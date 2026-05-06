@@ -552,8 +552,12 @@ pub fn layer_forward(
             let combined = add(&h1, &h2, None);
             rms_norm_opt(&combined, w.ffn_post_norm.as_ref())
         } else {
-            // Qwen3 MoE: router (proj → softmax → top-k) + expert forward.
-            let (top_k_indices, top_k_weights) = moe_router_qwen3(cfg, w, &normed2);
+            let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
+                moe_router_glm(cfg, w, &normed2)
+            } else {
+                // Qwen3 MoE: router (proj → softmax → top-k) + expert forward.
+                moe_router_qwen3(cfg, w, &normed2)
+            };
             let mut out = moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights);
             if w.shared_expert_gate.is_some() {
                 out = add(&out, &shared_expert_forward(w, &normed2), None);
@@ -1246,12 +1250,9 @@ fn glm_mla_embed_q_heads(
     mla_cfg: &GlmMlaAttentionConfig,
     mla_w: &crate::weights::GlmMlaAttentionWeights,
 ) -> MlxArray {
-    assert!(
-        mla_w.embed_q.scales.is_none(),
-        "GLM MLA quantized embed_q MultiLinear is not wired yet"
-    );
+    let weight = glm_mla_multilinear_weight(&mla_w.embed_q);
     reshape(
-        &mla_w.embed_q.weight,
+        &weight,
         &[
             cfg.n_heads as i32,
             mla_cfg.kv_lora_rank as i32,
@@ -1267,12 +1268,9 @@ fn glm_mla_unembed_out_heads(
     mla_cfg: &GlmMlaAttentionConfig,
     mla_w: &crate::weights::GlmMlaAttentionWeights,
 ) -> MlxArray {
-    assert!(
-        mla_w.unembed_out.scales.is_none(),
-        "GLM MLA quantized unembed_out MultiLinear is not wired yet"
-    );
+    let weight = glm_mla_multilinear_weight(&mla_w.unembed_out);
     reshape(
-        &mla_w.unembed_out.weight,
+        &weight,
         &[
             cfg.n_heads as i32,
             mla_cfg.value_head_dim as i32,
@@ -1280,6 +1278,21 @@ fn glm_mla_unembed_out_heads(
         ],
         None,
     )
+}
+
+fn glm_mla_multilinear_weight(weight: &QuantizedWeight) -> MlxArray {
+    if let Some(scales) = &weight.scales {
+        dequantize(
+            &weight.weight,
+            scales,
+            weight.biases.as_ref(),
+            Some(weight.group_size),
+            Some(weight.bits),
+            None,
+        )
+    } else {
+        weight.weight.clone()
+    }
 }
 
 fn attention_output_projection(
@@ -1681,9 +1694,26 @@ fn moe_router_qwen3(
     (top_k_indices, top_k_weights)
 }
 
+fn moe_router_glm(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    normed: &MlxArray,
+) -> (MlxArray, MlxArray) {
+    let logits = qw(
+        normed,
+        w.router_proj
+            .as_ref()
+            .expect("GLM MoE layer must have router projection"),
+    );
+    let correction_bias = w
+        .router_correction_bias
+        .as_ref()
+        .expect("GLM MoE layer must have router correction bias");
+    moe_router_glm_from_logits(cfg, &logits, correction_bias)
+}
+
 /// GLM4MoELite router: sigmoid logits + correction bias selects top-k;
 /// gathered weights come from the original sigmoid scores.
-#[allow(dead_code)] // Staged GLM contract; wired after MLA attention/cache support lands.
 pub(crate) fn moe_router_glm_from_logits(
     cfg: &ModelConfig,
     logits: &MlxArray,
@@ -2141,6 +2171,16 @@ mod tests {
         QuantizedWeight::new(zeros(shape, MlxDtype::Float32, None), None, None)
     }
 
+    fn quantized_zero_weight(packed_shape: &[i32], scale_shape: &[i32]) -> QuantizedWeight {
+        QuantizedWeight {
+            weight: zeros(packed_shape, MlxDtype::Uint32, None),
+            scales: Some(zeros(scale_shape, MlxDtype::Float32, None)),
+            biases: Some(zeros(scale_shape, MlxDtype::Float32, None)),
+            group_size: 64,
+            bits: 4,
+        }
+    }
+
     fn glm_mla_layer_weights(cfg: &ModelConfig) -> LayerWeights {
         let mla = cfg.glm_mla_attention.as_ref().expect("GLM MLA config");
         LayerWeights {
@@ -2204,6 +2244,33 @@ mod tests {
             up_exps: None,
             down_exps: None,
         }
+    }
+
+    fn glm_mla_quantized_multilinear_layer_weights(cfg: &ModelConfig) -> LayerWeights {
+        let mla = cfg.glm_mla_attention.as_ref().expect("GLM MLA config");
+        let mut weights = glm_mla_layer_weights(cfg);
+        weights.glm_mla_attn = Some(GlmMlaAttentionWeights {
+            q_a_proj: dense_weight(&[mla.q_lora_rank as i32, cfg.hidden_size as i32]),
+            q_a_norm: zeros(&[mla.q_lora_rank as i32], MlxDtype::Float32, None),
+            q_b_proj: dense_weight(&[
+                (cfg.n_heads * mla.q_head_dim) as i32,
+                mla.q_lora_rank as i32,
+            ]),
+            kv_a_proj: dense_weight(&[
+                (mla.kv_lora_rank + mla.qk_rope_head_dim) as i32,
+                cfg.hidden_size as i32,
+            ]),
+            kv_a_norm: zeros(&[mla.kv_lora_rank as i32], MlxDtype::Float32, None),
+            embed_q: quantized_zero_weight(
+                &[cfg.n_heads as i32, mla.kv_lora_rank as i32, 8],
+                &[cfg.n_heads as i32, mla.kv_lora_rank as i32, 1],
+            ),
+            unembed_out: quantized_zero_weight(
+                &[cfg.n_heads as i32, mla.value_head_dim as i32, 8],
+                &[cfg.n_heads as i32, mla.value_head_dim as i32, 1],
+            ),
+        });
+        weights
     }
 
     fn qwen35_linear_layer_weights(
@@ -2585,6 +2652,36 @@ mod tests {
     }
 
     #[test]
+    fn glm_mla_quantized_multilinear_dequantizes_to_prefill_and_decode_contracts() {
+        let mut manifest = glm4_moe_lite_manifest();
+        manifest.hidden_size = 8;
+        manifest.attention_head_count = 2;
+        manifest.kv_head_count = 2;
+        manifest.attention_head_dim = 66;
+        manifest.mla_attention.q_lora_rank = Some(4);
+        manifest.mla_attention.kv_lora_rank = Some(64);
+        manifest.mla_attention.qk_nope_head_dim = Some(64);
+        manifest.mla_attention.qk_rope_head_dim = Some(2);
+        manifest.mla_attention.value_head_dim = Some(64);
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let weights = glm_mla_quantized_multilinear_layer_weights(&cfg);
+
+        let kv_latent = zeros(&[1, 1, 3, 64], MlxDtype::Float32, None);
+        let prefill_k = glm_mla_embed_q_prefill(&cfg, &weights, &kv_latent);
+        let prefill_v = glm_mla_unembed_out(&cfg, &weights, &kv_latent);
+        eval(&[&prefill_k, &prefill_v]);
+        assert_eq!(prefill_k.shape(), vec![1, 2, 3, 64]);
+        assert_eq!(prefill_v.shape(), vec![1, 2, 3, 64]);
+
+        let q_nope = zeros(&[1, 2, 1, 64], MlxDtype::Float32, None);
+        let decode_q = glm_mla_embed_q_decode(&cfg, &weights, &q_nope);
+        let decode_out = glm_mla_unembed_out(&cfg, &weights, &decode_q);
+        eval(&[&decode_q, &decode_out]);
+        assert_eq!(decode_q.shape(), vec![1, 2, 1, 64]);
+        assert_eq!(decode_out.shape(), vec![1, 2, 1, 64]);
+    }
+
+    #[test]
     fn glm_mla_attention_forward_returns_hidden_shape_and_updates_cache() {
         let mut manifest = glm4_moe_lite_manifest();
         manifest.hidden_size = 8;
@@ -2612,6 +2709,31 @@ mod tests {
         let out = glm_mla_attention_forward(&cfg, &weights, &hidden, &mut cache, 0, 2);
         eval(&[&out]);
         assert_eq!(out.shape(), vec![1, 1, cfg.hidden_size as i32]);
+        assert_eq!(cache.collect_eval_refs().len(), 2);
+    }
+
+    #[test]
+    fn glm_mla_attention_forward_accepts_quantized_multilinear_weights() {
+        let mut manifest = glm4_moe_lite_manifest();
+        manifest.hidden_size = 8;
+        manifest.layer_count = 1;
+        manifest.attention_head_count = 2;
+        manifest.kv_head_count = 2;
+        manifest.attention_head_dim = 66;
+        manifest.mla_attention.q_lora_rank = Some(4);
+        manifest.mla_attention.kv_lora_rank = Some(64);
+        manifest.mla_attention.qk_nope_head_dim = Some(64);
+        manifest.mla_attention.qk_rope_head_dim = Some(2);
+        manifest.mla_attention.value_head_dim = Some(64);
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let weights = glm_mla_quantized_multilinear_layer_weights(&cfg);
+        let mut cache = MlxKVCache::new(cfg.layer_count);
+
+        let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
+        let out = glm_mla_attention_forward(&cfg, &weights, &hidden, &mut cache, 0, 0);
+        eval(&[&out]);
+
+        assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
         assert_eq!(cache.collect_eval_refs().len(), 2);
     }
 
