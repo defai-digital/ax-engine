@@ -102,6 +102,10 @@ pub struct TurboQuantDecodeQualityGate {
 }
 
 impl TurboQuantDecodeQualityGate {
+    pub const STRICT_DEBUG: Self = Self::new(0.02, 0.01, 0.999);
+    pub const REFERENCE_K8V4: Self = Self::new(0.04, 0.02, 0.998);
+    pub const RESEARCH_LOOSE: Self = Self::new(0.08, 0.04, 0.995);
+
     pub const fn new(max_abs_diff: f32, mean_abs_diff: f32, min_cosine_similarity: f32) -> Self {
         Self {
             max_abs_diff,
@@ -2259,6 +2263,36 @@ mod tests {
     }
 
     #[test]
+    fn decode_quality_gate_presets_are_ordered_by_promotion_confidence() {
+        const {
+            assert!(
+                TurboQuantDecodeQualityGate::STRICT_DEBUG.max_abs_diff
+                    <= TurboQuantDecodeQualityGate::REFERENCE_K8V4.max_abs_diff
+            );
+            assert!(
+                TurboQuantDecodeQualityGate::REFERENCE_K8V4.max_abs_diff
+                    <= TurboQuantDecodeQualityGate::RESEARCH_LOOSE.max_abs_diff
+            );
+            assert!(
+                TurboQuantDecodeQualityGate::STRICT_DEBUG.mean_abs_diff
+                    <= TurboQuantDecodeQualityGate::REFERENCE_K8V4.mean_abs_diff
+            );
+            assert!(
+                TurboQuantDecodeQualityGate::REFERENCE_K8V4.mean_abs_diff
+                    <= TurboQuantDecodeQualityGate::RESEARCH_LOOSE.mean_abs_diff
+            );
+            assert!(
+                TurboQuantDecodeQualityGate::STRICT_DEBUG.min_cosine_similarity
+                    >= TurboQuantDecodeQualityGate::REFERENCE_K8V4.min_cosine_similarity
+            );
+            assert!(
+                TurboQuantDecodeQualityGate::REFERENCE_K8V4.min_cosine_similarity
+                    >= TurboQuantDecodeQualityGate::RESEARCH_LOOSE.min_cosine_similarity
+            );
+        }
+    }
+
+    #[test]
     fn compressed_block_buffer_compares_all_head_decode_against_full_precision_oracle() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
             preset: MlxTurboQuantPreset::K8V4,
@@ -2324,8 +2358,11 @@ mod tests {
             "report was {report:?}"
         );
 
-        let gate = TurboQuantDecodeQualityGate::new(0.02, 0.01, 0.999);
-        assert!(gate.evaluate(&report).passed);
+        assert!(
+            TurboQuantDecodeQualityGate::REFERENCE_K8V4
+                .evaluate(&report)
+                .passed
+        );
     }
 
     #[test]

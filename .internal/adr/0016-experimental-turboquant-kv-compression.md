@@ -131,6 +131,12 @@ mean absolute error, and minimum cosine similarity together, returning
 future benchmark and fused-kernel promotion criteria explicit while remaining
 CPU-only and disconnected from generation behavior.
 
+Named decode quality gate presets are accepted as benchmark and promotion
+contracts, not as public quality claims. The initial set separates strict debug,
+K8V4 reference, and loose research thresholds so tests and future benchmark
+harnesses share one vocabulary without enabling TurboQuant in runtime KV
+storage, SDPA, or generation.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

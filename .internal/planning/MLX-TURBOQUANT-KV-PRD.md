@@ -145,6 +145,17 @@ Implemented decode quality gate slice on 2026-05-06:
 - Keeps the quality gate disconnected from MLX allocation, runtime KV storage,
   SDPA, and generation.
 
+Implemented decode quality preset slice on 2026-05-06:
+
+- Added named `TurboQuantDecodeQualityGate` presets for strict debug checks,
+  K8V4 reference promotion checks, and loose research exploration.
+- Replaced the compressed-buffer oracle test's ad hoc K8V4 threshold with the
+  reference preset.
+- Added an ordering test so stricter presets cannot accidentally become more
+  permissive than promotion or research gates.
+- Keeps the presets disconnected from MLX allocation, runtime KV storage, SDPA,
+  generation, and user-visible defaults.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
