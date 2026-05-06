@@ -408,6 +408,35 @@ impl TurboQuantCompressedDecodePlan {
 
         Ok(())
     }
+
+    pub fn validate_queries(self, queries: &[Vec<f32>]) -> Result<(), TurboQuantCodecError> {
+        if queries.len() != self.layout.config.n_kv_heads {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: self.layout.config.n_kv_heads,
+                actual: queries.len(),
+            });
+        }
+
+        for query in queries {
+            if query.len() != self.layout.config.head_dim {
+                return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                    expected: self.layout.config.head_dim,
+                    actual: query.len(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_decode_inputs(
+        self,
+        buffer: &TurboQuantCompressedBlockBuffer,
+        queries: &[Vec<f32>],
+    ) -> Result<(), TurboQuantCodecError> {
+        self.validate_queries(queries)?;
+        self.validate_compressed_buffer(buffer)
+    }
 }
 
 impl TurboQuantBlockLayout {
@@ -2129,6 +2158,75 @@ mod tests {
         assert!(!plan.needs_compressed_decode());
         plan.validate_compressed_buffer(&buffer)
             .expect("hot-window-only plan does not require compressed coverage");
+    }
+
+    #[test]
+    fn compressed_decode_plan_validates_query_shapes() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 1, 2).expect("plan should build");
+
+        plan.validate_queries(&[vec![0.1; 8], vec![0.2; 8]])
+            .expect("matching per-head queries should pass");
+
+        let error = plan
+            .validate_queries(&[vec![0.1; 8]])
+            .expect_err("query head count mismatch should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: 2,
+                actual: 1,
+            }
+        );
+
+        let error = plan
+            .validate_queries(&[vec![0.1; 8], vec![0.2; 7]])
+            .expect_err("query dimension mismatch should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedVectorDimension {
+                expected: 8,
+                actual: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn compressed_decode_plan_validates_buffer_and_queries_together() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 3, 1).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let token = vec![(vec![0.1; 8], vec![0.2; 8]), (vec![0.3; 8], vec![0.4; 8])];
+        buffer.write_token(0, &token).expect("first cold token");
+        buffer.write_token(1, &token).expect("second cold token");
+
+        plan.validate_decode_inputs(&buffer, &[vec![0.1; 8], vec![0.2; 8]])
+            .expect("complete compressed coverage and matching queries should pass");
+
+        let error = plan
+            .validate_decode_inputs(&buffer, &[vec![0.1; 8]])
+            .expect_err("query validation should happen before coverage");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: 2,
+                actual: 1,
+            }
+        );
     }
 
     #[test]
