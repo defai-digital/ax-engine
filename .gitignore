@@ -13,3 +13,9 @@ __pycache__/
 CLAUDE.md
 agents.md
 AGENTS.md
+ax-code.json
+
+# Local benchmark scratch outputs. Curated public artifacts live in dated
+# benchmark result directories without these suffixes.
+benchmarks/results/mlx-inference/*-investigate/
+benchmarks/results/mlx-inference/*-rerun/
