@@ -40,6 +40,8 @@ pub struct LayerWeights {
     pub o_proj: Option<QuantizedWeight>,
     // Linear attention (Qwen3.5 hybrid layers). Present instead of full-attention QKV/O.
     pub linear_attn: Option<LinearAttentionWeights>,
+    // GLM4MoELite MLA attention. Present instead of standard full-attention Q/K/V.
+    pub glm_mla_attn: Option<GlmMlaAttentionWeights>,
     // Dense FFN norms and weights.
     pub ffn_norm: MlxArray,
     pub ffn_post_norm: Option<MlxArray>,
@@ -53,6 +55,7 @@ pub struct LayerWeights {
     pub ffn_post_norm2: Option<MlxArray>,
     // MoE: router weights.
     pub router_proj: Option<QuantizedWeight>,
+    pub router_correction_bias: Option<MlxArray>,
     pub router_scale: Option<MlxArray>,
     /// Per-expert output scale (Gemma4 MoE): multiply top-k weights by this after softmax.
     pub router_expert_scale: Option<MlxArray>,
@@ -73,6 +76,17 @@ pub struct LayerWeights {
     pub gate_exps: Option<QuantizedWeight>,
     pub up_exps: Option<QuantizedWeight>,
     pub down_exps: Option<QuantizedWeight>,
+}
+
+/// Weights for a GLM4MoELite MLA attention layer.
+pub struct GlmMlaAttentionWeights {
+    pub q_a_proj: QuantizedWeight,
+    pub q_a_norm: MlxArray,
+    pub q_b_proj: QuantizedWeight,
+    pub kv_a_proj: QuantizedWeight,
+    pub kv_a_norm: MlxArray,
+    pub embed_q: QuantizedWeight,
+    pub unembed_out: QuantizedWeight,
 }
 
 /// Weights for a Qwen3.5 GatedDelta linear-attention layer.
@@ -454,11 +468,17 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         let q_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionQNorm, idx)?;
         let k_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionKNorm, idx)?;
 
-        let (qkv_packed, q_proj, k_proj, v_proj) = if attention_layout == AttentionLayout::Linear {
-            (None, None, None, None)
+        let (qkv_packed, q_proj, k_proj, v_proj, glm_mla_attn) = if attention_layout
+            == AttentionLayout::Linear
+        {
+            (None, None, None, None, None)
         } else {
             match full_attention_projection_layout(specs, idx, uses_shared_kv, uses_value_from_key)?
             {
+                FullAttentionProjectionLayout::GlmMla => {
+                    let glm = load_glm_mla_attention_weights(specs, &mut name_map, idx)?;
+                    (None, None, None, None, Some(glm))
+                }
                 FullAttentionProjectionLayout::QOnly => {
                     let q = take_weight(
                         specs,
@@ -467,7 +487,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                         idx,
                         "q_proj",
                     )?;
-                    (None, Some(q), None, None)
+                    (None, Some(q), None, None, None)
                 }
                 FullAttentionProjectionLayout::PackedQkv => {
                     let p = take_weight(
@@ -477,7 +497,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                         idx,
                         "qkv",
                     )?;
-                    (Some(p), None, None, None)
+                    (Some(p), None, None, None, None)
                 }
                 FullAttentionProjectionLayout::SplitQkValueFromKey => {
                     let q = take_weight(
@@ -494,7 +514,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                         idx,
                         "k_proj",
                     )?;
-                    (None, Some(q), Some(k), None)
+                    (None, Some(q), Some(k), None, None)
                 }
                 FullAttentionProjectionLayout::SplitQkv => {
                     let q = take_weight(
@@ -518,7 +538,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                         idx,
                         "v_proj",
                     )?;
-                    (None, Some(q), Some(k), Some(v))
+                    (None, Some(q), Some(k), Some(v), None)
                 }
             }
         };
@@ -564,6 +584,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             qkv_packed,
             o_proj,
             linear_attn,
+            glm_mla_attn,
             ffn_norm,
             ffn_post_norm,
             gate_proj,
@@ -574,6 +595,12 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             ffn_post_norm1,
             ffn_post_norm2,
             router_proj,
+            router_correction_bias: try_take_plain(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnGateInpCorrectionBias,
+                idx,
+            )?,
             router_scale,
             router_expert_scale,
             layer_scalar,
@@ -610,6 +637,8 @@ enum AttentionLayout {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FullAttentionProjectionLayout {
+    /// GLM4MoELite MLA attention uses q_a/q_b + latent KV projections.
+    GlmMla,
     /// KV-shared layers compute only Q and reuse a source layer's K/V.
     QOnly,
     PackedQkv,
@@ -643,6 +672,17 @@ fn full_attention_projection_layout(
     uses_shared_kv: bool,
     uses_value_from_key: bool,
 ) -> Result<FullAttentionProjectionLayout, WeightLoadError> {
+    let has_glm_mla = has_glm_mla_attention_role(specs, layer_index);
+    let has_standard_full = has_standard_full_attention_projection_role(specs, layer_index);
+    if has_glm_mla {
+        if uses_shared_kv || uses_value_from_key || has_standard_full {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "layer {layer_index:?} mixes GLM MLA attention with standard full-attention layout"
+            )));
+        }
+        return Ok(FullAttentionProjectionLayout::GlmMla);
+    }
+
     let has_packed = has_role(specs, NativeTensorRole::AttentionQkvPacked, layer_index);
     if uses_shared_kv {
         if has_packed {
@@ -673,6 +713,41 @@ fn has_full_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u32>)
         NativeTensorRole::AttentionK,
         NativeTensorRole::AttentionV,
         NativeTensorRole::AttentionQkvPacked,
+        NativeTensorRole::AttentionQa,
+        NativeTensorRole::AttentionQaNorm,
+        NativeTensorRole::AttentionQb,
+        NativeTensorRole::AttentionKvA,
+        NativeTensorRole::AttentionKvANorm,
+        NativeTensorRole::AttentionEmbedQ,
+        NativeTensorRole::AttentionUnembedOut,
+    ]
+    .into_iter()
+    .any(|role| has_role(specs, role, layer_index))
+}
+
+fn has_standard_full_attention_projection_role(
+    specs: &[NativeTensorSpec],
+    layer_index: Option<u32>,
+) -> bool {
+    [
+        NativeTensorRole::AttentionQ,
+        NativeTensorRole::AttentionK,
+        NativeTensorRole::AttentionV,
+        NativeTensorRole::AttentionQkvPacked,
+    ]
+    .into_iter()
+    .any(|role| has_role(specs, role, layer_index))
+}
+
+fn has_glm_mla_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u32>) -> bool {
+    [
+        NativeTensorRole::AttentionQa,
+        NativeTensorRole::AttentionQaNorm,
+        NativeTensorRole::AttentionQb,
+        NativeTensorRole::AttentionKvA,
+        NativeTensorRole::AttentionKvANorm,
+        NativeTensorRole::AttentionEmbedQ,
+        NativeTensorRole::AttentionUnembedOut,
     ]
     .into_iter()
     .any(|role| has_role(specs, role, layer_index))
@@ -781,6 +856,66 @@ fn load_linear_attention_weights(
             NativeTensorRole::LinearAttentionOutProj,
             layer_index,
             "linear_attention_out_proj",
+        )?,
+    })
+}
+
+fn load_glm_mla_attention_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    layer_index: Option<u32>,
+) -> Result<GlmMlaAttentionWeights, WeightLoadError> {
+    Ok(GlmMlaAttentionWeights {
+        q_a_proj: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionQa,
+            layer_index,
+            "glm_q_a_proj",
+        )?,
+        q_a_norm: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionQaNorm,
+            layer_index,
+            "glm_q_a_norm",
+        )?
+        .weight,
+        q_b_proj: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionQb,
+            layer_index,
+            "glm_q_b_proj",
+        )?,
+        kv_a_proj: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionKvA,
+            layer_index,
+            "glm_kv_a_proj",
+        )?,
+        kv_a_norm: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionKvANorm,
+            layer_index,
+            "glm_kv_a_norm",
+        )?
+        .weight,
+        embed_q: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionEmbedQ,
+            layer_index,
+            "glm_embed_q",
+        )?,
+        unembed_out: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionUnembedOut,
+            layer_index,
+            "glm_unembed_out",
         )?,
     })
 }
@@ -964,6 +1099,39 @@ mod tests {
     }
 
     #[test]
+    fn full_attention_projection_layout_uses_glm_mla_roles() {
+        let specs = vec![
+            spec(NativeTensorRole::AttentionQa),
+            spec(NativeTensorRole::AttentionQaNorm),
+            spec(NativeTensorRole::AttentionQb),
+            spec(NativeTensorRole::AttentionKvA),
+            spec(NativeTensorRole::AttentionKvANorm),
+            spec(NativeTensorRole::AttentionEmbedQ),
+            spec(NativeTensorRole::AttentionUnembedOut),
+            spec(NativeTensorRole::AttentionO),
+        ];
+
+        let layout = full_attention_projection_layout(&specs, Some(0), false, false)
+            .expect("GLM MLA layout should resolve");
+
+        assert_eq!(layout, FullAttentionProjectionLayout::GlmMla);
+    }
+
+    #[test]
+    fn full_attention_projection_layout_rejects_glm_mla_mixed_with_standard_qkv() {
+        let specs = vec![
+            spec(NativeTensorRole::AttentionQa),
+            spec(NativeTensorRole::AttentionQ),
+            spec(NativeTensorRole::AttentionO),
+        ];
+
+        let error = full_attention_projection_layout(&specs, Some(0), false, false)
+            .expect_err("GLM MLA cannot mix with standard QKV projections");
+
+        assert!(matches!(error, WeightLoadError::InvalidLayer(_)));
+    }
+
+    #[test]
     fn full_attention_projection_layout_rejects_packed_qkv_for_kv_shared_layers() {
         let specs = vec![spec(NativeTensorRole::AttentionQkvPacked)];
 
@@ -971,6 +1139,36 @@ mod tests {
             .expect_err("packed QKV cannot represent Q-only KV sharing");
 
         assert!(matches!(error, WeightLoadError::InvalidLayer(_)));
+    }
+
+    #[test]
+    fn load_glm_mla_attention_weights_takes_all_reference_roles() {
+        let roles = [
+            NativeTensorRole::AttentionQa,
+            NativeTensorRole::AttentionQaNorm,
+            NativeTensorRole::AttentionQb,
+            NativeTensorRole::AttentionKvA,
+            NativeTensorRole::AttentionKvANorm,
+            NativeTensorRole::AttentionEmbedQ,
+            NativeTensorRole::AttentionUnembedOut,
+        ];
+        let specs = roles.iter().copied().map(spec).collect::<Vec<_>>();
+        let mut name_map = roles
+            .iter()
+            .map(|role| (format!("{role:?}"), zeros(&[1, 1], MlxDtype::Float32, None)))
+            .collect::<HashMap<_, _>>();
+
+        let weights = load_glm_mla_attention_weights(&specs, &mut name_map, Some(0))
+            .expect("GLM MLA weights should load");
+
+        assert_eq!(weights.q_a_norm.shape(), vec![1, 1]);
+        assert_eq!(weights.kv_a_norm.shape(), vec![1, 1]);
+        assert!(weights.q_a_proj.scales.is_none());
+        assert!(weights.q_b_proj.scales.is_none());
+        assert!(weights.kv_a_proj.scales.is_none());
+        assert!(weights.embed_q.scales.is_none());
+        assert!(weights.unembed_out.scales.is_none());
+        assert!(name_map.is_empty());
     }
 
     #[test]
