@@ -20,6 +20,14 @@ struct AppendShape {
     dtype: MlxDtype,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GlmMlaAppendShape {
+    new_tokens: usize,
+    latent_dim: i32,
+    rope_dim: i32,
+    dtype: MlxDtype,
+}
+
 fn validate_append_inputs(
     layer: usize,
     layer_count: usize,
@@ -60,6 +68,63 @@ fn validate_append_inputs(
         n_kv_heads: k_shape[1],
         head_dim: k_shape[3],
         dtype: k_dtype,
+    }
+}
+
+fn validate_glm_mla_append_inputs(
+    layer: usize,
+    layer_count: usize,
+    new_kv_latent: &MlxArray,
+    new_k_pe: &MlxArray,
+) -> GlmMlaAppendShape {
+    assert!(
+        layer < layer_count,
+        "GLM MLA cache layer {layer} out of bounds for {layer_count} layers"
+    );
+
+    let latent_shape = new_kv_latent.shape();
+    let rope_shape = new_k_pe.shape();
+    assert_eq!(
+        latent_shape.len(),
+        4,
+        "GLM MLA latent cache append expects [1, 1, tokens, kv_lora_rank]"
+    );
+    assert_eq!(
+        rope_shape.len(),
+        4,
+        "GLM MLA rope-key cache append expects [1, 1, tokens, qk_rope_head_dim]"
+    );
+    assert_eq!(latent_shape[0], 1, "GLM MLA cache supports batch=1 only");
+    assert_eq!(rope_shape[0], 1, "GLM MLA cache supports batch=1 only");
+    assert_eq!(
+        latent_shape[1], 1,
+        "GLM MLA latent cache stores one latent head"
+    );
+    assert_eq!(
+        rope_shape[1], 1,
+        "GLM MLA rope-key cache stores one RoPE head"
+    );
+    assert_eq!(
+        latent_shape[2], rope_shape[2],
+        "GLM MLA cache append requires matching latent/k_pe token counts"
+    );
+    assert!(
+        latent_shape[2] > 0 && latent_shape[3] > 0 && rope_shape[3] > 0,
+        "GLM MLA cache append requires positive tokens and dimensions"
+    );
+
+    let dtype = new_kv_latent.dtype();
+    assert_eq!(
+        dtype,
+        new_k_pe.dtype(),
+        "GLM MLA cache append requires matching latent/k_pe dtypes"
+    );
+
+    GlmMlaAppendShape {
+        new_tokens: latent_shape[2] as usize,
+        latent_dim: latent_shape[3],
+        rope_dim: rope_shape[3],
+        dtype,
     }
 }
 
@@ -110,6 +175,18 @@ struct LayerKV {
     dtype: MlxDtype,
 }
 
+#[derive(Clone)]
+struct GlmMlaLayerCache {
+    /// `[1, 1, capacity, kv_lora_rank]`, matching mlx-lm's latent KV cache.
+    kv_latent: MlxArray,
+    /// `[1, 1, capacity, qk_rope_head_dim]`, matching mlx-lm's RoPE key cache.
+    k_pe: MlxArray,
+    latent_dim: i32,
+    rope_dim: i32,
+    capacity: usize,
+    dtype: MlxDtype,
+}
+
 #[derive(Clone, Default)]
 struct LinearLayerState {
     /// Qwen3.5 gated-delta conv tail: `[1, conv_kernel - 1, conv_dim]`.
@@ -138,6 +215,7 @@ struct LinearLayerState {
 /// The next `append` overwrites from `prefix_len`, restoring correctness.
 pub struct MlxKVCache {
     layers: Vec<Option<LayerKV>>,
+    glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
     linear_layers: Vec<LinearLayerState>,
     /// Current logical sequence length (token count cached).
     pub seq_len: usize,
@@ -148,6 +226,7 @@ impl Clone for MlxKVCache {
     fn clone(&self) -> Self {
         Self {
             layers: self.layers.clone(),
+            glm_mla_layers: self.glm_mla_layers.clone(),
             linear_layers: self.linear_layers.clone(),
             seq_len: self.seq_len,
             growth_count: self.growth_count,
@@ -159,6 +238,7 @@ impl MlxKVCache {
     pub fn new(num_layers: usize) -> Self {
         Self {
             layers: (0..num_layers).map(|_| None).collect(),
+            glm_mla_layers: (0..num_layers).map(|_| None).collect(),
             linear_layers: (0..num_layers)
                 .map(|_| LinearLayerState::default())
                 .collect(),
@@ -262,6 +342,141 @@ impl MlxKVCache {
         (k_view, v_view)
     }
 
+    /// Append GLM4MoELite MLA cache tokens and return full logical latent/KRoPE views.
+    ///
+    /// Shape convention follows mlx-lm's `cache.update_and_fetch(kv_latent, k_pe)`:
+    /// `new_kv_latent`: `[1, 1, new_tokens, kv_lora_rank]`
+    /// `new_k_pe`: `[1, 1, new_tokens, qk_rope_head_dim]`
+    ///
+    /// This cache stores the compressed MLA representation, not expanded K/V.
+    pub fn append_glm_mla(
+        &mut self,
+        layer: usize,
+        new_kv_latent: MlxArray,
+        new_k_pe: MlxArray,
+    ) -> (MlxArray, MlxArray) {
+        let append = validate_glm_mla_append_inputs(
+            layer,
+            self.glm_mla_layers.len(),
+            &new_kv_latent,
+            &new_k_pe,
+        );
+        let new_tokens = append.new_tokens;
+        let write_start = self.seq_len;
+        let write_end = write_start + new_tokens;
+        let dtype = append.dtype;
+        let latent_dim = append.latent_dim;
+        let rope_dim = append.rope_dim;
+
+        let entry = &mut self.glm_mla_layers[layer];
+        match entry {
+            None => {
+                let capacity = chunk_ceiling(write_end);
+                let latent_shape = [1i32, 1, capacity as i32, latent_dim];
+                let rope_shape = [1i32, 1, capacity as i32, rope_dim];
+                let latent_buf = zeros(&latent_shape, dtype, None);
+                let rope_buf = zeros(&rope_shape, dtype, None);
+                let start = [0i32, 0, write_start as i32, 0];
+                let latent_stop = [1i32, 1, write_end as i32, latent_dim];
+                let rope_stop = [1i32, 1, write_end as i32, rope_dim];
+                let strides = [1i32, 1, 1, 1];
+                let kv_latent = slice_update(
+                    &latent_buf,
+                    &new_kv_latent,
+                    &start,
+                    &latent_stop,
+                    &strides,
+                    None,
+                );
+                let k_pe = slice_update(&rope_buf, &new_k_pe, &start, &rope_stop, &strides, None);
+                self.growth_count = self.growth_count.saturating_add(1);
+                *entry = Some(GlmMlaLayerCache {
+                    kv_latent,
+                    k_pe,
+                    latent_dim,
+                    rope_dim,
+                    capacity,
+                    dtype,
+                });
+            }
+            Some(cache) => {
+                assert_eq!(
+                    cache.latent_dim, latent_dim,
+                    "GLM MLA cache append cannot change kv_lora_rank for an existing layer"
+                );
+                assert_eq!(
+                    cache.rope_dim, rope_dim,
+                    "GLM MLA cache append cannot change qk_rope_head_dim for an existing layer"
+                );
+                assert_eq!(
+                    cache.dtype, dtype,
+                    "GLM MLA cache append cannot change dtype for an existing layer"
+                );
+                if write_end > cache.capacity {
+                    let new_capacity = chunk_ceiling(write_end);
+                    let latent_shape = [1i32, 1, new_capacity as i32, cache.latent_dim];
+                    let rope_shape = [1i32, 1, new_capacity as i32, cache.rope_dim];
+                    let latent_new = zeros(&latent_shape, cache.dtype, None);
+                    let rope_new = zeros(&rope_shape, cache.dtype, None);
+                    let zero_start = [0i32, 0, 0, 0];
+                    let latent_old_stop = [1i32, 1, cache.capacity as i32, cache.latent_dim];
+                    let rope_old_stop = [1i32, 1, cache.capacity as i32, cache.rope_dim];
+                    let ones = [1i32, 1, 1, 1];
+                    cache.kv_latent = slice_update(
+                        &latent_new,
+                        &cache.kv_latent,
+                        &zero_start,
+                        &latent_old_stop,
+                        &ones,
+                        None,
+                    );
+                    cache.k_pe = slice_update(
+                        &rope_new,
+                        &cache.k_pe,
+                        &zero_start,
+                        &rope_old_stop,
+                        &ones,
+                        None,
+                    );
+                    cache.capacity = new_capacity;
+                    self.growth_count = self.growth_count.saturating_add(1);
+                }
+                let start = [0i32, 0, write_start as i32, 0];
+                let latent_stop = [1i32, 1, write_end as i32, cache.latent_dim];
+                let rope_stop = [1i32, 1, write_end as i32, cache.rope_dim];
+                let strides = [1i32, 1, 1, 1];
+                cache.kv_latent = slice_update(
+                    &cache.kv_latent,
+                    &new_kv_latent,
+                    &start,
+                    &latent_stop,
+                    &strides,
+                    None,
+                );
+                cache.k_pe =
+                    slice_update(&cache.k_pe, &new_k_pe, &start, &rope_stop, &strides, None);
+            }
+        }
+
+        let cache = self.glm_mla_layers[layer].as_ref().unwrap();
+        let end = write_end as i32;
+        let kv_latent = slice(
+            &cache.kv_latent,
+            &[0, 0, 0, 0],
+            &[1, 1, end, cache.latent_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let k_pe = slice(
+            &cache.k_pe,
+            &[0, 0, 0, 0],
+            &[1, 1, end, cache.rope_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        (kv_latent, k_pe)
+    }
+
     /// Trim the logical boundary to `prefix_len` tokens (draft rollback).
     ///
     /// With chunked layout this is O(1) — no array data is modified.  The backing
@@ -289,10 +504,14 @@ impl MlxKVCache {
     ///
     /// Mirrors mlx_lm's `mx.eval(y, cache)` pattern.
     pub fn collect_eval_refs(&self) -> Vec<&MlxArray> {
-        let mut refs = Vec::with_capacity(self.layers.len() * 4);
+        let mut refs = Vec::with_capacity(self.layers.len() * 4 + self.glm_mla_layers.len() * 2);
         for lkv in self.layers.iter().flatten() {
             refs.push(&lkv.k);
             refs.push(&lkv.v);
+        }
+        for glm_mla in self.glm_mla_layers.iter().flatten() {
+            refs.push(&glm_mla.kv_latent);
+            refs.push(&glm_mla.k_pe);
         }
         for linear in &self.linear_layers {
             if let Some(conv_state) = &linear.conv_state {
@@ -396,6 +615,21 @@ impl MlxKVCache {
                 usage.linear_state_layers = usage.linear_state_layers.saturating_add(1);
                 usage.linear_state_bytes = usage.linear_state_bytes.saturating_add(layer_bytes);
             }
+        }
+
+        for glm_mla in self.glm_mla_layers.iter().flatten() {
+            let elements_per_token =
+                (glm_mla.latent_dim as u64).saturating_add(glm_mla.rope_dim as u64);
+            let bytes_per_token =
+                elements_per_token.saturating_mul(glm_mla.dtype.size_bytes() as u64);
+            usage.full_attention_layers = usage.full_attention_layers.saturating_add(1);
+            usage.capacity_tokens = usage.capacity_tokens.saturating_add(glm_mla.capacity);
+            usage.logical_bytes = usage
+                .logical_bytes
+                .saturating_add(bytes_per_token.saturating_mul(self.seq_len as u64));
+            usage.capacity_bytes = usage
+                .capacity_bytes
+                .saturating_add(bytes_per_token.saturating_mul(glm_mla.capacity as u64));
         }
 
         usage.kv_compression = self.estimate_kv_compression_usage(
@@ -558,6 +792,9 @@ impl MlxKVCache {
         for entry in &mut self.layers {
             *entry = None;
         }
+        for entry in &mut self.glm_mla_layers {
+            *entry = None;
+        }
         for state in &mut self.linear_layers {
             *state = LinearLayerState::default();
         }
@@ -640,6 +877,63 @@ mod tests {
         let (conv_state, recurrent_state) = branch.linear_state(0);
         assert!(conv_state.is_some());
         assert!(recurrent_state.is_some());
+    }
+
+    #[test]
+    fn glm_mla_cache_appends_latent_and_rope_key_history() {
+        let mut cache = MlxKVCache::new(1);
+        let kv_latent = zeros(&[1, 1, 2, 512], MlxDtype::Bfloat16, None);
+        let k_pe = zeros(&[1, 1, 2, 64], MlxDtype::Bfloat16, None);
+
+        let (latent_history, rope_history) = cache.append_glm_mla(0, kv_latent, k_pe);
+
+        assert_eq!(latent_history.shape(), vec![1, 1, 2, 512]);
+        assert_eq!(rope_history.shape(), vec![1, 1, 2, 64]);
+        assert_eq!(cache.collect_eval_refs().len(), 2);
+        cache.seq_len = 2;
+
+        let kv_latent = zeros(&[1, 1, 1, 512], MlxDtype::Bfloat16, None);
+        let k_pe = zeros(&[1, 1, 1, 64], MlxDtype::Bfloat16, None);
+        let (latent_history, rope_history) = cache.append_glm_mla(0, kv_latent, k_pe);
+
+        assert_eq!(latent_history.shape(), vec![1, 1, 3, 512]);
+        assert_eq!(rope_history.shape(), vec![1, 1, 3, 64]);
+        assert_eq!(cache.collect_eval_refs().len(), 2);
+    }
+
+    #[test]
+    fn usage_snapshot_tracks_glm_mla_compressed_cache_bytes() {
+        let mut cache = MlxKVCache::new(1);
+        let kv_latent = zeros(&[1, 1, 2, 512], MlxDtype::Bfloat16, None);
+        let k_pe = zeros(&[1, 1, 2, 64], MlxDtype::Bfloat16, None);
+
+        cache.append_glm_mla(0, kv_latent, k_pe);
+        cache.seq_len = 2;
+
+        let usage = cache.usage_snapshot();
+        assert_eq!(usage.logical_tokens, 2);
+        assert_eq!(usage.capacity_tokens, 256);
+        assert_eq!(usage.full_attention_layers, 1);
+        assert_eq!(usage.logical_bytes, 2304);
+        assert_eq!(usage.capacity_bytes, 294_912);
+        assert_eq!(usage.growth_count, 1);
+    }
+
+    #[test]
+    fn reset_clears_glm_mla_cache_eval_refs() {
+        let mut cache = MlxKVCache::new(1);
+        let kv_latent = zeros(&[1, 1, 1, 512], MlxDtype::Bfloat16, None);
+        let k_pe = zeros(&[1, 1, 1, 64], MlxDtype::Bfloat16, None);
+
+        cache.append_glm_mla(0, kv_latent, k_pe);
+        cache.seq_len = 1;
+        assert_eq!(cache.collect_eval_refs().len(), 2);
+
+        cache.reset();
+
+        assert_eq!(cache.seq_len, 0);
+        assert!(cache.collect_eval_refs().is_empty());
+        assert_eq!(cache.usage_snapshot(), MlxKVCacheUsage::default());
     }
 
     #[test]
