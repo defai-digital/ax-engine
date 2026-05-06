@@ -167,6 +167,18 @@ Implemented decode quality profile mapping slice on 2026-05-06:
 - Keeps the mapping disconnected from MLX allocation, runtime KV storage, SDPA,
   generation, and user-visible defaults.
 
+Implemented decode quality evaluation slice on 2026-05-06:
+
+- Added `TurboQuantDecodeQualityEvaluation` as the typed output for applying a
+  quantization preset to a decode comparison report.
+- Added `evaluate_decode_quality_for_preset` so benchmark and promotion harnesses
+  receive the preset, mapped profile, gate thresholds, and pass/fail decision
+  from one CPU-only contract.
+- Added tests proving K8V4 uses the reference gate while aggressive presets stay
+  on the research gate until separate quality evidence promotes them.
+- Keeps the evaluation contract disconnected from MLX allocation, runtime KV
+  storage, SDPA, generation, and user-visible defaults.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

@@ -143,6 +143,12 @@ remain on the loose research profile until model-specific gates justify
 promotion. This keeps benchmark harnesses explicit without changing runtime
 defaults or enabling compressed KV storage.
 
+The preset quality evaluation result is accepted as the benchmark-facing API for
+quality decisions. `evaluate_decode_quality_for_preset` returns the quantization
+preset, mapped profile, gate thresholds, and decision together so callers do not
+duplicate policy mapping. It remains CPU-only and does not alter runtime
+defaults, KV storage, SDPA, or generation.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

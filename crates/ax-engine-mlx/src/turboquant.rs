@@ -116,6 +116,13 @@ impl TurboQuantDecodeQualityProfile {
             MlxTurboQuantPreset::K4V4 | MlxTurboQuantPreset::K3V4Research => Self::ResearchLoose,
         }
     }
+
+    pub fn evaluate(
+        self,
+        report: &TurboQuantDecodeComparisonReport,
+    ) -> TurboQuantDecodeQualityDecision {
+        self.gate().evaluate(report)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -174,6 +181,29 @@ pub struct TurboQuantDecodeQualityDecision {
     pub mean_abs_diff_limit: f32,
     pub min_cosine_similarity: f32,
     pub min_cosine_similarity_limit: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TurboQuantDecodeQualityEvaluation {
+    pub preset: MlxTurboQuantPreset,
+    pub profile: TurboQuantDecodeQualityProfile,
+    pub gate: TurboQuantDecodeQualityGate,
+    pub decision: TurboQuantDecodeQualityDecision,
+}
+
+pub fn evaluate_decode_quality_for_preset(
+    preset: MlxTurboQuantPreset,
+    report: &TurboQuantDecodeComparisonReport,
+) -> TurboQuantDecodeQualityEvaluation {
+    let profile = TurboQuantDecodeQualityProfile::for_quantization_preset(preset);
+    let gate = profile.gate();
+    let decision = gate.evaluate(report);
+    TurboQuantDecodeQualityEvaluation {
+        preset,
+        profile,
+        gate,
+        decision,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2344,6 +2374,40 @@ mod tests {
             ),
             TurboQuantDecodeQualityProfile::ResearchLoose
         );
+    }
+
+    #[test]
+    fn decode_quality_evaluation_records_preset_profile_gate_and_decision() {
+        let report =
+            compare_decode_outputs(&[vec![1.0, 0.0, 0.0, 0.0]], &[vec![0.97, 0.0, 0.0, 0.0]])
+                .expect("compare outputs");
+
+        let evaluation = evaluate_decode_quality_for_preset(MlxTurboQuantPreset::K8V4, &report);
+
+        assert_eq!(evaluation.preset, MlxTurboQuantPreset::K8V4);
+        assert_eq!(
+            evaluation.profile,
+            TurboQuantDecodeQualityProfile::ReferenceK8V4
+        );
+        assert_eq!(evaluation.gate, TurboQuantDecodeQualityGate::REFERENCE_K8V4);
+        assert!(evaluation.decision.passed, "evaluation was {evaluation:?}");
+    }
+
+    #[test]
+    fn decode_quality_evaluation_keeps_aggressive_presets_on_research_gate() {
+        let report =
+            compare_decode_outputs(&[vec![1.0, 1.0, 1.0, 1.0]], &[vec![1.06, 1.0, 1.0, 1.0]])
+                .expect("compare outputs");
+
+        let reference = evaluate_decode_quality_for_preset(MlxTurboQuantPreset::K8V4, &report);
+        let research = evaluate_decode_quality_for_preset(MlxTurboQuantPreset::K4V4, &report);
+
+        assert_eq!(
+            research.profile,
+            TurboQuantDecodeQualityProfile::ResearchLoose
+        );
+        assert!(!reference.decision.passed, "reference was {reference:?}");
+        assert!(research.decision.passed, "research was {research:?}");
     }
 
     #[test]
