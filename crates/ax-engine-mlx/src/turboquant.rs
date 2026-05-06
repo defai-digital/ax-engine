@@ -8,6 +8,7 @@ use crate::model::ModelConfig;
 pub type FullPrecisionKvTokenVectors = (Vec<f32>, Vec<f32>);
 
 pub const TURBOQUANT_SLOT_ALIGNMENT_BYTES: usize = 16;
+pub const TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM: usize = 128;
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum TurboQuantCodecError {
@@ -334,6 +335,9 @@ pub struct TurboQuantCompressedDecodePlan {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TurboQuantCompressedDecodeReadiness {
+    pub preset: MlxTurboQuantPreset,
+    pub key_bits: u32,
+    pub value_bits: u32,
     pub decode_path: TurboQuantCompressedDecodePath,
     pub total_tokens: usize,
     pub cold_tokens: usize,
@@ -345,6 +349,53 @@ pub struct TurboQuantCompressedDecodeReadiness {
     pub required_compressed_slots: usize,
     pub written_compressed_slots: usize,
     pub quality_profile: TurboQuantDecodeQualityProfile,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurboQuantFusedDecodeCandidateStatus {
+    Candidate,
+    FullPrecisionOnly,
+    UnsupportedHeadDim,
+    UnsupportedPreset,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantFusedDecodeCandidate {
+    pub status: TurboQuantFusedDecodeCandidateStatus,
+    pub preset: MlxTurboQuantPreset,
+    pub head_dim: usize,
+    pub compressed_blocks: usize,
+    pub compressed_buffer_bytes: usize,
+    pub required_compressed_slots: usize,
+}
+
+impl TurboQuantFusedDecodeCandidate {
+    pub fn is_candidate(self) -> bool {
+        self.status == TurboQuantFusedDecodeCandidateStatus::Candidate
+    }
+}
+
+impl TurboQuantCompressedDecodeReadiness {
+    pub fn fused_decode_candidate(self) -> TurboQuantFusedDecodeCandidate {
+        let status = if self.decode_path == TurboQuantCompressedDecodePath::FullPrecisionOnly {
+            TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly
+        } else if self.query_head_dim != TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM {
+            TurboQuantFusedDecodeCandidateStatus::UnsupportedHeadDim
+        } else if self.preset != MlxTurboQuantPreset::K8V4 {
+            TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset
+        } else {
+            TurboQuantFusedDecodeCandidateStatus::Candidate
+        };
+
+        TurboQuantFusedDecodeCandidate {
+            status,
+            preset: self.preset,
+            head_dim: self.query_head_dim,
+            compressed_blocks: self.compressed_blocks,
+            compressed_buffer_bytes: self.compressed_buffer_bytes,
+            required_compressed_slots: self.required_compressed_slots,
+        }
+    }
 }
 
 impl TurboQuantCompressedDecodePlan {
@@ -449,6 +500,9 @@ impl TurboQuantCompressedDecodePlan {
         }
 
         Ok(TurboQuantCompressedDecodeReadiness {
+            preset: self.layout.config.preset,
+            key_bits: self.layout.config.preset.key_bits(),
+            value_bits: self.layout.config.preset.value_bits(),
             decode_path: self.decode_path,
             total_tokens: self.total_tokens,
             cold_tokens: self.cold_tokens,
@@ -2306,6 +2360,9 @@ mod tests {
         assert_eq!(
             readiness,
             TurboQuantCompressedDecodeReadiness {
+                preset: MlxTurboQuantPreset::K8V4,
+                key_bits: 8,
+                value_bits: 4,
                 decode_path: TurboQuantCompressedDecodePath::CompressedColdWithHotWindow,
                 total_tokens: 3,
                 cold_tokens: 2,
@@ -2319,6 +2376,110 @@ mod tests {
                 quality_profile: TurboQuantDecodeQualityProfile::ReferenceK8V4,
             }
         );
+    }
+
+    #[test]
+    fn compressed_decode_readiness_marks_initial_fused_decode_candidate() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 1,
+            head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+            value_group_size: 32,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 2, 1).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let token = vec![(
+            vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+            vec![0.2; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+        )];
+        buffer.write_token(0, &token).expect("cold token");
+
+        let readiness = plan
+            .decode_readiness(
+                &buffer,
+                &[vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            )
+            .expect("complete compressed inputs should report readiness");
+        let candidate = readiness.fused_decode_candidate();
+
+        assert!(candidate.is_candidate());
+        assert_eq!(
+            candidate,
+            TurboQuantFusedDecodeCandidate {
+                status: TurboQuantFusedDecodeCandidateStatus::Candidate,
+                preset: MlxTurboQuantPreset::K8V4,
+                head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+                compressed_blocks: 1,
+                compressed_buffer_bytes: layout.block_bytes,
+                required_compressed_slots: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn compressed_decode_readiness_fails_closed_for_non_candidate_launches() {
+        let unsupported_head_layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 1,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("unsupported head layout should build for reference coverage");
+        let unsupported_head_plan =
+            TurboQuantCompressedDecodePlan::new(unsupported_head_layout, 2, 1)
+                .expect("plan should build");
+        let mut unsupported_head_buffer =
+            TurboQuantCompressedBlockBuffer::new(unsupported_head_layout);
+        unsupported_head_buffer
+            .write_token(0, &[(vec![0.1; 8], vec![0.2; 8])])
+            .expect("cold token");
+        let unsupported_head = unsupported_head_plan
+            .decode_readiness(&unsupported_head_buffer, &[vec![0.1; 8]])
+            .expect("readiness should still report")
+            .fused_decode_candidate();
+        assert_eq!(
+            unsupported_head.status,
+            TurboQuantFusedDecodeCandidateStatus::UnsupportedHeadDim
+        );
+        assert!(!unsupported_head.is_candidate());
+
+        let unsupported_preset_layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K4V4,
+            block_tokens: 2,
+            n_kv_heads: 1,
+            head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+            value_group_size: 32,
+        })
+        .expect("unsupported preset layout should build");
+        let unsupported_preset_plan =
+            TurboQuantCompressedDecodePlan::new(unsupported_preset_layout, 2, 1)
+                .expect("plan should build");
+        let mut unsupported_preset_buffer =
+            TurboQuantCompressedBlockBuffer::new(unsupported_preset_layout);
+        unsupported_preset_buffer
+            .write_token(
+                0,
+                &[(
+                    vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                    vec![0.2; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                )],
+            )
+            .expect("cold token");
+        let unsupported_preset = unsupported_preset_plan
+            .decode_readiness(
+                &unsupported_preset_buffer,
+                &[vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            )
+            .expect("readiness should still report")
+            .fused_decode_candidate();
+        assert_eq!(
+            unsupported_preset.status,
+            TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset
+        );
+        assert!(!unsupported_preset.is_candidate());
     }
 
     #[test]
@@ -2355,6 +2516,10 @@ mod tests {
         assert_eq!(
             readiness.quality_profile,
             TurboQuantDecodeQualityProfile::ResearchLoose
+        );
+        assert_eq!(
+            readiness.fused_decode_candidate().status,
+            TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly
         );
     }
 

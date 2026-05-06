@@ -239,6 +239,17 @@ Implemented compressed decode readiness report slice on 2026-05-06:
 - Keeps the report disconnected from MLX allocation, runtime KV storage, SDPA,
   generation, and user-visible defaults.
 
+Implemented fused decode candidate gate slice on 2026-05-06:
+
+- Added preset, key-bit, and value-bit metadata to compressed decode readiness.
+- Added `TurboQuantFusedDecodeCandidate` and status values for candidate,
+  full-precision-only, unsupported head dimension, and unsupported preset.
+- Gates the first fused decode candidate to compressed-path `K8V4` with
+  `head_dim=128`, matching the initial promotion target while keeping lower-bit
+  presets behind future quality work.
+- Keeps the gate as CPU-only metadata; it does not launch a kernel, allocate MLX
+  storage, change SDPA, change generation, or expose a user-facing switch.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

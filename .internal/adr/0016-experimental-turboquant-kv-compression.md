@@ -184,6 +184,13 @@ quality profile. Hot-window-only plans remain independent from compressed buffer
 layout checks. This remains CPU-only and does not alter runtime defaults, KV
 storage, SDPA, or generation.
 
+The fused decode candidate gate is accepted as the first fail-closed launch
+filter above readiness. `TurboQuantFusedDecodeCandidate` marks only compressed
+`K8V4` readiness with `head_dim=128` as the initial fused-kernel candidate, and
+labels full-precision-only, unsupported-head-dimension, and unsupported-preset
+cases explicitly. This remains CPU-only metadata and does not launch kernels,
+allocate MLX storage, alter SDPA, change generation, or expose a public switch.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a
