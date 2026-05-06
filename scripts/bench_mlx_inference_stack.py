@@ -108,6 +108,19 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_bonus_tokens",
 ]
 
+AX_MLX_GEMMA4_MOE_PROFILE_KEYS = [
+    "ax_mlx_gemma4_moe_profile_enabled",
+    "ax_mlx_gemma4_moe_profile_decode_layers",
+    "ax_mlx_gemma4_moe_profile_topk_selections",
+    "ax_mlx_gemma4_moe_profile_sorted_gather_layers",
+    "ax_mlx_gemma4_moe_profile_unsorted_gather_layers",
+    "ax_mlx_gemma4_moe_profile_attention_wall_us",
+    "ax_mlx_gemma4_moe_profile_dense_wall_us",
+    "ax_mlx_gemma4_moe_profile_router_wall_us",
+    "ax_mlx_gemma4_moe_profile_expert_wall_us",
+    "ax_mlx_gemma4_moe_profile_post_wall_us",
+]
+
 AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
     "ax_mlx_kv_compression_request_snapshots",
     "ax_mlx_kv_compression_status",
@@ -555,6 +568,7 @@ def start_axengine(
     kv_compression: str = "disabled",
     kv_compression_hot_window_tokens: int | None = None,
     kv_compression_min_context_tokens: int | None = None,
+    gemma4_moe_profile: bool = False,
 ) -> subprocess.Popen[Any]:
     cmd = [
         str(binary),
@@ -583,6 +597,8 @@ def start_axengine(
                 ]
             )
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
+    if gemma4_moe_profile:
+        env["AX_MLX_GEMMA4_MOE_PROFILE"] = "1"
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
 
@@ -610,6 +626,20 @@ def extract_ax_mlx_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
         return {}
     decisions = route.get("crossover_decisions") or {}
     return {key: int(decisions.get(key, 0)) for key in AX_MLX_TELEMETRY_KEYS}
+
+
+def extract_ax_mlx_gemma4_moe_profile(
+    route: dict[str, Any] | None,
+) -> dict[str, int]:
+    if not route:
+        return {}
+    decisions = route.get("crossover_decisions") or {}
+    if "ax_mlx_gemma4_moe_profile_enabled" not in decisions:
+        return {}
+    return {
+        key: int(decisions.get(key, 0))
+        for key in AX_MLX_GEMMA4_MOE_PROFILE_KEYS
+    }
 
 
 def extract_ax_mlx_kv_compression_telemetry(
@@ -673,6 +703,17 @@ def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     for run in runs:
         for key, value in (run.get("ax_mlx_telemetry") or {}).items():
             totals[key] = totals.get(key, 0) + int(value)
+    return totals
+
+
+def summarize_ax_mlx_gemma4_moe_profile(runs: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for run in runs:
+        for key, value in (run.get("ax_mlx_gemma4_moe_profile") or {}).items():
+            if key == "ax_mlx_gemma4_moe_profile_enabled":
+                totals[key] = max(totals.get(key, 0), int(value))
+            else:
+                totals[key] = totals.get(key, 0) + int(value)
     return totals
 
 
@@ -818,6 +859,9 @@ def axengine_one_run(
     mlx_telemetry = extract_ax_mlx_telemetry(final_route)
     if mlx_telemetry:
         run["ax_mlx_telemetry"] = mlx_telemetry
+    gemma4_moe_profile = extract_ax_mlx_gemma4_moe_profile(final_route)
+    if gemma4_moe_profile:
+        run["ax_mlx_gemma4_moe_profile"] = gemma4_moe_profile
     compression_telemetry = extract_ax_mlx_kv_compression_telemetry(final_route)
     if compression_telemetry:
         run["kv_compression_telemetry"] = compression_telemetry
@@ -907,6 +951,7 @@ def bench_axengine(
         "decode_s": summarize_runs(runs, "decode_s"),
         "ngram_acceleration_telemetry": summarize_telemetry(runs),
         "ax_mlx_telemetry": summarize_ax_mlx_telemetry(runs),
+        "ax_mlx_gemma4_moe_profile": summarize_ax_mlx_gemma4_moe_profile(runs),
         "trials": runs,
     }
     compression_summary = summarize_ax_mlx_kv_compression_telemetry(runs)
@@ -1209,6 +1254,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-gemma4-moe-profile",
+        action="store_true",
+        help=(
+            "Enable opt-in Gemma4 MoE decode-layer profiling for AX rows. "
+            "This inserts timing barriers and is for diagnosis, not headline throughput."
+        ),
+    )
+    parser.add_argument(
         "--experimental-mlx-kv-compression",
         choices=["disabled", "turboquant-shadow", "turboquant-fused-experimental"],
         default="disabled",
@@ -1360,6 +1413,7 @@ def main() -> None:
                     kv_compression_min_context_tokens=(
                         args.experimental_mlx_kv_compression_min_context_tokens
                     ),
+                    gemma4_moe_profile=args.ax_gemma4_moe_profile,
                 )
                 procs.append(proc)
                 if not wait_for_server(f"http://127.0.0.1:{args.axengine_port}/health"):
@@ -1443,6 +1497,7 @@ def main() -> None:
         "cooldown": args.cooldown,
         "prefill_step_size": args.prefill_step_size,
         "concurrency": 1,
+        "ax_gemma4_moe_profile": bool(args.ax_gemma4_moe_profile),
         "results": results,
     }
     if args.reuse_reference_results_from:

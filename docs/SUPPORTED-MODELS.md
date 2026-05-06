@@ -146,10 +146,8 @@ reference, or unknown architecture with explicit blockers.
 Gemma 4 E4B has model and scenario manifests but no MLX stack benchmark run
 yet; its public benchmark rows are pending. All other repo-owned MLX preview
 models above have completed benchmark rows.
-The Gemma 4 26B A4B MoE row intentionally omits `mlx_swift_lm` because the
-local Swift reference does not currently implement Gemma4 MoE Router/Experts.
-Gemma 4 E2B 5/6/8-bit rows include both `mlx_lm` and `mlx_swift_lm`
-reference rows.
+Gemma 4 26B A4B MoE and Gemma 4 E2B 5/6/8-bit rows include both `mlx_lm` and
+admitted `mlx_swift_lm` reference rows.
 N-gram acceleration rows remain effective-throughput measurements from AX's
 n-gram policy and must not be described as raw model-kernel speedups.
 

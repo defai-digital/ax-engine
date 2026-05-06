@@ -64,7 +64,10 @@ use crate::generate::{
     start_direct_pipeline_with_turboquant_context,
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
-use crate::model::{ModelConfig, TurboQuantModelDecodeContext};
+use crate::model::{
+    Gemma4MoeProfileSnapshot, ModelConfig, TurboQuantModelDecodeContext,
+    take_gemma4_moe_profile_snapshot,
+};
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, DRAFT_CONFIDENCE_THRESHOLD, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN,
     NgramTable, ngram_accel_decode_step, single_decode_with_turboquant_context,
@@ -396,6 +399,74 @@ impl DecodeTelemetry {
             ("ax_mlx_ngram_decode_steps", self.ngram_decode_steps),
             ("ax_mlx_ngram_decode_wall_us", self.ngram_decode_wall_us),
             ("ax_mlx_bonus_tokens", self.bonus_tokens),
+        ];
+
+        for (key, value) in entries {
+            upsert_route_decision(decisions, key, value);
+        }
+    }
+}
+
+impl Gemma4MoeProfileSnapshot {
+    fn merge_from(&mut self, other: Self) {
+        self.enabled = self.enabled.max(other.enabled);
+        self.decode_layers = self.decode_layers.saturating_add(other.decode_layers);
+        self.topk_selections = self.topk_selections.saturating_add(other.topk_selections);
+        self.sorted_gather_layers = self
+            .sorted_gather_layers
+            .saturating_add(other.sorted_gather_layers);
+        self.unsorted_gather_layers = self
+            .unsorted_gather_layers
+            .saturating_add(other.unsorted_gather_layers);
+        self.attention_wall_us = self
+            .attention_wall_us
+            .saturating_add(other.attention_wall_us);
+        self.dense_wall_us = self.dense_wall_us.saturating_add(other.dense_wall_us);
+        self.router_wall_us = self.router_wall_us.saturating_add(other.router_wall_us);
+        self.expert_wall_us = self.expert_wall_us.saturating_add(other.expert_wall_us);
+        self.post_wall_us = self.post_wall_us.saturating_add(other.post_wall_us);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+        if self.enabled == 0 {
+            return;
+        }
+
+        let entries = [
+            ("ax_mlx_gemma4_moe_profile_enabled", self.enabled),
+            (
+                "ax_mlx_gemma4_moe_profile_decode_layers",
+                self.decode_layers,
+            ),
+            (
+                "ax_mlx_gemma4_moe_profile_topk_selections",
+                self.topk_selections,
+            ),
+            (
+                "ax_mlx_gemma4_moe_profile_sorted_gather_layers",
+                self.sorted_gather_layers,
+            ),
+            (
+                "ax_mlx_gemma4_moe_profile_unsorted_gather_layers",
+                self.unsorted_gather_layers,
+            ),
+            (
+                "ax_mlx_gemma4_moe_profile_attention_wall_us",
+                self.attention_wall_us,
+            ),
+            (
+                "ax_mlx_gemma4_moe_profile_dense_wall_us",
+                self.dense_wall_us,
+            ),
+            (
+                "ax_mlx_gemma4_moe_profile_router_wall_us",
+                self.router_wall_us,
+            ),
+            (
+                "ax_mlx_gemma4_moe_profile_expert_wall_us",
+                self.expert_wall_us,
+            ),
+            ("ax_mlx_gemma4_moe_profile_post_wall_us", self.post_wall_us),
         ];
 
         for (key, value) in entries {
@@ -1029,6 +1100,7 @@ impl MlxRunner {
                 &mut dummy_rng,
             );
         }
+        let _ = take_gemma4_moe_profile_snapshot();
 
         // Qwen3.5 linear-attention uses `ngram_accel_decode_step_linear_safe` which
         // clones the cache for verification and recomputes the committed prefix on
@@ -1070,6 +1142,7 @@ impl ExecutionRunner for MlxRunner {
         let mut route_metadata = input.execution_batch.route_metadata.clone();
         let mut ngram_acceleration = NgramAccelerationTelemetry::default();
         let mut decode_telemetry = DecodeTelemetry::default();
+        let mut gemma4_moe_profile = Gemma4MoeProfileSnapshot::default();
         let mut kv_cache = KvCacheTelemetry::default();
 
         for item in &input.execution_batch.items {
@@ -1081,6 +1154,7 @@ impl ExecutionRunner for MlxRunner {
             let result = self.run_item(item, ctx);
             ngram_acceleration.merge_from(result.ngram_acceleration);
             decode_telemetry.merge_from(result.decode_telemetry);
+            gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
             kv_cache.merge_from(result.kv_usage);
             if let Some(wall_us) = result.kv_compression_shadow_sync_wall_us {
                 kv_cache.record_compression_shadow_sync(wall_us);
@@ -1089,6 +1163,7 @@ impl ExecutionRunner for MlxRunner {
         }
         ngram_acceleration.append_route_decisions(&mut route_metadata.crossover_decisions);
         decode_telemetry.append_route_decisions(&mut route_metadata.crossover_decisions);
+        gemma4_moe_profile.append_route_decisions(&mut route_metadata.crossover_decisions);
         kv_cache.append_route_decisions(&mut route_metadata.crossover_decisions);
 
         let tokens_written: u32 = input
@@ -1222,6 +1297,7 @@ impl MlxRunner {
                 },
                 ngram_acceleration: NgramAccelerationTelemetry::default(),
                 decode_telemetry: DecodeTelemetry::default(),
+                gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
                 kv_usage: MlxKVCacheUsage::default(),
                 kv_compression_shadow_sync_wall_us: None,
             };
@@ -1341,6 +1417,7 @@ impl MlxRunner {
         // Re-insert state only if the request continues — lock held briefly.
         let ngram_acceleration = state.ngram_acceleration;
         let decode_telemetry = state.decode_telemetry;
+        let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
         let kv_compression_layer_eligible = if self.kv_compression.is_enabled() {
             Some(self.kv_compression_layer_eligible.as_slice())
         } else {
@@ -1424,6 +1501,7 @@ impl MlxRunner {
             },
             ngram_acceleration,
             decode_telemetry,
+            gemma4_moe_profile,
             kv_usage,
             kv_compression_shadow_sync_wall_us,
         }
@@ -1754,6 +1832,7 @@ struct MlxItemRun {
     update: RequestExecutionUpdate,
     ngram_acceleration: NgramAccelerationTelemetry,
     decode_telemetry: DecodeTelemetry,
+    gemma4_moe_profile: Gemma4MoeProfileSnapshot,
     kv_usage: MlxKVCacheUsage,
     kv_compression_shadow_sync_wall_us: Option<u32>,
 }
@@ -2924,6 +3003,62 @@ mod tests {
             zero_decisions.get("ax_ngram_request_disable_events"),
             Some(&0)
         );
+    }
+
+    #[test]
+    fn gemma4_moe_profile_route_decisions_emit_only_when_enabled() {
+        let mut profile = Gemma4MoeProfileSnapshot {
+            enabled: 1,
+            decode_layers: 2,
+            topk_selections: 16,
+            sorted_gather_layers: 0,
+            unsorted_gather_layers: 2,
+            attention_wall_us: 100,
+            dense_wall_us: 80,
+            router_wall_us: 30,
+            expert_wall_us: 90,
+            post_wall_us: 20,
+        };
+        profile.merge_from(Gemma4MoeProfileSnapshot {
+            enabled: 1,
+            decode_layers: 3,
+            topk_selections: 24,
+            sorted_gather_layers: 0,
+            unsorted_gather_layers: 3,
+            attention_wall_us: 150,
+            dense_wall_us: 120,
+            router_wall_us: 45,
+            expert_wall_us: 135,
+            post_wall_us: 30,
+        });
+
+        let mut decisions = Vec::new();
+        profile.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(decisions.get("ax_mlx_gemma4_moe_profile_enabled"), Some(&1));
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_moe_profile_decode_layers"),
+            Some(&5)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_moe_profile_topk_selections"),
+            Some(&40)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_moe_profile_unsorted_gather_layers"),
+            Some(&5)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_moe_profile_attention_wall_us"),
+            Some(&250)
+        );
+
+        let mut disabled_decisions = Vec::new();
+        Gemma4MoeProfileSnapshot::default().append_route_decisions(&mut disabled_decisions);
+        assert!(disabled_decisions.is_empty());
     }
 
     #[test]
