@@ -38,11 +38,10 @@ fn validate_query_head_mapping(
     Ok(())
 }
 
-pub fn turboquant_fused_cold_decode_metal(
+fn validate_fused_decode_launch(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
-    buffer: &TurboQuantCompressedBlockBuffer,
     queries: &[Vec<f32>],
-) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
+) -> Result<(), TurboQuantCodecError> {
     if descriptor.preset != MlxTurboQuantPreset::K8V4 {
         return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
             status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset,
@@ -58,7 +57,15 @@ pub fn turboquant_fused_cold_decode_metal(
             status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly,
         });
     }
-    validate_query_head_mapping(descriptor, queries.len())?;
+    validate_query_head_mapping(descriptor, queries.len())
+}
+
+pub fn turboquant_fused_cold_decode_metal(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    buffer: &TurboQuantCompressedBlockBuffer,
+    queries: &[Vec<f32>],
+) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
+    validate_fused_decode_launch(descriptor, queries)?;
 
     let mut rotated_queries = Vec::with_capacity(descriptor.n_query_heads * descriptor.head_dim);
     for query in queries {
@@ -187,27 +194,12 @@ pub fn turboquant_fused_cold_decode_metal_head_serial(
     buffer: &TurboQuantCompressedBlockBuffer,
     queries: &[Vec<f32>],
 ) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
-    if descriptor.preset != MlxTurboQuantPreset::K8V4 {
-        return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
-            status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset,
-        });
-    }
-    if descriptor.key_bits != 8 || descriptor.value_bits != 4 {
-        return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
-            status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset,
-        });
-    }
-    if descriptor.cold_tokens == 0 {
-        return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
-            status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly,
-        });
-    }
+    validate_fused_decode_launch(descriptor, queries)?;
     if descriptor.head_dim != 128 || descriptor.n_query_heads != descriptor.n_kv_heads {
         return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
             status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::UnsupportedHeadDim,
         });
     }
-    validate_query_head_mapping(descriptor, queries.len())?;
 
     let mut rotated_queries = Vec::with_capacity(descriptor.n_kv_heads * descriptor.head_dim);
     for query in queries {
@@ -347,22 +339,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
     buffer: &TurboQuantCompressedBlockBuffer,
     queries: &[Vec<f32>],
 ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
-    if descriptor.preset != MlxTurboQuantPreset::K8V4 {
-        return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
-            status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset,
-        });
-    }
-    if descriptor.key_bits != 8 || descriptor.value_bits != 4 {
-        return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
-            status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset,
-        });
-    }
-    if descriptor.cold_tokens == 0 {
-        return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
-            status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly,
-        });
-    }
-    validate_query_head_mapping(descriptor, queries.len())?;
+    validate_fused_decode_launch(descriptor, queries)?;
 
     let mut rotated_queries = Vec::with_capacity(descriptor.n_query_heads * descriptor.head_dim);
     for query in queries {
@@ -392,7 +369,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
 
     let score_kernel = TURBOQUANT_FUSED_COLD_DECODE_SCORE_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "turboquant_fused_cold_decode_k8v4_scores",
+            "turboquant_fused_cold_decode_k8v4_scores_simd32",
             &["compressed", "rotated_query"],
             &["scores"],
             TURBOQUANT_FUSED_COLD_DECODE_SCORE_KERNEL_SOURCE,
@@ -452,11 +429,11 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
             },
         ],
         (
-            descriptor.cold_tokens as i32,
+            descriptor.cold_tokens as i32 * 32,
             descriptor.n_query_heads as i32,
             1,
         ),
-        (1, 1, 1),
+        (32, 1, 1),
         None,
     );
     let scores = score_outputs
@@ -755,8 +732,9 @@ const TURBOQUANT_FUSED_COLD_DECODE_HEAD_SERIAL_KERNEL_SOURCE: &str = r#"
 "#;
 
 const TURBOQUANT_FUSED_COLD_DECODE_SCORE_KERNEL_SOURCE: &str = r#"
-    const int token = thread_position_in_grid.x;
-    const int head = thread_position_in_grid.y;
+    const int lane = (int)thread_position_in_threadgroup.x;
+    const int token = (int)thread_position_in_grid.x / 32;
+    const int head = (int)thread_position_in_grid.y;
     if (token >= COLD_TOKENS || head >= HEADS) {
       return;
     }
@@ -771,12 +749,16 @@ const TURBOQUANT_FUSED_COLD_DECODE_SCORE_KERNEL_SOURCE: &str = r#"
     const float key_norm = tq_read_f32(compressed, slot + KEY_NORM_OFFSET);
     const float inv_sqrt_dim = rsqrt((float)HEAD_DIM);
 
-    float score = 0.0f;
-    for (int kdim = 0; kdim < HEAD_DIM; ++kdim) {
+    float partial = 0.0f;
+    for (int kdim = lane; kdim < HEAD_DIM; kdim += 32) {
       const float centroid = tq_centroid_k8(compressed[key_payload + kdim]);
-      score += rotated_query[head * HEAD_DIM + kdim] * centroid;
+      partial += rotated_query[head * HEAD_DIM + kdim] * centroid;
     }
-    scores[head * COLD_TOKENS + token] = score * key_norm * inv_sqrt_dim;
+    const float score = simd_sum(partial);
+
+    if (lane == 0) {
+      scores[head * COLD_TOKENS + token] = score * key_norm * inv_sqrt_dim;
+    }
 "#;
 
 const TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL_SOURCE: &str = r#"
