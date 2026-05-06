@@ -335,10 +335,10 @@ progress around long-running generate, step, cancel, or stream polling calls.
 For Phase 1, stepwise request-control methods (`submit`, `step`, `snapshot`,
 `cancel`) support MLX preview plus the server-backed llama.cpp preview path
 selected with `llama_server_url`. The `mlx_lm_delegated` route remains
-blocking-only in the Python session API for now; server endpoints wrap that
-blocking response when clients need fake SSE. That delegated stepwise path is
-still intentionally narrow, but one
-session can now hold multiple active
+blocking-only in the Python session API for now; server streaming endpoints also
+fail closed for this route because the delegated completion response does not
+provide AX-owned token IDs or per-token deltas. That delegated stepwise path is
+still intentionally narrow, but one session can now hold multiple active
 llama.cpp requests at once and `step()` aggregates progress across all
 currently active delegated requests through the same SDK-owned lifecycle shape.
 
