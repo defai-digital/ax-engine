@@ -3,7 +3,7 @@ use mlx_sys::{
     astype, concatenate, dequantize, divide, expand_dims, expand_dims_axes, gather_mm, gather_qmm,
     gelu, gelu_approx, matmul, multiply, quantized_matmul, reshape, rms_norm, rope,
     scaled_dot_product_attention_with_mask, slice_last_dim, softmax, sum_axis, take,
-    take_along_axis, tanh, transpose, zeros,
+    take_along_axis, tanh, transpose, where_cond, zeros,
 };
 
 use ax_engine_core::NativeModelManifest;
@@ -395,6 +395,13 @@ pub fn layer_forward(
 
     let attn_proj = if cfg.is_linear_attention_layer(layer_idx) {
         linear_attention_forward(cfg, w, &normed, cache, layer_idx)
+    } else if w.glm_mla_attn.is_some() {
+        let attn_proj = glm_mla_attention_forward(cfg, w, &normed, cache, layer_idx, token_offset);
+        if let Some(post_norm) = &w.attn_post_norm {
+            rms_norm(&attn_proj, Some(post_norm), 1e-6, None)
+        } else {
+            attn_proj
+        }
     } else {
         // 2-7. QKV projections + RoPE. KV-shared layers skip K/V and borrow from source.
         let (q_rope, cached_k, cached_v, attn_gate) = if let Some(src_layer) = kv_source {
@@ -1123,6 +1130,81 @@ fn glm_mla_positional_scores(cfg: &ModelConfig, q_pe: &MlxArray, k_pe: &MlxArray
     matmul(&q_pe, &transpose(k_pe, &[0, 1, 3, 2], None), None)
 }
 
+/// GLM4MoELite MLA attention up to the output projection boundary.
+#[allow(dead_code)] // Staged GLM contract; manifest validation remains fail-closed.
+fn glm_mla_attention_forward(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    token_offset: usize,
+) -> MlxArray {
+    let mla_cfg = cfg
+        .glm_mla_attention
+        .as_ref()
+        .expect("GLM MLA attention config");
+    let seq = x.shape()[1] as usize;
+    let cached = glm_mla_project_and_cache_inputs(cfg, w, x, cache, layer_idx, token_offset);
+    let key_len = cached.kv_latent.shape()[2] as usize;
+    let positional_scores =
+        glm_mla_causal_positional_scores(seq, key_len, &cached.positional_scores);
+
+    let attn_out = if seq == 1 {
+        let q_nope = glm_mla_embed_q_decode(cfg, w, &cached.q_nope);
+        let out = scaled_dot_product_attention_with_mask(
+            &q_nope,
+            &cached.kv_latent,
+            &cached.kv_latent,
+            mla_cfg.query_scale,
+            ScaledDotProductAttentionMask::Array(&positional_scores),
+            None,
+        );
+        glm_mla_unembed_out(cfg, w, &out)
+    } else {
+        let k = glm_mla_embed_q_prefill(cfg, w, &cached.kv_latent);
+        let v = glm_mla_unembed_out(cfg, w, &cached.kv_latent);
+        scaled_dot_product_attention_with_mask(
+            &cached.q_nope,
+            &k,
+            &v,
+            mla_cfg.query_scale,
+            ScaledDotProductAttentionMask::Array(&positional_scores),
+            None,
+        )
+    };
+
+    let attn_out = transpose(&attn_out, &[0, 2, 1, 3], None);
+    let attn_flat = reshape(
+        &attn_out,
+        &[1, seq as i32, (cfg.n_heads * mla_cfg.value_head_dim) as i32],
+        None,
+    );
+    attention_output_projection(
+        &attn_flat,
+        None,
+        w.o_proj.as_ref().expect("GLM MLA layer must have o_proj"),
+    )
+}
+
+#[allow(dead_code)] // Staged GLM contract; consumed by GLM MLA attention wiring.
+fn glm_mla_causal_positional_scores(
+    seq: usize,
+    key_len: usize,
+    positional_scores: &MlxArray,
+) -> MlxArray {
+    if seq == 1 {
+        return positional_scores.clone();
+    }
+    let offset = key_len
+        .checked_sub(seq)
+        .expect("GLM MLA key length must include current sequence");
+    let mask = create_causal_mask(seq, offset, None);
+    let mask = expand_dims_axes(&mask, &[0, 1], None);
+    let masked_value = scalar_like(-1.0e30, positional_scores.dtype());
+    where_cond(&mask, positional_scores, &masked_value, None)
+}
+
 #[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
 fn glm_mla_embed_q_prefill(cfg: &ModelConfig, w: &LayerWeights, kv_latent: &MlxArray) -> MlxArray {
     let mla_cfg = cfg
@@ -1501,14 +1583,18 @@ fn mlx_slice_last_dim(x: &MlxArray, start: i32, end: i32) -> MlxArray {
 
 fn scale_hidden(hidden: &MlxArray, scale: f32) -> MlxArray {
     let dtype = hidden.dtype();
-    let s_arr = MlxArray::from_raw_data(
-        &scale as *const f32 as *const u8,
+    let s_arr = scalar_like(scale, dtype);
+    multiply(hidden, &s_arr, None)
+}
+
+fn scalar_like(value: f32, dtype: MlxDtype) -> MlxArray {
+    let scalar = MlxArray::from_raw_data(
+        &value as *const f32 as *const u8,
         std::mem::size_of::<f32>(),
         &[1_i32],
         MlxDtype::Float32,
     );
-    let s_arr = astype(&s_arr, dtype, None);
-    multiply(hidden, &s_arr, None)
+    astype(&scalar, dtype, None)
 }
 
 fn apply_final_logit_softcap(cfg: &ModelConfig, logits: &MlxArray) -> MlxArray {
@@ -2496,6 +2582,76 @@ mod tests {
         eval(&[&decode_q, &decode_out]);
         assert_eq!(decode_q.shape(), vec![1, 2, 1, 4]);
         assert_eq!(decode_out.shape(), vec![1, 2, 1, 3]);
+    }
+
+    #[test]
+    fn glm_mla_attention_forward_returns_hidden_shape_and_updates_cache() {
+        let mut manifest = glm4_moe_lite_manifest();
+        manifest.hidden_size = 8;
+        manifest.layer_count = 1;
+        manifest.attention_head_count = 2;
+        manifest.kv_head_count = 2;
+        manifest.attention_head_dim = 4;
+        manifest.mla_attention.q_lora_rank = Some(4);
+        manifest.mla_attention.kv_lora_rank = Some(4);
+        manifest.mla_attention.qk_nope_head_dim = Some(2);
+        manifest.mla_attention.qk_rope_head_dim = Some(2);
+        manifest.mla_attention.value_head_dim = Some(3);
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let weights = glm_mla_layer_weights(&cfg);
+        let mut cache = MlxKVCache::new(cfg.layer_count);
+
+        let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
+        let out = glm_mla_attention_forward(&cfg, &weights, &hidden, &mut cache, 0, 0);
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
+        assert_eq!(cache.collect_eval_refs().len(), 2);
+
+        cache.seq_len = 2;
+        let hidden = zeros(&[1, 1, cfg.hidden_size as i32], MlxDtype::Float32, None);
+        let out = glm_mla_attention_forward(&cfg, &weights, &hidden, &mut cache, 0, 2);
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 1, cfg.hidden_size as i32]);
+        assert_eq!(cache.collect_eval_refs().len(), 2);
+    }
+
+    #[test]
+    fn layer_forward_routes_glm_mla_without_standard_qkv_weights() {
+        let mut manifest = glm4_moe_lite_manifest();
+        manifest.hidden_size = 8;
+        manifest.intermediate_size = 6;
+        manifest.layer_count = 1;
+        manifest.attention_head_count = 2;
+        manifest.kv_head_count = 2;
+        manifest.attention_head_dim = 4;
+        manifest.mla_attention.q_lora_rank = Some(4);
+        manifest.mla_attention.kv_lora_rank = Some(4);
+        manifest.mla_attention.qk_nope_head_dim = Some(2);
+        manifest.mla_attention.qk_rope_head_dim = Some(2);
+        manifest.mla_attention.value_head_dim = Some(3);
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let mut weights = glm_mla_layer_weights(&cfg);
+        weights.attn_post_norm = Some(zeros(&[cfg.hidden_size as i32], MlxDtype::Float32, None));
+        weights.gate_proj = Some(dense_weight(&[
+            cfg.intermediate_size as i32,
+            cfg.hidden_size as i32,
+        ]));
+        weights.up_proj = Some(dense_weight(&[
+            cfg.intermediate_size as i32,
+            cfg.hidden_size as i32,
+        ]));
+        weights.down_proj = Some(dense_weight(&[
+            cfg.hidden_size as i32,
+            cfg.intermediate_size as i32,
+        ]));
+        let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
+        let mut cache = MlxKVCache::new(cfg.layer_count);
+
+        let out = layer_forward(&cfg, &weights, &hidden, &mut cache, 0, 0, None);
+        eval(&[&out]);
+
+        assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
+        assert_eq!(cache.collect_eval_refs().len(), 2);
     }
 
     #[test]
