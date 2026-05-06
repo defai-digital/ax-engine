@@ -821,6 +821,12 @@ fn glm_router_config(config: &serde_json::Value, model_type: &str) -> NativeGlmR
             .and_then(u64_to_u32),
         routed_scaling_factor: arch_f64(config, model_type, "routed_scaling_factor")
             .map(|value| value as f32),
+        n_group: arch_u64(config, model_type, "n_group")
+            .and_then(u64_to_u32)
+            .or(Some(1)),
+        topk_group: arch_u64(config, model_type, "topk_group")
+            .and_then(u64_to_u32)
+            .or(Some(1)),
         has_shared_experts: arch_u64(config, model_type, "n_shared_experts").unwrap_or(0) > 0,
     }
 }
@@ -1523,6 +1529,8 @@ fn validate_glm4_moe_lite_draft_contract(
             "glm_router.routed_scaling_factor must be finite and > 0",
         );
     }
+    require_glm_config(manifest.glm_router.n_group, "glm_router.n_group")?;
+    require_glm_config(manifest.glm_router.topk_group, "glm_router.topk_group")?;
 
     if let (Some(nope_dim), Some(rope_dim)) = (
         manifest.mla_attention.qk_nope_head_dim,
@@ -3130,6 +3138,8 @@ mod tests {
         assert_eq!(manifest.moe.expert_intermediate_size, Some(1536));
         assert_eq!(manifest.glm_router.first_dense_layer_count, Some(1));
         assert_eq!(manifest.glm_router.routed_scaling_factor, Some(1.8));
+        assert_eq!(manifest.glm_router.n_group, Some(1));
+        assert_eq!(manifest.glm_router.topk_group, Some(1));
         assert!(manifest.glm_router.has_shared_experts);
         assert!(manifest.moe_norm_topk_prob);
         assert!(!manifest.runtime_status.ready);

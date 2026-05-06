@@ -155,6 +155,8 @@ impl GlmMlaAttentionConfig {
 pub struct GlmRouterConfig {
     pub first_dense_layer_count: usize,
     pub routed_scaling_factor: f32,
+    pub n_group: usize,
+    pub topk_group: usize,
     pub has_shared_experts: bool,
 }
 
@@ -173,6 +175,8 @@ impl GlmRouterConfig {
             routed_scaling_factor: cfg
                 .routed_scaling_factor
                 .expect("validated glm_router.routed_scaling_factor"),
+            n_group: cfg.n_group.expect("validated glm_router.n_group") as usize,
+            topk_group: cfg.topk_group.expect("validated glm_router.topk_group") as usize,
             has_shared_experts: cfg.has_shared_experts,
         })
     }
@@ -1381,6 +1385,53 @@ fn moe_router_qwen3(
     (top_k_indices, top_k_weights)
 }
 
+/// GLM4MoELite router: sigmoid logits + correction bias selects top-k;
+/// gathered weights come from the original sigmoid scores.
+#[allow(dead_code)] // Staged GLM contract; wired after MLA attention/cache support lands.
+pub(crate) fn moe_router_glm_from_logits(
+    cfg: &ModelConfig,
+    logits: &MlxArray,
+    correction_bias: &MlxArray,
+) -> (MlxArray, MlxArray) {
+    let router = cfg.glm_router.as_ref().expect("GLM router config");
+    assert_eq!(
+        router.n_group, 1,
+        "grouped GLM router selection is a separate implementation slice"
+    );
+    assert_eq!(
+        router.topk_group, 1,
+        "grouped GLM router selection is a separate implementation slice"
+    );
+
+    let last_axis = logits.ndim() as i32 - 1;
+    let scores = mlx_sys::ops::sigmoid(&astype(logits, MlxDtype::Float32, None), None);
+    let selection_scores = add(&scores, correction_bias, None);
+    let (top_k_indices, _) = top_k_by_argpartition(
+        &selection_scores,
+        cfg.moe_expert_count,
+        cfg.moe_experts_per_token,
+        false,
+    );
+    let top_k_weights = take_along_axis(&scores, &top_k_indices, last_axis, None);
+    let top_k_weights = if cfg.moe_experts_per_token > 1 && cfg.moe_norm_topk_prob {
+        let denominator = sum_axis(&top_k_weights, last_axis, true, None);
+        let epsilon = 1e-20_f32;
+        let epsilon = MlxArray::from_raw_data(
+            &epsilon as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1_i32],
+            MlxDtype::Float32,
+        );
+        divide(&top_k_weights, &add(&denominator, &epsilon, None), None)
+    } else {
+        top_k_weights
+    };
+    (
+        top_k_indices,
+        scale_hidden(&top_k_weights, router.routed_scaling_factor),
+    )
+}
+
 /// Pick top-k elements via argpartition and optionally re-apply softmax.
 fn top_k_by_argpartition(
     scores: &MlxArray,
@@ -1782,6 +1833,8 @@ mod tests {
             glm_router: NativeGlmRouterConfig {
                 first_dense_layer_count: Some(1),
                 routed_scaling_factor: Some(1.8),
+                n_group: Some(1),
+                topk_group: Some(1),
                 has_shared_experts: true,
             },
             tensors: Vec::new(),
@@ -2020,10 +2073,45 @@ mod tests {
 
         assert_eq!(router.first_dense_layer_count, 1);
         assert!((router.routed_scaling_factor - 1.8).abs() < f32::EPSILON);
+        assert_eq!(router.n_group, 1);
+        assert_eq!(router.topk_group, 1);
         assert!(router.has_shared_experts);
         assert!(!cfg.is_glm_moe_layer(0));
         assert!(cfg.is_glm_moe_layer(1));
         assert!(cfg.is_glm_moe_layer(2));
+    }
+
+    #[test]
+    fn glm_router_uses_correction_bias_for_selection_and_sigmoid_for_weights() {
+        let mut cfg = ModelConfig::from_manifest(&glm4_moe_lite_manifest());
+        cfg.moe_expert_count = 4;
+        cfg.moe_experts_per_token = 2;
+        cfg.moe_norm_topk_prob = true;
+        let logits_data = [0.0_f32, 0.0, 0.0, 0.0];
+        let logits = MlxArray::from_raw_data(
+            logits_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&logits_data),
+            &[1, 1, 4],
+            MlxDtype::Float32,
+        );
+        let bias_data = [0.0_f32, 10.0, 0.0, 5.0];
+        let bias = MlxArray::from_raw_data(
+            bias_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&bias_data),
+            &[1, 1, 4],
+            MlxDtype::Float32,
+        );
+
+        let (indices, weights) = moe_router_glm_from_logits(&cfg, &logits, &bias);
+        eval(&[&indices, &weights]);
+
+        let mut selected = indices.data_u32().to_vec();
+        selected.sort_unstable();
+        assert_eq!(selected, vec![1, 3]);
+        assert_eq!(weights.shape(), vec![1, 1, 2]);
+        for weight in weights.data_f32() {
+            assert!((*weight - 0.9).abs() < 1e-5, "{weight}");
+        }
     }
 
     #[test]
