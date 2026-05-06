@@ -4,8 +4,9 @@ AX Engine keeps benchmarking deliberately split by evidence type. A result is
 useful only when the workload, runtime route, reference engine, host, model,
 sampling policy, and artifact schema are explicit.
 
-Measured results for each tested model are summarized in `README.md` under the
-**Benchmarks** section. Public review artifacts live under
+Measured results for each tested model are summarized in the root `README.md`
+under the **Performance** section. Methodology and interpretation for the
+current public table live in `docs/PERFORMANCE.md`. Public review artifacts live under
 `benchmarks/results/mlx-inference/<date>/`; for example, the 2026-05-04 result
 set includes the full JSON output, prompt-token JSON files, and command logs for
 Gemma 4 E2B 4/5/6/8-bit, Gemma 4 26B A4B, Gemma 4 31B,

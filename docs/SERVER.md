@@ -454,12 +454,21 @@ lifecycle contract as the SDK.
 The server allocates request ids from one process-local sequence across both
 paths so transport logs and client correlation do not collide when clients mix
 blocking and stepwise APIs.
-The `mlx_lm_delegated` backend supports `/v1/generate` through
-`mlx_lm.server` `/v1/completions`. AX also exposes fake SSE over
-`/v1/generate/stream` and streamed OpenAI-compatible completion/chat endpoints
-by chunking the blocking delegated response into the normal AX SSE envelopes.
-This preserves the AX transport contract for UI clients, but it is not true
-token-by-token upstream streaming.
+The `mlx_lm_delegated` backend supports blocking `/v1/generate` through
+`mlx_lm.server` `/v1/completions`. It does not expose `/v1/generate/stream` or
+streamed OpenAI-compatible completion/chat endpoints because the delegated
+completion route does not provide AX-owned token IDs or per-token deltas. Those
+requests fail closed with `streaming_not_supported`, matching
+`runtime.capabilities.token_streaming=false`.
+
+For delegated text responses, `output_text` is authoritative. `output_tokens`
+is intentionally empty because AX did not tokenize the upstream text response;
+use `output_token_count` when `mlx_lm.server` reports usage. EOS/stop handling
+for this path follows the upstream `finish_reason`. Repo-owned MLX token
+requests stop on configured EOS token IDs in the model artifacts; raw text
+completion prompts are not chat-templated by AX, so short instruction prompts
+may still finish by `max_output_tokens` unless the upstream backend emits a
+stop finish reason.
 
 For Phase 1, the llama.cpp backend supports blocking `/v1/generate`,
 OpenAI-compatible `/v1/completions`, and OpenAI-compatible
