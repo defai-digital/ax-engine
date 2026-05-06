@@ -1,5 +1,8 @@
 # AX Engine
 
+[![Preview Surfaces](https://github.com/defai-digital/ax-engine/actions/workflows/python-preview.yml/badge.svg?branch=main)](https://github.com/defai-digital/ax-engine/actions/workflows/python-preview.yml)
+[![Coverage Report](https://github.com/defai-digital/ax-engine/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/defai-digital/ax-engine/actions/workflows/coverage.yml)
+
 AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and
 benchmark toolkit for Apple Silicon.
 
@@ -80,6 +83,9 @@ The runtime report exposes `selected_backend`, `support_tier`, and
 `resolution_policy` so callers and benchmark artifacts can distinguish these
 paths.
 
+For the exact OpenAI-shaped endpoint contract, including what is and is not
+compatible today, see `docs/API-COMPATIBILITY.md`.
+
 ## Design
 
 ### Execution Layer
@@ -131,6 +137,23 @@ descriptor. Each supported architecture has a hand-written forward pass in
 `ax-engine-mlx`. Adding a new architecture means implementing the model graph,
 not wiring up a generic loader.
 
+Recent community-model checks that lack an AX `model-manifest.json` are tracked
+as reference-only evidence, not repo-owned AX support. On 2026-05-06,
+`mlx-community/GLM-4.7-Flash-4bit` benchmarked successfully through
+`mlx_lm.benchmark`; `mlx-community/DeepSeek-V4-Flash-2bit-DQ` downloaded but
+failed closed because upstream `mlx-lm` did not support `model_type=deepseek_v4`
+in this environment. See
+`benchmarks/results/mlx-inference/2026-05-06/README.md` for commands and
+artifacts. Before promoting either architecture, run
+`scripts/probe_mlx_model_support.py --model-dir <model-dir>`: GLM currently
+classifies as an implementation candidate because Apple `mlx-lm` and Apple
+`mlx-swift-lm` both expose GLM4MoELite references. AX can now map GLM tensors
+into a draft `model-manifest.json`, but that manifest is intentionally marked
+`runtime_status.ready=false` until the GLM MLA attention, router, and latent-KV
+cache paths exist. DeepSeek V4 remains fail-closed because the available
+SwiftLM port is partial and drops checkpoint features that affect the forward
+contract.
+
 ## Limitations
 
 - **GatedDelta prefill**: Qwen3.5 and Qwen3-Next linear-attention layers use a
@@ -146,51 +169,72 @@ not wiring up a generic loader.
 ## Performance
 
 **Apple M5 Max · 128 GB · macOS 26.4.1.** Random-token prompts (mlx_lm seed=0),
-batch=1, prefill_step_size=2048, 3 timed trials + 1 warmup. Reference rows are
-from the public benchmark artifacts; AX rows were refreshed on 2026-05-05 with
-the same prompt artifacts and `server_sse_runner_time_us`. `ax engine` is the
-direct same-policy comparison against `mlx_lm`; `ax engine + n-gram accel`
-reports observed effective throughput, not raw model speed.
+batch=1, prefill_step_size=2048, 3 timed trials + 1 warmup. All rows
+below were refreshed on 2026-05-05 from
+`benchmarks/results/mlx-inference/2026-05-05-rerun/`. `ax engine` is the direct
+same-policy comparison against `mlx_lm`; `ax engine + n-gram accel` reports
+observed effective throughput, not raw model speed.
+
+To reproduce the benchmark procedure on an Apple Silicon host, use
+`scripts/reproduce-mlx-inference-benchmark.sh` with a local MLX model artifact
+directory. The script records doctor output, command logs, prompt artifacts, and
+raw JSON results under `benchmarks/community-results/local/` by default. See
+`docs/BENCHMARKS.md` and `benchmarks/community-results/README.md` before
+submitting or comparing external rows.
 
 Gemma 4 E4B benchmark rows are pending; the model manifest and scenario
 manifest are present. See `benchmarks/results/mlx-inference/2026-05-04/README.md`
 for the run command.
 
+### Reference-only MLX checks
+
+These rows use upstream `mlx_lm.benchmark` only. They show whether a community
+MLX model can run today through the reference stack; they are not AX Engine
+repo-owned runtime rows and should not be compared with `ax engine` columns
+until a model manifest, graph implementation, server smoke, and AX benchmark
+artifact exist.
+
+| Model | Repo revision | Status | Prompt tok | mlx_lm prefill tok/s | mlx_lm decode tok/s | Peak memory |
+|---|---|---|---:|---:|---:|---:|
+| mlx-community/GLM-4.7-Flash-4bit | `1454cffb1a21737e162f508e5bc70be9def89276` | Reference benchmark passed; draft manifest candidate | 128 | 487.5 | 89.7 | 17.063 GB |
+|    |    |    | 512 | 1,517.5 | 85.5 | 17.495 GB |
+| mlx-community/DeepSeek-V4-Flash-2bit-DQ | `722bf559b7de93575b2320973cf2002e05bfe6c9` | Downloaded; fail-closed partial reference; benchmark blocked by `mlx_lm`: `Model type deepseek_v4 not supported` | 128 / 512 | - | - | - |
+
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine | ax engine + n-gram accel |
 |---|---|---:|---:|---:|---:|---|
-| Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 197.5 | 192.4 (−2.6%) | 173.7 (−12.0%) | **474.0 (+140.0%)** |
-|   |   | 512 | 191.9 | 179.5 (−6.5%) | 167.2 (−12.9%) | **473.2 (+146.5%)** |
-| Gemma 4 E2B | 5-bit · group=64 · affine‖ | 128 | 182.9 | 174.1 (−4.8%) | 155.0 (−15.3%) | **355.7 (+94.4%)** |
-|   |   | 512 | 178.1 | 167.0 (−6.2%) | 151.9 (−14.7%) | **353.6 (+98.5%)** |
-| Gemma 4 E2B | 6-bit · group=64 · affine‖ | 128 | 161.3 | 153.0 (−5.1%) | 147.1 (−8.8%) | **333.3 (+106.7%)** |
-|   |   | 512 | 154.2 | 147.1 (−4.6%) | 143.1 (−7.2%) | **337.6 (+118.9%)** |
-| Gemma 4 E2B | 8-bit · group=64 · affine‖ | 128 | 139.4 | 134.9 (−3.2%) | 130.6 (−6.3%) | **353.3 (+153.5%)** |
-|   |   | 512 | 134.5 | 130.8 (−2.8%) | 124.7 (−7.3%) | **370.2 (+175.1%)** |
-| Gemma 4 26B A4B | 4-bit · group=64 · affine¶ | 128 | 118.3 | 109.4 (−7.5%) | 114.8 (−3.0%) | **216.1 (+82.8%)** |
-|   |   | 512 | 113.1 | 104.7 (−7.5%) | 110.4 (−2.4%) | **177.5 (+56.9%)** |
-| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 26.2 | 24.8 (−5.5%) | 24.4 (−7.0%) | **51.8 (+97.6%)** |
-|   |   | 512 | 24.9 | 24.7 (−0.9%) | 23.7 (−5.0%) | **45.6 (+82.9%)** |
-| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 96.5 | 93.7 (−2.9%) | 89.9 (−6.9%) | **168.4 (+74.5%) †** |
-|   |   | 512 | 101.3 | 91.4 (−9.8%) | 89.1 (−12.0%) | 83.9 (−17.1%) † |
-| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine§ | 128 | 107.6 | 103.6 (−3.7%) | 107.7 (+0.1%) | **208.2 (+93.5%) †** |
-|   |   | 512 | 103.3 | 101.4 (−1.9%) | 105.4 (+2.1%) | **210.6 (+103.9%) †** |
-| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine§ | 128 | 116.8 | 110.2 (−5.6%) | 116.7 (−0.1%) | **228.1 (+95.3%) †** |
-|   |   | 512 | 113.7 | 108.7 (−4.4%) | 127.6 (+12.2%) | **223.5 (+96.5%) †** |
-| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine§ | 128 | 102.9 | 99.1 (−3.6%) | 112.8 (+9.6%) | **210.4 (+104.6%) †** |
-|   |   | 512 | 101.1 | 98.0 (−3.1%) | 112.5 (+11.3%) | **195.2 (+93.2%) †** |
-| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine§ | 128 | 93.6 | 89.3 (−4.6%) | 96.7 (+3.3%) | **192.3 (+105.5%) †** |
-|   |   | 512 | 91.4 | 89.1 (−2.6%) | 95.8 (+4.8%) | **187.9 (+105.5%) †** |
-| Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 92.2 | 89.4 (−3.0%) | 93.8 (+1.8%) | **213.8 (+132.0%) †** |
-|   |   | 512 | 90.4 | 89.2 (−1.3%) | 92.7 (+2.6%) | **211.3 (+133.8%) †** |
+| Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 198.4 | 192.7 (−2.9%) | 176.4 (−11.1%) | **548.9 (+176.7%)** |
+|    |    | 512 | 194.3 | 183.7 (−5.5%) | 171.8 (−11.6%) | **542.5 (+179.2%)** |
+| Gemma 4 E2B | 5-bit · group=64 · affine‖ | 128 | 176.5 | 172.9 (−2.0%) | 161.1 (−8.7%) | **434.2 (+146.0%)** |
+|    |    | 512 | 174.4 | 163.9 (−6.0%) | 150.4 (−13.7%) | **412.1 (+136.3%)** |
+| Gemma 4 E2B | 6-bit · group=64 · affine‖ | 128 | 153.1 | 147.2 (−3.8%) | 137.7 (−10.0%) | **377.3 (+146.5%)** |
+|    |    | 512 | 148.6 | 141.1 (−5.0%) | 130.4 (−12.2%) | **374.0 (+151.8%)** |
+| Gemma 4 E2B | 8-bit · group=64 · affine‖ | 128 | 131.7 | 133.4 (+1.2%) | 127.8 (−3.0%) | **431.7 (+227.7%)** |
+|    |    | 512 | 134.0 | 131.5 (−1.9%) | 124.6 (−7.0%) | **427.7 (+219.2%)** |
+| Gemma 4 26B A4B | 4-bit · group=64 · affine¶ | 128 | 118.3 | 110.8 (−6.3%) | 115.8 (−2.1%) | **252.4 (+113.4%)** |
+|    |    | 512 | 115.3 | 106.5 (−7.7%) | 111.3 (−3.5%) | **206.9 (+79.4%)** |
+| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 26.4 | 25.7 (−2.7%) | 25.7 (−2.6%) | **61.7 (+133.5%)** |
+|    |    | 512 | 25.4 | 24.9 (−2.0%) | 24.9 (−1.7%) | **57.6 (+126.9%)** |
+| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 94.2 | 93.0 (−1.3%) | 94.6 (+0.4%) | **196.3 (+108.4%) †** |
+|    |    | 512 | 93.9 | 90.6 (−3.5%) | 92.8 (−1.2%) | 91.8 (−2.2%) † |
+| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine§ | 128 | 107.8 | 105.8 (−1.8%) | 111.7 (+3.7%) | **259.2 (+140.5%) †** |
+|    |    | 512 | 107.2 | 105.0 (−2.1%) | 110.4 (+3.0%) | **257.5 (+140.1%) †** |
+| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine§ | 128 | 112.5 | 110.4 (−1.9%) | 120.6 (+7.2%) | **260.8 (+131.8%) †** |
+|    |    | 512 | 112.4 | 108.8 (−3.2%) | 120.0 (+6.7%) | **258.0 (+129.5%) †** |
+| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine§ | 128 | 102.3 | 98.4 (−3.9%) | 105.5 (+3.1%) | **239.0 (+133.5%) †** |
+|    |    | 512 | 102.1 | 97.0 (−5.1%) | 104.5 (+2.3%) | **236.3 (+131.3%) †** |
+| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine§ | 128 | 93.5 | 88.3 (−5.5%) | 94.2 (+0.7%) | **236.2 (+152.6%) †** |
+|    |    | 512 | 92.9 | 88.1 (−5.2%) | 94.5 (+1.6%) | **232.1 (+149.8%) †** |
+| Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 88.6 | 85.2 (−3.8%) | 92.3 (+4.2%) | **247.1 (+178.8%) †** |
+|    |    | 512 | 88.9 | 88.3 (−0.7%) | 94.6 (+6.4%) | **242.3 (+172.7%) †** |
 
 † Qwen 3.5, Qwen 3.6, and Qwen Coder Next n-gram acceleration rows use a rollback-safe
 branch/recompute path for SSM state. These are effective-throughput
 measurements from AX's n-gram acceleration policy, not raw model decode speed.
 Linear-attention acceleration is prompt/output-pattern dependent. Benchmark JSON
-artifacts include fixed-schema n-gram telemetry counters for draft attempts,
-accepted/rejected tokens, complete misses, no-draft steps, and cooldowns.
+artifacts include fixed-schema n-gram telemetry fields; the throughput table
+uses the median `server_sse_runner_time_us` timing plus output-token count.
 
 ‡ Qwen Coder Next uses MLX affine 4-bit globally, with 8-bit overrides for
 router and shared-expert gate tensors.
@@ -215,30 +259,30 @@ reference.
 
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |
 |---|---|---:|---:|---:|---:|
-| Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 2,265.8 | 2,450.4 (+8.1%) | 3,116.9 (+37.6%) |
-|   |   | 512 | 7,634.1 | 6,664.3 (−12.7%) | 7,482.5 (−2.0%) |
-| Gemma 4 E2B | 5-bit · group=64 · affine‖ | 128 | 2,267.5 | 2,393.9 (+5.6%) | 3,182.7 (+40.4%) |
-|   |   | 512 | 8,405.7 | 6,742.6 (−19.8%) | 7,461.4 (−11.2%) |
-| Gemma 4 E2B | 6-bit · group=64 · affine‖ | 128 | 2,156.3 | 3,436.8 (+59.4%) | 3,173.5 (+47.2%) |
-|   |   | 512 | 7,320.7 | 7,962.3 (+8.8%) | 7,190.5 (−1.8%) |
-| Gemma 4 E2B | 8-bit · group=64 · affine‖ | 128 | 1,911.7 | 3,082.0 (+61.2%) | 3,137.8 (+64.1%) |
-|   |   | 512 | 6,582.8 | 6,758.1 (+2.7%) | 7,417.0 (+12.7%) |
-| Gemma 4 26B A4B | 4-bit · group=64 · affine¶ | 128 | 545.3 | 1,227.3 (+125.1%) | 1,229.3 (+125.4%) |
-|   |   | 512 | 1,620.7 | 2,938.6 (+81.3%) | 2,749.7 (+69.7%) |
-| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 336.5 | 641.6 (+90.7%) | 524.5 (+55.9%) |
-|   |   | 512 | 563.5 | 760.6 (+35.0%) | 648.9 (+15.2%) |
-| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 1,133.3 | 2,101.1 (+85.4%) | 1,862.5 (+64.3%) |
-|   |   | 512 | 2,245.7 | 3,165.8 (+41.0%) | 2,652.0 (+18.1%) |
-| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine§ | 128 | 531.7 | 963.2 (+81.1%) | 1,011.1 (+90.2%) |
-|   |   | 512 | 1,594.2 | 2,546.5 (+59.7%) | 2,547.8 (+59.8%) |
-| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine§ | 128 | 474.4 | 861.8 (+81.7%) | 968.9 (+104.2%) |
-|   |   | 512 | 1,484.5 | 2,416.7 (+62.8%) | 2,546.1 (+71.5%) |
-| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine§ | 128 | 420.0 | 762.4 (+81.5%) | 976.1 (+132.4%) |
-|   |   | 512 | 1,377.9 | 2,350.6 (+70.6%) | 2,455.5 (+78.2%) |
-| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine§ | 128 | 393.1 | 617.7 (+57.1%) | 926.7 (+135.7%) |
-|   |   | 512 | 1,202.2 | 2,305.2 (+91.7%) | 2,326.0 (+93.5%) |
-| Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 267.1 | 384.9 (+44.1%) | 823.0 (+208.1%) |
-|   |   | 512 | 815.4 | 1,417.0 (+73.8%) | 2,585.7 (+217.1%) |
+| Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 2,451.0 | 3,032.3 (+23.7%) | 3,289.5 (+34.2%) |
+|    |    | 512 | 7,909.9 | 6,679.4 (−15.6%) | 7,741.2 (−2.1%) |
+| Gemma 4 E2B | 5-bit · group=64 · affine‖ | 128 | 2,338.0 | 2,936.3 (+25.6%) | 3,159.3 (+35.1%) |
+|    |    | 512 | 7,772.5 | 6,863.5 (−11.7%) | 7,403.9 (−4.7%) |
+| Gemma 4 E2B | 6-bit · group=64 · affine‖ | 128 | 2,435.5 | 3,028.7 (+24.4%) | 3,009.4 (+23.6%) |
+|    |    | 512 | 7,772.0 | 6,863.8 (−11.7%) | 6,888.6 (−11.4%) |
+| Gemma 4 E2B | 8-bit · group=64 · affine‖ | 128 | 1,842.4 | 2,596.9 (+41.0%) | 3,049.3 (+65.5%) |
+|    |    | 512 | 6,914.1 | 5,691.1 (−17.7%) | 7,336.8 (+6.1%) |
+| Gemma 4 26B A4B | 4-bit · group=64 · affine¶ | 128 | 694.8 | 1,235.2 (+77.8%) | 1,239.0 (+78.3%) |
+|    |    | 512 | 2,004.5 | 2,805.0 (+39.9%) | 2,827.0 (+41.0%) |
+| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 344.1 | 617.3 (+79.4%) | 538.7 (+56.6%) |
+|    |    | 512 | 581.4 | 765.6 (+31.7%) | 709.5 (+22.0%) |
+| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 989.9 | 1,743.5 (+76.1%) | 1,905.2 (+92.5%) |
+|    |    | 512 | 2,105.3 | 2,922.4 (+38.8%) | 2,720.1 (+29.2%) |
+| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine§ | 128 | 479.5 | 854.7 (+78.3%) | 1,019.7 (+112.7%) |
+|    |    | 512 | 1,492.0 | 2,511.7 (+68.3%) | 2,565.7 (+72.0%) |
+| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine§ | 128 | 455.2 | 811.9 (+78.3%) | 947.0 (+108.0%) |
+|    |    | 512 | 1,460.0 | 2,449.5 (+67.8%) | 2,469.1 (+69.1%) |
+| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine§ | 128 | 399.9 | 696.3 (+74.1%) | 918.1 (+129.6%) |
+|    |    | 512 | 1,323.5 | 2,340.2 (+76.8%) | 2,354.5 (+77.9%) |
+| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine§ | 128 | 368.2 | 585.5 (+59.0%) | 903.1 (+145.3%) |
+|    |    | 512 | 1,199.5 | 2,234.5 (+86.3%) | 2,319.0 (+93.3%) |
+| Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 276.4 | 437.8 (+58.4%) | 852.1 (+208.3%) |
+|    |    | 512 | 888.6 | 1,652.8 (+86.0%) | 2,686.0 (+202.3%) |
 
 ### Workload Contracts
 
@@ -266,6 +310,7 @@ This installs:
 - `ax-engine-server`: local HTTP adapter over the SDK runtime
 - `ax-engine-bench`: workload-contract, readiness, direct-generate, and
   benchmark-support CLI
+- the Homebrew `mlx-c` runtime dependency required by the released binaries
 
 Check the installed tools:
 
@@ -275,8 +320,15 @@ ax-engine-bench doctor
 ```
 
 Homebrew is the quickest path for the released server and benchmark binaries.
+If `ax-engine-bench doctor` fails with `Library not loaded:
+/opt/homebrew/opt/mlx-c/lib/libmlxc.dylib`, install or repair the runtime with
+`brew install mlx-c` and `brew reinstall defai-digital/ax-engine/ax-engine`.
 Use the source build when you need the full Rust workspace, Python extension,
 local examples, or changes that have not been tagged yet.
+
+The release archive attached to GitHub is the Homebrew formula payload. It is
+not a standalone installer with bundled dynamic libraries. Use Homebrew unless
+you are prepared to provide `mlx-c` and its dynamic library path yourself.
 
 ### Source
 
@@ -383,6 +435,11 @@ cargo fmt                                                         # format
 maturin develop                                                   # rebuild Python extension
 python -m unittest discover -s python/tests -v                   # Python tests
 ```
+
+Coverage is collected by the report-only GitHub Actions workflow in
+`.github/workflows/coverage.yml`. It publishes Rust `cargo llvm-cov` and Python
+`coverage.py` artifacts without enforcing a percentage threshold yet; add a gate
+only after the project has a stable baseline across macOS, MLX, and PyO3 paths.
 
 Public documentation is in `docs/`. Canonical benchmark manifests are in
 `benchmarks/manifests/`.

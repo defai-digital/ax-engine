@@ -16,4 +16,7 @@ trap cleanup EXIT
 
 cd "$ROOT_DIR"
 
-"$PYTHON_BIN" -m unittest scripts/test_bench_mlx_inference_stack.py -v
+"$PYTHON_BIN" -m unittest \
+  scripts/test_bench_mlx_inference_stack.py \
+  scripts/test_probe_mlx_model_support.py \
+  -v

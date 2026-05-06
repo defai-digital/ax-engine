@@ -38,8 +38,17 @@ throughput baselines.
   `mlx_lm.benchmark`.
 - `test_bench_mlx_inference_stack.py`: unit tests for the MLX benchmark
   contract, parser, prompt artifact hash checks, and secondary adapter shape.
+- `probe_mlx_model_support.py`: support-contract probe for downloaded MLX
+  model artifacts. It reads `config.json`, safetensors index metadata, and
+  local reference implementations so new architectures fail closed with named
+  blockers instead of becoming benchmark-only support claims.
+- `test_probe_mlx_model_support.py`: unit tests for GLM/DeepSeek support
+  classification and fail-closed partial-reference behavior.
 - `check-bench-inference-stack.sh`: lightweight contract check for the MLX
   inference-stack benchmark harness. It does not load a model.
+- `reproduce-mlx-inference-benchmark.sh`: public reproduction wrapper for
+  external Apple Silicon benchmark bundles. It records doctor output, command
+  logs, prompt artifacts, environment metadata, and raw JSON results.
 - `diagnose_server_rss.py`: long-lived RSS diagnostic for MLX and delegated
   llama.cpp server routes. It is not a throughput benchmark.
 - `check-bench-*.sh`: smoke checks for `ax-engine-bench` workload-contract

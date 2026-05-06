@@ -12,9 +12,19 @@ use mlx_sys::{
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
-    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
-    NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
+    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary, MlxKvCompressionConfig,
+    NativeModelArtifacts, NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
     ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS,
     ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB, ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS,
@@ -36,6 +46,7 @@ use crate::ngram_accel::{
     NgramTable, ngram_accel_decode_step, single_decode,
 };
 use crate::sampling::Xorshift64;
+use crate::turboquant::turboquant_support_report;
 use crate::weights::{ModelWeights, load_weights};
 
 /// Beta prior counts for the n-gram acceleration accept-rate gate.
@@ -61,6 +72,11 @@ const LINEAR_NGRAM_RETRY_INTERVAL: u32 = 16;
 /// Steps to suppress after a *partial* accept (≥1 draft token accepted but not all).
 /// Partial accept means the n-gram is close — retry quickly.
 const LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL: u32 = 4;
+/// If a linear-attention request cannot produce any n-gram draft after one full
+/// retry window, stop probing for the rest of the request and use the direct
+/// pipeline.  Qwen3.5 short prompts can start finding drafts after 16 generated
+/// tokens, so the threshold intentionally gives them that full window first.
+const LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD: u32 = LINEAR_NGRAM_RETRY_INTERVAL + 1;
 /// Maximum number of prompt tail tokens fed into the n-gram table.
 /// Long prompts (especially random-token benchmarks) would otherwise fill the
 /// table with useless bigrams that trigger false-positive n-gram acceleration and force
@@ -80,6 +96,8 @@ struct NgramAccelerationTelemetry {
     cooldown_steps: u32,
     cooldown_events: u32,
     cooldown_steps_scheduled: u32,
+    request_disable_events: u32,
+    request_disabled_steps: u32,
 }
 
 impl NgramAccelerationTelemetry {
@@ -116,6 +134,14 @@ impl NgramAccelerationTelemetry {
             self.cooldown_steps_scheduled.saturating_add(disabled_steps);
     }
 
+    fn record_request_disable_event(&mut self) {
+        self.request_disable_events = self.request_disable_events.saturating_add(1);
+    }
+
+    fn record_request_disabled_step(&mut self) {
+        self.request_disabled_steps = self.request_disabled_steps.saturating_add(1);
+    }
+
     fn merge_from(&mut self, other: Self) {
         self.draft_attempts = self.draft_attempts.saturating_add(other.draft_attempts);
         self.draft_tokens = self.draft_tokens.saturating_add(other.draft_tokens);
@@ -130,6 +156,12 @@ impl NgramAccelerationTelemetry {
         self.cooldown_steps_scheduled = self
             .cooldown_steps_scheduled
             .saturating_add(other.cooldown_steps_scheduled);
+        self.request_disable_events = self
+            .request_disable_events
+            .saturating_add(other.request_disable_events);
+        self.request_disabled_steps = self
+            .request_disabled_steps
+            .saturating_add(other.request_disabled_steps);
     }
 
     fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
@@ -147,6 +179,14 @@ impl NgramAccelerationTelemetry {
             (
                 "ax_ngram_cooldown_steps_scheduled",
                 self.cooldown_steps_scheduled,
+            ),
+            (
+                "ax_ngram_request_disable_events",
+                self.request_disable_events,
+            ),
+            (
+                "ax_ngram_request_disabled_steps",
+                self.request_disabled_steps,
             ),
         ];
 
@@ -337,6 +377,18 @@ struct KvCacheTelemetry {
     linear_state_layers: u64,
     linear_state_bytes: u64,
     growth_count: u64,
+    compression_request_snapshots: u32,
+    compression_status: u32,
+    compression_preset: u32,
+    compression_key_bits: u32,
+    compression_value_bits: u32,
+    compression_eligible_layers: u64,
+    compression_candidate_token_layers: u64,
+    compression_hot_token_layers: u64,
+    compression_full_precision_bytes: u64,
+    compression_estimated_compressed_bytes: u64,
+    compression_estimated_saved_bytes: u64,
+    compression_ratio_milli: u32,
 }
 
 impl KvCacheTelemetry {
@@ -372,6 +424,42 @@ impl KvCacheTelemetry {
             .linear_state_bytes
             .saturating_add(usage.linear_state_bytes);
         self.growth_count = self.growth_count.saturating_add(usage.growth_count);
+
+        let compression = usage.kv_compression;
+        if compression.policy_enabled {
+            self.compression_request_snapshots =
+                self.compression_request_snapshots.saturating_add(1);
+            self.compression_status = compression.status_code;
+            self.compression_preset = compression.preset_code;
+            self.compression_key_bits = compression.key_bits;
+            self.compression_value_bits = compression.value_bits;
+            self.compression_eligible_layers = self
+                .compression_eligible_layers
+                .saturating_add(compression.eligible_layers as u64);
+            self.compression_candidate_token_layers = self
+                .compression_candidate_token_layers
+                .saturating_add(compression.candidate_token_layers as u64);
+            self.compression_hot_token_layers = self
+                .compression_hot_token_layers
+                .saturating_add(compression.hot_token_layers as u64);
+            self.compression_full_precision_bytes = self
+                .compression_full_precision_bytes
+                .saturating_add(compression.full_precision_bytes);
+            self.compression_estimated_compressed_bytes = self
+                .compression_estimated_compressed_bytes
+                .saturating_add(compression.estimated_compressed_bytes);
+            self.compression_estimated_saved_bytes = self
+                .compression_estimated_saved_bytes
+                .saturating_add(compression.estimated_saved_bytes);
+            self.compression_ratio_milli = if self.compression_full_precision_bytes == 0 {
+                0
+            } else {
+                self.compression_estimated_compressed_bytes
+                    .saturating_mul(1000)
+                    .saturating_div(self.compression_full_precision_bytes)
+                    .min(u32::MAX as u64) as u32
+            };
+        }
     }
 
     fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
@@ -437,6 +525,63 @@ impl KvCacheTelemetry {
         for (key, value) in entries {
             upsert_route_decision(decisions, key, value);
         }
+
+        if self.compression_request_snapshots > 0 {
+            let compression_entries = [
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS,
+                    self.compression_request_snapshots,
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS,
+                    self.compression_status,
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET,
+                    self.compression_preset,
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS,
+                    self.compression_key_bits,
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS,
+                    self.compression_value_bits,
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,
+                    saturating_u32_from_u64(self.compression_eligible_layers),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
+                    saturating_u32_from_u64(self.compression_candidate_token_layers),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
+                    saturating_u32_from_u64(self.compression_hot_token_layers),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB,
+                    kib_ceil(self.compression_full_precision_bytes),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB,
+                    kib_ceil(self.compression_estimated_compressed_bytes),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB,
+                    kib_ceil(self.compression_estimated_saved_bytes),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI,
+                    self.compression_ratio_milli,
+                ),
+            ];
+
+            for (key, value) in compression_entries {
+                upsert_route_decision(decisions, key, value);
+            }
+        }
     }
 }
 
@@ -455,6 +600,13 @@ struct RequestState {
     ngram_beta_beta: f32,
     /// Steps remaining before re-enabling ngram_acceleration (0 = n-gram acceleration allowed).
     ngram_disabled_steps: u32,
+    /// Consecutive decode steps where a linear-attention request had no viable
+    /// n-gram draft.  Used to avoid spending an entire request in single-decode
+    /// fallback when acceleration has no evidence to act on.
+    linear_ngram_no_draft_streak: u32,
+    /// Request-local fallback: once a linear-attention request proves it has no
+    /// useful n-gram support, finish it on the direct pipeline.
+    ngram_acceleration_disabled_for_request: bool,
     /// Pre-verified bonus tokens ready to serve without a model run.
     bonus_queue: VecDeque<u32>,
     /// The token to use as `last_token` for the next model run.
@@ -483,6 +635,8 @@ impl RequestState {
             ngram_beta_alpha: NGRAM_BETA_PRIOR_ALPHA,
             ngram_beta_beta: NGRAM_BETA_PRIOR_BETA,
             ngram_disabled_steps: 0,
+            linear_ngram_no_draft_streak: 0,
+            ngram_acceleration_disabled_for_request: false,
             bonus_queue: VecDeque::new(),
             next_model_last_token: None,
             pending_direct: None,
@@ -509,6 +663,10 @@ pub struct MlxRunner {
     _stream: MlxStream,
     /// When true, disable n-gram acceleration and use the direct decode path.
     disable_ngram_acceleration: bool,
+    /// Optional KV compression policy. Disabled by default and never changes logits in shadow mode.
+    kv_compression: MlxKvCompressionConfig,
+    /// Per-layer compression eligibility. Empty when compression is disabled.
+    kv_compression_layer_eligible: Vec<bool>,
 }
 
 impl fmt::Debug for MlxRunner {
@@ -525,6 +683,7 @@ impl MlxRunner {
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
+        kv_compression: MlxKvCompressionConfig,
     ) -> Result<Self, MlxRunnerError> {
         // Enable MLX compute-graph compilation globally.
         // This caches and reuses compiled Metal shaders across calls with the same
@@ -551,6 +710,17 @@ impl MlxRunner {
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
         let terminal_token_ids = resolve_terminal_token_ids(artifacts);
         let kv_layer_windows = kv_layer_windows_from_config(&cfg);
+        let kv_compression_layer_eligible = if kv_compression.is_enabled() {
+            turboquant_support_report(&cfg, kv_compression.preset)
+                .map_err(|error| {
+                    MlxRunnerError::UnsupportedFeature(format!(
+                        "invalid TurboQuant compression policy: {error}"
+                    ))
+                })?
+                .eligible_layer_mask()
+        } else {
+            Vec::new()
+        };
         let weights = load_weights(artifacts).map_err(MlxRunnerError::Weights)?;
 
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
@@ -586,6 +756,8 @@ impl MlxRunner {
             states: Mutex::new(HashMap::new()),
             _stream: stream,
             disable_ngram_acceleration,
+            kv_compression,
+            kv_compression_layer_eligible,
         })
     }
 }
@@ -799,6 +971,9 @@ impl MlxRunner {
                     state.bonus_queue.clear();
                     state.next_model_last_token = None;
                     state.pending_direct = None;
+                    state.ngram_disabled_steps = 0;
+                    state.linear_ngram_no_draft_streak = 0;
+                    state.ngram_acceleration_disabled_for_request = false;
 
                     // Bootstrap the double-buffer direct pipeline: submit the second token's
                     // forward pass to the GPU asynchronously so the first decode step can
@@ -845,9 +1020,18 @@ impl MlxRunner {
         // Re-insert state only if the request continues — lock held briefly.
         let ngram_acceleration = state.ngram_acceleration;
         let decode_telemetry = state.decode_telemetry;
+        let kv_compression_layer_eligible = if self.kv_compression.is_enabled() {
+            Some(self.kv_compression_layer_eligible.as_slice())
+        } else {
+            None
+        };
         let kv_usage = state
             .cache
-            .usage_snapshot_with_layer_windows(&self.kv_layer_windows);
+            .usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
+                &self.kv_layer_windows,
+                self.kv_compression,
+                kv_compression_layer_eligible,
+            );
         if stop_reason.is_none() {
             let mut states = self.states.lock().unwrap();
             states.insert(item.request_id, state);
@@ -914,6 +1098,29 @@ impl MlxRunner {
         apply_decode_result(state, &result, &self.terminal_token_ids)
     }
 
+    /// Decode one deterministic token on the direct double-buffer pipeline.
+    ///
+    /// Used both by explicit direct mode and by request-local n-gram fallback after
+    /// a linear-attention request proves it has no useful draft support.  The
+    /// pipeline may keep the cache one lazy token ahead, so callers must continue
+    /// using this path until the request finishes.
+    fn run_direct_pipeline_decode(&self, state: &mut RequestState, last_token: u32) -> u32 {
+        let branch_started = Instant::now();
+        let (tok, next_pending) = if let Some(pending) = state.pending_direct.take() {
+            advance_direct_pipeline(&self.cfg, &self.weights, &pending, &mut state.cache)
+        } else {
+            let pending =
+                start_direct_pipeline(&self.cfg, &self.weights, last_token, &mut state.cache);
+            advance_direct_pipeline(&self.cfg, &self.weights, &pending, &mut state.cache)
+        };
+        state
+            .decode_telemetry
+            .record_direct_pipeline(elapsed_us(branch_started));
+        state.pending_direct = Some(next_pending);
+        state.ngram.feed(&[tok]);
+        tok
+    }
+
     /// Run one model decode step, updating the n-gram accept-rate gate.
     fn run_model_decode(
         &self,
@@ -922,6 +1129,27 @@ impl MlxRunner {
         temperature: f32,
     ) -> Vec<u32> {
         if self.disable_ngram_acceleration {
+            let branch_started = Instant::now();
+            let result = single_decode(
+                &self.cfg,
+                &self.weights,
+                &mut state.cache,
+                &mut state.ngram,
+                last_token,
+                temperature,
+                &mut state.rng,
+            );
+            state
+                .decode_telemetry
+                .record_single_decode(elapsed_us(branch_started));
+            return result;
+        }
+
+        if state.ngram_acceleration_disabled_for_request {
+            state.ngram_acceleration.record_request_disabled_step();
+            if temperature == 0.0 {
+                return vec![self.run_direct_pipeline_decode(state, last_token)];
+            }
             let branch_started = Instant::now();
             let result = single_decode(
                 &self.cfg,
@@ -961,6 +1189,18 @@ impl MlxRunner {
         let draft = ngram_acceleration_draft(&state.ngram, self.cfg.linear_attention.is_some());
         if draft.is_empty() {
             state.ngram_acceleration.record_no_draft();
+            if self.cfg.linear_attention.is_some() {
+                state.linear_ngram_no_draft_streak =
+                    state.linear_ngram_no_draft_streak.saturating_add(1);
+                if temperature == 0.0
+                    && linear_ngram_no_draft_should_disable(state.linear_ngram_no_draft_streak)
+                {
+                    state.ngram_acceleration_disabled_for_request = true;
+                    state.ngram_acceleration.record_request_disable_event();
+                    state.ngram_acceleration.record_request_disabled_step();
+                    return vec![self.run_direct_pipeline_decode(state, last_token)];
+                }
+            }
             let branch_started = Instant::now();
             let result = single_decode(
                 &self.cfg,
@@ -976,6 +1216,8 @@ impl MlxRunner {
                 .record_single_decode(elapsed_us(branch_started));
             return result;
         }
+
+        state.linear_ngram_no_draft_streak = 0;
 
         let draft_len = draft.len();
         let branch_started = Instant::now();
@@ -1125,6 +1367,10 @@ fn ngram_acceleration_disabled_steps(
     (posterior_mean < NGRAM_ACCEPT_THRESHOLD).then_some(NGRAM_RETRY_INTERVAL)
 }
 
+fn linear_ngram_no_draft_should_disable(streak: u32) -> bool {
+    streak >= LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD
+}
+
 fn ngram_acceleration_draft(ngram: &NgramTable, has_linear_attention: bool) -> Vec<u32> {
     if has_linear_attention {
         // Dense rollback is O(1); linear-attention partial-reject pays
@@ -1151,6 +1397,11 @@ pub enum MlxRunnerError {
 
 fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(), MlxRunnerError> {
     let manifest = artifacts.manifest();
+    if manifest.model_family == "glm4_moe_lite" || has_glm_mla_tensors(artifacts) {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite manifests are draft-only until GLM MLA attention, sigmoid router correction bias, and latent-KV cache support are implemented".to_string(),
+        ));
+    }
     if manifest.linear_attention.is_enabled() || has_linear_attention_tensors(artifacts) {
         validate_qwen_gated_delta_linear_attention(manifest)?;
     }
@@ -1163,6 +1414,22 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
         validate_gemma4_interleaved_attention(manifest)?;
     }
     Ok(())
+}
+
+fn has_glm_mla_tensors(artifacts: &NativeModelArtifacts) -> bool {
+    artifacts.tensor_specs().iter().any(|tensor| {
+        matches!(
+            tensor.role,
+            NativeTensorRole::AttentionQa
+                | NativeTensorRole::AttentionQaNorm
+                | NativeTensorRole::AttentionQb
+                | NativeTensorRole::AttentionKvA
+                | NativeTensorRole::AttentionKvANorm
+                | NativeTensorRole::AttentionEmbedQ
+                | NativeTensorRole::AttentionUnembedOut
+                | NativeTensorRole::FfnGateInpCorrectionBias
+        )
+    })
 }
 
 fn has_linear_attention_tensors(artifacts: &NativeModelArtifacts) -> bool {
@@ -1453,10 +1720,16 @@ mod tests {
         state.bonus_queue.push_back(99);
         state.bonus_queue.push_back(100);
         state.next_model_last_token = Some(5);
+        state.ngram_disabled_steps = 3;
+        state.linear_ngram_no_draft_streak = 7;
+        state.ngram_acceleration_disabled_for_request = true;
 
         // Simulate the prefill reset branch of run_item.
         state.bonus_queue.clear();
         state.next_model_last_token = None;
+        state.ngram_disabled_steps = 0;
+        state.linear_ngram_no_draft_streak = 0;
+        state.ngram_acceleration_disabled_for_request = false;
 
         assert!(
             state.bonus_queue.is_empty(),
@@ -1466,6 +1739,9 @@ mod tests {
             state.next_model_last_token.is_none(),
             "last_token pointer must be reset on prefill"
         );
+        assert_eq!(state.ngram_disabled_steps, 0);
+        assert_eq!(state.linear_ngram_no_draft_streak, 0);
+        assert!(!state.ngram_acceleration_disabled_for_request);
     }
 
     #[test]
@@ -1573,12 +1849,15 @@ mod tests {
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {
+        static NEXT_TEST_DIR_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_TEST_DIR_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time should be valid")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "ax-mlx-runner-{label}-{}-{nanos}",
+            "ax-mlx-runner-{label}-{}-{id}-{nanos}",
             std::process::id()
         ))
     }
@@ -1896,6 +2175,28 @@ mod tests {
     }
 
     #[test]
+    fn mlx_manifest_validation_rejects_glm_draft_roles_even_if_ready_is_forced() {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "glm4_moe_lite".to_string();
+        manifest.tensors.push(tensor(
+            "model.layers.0.self_attn.q_a_proj.weight",
+            NativeTensorRole::AttentionQa,
+            Some(0),
+            vec![4, 4],
+        ));
+        let artifacts = write_artifacts(manifest);
+
+        let error = validate_mlx_supported_manifest(&artifacts)
+            .expect_err("GLM draft roles should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("glm4_moe_lite manifests are draft-only")
+        );
+    }
+
+    #[test]
     fn mlx_manifest_validation_allows_qwen35_linear_attention() {
         let artifacts = write_artifacts(qwen35_linear_manifest());
 
@@ -1939,7 +2240,7 @@ mod tests {
         let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
             .expect("real MLX manifest should load");
 
-        MlxRunner::from_artifacts(&artifacts, 8, true)
+        MlxRunner::from_artifacts(&artifacts, 8, true, MlxKvCompressionConfig::disabled())
             .expect("real Qwen3.5 MLX runner should warm up");
     }
 
@@ -1972,6 +2273,8 @@ mod tests {
         telemetry.record_draft(DEFAULT_DRAFT_LEN, 2);
         telemetry.record_cooldown_step();
         telemetry.record_cooldown_event(4);
+        telemetry.record_request_disable_event();
+        telemetry.record_request_disabled_step();
 
         let mut decisions = Vec::new();
         telemetry.append_route_decisions(&mut decisions);
@@ -1999,6 +2302,8 @@ mod tests {
         assert_eq!(decisions.get("ax_ngram_cooldown_steps"), Some(&1));
         assert_eq!(decisions.get("ax_ngram_cooldown_events"), Some(&1));
         assert_eq!(decisions.get("ax_ngram_cooldown_steps_scheduled"), Some(&4));
+        assert_eq!(decisions.get("ax_ngram_request_disable_events"), Some(&1));
+        assert_eq!(decisions.get("ax_ngram_request_disabled_steps"), Some(&1));
 
         let mut zero_decisions = Vec::new();
         NgramAccelerationTelemetry::default().append_route_decisions(&mut zero_decisions);
@@ -2008,6 +2313,20 @@ mod tests {
         assert_eq!(zero_decisions.get("ax_ngram_draft_attempts"), Some(&0));
         assert_eq!(zero_decisions.get("ax_ngram_complete_misses"), Some(&0));
         assert_eq!(zero_decisions.get("ax_ngram_cooldown_events"), Some(&0));
+        assert_eq!(
+            zero_decisions.get("ax_ngram_request_disable_events"),
+            Some(&0)
+        );
+    }
+
+    #[test]
+    fn linear_attention_no_draft_threshold_disables_request_acceleration() {
+        assert!(!linear_ngram_no_draft_should_disable(
+            LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD - 1
+        ));
+        assert!(linear_ngram_no_draft_should_disable(
+            LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD
+        ));
     }
 
     #[test]
@@ -2097,6 +2416,7 @@ mod tests {
             linear_state_layers: 1,
             linear_state_bytes: 936,
             growth_count: 2,
+            ..MlxKVCacheUsage::default()
         });
 
         let mut decisions = Vec::new();
@@ -2158,6 +2478,12 @@ mod tests {
             Some(&3)
         );
         assert!(
+            !decisions
+                .keys()
+                .any(|key| key.starts_with("ax_mlx_kv_compression_")),
+            "compression counters must stay absent when the policy is disabled"
+        );
+        assert!(
             ax_engine_core::ROUTE_DECISION_AX_MLX_KV_KEYS
                 .iter()
                 .all(|key| decisions.contains_key(*key)),
@@ -2202,6 +2528,69 @@ mod tests {
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT),
             Some(&0)
+        );
+        assert!(
+            !decisions
+                .keys()
+                .any(|key| key.starts_with("ax_mlx_kv_compression_")),
+            "empty disabled snapshots must not add compression metadata"
+        );
+    }
+
+    #[test]
+    fn kv_cache_telemetry_emits_compression_counters_only_when_enabled() {
+        let mut telemetry = KvCacheTelemetry::default();
+        telemetry.merge_from(MlxKVCacheUsage {
+            kv_compression: crate::kv_cache::MlxKvCompressionUsage {
+                policy_enabled: true,
+                status_code: 1,
+                preset_code: 1,
+                key_bits: 8,
+                value_bits: 4,
+                eligible_layers: 2,
+                candidate_token_layers: 688,
+                hot_token_layers: 512,
+                full_precision_bytes: 22_016,
+                estimated_compressed_bytes: 8_256,
+                estimated_saved_bytes: 13_760,
+                estimated_ratio_milli: 375,
+            },
+            ..MlxKVCacheUsage::default()
+        });
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS),
+            Some(&688)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB),
+            Some(&22)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB),
+            Some(&9)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB),
+            Some(&14)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI),
+            Some(&375)
         );
     }
 
