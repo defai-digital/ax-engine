@@ -5135,6 +5135,10 @@ mod tests {
         assert_eq!(buffer.written_slot_count(), 4);
 
         buffer.write_token(0, &heads).expect("overwrite token 0");
-        assert_eq!(buffer.written_slot_count(), 4, "overwrite must not double-count");
+        assert_eq!(
+            buffer.written_slot_count(),
+            4,
+            "overwrite must not double-count"
+        );
     }
 }
