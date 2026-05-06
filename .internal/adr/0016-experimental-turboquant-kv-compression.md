@@ -124,6 +124,13 @@ metrics for expected versus actual all-head decode outputs, and
 against a caller-provided full-precision oracle. The comparison remains CPU-only
 and does not change runtime KV storage, SDPA, or generation behavior.
 
+The decode quality gate is accepted as the pass/fail layer above comparison
+metrics. `TurboQuantDecodeQualityGate` evaluates aggregate max absolute error,
+mean absolute error, and minimum cosine similarity together, returning
+`TurboQuantDecodeQualityDecision` with individual condition results. This keeps
+future benchmark and fused-kernel promotion criteria explicit while remaining
+CPU-only and disconnected from generation behavior.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

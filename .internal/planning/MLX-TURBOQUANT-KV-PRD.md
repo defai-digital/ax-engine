@@ -134,6 +134,17 @@ Implemented decode comparison report slice on 2026-05-06:
 - Keeps the comparison contract disconnected from MLX allocation, runtime KV
   storage, SDPA, and generation.
 
+Implemented decode quality gate slice on 2026-05-06:
+
+- Added `TurboQuantDecodeQualityGate` for deterministic pass/fail evaluation of
+  decode comparison reports.
+- Requires aggregate max absolute error, mean absolute error, and minimum cosine
+  similarity to pass together.
+- Returns `TurboQuantDecodeQualityDecision` with individual condition results
+  and observed-versus-limit values.
+- Keeps the quality gate disconnected from MLX allocation, runtime KV storage,
+  SDPA, and generation.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
