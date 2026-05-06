@@ -96,6 +96,10 @@ jobs:
           grep -q 'depends_on "mlx-c"' Formula/ax-engine.rb
           ruby -c Formula/ax-engine.rb
 
+          # Commit locally first so brew tap clones the updated formula
+          git add Formula/ax-engine.rb
+          git diff --cached --quiet || git commit -m "chore: update ax-engine to v${VERSION}"
+
           brew uninstall --ignore-dependencies ax-engine || true
           brew uninstall --ignore-dependencies mlx-c || true
           brew untap defai-digital/ax-engine || true
@@ -104,6 +108,5 @@ jobs:
           test -e "$(brew --prefix mlx-c)/lib/libmlxc.dylib"
           HOMEBREW_NO_AUTO_UPDATE=1 brew test defai-digital/ax-engine/ax-engine
 
-          git add Formula/ax-engine.rb
-          git diff --cached --quiet || git commit -m "chore: update ax-engine to v${VERSION}"
+          # Push only after successful install and test
           git push origin main
