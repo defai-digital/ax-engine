@@ -451,6 +451,27 @@ impl TurboQuantCompressedBlockBuffer {
         reference_decode_attention(query, &tokens)
     }
 
+    pub fn debug_decode_attention_for_all_heads(
+        &self,
+        queries: &[Vec<f32>],
+        token_count: usize,
+    ) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
+        if queries.len() != self.layout.config.n_kv_heads {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: self.layout.config.n_kv_heads,
+                actual: queries.len(),
+            });
+        }
+
+        queries
+            .iter()
+            .enumerate()
+            .map(|(head_index, query)| {
+                self.debug_decode_attention_for_head(query, head_index, token_count)
+            })
+            .collect()
+    }
+
     fn validate_slot_vectors(
         &self,
         key: &[f32],
@@ -1936,6 +1957,87 @@ mod tests {
             .debug_decode_attention_for_head(&[1.0, 0.0, 0.0, 0.0], 0, 0)
             .expect_err("empty history should fail");
         assert_eq!(error, TurboQuantCodecError::EmptyKvHistory);
+    }
+
+    #[test]
+    fn compressed_block_buffer_decodes_attention_for_all_heads() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        for token_index in 0..3 {
+            let heads = vec![
+                (
+                    (0..8)
+                        .map(|idx| token_index as f32 * 0.08 + idx as f32 * 0.04 - 0.3)
+                        .collect::<Vec<_>>(),
+                    (0..8)
+                        .map(|idx| token_index as f32 * 0.02 - idx as f32 * 0.03)
+                        .collect::<Vec<_>>(),
+                ),
+                (
+                    (0..8)
+                        .map(|idx| token_index as f32 * -0.06 + idx as f32 * 0.03 + 0.2)
+                        .collect::<Vec<_>>(),
+                    (0..8)
+                        .map(|idx| token_index as f32 * 0.05 + idx as f32 * 0.02 - 0.4)
+                        .collect::<Vec<_>>(),
+                ),
+            ];
+            buffer
+                .write_token(token_index, &heads)
+                .expect("token write should work");
+        }
+        let queries = vec![
+            vec![0.1, -0.2, 0.3, 0.4, -0.1, 0.2, 0.5, -0.3],
+            vec![0.3, 0.1, -0.2, 0.6, -0.4, 0.0, 0.2, 0.5],
+        ];
+
+        let actual = buffer
+            .debug_decode_attention_for_all_heads(&queries, 3)
+            .expect("all-head decode should work");
+        let expected = queries
+            .iter()
+            .enumerate()
+            .map(|(head_index, query)| {
+                buffer
+                    .debug_decode_attention_for_head(query, head_index, 3)
+                    .expect("single-head decode should work")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 2);
+        assert!(actual.iter().all(|head| head.len() == 8));
+    }
+
+    #[test]
+    fn compressed_block_buffer_all_heads_decode_fails_closed_for_query_count() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            value_group_size: 2,
+        })
+        .expect("layout should build");
+        let buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let error = buffer
+            .debug_decode_attention_for_all_heads(&[vec![1.0, 0.0, 0.0, 0.0]], 1)
+            .expect_err("query head count mismatch should fail");
+
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: 2,
+                actual: 1,
+            }
+        );
     }
 
     #[test]
