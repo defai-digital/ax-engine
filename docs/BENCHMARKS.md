@@ -10,6 +10,10 @@ Measured results for each tested model are summarized in `README.md` under the
 set includes the full JSON output, prompt-token JSON files, and command logs for
 Gemma 4 E2B 4/5/6/8-bit, Gemma 4 26B A4B, Gemma 4 31B,
 Qwen 3.5 9B, Qwen 3.6 35B A3B 4/5/6/8-bit, and Qwen Coder Next.
+The 2026-05-06 result set separately records reference-only `mlx_lm.benchmark`
+checks for `mlx-community/GLM-4.7-Flash-4bit` and
+`mlx-community/DeepSeek-V4-Flash-2bit-DQ`; those rows are not repo-owned AX
+runtime claims.
 
 ## Which Tool To Use
 
@@ -232,6 +236,19 @@ user-provided `mlx_lm.server` for unsupported MLX text models. They must record
 `selected_backend=mlx_lm_delegated` and `support_tier=mlx_lm_delegated`, and
 they must not be described as repo-owned MLX throughput evidence.
 
+Reference-only `mlx_lm.benchmark` checks are even narrower: they prove the
+upstream Python reference can load and benchmark a downloaded model artifact,
+but they do not prove AX route compatibility unless a delegated server check is
+also run. The 2026-05-06 GLM/DeepSeek community checks are in this category.
+For new MLX architectures, run `scripts/probe_mlx_model_support.py` alongside
+the benchmark check so support claims include both performance evidence and a
+reference-grounded implementation decision. A reference-only benchmark can make
+GLM an implementation candidate, and the converter may now emit a draft GLM
+manifest, but it still cannot promote GLM to repo-owned support until the AX
+graph, smoke test, and AX benchmark rows exist. A partial reference, such as
+the current DeepSeek V4 SwiftLM port that drops
+compressor/indexer and hash-routing tensors, must stay fail-closed.
+
 The delegated route supports text generation through upstream
 `mlx_lm.server`, including AX fake-SSE surfaces that wrap the blocking
 delegated response. Token-array prompts, stepwise lifecycle calls, and
@@ -260,6 +277,34 @@ ax-engine-bench doctor --json
 
 Delegated `mlx_lm_delegated` and llama.cpp adapters do not widen repo-owned
 MLX host support. They are separate delegated runtime checks.
+
+## Reproducible Community Runs
+
+Use the reproduction wrapper when an external reviewer wants to rerun the public
+MLX inference-stack procedure on an Apple Silicon host:
+
+```text
+scripts/reproduce-mlx-inference-benchmark.sh \
+  --model-dir /path/to/mlx-model \
+  --run-label qwen3-5-9b-m4-max
+```
+
+The wrapper keeps the existing benchmark contract intact. It runs
+`ax-engine-bench doctor`, builds the release server binary, invokes
+`scripts/bench_mlx_inference_stack.py`, and writes a bundle containing raw JSON,
+prompt-token artifacts, doctor output, command logs, and host metadata under
+`benchmarks/community-results/local/` by default.
+
+Use `--direct-only` when the comparison should include only the direct
+same-policy AX row. By default, the wrapper uses `--ax-compare-policies` so the
+bundle includes both direct AX and n-gram effective-throughput rows, each with
+its own decode-policy label.
+
+Community runs reproduce the procedure, not identical numbers. Only compare
+rows after checking model artifact identity, prompt-token hashes, generated
+token count, repetitions, reference runtime, AX decode policy, host class, and
+thermal context. See `benchmarks/community-results/README.md` for submission
+rules.
 
 ## Smoke Checks
 

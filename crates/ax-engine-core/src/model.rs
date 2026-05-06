@@ -53,6 +53,13 @@ pub enum NativeTensorRole {
     AttentionK,
     AttentionV,
     AttentionQkvPacked,
+    AttentionQa,
+    AttentionQaNorm,
+    AttentionQb,
+    AttentionKvA,
+    AttentionKvANorm,
+    AttentionEmbedQ,
+    AttentionUnembedOut,
     AttentionO,
     LinearAttentionInProjQkv,
     LinearAttentionInProjQkvz,
@@ -73,6 +80,7 @@ pub enum NativeTensorRole {
     FfnGateInp,
     FfnGateInpScale,
     FfnGateInpExpertScale,
+    FfnGateInpCorrectionBias,
     FfnGate,
     FfnUp,
     FfnGateUpPacked,
@@ -117,6 +125,13 @@ impl NativeTensorRole {
                 | Self::AttentionK
                 | Self::AttentionV
                 | Self::AttentionQkvPacked
+                | Self::AttentionQa
+                | Self::AttentionQaNorm
+                | Self::AttentionQb
+                | Self::AttentionKvA
+                | Self::AttentionKvANorm
+                | Self::AttentionEmbedQ
+                | Self::AttentionUnembedOut
                 | Self::AttentionO
                 | Self::LinearAttentionInProjQkv
                 | Self::LinearAttentionInProjQkvz
@@ -137,6 +152,7 @@ impl NativeTensorRole {
                 | Self::FfnGateInp
                 | Self::FfnGateInpScale
                 | Self::FfnGateInpExpertScale
+                | Self::FfnGateInpCorrectionBias
                 | Self::FfnGate
                 | Self::FfnUp
                 | Self::FfnGateUpPacked

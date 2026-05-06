@@ -37,7 +37,9 @@ pub enum ConvertError {
         #[source]
         source: serde_json::Error,
     },
-    #[error("unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4")]
+    #[error(
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, glm4_moe_lite draft manifests"
+    )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
     MissingConfigField { field: &'static str },
@@ -47,6 +49,8 @@ pub enum ConvertError {
     InvalidSafetensorsHeader { path: PathBuf, message: String },
     #[error("unsupported tensor dtype {dtype} for tensor {name}")]
     UnsupportedDtype { name: String, dtype: String },
+    #[error("invalid {model_type} conversion contract: {message}")]
+    InvalidModelContract { model_type: String, message: String },
 }
 
 /// Convert a HuggingFace / MLX model directory into a `NativeModelManifest`.
@@ -115,12 +119,12 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         arch.layer_count,
     );
 
-    Ok(NativeModelManifest {
+    let manifest = NativeModelManifest {
         schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
         model_family: family.family_name.to_string(),
         tensor_format: NativeTensorFormat::Safetensors,
         source_quantization: None,
-        runtime_status: NativeRuntimeStatus::default(),
+        runtime_status: runtime_status_for_model_type(&model_type),
         layer_count: arch.layer_count,
         hidden_size: arch.hidden_size,
         intermediate_size: arch.intermediate_size,
@@ -166,7 +170,11 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         linear_attention,
         moe: moe_config(&config, &model_type),
         tensors: mapped_tensors,
-    })
+    };
+
+    validate_converted_model_contract(&config, &model_type, &manifest)?;
+
+    Ok(manifest)
 }
 
 /// Write a `model-manifest.json` file in the given directory.
@@ -242,6 +250,73 @@ const QWEN3_MOE_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "mlp.switch_mlp.down_proj.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+];
+
+/// Extra per-layer tensor patterns for GLM4MoELite.
+///
+/// These roles intentionally make the manifest graph-specific instead of
+/// pretending GLM's MLA projections are ordinary split Q/K/V attention.
+const GLM4_MOE_LITE_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "self_attn.q_a_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQa),
+    ),
+    (
+        "self_attn.q_a_layernorm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQaNorm),
+    ),
+    (
+        "self_attn.q_b_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQb),
+    ),
+    (
+        "self_attn.kv_a_proj_with_mqa.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionKvA),
+    ),
+    (
+        "self_attn.kv_a_layernorm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionKvANorm),
+    ),
+    (
+        "self_attn.embed_q.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionEmbedQ),
+    ),
+    (
+        "self_attn.unembed_out.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionUnembedOut),
+    ),
+    (
+        "mlp.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "mlp.gate.e_score_correction_bias",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpCorrectionBias),
+    ),
+    (
+        "mlp.switch_mlp.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "mlp.switch_mlp.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "mlp.switch_mlp.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    (
+        "mlp.shared_experts.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "mlp.shared_experts.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "mlp.shared_experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
     ),
 ];
 
@@ -555,6 +630,12 @@ fn model_family_for_type(model_type: &str) -> Result<ModelFamily, ConvertError> 
             extra_tensor_map: None,
             uses_language_model_prefix: true,
         }),
+        "glm4_moe_lite" => Ok(ModelFamily {
+            family_name: "glm4_moe_lite",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(GLM4_MOE_LITE_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: false,
+        }),
         other => Err(ConvertError::UnsupportedModelType {
             model_type: other.to_string(),
         }),
@@ -623,8 +704,30 @@ fn is_qwen_gated_delta_family(model_type: &str) -> bool {
     is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
 }
 
+fn is_glm4_moe_lite(model_type: &str) -> bool {
+    model_type == "glm4_moe_lite"
+}
+
 fn defaults_attn_output_gate(model_type: &str) -> bool {
     is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+}
+
+fn runtime_status_for_model_type(model_type: &str) -> NativeRuntimeStatus {
+    if is_glm4_moe_lite(model_type) {
+        return NativeRuntimeStatus {
+            ready: false,
+            blockers: vec![
+                "glm4_moe_lite manifest conversion is draft-only until ax-engine-mlx implements GLM4MoELite MLA attention".to_string(),
+                "GLM sigmoid top-k router with e_score_correction_bias and routed_scaling_factor is not implemented in ax-engine-mlx".to_string(),
+                "GLM latent-KV plus RoPE-key decode cache semantics are not implemented in ax-engine-mlx".to_string(),
+            ],
+            notes: vec![
+                "Apple mlx-lm and Apple mlx-swift-lm provide complete-enough GLM4MoELite references for implementation planning".to_string(),
+            ],
+        };
+    }
+
+    NativeRuntimeStatus::default()
 }
 
 /// Get a u64 field, checking both the top-level config and a nested `text_config`
@@ -693,12 +796,14 @@ fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
     let is_gemma4_moe = arch_bool(config, model_type, "enable_moe_block").unwrap_or(false);
     let is_qwen3_moe = matches!(model_type, "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_text");
     let is_qwen3_next_moe = model_type == "qwen3_next";
-    if !is_gemma4_moe && !is_qwen3_moe && !is_qwen3_next_moe {
+    let is_glm_moe = is_glm4_moe_lite(model_type);
+    if !is_gemma4_moe && !is_qwen3_moe && !is_qwen3_next_moe && !is_glm_moe {
         return NativeMoeConfig::default();
     }
 
     let expert_count = arch_u64(config, model_type, "num_experts")
         .or_else(|| arch_u64(config, model_type, "num_local_experts"))
+        .or_else(|| arch_u64(config, model_type, "n_routed_experts"))
         .and_then(u64_to_u32);
     let experts_per_token = arch_u64(config, model_type, "top_k_experts")
         .or_else(|| arch_u64(config, model_type, "num_experts_per_tok"))
@@ -902,9 +1007,15 @@ fn resolve_architecture(
     let kv_head_count = arch_u64(config, model_type, "num_key_value_heads")
         .map(|v| v as u32)
         .unwrap_or(attention_head_count);
-    let attention_head_dim = arch_u64(config, model_type, "head_dim")
-        .map(|v| v as u32)
-        .unwrap_or_else(|| hidden_size.checked_div(attention_head_count).unwrap_or(0));
+    let attention_head_dim = if is_glm4_moe_lite(model_type) {
+        let qk_nope = require_arch_u64(config, model_type, "qk_nope_head_dim")?;
+        let qk_rope = require_arch_u64(config, model_type, "qk_rope_head_dim")?;
+        (qk_nope + qk_rope) as u32
+    } else {
+        arch_u64(config, model_type, "head_dim")
+            .map(|v| v as u32)
+            .unwrap_or_else(|| hidden_size.checked_div(attention_head_count).unwrap_or(0))
+    };
     let layer_count = require_arch_u64(config, model_type, "num_hidden_layers")? as u32;
     let vocab_size = require_arch_u64(config, model_type, "vocab_size")? as u32;
     let intermediate_size = arch_u64(config, model_type, "intermediate_size")
@@ -1308,6 +1419,105 @@ fn map_tensors(
     // Sort by (layer_index, role ordinal) for deterministic output.
     mapped.sort_by_key(|spec| (spec.layer_index, format!("{:?}", spec.role)));
     Ok(mapped)
+}
+
+// ---------------------------------------------------------------------------
+// Conversion contract validation
+// ---------------------------------------------------------------------------
+
+fn validate_converted_model_contract(
+    config: &serde_json::Value,
+    model_type: &str,
+    manifest: &NativeModelManifest,
+) -> Result<(), ConvertError> {
+    if is_glm4_moe_lite(model_type) {
+        return validate_glm4_moe_lite_draft_contract(config, manifest);
+    }
+
+    Ok(())
+}
+
+fn validate_glm4_moe_lite_draft_contract(
+    config: &serde_json::Value,
+    manifest: &NativeModelManifest,
+) -> Result<(), ConvertError> {
+    if manifest.runtime_status.ready {
+        return invalid_model_contract(
+            "glm4_moe_lite",
+            "draft manifest must keep runtime_status.ready=false until the MLX graph is implemented",
+        );
+    }
+
+    let first_dense_layers = arch_u64(config, "glm4_moe_lite", "first_k_dense_replace")
+        .and_then(u64_to_u32)
+        .unwrap_or(1)
+        .min(manifest.layer_count);
+    let has_shared_experts = arch_u64(config, "glm4_moe_lite", "n_shared_experts").unwrap_or(0) > 0;
+
+    for layer_index in 0..manifest.layer_count {
+        require_glm_role(manifest, layer_index, NativeTensorRole::AttentionNorm)?;
+        require_glm_role(manifest, layer_index, NativeTensorRole::AttentionQa)?;
+        require_glm_role(manifest, layer_index, NativeTensorRole::AttentionQaNorm)?;
+        require_glm_role(manifest, layer_index, NativeTensorRole::AttentionQb)?;
+        require_glm_role(manifest, layer_index, NativeTensorRole::AttentionKvA)?;
+        require_glm_role(manifest, layer_index, NativeTensorRole::AttentionKvANorm)?;
+        require_glm_role(manifest, layer_index, NativeTensorRole::AttentionEmbedQ)?;
+        require_glm_role(manifest, layer_index, NativeTensorRole::AttentionUnembedOut)?;
+        require_glm_role(manifest, layer_index, NativeTensorRole::AttentionO)?;
+        require_glm_role(manifest, layer_index, NativeTensorRole::AttentionPostNorm)?;
+
+        if layer_index < first_dense_layers {
+            require_glm_role(manifest, layer_index, NativeTensorRole::FfnGate)?;
+            require_glm_role(manifest, layer_index, NativeTensorRole::FfnUp)?;
+            require_glm_role(manifest, layer_index, NativeTensorRole::FfnDown)?;
+        } else {
+            require_glm_role(manifest, layer_index, NativeTensorRole::FfnGateInp)?;
+            require_glm_role(
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnGateInpCorrectionBias,
+            )?;
+            require_glm_role(manifest, layer_index, NativeTensorRole::FfnGateExps)?;
+            require_glm_role(manifest, layer_index, NativeTensorRole::FfnUpExps)?;
+            require_glm_role(manifest, layer_index, NativeTensorRole::FfnDownExps)?;
+            if has_shared_experts {
+                require_glm_role(manifest, layer_index, NativeTensorRole::FfnSharedExpertGate)?;
+                require_glm_role(manifest, layer_index, NativeTensorRole::FfnSharedExpertUp)?;
+                require_glm_role(manifest, layer_index, NativeTensorRole::FfnSharedExpertDown)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn require_glm_role(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+    role: NativeTensorRole,
+) -> Result<(), ConvertError> {
+    if manifest
+        .tensors
+        .iter()
+        .any(|tensor| tensor.layer_index == Some(layer_index) && tensor.role == role)
+    {
+        return Ok(());
+    }
+
+    invalid_model_contract(
+        "glm4_moe_lite",
+        format!("layer {layer_index} is missing required draft tensor role {role:?}"),
+    )
+}
+
+fn invalid_model_contract(
+    model_type: &str,
+    message: impl Into<String>,
+) -> Result<(), ConvertError> {
+    Err(ConvertError::InvalidModelContract {
+        model_type: model_type.to_string(),
+        message: message.into(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2632,6 +2842,314 @@ mod tests {
 
         write_manifest(&dir, &manifest).expect("write should succeed");
         crate::model::NativeModelArtifacts::from_dir(&dir).expect("moe manifest should validate");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn converts_glm4_moe_lite_to_draft_manifest_with_mla_roles() {
+        let dir = unique_test_dir("glm4_moe_lite");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "glm4_moe_lite",
+                "hidden_size": 2048,
+                "intermediate_size": 10240,
+                "num_attention_heads": 20,
+                "num_key_value_heads": 20,
+                "num_hidden_layers": 2,
+                "vocab_size": 154880,
+                "qk_nope_head_dim": 192,
+                "qk_rope_head_dim": 64,
+                "v_head_dim": 256,
+                "q_lora_rank": 768,
+                "kv_lora_rank": 512,
+                "first_k_dense_replace": 1,
+                "n_routed_experts": 64,
+                "num_experts_per_tok": 4,
+                "moe_intermediate_size": 1536,
+                "norm_topk_prob": true,
+                "rope_theta": 1000000,
+                "quantization": {
+                    "group_size": 64,
+                    "bits": 4,
+                    "mode": "affine"
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.embed_tokens.weight", "BF16", &[154880, 2048]),
+                ("model.norm.weight", "BF16", &[2048]),
+                ("lm_head.weight", "BF16", &[154880, 2048]),
+                ("model.layers.0.input_layernorm.weight", "BF16", &[2048]),
+                (
+                    "model.layers.0.self_attn.q_a_proj.weight",
+                    "U32",
+                    &[768, 512],
+                ),
+                (
+                    "model.layers.0.self_attn.q_a_layernorm.weight",
+                    "BF16",
+                    &[768],
+                ),
+                (
+                    "model.layers.0.self_attn.q_b_proj.weight",
+                    "U32",
+                    &[5120, 768],
+                ),
+                (
+                    "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
+                    "U32",
+                    &[576, 512],
+                ),
+                (
+                    "model.layers.0.self_attn.kv_a_layernorm.weight",
+                    "BF16",
+                    &[512],
+                ),
+                (
+                    "model.layers.0.self_attn.embed_q.weight",
+                    "U32",
+                    &[3840, 512],
+                ),
+                (
+                    "model.layers.0.self_attn.unembed_out.weight",
+                    "U32",
+                    &[5120, 512],
+                ),
+                (
+                    "model.layers.0.self_attn.o_proj.weight",
+                    "U32",
+                    &[2048, 5120],
+                ),
+                (
+                    "model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[2048],
+                ),
+                ("model.layers.0.mlp.gate_proj.weight", "U32", &[10240, 512]),
+                ("model.layers.0.mlp.up_proj.weight", "U32", &[10240, 512]),
+                ("model.layers.0.mlp.down_proj.weight", "U32", &[2048, 2560]),
+                ("model.layers.1.input_layernorm.weight", "BF16", &[2048]),
+                (
+                    "model.layers.1.self_attn.q_a_proj.weight",
+                    "U32",
+                    &[768, 512],
+                ),
+                (
+                    "model.layers.1.self_attn.q_a_layernorm.weight",
+                    "BF16",
+                    &[768],
+                ),
+                (
+                    "model.layers.1.self_attn.q_b_proj.weight",
+                    "U32",
+                    &[5120, 768],
+                ),
+                (
+                    "model.layers.1.self_attn.kv_a_proj_with_mqa.weight",
+                    "U32",
+                    &[576, 512],
+                ),
+                (
+                    "model.layers.1.self_attn.kv_a_layernorm.weight",
+                    "BF16",
+                    &[512],
+                ),
+                (
+                    "model.layers.1.self_attn.embed_q.weight",
+                    "U32",
+                    &[3840, 512],
+                ),
+                (
+                    "model.layers.1.self_attn.unembed_out.weight",
+                    "U32",
+                    &[5120, 512],
+                ),
+                (
+                    "model.layers.1.self_attn.o_proj.weight",
+                    "U32",
+                    &[2048, 5120],
+                ),
+                (
+                    "model.layers.1.post_attention_layernorm.weight",
+                    "BF16",
+                    &[2048],
+                ),
+                ("model.layers.1.mlp.gate.weight", "BF16", &[64, 2048]),
+                (
+                    "model.layers.1.mlp.gate.e_score_correction_bias",
+                    "BF16",
+                    &[64],
+                ),
+                (
+                    "model.layers.1.mlp.switch_mlp.gate_proj.weight",
+                    "U32",
+                    &[64, 1536, 512],
+                ),
+                (
+                    "model.layers.1.mlp.switch_mlp.up_proj.weight",
+                    "U32",
+                    &[64, 1536, 512],
+                ),
+                (
+                    "model.layers.1.mlp.switch_mlp.down_proj.weight",
+                    "U32",
+                    &[64, 2048, 384],
+                ),
+                (
+                    "model.layers.1.mlp.shared_experts.gate_proj.weight",
+                    "U32",
+                    &[1536, 512],
+                ),
+                (
+                    "model.layers.1.mlp.shared_experts.up_proj.weight",
+                    "U32",
+                    &[1536, 512],
+                ),
+                (
+                    "model.layers.1.mlp.shared_experts.down_proj.weight",
+                    "U32",
+                    &[2048, 384],
+                ),
+            ],
+        );
+
+        let manifest = convert_hf_model_dir(&dir).expect("GLM draft conversion should succeed");
+
+        assert_eq!(manifest.model_family, "glm4_moe_lite");
+        assert_eq!(manifest.attention_head_dim, 256);
+        assert_eq!(manifest.moe.expert_count, Some(64));
+        assert_eq!(manifest.moe.experts_per_token, Some(4));
+        assert_eq!(manifest.moe.expert_intermediate_size, Some(1536));
+        assert!(manifest.moe_norm_topk_prob);
+        assert!(!manifest.runtime_status.ready);
+        assert!(
+            manifest
+                .runtime_status
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains("GLM4MoELite MLA attention"))
+        );
+
+        for role in [
+            NativeTensorRole::AttentionQa,
+            NativeTensorRole::AttentionQaNorm,
+            NativeTensorRole::AttentionQb,
+            NativeTensorRole::AttentionKvA,
+            NativeTensorRole::AttentionKvANorm,
+            NativeTensorRole::AttentionEmbedQ,
+            NativeTensorRole::AttentionUnembedOut,
+            NativeTensorRole::FfnGateInpCorrectionBias,
+            NativeTensorRole::FfnSharedExpertGate,
+        ] {
+            assert!(
+                manifest.tensors.iter().any(|tensor| tensor.role == role),
+                "GLM manifest should map {role:?}"
+            );
+        }
+
+        write_manifest(&dir, &manifest).expect("write should succeed");
+        let error = crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect_err("draft GLM manifest must not validate as runtime-ready");
+        assert!(
+            error
+                .to_string()
+                .contains("native model manifest is not runtime ready")
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rejects_glm4_moe_lite_draft_manifest_when_router_bias_is_missing() {
+        let dir = unique_test_dir("glm4_missing_router_bias");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "glm4_moe_lite",
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 2,
+                "num_hidden_layers": 1,
+                "vocab_size": 64,
+                "qk_nope_head_dim": 6,
+                "qk_rope_head_dim": 2,
+                "v_head_dim": 8,
+                "first_k_dense_replace": 0,
+                "n_routed_experts": 4,
+                "n_shared_experts": 0,
+                "num_experts_per_tok": 2,
+                "moe_intermediate_size": 8
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.embed_tokens.weight", "BF16", &[64, 16]),
+                ("model.norm.weight", "BF16", &[16]),
+                ("lm_head.weight", "BF16", &[64, 16]),
+                ("model.layers.0.input_layernorm.weight", "BF16", &[16]),
+                ("model.layers.0.self_attn.q_a_proj.weight", "BF16", &[8, 16]),
+                (
+                    "model.layers.0.self_attn.q_a_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                ("model.layers.0.self_attn.q_b_proj.weight", "BF16", &[16, 8]),
+                (
+                    "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
+                    "BF16",
+                    &[10, 16],
+                ),
+                (
+                    "model.layers.0.self_attn.kv_a_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                ("model.layers.0.self_attn.embed_q.weight", "BF16", &[12, 8]),
+                (
+                    "model.layers.0.self_attn.unembed_out.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                ("model.layers.0.self_attn.o_proj.weight", "BF16", &[16, 16]),
+                (
+                    "model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[16],
+                ),
+                ("model.layers.0.mlp.gate.weight", "BF16", &[4, 16]),
+                (
+                    "model.layers.0.mlp.switch_mlp.gate_proj.weight",
+                    "BF16",
+                    &[4, 8, 16],
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.up_proj.weight",
+                    "BF16",
+                    &[4, 8, 16],
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    "BF16",
+                    &[4, 16, 8],
+                ),
+            ],
+        );
+
+        let error = convert_hf_model_dir(&dir)
+            .expect_err("GLM MoE layer without correction bias should fail conversion");
+
+        assert!(
+            error.to_string().contains("FfnGateInpCorrectionBias"),
+            "{error}"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

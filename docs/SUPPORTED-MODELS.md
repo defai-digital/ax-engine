@@ -121,6 +121,25 @@ The current runtime direction is:
 | Qwen 3.6 | Qwen3.6-35B-A3B 4/5/6/8-bit MLX | MLX stack benchmark, server smoke, Qwen3.5-MoE manifest regression test |
 | Qwen 3 Coder Next | Qwen3-Coder-Next-4bit | MLX stack benchmark, server smoke, Qwen3Next MoE/linear-attention regression tests |
 
+## Reference-Only MLX Community Checks
+
+The following checks answer a narrower question: can upstream `mlx-lm` load and
+benchmark the downloaded community model today? They are not repo-owned AX
+runtime support until the model has an AX `model-manifest.json`, a hand-written
+graph in `ax-engine-mlx`, server smoke coverage, and MLX stack benchmark rows
+that include AX runtime results.
+
+Use `scripts/probe_mlx_model_support.py --model-dir <model-dir>` before
+starting a repo-owned implementation for a new MLX architecture. The probe reads
+the model config, safetensors index, and local reference implementations, then
+classifies the artifact as an implementation candidate, known family, partial
+reference, or unknown architecture with explicit blockers.
+
+| Model | Config model_type | Current AX status | Latest local evidence |
+|---|---|---|---|
+| `mlx-community/GLM-4.7-Flash-4bit` | `glm4_moe_lite` | Draft manifest candidate, not repo-owned AX support yet | `mlx_lm.benchmark` passed on 2026-05-06; converter maps GLM MLA/router roles into a `runtime_status.ready=false` draft manifest; support probe finds complete-enough Apple `mlx-lm` + Apple `mlx-swift-lm` references |
+| `mlx-community/DeepSeek-V4-Flash-2bit-DQ` | `deepseek_v4` | Fail closed: partial reference only, not repo-owned AX support | Downloaded on 2026-05-06; `mlx_lm.benchmark` failed with `Model type deepseek_v4 not supported`; support probe finds the available SwiftLM port drops compressor/indexer and `tid2eid` hash-routing weights that are present in the checkpoint |
+
 ## Current Limitations And Problems
 
 Gemma 4 E4B has model and scenario manifests but no MLX stack benchmark run
