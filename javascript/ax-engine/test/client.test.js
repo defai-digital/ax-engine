@@ -162,6 +162,43 @@ test("streamCompletion stops on OpenAI [DONE] sentinel", async () => {
   });
 });
 
+test("embeddings posts token array to OpenAI-shaped endpoint", async () => {
+  await withServer((req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/v1/embeddings");
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      const payload = JSON.parse(body);
+      assert.deepEqual(payload.input, [1, 2, 3]);
+      assert.equal(payload.pooling, "last");
+      assert.equal(payload.normalize, true);
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          object: "list",
+          data: [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }],
+          model: "qwen3_embedding",
+          usage: { prompt_tokens: 3, total_tokens: 3 },
+        }),
+      );
+    });
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    const response = await client.embeddings({
+      model: "qwen3_embedding",
+      input: [1, 2, 3],
+      pooling: "last",
+      normalize: true,
+    });
+    assert.deepEqual(response.data[0].embedding, [0.1, 0.2]);
+    assert.equal(response.usage.total_tokens, 3);
+  });
+});
+
 test("non-2xx responses raise AxEngineHttpError with payload", async () => {
   await withServer((_req, res) => {
     res.writeHead(400, {

@@ -52,6 +52,30 @@ export interface OpenAiChatCompletionRequest {
   metadata?: string;
 }
 
+export interface OpenAiEmbeddingRequest {
+  model?: string;
+  input: number[];
+  encoding_format?: string;
+  pooling?: "last" | "mean" | "cls" | string;
+  normalize?: boolean;
+}
+
+export interface OpenAiEmbeddingObject {
+  object: string;
+  embedding: number[];
+  index: number;
+}
+
+export interface OpenAiEmbeddingResponse {
+  object: string;
+  data: OpenAiEmbeddingObject[];
+  model: string;
+  usage: {
+    prompt_tokens: number;
+    total_tokens: number;
+  };
+}
+
 export interface StreamEvent<T = unknown> {
   event: string;
   data: T;
@@ -309,6 +333,7 @@ export class AxEngineClient {
   step(): Promise<StepReport>;
   completion(request: OpenAiCompletionRequest): Promise<any>;
   chatCompletion(request: OpenAiChatCompletionRequest): Promise<any>;
+  embeddings(request: OpenAiEmbeddingRequest): Promise<OpenAiEmbeddingResponse>;
   streamGenerate(
     request: PreviewGenerateRequest,
   ): AsyncGenerator<PreviewGenerateStreamEvent, void, void>;

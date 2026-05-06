@@ -9,6 +9,7 @@ It is intentionally narrow:
 - built on standard `fetch`
 - targets the existing preview HTTP and OpenAI-compatible endpoints
 - does not pull architecture ownership away from `ax-engine-sdk` or the server
+- does not implement tool/function calling yet
 
 ## Install
 
@@ -55,6 +56,23 @@ const response = await client.completion({
 });
 
 console.log(response.choices[0].text);
+```
+
+For embeddings:
+
+```js
+import { AxEngineClient } from "@ax-engine/preview-client";
+
+const client = new AxEngineClient({
+  baseUrl: "http://127.0.0.1:8080",
+});
+
+const response = await client.embeddings({
+  model: "qwen3_embedding",
+  input: [1, 2, 3],
+});
+
+console.log(response.data[0].embedding);
 ```
 
 Streaming helpers yield parsed SSE events:

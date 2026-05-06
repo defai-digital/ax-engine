@@ -23,6 +23,23 @@ AX surface for broader model coverage.
 | `mlx_lm_delegated` | Upstream `mlx-lm` supports the MLX text model but AX does not yet have a repo-owned graph | Requires a running `mlx_lm.server`; supports text generation, fake SSE, and OpenAI-compatible text completion/chat shapes |
 | `llama_cpp` | You have GGUF/non-MLX local inference needs | Use a llama.cpp server or CLI target; these are delegated route-contract claims |
 
+```mermaid
+flowchart TD
+    request["User request"] --> explicitMlx{"Explicit repo-owned MLX?\n--mlx or --preset"}
+    explicitMlx -->|yes| supportedMlx{"Supported Qwen/Gemma\nAX-ready MLX artifacts?"}
+    supportedMlx -->|yes| mlx["Repo-owned MLX runtime\nselected_backend=mlx\nmodel-inference benchmark claims"]
+    supportedMlx -->|no| unsupported["Fail closed or choose\na delegated compatibility path"]
+    explicitMlx -->|no| delegatedMlx{"Explicit mlx_lm_delegated?"}
+    delegatedMlx -->|yes| mlxLm["Delegated mlx_lm.server\nselected_backend=mlx_lm_delegated\ntext compatibility claims"]
+    delegatedMlx -->|no| gguf{"GGUF or non-MLX target?"}
+    gguf -->|yes| llama["Delegated llama.cpp\nselected_backend=llama_cpp\nroute-contract claims"]
+    gguf -->|no| llamaDefault["Default non-MLX route\nselected_backend=llama_cpp"]
+```
+
+The diagram is a routing guide, not a benchmark shortcut. Repo-owned MLX
+performance claims still require the MLX inference-stack harness; delegated
+paths validate compatibility and route behavior.
+
 ## Installation
 
 ### Homebrew
@@ -34,11 +51,26 @@ brew install defai-digital/ax-engine/ax-engine
 ```
 
 This installs `ax-engine-server` and `ax-engine-bench`.
+The Homebrew formula also installs the `mlx-c` runtime dependency used by the
+released binaries.
 
 ```text
 ax-engine-server --help
 ax-engine-bench doctor
 ```
+
+If `ax-engine-bench doctor` exits before printing a report with
+`Library not loaded: /opt/homebrew/opt/mlx-c/lib/libmlxc.dylib`, repair the
+runtime dependency with:
+
+```text
+brew install mlx-c
+brew reinstall defai-digital/ax-engine/ax-engine
+```
+
+The GitHub release archive is the Homebrew formula payload, not a standalone
+installer with bundled dynamic libraries. Prefer Homebrew for released binaries
+so `mlx-c` is installed, upgraded, and linked by the package manager.
 
 ### Source
 
@@ -267,8 +299,10 @@ npm install ./javascript/ax-engine
 ```
 
 That package is intentionally thin: it targets the preview server's
-`/v1/runtime`, `/v1/generate`, `/v1/generate/stream`, `/v1/completions`, and
-`/v1/chat/completions` endpoints rather than bypassing the SDK/server contract.
+`/v1/runtime`, `/v1/generate`, `/v1/generate/stream`, `/v1/completions`,
+`/v1/chat/completions`, and `/v1/embeddings` endpoints rather than bypassing
+the SDK/server contract. See `docs/API-COMPATIBILITY.md` before assuming full
+OpenAI API parity.
 
 To run a repo-owned end-to-end server smoke check instead of driving that path
 manually:

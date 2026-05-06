@@ -17,7 +17,7 @@ The current preview package provides:
 - `AxEngineClient`
 - JSON helpers for:
   `health()`, `runtime()`, `models()`, `generate()`, `submit()`,
-  `requestSnapshot()`, `cancel()`, and `step()`
+  `requestSnapshot()`, `cancel()`, `step()`, and `embeddings()`
 - OpenAI-compatible helpers through `completion()` and `chatCompletion()`
 - SSE helpers through `streamGenerate()`, `streamCompletion()`, and
   `streamChatCompletion()`
@@ -27,6 +27,7 @@ It does not yet provide:
 - tokenizer utilities
 - model-aware chat templating
 - a published npm release workflow
+- tool/function calling helpers
 - browser-specific packaging beyond standards-based `fetch`
 
 ## Install
@@ -76,6 +77,25 @@ const response = await client.completion({
 });
 
 console.log(response.choices[0].text);
+```
+
+For an embedding-capable local MLX server:
+
+```js
+import { AxEngineClient } from "@ax-engine/preview-client";
+
+const client = new AxEngineClient({
+  baseUrl: "http://127.0.0.1:8080",
+});
+
+const response = await client.embeddings({
+  model: "qwen3_embedding",
+  input: [1, 2, 3],
+  pooling: "last",
+  normalize: true,
+});
+
+console.log(response.data[0].embedding.length);
 ```
 
 Streaming helpers yield parsed SSE messages:
