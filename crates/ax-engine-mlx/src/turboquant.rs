@@ -9,6 +9,7 @@ pub type FullPrecisionKvTokenVectors = (Vec<f32>, Vec<f32>);
 
 pub const TURBOQUANT_SLOT_ALIGNMENT_BYTES: usize = 16;
 pub const TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM: usize = 128;
+pub const TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TurboQuantProductionRequirements {
@@ -35,6 +36,16 @@ pub struct TurboQuantProductionReadiness {
 }
 
 impl TurboQuantProductionRequirements {
+    pub const fn mlx_shadow_route_metadata() -> Self {
+        Self {
+            fused_decode_kernel: false,
+            runtime_kv_storage: false,
+            runner_route_metadata: true,
+            long_context_benchmark_artifact: false,
+            public_switch_and_docs: false,
+        }
+    }
+
     pub fn evaluate(self) -> TurboQuantProductionReadiness {
         let mut blockers = Vec::new();
         if !self.fused_decode_kernel {
@@ -2325,6 +2336,22 @@ mod tests {
         assert_eq!(
             readiness.blockers,
             vec![TurboQuantProductionBlocker::PublicSwitchAndDocs]
+        );
+    }
+
+    #[test]
+    fn production_readiness_marks_shadow_route_metadata_gate_present() {
+        let readiness = TurboQuantProductionRequirements::mlx_shadow_route_metadata().evaluate();
+
+        assert!(!readiness.is_ready());
+        assert_eq!(
+            readiness.blockers,
+            vec![
+                TurboQuantProductionBlocker::FusedDecodeKernel,
+                TurboQuantProductionBlocker::RuntimeKvStorage,
+                TurboQuantProductionBlocker::LongContextBenchmarkArtifact,
+                TurboQuantProductionBlocker::PublicSwitchAndDocs,
+            ]
         );
     }
 

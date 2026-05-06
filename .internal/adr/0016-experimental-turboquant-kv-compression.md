@@ -254,6 +254,14 @@ any gate blocks production readiness. This cutoff preserves the default disabled
 path and does not launch kernels, allocate MLX storage, alter SDPA, change
 generation, publish route metadata, or expose a public switch.
 
+The runner route metadata gate is now represented by the internal
+`turboquant-shadow` metadata schema. When the shadow policy is explicitly
+selected, route metadata publishes the schema version, production-ready flag,
+and remaining production-blocker count. The default disabled path remains silent.
+This satisfies the route metadata gate only; fused kernel, runtime KV storage,
+long-context benchmark/model-quality artifact, and public switch/docs approval
+remain required before production readiness.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

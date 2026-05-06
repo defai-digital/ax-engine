@@ -22,8 +22,11 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_BLOCKERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_READY,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ROUTE_METADATA_SCHEMA,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS,
     ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
@@ -46,7 +49,10 @@ use crate::ngram_accel::{
     NgramTable, ngram_accel_decode_step, single_decode,
 };
 use crate::sampling::Xorshift64;
-use crate::turboquant::turboquant_support_report;
+use crate::turboquant::{
+    TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION, TurboQuantProductionRequirements,
+    turboquant_support_report,
+};
 use crate::weights::{ModelWeights, load_weights};
 
 /// Beta prior counts for the n-gram acceleration accept-rate gate.
@@ -389,6 +395,9 @@ struct KvCacheTelemetry {
     compression_estimated_compressed_bytes: u64,
     compression_estimated_saved_bytes: u64,
     compression_ratio_milli: u32,
+    compression_route_metadata_schema: u32,
+    compression_production_ready: u32,
+    compression_production_blockers: u32,
 }
 
 impl KvCacheTelemetry {
@@ -427,12 +436,18 @@ impl KvCacheTelemetry {
 
         let compression = usage.kv_compression;
         if compression.policy_enabled {
+            let production_readiness =
+                TurboQuantProductionRequirements::mlx_shadow_route_metadata().evaluate();
             self.compression_request_snapshots =
                 self.compression_request_snapshots.saturating_add(1);
             self.compression_status = compression.status_code;
             self.compression_preset = compression.preset_code;
             self.compression_key_bits = compression.key_bits;
             self.compression_value_bits = compression.value_bits;
+            self.compression_route_metadata_schema = TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION;
+            self.compression_production_ready = u32::from(production_readiness.is_ready());
+            self.compression_production_blockers =
+                saturating_u32_from_u64(production_readiness.blockers.len() as u64);
             self.compression_eligible_layers = self
                 .compression_eligible_layers
                 .saturating_add(compression.eligible_layers as u64);
@@ -575,6 +590,18 @@ impl KvCacheTelemetry {
                 (
                     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI,
                     self.compression_ratio_milli,
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ROUTE_METADATA_SCHEMA,
+                    self.compression_route_metadata_schema,
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_READY,
+                    self.compression_production_ready,
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_BLOCKERS,
+                    self.compression_production_blockers,
                 ),
             ];
 
@@ -2780,6 +2807,24 @@ mod tests {
             decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI),
             Some(&375)
         );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ROUTE_METADATA_SCHEMA),
+            Some(&TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_READY),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_BLOCKERS),
+            Some(&4)
+        );
+        for key in ax_engine_core::ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS {
+            assert!(
+                decisions.contains_key(key),
+                "missing canonical compression counter {key}"
+            );
+        }
     }
 
     #[test]

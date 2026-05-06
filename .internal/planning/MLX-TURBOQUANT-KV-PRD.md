@@ -350,6 +350,18 @@ Implemented production readiness cutoff slice on 2026-05-06:
   launched, no MLX storage changes, no SDPA/generation change, no route metadata
   publication, and no public support claim is introduced by this cutoff.
 
+Implemented runner route metadata gate slice on 2026-05-06:
+
+- Added route metadata schema/version, production-ready, and production-blocker
+  counters for the internal `turboquant-shadow` path.
+- Marks only the runner route metadata production gate present; fused kernel,
+  runtime KV storage, long-context benchmark/model-quality artifact, and public
+  switch/docs gates remain blocked.
+- Keeps the default disabled path silent: TurboQuant compression metadata is
+  emitted only when the experimental shadow policy is explicitly selected.
+- Still does not allocate compressed KV storage, change logits, alter SDPA, or
+  expose a public support claim.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
