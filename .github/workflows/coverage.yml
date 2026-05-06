@@ -35,7 +35,7 @@ jobs:
       - name: Collect Rust coverage
         run: |
           mkdir -p target/coverage
-          cargo llvm-cov --workspace --all-features --lcov --output-path target/coverage/rust-lcov.info
+          cargo llvm-cov --workspace --all-features --exclude ax-engine-py --lcov --output-path target/coverage/rust-lcov.info
           cargo llvm-cov report --summary-only | tee target/coverage/rust-summary.txt
 
       - name: Collect Python coverage
