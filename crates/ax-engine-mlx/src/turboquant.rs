@@ -10,6 +10,62 @@ pub type FullPrecisionKvTokenVectors = (Vec<f32>, Vec<f32>);
 pub const TURBOQUANT_SLOT_ALIGNMENT_BYTES: usize = 16;
 pub const TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM: usize = 128;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TurboQuantProductionRequirements {
+    pub fused_decode_kernel: bool,
+    pub runtime_kv_storage: bool,
+    pub runner_route_metadata: bool,
+    pub long_context_benchmark_artifact: bool,
+    pub public_switch_and_docs: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurboQuantProductionBlocker {
+    FusedDecodeKernel,
+    RuntimeKvStorage,
+    RunnerRouteMetadata,
+    LongContextBenchmarkArtifact,
+    PublicSwitchAndDocs,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurboQuantProductionReadiness {
+    pub ready: bool,
+    pub blockers: Vec<TurboQuantProductionBlocker>,
+}
+
+impl TurboQuantProductionRequirements {
+    pub fn evaluate(self) -> TurboQuantProductionReadiness {
+        let mut blockers = Vec::new();
+        if !self.fused_decode_kernel {
+            blockers.push(TurboQuantProductionBlocker::FusedDecodeKernel);
+        }
+        if !self.runtime_kv_storage {
+            blockers.push(TurboQuantProductionBlocker::RuntimeKvStorage);
+        }
+        if !self.runner_route_metadata {
+            blockers.push(TurboQuantProductionBlocker::RunnerRouteMetadata);
+        }
+        if !self.long_context_benchmark_artifact {
+            blockers.push(TurboQuantProductionBlocker::LongContextBenchmarkArtifact);
+        }
+        if !self.public_switch_and_docs {
+            blockers.push(TurboQuantProductionBlocker::PublicSwitchAndDocs);
+        }
+
+        TurboQuantProductionReadiness {
+            ready: blockers.is_empty(),
+            blockers,
+        }
+    }
+}
+
+impl TurboQuantProductionReadiness {
+    pub fn is_ready(&self) -> bool {
+        self.ready
+    }
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum TurboQuantCodecError {
     #[error("TurboQuant reference codec requires a non-empty vector")]
@@ -2238,6 +2294,53 @@ mod tests {
         assert!(report.layers.iter().all(|layer| {
             layer.head_dim == 128 && layer.reason == TurboQuantLayerSupportReason::Eligible
         }));
+    }
+
+    #[test]
+    fn production_readiness_fails_closed_until_every_runtime_gate_is_present() {
+        let readiness = TurboQuantProductionRequirements::default().evaluate();
+
+        assert!(!readiness.is_ready());
+        assert_eq!(
+            readiness.blockers,
+            vec![
+                TurboQuantProductionBlocker::FusedDecodeKernel,
+                TurboQuantProductionBlocker::RuntimeKvStorage,
+                TurboQuantProductionBlocker::RunnerRouteMetadata,
+                TurboQuantProductionBlocker::LongContextBenchmarkArtifact,
+                TurboQuantProductionBlocker::PublicSwitchAndDocs,
+            ]
+        );
+
+        let readiness = TurboQuantProductionRequirements {
+            fused_decode_kernel: true,
+            runtime_kv_storage: true,
+            runner_route_metadata: true,
+            long_context_benchmark_artifact: true,
+            public_switch_and_docs: false,
+        }
+        .evaluate();
+
+        assert!(!readiness.is_ready());
+        assert_eq!(
+            readiness.blockers,
+            vec![TurboQuantProductionBlocker::PublicSwitchAndDocs]
+        );
+    }
+
+    #[test]
+    fn production_readiness_passes_only_when_all_runtime_gates_are_present() {
+        let readiness = TurboQuantProductionRequirements {
+            fused_decode_kernel: true,
+            runtime_kv_storage: true,
+            runner_route_metadata: true,
+            long_context_benchmark_artifact: true,
+            public_switch_and_docs: true,
+        }
+        .evaluate();
+
+        assert!(readiness.is_ready());
+        assert!(readiness.blockers.is_empty());
     }
 
     #[test]
