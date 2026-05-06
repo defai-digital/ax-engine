@@ -8,6 +8,11 @@ and repo-owned AX Engine MLX direct and n-gram acceleration benchmarks. DeepSeek
 V4 remains reference-only and fail-closed because the available local references
 are incomplete for AX promotion.
 
+The latest AX Engine rows below were refreshed after rebuilding the release
+server with the GLM MoE dtype cast-back fix. The prior AX direct decode rows
+(49.2 / 47.1 tok/s) were collected before `moe_experts_forward` cast the
+weighted-sum output back to the residual hidden-state dtype.
+
 Support-contract classification now comes from:
 
 ```bash
@@ -39,18 +44,18 @@ python3 scripts/bench_mlx_inference_stack.py \
   --cooldown 3 \
   --prefill-step-size 2048 \
   --reuse-reference-results-from benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-mlx-swift-lm.json \
-  --output benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-ax-engine-user-change.json
+  --output benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-ax-engine-post-latest-4.json
 ```
 
 | Prompt tok | Generation tok | mlx_lm prefill tok/s | mlx_lm decode tok/s | ax engine prefill tok/s | ax engine decode tok/s |
 |---:|---:|---:|---:|---:|---:|
-| 128 | 128 | 502.9 | 93.0 | 649.1 | 49.2 |
-| 512 | 128 | 1,584.7 | 90.4 | 1,682.3 | 47.1 |
+| 128 | 128 | 502.9 | 93.0 | 841.8 | 94.8 |
+| 512 | 128 | 1,584.7 | 90.4 | 2,299.9 | 94.1 |
 
 Artifacts:
 
-- `glm-4.7-flash-4bit-ax-engine-user-change.json`
-- `glm-4.7-flash-4bit-ax-engine-user-change-prompts/`
+- `glm-4.7-flash-4bit-ax-engine-post-latest-4.json`
+- `glm-4.7-flash-4bit-ax-engine-post-latest-4-prompts/`
 
 ## GLM-4.7-Flash-4bit AX N-Gram Result
 
@@ -66,23 +71,23 @@ python3 scripts/bench_mlx_inference_stack.py \
   --prefill-step-size 2048 \
   --reuse-reference-results-from benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-mlx-swift-lm.json \
   --ax-ngram-accel \
-  --output benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-ax-engine-ngram-user-change.json
+  --output benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-ax-engine-ngram-post-latest-4.json
 ```
 
 | Prompt tok | Generation tok | mlx_lm decode tok/s | ax engine direct decode tok/s | ax engine n-gram decode tok/s | N-gram accept rate |
 |---:|---:|---:|---:|---:|---:|
-| 128 | 128 | 93.0 | 49.2 | 164.4 | 100.0% |
-| 512 | 128 | 90.4 | 47.1 | 137.2 | 100.0% |
+| 128 | 128 | 93.0 | 94.8 | 260.7 | 100.0% |
+| 512 | 128 | 90.4 | 94.1 | 253.5 | 100.0% |
 
 This confirms GLM 4.7 can run through AX Engine's n-gram acceleration policy.
-In this user-change refresh, both prompt shapes accepted all drafted tokens and
-improved over direct AX decode: 49.2 -> 164.4 tok/s at 128 prompt tokens, and
-47.1 -> 137.2 tok/s at 512 prompt tokens.
+In this latest refresh, both prompt shapes accepted all drafted tokens and
+improved over direct AX decode: 94.8 -> 260.7 tok/s at 128 prompt tokens, and
+94.1 -> 253.5 tok/s at 512 prompt tokens.
 
 Artifacts:
 
-- `glm-4.7-flash-4bit-ax-engine-ngram-user-change.json`
-- `glm-4.7-flash-4bit-ax-engine-ngram-user-change-prompts/`
+- `glm-4.7-flash-4bit-ax-engine-ngram-post-latest-4.json`
+- `glm-4.7-flash-4bit-ax-engine-ngram-post-latest-4-prompts/`
 
 ## GLM-4.7-Flash-4bit mlx-swift-lm Result
 

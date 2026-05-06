@@ -138,7 +138,7 @@ reference, or unknown architecture with explicit blockers.
 
 | Model | Config model_type | Current AX status | Latest local evidence |
 |---|---|---|---|
-| `mlx-community/GLM-4.7-Flash-4bit` | `glm4_moe_lite` | Repo-owned MLX runtime ready | `mlx_lm.benchmark`, `mlx_swift_lm`, refreshed `ax_engine_mlx` direct, and `ax_engine_mlx_ngram_accel` benchmarks passed on 2026-05-06; support probe reports `repo_owned_runtime_ready`; user-change median AX direct decode is 49.2 tok/s at 128 prompt tokens and 47.1 tok/s at 512 prompt tokens; n-gram effective decode is 164.4 tok/s at 128 prompt tokens and 137.2 tok/s at 512 prompt tokens |
+| `mlx-community/GLM-4.7-Flash-4bit` | `glm4_moe_lite` | Repo-owned MLX runtime ready | `mlx_lm.benchmark`, `mlx_swift_lm`, refreshed `ax_engine_mlx` direct, and `ax_engine_mlx_ngram_accel` benchmarks passed on 2026-05-06; support probe reports `repo_owned_runtime_ready`; latest median AX direct decode is 94.8 tok/s at 128 prompt tokens and 94.1 tok/s at 512 prompt tokens; n-gram effective decode is 260.7 tok/s at 128 prompt tokens and 253.5 tok/s at 512 prompt tokens |
 | `mlx-community/DeepSeek-V4-Flash-2bit-DQ` | `deepseek_v4` | Fail closed: partial reference only, not repo-owned AX support | Downloaded on 2026-05-06; `mlx_lm.benchmark` failed with `Model type deepseek_v4 not supported`; support probe finds the available SwiftLM port drops compressor/indexer and `tid2eid` hash-routing weights that are present in the checkpoint |
 
 ## Current Limitations And Problems
