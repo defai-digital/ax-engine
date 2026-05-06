@@ -108,6 +108,28 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_bonus_tokens",
 ]
 
+AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
+    "ax_mlx_kv_compression_request_snapshots",
+    "ax_mlx_kv_compression_status",
+    "ax_mlx_kv_compression_preset",
+    "ax_mlx_kv_compression_key_bits",
+    "ax_mlx_kv_compression_value_bits",
+    "ax_mlx_kv_compression_eligible_layers",
+    "ax_mlx_kv_compression_candidate_token_layers",
+    "ax_mlx_kv_compression_hot_token_layers",
+    "ax_mlx_kv_compression_full_precision_kib",
+    "ax_mlx_kv_compression_estimated_compressed_kib",
+    "ax_mlx_kv_compression_estimated_saved_kib",
+    "ax_mlx_kv_compression_ratio_milli",
+    "ax_mlx_kv_compression_route_metadata_schema",
+    "ax_mlx_kv_compression_production_ready",
+    "ax_mlx_kv_compression_production_blockers",
+    "ax_mlx_kv_compression_runtime_storage_layers",
+    "ax_mlx_kv_compression_runtime_storage_token_layers",
+    "ax_mlx_kv_compression_runtime_storage_kib",
+    "ax_mlx_kv_compression_runtime_storage_written_slots",
+]
+
 
 def _sysctl(key: str) -> str:
     try:
@@ -514,6 +536,9 @@ def start_axengine(
     port: int,
     *,
     direct_mode: bool,
+    kv_compression: str = "disabled",
+    kv_compression_hot_window_tokens: int | None = None,
+    kv_compression_min_context_tokens: int | None = None,
 ) -> subprocess.Popen[Any]:
     cmd = [
         str(binary),
@@ -525,6 +550,22 @@ def start_axengine(
     ]
     if direct_mode:
         cmd.append("--disable-ngram-acceleration")
+    if kv_compression != "disabled":
+        cmd.extend(["--experimental-mlx-kv-compression", kv_compression])
+        if kv_compression_hot_window_tokens is not None:
+            cmd.extend(
+                [
+                    "--experimental-mlx-kv-compression-hot-window-tokens",
+                    str(kv_compression_hot_window_tokens),
+                ]
+            )
+        if kv_compression_min_context_tokens is not None:
+            cmd.extend(
+                [
+                    "--experimental-mlx-kv-compression-min-context-tokens",
+                    str(kv_compression_min_context_tokens),
+                ]
+            )
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
@@ -553,6 +594,21 @@ def extract_ax_mlx_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
         return {}
     decisions = route.get("crossover_decisions") or {}
     return {key: int(decisions.get(key, 0)) for key in AX_MLX_TELEMETRY_KEYS}
+
+
+def extract_ax_mlx_kv_compression_telemetry(
+    route: dict[str, Any] | None,
+) -> dict[str, int]:
+    if not route:
+        return {}
+    decisions = route.get("crossover_decisions") or {}
+    present = [key for key in AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS if key in decisions]
+    if not present:
+        return {}
+    return {
+        key: int(decisions.get(key, 0))
+        for key in AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS
+    }
 
 
 def route_with_more_decisions(
@@ -601,6 +657,30 @@ def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     for run in runs:
         for key, value in (run.get("ax_mlx_telemetry") or {}).items():
             totals[key] = totals.get(key, 0) + int(value)
+    return totals
+
+
+def summarize_ax_mlx_kv_compression_telemetry(
+    runs: list[dict[str, Any]],
+) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    latest_keys = {
+        "ax_mlx_kv_compression_status",
+        "ax_mlx_kv_compression_preset",
+        "ax_mlx_kv_compression_key_bits",
+        "ax_mlx_kv_compression_value_bits",
+        "ax_mlx_kv_compression_ratio_milli",
+        "ax_mlx_kv_compression_route_metadata_schema",
+        "ax_mlx_kv_compression_production_ready",
+        "ax_mlx_kv_compression_production_blockers",
+    }
+    for run in runs:
+        telemetry = run.get("kv_compression_telemetry") or {}
+        for key, value in telemetry.items():
+            if key in latest_keys:
+                totals[key] = int(value)
+            else:
+                totals[key] = totals.get(key, 0) + int(value)
     return totals
 
 
@@ -679,6 +759,9 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
     mlx_telemetry = extract_ax_mlx_telemetry(final_route)
     if mlx_telemetry:
         run["ax_mlx_telemetry"] = mlx_telemetry
+    compression_telemetry = extract_ax_mlx_kv_compression_telemetry(final_route)
+    if compression_telemetry:
+        run["kv_compression_telemetry"] = compression_telemetry
     return run
 
 
@@ -710,6 +793,7 @@ def bench_axengine(
     *,
     model_metadata: dict[str, Any],
     direct_mode: bool = False,
+    kv_compression: str = "disabled",
 ) -> dict[str, Any]:
     engine_key = AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
     decode_policy = ax_decode_policy(
@@ -717,7 +801,8 @@ def bench_axengine(
     )
     print(
         f"  [ax-engine/{engine_key}] prompt={len(tokens)} "
-        f"generation={generation_tokens} policy={decode_policy}",
+        f"generation={generation_tokens} policy={decode_policy} "
+        f"kv_compression={kv_compression}",
         file=sys.stderr,
     )
     axengine_one_run(port, tokens, generation_tokens)
@@ -736,7 +821,7 @@ def bench_axengine(
         if cooldown > 0 and index < repetitions - 1:
             time.sleep(cooldown)
 
-    return {
+    row = {
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
         "timing_scope": "ax_engine_runner_time_us",
@@ -759,6 +844,14 @@ def bench_axengine(
         "ax_mlx_telemetry": summarize_ax_mlx_telemetry(runs),
         "trials": runs,
     }
+    compression_summary = summarize_ax_mlx_kv_compression_telemetry(runs)
+    if kv_compression != "disabled":
+        row["experimental_mlx_kv_compression"] = kv_compression
+        row["kv_compression_decode_path"] = "full_precision_shadow"
+        row["kv_compression_claim_status"] = "telemetry_only_full_precision_generation"
+    if compression_summary:
+        row["kv_compression_telemetry"] = compression_summary
+    return row
 
 
 def parse_swift_adapter_json(stdout: str) -> dict[str, Any]:
@@ -1043,6 +1136,25 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--experimental-mlx-kv-compression",
+        choices=["disabled", "turboquant-shadow"],
+        default="disabled",
+        help=(
+            "Pass the AX server experimental MLX KV compression flag through "
+            "for AX rows. Default is disabled."
+        ),
+    )
+    parser.add_argument(
+        "--experimental-mlx-kv-compression-hot-window-tokens",
+        type=int,
+        help="Pass through the AX server experimental KV compression hot-window token count.",
+    )
+    parser.add_argument(
+        "--experimental-mlx-kv-compression-min-context-tokens",
+        type=int,
+        help="Pass through the AX server experimental KV compression minimum context token count.",
+    )
+    parser.add_argument(
         "--prompt-artifact-root",
         type=Path,
         help="Directory for canonical mlx_lm random-token prompt JSON files",
@@ -1159,6 +1271,13 @@ def main() -> None:
                     args.model_dir,
                     args.axengine_port,
                     direct_mode=direct_mode,
+                    kv_compression=args.experimental_mlx_kv_compression,
+                    kv_compression_hot_window_tokens=(
+                        args.experimental_mlx_kv_compression_hot_window_tokens
+                    ),
+                    kv_compression_min_context_tokens=(
+                        args.experimental_mlx_kv_compression_min_context_tokens
+                    ),
                 )
                 procs.append(proc)
                 if not wait_for_server(f"http://127.0.0.1:{args.axengine_port}/health"):
@@ -1179,6 +1298,7 @@ def main() -> None:
                             args.cooldown,
                             model_metadata=model_metadata,
                             direct_mode=direct_mode,
+                            kv_compression=args.experimental_mlx_kv_compression,
                         )
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size

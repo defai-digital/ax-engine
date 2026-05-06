@@ -39,18 +39,18 @@ python3 scripts/bench_mlx_inference_stack.py \
   --cooldown 3 \
   --prefill-step-size 2048 \
   --reuse-reference-results-from benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-mlx-swift-lm.json \
-  --output benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-ax-engine-current.json
+  --output benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-ax-engine-user-change.json
 ```
 
 | Prompt tok | Generation tok | mlx_lm prefill tok/s | mlx_lm decode tok/s | ax engine prefill tok/s | ax engine decode tok/s |
 |---:|---:|---:|---:|---:|---:|
-| 128 | 128 | 502.9 | 93.0 | 861.6 | 50.9 |
-| 512 | 128 | 1,584.7 | 90.4 | 2,081.9 | 49.4 |
+| 128 | 128 | 502.9 | 93.0 | 649.1 | 49.2 |
+| 512 | 128 | 1,584.7 | 90.4 | 1,682.3 | 47.1 |
 
 Artifacts:
 
-- `glm-4.7-flash-4bit-ax-engine-current.json`
-- `glm-4.7-flash-4bit-ax-engine-current-prompts/`
+- `glm-4.7-flash-4bit-ax-engine-user-change.json`
+- `glm-4.7-flash-4bit-ax-engine-user-change-prompts/`
 
 ## GLM-4.7-Flash-4bit AX N-Gram Result
 
@@ -66,24 +66,23 @@ python3 scripts/bench_mlx_inference_stack.py \
   --prefill-step-size 2048 \
   --reuse-reference-results-from benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-mlx-swift-lm.json \
   --ax-ngram-accel \
-  --output benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-ax-engine-ngram.json
+  --output benchmarks/results/mlx-inference/2026-05-06/glm-4.7-flash-4bit-ax-engine-ngram-user-change.json
 ```
 
 | Prompt tok | Generation tok | mlx_lm decode tok/s | ax engine direct decode tok/s | ax engine n-gram decode tok/s | N-gram accept rate |
 |---:|---:|---:|---:|---:|---:|
-| 128 | 128 | 93.0 | 50.9 | 60.2 | 51.1% |
-| 512 | 128 | 90.4 | 49.4 | 46.3 | 27.5% |
+| 128 | 128 | 93.0 | 49.2 | 164.4 | 100.0% |
+| 512 | 128 | 90.4 | 47.1 | 137.2 | 100.0% |
 
-This confirms GLM 4.7 can run through AX Engine's n-gram acceleration policy,
-but the observed benefit is prompt/output-pattern dependent. The 128-token
-prompt improved over AX direct decode, while the 512-token prompt regressed
-because fewer draft tokens were accepted and cooldown dominated more decode
-steps.
+This confirms GLM 4.7 can run through AX Engine's n-gram acceleration policy.
+In this user-change refresh, both prompt shapes accepted all drafted tokens and
+improved over direct AX decode: 49.2 -> 164.4 tok/s at 128 prompt tokens, and
+47.1 -> 137.2 tok/s at 512 prompt tokens.
 
 Artifacts:
 
-- `glm-4.7-flash-4bit-ax-engine-ngram.json`
-- `glm-4.7-flash-4bit-ax-engine-ngram-prompts/`
+- `glm-4.7-flash-4bit-ax-engine-ngram-user-change.json`
+- `glm-4.7-flash-4bit-ax-engine-ngram-user-change-prompts/`
 
 ## GLM-4.7-Flash-4bit mlx-swift-lm Result
 

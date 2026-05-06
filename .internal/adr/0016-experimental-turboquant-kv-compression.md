@@ -262,6 +262,60 @@ This satisfies the route metadata gate only; fused kernel, runtime KV storage,
 long-context benchmark/model-quality artifact, and public switch/docs approval
 remain required before production readiness.
 
+The runtime storage gate is now represented by `MlxKVCache`-owned TurboQuant
+shadow compressed storage. When `turboquant-shadow` is explicitly selected, the
+runtime writes eligible full-attention cold token heads into
+`TurboQuantCompressedBlockBuffer` and reports storage layers, token-layers,
+bytes, and written slots in route metadata. Decode still reads the full-precision
+KV cache; the compressed storage is staged for the future fused decode kernel
+and does not alter logits, SDPA, or default allocation behavior. After this gate,
+production readiness remains blocked by the real fused MLX/Metal decode kernel,
+long-context benchmark/model-quality artifact, and public switch/docs approval.
+
+The fused-kernel gate is now represented by an MLX fast Metal K8/V4 compressed
+cold-token decode kernel. The kernel reads `TurboQuantCompressedBlockBuffer`
+bytes, reconstructs K8 centroid/norm keys and V4 grouped values inside Metal,
+computes score/softmax/value accumulation, and returns per-head Float32 outputs.
+It is covered by a launch test against the CPU reference decode. This satisfies
+the fused kernel gate for the internal shadow/fused path, but the production
+decode route still remains full precision until long-context model-quality
+artifacts and public switch/docs approval are available.
+
+The long-context quality artifact contract is accepted as the next fail-closed
+promotion layer. `scripts/check_turboquant_quality_artifact.py` validates the
+model identity, long-context shape, MLX full-precision baseline, fused compressed
+K8/V4 candidate, route metadata, runtime compressed slot writes, quality metrics,
+throughput ratio, KV savings, and artifact hashes. This validator does not by
+itself satisfy the production quality gate; only a real model artifact that
+passes it can do that. It also keeps public support documentation approval as a
+separate blocker.
+
+The MLX inference-stack benchmark harness is accepted as the initial capture
+surface for TurboQuant route metadata. It can pass through the experimental
+`turboquant-shadow` policy to AX server rows and records the emitted KV
+compression counters in benchmark output. The default harness behavior remains
+unchanged and emits no compression metadata when the policy is disabled.
+
+Public documentation may mention the experimental shadow switch only with the
+same safety boundary: disabled by default, full-precision generation, telemetry
+and benchmark evidence only, and no production TurboQuant support claim. Public
+support approval remains a separate promotion decision.
+
+The quality artifact builder is accepted as the promotion compiler above the
+benchmark artifacts. It derives the gate artifact from benchmark rows plus a
+quality-metrics JSON file and reuses the validator before writing output.
+Candidate rows marked as full-precision shadow evidence are rejected, so route
+telemetry cannot be mistaken for fused compressed decode evidence.
+
+The quality metrics builder is accepted as the standard way to produce the
+quality-metrics JSON consumed by the artifact builder. It compares same-shaped
+baseline and candidate decode output vectors and fails closed for empty vectors,
+non-finite values, and shape mismatches.
+
+The lightweight quality-gate smoke is accepted as the script-level contract for
+this pipeline. It exercises the metrics builder, artifact builder, validator,
+and negative shadow-candidate rejection without loading a model.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a
@@ -321,6 +375,13 @@ Benchmark and route artifacts must expose:
 - `ax_mlx_kv_compression_estimated_compressed_kib`
 - `ax_mlx_kv_compression_estimated_saved_kib`
 - `ax_mlx_kv_compression_ratio_milli`
+- `ax_mlx_kv_compression_route_metadata_schema`
+- `ax_mlx_kv_compression_production_ready`
+- `ax_mlx_kv_compression_production_blockers`
+- `ax_mlx_kv_compression_runtime_storage_layers`
+- `ax_mlx_kv_compression_runtime_storage_token_layers`
+- `ax_mlx_kv_compression_runtime_storage_kib`
+- `ax_mlx_kv_compression_runtime_storage_written_slots`
 - selected backend and support tier
 
 The first implementation may encode numeric values through route

@@ -20,7 +20,12 @@ bash -n scripts/*.sh scripts/lib/common.sh
 "$PYTHON_BIN" -m py_compile \
   scripts/bench_mlx_inference_stack.py \
   scripts/test_bench_mlx_inference_stack.py \
+  scripts/build_turboquant_quality_metrics.py \
+  scripts/build_turboquant_quality_artifact.py \
+  scripts/check_turboquant_quality_artifact.py \
+  scripts/test_turboquant_quality_artifact.py \
   scripts/probe_mlx_model_support.py \
   scripts/test_probe_mlx_model_support.py \
   scripts/diagnose_server_rss.py
 bash scripts/check-bench-inference-stack.sh
+bash scripts/check-turboquant-quality-gate.sh

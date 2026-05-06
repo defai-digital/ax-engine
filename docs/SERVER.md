@@ -67,6 +67,27 @@ cargo run -p ax-engine-server -- \
   --port 8080
 ```
 
+Experimental MLX KV compression is opt-in and off by default. The current
+`turboquant-shadow` mode is for benchmark evidence and route telemetry only: it
+keeps generation on the existing full-precision MLX KV path, does not change
+SDPA inputs, logits, sampling, or output tokens, and does not imply production
+TurboQuant support.
+
+```text
+cargo run -p ax-engine-server -- \
+  --model-id qwen3_dense \
+  --mlx \
+  --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
+  --experimental-mlx-kv-compression turboquant-shadow \
+  --experimental-mlx-kv-compression-hot-window-tokens 256 \
+  --experimental-mlx-kv-compression-min-context-tokens 512 \
+  --port 8080
+```
+
+When enabled, route metadata includes TurboQuant eligibility, estimated
+compressed/saved KiB, production-readiness blockers, and runtime shadow-storage
+counters. When disabled, the server emits no TurboQuant compression metadata.
+
 For common repo-owned MLX targets, use a preset to select the model id, MLX
 runtime, support tier, and current safe defaults while keeping model artifacts
 explicit:

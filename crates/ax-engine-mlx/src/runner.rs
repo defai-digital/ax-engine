@@ -27,6 +27,10 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ROUTE_METADATA_SCHEMA,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_KIB,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_TOKEN_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_WRITTEN_SLOTS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS,
     ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
@@ -398,6 +402,10 @@ struct KvCacheTelemetry {
     compression_route_metadata_schema: u32,
     compression_production_ready: u32,
     compression_production_blockers: u32,
+    compression_runtime_storage_layers: u64,
+    compression_runtime_storage_token_layers: u64,
+    compression_runtime_storage_bytes: u64,
+    compression_runtime_storage_written_slots: u64,
 }
 
 impl KvCacheTelemetry {
@@ -437,7 +445,7 @@ impl KvCacheTelemetry {
         let compression = usage.kv_compression;
         if compression.policy_enabled {
             let production_readiness =
-                TurboQuantProductionRequirements::mlx_shadow_route_metadata().evaluate();
+                TurboQuantProductionRequirements::mlx_shadow_fused_kernel().evaluate();
             self.compression_request_snapshots =
                 self.compression_request_snapshots.saturating_add(1);
             self.compression_status = compression.status_code;
@@ -448,6 +456,18 @@ impl KvCacheTelemetry {
             self.compression_production_ready = u32::from(production_readiness.is_ready());
             self.compression_production_blockers =
                 saturating_u32_from_u64(production_readiness.blockers.len() as u64);
+            self.compression_runtime_storage_layers = self
+                .compression_runtime_storage_layers
+                .saturating_add(compression.runtime_storage_layers as u64);
+            self.compression_runtime_storage_token_layers = self
+                .compression_runtime_storage_token_layers
+                .saturating_add(compression.runtime_storage_token_layers as u64);
+            self.compression_runtime_storage_bytes = self
+                .compression_runtime_storage_bytes
+                .saturating_add(compression.runtime_storage_bytes);
+            self.compression_runtime_storage_written_slots = self
+                .compression_runtime_storage_written_slots
+                .saturating_add(compression.runtime_storage_written_slots as u64);
             self.compression_eligible_layers = self
                 .compression_eligible_layers
                 .saturating_add(compression.eligible_layers as u64);
@@ -602,6 +622,22 @@ impl KvCacheTelemetry {
                 (
                     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_BLOCKERS,
                     self.compression_production_blockers,
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_LAYERS,
+                    saturating_u32_from_u64(self.compression_runtime_storage_layers),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_TOKEN_LAYERS,
+                    saturating_u32_from_u64(self.compression_runtime_storage_token_layers),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_KIB,
+                    kib_ceil(self.compression_runtime_storage_bytes),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_WRITTEN_SLOTS,
+                    saturating_u32_from_u64(self.compression_runtime_storage_written_slots),
                 ),
             ];
 
@@ -1052,6 +1088,13 @@ impl MlxRunner {
         } else {
             None
         };
+        if self.kv_compression.is_enabled() {
+            state.cache.sync_turboquant_shadow_storage(
+                &self.kv_layer_windows,
+                self.kv_compression,
+                kv_compression_layer_eligible,
+            );
+        }
         let kv_usage = state
             .cache
             .usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
@@ -2769,6 +2812,7 @@ mod tests {
                 estimated_compressed_bytes: 8_256,
                 estimated_saved_bytes: 13_760,
                 estimated_ratio_milli: 375,
+                ..crate::kv_cache::MlxKvCompressionUsage::default()
             },
             ..MlxKVCacheUsage::default()
         });
@@ -2817,7 +2861,23 @@ mod tests {
         );
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRODUCTION_BLOCKERS),
-            Some(&4)
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_LAYERS),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_TOKEN_LAYERS),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_KIB),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RUNTIME_STORAGE_WRITTEN_SLOTS),
+            Some(&0)
         );
         for key in ax_engine_core::ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS {
             assert!(

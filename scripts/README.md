@@ -35,9 +35,24 @@ throughput baselines.
 - `check-scripts.sh`: fast script hygiene gate. It syntax-checks shell scripts,
   compiles Python scripts, and runs the MLX inference-stack contract tests.
 - `bench_mlx_inference_stack.py`: MLX model-inference comparison against
-  `mlx_lm.benchmark`.
+  `mlx_lm.benchmark`. It can pass through
+  `--experimental-mlx-kv-compression turboquant-shadow` for AX rows and records
+  TurboQuant KV compression route counters when the runtime emits them.
 - `test_bench_mlx_inference_stack.py`: unit tests for the MLX benchmark
   contract, parser, prompt artifact hash checks, and secondary adapter shape.
+- `check_turboquant_quality_artifact.py`: fail-closed validator for internal
+  TurboQuant long-context quality gate artifacts. It checks model identity,
+  long-context shape, baseline/candidate provenance, K8/V4 route metadata,
+  decode quality thresholds, throughput ratio, and memory-savings evidence.
+- `build_turboquant_quality_artifact.py`: compiles a TurboQuant quality artifact
+  from MLX inference-stack benchmark output and a quality-metrics JSON file,
+  then validates it through the same fail-closed gate. Full-precision shadow
+  rows are rejected as promotion evidence.
+- `build_turboquant_quality_metrics.py`: compares baseline and candidate decode
+  output vectors and emits the max/mean absolute error plus minimum cosine
+  similarity JSON consumed by the TurboQuant quality artifact builder.
+- `test_turboquant_quality_artifact.py`: unit tests for the TurboQuant quality
+  artifact validator.
 - `probe_mlx_model_support.py`: support-contract probe for downloaded MLX
   model artifacts. It reads `config.json`, safetensors index metadata, and
   local reference implementations so new architectures fail closed with named
@@ -46,6 +61,10 @@ throughput baselines.
   classification and fail-closed partial-reference behavior.
 - `check-bench-inference-stack.sh`: lightweight contract check for the MLX
   inference-stack benchmark harness. It does not load a model.
+- `check-turboquant-quality-gate.sh`: lightweight CLI pipeline check for
+  TurboQuant quality evidence. It builds synthetic quality metrics, compiles a
+  quality artifact, validates it, and proves `full_precision_shadow` candidates
+  fail promotion.
 - `reproduce-mlx-inference-benchmark.sh`: public reproduction wrapper for
   external Apple Silicon benchmark bundles. It records doctor output, command
   logs, prompt artifacts, environment metadata, and raw JSON results.

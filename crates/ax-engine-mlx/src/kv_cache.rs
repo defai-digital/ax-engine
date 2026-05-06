@@ -1,7 +1,10 @@
 use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode};
-use mlx_sys::{MlxArray, MlxDtype, slice, slice_update, zeros};
+use mlx_sys::{MlxArray, MlxDtype, eval, slice, slice_update, zeros};
 
-use crate::turboquant::packed_kv_bytes_per_token;
+use crate::turboquant::{
+    FullPrecisionKvTokenVectors, TurboQuantBlockLayout, TurboQuantBlockLayoutConfig,
+    TurboQuantCompressedBlockBuffer, packed_kv_bytes_per_token,
+};
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
 /// the logical sequence length exceeds capacity, so the number of grow operations
@@ -128,6 +131,89 @@ fn validate_glm_mla_append_inputs(
     }
 }
 
+fn kv_heads_for_token(lkv: &LayerKV, token_index: usize) -> Vec<FullPrecisionKvTokenVectors> {
+    (0..lkv.n_kv_heads as usize)
+        .map(|head_index| {
+            (
+                kv_vector_for_token_head(&lkv.k, lkv, token_index, head_index),
+                kv_vector_for_token_head(&lkv.v, lkv, token_index, head_index),
+            )
+        })
+        .collect()
+}
+
+fn kv_vector_for_token_head(
+    array: &MlxArray,
+    lkv: &LayerKV,
+    token_index: usize,
+    head_index: usize,
+) -> Vec<f32> {
+    let capacity = lkv.capacity;
+    let head_dim = lkv.head_dim as usize;
+    let base_element = head_index
+        .saturating_mul(capacity)
+        .saturating_add(token_index)
+        .saturating_mul(head_dim);
+    (0..head_dim)
+        .map(|dim| array_element_as_f32(array, lkv.dtype, base_element + dim))
+        .collect()
+}
+
+fn array_element_as_f32(array: &MlxArray, dtype: MlxDtype, element_index: usize) -> f32 {
+    let ptr = array.data_raw();
+    if ptr.is_null() {
+        return 0.0;
+    }
+
+    match dtype {
+        MlxDtype::Float32 => unsafe {
+            std::slice::from_raw_parts(ptr.cast::<f32>(), array.nbytes() / 4)
+                .get(element_index)
+                .copied()
+                .unwrap_or(0.0)
+        },
+        MlxDtype::Float16 => unsafe {
+            std::slice::from_raw_parts(ptr.cast::<u16>(), array.nbytes() / 2)
+                .get(element_index)
+                .map(|bits| f16_bits_to_f32(*bits))
+                .unwrap_or(0.0)
+        },
+        MlxDtype::Bfloat16 => unsafe {
+            std::slice::from_raw_parts(ptr.cast::<u16>(), array.nbytes() / 2)
+                .get(element_index)
+                .map(|bits| f32::from_bits((*bits as u32) << 16))
+                .unwrap_or(0.0)
+        },
+        _ => 0.0,
+    }
+}
+
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exponent = (bits >> 10) & 0x1f;
+    let fraction = (bits & 0x03ff) as u32;
+
+    let f32_bits = match exponent {
+        0 => {
+            if fraction == 0 {
+                sign
+            } else {
+                let leading = fraction.leading_zeros() - 22;
+                let mantissa = (fraction << (leading + 1)) & 0x03ff;
+                let exponent = 127 - 15 - leading;
+                sign | (exponent << 23) | (mantissa << 13)
+            }
+        }
+        0x1f => sign | 0x7f80_0000 | (fraction << 13),
+        _ => {
+            let exponent = (exponent as u32) + (127 - 15);
+            sign | (exponent << 23) | (fraction << 13)
+        }
+    };
+
+    f32::from_bits(f32_bits)
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MlxKVCacheUsage {
     pub logical_tokens: usize,
@@ -150,7 +236,7 @@ pub struct MlxKVCacheUsage {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MlxKvCompressionUsage {
     pub policy_enabled: bool,
-    /// 0 disabled, 1 shadow estimate active, 2 short context, 3 no eligible layer.
+    /// 0 disabled, 1 shadow storage active, 2 short context, 3 no eligible layer.
     pub status_code: u32,
     pub preset_code: u32,
     pub key_bits: u32,
@@ -162,6 +248,10 @@ pub struct MlxKvCompressionUsage {
     pub estimated_compressed_bytes: u64,
     pub estimated_saved_bytes: u64,
     pub estimated_ratio_milli: u32,
+    pub runtime_storage_layers: usize,
+    pub runtime_storage_token_layers: usize,
+    pub runtime_storage_bytes: u64,
+    pub runtime_storage_written_slots: usize,
 }
 
 #[derive(Clone)]
@@ -185,6 +275,21 @@ struct GlmMlaLayerCache {
     rope_dim: i32,
     capacity: usize,
     dtype: MlxDtype,
+}
+
+#[derive(Clone)]
+struct TurboQuantShadowLayerStorage {
+    layout: TurboQuantBlockLayout,
+    buffer: TurboQuantCompressedBlockBuffer,
+    compressed_tokens: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TurboQuantShadowStorageUsage {
+    pub layers: usize,
+    pub token_layers: usize,
+    pub bytes: u64,
+    pub written_slots: usize,
 }
 
 #[derive(Clone, Default)]
@@ -217,6 +322,7 @@ pub struct MlxKVCache {
     layers: Vec<Option<LayerKV>>,
     glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
     linear_layers: Vec<LinearLayerState>,
+    turboquant_shadow_layers: Vec<Option<TurboQuantShadowLayerStorage>>,
     /// Current logical sequence length (token count cached).
     pub seq_len: usize,
     growth_count: u64,
@@ -228,6 +334,7 @@ impl Clone for MlxKVCache {
             layers: self.layers.clone(),
             glm_mla_layers: self.glm_mla_layers.clone(),
             linear_layers: self.linear_layers.clone(),
+            turboquant_shadow_layers: self.turboquant_shadow_layers.clone(),
             seq_len: self.seq_len,
             growth_count: self.growth_count,
         }
@@ -242,6 +349,7 @@ impl MlxKVCache {
             linear_layers: (0..num_layers)
                 .map(|_| LinearLayerState::default())
                 .collect(),
+            turboquant_shadow_layers: (0..num_layers).map(|_| None).collect(),
             seq_len: 0,
             growth_count: 0,
         }
@@ -490,7 +598,117 @@ impl MlxKVCache {
     pub fn trim_to(&mut self, prefix_len: usize) -> bool {
         let valid = prefix_len <= self.seq_len;
         self.seq_len = prefix_len.min(self.seq_len);
+        for storage in self.turboquant_shadow_layers.iter_mut().flatten() {
+            storage.compressed_tokens = storage.compressed_tokens.min(self.seq_len);
+        }
         valid
+    }
+
+    pub fn sync_turboquant_shadow_storage(
+        &mut self,
+        layer_windows: &[Option<usize>],
+        compression: MlxKvCompressionConfig,
+        compression_eligible_layers: Option<&[bool]>,
+    ) -> TurboQuantShadowStorageUsage {
+        if !matches!(compression.mode, MlxKvCompressionMode::TurboQuantShadow)
+            || self.seq_len < compression.min_context_tokens
+        {
+            self.clear_turboquant_shadow_storage();
+            return TurboQuantShadowStorageUsage::default();
+        }
+
+        let cold_tokens = self.seq_len.saturating_sub(compression.hot_window_tokens);
+        if cold_tokens == 0 {
+            self.clear_turboquant_shadow_storage();
+            return TurboQuantShadowStorageUsage::default();
+        }
+
+        for layer_idx in 0..self.layers.len() {
+            if layer_windows.get(layer_idx).copied().flatten().is_some() {
+                self.turboquant_shadow_layers[layer_idx] = None;
+                continue;
+            }
+            if let Some(eligible_layers) = compression_eligible_layers
+                && !eligible_layers.get(layer_idx).copied().unwrap_or(false)
+            {
+                self.turboquant_shadow_layers[layer_idx] = None;
+                continue;
+            }
+
+            let Some(lkv) = self.layers[layer_idx].as_ref() else {
+                self.turboquant_shadow_layers[layer_idx] = None;
+                continue;
+            };
+
+            let Ok(head_dim) = usize::try_from(lkv.head_dim) else {
+                self.turboquant_shadow_layers[layer_idx] = None;
+                continue;
+            };
+            let Ok(n_kv_heads) = usize::try_from(lkv.n_kv_heads) else {
+                self.turboquant_shadow_layers[layer_idx] = None;
+                continue;
+            };
+            let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+                preset: compression.preset,
+                block_tokens: KV_CHUNK_TOKENS,
+                n_kv_heads,
+                head_dim,
+                value_group_size: 32.min(head_dim).max(1),
+            })
+            .expect("TurboQuant shadow support report only permits valid layouts");
+
+            let reset_storage = self.turboquant_shadow_layers[layer_idx]
+                .as_ref()
+                .map(|storage| storage.layout != layout || storage.compressed_tokens > cold_tokens)
+                .unwrap_or(true);
+            if reset_storage {
+                self.turboquant_shadow_layers[layer_idx] = Some(TurboQuantShadowLayerStorage {
+                    layout,
+                    buffer: TurboQuantCompressedBlockBuffer::new(layout),
+                    compressed_tokens: 0,
+                });
+            }
+
+            let storage = self.turboquant_shadow_layers[layer_idx]
+                .as_mut()
+                .expect("storage was just initialized");
+            if storage.compressed_tokens >= cold_tokens {
+                continue;
+            }
+
+            eval(&[&lkv.k, &lkv.v]);
+            for token_index in storage.compressed_tokens..cold_tokens {
+                let heads = kv_heads_for_token(lkv, token_index);
+                storage
+                    .buffer
+                    .write_token(token_index, &heads)
+                    .expect("TurboQuant shadow storage writes validated KV slots");
+            }
+            storage.compressed_tokens = cold_tokens;
+        }
+
+        self.turboquant_shadow_storage_usage()
+    }
+
+    pub fn turboquant_shadow_storage_usage(&self) -> TurboQuantShadowStorageUsage {
+        let mut usage = TurboQuantShadowStorageUsage::default();
+        for storage in self.turboquant_shadow_layers.iter().flatten() {
+            usage.layers = usage.layers.saturating_add(1);
+            usage.token_layers = usage.token_layers.saturating_add(storage.compressed_tokens);
+            usage.bytes = usage
+                .bytes
+                .saturating_add(storage.buffer.as_bytes().len() as u64);
+            usage.written_slots = usage
+                .written_slots
+                .saturating_add(storage.buffer.written_slot_count());
+        }
+        usage
+    }
+
+    fn clear_turboquant_shadow_storage(&mut self) {
+        for storage in &mut self.turboquant_shadow_layers {
+            *storage = None;
+        }
     }
 
     /// Collect refs to all K and V backing buffers for bulk `eval`.
@@ -661,6 +879,11 @@ impl MlxKVCache {
             value_bits,
             ..MlxKvCompressionUsage::default()
         };
+        let storage_usage = self.turboquant_shadow_storage_usage();
+        usage.runtime_storage_layers = storage_usage.layers;
+        usage.runtime_storage_token_layers = storage_usage.token_layers;
+        usage.runtime_storage_bytes = storage_usage.bytes;
+        usage.runtime_storage_written_slots = storage_usage.written_slots;
 
         if self.seq_len < compression.min_context_tokens {
             usage.status_code = 2;
@@ -798,6 +1021,7 @@ impl MlxKVCache {
         for state in &mut self.linear_layers {
             *state = LinearLayerState::default();
         }
+        self.clear_turboquant_shadow_storage();
         self.seq_len = 0;
         self.growth_count = 0;
     }
@@ -1010,6 +1234,55 @@ mod tests {
         assert_eq!(usage.kv_compression.estimated_compressed_bytes, 4_128);
         assert_eq!(usage.kv_compression.estimated_saved_bytes, 6_880);
         assert_eq!(usage.kv_compression.estimated_ratio_milli, 375);
+    }
+
+    #[test]
+    fn turboquant_shadow_sync_writes_runtime_compressed_storage() {
+        let mut cache = MlxKVCache::new(1);
+        let k_data: Vec<f32> = (0..48).map(|idx| idx as f32 / 16.0).collect();
+        let v_data: Vec<f32> = (0..48).map(|idx| 1.0 - (idx as f32 / 64.0)).collect();
+        let k = MlxArray::from_raw_data(
+            k_data.as_ptr().cast(),
+            k_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 6, 4],
+            MlxDtype::Float32,
+        );
+        let v = MlxArray::from_raw_data(
+            v_data.as_ptr().cast(),
+            v_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 6, 4],
+            MlxDtype::Float32,
+        );
+        let compression = MlxKvCompressionConfig {
+            hot_window_tokens: 2,
+            min_context_tokens: 4,
+            ..MlxKvCompressionConfig::turboquant_shadow()
+        };
+
+        cache.append(0, k, v);
+        cache.seq_len = 6;
+        let storage = cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
+
+        assert_eq!(storage.layers, 1);
+        assert_eq!(storage.token_layers, 4);
+        assert_eq!(storage.written_slots, 8);
+        assert!(storage.bytes > 0);
+
+        let usage = cache.usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
+            &[None],
+            compression,
+            Some(&[true]),
+        );
+        assert_eq!(usage.kv_compression.runtime_storage_layers, 1);
+        assert_eq!(usage.kv_compression.runtime_storage_token_layers, 4);
+        assert_eq!(usage.kv_compression.runtime_storage_written_slots, 8);
+        assert_eq!(usage.kv_compression.runtime_storage_bytes, storage.bytes);
+
+        cache.reset();
+        assert_eq!(
+            cache.turboquant_shadow_storage_usage(),
+            TurboQuantShadowStorageUsage::default()
+        );
     }
 
     #[test]

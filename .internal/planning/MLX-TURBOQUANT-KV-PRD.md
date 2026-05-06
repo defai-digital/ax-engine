@@ -362,6 +362,102 @@ Implemented runner route metadata gate slice on 2026-05-06:
 - Still does not allocate compressed KV storage, change logits, alter SDPA, or
   expose a public support claim.
 
+Implemented runtime shadow storage gate slice on 2026-05-06:
+
+- Added `MlxKVCache`-owned TurboQuant shadow compressed storage for eligible
+  full-attention cold tokens.
+- The storage path writes cold K/V token heads into the existing
+  `TurboQuantCompressedBlockBuffer` and tracks runtime storage layers,
+  token-layers, bytes, and written slots in route metadata.
+- Marks the runtime KV storage and runner route metadata gates present for the
+  internal shadow path.
+- Keeps decode on the full-precision cache; the compressed storage is prepared
+  for future fused decode integration but is not consumed by SDPA yet.
+- Keeps the default disabled path silent and allocation-free.
+- Remaining production blockers: real fused MLX/Metal decode kernel,
+  long-context benchmark/model-quality artifact, and public switch/docs.
+
+Implemented fused Metal compressed cold decode kernel slice on 2026-05-06:
+
+- Added an MLX fast Metal kernel for K8/V4 compressed cold-token decode.
+- The kernel reads `TurboQuantCompressedBlockBuffer` bytes, decodes K8 key
+  centroids plus norms and V4 value groups, computes score/softmax/value
+  accumulation in Metal, and returns per-head Float32 decode outputs.
+- Added a launch test comparing the Metal output against the existing CPU
+  reference decode for a 128-dim K8/V4 descriptor.
+- Marks the fused kernel, runtime KV storage, and runner route metadata gates
+  present for the internal shadow/fused path.
+- Keeps the production decode path on full precision until long-context
+  model-quality artifacts and public switch/docs are approved.
+- Remaining production blockers: long-context benchmark/model-quality artifact
+  and public switch/docs.
+
+Implemented quality artifact contract slice on 2026-05-06:
+
+- Added `scripts/check_turboquant_quality_artifact.py` as the fail-closed
+  validator for long-context, model-level TurboQuant promotion artifacts.
+- Added unit tests covering passing artifacts, short-context rejection, quality
+  metric regression rejection, missing runtime storage metadata rejection, and
+  separation from public-doc approval.
+- Added `.internal/turboquant/QUALITY-GATE-ARTIFACT.md` as the internal artifact
+  contract.
+- Requires the initial promoted artifact to use an MLX full-precision baseline,
+  a fused compressed K8/V4 candidate, at least 8192 context tokens, at least
+  128 generation tokens, positive KV savings, positive runtime compressed slot
+  writes, decode throughput ratio >= 0.85, and `reference_k8v4` quality limits.
+- Keeps the production readiness gate blocked until a real model artifact passes
+  this validator and public support docs are approved.
+
+Implemented benchmark harness metadata capture slice on 2026-05-06:
+
+- Extended `scripts/bench_mlx_inference_stack.py` with pass-through support for
+  `--experimental-mlx-kv-compression turboquant-shadow` and the matching
+  hot-window/min-context knobs.
+- Added TurboQuant KV compression route telemetry extraction and per-row
+  summaries for the MLX inference-stack benchmark artifact.
+- Keeps compression metadata silent when the policy is disabled.
+- Keeps the switch experimental; this is benchmark evidence capture, not public
+  production enablement.
+
+Implemented experimental switch documentation slice on 2026-05-06:
+
+- Added public docs for the existing
+  `--experimental-mlx-kv-compression turboquant-shadow` server switch and the
+  benchmark harness pass-through.
+- Documents that the mode is disabled by default, keeps generation on the
+  full-precision MLX KV path, and is benchmark/telemetry evidence only.
+- Keeps production support blocked until a real quality artifact passes and the
+  public support claim is explicitly approved.
+
+Implemented quality artifact builder slice on 2026-05-06:
+
+- Added `scripts/build_turboquant_quality_artifact.py` to compile a promotion
+  artifact from a full-precision benchmark artifact, a TurboQuant candidate
+  benchmark artifact, and a quality-metrics JSON file.
+- The builder computes input artifact SHA-256 values, checks matching prompt
+  hashes, carries route metadata forward, derives decode throughput ratio, and
+  runs the fail-closed validator before writing the artifact.
+- Candidate rows labelled `full_precision_shadow` are rejected and cannot be
+  promoted as fused compressed decode evidence.
+
+Implemented quality metrics builder slice on 2026-05-06:
+
+- Added `scripts/build_turboquant_quality_metrics.py` to compare same-shaped
+  baseline and candidate decode-output vectors.
+- Emits `max_abs_diff`, `mean_abs_diff`, and `min_cosine_similarity` in the JSON
+  shape consumed by the quality artifact builder.
+- Fails closed for empty vectors, non-numeric/non-finite values, output-count
+  mismatches, and vector-dimension mismatches.
+
+Implemented quality gate CLI smoke slice on 2026-05-06:
+
+- Added `scripts/check-turboquant-quality-gate.sh` as a lightweight end-to-end
+  check for the TurboQuant artifact pipeline.
+- The smoke builds synthetic decode quality metrics, compiles a quality
+  artifact, validates it, and proves `full_precision_shadow` candidates fail
+  promotion.
+- Added the smoke to `scripts/check-scripts.sh`.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
@@ -644,6 +740,16 @@ Acceptance:
 
 - Each promoted mode has model-specific benchmark artifacts.
 - Public docs describe only modes that passed gates.
+
+Status: artifact validator implemented. No real long-context model artifact has
+been accepted yet, so the production gate remains blocked. The MLX
+inference-stack benchmark harness can now capture TurboQuant route metadata for
+future candidate artifacts. Public docs expose only the experimental shadow
+switch and do not claim production TurboQuant support. The quality artifact
+builder can now compile a future fused candidate artifact while rejecting shadow
+telemetry as promotion evidence. The metrics builder can now produce the
+quality-metrics input from decode-output vectors without hand-written numbers.
+The CLI pipeline smoke now exercises that flow without loading a model.
 
 ## 8. Metrics
 
