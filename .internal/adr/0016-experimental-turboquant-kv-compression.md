@@ -231,6 +231,13 @@ cold savings fail closed. This remains internal and CPU-only; it does not launch
 kernels, allocate MLX storage, alter SDPA, change generation, publish route
 metadata, or expose a public switch.
 
+The fused decode promotion evidence report is accepted as the artifact-facing
+view above readiness, benchmark estimate, and quality gate decisions. Descriptor
+`promotion_evidence()` reports readiness plus quality pass status, max/mean
+absolute error, cosine similarity, and their gate limits. This remains internal
+and CPU-only; it does not launch kernels, allocate MLX storage, alter SDPA,
+change generation, publish route metadata, or expose a public switch.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

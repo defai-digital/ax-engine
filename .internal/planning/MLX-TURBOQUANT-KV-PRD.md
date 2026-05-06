@@ -313,6 +313,16 @@ Implemented fused decode promotion readiness slice on 2026-05-06:
   kernel, allocate MLX storage, change SDPA, change generation, publish route
   metadata, or expose a user-facing switch.
 
+Implemented fused decode promotion evidence slice on 2026-05-06:
+
+- Added `TurboQuantFusedDecodePromotionEvidence` as the promotion artifact view
+  above readiness, benchmark estimate, and decode quality gate decisions.
+- Added descriptor `promotion_evidence()` to report readiness plus quality pass
+  status, max/mean absolute error, cosine similarity, and their gate limits.
+- Keeps evidence generation CPU-only and internal; it does not launch a kernel,
+  allocate MLX storage, change SDPA, change generation, publish route metadata,
+  or expose a user-facing switch.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
