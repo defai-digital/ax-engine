@@ -31,26 +31,20 @@ pub fn chunked_prefill(
 
         if offset == total {
             // GPU argmax over [vocab] logits → token ID.
+            // KV cache is in the computation graph of token_arr (via SDPA), so
+            // evaluating token_arr materialises all KV buffers as a side effect.
             let token_arr = argmax(&logits, None);
-            let kv_refs = cache.collect_eval_refs();
-            let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
-            targets.push(&token_arr);
-            targets.extend(kv_refs);
-            eval(&targets);
+            eval(&[&token_arr]);
             // Free MLX's graph/intermediate-array cache after prefill.
             // SwiftLM does the same (MLX.Memory.clearCache()) to reclaim GPU
             // memory consumed by the prefill computation graph.
             clear_cache();
             return token_arr.data_u32().first().copied().unwrap_or(0);
         } else {
-            // Drain GPU queue asynchronously and materialise appended KV buffers.
-            // Each chunk updates K/V through lazy slice_update graph nodes; evaluating
-            // only logits lets long-prefill graphs accumulate across chunks.
-            let kv_refs = cache.collect_eval_refs();
-            let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
-            targets.push(&logits);
-            targets.extend(kv_refs);
-            async_eval(&targets);
+            // Drain GPU queue asynchronously. logits depends on the KV cache
+            // transitively (via SDPA), so evaluating logits materialises the
+            // appended KV slice_update nodes and prevents O(N²) graph growth.
+            async_eval(&[&logits]);
         }
     }
 }
@@ -71,12 +65,9 @@ pub fn start_direct_pipeline(
     let token_offset = cache.seq_len;
     let logits = forward(cfg, weights, &[last_token], cache, token_offset);
     cache.seq_len += 1;
+    // KV cache is in token_arr's computation graph; no extra refs needed.
     let token_arr = argmax(&logits, None);
-    let kv_refs = cache.collect_eval_refs();
-    let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
-    targets.push(&token_arr);
-    targets.extend(kv_refs);
-    async_eval(&targets);
+    async_eval(&[&token_arr]);
     token_arr
 }
 
@@ -103,13 +94,9 @@ pub fn advance_direct_pipeline(
     let logits = forward_lazy_single(cfg, weights, pending, cache, token_offset);
     cache.seq_len += 1;
     let next_token_arr = argmax(&logits, None);
-    let kv_refs = cache.collect_eval_refs();
-    let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
-    targets.push(&next_token_arr);
-    targets.extend(kv_refs);
     // Submit step N+1 to the GPU before waiting for step N.
-    // The GPU will sequence correctly: N+1 starts as soon as N's results are ready.
-    async_eval(&targets);
+    // KV cache is in next_token_arr's computation graph, so no extra refs needed.
+    async_eval(&[&next_token_arr]);
 
     // Materialise the pending (step N) token.  Because `async_eval` was called
     // in the previous `start_direct_pipeline` / `advance_direct_pipeline`, the GPU
@@ -138,25 +125,17 @@ pub fn decode_step(
     let logits = forward(cfg, weights, &[last_token], cache, token_offset);
     cache.seq_len += 1;
 
-    let kv_refs = cache.collect_eval_refs();
-
     if temperature > 0.0 {
-        // Eval logits + KV buffers to CPU, then sample with temperature.
-        // Each append() adds a slice_update graph node to every layer's K/V buffer;
-        // materialising here prevents O(N²) graph traversal over the decode loop.
-        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
-        targets.push(&logits);
-        targets.extend(kv_refs);
-        eval(&targets);
+        // logits is in the KV cache's computation graph, so evaluating logits
+        // materialises all KV slice_update nodes and prevents O(N²) graph growth.
+        eval(&[&logits]);
         let logits_data = logits.data_f32();
         sample_categorical(logits_data, temperature, rng)
     } else {
         // Deterministic argmax path: GPU argmax, no CPU data movement.
+        // KV cache is in token_arr's computation graph via SDPA dependency.
         let token_arr = argmax(&logits, None);
-        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
-        targets.push(&token_arr);
-        targets.extend(kv_refs);
-        eval(&targets);
+        eval(&[&token_arr]);
         token_arr.data_u32().first().copied().unwrap_or(0)
     }
 }

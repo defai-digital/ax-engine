@@ -224,6 +224,8 @@ pub struct ModelConfig {
     pub glm_mla_attention: Option<GlmMlaAttentionConfig>,
     /// GLM4MoELite sigmoid router config, when present.
     pub glm_router: Option<GlmRouterConfig>,
+    /// Epsilon for all RMSNorm operations (1e-6 for Qwen/Gemma, 1e-5 for GLM).
+    pub rms_norm_eps: f32,
 }
 
 impl ModelConfig {
@@ -274,6 +276,13 @@ impl ModelConfig {
             linear_attention: LinearAttentionConfig::from_manifest(m),
             glm_mla_attention: GlmMlaAttentionConfig::from_manifest(m),
             glm_router: GlmRouterConfig::from_manifest(m),
+            rms_norm_eps: if m.model_family.starts_with("qwen")
+                || m.model_family.starts_with("gemma")
+            {
+                1e-6
+            } else {
+                1e-5
+            },
         }
     }
 
@@ -389,7 +398,7 @@ pub fn layer_forward(
         layer_params(cfg, layer_idx);
 
     // 1. Attention norm.
-    let normed = rms_norm(hidden, Some(&w.attn_norm), 1e-6, None);
+    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
 
     let seq = hidden.shape()[1] as usize;
 
@@ -398,7 +407,7 @@ pub fn layer_forward(
     } else if w.glm_mla_attn.is_some() {
         let attn_proj = glm_mla_attention_forward(cfg, w, &normed, cache, layer_idx, token_offset);
         if let Some(post_norm) = &w.attn_post_norm {
-            rms_norm(&attn_proj, Some(post_norm), 1e-6, None)
+            rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
         } else {
             attn_proj
         }
@@ -415,7 +424,7 @@ pub fn layer_forward(
                 &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
                 None,
             );
-            let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq);
+            let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq, cfg.rms_norm_eps);
             let q = transpose(&q, &[0, 2, 1, 3], None);
             let q_rope = rope(
                 &q,
@@ -452,8 +461,8 @@ pub fn layer_forward(
                 None,
             );
 
-            let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq);
-            let k = qk_norm_bshd(k, w.k_norm.as_ref(), kv_heads, head_dim, seq);
+            let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq, cfg.rms_norm_eps);
+            let k = qk_norm_bshd(k, w.k_norm.as_ref(), kv_heads, head_dim, seq, cfg.rms_norm_eps);
 
             let q = transpose(&q, &[0, 2, 1, 3], None);
             let k = transpose(&k, &[0, 2, 1, 3], None);
@@ -523,7 +532,7 @@ pub fn layer_forward(
 
         // 14. Optional post-attention layernorm (Gemma4): applied BEFORE residual add.
         if let Some(post_norm) = &w.attn_post_norm {
-            rms_norm(&attn_proj, Some(post_norm), 1e-6, None)
+            rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
         } else {
             attn_proj
         }
@@ -533,24 +542,24 @@ pub fn layer_forward(
     let hidden = add(hidden, &attn_proj, None);
 
     // 16. Pre-FFN norm.
-    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), 1e-6, None);
+    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
 
     // 17. FFN: MoE or dense.
     let ffn_out = if w.router_proj.is_some() {
         if cfg.gemma4_moe_router {
             // Gemma4 dual-path: dense sub-block + expert sub-block.
             let h1 = ffn_swiglu(cfg, w, &normed2);
-            let h1 = rms_norm_opt(&h1, w.ffn_post_norm1.as_ref());
+            let h1 = rms_norm_opt(&h1, w.ffn_post_norm1.as_ref(), cfg.rms_norm_eps);
             let h2_normed = if let Some(n2) = &w.ffn_norm2 {
-                rms_norm(&hidden, Some(n2), 1e-6, None)
+                rms_norm(&hidden, Some(n2), cfg.rms_norm_eps, None)
             } else {
                 normed2
             };
             let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
             let h2 = moe_experts_forward(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
-            let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref());
+            let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref(), cfg.rms_norm_eps);
             let combined = add(&h1, &h2, None);
-            rms_norm_opt(&combined, w.ffn_post_norm.as_ref())
+            rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
         } else {
             let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
                 moe_router_glm(cfg, w, &normed2)
@@ -559,15 +568,15 @@ pub fn layer_forward(
                 moe_router_qwen3(cfg, w, &normed2)
             };
             let mut out = moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights);
-            if w.shared_expert_gate.is_some() {
+            if w.shared_gate_proj.is_some() {
                 out = add(&out, &shared_expert_forward(w, &normed2), None);
             }
-            rms_norm_opt(&out, w.ffn_post_norm.as_ref())
+            rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
         }
     } else {
         // Dense path (Qwen3, Gemma4 non-MoE layers).
         let out = ffn_swiglu(cfg, w, &normed2);
-        rms_norm_opt(&out, w.ffn_post_norm.as_ref())
+        rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
     };
 
     // 18. Residual.
@@ -583,7 +592,7 @@ pub fn layer_forward(
         let gate = gelu_approx(&qw(&out, gate_w), None);
         let gated = multiply(&gate, pli, None);
         let projected = qw(&gated, proj_w);
-        let normed = rms_norm(&projected, Some(post_norm), 1e-6, None);
+        let normed = rms_norm(&projected, Some(post_norm), cfg.rms_norm_eps, None);
         out = add(&out, &normed, None);
     }
 
@@ -675,7 +684,7 @@ pub fn forward(
         hidden
     };
 
-    let normed = rms_norm(&last_hidden, Some(&weights.final_norm), 1e-6, None);
+    let normed = rms_norm(&last_hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
@@ -705,7 +714,7 @@ pub fn forward_all_positions(
     }
 
     let seq = token_ids.len() as i32;
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), 1e-6, None);
+    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
@@ -736,7 +745,7 @@ pub fn forward_for_embedding(
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward(cfg, layer_w, &hidden, &mut cache, li, 0, pli);
     }
-    rms_norm(&hidden, Some(&weights.final_norm), 1e-6, None)
+    rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None)
 }
 
 /// Single-token forward pass accepting a lazy token `MlxArray`.
@@ -774,7 +783,7 @@ pub fn forward_lazy_single(
         hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset, pli);
     }
     // Single token: hidden shape is [1, 1, hidden_size] — no sequence slice needed.
-    let normed = rms_norm(&hidden, Some(&weights.final_norm), 1e-6, None);
+    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
@@ -833,7 +842,7 @@ fn compute_per_layer_inputs_arr(
         None,
     );
     // RMSNorm over last dim (per_layer_dim)
-    let proj_out = rms_norm(&proj_out, Some(proj_norm_w), 1e-6, None);
+    let proj_out = rms_norm(&proj_out, Some(proj_norm_w), cfg.rms_norm_eps, None);
 
     // 3. Combine: (proj + embed) * 2^(-0.5)
     let combined_scale = 2.0_f32.powf(-0.5);
@@ -881,10 +890,11 @@ fn qk_norm_bshd(
     n_heads: usize,
     head_dim: usize,
     seq: usize,
+    eps: f32,
 ) -> MlxArray {
     let Some(n) = norm else { return x };
     let flat = reshape(&x, &[(n_heads * seq) as i32, head_dim as i32], None);
-    let normed = rms_norm(&flat, Some(n), 1e-6, None);
+    let normed = rms_norm(&flat, Some(n), eps, None);
     reshape(
         &normed,
         &[1, seq as i32, n_heads as i32, head_dim as i32],
@@ -940,9 +950,9 @@ fn attention_mask_array(
 }
 
 /// Apply optional RMS norm; pass `x` through if `norm` is None.
-fn rms_norm_opt(x: &MlxArray, norm: Option<&MlxArray>) -> MlxArray {
+fn rms_norm_opt(x: &MlxArray, norm: Option<&MlxArray>, eps: f32) -> MlxArray {
     if let Some(n) = norm {
-        rms_norm(x, Some(n), 1e-6, None)
+        rms_norm(x, Some(n), eps, None)
     } else {
         x.clone()
     }
@@ -1043,7 +1053,7 @@ fn glm_mla_project_inputs(
     let seq = x.shape()[1];
 
     let q_a = qw(x, &mla_w.q_a_proj);
-    let q_a = rms_norm(&q_a, Some(&mla_w.q_a_norm), 1e-6, None);
+    let q_a = rms_norm(&q_a, Some(&mla_w.q_a_norm), cfg.rms_norm_eps, None);
     let q = qw(&q_a, &mla_w.q_b_proj);
     let q = reshape(
         &q,
@@ -1077,7 +1087,7 @@ fn glm_mla_project_inputs(
         (mla_cfg.kv_lora_rank + mla_cfg.qk_rope_head_dim) as i32,
         None,
     );
-    let kv_latent = rms_norm(&kv_latent_raw, Some(&mla_w.kv_a_norm), 1e-6, None);
+    let kv_latent = rms_norm(&kv_latent_raw, Some(&mla_w.kv_a_norm), cfg.rms_norm_eps, None);
     let kv_latent = expand_dims(&kv_latent, 1, None);
     let k_pe = reshape(&k_pe, &[1, seq, 1, mla_cfg.qk_rope_head_dim as i32], None);
     let k_pe = transpose(&k_pe, &[0, 2, 1, 3], None);
@@ -1669,7 +1679,7 @@ fn moe_router_gemma4(
     );
     let scale_arr = astype(&scale_arr, MlxDtype::Bfloat16, None);
     let combined_scale = multiply(router_scale, &scale_arr, None);
-    let normed = rms_norm(hidden, Some(&combined_scale), 1e-6, None);
+    let normed = rms_norm(hidden, Some(&combined_scale), cfg.rms_norm_eps, None);
 
     let expert_scores = qw(&normed, router_proj);
     let (top_k_indices, mut top_k_weights) = top_k_by_argpartition(
@@ -2092,6 +2102,7 @@ mod tests {
             linear_attention: None,
             glm_mla_attention: None,
             glm_router: None,
+            rms_norm_eps: 1e-6,
         }
     }
 

@@ -36,10 +36,10 @@ pub struct TurboQuantProductionReadiness {
 }
 
 impl TurboQuantProductionRequirements {
-    pub const fn mlx_shadow_route_metadata() -> Self {
+    pub const fn mlx_shadow_fused_kernel() -> Self {
         Self {
-            fused_decode_kernel: false,
-            runtime_kv_storage: false,
+            fused_decode_kernel: true,
+            runtime_kv_storage: true,
             runner_route_metadata: true,
             long_context_benchmark_artifact: false,
             public_switch_and_docs: false,
@@ -1126,6 +1126,13 @@ impl TurboQuantCompressedBlockBuffer {
 
     pub fn token_count(&self) -> usize {
         self.token_count
+    }
+
+    pub fn written_slot_count(&self) -> usize {
+        self.written_slots
+            .iter()
+            .filter(|written| **written)
+            .count()
     }
 
     pub fn block_count(&self) -> usize {
@@ -2258,6 +2265,7 @@ mod tests {
             linear_attention: None,
             glm_mla_attention: None,
             glm_router: None,
+            rms_norm_eps: 1e-6,
         }
     }
 
@@ -2340,15 +2348,13 @@ mod tests {
     }
 
     #[test]
-    fn production_readiness_marks_shadow_route_metadata_gate_present() {
-        let readiness = TurboQuantProductionRequirements::mlx_shadow_route_metadata().evaluate();
+    fn production_readiness_marks_shadow_fused_kernel_storage_and_metadata_gates_present() {
+        let readiness = TurboQuantProductionRequirements::mlx_shadow_fused_kernel().evaluate();
 
         assert!(!readiness.is_ready());
         assert_eq!(
             readiness.blockers,
             vec![
-                TurboQuantProductionBlocker::FusedDecodeKernel,
-                TurboQuantProductionBlocker::RuntimeKvStorage,
                 TurboQuantProductionBlocker::LongContextBenchmarkArtifact,
                 TurboQuantProductionBlocker::PublicSwitchAndDocs,
             ]
