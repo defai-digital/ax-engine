@@ -159,6 +159,13 @@ files are present.
   conv1d `moveaxis(2,1)` transformations that the converter does not apply.
 - **N-gram acceleration rows**: effective-throughput measurements, not raw model-kernel
   speedups. n-gram hit rate is prompt/output-pattern dependent.
+- **TurboQuant KV compression**: experimental and off by default. The
+  `turboquant-shadow` and `turboquant-fused-experimental` modes are evidence
+  and route-telemetry surfaces, not production support claims. Public support
+  requires a passing long-context, model-level quality artifact and decode
+  throughput gate; current Gemma 4 E2B local evidence reaches the fused
+  compressed route with zero fallback but does not pass the promotion
+  performance gate.
 
 ## Performance
 

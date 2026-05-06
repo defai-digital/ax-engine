@@ -30,6 +30,12 @@ comparisons with a required matching `mlx_lm.benchmark` primary baseline, option
 `mlx-swift-lm` secondary baseline adapter rows, delegated `mlx_lm_delegated`
 compatibility checks, and delegated non-MLX route checks.
 
+Experimental MLX KV compression, including `turboquant-shadow` and
+`turboquant-fused-experimental`, is off by default and is not a production
+support claim. Treat TurboQuant results as evidence artifacts only until a
+long-context, model-level quality artifact and decode-throughput promotion gate
+both pass.
+
 Public docs should not contain:
 
 - PRDs
