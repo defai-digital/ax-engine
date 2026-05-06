@@ -303,6 +303,66 @@ pub struct TurboQuantSlotAddress {
     pub slot_bytes: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurboQuantCompressedDecodePath {
+    FullPrecisionOnly,
+    CompressedColdWithHotWindow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantCompressedDecodePlan {
+    pub layout: TurboQuantBlockLayout,
+    pub total_tokens: usize,
+    pub cold_tokens: usize,
+    pub hot_tokens: usize,
+    pub compressed_blocks: usize,
+    pub compressed_buffer_bytes: usize,
+    pub required_compressed_slots: usize,
+    pub decode_path: TurboQuantCompressedDecodePath,
+    pub quality_profile: TurboQuantDecodeQualityProfile,
+}
+
+impl TurboQuantCompressedDecodePlan {
+    pub fn new(
+        layout: TurboQuantBlockLayout,
+        total_tokens: usize,
+        hot_window_tokens: usize,
+    ) -> Result<Self, TurboQuantCodecError> {
+        validate_layout_nonzero("total_tokens", total_tokens)?;
+        let cold_tokens = total_tokens.saturating_sub(hot_window_tokens);
+        let hot_tokens = total_tokens.saturating_sub(cold_tokens);
+        let compressed_blocks = layout.block_count_for_tokens(cold_tokens);
+        let compressed_buffer_bytes = layout.buffer_bytes_for_tokens(cold_tokens)?;
+        let required_compressed_slots = checked_mul(cold_tokens, layout.config.n_kv_heads)?;
+        let decode_path = if cold_tokens == 0 {
+            TurboQuantCompressedDecodePath::FullPrecisionOnly
+        } else {
+            TurboQuantCompressedDecodePath::CompressedColdWithHotWindow
+        };
+        let quality_profile =
+            TurboQuantDecodeQualityProfile::for_quantization_preset(layout.config.preset);
+
+        Ok(Self {
+            layout,
+            total_tokens,
+            cold_tokens,
+            hot_tokens,
+            compressed_blocks,
+            compressed_buffer_bytes,
+            required_compressed_slots,
+            decode_path,
+            quality_profile,
+        })
+    }
+
+    pub fn needs_compressed_decode(self) -> bool {
+        matches!(
+            self.decode_path,
+            TurboQuantCompressedDecodePath::CompressedColdWithHotWindow
+        )
+    }
+}
+
 impl TurboQuantBlockLayout {
     pub fn new(config: TurboQuantBlockLayoutConfig) -> Result<Self, TurboQuantCodecError> {
         validate_layout_nonzero("block_tokens", config.block_tokens)?;
@@ -1837,6 +1897,88 @@ mod tests {
                 name: "head_index",
                 index: 2,
                 limit: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn compressed_decode_plan_splits_cold_and_hot_history() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 16,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 40, 8).expect("plan should build");
+
+        assert_eq!(plan.total_tokens, 40);
+        assert_eq!(plan.cold_tokens, 32);
+        assert_eq!(plan.hot_tokens, 8);
+        assert_eq!(plan.compressed_blocks, 2);
+        assert_eq!(plan.compressed_buffer_bytes, 2048);
+        assert_eq!(plan.required_compressed_slots, 64);
+        assert_eq!(
+            plan.decode_path,
+            TurboQuantCompressedDecodePath::CompressedColdWithHotWindow
+        );
+        assert!(plan.needs_compressed_decode());
+        assert_eq!(
+            plan.quality_profile,
+            TurboQuantDecodeQualityProfile::ReferenceK8V4
+        );
+    }
+
+    #[test]
+    fn compressed_decode_plan_falls_back_when_history_is_inside_hot_window() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K4V4,
+            block_tokens: 16,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 8, 16).expect("plan should build");
+
+        assert_eq!(plan.cold_tokens, 0);
+        assert_eq!(plan.hot_tokens, 8);
+        assert_eq!(plan.compressed_blocks, 0);
+        assert_eq!(plan.compressed_buffer_bytes, 0);
+        assert_eq!(plan.required_compressed_slots, 0);
+        assert_eq!(
+            plan.decode_path,
+            TurboQuantCompressedDecodePath::FullPrecisionOnly
+        );
+        assert!(!plan.needs_compressed_decode());
+        assert_eq!(
+            plan.quality_profile,
+            TurboQuantDecodeQualityProfile::ResearchLoose
+        );
+    }
+
+    #[test]
+    fn compressed_decode_plan_fails_closed_for_empty_history() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 16,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+
+        let error = TurboQuantCompressedDecodePlan::new(layout, 0, 16)
+            .expect_err("empty decode history should fail");
+
+        assert_eq!(
+            error,
+            TurboQuantCodecError::InvalidLayoutParameter {
+                name: "total_tokens",
+                value: 0,
             }
         );
     }
