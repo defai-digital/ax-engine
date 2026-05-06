@@ -87,6 +87,8 @@ AX_NGRAM_TELEMETRY_KEYS = [
     "ax_ngram_cooldown_steps",
     "ax_ngram_cooldown_events",
     "ax_ngram_cooldown_steps_scheduled",
+    "ax_ngram_request_disable_events",
+    "ax_ngram_request_disabled_steps",
 ]
 AX_NGRAM_ACCEPT_RATE_KEY = "ax_ngram_accept_rate_micros"
 
@@ -564,6 +566,15 @@ def route_with_more_decisions(
     current_count = len(current.get("crossover_decisions") or {})
     if candidate_count > current_count:
         return candidate
+    if candidate_count == current_count:
+        candidate_total = sum(
+            int(value) for value in (candidate.get("crossover_decisions") or {}).values()
+        )
+        current_total = sum(
+            int(value) for value in (current.get("crossover_decisions") or {}).values()
+        )
+        if candidate_total > current_total:
+            return candidate
     return current
 
 
