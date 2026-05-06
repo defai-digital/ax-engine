@@ -111,6 +111,12 @@ attention oracle. This gives future fused compressed decode kernels a
 per-head comparison target while still avoiding MLX allocation, runtime KV
 storage changes, SDPA integration, or generation behavior changes.
 
+The compressed all-head decode oracle extends that contract without changing the
+runtime boundary. `debug_decode_attention_for_all_heads` accepts one query vector
+per KV head and returns one decoded output per head by reusing the per-head
+oracle. It fails closed on query/head-count mismatch and remains disconnected
+from MLX allocation, runtime KV storage, SDPA, and generation.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

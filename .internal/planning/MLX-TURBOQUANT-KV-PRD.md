@@ -110,6 +110,16 @@ Implemented compressed head decode oracle slice on 2026-05-06:
 - Keeps the oracle disconnected from MLX allocation, runtime KV storage, SDPA,
   and generation.
 
+Implemented compressed all-head decode oracle slice on 2026-05-06:
+
+- Added CPU-only all-head decode attention over `TurboQuantCompressedBlockBuffer`.
+- Accepts one query vector per KV head and returns one decoded output per head.
+- Reuses the per-head compressed decode oracle, preserving deterministic
+  comparison behavior for future fused kernels.
+- Fails closed when the query head count does not match the compressed layout.
+- Keeps the oracle disconnected from MLX allocation, runtime KV storage, SDPA,
+  and generation.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
