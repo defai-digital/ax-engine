@@ -117,6 +117,14 @@ pub enum TurboQuantDecodeQualityProfile {
 }
 
 impl TurboQuantDecodeQualityProfile {
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::StrictDebug => 1,
+            Self::ReferenceK8V4 => 2,
+            Self::ResearchLoose => 3,
+        }
+    }
+
     pub const fn gate(self) -> TurboQuantDecodeQualityGate {
         match self {
             Self::StrictDebug => TurboQuantDecodeQualityGate::STRICT_DEBUG,
@@ -486,6 +494,17 @@ pub enum TurboQuantFusedDecodePromotionStatus {
     NoColdSavings,
 }
 
+impl TurboQuantFusedDecodePromotionStatus {
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Ready => 1,
+            Self::QualityPresetMismatch => 2,
+            Self::QualityGateFailed => 3,
+            Self::NoColdSavings => 4,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TurboQuantFusedDecodePromotionReadiness {
     pub status: TurboQuantFusedDecodePromotionStatus,
@@ -504,6 +523,53 @@ pub struct TurboQuantFusedDecodePromotionEvidence {
     pub mean_abs_diff_limit: f32,
     pub min_cosine_similarity: f32,
     pub min_cosine_similarity_limit: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantFusedDecodePromotionEvidenceSummary {
+    pub status_code: u32,
+    pub ready: bool,
+    pub preset_code: u32,
+    pub quality_profile_code: u32,
+    pub quality_passed: bool,
+    pub max_abs_diff_microunits: u32,
+    pub max_abs_diff_limit_microunits: u32,
+    pub mean_abs_diff_microunits: u32,
+    pub mean_abs_diff_limit_microunits: u32,
+    pub min_cosine_similarity_microunits: u32,
+    pub min_cosine_similarity_limit_microunits: u32,
+    pub estimated_cold_saved_kib: usize,
+    pub estimated_total_saved_read_kib: usize,
+    pub cold_compression_ratio_milli: u32,
+}
+
+impl TurboQuantFusedDecodePromotionEvidence {
+    pub fn summary(&self) -> TurboQuantFusedDecodePromotionEvidenceSummary {
+        TurboQuantFusedDecodePromotionEvidenceSummary {
+            status_code: self.readiness.status.code(),
+            ready: self.readiness.is_ready(),
+            preset_code: self.readiness.preset.route_code(),
+            quality_profile_code: self.readiness.quality_profile.code(),
+            quality_passed: self.quality_passed,
+            max_abs_diff_microunits: f32_microunits(self.max_abs_diff),
+            max_abs_diff_limit_microunits: f32_microunits(self.max_abs_diff_limit),
+            mean_abs_diff_microunits: f32_microunits(self.mean_abs_diff),
+            mean_abs_diff_limit_microunits: f32_microunits(self.mean_abs_diff_limit),
+            min_cosine_similarity_microunits: f32_microunits(self.min_cosine_similarity),
+            min_cosine_similarity_limit_microunits: f32_microunits(
+                self.min_cosine_similarity_limit,
+            ),
+            estimated_cold_saved_kib: self.readiness.benchmark_estimate.estimated_cold_saved_kib,
+            estimated_total_saved_read_kib: self
+                .readiness
+                .benchmark_estimate
+                .estimated_total_saved_read_kib,
+            cold_compression_ratio_milli: self
+                .readiness
+                .benchmark_estimate
+                .cold_compression_ratio_milli,
+        }
+    }
 }
 
 impl TurboQuantFusedDecodePromotionReadiness {
@@ -2025,6 +2091,14 @@ fn compression_ratio_milli(compressed_bytes: usize, full_precision_bytes: usize)
     }
 }
 
+fn f32_microunits(value: f32) -> u32 {
+    if value <= 0.0 {
+        0
+    } else {
+        (value * 1_000_000.0).round().min(u32::MAX as f32) as u32
+    }
+}
+
 fn kib_ceil_usize(bytes: usize) -> usize {
     bytes / 1024 + usize::from(!bytes.is_multiple_of(1024))
 }
@@ -2999,6 +3073,68 @@ mod tests {
                 .benchmark_estimate
                 .estimated_cold_saved_kib,
             1
+        );
+    }
+
+    #[test]
+    fn fused_decode_promotion_evidence_reports_artifact_summary() {
+        let descriptor = TurboQuantFusedDecodeLaunchDescriptor {
+            preset: MlxTurboQuantPreset::K8V4,
+            key_bits: 8,
+            value_bits: 4,
+            total_tokens: 2,
+            cold_tokens: 1,
+            hot_tokens: 1,
+            n_kv_heads: 1,
+            head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+            block_tokens: 2,
+            compressed_blocks: 1,
+            compressed_buffer_bytes: 480,
+            required_compressed_slots: 1,
+            value_group_size: 32,
+            value_group_count: 4,
+            key_payload_bytes_per_head: 128,
+            key_norm_bytes_per_head: 4,
+            value_payload_bytes_per_head: 64,
+            value_metadata_bytes_per_head: 32,
+            raw_slot_bytes_per_head: 228,
+            slot_bytes_per_head: 240,
+            token_stride_bytes: 240,
+            block_bytes: 480,
+            key_payload_offset_in_slot: 0,
+            key_norm_offset_in_slot: 128,
+            value_payload_offset_in_slot: 132,
+            value_mins_offset_in_slot: 196,
+            value_scales_offset_in_slot: 212,
+        };
+        let comparison = compare_decode_outputs(
+            &[vec![1.0; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            &[vec![1.0; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+        )
+        .expect("comparison should pass");
+        let quality_check =
+            TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, comparison);
+
+        let summary = descriptor.promotion_evidence(&quality_check).summary();
+
+        assert_eq!(
+            summary,
+            TurboQuantFusedDecodePromotionEvidenceSummary {
+                status_code: 1,
+                ready: true,
+                preset_code: 1,
+                quality_profile_code: 2,
+                quality_passed: true,
+                max_abs_diff_microunits: 0,
+                max_abs_diff_limit_microunits: 40_000,
+                mean_abs_diff_microunits: 0,
+                mean_abs_diff_limit_microunits: 20_000,
+                min_cosine_similarity_microunits: 1_000_000,
+                min_cosine_similarity_limit_microunits: 998_000,
+                estimated_cold_saved_kib: 1,
+                estimated_total_saved_read_kib: 1,
+                cold_compression_ratio_milli: 222,
+            }
         );
     }
 
