@@ -84,6 +84,10 @@ throughput baselines.
 - `check_turboquant_public_docs.py`: lightweight public-docs contract check for
   the optional TurboQuant switch, telemetry-only shadow boundary, and sync
   timing docs.
+- `check_turboquant_promotion_readiness.py`: fail-closed readiness report for
+  TurboQuant public-support promotion. It scans local model manifests and
+  quality-gate artifacts, then reports whether public docs must remain
+  experimental.
 - `cargo run -p ax-engine-mlx --release --bin turboquant-microbench -- ...`:
   TurboQuant fused cold-decode microbenchmark. It compares the K8/V4 MLX/Metal
   kernels against the CPU reference oracle and writes

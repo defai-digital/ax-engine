@@ -458,6 +458,20 @@ Implemented quality gate CLI smoke slice on 2026-05-06:
   promotion.
 - Added the smoke to `scripts/check-scripts.sh`.
 
+Implemented promotion readiness report slice on 2026-05-06:
+
+- Added `scripts/check_turboquant_promotion_readiness.py` to scan local model
+  manifests and saved quality-gate artifacts before any public support claim.
+- The report currently blocks promotion because the local model set uses
+  `attention_head_dim=256` and/or grouped-query, linear-attention, or MLA
+  layouts, while the first fused K8/V4 promotion gate accepts only
+  `head_dim=128`, non-GQA full-attention decode with `fused_compressed_decode`
+  successes and zero fallbacks.
+- This makes the correct current decision explicit: public docs remain
+  experimental until either a qualifying `head_dim=128` model artifact passes,
+  or the fused kernel, runtime gate, and quality artifact validator are extended
+  and revalidated for 256-dim/GQA model families.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

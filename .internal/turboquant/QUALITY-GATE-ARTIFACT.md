@@ -68,8 +68,23 @@ python3 scripts/build_turboquant_quality_artifact.py \
 ```
 
 The builder validates the produced artifact before writing it. Candidate rows
-that are only `full_precision_shadow` evidence fail validation and cannot be
-promoted as fused compressed decode evidence.
+that are only `full_precision_shadow` or `cpu_oracle_compressed_decode`
+evidence fail validation and cannot be promoted as fused compressed decode
+evidence.
+
+The initial promotion gate is intentionally narrower than the benchmark
+telemetry surface: it accepts only K8/V4 `turboquant-fused-experimental`
+artifacts with `head_dim=128`, `fused_compressed_decode`, positive fused decode
+successes, and zero fused decode fallbacks. If the local model set contains
+only `attention_head_dim=256` manifests, the correct outcome is a blocked
+readiness report, not a public support claim.
+
+Check the current promotion boundary without running a model:
+
+```text
+python3 scripts/check_turboquant_promotion_readiness.py \
+  --output benchmarks/results/turboquant/<date>/promotion-readiness.json
+```
 
 Run the lightweight CLI pipeline smoke without loading a model:
 

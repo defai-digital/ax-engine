@@ -156,6 +156,12 @@ decode attempts and successes greater than zero, and zero fused decode
 fallbacks. Shadow rows and cpu_oracle_compressed_decode rows are useful for
 diagnosis, but they are rejected as promotion evidence.
 
+Before changing public support wording, run
+`scripts/check_turboquant_promotion_readiness.py`. Public docs must remain
+experimental while that report has blockers, for example when the available
+model manifests cannot exercise the current `head_dim=128` fused K8/V4 gate or
+no passing long-context fused-path quality artifact exists.
+
 The internal quantitative benchmark design lives in
 `.internal/benchmark/TURBOQUANT-BENCHMARK-DESIGN.md`. It separates microkernel
 timing, optional shadow-storage overhead, integrated fused compressed decode,
