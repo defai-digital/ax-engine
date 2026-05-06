@@ -11,8 +11,7 @@
   ],
   "toolchain_requirements": [
     "xcrun metal",
-    "xcrun metallib",
-    "xcrun metal-ar"
+    "xcrun metallib"
   ],
   "doctor": {
     "status": "ready",

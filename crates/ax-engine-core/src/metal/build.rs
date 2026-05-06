@@ -217,12 +217,17 @@ pub fn build_phase1_kernel_artifacts(
         metalar_path.display().to_string(),
         air_path.display().to_string(),
     ];
+    let compile_metallib_input_path = if request.doctor.metal_toolchain.metal_ar.available {
+        metalar_path.as_path()
+    } else {
+        air_path.as_path()
+    };
     let compile_metallib_cmd = vec![
         "xcrun".to_string(),
         "--sdk".to_string(),
         "macosx".to_string(),
         "metallib".to_string(),
-        metalar_path.display().to_string(),
+        compile_metallib_input_path.display().to_string(),
         "-o".to_string(),
         metallib_path.display().to_string(),
     ];
@@ -283,25 +288,33 @@ pub fn build_phase1_kernel_artifacts(
         build_report.reason =
             Some("AX native bring-up is not allowed on this machine without override".to_string());
     } else {
-        build_report.compile_commands = vec![
-            compile_air_cmd.clone(),
-            compile_metalar_cmd.clone(),
-            compile_metallib_cmd.clone(),
-        ];
+        build_report.compile_commands = vec![compile_air_cmd.clone()];
+        if request.doctor.metal_toolchain.metal_ar.available {
+            build_report
+                .compile_commands
+                .push(compile_metalar_cmd.clone());
+        }
+        build_report
+            .compile_commands
+            .push(compile_metallib_cmd.clone());
 
         let compile_result = run_toolchain_command(
             &compile_air_cmd,
             &workspace_root,
             request.toolchain_path_override.as_ref(),
-        )
-        .and_then(|_| {
-            run_toolchain_command(
-                &compile_metalar_cmd,
-                &workspace_root,
-                request.toolchain_path_override.as_ref(),
-            )
-        })
-        .and_then(|_| {
+        );
+        let compile_result = if request.doctor.metal_toolchain.metal_ar.available {
+            compile_result.and_then(|_| {
+                run_toolchain_command(
+                    &compile_metalar_cmd,
+                    &workspace_root,
+                    request.toolchain_path_override.as_ref(),
+                )
+            })
+        } else {
+            compile_result
+        };
+        let compile_result = compile_result.and_then(|_| {
             run_toolchain_command(
                 &compile_metallib_cmd,
                 &workspace_root,
@@ -313,10 +326,12 @@ pub fn build_phase1_kernel_artifacts(
             Ok(()) => {
                 build_report.status = MetalBuildStatus::Compiled;
                 build_report.outputs.air = Some(air_path.clone());
-                build_report.outputs.metalar = Some(metalar_path.clone());
+                if request.doctor.metal_toolchain.metal_ar.available {
+                    build_report.outputs.metalar = Some(metalar_path.clone());
+                    build_report.outputs.metalar_sha256 = Some(file_sha256(&metalar_path)?);
+                }
                 build_report.outputs.metallib = Some(metallib_path.clone());
                 build_report.outputs.air_sha256 = Some(file_sha256(&air_path)?);
-                build_report.outputs.metalar_sha256 = Some(file_sha256(&metalar_path)?);
                 build_report.outputs.metallib_sha256 = Some(file_sha256(&metallib_path)?);
             }
             Err(reason) => {
@@ -1041,11 +1056,6 @@ fn validate_compiled_outputs(outputs: &MetalBuildOutputs) -> Result<(), MetalRun
             message: "compiled build report must include outputs.air".to_string(),
         });
     };
-    let Some(metalar_path) = outputs.metalar.as_deref() else {
-        return Err(MetalRuntimeError::InvalidBuildReport {
-            message: "compiled build report must include outputs.metalar".to_string(),
-        });
-    };
     let Some(metallib_path) = outputs.metallib.as_deref() else {
         return Err(MetalRuntimeError::InvalidBuildReport {
             message: "compiled build report must include outputs.metallib".to_string(),
@@ -1056,26 +1066,31 @@ fn validate_compiled_outputs(outputs: &MetalBuildOutputs) -> Result<(), MetalRun
             message: "compiled build report must include outputs.air_sha256".to_string(),
         });
     };
-    let Some(metalar_sha256) = outputs.metalar_sha256.as_deref() else {
-        return Err(MetalRuntimeError::InvalidBuildReport {
-            message: "compiled build report must include outputs.metalar_sha256".to_string(),
-        });
-    };
     let Some(metallib_sha256) = outputs.metallib_sha256.as_deref() else {
         return Err(MetalRuntimeError::InvalidBuildReport {
             message: "compiled build report must include outputs.metallib_sha256".to_string(),
         });
     };
+    if outputs.metalar.is_some() != outputs.metalar_sha256.is_some() {
+        return Err(MetalRuntimeError::InvalidBuildReport {
+            message: "compiled build report must include outputs.metalar and outputs.metalar_sha256 together".to_string(),
+        });
+    }
 
     if file_sha256(air_path)? != air_sha256 {
         return Err(MetalRuntimeError::InvalidBuildReport {
             message: format!("air_sha256 mismatch for {}", air_path.display()),
         });
     }
-    if file_sha256(metalar_path)? != metalar_sha256 {
-        return Err(MetalRuntimeError::InvalidBuildReport {
-            message: format!("metalar_sha256 mismatch for {}", metalar_path.display()),
-        });
+    if let (Some(metalar_path), Some(metalar_sha256)) = (
+        outputs.metalar.as_deref(),
+        outputs.metalar_sha256.as_deref(),
+    ) {
+        if file_sha256(metalar_path)? != metalar_sha256 {
+            return Err(MetalRuntimeError::InvalidBuildReport {
+                message: format!("metalar_sha256 mismatch for {}", metalar_path.display()),
+            });
+        }
     }
     if file_sha256(metallib_path)? != metallib_sha256 {
         return Err(MetalRuntimeError::InvalidBuildReport {

@@ -50,7 +50,7 @@ pub(crate) fn runtime_metal_toolchain_report() -> MetalToolchainReport {
     let metal = cached_tool_status(&METAL_TOOL_STATUS, "metal");
     let metallib = cached_tool_status(&METALLIB_TOOL_STATUS, "metallib");
     let metal_ar = cached_tool_status(&METAL_AR_TOOL_STATUS, "metal-ar");
-    let fully_available = metal.available && metallib.available && metal_ar.available;
+    let fully_available = metal.available && metallib.available;
 
     MetalToolchainReport {
         fully_available,
@@ -302,7 +302,7 @@ mod tests {
 
         assert_eq!(
             report.fully_available,
-            report.metal.available && report.metallib.available && report.metal_ar.available
+            report.metal.available && report.metallib.available
         );
     }
 }
