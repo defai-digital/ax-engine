@@ -199,6 +199,13 @@ payload offsets. Non-candidates fail closed before a descriptor is produced.
 This remains CPU-only metadata and does not launch kernels, allocate MLX
 storage, alter SDPA, change generation, or expose a public switch.
 
+The fused decode workload accounting contract is accepted above the launch
+descriptor. Descriptor `workload()` reports cold and hot score elements, output
+elements, compressed key/value/metadata bytes, raw versus aligned compressed
+slot bytes, and hot full-precision K/V bytes. This is benchmark accounting only:
+it makes no throughput claim and does not launch kernels, allocate MLX storage,
+alter SDPA, change generation, or expose a public switch.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

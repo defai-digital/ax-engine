@@ -262,6 +262,18 @@ Implemented fused decode launch descriptor slice on 2026-05-06:
 - Keeps the descriptor CPU-only; it does not launch a kernel, allocate MLX
   storage, change SDPA, change generation, or expose a user-facing switch.
 
+Implemented fused decode workload accounting slice on 2026-05-06:
+
+- Added per-slot payload byte counts to the fused decode launch descriptor.
+- Added `TurboQuantFusedDecodeLaunchWorkload` and descriptor `workload()` for
+  deterministic cold-score, hot-score, output-element, compressed-byte, and
+  hot full-precision byte accounting.
+- Reports raw compressed slot bytes separately from aligned slot bytes so future
+  benchmark rows can distinguish logical read volume from layout allocation.
+- Keeps the accounting CPU-only; it does not claim throughput, launch a kernel,
+  allocate MLX storage, change SDPA, change generation, or expose a user-facing
+  switch.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

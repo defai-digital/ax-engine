@@ -418,6 +418,11 @@ pub struct TurboQuantFusedDecodeLaunchDescriptor {
     pub required_compressed_slots: usize,
     pub value_group_size: usize,
     pub value_group_count: usize,
+    pub key_payload_bytes_per_head: usize,
+    pub key_norm_bytes_per_head: usize,
+    pub value_payload_bytes_per_head: usize,
+    pub value_metadata_bytes_per_head: usize,
+    pub raw_slot_bytes_per_head: usize,
     pub slot_bytes_per_head: usize,
     pub token_stride_bytes: usize,
     pub block_bytes: usize,
@@ -426,6 +431,59 @@ pub struct TurboQuantFusedDecodeLaunchDescriptor {
     pub value_payload_offset_in_slot: usize,
     pub value_mins_offset_in_slot: usize,
     pub value_scales_offset_in_slot: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantFusedDecodeLaunchWorkload {
+    pub cold_score_elements: usize,
+    pub hot_score_elements: usize,
+    pub output_elements: usize,
+    pub compressed_key_payload_bytes: usize,
+    pub compressed_key_norm_bytes: usize,
+    pub compressed_value_payload_bytes: usize,
+    pub compressed_value_metadata_bytes: usize,
+    pub compressed_raw_slot_bytes: usize,
+    pub compressed_aligned_slot_bytes: usize,
+    pub hot_full_precision_kv_bytes: usize,
+    pub estimated_total_read_bytes: usize,
+}
+
+impl TurboQuantFusedDecodeLaunchDescriptor {
+    pub fn workload(self) -> TurboQuantFusedDecodeLaunchWorkload {
+        let compressed_key_payload_bytes =
+            self.required_compressed_slots * self.key_payload_bytes_per_head;
+        let compressed_key_norm_bytes =
+            self.required_compressed_slots * self.key_norm_bytes_per_head;
+        let compressed_value_payload_bytes =
+            self.required_compressed_slots * self.value_payload_bytes_per_head;
+        let compressed_value_metadata_bytes =
+            self.required_compressed_slots * self.value_metadata_bytes_per_head;
+        let compressed_raw_slot_bytes =
+            self.required_compressed_slots * self.raw_slot_bytes_per_head;
+        let compressed_aligned_slot_bytes =
+            self.required_compressed_slots * self.slot_bytes_per_head;
+        let hot_full_precision_kv_bytes = self
+            .hot_tokens
+            .saturating_mul(self.n_kv_heads)
+            .saturating_mul(self.head_dim)
+            .saturating_mul(std::mem::size_of::<f32>())
+            .saturating_mul(2);
+
+        TurboQuantFusedDecodeLaunchWorkload {
+            cold_score_elements: self.cold_tokens * self.n_kv_heads,
+            hot_score_elements: self.hot_tokens * self.n_kv_heads,
+            output_elements: self.n_kv_heads * self.head_dim,
+            compressed_key_payload_bytes,
+            compressed_key_norm_bytes,
+            compressed_value_payload_bytes,
+            compressed_value_metadata_bytes,
+            compressed_raw_slot_bytes,
+            compressed_aligned_slot_bytes,
+            hot_full_precision_kv_bytes,
+            estimated_total_read_bytes: compressed_raw_slot_bytes
+                .saturating_add(hot_full_precision_kv_bytes),
+        }
+    }
 }
 
 impl TurboQuantCompressedDecodePlan {
@@ -576,6 +634,11 @@ impl TurboQuantCompressedDecodePlan {
             required_compressed_slots: readiness.required_compressed_slots,
             value_group_size: self.layout.config.value_group_size,
             value_group_count: self.layout.value_group_count,
+            key_payload_bytes_per_head: self.layout.key_payload_bytes_per_head,
+            key_norm_bytes_per_head: self.layout.key_norm_bytes_per_head,
+            value_payload_bytes_per_head: self.layout.value_payload_bytes_per_head,
+            value_metadata_bytes_per_head: self.layout.value_metadata_bytes_per_head,
+            raw_slot_bytes_per_head: self.layout.raw_slot_bytes_per_head,
             slot_bytes_per_head: self.layout.slot_bytes_per_head,
             token_stride_bytes: self.layout.token_stride_bytes,
             block_bytes: self.layout.block_bytes,
@@ -2534,6 +2597,11 @@ mod tests {
                 required_compressed_slots: 1,
                 value_group_size: 32,
                 value_group_count: 4,
+                key_payload_bytes_per_head: 128,
+                key_norm_bytes_per_head: 4,
+                value_payload_bytes_per_head: 64,
+                value_metadata_bytes_per_head: 32,
+                raw_slot_bytes_per_head: 228,
                 slot_bytes_per_head: 240,
                 token_stride_bytes: 240,
                 block_bytes: 480,
@@ -2542,6 +2610,54 @@ mod tests {
                 value_payload_offset_in_slot: 132,
                 value_mins_offset_in_slot: 196,
                 value_scales_offset_in_slot: 212,
+            }
+        );
+    }
+
+    #[test]
+    fn fused_decode_launch_descriptor_reports_workload_estimate() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 1,
+            head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+            value_group_size: 32,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 2, 1).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        buffer
+            .write_token(
+                0,
+                &[(
+                    vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                    vec![0.2; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                )],
+            )
+            .expect("cold token");
+
+        let workload = plan
+            .fused_decode_launch_descriptor(
+                &buffer,
+                &[vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            )
+            .expect("candidate launch should produce descriptor")
+            .workload();
+
+        assert_eq!(
+            workload,
+            TurboQuantFusedDecodeLaunchWorkload {
+                cold_score_elements: 1,
+                hot_score_elements: 1,
+                output_elements: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+                compressed_key_payload_bytes: 128,
+                compressed_key_norm_bytes: 4,
+                compressed_value_payload_bytes: 64,
+                compressed_value_metadata_bytes: 32,
+                compressed_raw_slot_bytes: 228,
+                compressed_aligned_slot_bytes: 240,
+                hot_full_precision_kv_bytes: 1024,
+                estimated_total_read_bytes: 1252,
             }
         );
     }
