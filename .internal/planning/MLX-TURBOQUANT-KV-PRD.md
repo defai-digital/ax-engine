@@ -274,6 +274,18 @@ Implemented fused decode workload accounting slice on 2026-05-06:
   allocate MLX storage, change SDPA, change generation, or expose a user-facing
   switch.
 
+Implemented fused decode savings accounting slice on 2026-05-06:
+
+- Added full-precision cold and total K/V byte accounting to fused decode
+  workload estimates.
+- Added estimated cold saved bytes, estimated total saved read bytes, and cold
+  compression ratio in milli-units.
+- Added shared full-precision K/V byte and compression-ratio helpers so future
+  benchmark rows use the same accounting contract as the launch descriptor.
+- Keeps the savings accounting CPU-only; it does not claim throughput, launch a
+  kernel, allocate MLX storage, change SDPA, change generation, or expose a
+  user-facing switch.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

@@ -206,6 +206,13 @@ slot bytes, and hot full-precision K/V bytes. This is benchmark accounting only:
 it makes no throughput claim and does not launch kernels, allocate MLX storage,
 alter SDPA, change generation, or expose a public switch.
 
+The fused decode savings accounting contract is accepted for benchmark rows and
+promotion evidence. Descriptor workload estimates now include full-precision
+cold and total K/V bytes, estimated cold saved bytes, estimated total saved read
+bytes, and cold compression ratio in milli-units. This remains accounting only:
+it makes no throughput claim and does not launch kernels, allocate MLX storage,
+alter SDPA, change generation, or expose a public switch.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

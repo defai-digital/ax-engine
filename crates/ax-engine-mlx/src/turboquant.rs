@@ -438,6 +438,8 @@ pub struct TurboQuantFusedDecodeLaunchWorkload {
     pub cold_score_elements: usize,
     pub hot_score_elements: usize,
     pub output_elements: usize,
+    pub full_precision_cold_kv_bytes: usize,
+    pub full_precision_total_kv_bytes: usize,
     pub compressed_key_payload_bytes: usize,
     pub compressed_key_norm_bytes: usize,
     pub compressed_value_payload_bytes: usize,
@@ -446,6 +448,9 @@ pub struct TurboQuantFusedDecodeLaunchWorkload {
     pub compressed_aligned_slot_bytes: usize,
     pub hot_full_precision_kv_bytes: usize,
     pub estimated_total_read_bytes: usize,
+    pub estimated_cold_saved_bytes: usize,
+    pub estimated_total_saved_read_bytes: usize,
+    pub cold_compression_ratio_milli: u32,
 }
 
 impl TurboQuantFusedDecodeLaunchDescriptor {
@@ -462,17 +467,21 @@ impl TurboQuantFusedDecodeLaunchDescriptor {
             self.required_compressed_slots * self.raw_slot_bytes_per_head;
         let compressed_aligned_slot_bytes =
             self.required_compressed_slots * self.slot_bytes_per_head;
-        let hot_full_precision_kv_bytes = self
-            .hot_tokens
-            .saturating_mul(self.n_kv_heads)
-            .saturating_mul(self.head_dim)
-            .saturating_mul(std::mem::size_of::<f32>())
-            .saturating_mul(2);
+        let full_precision_cold_kv_bytes =
+            full_precision_kv_bytes(self.cold_tokens, self.n_kv_heads, self.head_dim);
+        let hot_full_precision_kv_bytes =
+            full_precision_kv_bytes(self.hot_tokens, self.n_kv_heads, self.head_dim);
+        let full_precision_total_kv_bytes =
+            full_precision_cold_kv_bytes.saturating_add(hot_full_precision_kv_bytes);
+        let estimated_total_read_bytes =
+            compressed_raw_slot_bytes.saturating_add(hot_full_precision_kv_bytes);
 
         TurboQuantFusedDecodeLaunchWorkload {
             cold_score_elements: self.cold_tokens * self.n_kv_heads,
             hot_score_elements: self.hot_tokens * self.n_kv_heads,
             output_elements: self.n_kv_heads * self.head_dim,
+            full_precision_cold_kv_bytes,
+            full_precision_total_kv_bytes,
             compressed_key_payload_bytes,
             compressed_key_norm_bytes,
             compressed_value_payload_bytes,
@@ -480,8 +489,15 @@ impl TurboQuantFusedDecodeLaunchDescriptor {
             compressed_raw_slot_bytes,
             compressed_aligned_slot_bytes,
             hot_full_precision_kv_bytes,
-            estimated_total_read_bytes: compressed_raw_slot_bytes
-                .saturating_add(hot_full_precision_kv_bytes),
+            estimated_total_read_bytes,
+            estimated_cold_saved_bytes: full_precision_cold_kv_bytes
+                .saturating_sub(compressed_raw_slot_bytes),
+            estimated_total_saved_read_bytes: full_precision_total_kv_bytes
+                .saturating_sub(estimated_total_read_bytes),
+            cold_compression_ratio_milli: compression_ratio_milli(
+                compressed_raw_slot_bytes,
+                full_precision_cold_kv_bytes,
+            ),
         }
     }
 }
@@ -1860,6 +1876,25 @@ fn validate_layout_nonzero(name: &'static str, value: usize) -> Result<(), Turbo
     Ok(())
 }
 
+fn full_precision_kv_bytes(token_count: usize, n_kv_heads: usize, head_dim: usize) -> usize {
+    token_count
+        .saturating_mul(n_kv_heads)
+        .saturating_mul(head_dim)
+        .saturating_mul(std::mem::size_of::<f32>())
+        .saturating_mul(2)
+}
+
+fn compression_ratio_milli(compressed_bytes: usize, full_precision_bytes: usize) -> u32 {
+    if full_precision_bytes == 0 {
+        0
+    } else {
+        compressed_bytes
+            .saturating_mul(1000)
+            .saturating_div(full_precision_bytes)
+            .min(u32::MAX as usize) as u32
+    }
+}
+
 fn checked_add_many(values: &[usize]) -> Result<usize, TurboQuantCodecError> {
     values.iter().try_fold(0usize, |acc, value| {
         acc.checked_add(*value)
@@ -2650,6 +2685,8 @@ mod tests {
                 cold_score_elements: 1,
                 hot_score_elements: 1,
                 output_elements: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+                full_precision_cold_kv_bytes: 1024,
+                full_precision_total_kv_bytes: 2048,
                 compressed_key_payload_bytes: 128,
                 compressed_key_norm_bytes: 4,
                 compressed_value_payload_bytes: 64,
@@ -2658,6 +2695,9 @@ mod tests {
                 compressed_aligned_slot_bytes: 240,
                 hot_full_precision_kv_bytes: 1024,
                 estimated_total_read_bytes: 1252,
+                estimated_cold_saved_bytes: 796,
+                estimated_total_saved_read_bytes: 796,
+                cold_compression_ratio_milli: 222,
             }
         );
     }
