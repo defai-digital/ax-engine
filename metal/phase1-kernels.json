@@ -10,8 +10,7 @@
   "source_file": "metal/kernels/phase1_dense_path.metal",
   "toolchain_requirements": [
     "xcrun metal",
-    "xcrun metallib",
-    "xcrun metal-ar"
+    "xcrun metallib"
   ],
   "build_gate": "bringup_allowed",
   "kernels": [

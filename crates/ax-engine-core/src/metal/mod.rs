@@ -102,8 +102,7 @@ pub const PHASE1_OPTIONAL_METAL_KERNELS: &[&str] = &[
     "linear_gated_delta_step_f32",
 ];
 const PHASE1_MODEL_STAGE_ROPE_FREQ_BASE: f32 = 10_000.0;
-pub(super) const REQUIRED_TOOLCHAIN_REQUIREMENTS: &[&str] =
-    &["xcrun metal", "xcrun metallib", "xcrun metal-ar"];
+pub(super) const REQUIRED_TOOLCHAIN_REQUIREMENTS: &[&str] = &["xcrun metal", "xcrun metallib"];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MetalDispatchNumericLayout {

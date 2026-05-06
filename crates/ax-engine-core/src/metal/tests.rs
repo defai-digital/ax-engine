@@ -8864,6 +8864,51 @@ fn metal_kernel_builder_compiles_with_fake_xcrun_toolchain() {
 }
 
 #[test]
+fn metal_kernel_builder_compiles_without_metal_ar() {
+    let fixture = write_phase1_fixture(MetalBuildStatus::SkippedToolchainUnavailable, None);
+    let bin_dir = fixture.root.join("fake-bin");
+    fs::create_dir_all(&bin_dir).expect("fake bin directory should create");
+    let fake_xcrun = bin_dir.join("xcrun");
+    fs::write(&fake_xcrun, fake_xcrun_script()).expect("fake xcrun should write");
+    let mut permissions = fs::metadata(&fake_xcrun)
+        .expect("fake xcrun metadata should load")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_xcrun, permissions).expect("fake xcrun should be executable");
+
+    let original_path = std::env::var_os("PATH");
+    let fake_path = prepend_to_path(&bin_dir, original_path.as_ref());
+    let mut doctor = sample_build_doctor(true, true);
+    doctor.metal_toolchain.metal_ar.available = false;
+    doctor.metal_toolchain.metal_ar.version = None;
+
+    let request = MetalKernelBuildRequest {
+        manifest_path: fixture.root.join("metal/phase1-kernels.json"),
+        output_dir: fixture.build_dir.clone(),
+        doctor,
+        toolchain_path_override: Some(fake_path),
+    };
+
+    let artifacts = build_phase1_kernel_artifacts(&request)
+        .expect("builder should compile directly from AIR when metal-ar is unavailable");
+
+    assert_eq!(artifacts.build_status(), MetalBuildStatus::Compiled);
+    assert_eq!(artifacts.build_report.compile_commands.len(), 2);
+    assert!(artifacts.build_report.outputs.metalar.is_none());
+    assert!(artifacts.build_report.outputs.metalar_sha256.is_none());
+    assert!(
+        artifacts
+            .build_report
+            .outputs
+            .metallib
+            .as_deref()
+            .is_some_and(Path::is_file)
+    );
+
+    fixture.cleanup();
+}
+
+#[test]
 fn metal_kernel_builder_reuses_valid_compiled_artifacts_without_recompiling() {
     let fixture = write_phase1_fixture(MetalBuildStatus::Compiled, None);
     let bin_dir = fixture.root.join("fake-bin");
