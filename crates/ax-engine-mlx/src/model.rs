@@ -13,8 +13,8 @@ use ax_engine_core::{MlxKvCompressionConfig, MlxTurboQuantPreset, NativeModelMan
 use crate::attention_mask::create_causal_mask;
 use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeCandidate, MlxKvCompressionDecodeOutcome};
 use crate::linear_attention::{
-    compute_gated_delta_g, gated_delta_kernel, linear_attention_conv1d,
-    normalize_linear_attention_qk, rms_norm_gated, split_linear_attention_qkv,
+    gated_delta_kernel, linear_attention_conv1d, normalize_linear_attention_qk, rms_norm_gated,
+    split_linear_attention_qkv,
 };
 use crate::turboquant::turboquant_fused_decode_head_dim_supported;
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
@@ -1429,10 +1429,10 @@ fn attention_mask_array(
 }
 
 fn attention_mask_key_len(seq_len: usize, key_len: usize, sliding_window: Option<usize>) -> usize {
-    if seq_len == 1 {
-        if let Some(window) = sliding_window.filter(|window| *window > 0) {
-            return key_len.min(window);
-        }
+    if seq_len == 1
+        && let Some(window) = sliding_window.filter(|window| *window > 0)
+    {
+        return key_len.min(window);
     }
     key_len
 }
@@ -2003,8 +2003,11 @@ fn linear_attention_forward(
         linear_attention_conv1d(linear_cfg, &qkv, &conv_weight, conv_state, None);
     let qkv = split_linear_attention_qkv(linear_cfg, &conv_out);
     let (q, k) = normalize_linear_attention_qk(linear_cfg, &qkv.q, &qkv.k);
-    let beta = mlx_sys::ops::sigmoid(&b, None);
-    let g = compute_gated_delta_g(&linear_w.a_log, &a, &linear_w.dt_bias);
+    // Cast a_log and dt_bias to float32: mlx_lm preserves A_log as float32 and
+    // computes g in float32 precision.  dt_bias may be BF16 in quantized models.
+    let a_log_f32 = astype(&linear_w.a_log, MlxDtype::Float32, None);
+    let dt_bias_f32 = astype(&linear_w.dt_bias, MlxDtype::Float32, None);
+    // State is always float32: mlx_lm initialises state as mx.zeros(..., dtype=mx.float32).
     let state = recurrent_state.cloned().unwrap_or_else(|| {
         zeros(
             &[
@@ -2013,11 +2016,14 @@ fn linear_attention_forward(
                 linear_cfg.value_head_dim as i32,
                 linear_cfg.key_head_dim as i32,
             ],
-            q.dtype(),
+            MlxDtype::Float32,
             None,
         )
     });
-    let (out, new_recurrent_state) = gated_delta_kernel(&q, &k, &qkv.v, &g, &beta, &state);
+    // g and beta are computed inside the Metal kernel (fused) instead of as separate
+    // lazy MLX ops, eliminating ~8 kernel dispatches per layer.
+    let (out, new_recurrent_state) =
+        gated_delta_kernel(&q, &k, &qkv.v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
     cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
 
     let out = rms_norm_gated(&out, &z, &linear_w.norm);

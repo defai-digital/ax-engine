@@ -19,6 +19,9 @@ static GATED_DELTA_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 /// compute_g from mlx-lm/mlx-swift-lm:
 /// `exp(-exp(A_log.float32) * softplus(a + dt_bias))`.
+///
+/// This function is retained for testing; the production path folds this
+/// computation into `gated_delta_kernel` to avoid the 7-node lazy graph.
 pub fn compute_gated_delta_g(a_log: &MlxArray, a: &MlxArray, dt_bias: &MlxArray) -> MlxArray {
     let a_log_f32 = astype(a_log, MlxDtype::Float32, None);
     let decay_rate = exp(&a_log_f32, None);
@@ -140,24 +143,35 @@ pub fn normalize_linear_attention_qk(
 }
 
 fn linear_attention_qk_scale(key_head_dim: usize) -> (f32, f32) {
+    // mlx-lm/Swift: q *= inv_scale², k *= inv_scale  (inv_scale = Dk^(-0.5))
     let inv_scale = (key_head_dim as f32).powf(-0.5);
-    (inv_scale, inv_scale)
+    (inv_scale * inv_scale, inv_scale)
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Run Qwen3.5's gated-delta recurrent update with the MLX Metal kernel.
 ///
+/// `g = exp(-exp(a_log) * softplus(a_raw + dt_bias))` and `beta = sigmoid(b_raw)` are
+/// computed inside the Metal kernel rather than as separate MLX ops, eliminating 8 lazy
+/// graph nodes per GatedDeltaNet layer (~216 kernel dispatches/step for Qwen3.5 9B).
+///
 /// Shapes match mlx-lm/mlx-swift-lm:
-/// - `q`, `k`: `[B, T, Hk, Dk]`
-/// - `v`: `[B, T, Hv, Dv]`
-/// - `g`, `beta`: `[B, T, Hv]`
-/// - `state`: `[B, Hv, Dv, Dk]`
+/// - `q`, `k`: `[B, T, Hk, Dk]` — activation dtype (InT)
+/// - `v`: `[B, T, Hv, Dv]` — activation dtype (InT)
+/// - `a_log`: `[Hv]` — float32 (StT); the `A_log` model weight
+/// - `a_raw`: `[B, T, Hv]` — activation dtype (InT)
+/// - `dt_bias`: `[Hv]` — float32 (StT)
+/// - `b_raw`: `[B, T, Hv]` — activation dtype (InT)
+/// - `state`: `[B, Hv, Dv, Dk]` — float32 (StT)
 /// - returns `(y: [B, T, Hv, Dv], state: [B, Hv, Dv, Dk])`
 pub fn gated_delta_kernel(
     q: &MlxArray,
     k: &MlxArray,
     v: &MlxArray,
-    g: &MlxArray,
-    beta: &MlxArray,
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
     state: &MlxArray,
 ) -> (MlxArray, MlxArray) {
     let q_shape = q.shape();
@@ -188,8 +202,10 @@ pub fn gated_delta_kernel(
 
     let kernel = GATED_DELTA_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "qwen35_gated_delta_step",
-            &["q", "k", "v", "g", "beta", "state_in", "seq_len"],
+            "qwen35_gated_delta_v2",
+            &[
+                "q", "k", "v", "a_log", "a_raw", "dt_bias", "b_raw", "state_in", "seq_len",
+            ],
             &["y", "state_out"],
             GATED_DELTA_KERNEL_SOURCE,
             "",
@@ -198,7 +214,7 @@ pub fn gated_delta_kernel(
     });
 
     let outputs = kernel.apply_with_template(
-        &[q, k, v, g, beta, state, &seq_i32],
+        &[q, k, v, a_log, a_raw, dt_bias, b_raw, state, &seq_i32],
         &[
             KernelOutputSpec {
                 shape: vec![batch, seq, num_value_heads, value_head_dim],
@@ -283,22 +299,27 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     auto hk_idx = hv_idx / (Hv / Hk);
     constexpr int n_per_t = Dk / 32;
 
-    // q, k: [B, T, Hk, Dk]
+    // q, k: [B, T, Hk, Dk] InT
     auto q_ = q + b_idx * t_len * Hk * Dk + hk_idx * Dk;
     auto k_ = k + b_idx * t_len * Hk * Dk + hk_idx * Dk;
 
-    // v, y: [B, T, Hv, Dv]
+    // v, y: [B, T, Hv, Dv] InT
     auto v_ = v + b_idx * t_len * Hv * Dv + hv_idx * Dv;
     y += b_idx * t_len * Hv * Dv + hv_idx * Dv;
 
     auto dk_idx = thread_position_in_threadgroup.x;
     auto dv_idx = thread_position_in_grid.y;
 
-    // g, beta: [B, T, Hv]
-    auto g_ = g + b_idx * t_len * Hv;
-    auto beta_ = beta + b_idx * t_len * Hv;
+    // a_log: [Hv] StT (float32); dt_bias: [Hv] StT (float32)
+    // exp(A_log[hv]) is invariant across all timesteps for this thread.
+    const float exp_a_log = exp(static_cast<float>(a_log[hv_idx]));
+    const float dt_bias_v = static_cast<float>(dt_bias[hv_idx]);
 
-    // state_in, state_out: [B, Hv, Dv, Dk]
+    // a_raw: [B, T, Hv] InT; b_raw: [B, T, Hv] InT
+    auto a_ptr = a_raw + b_idx * t_len * Hv;
+    auto b_ptr = b_raw + b_idx * t_len * Hv;
+
+    // state_in, state_out: [B, Hv, Dv, Dk] StT
     auto i_state = state_in + (n * Dv + dv_idx) * Dk;
     auto o_state = state_out + (n * Dv + dv_idx) * Dk;
 
@@ -311,13 +332,17 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     }
 
     for (int t = 0; t < t_len; ++t) {
-      // Load per-timestep scalars once from global memory.  g_[hv_idx] and
-      // beta_[hv_idx] are read n_per_t and 1 times respectively in the
-      // original loop body; caching them avoids repeated address computations
-      // and makes the float promotion explicit (InT may be BF16).
-      const float g_t    = static_cast<float>(g_[hv_idx]);
-      const float beta_t = static_cast<float>(beta_[hv_idx]);
-      const float v_t    = static_cast<float>(v_[dv_idx]);
+      // g_t = exp(-exp(A_log[hv]) * softplus(a[t,hv] + dt_bias[hv]))
+      // Uses numerically stable softplus: log1p(exp(x)) clamped for large x.
+      const float a_plus_dt = static_cast<float>(a_ptr[hv_idx]) + dt_bias_v;
+      const float sp = a_plus_dt > 20.0f ? a_plus_dt : log1p(exp(a_plus_dt));
+      const float g_t = exp(-exp_a_log * sp);
+
+      // beta_t = sigmoid(b[t,hv])
+      const float b_val = static_cast<float>(b_ptr[hv_idx]);
+      const float beta_t = 1.0f / (1.0f + exp(-b_val));
+
+      const float v_t = static_cast<float>(v_[dv_idx]);
 
       float kv_mem = 0.0f;
       for (int i = 0; i < n_per_t; ++i) {
@@ -342,8 +367,8 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
       k_ += Hk * Dk;
       v_ += Hv * Dv;
       y += Hv * Dv;
-      g_ += Hv;
-      beta_ += Hv;
+      a_ptr += Hv;
+      b_ptr += Hv;
     }
 
     for (int i = 0; i < n_per_t; ++i) {
@@ -413,14 +438,19 @@ mod tests {
 
     #[test]
     fn gated_delta_kernel_reports_reference_shapes() {
+        // B=1, T=2, Hk=1, Dk=32, Hv=1, Dv=4
         let q = zeros(&[1, 2, 1, 32], MlxDtype::Float32, None);
         let k = zeros(&[1, 2, 1, 32], MlxDtype::Float32, None);
         let v = zeros(&[1, 2, 1, 4], MlxDtype::Float32, None);
-        let g = zeros(&[1, 2, 1], MlxDtype::Float32, None);
-        let beta = zeros(&[1, 2, 1], MlxDtype::Float32, None);
+        // a_log, dt_bias: [Hv] float32 (StT)
+        let a_log = zeros(&[1], MlxDtype::Float32, None);
+        let a_raw = zeros(&[1, 2, 1], MlxDtype::Float32, None);
+        let dt_bias = zeros(&[1], MlxDtype::Float32, None);
+        let b_raw = zeros(&[1, 2, 1], MlxDtype::Float32, None);
         let state = zeros(&[1, 1, 4, 32], MlxDtype::Float32, None);
 
-        let (y, new_state) = gated_delta_kernel(&q, &k, &v, &g, &beta, &state);
+        let (y, new_state) =
+            gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
 
         assert_eq!(y.shape(), vec![1, 2, 1, 4]);
         assert_eq!(new_state.shape(), vec![1, 1, 4, 32]);
@@ -448,11 +478,12 @@ mod tests {
     }
 
     #[test]
-    fn normalize_linear_attention_qk_scales_q_and_k_symmetrically() {
+    fn normalize_linear_attention_qk_q_uses_inv_scale_squared() {
+        // mlx-lm/Swift: q_scale = Dk^(-1), k_scale = Dk^(-0.5)
         let (q_scale, k_scale) = linear_attention_qk_scale(4);
 
-        assert!((q_scale - 0.5).abs() < f32::EPSILON);
-        assert!((k_scale - 0.5).abs() < f32::EPSILON);
+        assert!((q_scale - 0.25).abs() < f32::EPSILON, "q_scale={q_scale}");
+        assert!((k_scale - 0.5).abs() < f32::EPSILON, "k_scale={k_scale}");
     }
 
     #[test]
