@@ -30,7 +30,7 @@ use tracing_subscriber::EnvFilter;
 
 mod args;
 
-use args::ServerArgs;
+use args::{ServerArgs, render_presets};
 
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 
@@ -312,26 +312,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tracing_enabled = init_tracing();
 
     let args = ServerArgs::parse();
+    if args.list_presets {
+        println!("{}", render_presets());
+        return Ok(());
+    }
     let bind_address = args.bind_address();
+    let model_id = args.effective_model_id().to_string();
+    let support_tier = args.effective_support_tier();
     let session_config = args
         .session_config()
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     let session = EngineSession::new(session_config.clone())?;
-    let state = build_app_state(args.model_id.clone(), session)?;
+    let state = build_app_state(model_id.clone(), session)?;
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
 
     if tracing_enabled {
         info!(
             bind_address = %bind_address,
-            model_id = %args.model_id,
-            support_tier = ?args.support_tier,
+            model_id = %model_id,
+            support_tier = ?support_tier,
             "ax-engine-server preview listening"
         );
     } else {
         eprintln!(
             "ax-engine-server preview listening on http://{} model_id={} support_tier={:?}",
-            bind_address, args.model_id, args.support_tier
+            bind_address, model_id, support_tier
         );
     }
 
@@ -1849,6 +1855,8 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 8080,
             model_id: "qwen3_dense".to_string(),
+            preset: None,
+            list_presets: false,
             deterministic: true,
             max_batch_tokens: 2048,
             cache_group_id: 0,
@@ -1861,7 +1869,14 @@ mod tests {
             llama_server_url: None,
             mlx_lm_server_url: None,
             mlx_model_artifacts_dir: None,
+            resolve_model_artifacts: args::ModelArtifactResolution::ExplicitOnly,
+            hf_cache_root: None,
             disable_ngram_acceleration: false,
+            experimental_mlx_kv_compression: args::PreviewMlxKvCompression::Disabled,
+            experimental_mlx_kv_compression_hot_window_tokens:
+                ax_engine_sdk::MlxKvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS,
+            experimental_mlx_kv_compression_min_context_tokens:
+                ax_engine_sdk::MlxKvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
         }
     }
 

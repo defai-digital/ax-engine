@@ -1571,7 +1571,9 @@ mod tests {
             hidden_size_per_layer_input: 0,
             vocab_size_per_layer_input: None,
             linear_attention: NativeLinearAttentionConfig::default(),
+            mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
+            glm_router: Default::default(),
             tensors: Vec::new(),
         }
     }
@@ -1616,7 +1618,9 @@ mod tests {
                 value_head_dim: Some(3),
                 conv_kernel_dim: Some(4),
             },
+            mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
+            glm_router: Default::default(),
             tensors: Vec::new(),
         }
     }

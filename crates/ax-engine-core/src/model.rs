@@ -213,6 +213,34 @@ impl NativeLinearAttentionConfig {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct NativeMlaAttentionConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub q_lora_rank: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_lora_rank: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qk_nope_head_dim: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qk_rope_head_dim: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_head_dim: Option<u32>,
+}
+
+impl NativeMlaAttentionConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.q_lora_rank.is_some()
+            || self.kv_lora_rank.is_some()
+            || self.qk_nope_head_dim.is_some()
+            || self.qk_rope_head_dim.is_some()
+            || self.value_head_dim.is_some()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.is_enabled()
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NativeMoeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -228,6 +256,28 @@ impl NativeMoeConfig {
         self.expert_count.is_some()
             || self.experts_per_token.is_some()
             || self.expert_intermediate_size.is_some()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.is_enabled()
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct NativeGlmRouterConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_dense_layer_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed_scaling_factor: Option<f32>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_shared_experts: bool,
+}
+
+impl NativeGlmRouterConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.first_dense_layer_count.is_some()
+            || self.routed_scaling_factor.is_some()
+            || self.has_shared_experts
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -402,8 +452,12 @@ pub struct NativeModelManifest {
         skip_serializing_if = "NativeLinearAttentionConfig::is_disabled"
     )]
     pub linear_attention: NativeLinearAttentionConfig,
+    #[serde(default, skip_serializing_if = "NativeMlaAttentionConfig::is_disabled")]
+    pub mla_attention: NativeMlaAttentionConfig,
     #[serde(default, skip_serializing_if = "NativeMoeConfig::is_disabled")]
     pub moe: NativeMoeConfig,
+    #[serde(default, skip_serializing_if = "NativeGlmRouterConfig::is_disabled")]
+    pub glm_router: NativeGlmRouterConfig,
     pub tensors: Vec<NativeTensorSpec>,
 }
 
@@ -691,6 +745,42 @@ fn validate_native_model_manifest(
             }
         }
     }
+    if manifest.mla_attention.is_enabled() {
+        require_positive_field(
+            manifest.mla_attention.q_lora_rank,
+            "mla_attention.q_lora_rank",
+        )?;
+        require_positive_field(
+            manifest.mla_attention.kv_lora_rank,
+            "mla_attention.kv_lora_rank",
+        )?;
+        require_positive_field(
+            manifest.mla_attention.qk_nope_head_dim,
+            "mla_attention.qk_nope_head_dim",
+        )?;
+        require_positive_field(
+            manifest.mla_attention.qk_rope_head_dim,
+            "mla_attention.qk_rope_head_dim",
+        )?;
+        require_positive_field(
+            manifest.mla_attention.value_head_dim,
+            "mla_attention.value_head_dim",
+        )?;
+        if let (Some(nope_dim), Some(rope_dim)) = (
+            manifest.mla_attention.qk_nope_head_dim,
+            manifest.mla_attention.qk_rope_head_dim,
+        ) {
+            let expected_head_dim = nope_dim.saturating_add(rope_dim);
+            if expected_head_dim != manifest.attention_head_dim {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "mla_attention qk_nope_head_dim + qk_rope_head_dim must equal attention_head_dim {}, got {} + {}",
+                        manifest.attention_head_dim, nope_dim, rope_dim
+                    ),
+                });
+            }
+        }
+    }
     if manifest.moe.is_enabled() {
         require_positive_field(manifest.moe.expert_count, "moe.expert_count")?;
         require_positive_field(manifest.moe.experts_per_token, "moe.experts_per_token")?;
@@ -707,6 +797,44 @@ fn validate_native_model_manifest(
                         "moe.experts_per_token {} must be <= moe.expert_count {}",
                         experts_per_token, expert_count
                     ),
+                });
+            }
+        }
+    }
+    if manifest.glm_router.is_enabled() {
+        if manifest.glm_router.first_dense_layer_count.is_none() {
+            return Err(NativeModelError::InvalidManifest {
+                message: "glm_router.first_dense_layer_count must be configured".to_string(),
+            });
+        }
+        if manifest
+            .glm_router
+            .first_dense_layer_count
+            .is_some_and(|count| count > manifest.layer_count)
+        {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "glm_router.first_dense_layer_count must be <= layer_count {}, got {}",
+                    manifest.layer_count,
+                    manifest
+                        .glm_router
+                        .first_dense_layer_count
+                        .unwrap_or_default()
+                ),
+            });
+        }
+        match manifest.glm_router.routed_scaling_factor {
+            Some(value) if value.is_finite() && value > 0.0 => {}
+            Some(value) => {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "glm_router.routed_scaling_factor must be finite and > 0, got {value}"
+                    ),
+                });
+            }
+            None => {
+                return Err(NativeModelError::InvalidManifest {
+                    message: "glm_router.routed_scaling_factor must be configured".to_string(),
                 });
             }
         }
@@ -2663,7 +2791,9 @@ mod tests {
             hidden_size_per_layer_input: 0,
             vocab_size_per_layer_input: None,
             linear_attention: NativeLinearAttentionConfig::default(),
+            mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
+            glm_router: Default::default(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

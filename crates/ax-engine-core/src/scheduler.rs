@@ -47,6 +47,27 @@ pub const ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB: &str =
 pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS: &str = "ax_mlx_kv_linear_state_layers";
 pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB: &str = "ax_mlx_kv_linear_state_kib";
 pub const ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT: &str = "ax_mlx_kv_growth_count";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS: &str =
+    "ax_mlx_kv_compression_request_snapshots";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS: &str = "ax_mlx_kv_compression_status";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET: &str = "ax_mlx_kv_compression_preset";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS: &str = "ax_mlx_kv_compression_key_bits";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS: &str =
+    "ax_mlx_kv_compression_value_bits";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS: &str =
+    "ax_mlx_kv_compression_eligible_layers";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS: &str =
+    "ax_mlx_kv_compression_candidate_token_layers";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS: &str =
+    "ax_mlx_kv_compression_hot_token_layers";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB: &str =
+    "ax_mlx_kv_compression_full_precision_kib";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB: &str =
+    "ax_mlx_kv_compression_estimated_compressed_kib";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB: &str =
+    "ax_mlx_kv_compression_estimated_saved_kib";
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI: &str =
+    "ax_mlx_kv_compression_ratio_milli";
 pub const ROUTE_DECISION_AX_MLX_KV_KEYS: [&str; 13] = [
     ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS,
     ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS,
@@ -61,6 +82,20 @@ pub const ROUTE_DECISION_AX_MLX_KV_KEYS: [&str; 13] = [
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB,
     ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
+];
+pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS: [&str; 12] = [
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI,
 ];
 
 impl RouteMetadata {
@@ -380,6 +415,32 @@ mod tests {
         );
         assert!(
             ROUTE_DECISION_AX_MLX_KV_KEYS
+                .iter()
+                .all(|key| !key.contains('-'))
+        );
+    }
+
+    #[test]
+    fn mlx_kv_compression_route_decision_keys_are_stable_and_unique() {
+        assert_eq!(
+            ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS.len(),
+            ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+        );
+        assert!(
+            ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS
+                .iter()
+                .all(|key| key.starts_with("ax_mlx_kv_compression_"))
+        );
+        assert!(
+            ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS
+                .iter()
+                .all(|key| key.is_ascii())
+        );
+        assert!(
+            ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS
                 .iter()
                 .all(|key| !key.contains('-'))
         );

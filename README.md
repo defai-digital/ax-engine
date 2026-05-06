@@ -148,9 +148,10 @@ artifacts. Before promoting either architecture, run
 `scripts/probe_mlx_model_support.py --model-dir <model-dir>`: GLM currently
 classifies as an implementation candidate because Apple `mlx-lm` and Apple
 `mlx-swift-lm` both expose GLM4MoELite references. AX can now map GLM tensors
-into a draft `model-manifest.json`, but that manifest is intentionally marked
-`runtime_status.ready=false` until the GLM MLA attention, router, and latent-KV
-cache paths exist. DeepSeek V4 remains fail-closed because the available
+and config-derived MLA/router metadata into a draft `model-manifest.json`, but
+that manifest is intentionally marked `runtime_status.ready=false` until the
+GLM MLA attention, router, and latent-KV cache paths exist. DeepSeek V4 remains
+fail-closed because the available
 SwiftLM port is partial and drops checkpoint features that affect the forward
 contract.
 

@@ -13,16 +13,16 @@ Support-contract classification now comes from:
 python3 scripts/probe_mlx_model_support.py --model-dir <model-dir>
 ```
 
-The probe reads the model config, safetensors index, and local reference
-implementations. It currently classifies GLM as an implementation candidate
-with draft manifest mapping and DeepSeek V4 as fail-closed partial-reference
-only.
+The probe reads the model config, safetensors index, draft manifest metadata,
+and local reference implementations. It currently classifies GLM as an
+implementation candidate with draft manifest mapping and DeepSeek V4 as
+fail-closed partial-reference only.
 
 ## Models
 
 | Model | Hugging Face revision | Local size | Config model_type | AX model-manifest | Outcome |
 |---|---|---:|---|---|---|
-| `mlx-community/GLM-4.7-Flash-4bit` | `1454cffb1a21737e162f508e5bc70be9def89276` | 16 GB | `glm4_moe_lite` | absent during benchmark; converter can now emit a draft manifest | `mlx_lm.benchmark` passed; probe says implementation candidate |
+| `mlx-community/GLM-4.7-Flash-4bit` | `1454cffb1a21737e162f508e5bc70be9def89276` | 16 GB | `glm4_moe_lite` | absent during benchmark; converter can now emit a draft manifest with MLA attention and router metadata | `mlx_lm.benchmark` passed; probe says implementation candidate |
 | `mlx-community/DeepSeek-V4-Flash-2bit-DQ` | `722bf559b7de93575b2320973cf2002e05bfe6c9` | 90 GB | `deepseek_v4` | absent | blocked by upstream `mlx_lm`; probe says fail-closed partial reference |
 
 ## GLM-4.7-Flash-4bit Result

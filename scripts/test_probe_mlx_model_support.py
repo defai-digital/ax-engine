@@ -55,6 +55,15 @@ class MlxModelSupportProbeTests(unittest.TestCase):
                     "model.layers.1.mlp.experts.gate_up_proj.weight",
                 ],
             )
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "runtime_status": {"ready": False},
+                        "mla_attention": {"q_lora_rank": 768},
+                        "glm_router": {"routed_scaling_factor": 1.8},
+                    }
+                )
+            )
 
             with patch.object(probe, "REPO_ROOT", repo):
                 report = probe.probe_model(model_dir)
@@ -62,6 +71,9 @@ class MlxModelSupportProbeTests(unittest.TestCase):
         self.assertEqual(report["support_decision"], "implementation_candidate")
         self.assertTrue(report["can_implement_repo_owned_runtime"])
         self.assertEqual(report["reference_support"], "complete_enough_for_ax_port")
+        self.assertTrue(report["draft_manifest_features"]["mla_attention_configured"])
+        self.assertTrue(report["draft_manifest_features"]["glm_router_configured"])
+        self.assertFalse(report["draft_manifest_features"]["runtime_ready"])
         self.assertIn("GLM4MoELite MLA", " ".join(report["blockers"]))
 
     def test_deepseek_v4_fails_closed_when_partial_reference_drops_required_weights(self) -> None:

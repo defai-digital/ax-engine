@@ -5,7 +5,10 @@
     clippy::unnecessary_lazy_evaluations
 )]
 
-pub use ax_engine_core::{CacheGroupId, EmbeddingPooling, KvManagerConfig};
+pub use ax_engine_core::{
+    CacheGroupId, EmbeddingPooling, KvManagerConfig, MlxKvCompressionConfig, MlxKvCompressionMode,
+    MlxTurboQuantPreset,
+};
 
 pub mod backend;
 pub mod generate;

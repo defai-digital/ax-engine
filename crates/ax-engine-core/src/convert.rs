@@ -13,9 +13,10 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::model::{
-    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeLinearAttentionConfig, NativeModelManifest,
-    NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat,
-    NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeGlmRouterConfig, NativeLinearAttentionConfig,
+    NativeMlaAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
+    NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization, NativeTensorRole,
+    NativeTensorSpec,
 };
 
 // ---------------------------------------------------------------------------
@@ -103,6 +104,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let attention_logit_softcap =
         arch_f64(&config, &model_type, "attn_logit_softcapping").and_then(f64_to_u32);
     let linear_attention = linear_attention_config(&config, &model_type);
+    let mla_attention = mla_attention_config(&config, &model_type);
+    let glm_router = glm_router_config(&config, &model_type);
 
     let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
@@ -168,7 +171,9 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         vocab_size_per_layer_input: arch_u64(&config, &model_type, "vocab_size_per_layer_input")
             .and_then(u64_to_u32),
         linear_attention,
+        mla_attention,
         moe: moe_config(&config, &model_type),
+        glm_router,
         tensors: mapped_tensors,
     };
 
@@ -789,6 +794,34 @@ fn linear_attention_config(
         value_head_dim: arch_u64(config, model_type, "linear_value_head_dim").and_then(u64_to_u32),
         conv_kernel_dim: arch_u64(config, model_type, "linear_conv_kernel_dim")
             .and_then(u64_to_u32),
+    }
+}
+
+fn mla_attention_config(config: &serde_json::Value, model_type: &str) -> NativeMlaAttentionConfig {
+    if !is_glm4_moe_lite(model_type) {
+        return NativeMlaAttentionConfig::default();
+    }
+
+    NativeMlaAttentionConfig {
+        q_lora_rank: arch_u64(config, model_type, "q_lora_rank").and_then(u64_to_u32),
+        kv_lora_rank: arch_u64(config, model_type, "kv_lora_rank").and_then(u64_to_u32),
+        qk_nope_head_dim: arch_u64(config, model_type, "qk_nope_head_dim").and_then(u64_to_u32),
+        qk_rope_head_dim: arch_u64(config, model_type, "qk_rope_head_dim").and_then(u64_to_u32),
+        value_head_dim: arch_u64(config, model_type, "v_head_dim").and_then(u64_to_u32),
+    }
+}
+
+fn glm_router_config(config: &serde_json::Value, model_type: &str) -> NativeGlmRouterConfig {
+    if !is_glm4_moe_lite(model_type) {
+        return NativeGlmRouterConfig::default();
+    }
+
+    NativeGlmRouterConfig {
+        first_dense_layer_count: arch_u64(config, model_type, "first_k_dense_replace")
+            .and_then(u64_to_u32),
+        routed_scaling_factor: arch_f64(config, model_type, "routed_scaling_factor")
+            .map(|value| value as f32),
+        has_shared_experts: arch_u64(config, model_type, "n_shared_experts").unwrap_or(0) > 0,
     }
 }
 
@@ -1454,6 +1487,58 @@ fn validate_glm4_moe_lite_draft_contract(
         .min(manifest.layer_count);
     let has_shared_experts = arch_u64(config, "glm4_moe_lite", "n_shared_experts").unwrap_or(0) > 0;
 
+    require_glm_config(
+        manifest.mla_attention.q_lora_rank,
+        "mla_attention.q_lora_rank",
+    )?;
+    require_glm_config(
+        manifest.mla_attention.kv_lora_rank,
+        "mla_attention.kv_lora_rank",
+    )?;
+    require_glm_config(
+        manifest.mla_attention.qk_nope_head_dim,
+        "mla_attention.qk_nope_head_dim",
+    )?;
+    require_glm_config(
+        manifest.mla_attention.qk_rope_head_dim,
+        "mla_attention.qk_rope_head_dim",
+    )?;
+    require_glm_config(
+        manifest.mla_attention.value_head_dim,
+        "mla_attention.value_head_dim",
+    )?;
+    if manifest.glm_router.first_dense_layer_count.is_none() {
+        return invalid_model_contract(
+            "glm4_moe_lite",
+            "glm_router.first_dense_layer_count must be configured",
+        );
+    }
+    if manifest
+        .glm_router
+        .routed_scaling_factor
+        .is_none_or(|value| !value.is_finite() || value <= 0.0)
+    {
+        return invalid_model_contract(
+            "glm4_moe_lite",
+            "glm_router.routed_scaling_factor must be finite and > 0",
+        );
+    }
+
+    if let (Some(nope_dim), Some(rope_dim)) = (
+        manifest.mla_attention.qk_nope_head_dim,
+        manifest.mla_attention.qk_rope_head_dim,
+    ) {
+        if nope_dim + rope_dim != manifest.attention_head_dim {
+            return invalid_model_contract(
+                "glm4_moe_lite",
+                format!(
+                    "mla_attention qk_nope_head_dim + qk_rope_head_dim must equal attention_head_dim {}, got {} + {}",
+                    manifest.attention_head_dim, nope_dim, rope_dim
+                ),
+            );
+        }
+    }
+
     for layer_index in 0..manifest.layer_count {
         require_glm_role(manifest, layer_index, NativeTensorRole::AttentionNorm)?;
         require_glm_role(manifest, layer_index, NativeTensorRole::AttentionQa)?;
@@ -1507,6 +1592,17 @@ fn require_glm_role(
     invalid_model_contract(
         "glm4_moe_lite",
         format!("layer {layer_index} is missing required draft tensor role {role:?}"),
+    )
+}
+
+fn require_glm_config(value: Option<u32>, field: &str) -> Result<(), ConvertError> {
+    if value.is_some_and(|value| value > 0) {
+        return Ok(());
+    }
+
+    invalid_model_contract(
+        "glm4_moe_lite",
+        format!("{field} must be configured and > 0"),
     )
 }
 
@@ -2866,8 +2962,10 @@ mod tests {
                 "kv_lora_rank": 512,
                 "first_k_dense_replace": 1,
                 "n_routed_experts": 64,
+                "n_shared_experts": 1,
                 "num_experts_per_tok": 4,
                 "moe_intermediate_size": 1536,
+                "routed_scaling_factor": 1.8,
                 "norm_topk_prob": true,
                 "rope_theta": 1000000,
                 "quantization": {
@@ -3022,9 +3120,17 @@ mod tests {
 
         assert_eq!(manifest.model_family, "glm4_moe_lite");
         assert_eq!(manifest.attention_head_dim, 256);
+        assert_eq!(manifest.mla_attention.q_lora_rank, Some(768));
+        assert_eq!(manifest.mla_attention.kv_lora_rank, Some(512));
+        assert_eq!(manifest.mla_attention.qk_nope_head_dim, Some(192));
+        assert_eq!(manifest.mla_attention.qk_rope_head_dim, Some(64));
+        assert_eq!(manifest.mla_attention.value_head_dim, Some(256));
         assert_eq!(manifest.moe.expert_count, Some(64));
         assert_eq!(manifest.moe.experts_per_token, Some(4));
         assert_eq!(manifest.moe.expert_intermediate_size, Some(1536));
+        assert_eq!(manifest.glm_router.first_dense_layer_count, Some(1));
+        assert_eq!(manifest.glm_router.routed_scaling_factor, Some(1.8));
+        assert!(manifest.glm_router.has_shared_experts);
         assert!(manifest.moe_norm_topk_prob);
         assert!(!manifest.runtime_status.ready);
         assert!(
@@ -3080,11 +3186,14 @@ mod tests {
                 "qk_nope_head_dim": 6,
                 "qk_rope_head_dim": 2,
                 "v_head_dim": 8,
+                "q_lora_rank": 8,
+                "kv_lora_rank": 8,
                 "first_k_dense_replace": 0,
                 "n_routed_experts": 4,
                 "n_shared_experts": 0,
                 "num_experts_per_tok": 2,
-                "moe_intermediate_size": 8
+                "moe_intermediate_size": 8,
+                "routed_scaling_factor": 1.8
             }),
         );
         write_fake_safetensors(
