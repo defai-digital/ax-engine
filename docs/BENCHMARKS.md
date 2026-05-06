@@ -116,6 +116,23 @@ rows, and `ngram_acceleration_linear_attention_branch_recompute` for Qwen3.5-sty
 recurrent linear-attention rows, where repeated n-gram evidence is required
 before probing and partial accepts trigger a longer cooldown.
 
+For Gemma 4 26B A4B direct-decode investigation, enable the opt-in MoE profile:
+
+```text
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-dir /path/to/gemma-4-26b-a4b-it-4bit \
+  --prompt-tokens 128,512 \
+  --generation-tokens 128 \
+  --ax-direct \
+  --ax-gemma4-moe-profile
+```
+
+This sets `AX_MLX_GEMMA4_MOE_PROFILE=1` for the AX server and records
+`ax_mlx_gemma4_moe_profile` counters in AX trial and summary rows. The profile
+inserts eval barriers around Gemma4 MoE decode-layer attention, dense, router,
+expert, and post-combine sections, so use it to localize bottlenecks, not as
+headline throughput evidence.
+
 For internal TurboQuant evidence capture, the harness can pass through the
 server's experimental shadow policy:
 

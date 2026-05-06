@@ -5,6 +5,8 @@ use mlx_sys::{
     reshape, rms_norm, rope, scaled_dot_product_attention_with_mask, slice, slice_last_dim,
     softmax, sum_axis, take, take_along_axis, tanh, transpose, where_cond, zeros,
 };
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use ax_engine_core::{MlxKvCompressionConfig, MlxTurboQuantPreset, NativeModelManifest};
 
@@ -18,6 +20,92 @@ use crate::turboquant::turboquant_fused_decode_head_dim_supported;
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 
 const SWITCH_GLU_SORT_THRESHOLD: usize = 64;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Gemma4MoeProfileSnapshot {
+    pub enabled: u32,
+    pub decode_layers: u32,
+    pub topk_selections: u32,
+    pub sorted_gather_layers: u32,
+    pub unsorted_gather_layers: u32,
+    pub attention_wall_us: u32,
+    pub dense_wall_us: u32,
+    pub router_wall_us: u32,
+    pub expert_wall_us: u32,
+    pub post_wall_us: u32,
+}
+
+#[derive(Clone, Copy)]
+enum Gemma4MoeProfileStage {
+    Attention,
+    Dense,
+    Router,
+    Expert,
+    Post,
+}
+
+static GEMMA4_MOE_PROFILE: OnceLock<Mutex<Gemma4MoeProfileSnapshot>> = OnceLock::new();
+
+fn gemma4_moe_profile_enabled() -> bool {
+    matches!(
+        std::env::var("AX_MLX_GEMMA4_MOE_PROFILE").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
+fn gemma4_moe_profile() -> &'static Mutex<Gemma4MoeProfileSnapshot> {
+    GEMMA4_MOE_PROFILE.get_or_init(|| Mutex::new(Gemma4MoeProfileSnapshot::default()))
+}
+
+fn saturating_profile_us(started: Instant) -> u32 {
+    started.elapsed().as_micros().min(u32::MAX as u128) as u32
+}
+
+fn record_gemma4_moe_decode_layer(topk_selections: usize, sorted_gather: bool) {
+    let mut profile = gemma4_moe_profile().lock().unwrap();
+    profile.enabled = 1;
+    profile.decode_layers = profile.decode_layers.saturating_add(1);
+    profile.topk_selections = profile
+        .topk_selections
+        .saturating_add(topk_selections.min(u32::MAX as usize) as u32);
+    if sorted_gather {
+        profile.sorted_gather_layers = profile.sorted_gather_layers.saturating_add(1);
+    } else {
+        profile.unsorted_gather_layers = profile.unsorted_gather_layers.saturating_add(1);
+    }
+}
+
+fn record_gemma4_moe_profile_stage(stage: Gemma4MoeProfileStage, wall_us: u32) {
+    let mut profile = gemma4_moe_profile().lock().unwrap();
+    profile.enabled = 1;
+    let target = match stage {
+        Gemma4MoeProfileStage::Attention => &mut profile.attention_wall_us,
+        Gemma4MoeProfileStage::Dense => &mut profile.dense_wall_us,
+        Gemma4MoeProfileStage::Router => &mut profile.router_wall_us,
+        Gemma4MoeProfileStage::Expert => &mut profile.expert_wall_us,
+        Gemma4MoeProfileStage::Post => &mut profile.post_wall_us,
+    };
+    *target = target.saturating_add(wall_us);
+}
+
+fn profile_eval_elapsed(
+    enabled: bool,
+    stage: Gemma4MoeProfileStage,
+    started: Instant,
+    targets: &[&MlxArray],
+) {
+    if enabled {
+        eval(targets);
+        record_gemma4_moe_profile_stage(stage, saturating_profile_us(started));
+    }
+}
+
+pub fn take_gemma4_moe_profile_snapshot() -> Gemma4MoeProfileSnapshot {
+    let mut profile = gemma4_moe_profile().lock().unwrap();
+    let snapshot = *profile;
+    *profile = Gemma4MoeProfileSnapshot::default();
+    snapshot
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TurboQuantModelDecodeCandidateStatus {
@@ -566,6 +654,9 @@ pub fn layer_forward_with_turboquant_context(
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
 
     let seq = hidden.shape()[1] as usize;
+    let profile_gemma4_moe_decode =
+        cfg.gemma4_moe_router && seq == 1 && gemma4_moe_profile_enabled();
+    let attention_started = profile_gemma4_moe_decode.then(Instant::now);
 
     let attn_proj = if cfg.is_linear_attention_layer(layer_idx) {
         linear_attention_forward(cfg, w, &normed, cache, layer_idx)
@@ -779,6 +870,14 @@ pub fn layer_forward_with_turboquant_context(
             attn_proj
         }
     };
+    if let Some(started) = attention_started {
+        profile_eval_elapsed(
+            profile_gemma4_moe_decode,
+            Gemma4MoeProfileStage::Attention,
+            started,
+            &[&attn_proj],
+        );
+    }
 
     // 15. Residual.
     let hidden = add(hidden, &attn_proj, None);
@@ -790,18 +889,62 @@ pub fn layer_forward_with_turboquant_context(
     let ffn_out = if w.router_proj.is_some() {
         if cfg.gemma4_moe_router {
             // Gemma4 dual-path: dense sub-block + expert sub-block.
+            let dense_started = profile_gemma4_moe_decode.then(Instant::now);
             let h1 = ffn_swiglu(cfg, w, &normed2);
             let h1 = rms_norm_opt(&h1, w.ffn_post_norm1.as_ref(), cfg.rms_norm_eps);
+            if let Some(started) = dense_started {
+                profile_eval_elapsed(
+                    profile_gemma4_moe_decode,
+                    Gemma4MoeProfileStage::Dense,
+                    started,
+                    &[&h1],
+                );
+            }
             let h2_normed = if let Some(n2) = &w.ffn_norm2 {
                 rms_norm(&hidden, Some(n2), cfg.rms_norm_eps, None)
             } else {
                 normed2
             };
+            let router_started = profile_gemma4_moe_decode.then(Instant::now);
             let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
+            if let Some(started) = router_started {
+                profile_eval_elapsed(
+                    profile_gemma4_moe_decode,
+                    Gemma4MoeProfileStage::Router,
+                    started,
+                    &[&top_k_indices, &top_k_weights],
+                );
+            }
+            if profile_gemma4_moe_decode {
+                let topk_selections = shape_element_count(&top_k_indices.shape());
+                record_gemma4_moe_decode_layer(
+                    topk_selections,
+                    topk_selections >= SWITCH_GLU_SORT_THRESHOLD,
+                );
+            }
+            let expert_started = profile_gemma4_moe_decode.then(Instant::now);
             let h2 = moe_experts_forward(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
+            if let Some(started) = expert_started {
+                profile_eval_elapsed(
+                    profile_gemma4_moe_decode,
+                    Gemma4MoeProfileStage::Expert,
+                    started,
+                    &[&h2],
+                );
+            }
+            let post_started = profile_gemma4_moe_decode.then(Instant::now);
             let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref(), cfg.rms_norm_eps);
             let combined = add(&h1, &h2, None);
-            rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
+            let out = rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
+            if let Some(started) = post_started {
+                profile_eval_elapsed(
+                    profile_gemma4_moe_decode,
+                    Gemma4MoeProfileStage::Post,
+                    started,
+                    &[&out],
+                );
+            }
+            out
         } else {
             let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
                 moe_router_glm(cfg, w, &normed2)

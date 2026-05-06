@@ -254,6 +254,49 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_decode_steps"], 5)
         self.assertEqual(summary["ax_mlx_decode_wall_us"], 200)
 
+    def test_ax_mlx_gemma4_moe_profile_is_extracted_and_summarized(self) -> None:
+        profile = bench.extract_ax_mlx_gemma4_moe_profile(
+            {
+                "crossover_decisions": {
+                    "ax_mlx_gemma4_moe_profile_enabled": 1,
+                    "ax_mlx_gemma4_moe_profile_decode_layers": 2,
+                    "ax_mlx_gemma4_moe_profile_topk_selections": 16,
+                    "ax_mlx_gemma4_moe_profile_unsorted_gather_layers": 2,
+                    "ax_mlx_gemma4_moe_profile_attention_wall_us": 100,
+                    "ax_mlx_gemma4_moe_profile_dense_wall_us": 80,
+                    "ax_mlx_gemma4_moe_profile_router_wall_us": 30,
+                    "ax_mlx_gemma4_moe_profile_expert_wall_us": 90,
+                    "ax_mlx_gemma4_moe_profile_post_wall_us": 20,
+                    "unrelated": 99,
+                }
+            }
+        )
+
+        self.assertEqual(profile["ax_mlx_gemma4_moe_profile_enabled"], 1)
+        self.assertEqual(profile["ax_mlx_gemma4_moe_profile_decode_layers"], 2)
+        self.assertEqual(profile["ax_mlx_gemma4_moe_profile_topk_selections"], 16)
+        self.assertEqual(profile["ax_mlx_gemma4_moe_profile_sorted_gather_layers"], 0)
+        self.assertEqual(profile["ax_mlx_gemma4_moe_profile_unsorted_gather_layers"], 2)
+        self.assertNotIn("unrelated", profile)
+
+        summary = bench.summarize_ax_mlx_gemma4_moe_profile(
+            [
+                {"ax_mlx_gemma4_moe_profile": profile},
+                {
+                    "ax_mlx_gemma4_moe_profile": {
+                        "ax_mlx_gemma4_moe_profile_enabled": 1,
+                        "ax_mlx_gemma4_moe_profile_decode_layers": 3,
+                        "ax_mlx_gemma4_moe_profile_topk_selections": 24,
+                        "ax_mlx_gemma4_moe_profile_attention_wall_us": 150,
+                    }
+                },
+            ]
+        )
+        self.assertEqual(summary["ax_mlx_gemma4_moe_profile_enabled"], 1)
+        self.assertEqual(summary["ax_mlx_gemma4_moe_profile_decode_layers"], 5)
+        self.assertEqual(summary["ax_mlx_gemma4_moe_profile_topk_selections"], 40)
+        self.assertEqual(summary["ax_mlx_gemma4_moe_profile_attention_wall_us"], 250)
+
     def test_ax_mlx_kv_compression_telemetry_is_extracted_and_summarized(self) -> None:
         telemetry = bench.extract_ax_mlx_kv_compression_telemetry(
             {
@@ -372,6 +415,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             {},
         )
 
+    def test_absent_ax_mlx_gemma4_moe_profile_stays_silent(self) -> None:
+        self.assertEqual(
+            bench.extract_ax_mlx_gemma4_moe_profile(
+                {"crossover_decisions": {"ax_mlx_decode_steps": 2}}
+            ),
+            {},
+        )
+
     def test_ax_step_timing_classifies_chunked_prefill_by_scheduled_tokens(self) -> None:
         self.assertTrue(
             bench.is_ax_prefill_step({"scheduled_tokens": 1}, seen_prefill=False)
@@ -415,6 +466,19 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertIn("--experimental-mlx-kv-compression", command)
         self.assertIn("turboquant-fused-experimental", command)
+
+    def test_axengine_command_can_enable_gemma4_moe_profile(self) -> None:
+        with patch.object(bench.subprocess, "Popen") as popen:
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                direct_mode=True,
+                gemma4_moe_profile=True,
+            )
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["AX_MLX_GEMMA4_MOE_PROFILE"], "1")
 
     def test_route_with_more_decisions_keeps_step_telemetry_over_response_route(self) -> None:
         step_route = {
