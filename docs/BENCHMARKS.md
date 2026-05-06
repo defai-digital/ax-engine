@@ -116,6 +116,24 @@ rows, and `ngram_acceleration_linear_attention_branch_recompute` for Qwen3.5-sty
 recurrent linear-attention rows, where repeated n-gram evidence is required
 before probing and partial accepts trigger a longer cooldown.
 
+For internal TurboQuant evidence capture, the harness can pass through the
+server's experimental shadow policy:
+
+```text
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-dir /path/to/local/mlx-model \
+  --prompt-tokens 8192 \
+  --generation-tokens 256 \
+  --experimental-mlx-kv-compression turboquant-shadow
+```
+
+The default remains disabled. `turboquant-shadow` keeps generation on the
+full-precision MLX decode path and records route counters for eligibility,
+estimated saved KiB, runtime shadow-storage writes, and remaining production
+blockers when the runtime emits them. It is artifact evidence only; promoted
+TurboQuant support still requires a long-context quality artifact validated by
+`scripts/check_turboquant_quality_artifact.py`.
+
 N-gram acceleration AX result objects also include `ngram_acceleration_telemetry` when the
 runtime emits route counters. The stored counters cover draft attempts, draft
 tokens, accepted/rejected draft tokens, full accepts, partial rejects, complete

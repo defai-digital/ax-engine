@@ -424,7 +424,14 @@ pub fn layer_forward(
                 &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
                 None,
             );
-            let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq, cfg.rms_norm_eps);
+            let q = qk_norm_bshd(
+                q,
+                w.q_norm.as_ref(),
+                cfg.n_heads,
+                head_dim,
+                seq,
+                cfg.rms_norm_eps,
+            );
             let q = transpose(&q, &[0, 2, 1, 3], None);
             let q_rope = rope(
                 &q,
@@ -461,8 +468,22 @@ pub fn layer_forward(
                 None,
             );
 
-            let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq, cfg.rms_norm_eps);
-            let k = qk_norm_bshd(k, w.k_norm.as_ref(), kv_heads, head_dim, seq, cfg.rms_norm_eps);
+            let q = qk_norm_bshd(
+                q,
+                w.q_norm.as_ref(),
+                cfg.n_heads,
+                head_dim,
+                seq,
+                cfg.rms_norm_eps,
+            );
+            let k = qk_norm_bshd(
+                k,
+                w.k_norm.as_ref(),
+                kv_heads,
+                head_dim,
+                seq,
+                cfg.rms_norm_eps,
+            );
 
             let q = transpose(&q, &[0, 2, 1, 3], None);
             let k = transpose(&k, &[0, 2, 1, 3], None);
@@ -684,7 +705,12 @@ pub fn forward(
         hidden
     };
 
-    let normed = rms_norm(&last_hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let normed = rms_norm(
+        &last_hidden,
+        Some(&weights.final_norm),
+        cfg.rms_norm_eps,
+        None,
+    );
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
@@ -1087,7 +1113,12 @@ fn glm_mla_project_inputs(
         (mla_cfg.kv_lora_rank + mla_cfg.qk_rope_head_dim) as i32,
         None,
     );
-    let kv_latent = rms_norm(&kv_latent_raw, Some(&mla_w.kv_a_norm), cfg.rms_norm_eps, None);
+    let kv_latent = rms_norm(
+        &kv_latent_raw,
+        Some(&mla_w.kv_a_norm),
+        cfg.rms_norm_eps,
+        None,
+    );
     let kv_latent = expand_dims(&kv_latent, 1, None);
     let k_pe = reshape(&k_pe, &[1, seq, 1, mla_cfg.qk_rope_head_dim as i32], None);
     let k_pe = transpose(&k_pe, &[0, 2, 1, 3], None);
@@ -1611,13 +1642,12 @@ fn shared_expert_forward(w: &LayerWeights, x: &MlxArray) -> MlxArray {
             .as_ref()
             .expect("shared expert must have down projection"),
     );
-    let shared_gate = qw(
-        x,
-        w.shared_expert_gate
-            .as_ref()
-            .expect("shared expert must have gate input projection"),
-    );
-    multiply(&mlx_sys::ops::sigmoid(&shared_gate, None), &shared, None)
+    if let Some(shared_expert_gate) = &w.shared_expert_gate {
+        let shared_gate = qw(x, shared_expert_gate);
+        multiply(&mlx_sys::ops::sigmoid(&shared_gate, None), &shared, None)
+    } else {
+        shared
+    }
 }
 
 fn mlx_slice_last_dim(x: &MlxArray, start: i32, end: i32) -> MlxArray {
@@ -2966,6 +2996,38 @@ mod tests {
         let cfg = ModelConfig::from_manifest(&manifest);
         let mut weights = glm_mla_layer_weights(&cfg);
         attach_glm_moe_ffn(&mut weights, &cfg);
+        let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
+        let mut cache = MlxKVCache::new(cfg.layer_count);
+
+        let out = layer_forward(&cfg, &weights, &hidden, &mut cache, 0, 0, None);
+        eval(&[&out]);
+
+        assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
+        assert_eq!(cache.collect_eval_refs().len(), 2);
+    }
+
+    #[test]
+    fn layer_forward_routes_glm_moe_with_ungated_shared_expert() {
+        let mut manifest = glm4_moe_lite_manifest();
+        manifest.hidden_size = 8;
+        manifest.intermediate_size = 6;
+        manifest.layer_count = 1;
+        manifest.attention_head_count = 2;
+        manifest.kv_head_count = 2;
+        manifest.attention_head_dim = 4;
+        manifest.mla_attention.q_lora_rank = Some(4);
+        manifest.mla_attention.kv_lora_rank = Some(4);
+        manifest.mla_attention.qk_nope_head_dim = Some(2);
+        manifest.mla_attention.qk_rope_head_dim = Some(2);
+        manifest.mla_attention.value_head_dim = Some(3);
+        manifest.moe.expert_count = Some(4);
+        manifest.moe.experts_per_token = Some(2);
+        manifest.moe.expert_intermediate_size = Some(3);
+        manifest.glm_router.first_dense_layer_count = Some(0);
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let mut weights = glm_mla_layer_weights(&cfg);
+        attach_glm_moe_ffn(&mut weights, &cfg);
+        weights.shared_expert_gate = None;
         let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
         let mut cache = MlxKVCache::new(cfg.layer_count);
 

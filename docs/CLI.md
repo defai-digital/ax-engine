@@ -75,6 +75,22 @@ through an explicit `BenchmarkHelpers` / `MLXLMCommon` generation adapter that
 reads the emitted prompt token JSON. The older SwiftLM application-server
 benchmark is retired.
 
+For TurboQuant evidence collection, the MLX inference-stack harness can pass
+through the server's experimental shadow policy:
+
+```text
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-dir /path/to/local/mlx-model \
+  --prompt-tokens 8192 \
+  --generation-tokens 256 \
+  --experimental-mlx-kv-compression turboquant-shadow
+```
+
+This mode is optional, disabled by default, and records TurboQuant route
+metadata only when the runtime emits it. It is not a production support claim
+and should be paired with `scripts/check_turboquant_quality_artifact.py` before
+being used as promotion evidence.
+
 ## Delegated llama.cpp Checks
 
 `ax-engine-bench` can run delegated llama.cpp scenario and replay manifests

@@ -254,6 +254,83 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_decode_steps"], 5)
         self.assertEqual(summary["ax_mlx_decode_wall_us"], 200)
 
+    def test_ax_mlx_kv_compression_telemetry_is_extracted_and_summarized(self) -> None:
+        telemetry = bench.extract_ax_mlx_kv_compression_telemetry(
+            {
+                "crossover_decisions": {
+                    "ax_mlx_kv_compression_request_snapshots": 1,
+                    "ax_mlx_kv_compression_status": 2,
+                    "ax_mlx_kv_compression_preset": 1,
+                    "ax_mlx_kv_compression_key_bits": 8,
+                    "ax_mlx_kv_compression_value_bits": 4,
+                    "ax_mlx_kv_compression_candidate_token_layers": 100,
+                    "ax_mlx_kv_compression_estimated_saved_kib": 20,
+                    "ax_mlx_kv_compression_route_metadata_schema": 1,
+                    "ax_mlx_kv_compression_production_ready": 0,
+                    "ax_mlx_kv_compression_production_blockers": 2,
+                    "ax_mlx_kv_compression_runtime_storage_written_slots": 50,
+                    "unrelated": 99,
+                }
+            }
+        )
+
+        self.assertEqual(telemetry["ax_mlx_kv_compression_preset"], 1)
+        self.assertEqual(telemetry["ax_mlx_kv_compression_key_bits"], 8)
+        self.assertEqual(
+            telemetry["ax_mlx_kv_compression_runtime_storage_written_slots"],
+            50,
+        )
+        self.assertNotIn("unrelated", telemetry)
+
+        summary = bench.summarize_ax_mlx_kv_compression_telemetry(
+            [
+                {"kv_compression_telemetry": telemetry},
+                {
+                    "kv_compression_telemetry": {
+                        "ax_mlx_kv_compression_request_snapshots": 1,
+                        "ax_mlx_kv_compression_status": 2,
+                        "ax_mlx_kv_compression_preset": 1,
+                        "ax_mlx_kv_compression_runtime_storage_written_slots": 75,
+                    }
+                },
+            ]
+        )
+
+        self.assertEqual(summary["ax_mlx_kv_compression_request_snapshots"], 2)
+        self.assertEqual(summary["ax_mlx_kv_compression_status"], 2)
+        self.assertEqual(summary["ax_mlx_kv_compression_preset"], 1)
+        self.assertEqual(
+            summary["ax_mlx_kv_compression_runtime_storage_written_slots"],
+            125,
+        )
+
+    def test_absent_ax_mlx_kv_compression_telemetry_stays_silent(self) -> None:
+        self.assertEqual(
+            bench.extract_ax_mlx_kv_compression_telemetry(
+                {"crossover_decisions": {"ax_mlx_decode_steps": 2}}
+            ),
+            {},
+        )
+
+    def test_axengine_command_can_enable_experimental_kv_compression(self) -> None:
+        with patch.object(bench.subprocess, "Popen") as popen:
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                direct_mode=True,
+                kv_compression="turboquant-shadow",
+                kv_compression_hot_window_tokens=128,
+                kv_compression_min_context_tokens=1024,
+            )
+
+        command = popen.call_args.args[0]
+        self.assertIn("--disable-ngram-acceleration", command)
+        self.assertIn("--experimental-mlx-kv-compression", command)
+        self.assertIn("turboquant-shadow", command)
+        self.assertIn("--experimental-mlx-kv-compression-hot-window-tokens", command)
+        self.assertIn("--experimental-mlx-kv-compression-min-context-tokens", command)
+
     def test_route_with_more_decisions_keeps_step_telemetry_over_response_route(self) -> None:
         step_route = {
             "attention_route": "qwen_paged_decode",
