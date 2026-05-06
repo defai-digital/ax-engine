@@ -55,7 +55,8 @@ def _full_attention_layers(manifest: dict[str, Any]) -> int | None:
 def inspect_manifest(path: Path) -> dict[str, Any]:
     manifest = _load_json(path)
     model_dir = path.parent
-    head_dim = manifest.get("attention_head_dim")
+    attention_head_dim = manifest.get("attention_head_dim")
+    fused_head_dim = manifest.get("global_head_dim") or attention_head_dim
     n_heads = manifest.get("attention_head_count")
     n_kv_heads = manifest.get("kv_head_count")
     family = manifest.get("model_family")
@@ -64,11 +65,15 @@ def inspect_manifest(path: Path) -> dict[str, Any]:
     has_mla_attention = bool(manifest.get("mla_attention"))
 
     blockers: list[str] = []
-    if head_dim != 128:
-        blockers.append(f"attention_head_dim {head_dim} is not supported by the current fused gate")
-    if n_heads != n_kv_heads:
+    if fused_head_dim not in checker.SUPPORTED_HEAD_DIMS:
         blockers.append(
-            f"grouped-query attention is not supported yet: attention_head_count={n_heads}, kv_head_count={n_kv_heads}"
+            f"fused attention head_dim {fused_head_dim} is not supported by the current fused gate"
+        )
+    if not isinstance(n_heads, int) or not isinstance(n_kv_heads, int) or n_kv_heads <= 0:
+        blockers.append("attention_head_count and kv_head_count must be valid integers")
+    elif n_heads % n_kv_heads != 0:
+        blockers.append(
+            f"grouped-query mapping is invalid: attention_head_count={n_heads}, kv_head_count={n_kv_heads}"
         )
     if full_layers == 0:
         blockers.append("no full_attention layers are available for first production preset")
@@ -80,7 +85,8 @@ def inspect_manifest(path: Path) -> dict[str, Any]:
     return {
         "model_dir": _relative(model_dir),
         "model_family": family,
-        "attention_head_dim": head_dim,
+        "attention_head_dim": attention_head_dim,
+        "fused_attention_head_dim": fused_head_dim,
         "attention_head_count": n_heads,
         "kv_head_count": n_kv_heads,
         "full_attention_layers": full_layers,
@@ -154,7 +160,7 @@ def build_report(
         "required_current_gate": {
             "candidate_mode": checker.REQUIRED_CANDIDATE_COMPRESSION_MODE,
             "preset": "k8v4",
-            "head_dim": 128,
+            "head_dim": sorted(checker.SUPPORTED_HEAD_DIMS),
             "decode_path": "fused_compressed_decode",
             "fused_decode_successes": "> 0",
             "fused_decode_fallbacks": 0,

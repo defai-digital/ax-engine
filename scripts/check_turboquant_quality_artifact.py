@@ -23,6 +23,7 @@ MIN_DECODE_RATIO_TO_BASELINE = 0.85
 MIN_SAVED_KIB = 1
 MAX_RUNTIME_PRODUCTION_BLOCKERS = 1
 REQUIRED_CANDIDATE_COMPRESSION_MODE = "turboquant-fused-experimental"
+SUPPORTED_HEAD_DIMS = {128, 256, 512}
 
 QUALITY_GATES = {
     "reference_k8v4": {
@@ -236,7 +237,10 @@ def validate_artifact(doc: dict[str, Any], *, root: Path = REPO_ROOT, require_fi
     _string(model.get("id"), "model.id")
     _string(model.get("family"), "model.family")
     _string(model.get("revision"), "model.revision")
-    _require(_integer(model.get("head_dim"), "model.head_dim") == 128, "initial gate requires head_dim=128")
+    _require(
+        _integer(model.get("head_dim"), "model.head_dim") in SUPPORTED_HEAD_DIMS,
+        "initial gate requires head_dim=128, head_dim=256, or head_dim=512",
+    )
 
     workload = _mapping(doc.get("workload"), "workload")
     manifest = _string(workload.get("manifest"), "workload.manifest")

@@ -59,6 +59,17 @@ throughput baselines.
   from MLX inference-stack benchmark output and a quality-metrics JSON file,
   then validates it through the same fail-closed gate. Full-precision shadow
   and CPU oracle rows are rejected as promotion evidence.
+- `build_turboquant_decode_outputs.py`: extracts opt-in AX response
+  `output_token_ids` from MLX inference-stack benchmark artifacts into the
+  `decode_outputs` vector format consumed by TurboQuant quality metrics. Rerun
+  the benchmark with `--capture-output-token-ids` when producing real-model
+  quality evidence.
+- `run-turboquant-quality-artifact.sh`: real-model TurboQuant promotion-evidence
+  runner. It builds the release server, runs full-precision and
+  `turboquant-fused-experimental` AX rows with output-token capture, extracts
+  decode vectors, builds quality metrics, validates the quality artifact, and
+  writes a promotion-readiness report. Use `--dry-run` first to inspect
+  inferred metadata and planned commands without loading a model.
 - `build_turboquant_quality_metrics.py`: compares baseline and candidate decode
   output vectors and emits the max/mean absolute error plus minimum cosine
   similarity JSON consumed by the TurboQuant quality artifact builder.

@@ -155,12 +155,22 @@ metadata schema `>= 2`, K8/V4, fused_compressed_decode path code `2`, fused
 decode attempts and successes greater than zero, and zero fused decode
 fallbacks. Shadow rows and cpu_oracle_compressed_decode rows are useful for
 diagnosis, but they are rejected as promotion evidence.
+For model-level quality evidence, run the baseline and fused candidate AX rows
+with `bench_mlx_inference_stack.py --capture-output-token-ids`, then extract
+same-shaped output vectors with `scripts/build_turboquant_decode_outputs.py`
+before building the quality metrics JSON.
+The repo-owned wrapper is `scripts/run-turboquant-quality-artifact.sh`; it runs
+the baseline, fused candidate, decode-output extraction, quality metrics,
+artifact validation, and promotion-readiness report in one fail-closed bundle.
+Run it with `--dry-run` first to inspect inferred model metadata and planned
+commands without loading the model.
 
 Before changing public support wording, run
 `scripts/check_turboquant_promotion_readiness.py`. Public docs must remain
 experimental while that report has blockers, for example when the available
-model manifests cannot exercise the current `head_dim=128` fused K8/V4 gate or
-no passing long-context fused-path quality artifact exists.
+model manifests cannot exercise the current `head_dim=128`, `head_dim=256`, or
+`head_dim=512` fused K8/V4 gate or no passing long-context fused-path quality
+artifact exists.
 
 The internal quantitative benchmark design lives in
 `.internal/benchmark/TURBOQUANT-BENCHMARK-DESIGN.md`. It separates microkernel

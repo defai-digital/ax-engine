@@ -27,6 +27,14 @@ assert METRICS_SPEC and METRICS_SPEC.loader
 metrics_builder = importlib.util.module_from_spec(METRICS_SPEC)
 METRICS_SPEC.loader.exec_module(metrics_builder)
 
+DECODE_OUTPUTS_PATH = Path(__file__).with_name("build_turboquant_decode_outputs.py")
+DECODE_OUTPUTS_SPEC = importlib.util.spec_from_file_location(
+    "build_turboquant_decode_outputs", DECODE_OUTPUTS_PATH
+)
+assert DECODE_OUTPUTS_SPEC and DECODE_OUTPUTS_SPEC.loader
+decode_outputs_builder = importlib.util.module_from_spec(DECODE_OUTPUTS_SPEC)
+DECODE_OUTPUTS_SPEC.loader.exec_module(decode_outputs_builder)
+
 SHA = "a" * 64
 
 
@@ -116,6 +124,7 @@ def benchmark_doc(
     compressed: bool,
     decode_path: str | None = None,
     compression_mode: str = checker.REQUIRED_CANDIDATE_COMPRESSION_MODE,
+    output_token_ids: list[int] | None = None,
 ) -> dict:
     resolved_decode_path = decode_path or "fused_compressed_decode"
     decode_path_code = {
@@ -130,6 +139,15 @@ def benchmark_doc(
         "prompt_token_ids_sha256": SHA,
         "decode_tok_s": {"median": 100.0 if not compressed else 90.0},
     }
+    if output_token_ids is not None:
+        row["trials"] = [
+            {
+                "prefill_tok_s": 1.0,
+                "decode_tok_s": 1.0,
+                "output_tokens": float(len(output_token_ids)),
+                "output_token_ids": output_token_ids,
+            }
+        ]
     if compressed:
         row.update(
             {
@@ -235,10 +253,65 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             )
             self.assertFalse(output.exists())
 
+    def test_decode_outputs_builder_extracts_captured_ax_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            benchmark = root / "benchmark.json"
+            tokens = list(range(256))
+            benchmark.write_text(
+                json.dumps(benchmark_doc(compressed=False, output_token_ids=tokens))
+            )
+
+            doc = decode_outputs_builder.build_decode_outputs(
+                benchmark,
+                engine="ax_engine_mlx",
+                context_tokens=8192,
+                generation_tokens=256,
+                compression_mode="disabled",
+            )
+
+            self.assertEqual(doc["schema_version"], decode_outputs_builder.SCHEMA_VERSION)
+            self.assertEqual(doc["prompt_token_ids_sha256"], SHA)
+            self.assertEqual(doc["decode_outputs"], [[float(token) for token in tokens]])
+
+    def test_decode_outputs_builder_fails_closed_without_captured_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            benchmark = root / "benchmark.json"
+            doc = benchmark_doc(compressed=False)
+            doc["results"][0]["trials"] = [{"output_tokens": 256.0}]
+            benchmark.write_text(json.dumps(doc))
+
+            with self.assertRaisesRegex(
+                decode_outputs_builder.DecodeOutputBuildError,
+                "--capture-output-token-ids",
+            ):
+                decode_outputs_builder.build_decode_outputs(
+                    benchmark,
+                    engine="ax_engine_mlx",
+                    context_tokens=8192,
+                    generation_tokens=256,
+                    compression_mode="disabled",
+                )
+
     def test_valid_artifact_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             checker.validate_artifact(valid_artifact(root), root=root)
+
+    def test_valid_head_dim_256_artifact_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["model"]["head_dim"] = 256
+            checker.validate_artifact(artifact, root=root)
+
+    def test_valid_head_dim_512_artifact_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["model"]["head_dim"] = 512
+            checker.validate_artifact(artifact, root=root)
 
     def test_short_context_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
