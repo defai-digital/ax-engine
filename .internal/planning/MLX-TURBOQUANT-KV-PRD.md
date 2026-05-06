@@ -300,6 +300,19 @@ Implemented fused decode benchmark estimate slice on 2026-05-06:
   not launch a kernel, allocate MLX storage, change SDPA, change generation, or
   expose a user-facing switch.
 
+Implemented fused decode promotion readiness slice on 2026-05-06:
+
+- Added `TurboQuantFusedDecodePromotionReadiness` as the internal evidence gate
+  above launch descriptor and benchmark estimate accounting.
+- Added descriptor `promotion_readiness()` to require matching quality preset,
+  passing decode quality gate, and positive cold-history savings before marking
+  a fused decode candidate as ready for promotion evidence.
+- Added fail-closed status values for quality-preset mismatch, quality-gate
+  failure, and no cold savings.
+- Keeps the readiness contract CPU-only and internal; it does not launch a
+  kernel, allocate MLX storage, change SDPA, change generation, publish route
+  metadata, or expose a user-facing switch.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

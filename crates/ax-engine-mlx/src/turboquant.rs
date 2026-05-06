@@ -478,6 +478,28 @@ pub struct TurboQuantFusedDecodeBenchmarkEstimate {
     pub cold_compression_ratio_milli: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurboQuantFusedDecodePromotionStatus {
+    Ready,
+    QualityPresetMismatch,
+    QualityGateFailed,
+    NoColdSavings,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantFusedDecodePromotionReadiness {
+    pub status: TurboQuantFusedDecodePromotionStatus,
+    pub preset: MlxTurboQuantPreset,
+    pub quality_profile: TurboQuantDecodeQualityProfile,
+    pub benchmark_estimate: TurboQuantFusedDecodeBenchmarkEstimate,
+}
+
+impl TurboQuantFusedDecodePromotionReadiness {
+    pub fn is_ready(self) -> bool {
+        self.status == TurboQuantFusedDecodePromotionStatus::Ready
+    }
+}
+
 impl TurboQuantFusedDecodeLaunchDescriptor {
     pub fn workload(self) -> TurboQuantFusedDecodeLaunchWorkload {
         let compressed_key_payload_bytes =
@@ -552,6 +574,30 @@ impl TurboQuantFusedDecodeLaunchDescriptor {
                 workload.estimated_total_saved_read_bytes,
             ),
             cold_compression_ratio_milli: workload.cold_compression_ratio_milli,
+        }
+    }
+
+    pub fn promotion_readiness(
+        self,
+        quality_check: &TurboQuantDecodeQualityCheck,
+    ) -> TurboQuantFusedDecodePromotionReadiness {
+        let workload = self.workload();
+        let benchmark_estimate = self.benchmark_estimate();
+        let status = if quality_check.evaluation.preset != self.preset {
+            TurboQuantFusedDecodePromotionStatus::QualityPresetMismatch
+        } else if !quality_check.evaluation.decision.passed {
+            TurboQuantFusedDecodePromotionStatus::QualityGateFailed
+        } else if workload.estimated_cold_saved_bytes == 0 {
+            TurboQuantFusedDecodePromotionStatus::NoColdSavings
+        } else {
+            TurboQuantFusedDecodePromotionStatus::Ready
+        };
+
+        TurboQuantFusedDecodePromotionReadiness {
+            status,
+            preset: self.preset,
+            quality_profile: quality_check.evaluation.profile,
+            benchmark_estimate,
         }
     }
 }
@@ -2815,6 +2861,135 @@ mod tests {
                 estimated_total_saved_read_kib: 1,
                 cold_compression_ratio_milli: 222,
             }
+        );
+    }
+
+    #[test]
+    fn fused_decode_launch_descriptor_reports_promotion_readiness() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 1,
+            head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+            value_group_size: 32,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 2, 1).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        buffer
+            .write_token(
+                0,
+                &[(
+                    vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                    vec![0.2; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                )],
+            )
+            .expect("cold token");
+        let descriptor = plan
+            .fused_decode_launch_descriptor(
+                &buffer,
+                &[vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            )
+            .expect("candidate launch should produce descriptor");
+        let comparison = compare_decode_outputs(
+            &[vec![1.0; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            &[vec![1.0; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+        )
+        .expect("comparison should pass");
+        let quality_check =
+            TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, comparison);
+
+        let readiness = descriptor.promotion_readiness(&quality_check);
+
+        assert!(readiness.is_ready());
+        assert_eq!(
+            readiness.status,
+            TurboQuantFusedDecodePromotionStatus::Ready
+        );
+        assert_eq!(readiness.preset, MlxTurboQuantPreset::K8V4);
+        assert_eq!(
+            readiness.quality_profile,
+            TurboQuantDecodeQualityProfile::ReferenceK8V4
+        );
+        assert_eq!(readiness.benchmark_estimate.estimated_cold_saved_kib, 1);
+        assert_eq!(
+            readiness.benchmark_estimate.cold_compression_ratio_milli,
+            222
+        );
+    }
+
+    #[test]
+    fn fused_decode_promotion_readiness_fails_closed() {
+        let descriptor = TurboQuantFusedDecodeLaunchDescriptor {
+            preset: MlxTurboQuantPreset::K8V4,
+            key_bits: 8,
+            value_bits: 4,
+            total_tokens: 2,
+            cold_tokens: 1,
+            hot_tokens: 1,
+            n_kv_heads: 1,
+            head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+            block_tokens: 2,
+            compressed_blocks: 1,
+            compressed_buffer_bytes: 480,
+            required_compressed_slots: 1,
+            value_group_size: 32,
+            value_group_count: 4,
+            key_payload_bytes_per_head: 128,
+            key_norm_bytes_per_head: 4,
+            value_payload_bytes_per_head: 64,
+            value_metadata_bytes_per_head: 32,
+            raw_slot_bytes_per_head: 228,
+            slot_bytes_per_head: 240,
+            token_stride_bytes: 240,
+            block_bytes: 480,
+            key_payload_offset_in_slot: 0,
+            key_norm_offset_in_slot: 128,
+            value_payload_offset_in_slot: 132,
+            value_mins_offset_in_slot: 196,
+            value_scales_offset_in_slot: 212,
+        };
+        let passing_comparison = compare_decode_outputs(
+            &[vec![1.0; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            &[vec![1.0; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+        )
+        .expect("comparison should pass");
+        let mismatched_quality_check = TurboQuantDecodeQualityCheck::for_preset(
+            MlxTurboQuantPreset::K4V4,
+            passing_comparison.clone(),
+        );
+        let failing_comparison = compare_decode_outputs(
+            &[vec![1.0; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            &[vec![0.0; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+        )
+        .expect("comparison should report failure metrics");
+        let failing_quality_check =
+            TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, failing_comparison);
+        let passing_quality_check =
+            TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, passing_comparison);
+
+        assert_eq!(
+            descriptor
+                .promotion_readiness(&mismatched_quality_check)
+                .status,
+            TurboQuantFusedDecodePromotionStatus::QualityPresetMismatch
+        );
+        assert_eq!(
+            descriptor
+                .promotion_readiness(&failing_quality_check)
+                .status,
+            TurboQuantFusedDecodePromotionStatus::QualityGateFailed
+        );
+
+        let no_savings_descriptor = TurboQuantFusedDecodeLaunchDescriptor {
+            raw_slot_bytes_per_head: 2048,
+            ..descriptor
+        };
+        assert_eq!(
+            no_savings_descriptor
+                .promotion_readiness(&passing_quality_check)
+                .status,
+            TurboQuantFusedDecodePromotionStatus::NoColdSavings
         );
     }
 

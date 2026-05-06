@@ -222,6 +222,15 @@ metadata until the runtime path is explicitly enabled; it does not launch
 kernels, allocate MLX storage, alter SDPA, change generation, or expose a public
 switch.
 
+The fused decode promotion readiness gate is accepted as the internal evidence
+contract above launch descriptor and benchmark estimate accounting. Descriptor
+`promotion_readiness()` requires a matching quality preset, a passing decode
+quality gate, and positive cold-history savings before marking a fused decode
+candidate ready for promotion evidence. Preset mismatch, quality failure, and no
+cold savings fail closed. This remains internal and CPU-only; it does not launch
+kernels, allocate MLX storage, alter SDPA, change generation, publish route
+metadata, or expose a public switch.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a
