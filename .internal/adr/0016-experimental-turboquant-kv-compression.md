@@ -117,6 +117,13 @@ per KV head and returns one decoded output per head by reusing the per-head
 oracle. It fails closed on query/head-count mismatch and remains disconnected
 from MLX allocation, runtime KV storage, SDPA, and generation.
 
+The decode comparison report is accepted as the first quality-gate contract for
+future kernels. `compare_decode_outputs` reports per-head and aggregate error
+metrics for expected versus actual all-head decode outputs, and
+`debug_compare_attention_for_all_heads` compares compressed-buffer decode output
+against a caller-provided full-precision oracle. The comparison remains CPU-only
+and does not change runtime KV storage, SDPA, or generation behavior.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

@@ -120,6 +120,20 @@ Implemented compressed all-head decode oracle slice on 2026-05-06:
 - Keeps the oracle disconnected from MLX allocation, runtime KV storage, SDPA,
   and generation.
 
+Implemented decode comparison report slice on 2026-05-06:
+
+- Added CPU-only comparison metrics for expected versus actual all-head decode
+  outputs.
+- Reports per-head max absolute error, mean absolute error, and cosine
+  similarity.
+- Reports aggregate max absolute error, mean absolute error, and minimum cosine
+  similarity across heads.
+- Added a compressed-buffer comparison helper that compares compressed all-head
+  decode output against caller-provided full-precision oracle output.
+- Fails closed for output head-count and vector-dimension mismatches.
+- Keeps the comparison contract disconnected from MLX allocation, runtime KV
+  storage, SDPA, and generation.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
