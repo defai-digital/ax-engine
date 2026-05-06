@@ -191,6 +191,14 @@ labels full-precision-only, unsupported-head-dimension, and unsupported-preset
 cases explicitly. This remains CPU-only metadata and does not launch kernels,
 allocate MLX storage, alter SDPA, change generation, or expose a public switch.
 
+The fused decode launch descriptor is accepted as the deterministic geometry
+contract for future kernel work. `fused_decode_launch_descriptor` composes
+readiness validation and candidate gating, then reports block geometry,
+compressed bytes, value grouping, slot sizes, token stride, block bytes, and
+payload offsets. Non-candidates fail closed before a descriptor is produced.
+This remains CPU-only metadata and does not launch kernels, allocate MLX
+storage, alter SDPA, change generation, or expose a public switch.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

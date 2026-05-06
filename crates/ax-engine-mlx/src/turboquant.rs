@@ -69,6 +69,10 @@ pub enum TurboQuantCodecError {
         required_slots: usize,
         written_slots: usize,
     },
+    #[error("TurboQuant fused decode launch rejected: {status:?}")]
+    FusedDecodeLaunchRejected {
+        status: TurboQuantFusedDecodeCandidateStatus,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -398,6 +402,32 @@ impl TurboQuantCompressedDecodeReadiness {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantFusedDecodeLaunchDescriptor {
+    pub preset: MlxTurboQuantPreset,
+    pub key_bits: u32,
+    pub value_bits: u32,
+    pub total_tokens: usize,
+    pub cold_tokens: usize,
+    pub hot_tokens: usize,
+    pub n_kv_heads: usize,
+    pub head_dim: usize,
+    pub block_tokens: usize,
+    pub compressed_blocks: usize,
+    pub compressed_buffer_bytes: usize,
+    pub required_compressed_slots: usize,
+    pub value_group_size: usize,
+    pub value_group_count: usize,
+    pub slot_bytes_per_head: usize,
+    pub token_stride_bytes: usize,
+    pub block_bytes: usize,
+    pub key_payload_offset_in_slot: usize,
+    pub key_norm_offset_in_slot: usize,
+    pub value_payload_offset_in_slot: usize,
+    pub value_mins_offset_in_slot: usize,
+    pub value_scales_offset_in_slot: usize,
+}
+
 impl TurboQuantCompressedDecodePlan {
     pub fn new(
         layout: TurboQuantBlockLayout,
@@ -514,6 +544,46 @@ impl TurboQuantCompressedDecodePlan {
             required_compressed_slots: self.required_compressed_slots,
             written_compressed_slots,
             quality_profile: self.quality_profile,
+        })
+    }
+
+    pub fn fused_decode_launch_descriptor(
+        self,
+        buffer: &TurboQuantCompressedBlockBuffer,
+        queries: &[Vec<f32>],
+    ) -> Result<TurboQuantFusedDecodeLaunchDescriptor, TurboQuantCodecError> {
+        let readiness = self.decode_readiness(buffer, queries)?;
+        let candidate = readiness.fused_decode_candidate();
+        if !candidate.is_candidate() {
+            return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
+                status: candidate.status,
+            });
+        }
+
+        let slot_zero = self.layout.address(0, 0, 0)?;
+        Ok(TurboQuantFusedDecodeLaunchDescriptor {
+            preset: readiness.preset,
+            key_bits: readiness.key_bits,
+            value_bits: readiness.value_bits,
+            total_tokens: readiness.total_tokens,
+            cold_tokens: readiness.cold_tokens,
+            hot_tokens: readiness.hot_tokens,
+            n_kv_heads: readiness.query_heads,
+            head_dim: readiness.query_head_dim,
+            block_tokens: self.layout.config.block_tokens,
+            compressed_blocks: readiness.compressed_blocks,
+            compressed_buffer_bytes: readiness.compressed_buffer_bytes,
+            required_compressed_slots: readiness.required_compressed_slots,
+            value_group_size: self.layout.config.value_group_size,
+            value_group_count: self.layout.value_group_count,
+            slot_bytes_per_head: self.layout.slot_bytes_per_head,
+            token_stride_bytes: self.layout.token_stride_bytes,
+            block_bytes: self.layout.block_bytes,
+            key_payload_offset_in_slot: slot_zero.key_payload_offset_bytes,
+            key_norm_offset_in_slot: slot_zero.key_norm_offset_bytes,
+            value_payload_offset_in_slot: slot_zero.value_payload_offset_bytes,
+            value_mins_offset_in_slot: slot_zero.value_mins_offset_bytes,
+            value_scales_offset_in_slot: slot_zero.value_scales_offset_bytes,
         })
     }
 
@@ -2414,6 +2484,92 @@ mod tests {
                 compressed_blocks: 1,
                 compressed_buffer_bytes: layout.block_bytes,
                 required_compressed_slots: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn compressed_decode_plan_builds_fused_decode_launch_descriptor() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 1,
+            head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+            value_group_size: 32,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 2, 1).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        buffer
+            .write_token(
+                0,
+                &[(
+                    vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                    vec![0.2; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                )],
+            )
+            .expect("cold token");
+
+        let descriptor = plan
+            .fused_decode_launch_descriptor(
+                &buffer,
+                &[vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            )
+            .expect("candidate launch should produce descriptor");
+
+        assert_eq!(
+            descriptor,
+            TurboQuantFusedDecodeLaunchDescriptor {
+                preset: MlxTurboQuantPreset::K8V4,
+                key_bits: 8,
+                value_bits: 4,
+                total_tokens: 2,
+                cold_tokens: 1,
+                hot_tokens: 1,
+                n_kv_heads: 1,
+                head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+                block_tokens: 2,
+                compressed_blocks: 1,
+                compressed_buffer_bytes: layout.block_bytes,
+                required_compressed_slots: 1,
+                value_group_size: 32,
+                value_group_count: 4,
+                slot_bytes_per_head: 240,
+                token_stride_bytes: 240,
+                block_bytes: 480,
+                key_payload_offset_in_slot: 0,
+                key_norm_offset_in_slot: 128,
+                value_payload_offset_in_slot: 132,
+                value_mins_offset_in_slot: 196,
+                value_scales_offset_in_slot: 212,
+            }
+        );
+    }
+
+    #[test]
+    fn compressed_decode_launch_descriptor_rejects_non_candidates() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 1,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 2, 1).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        buffer
+            .write_token(0, &[(vec![0.1; 8], vec![0.2; 8])])
+            .expect("cold token");
+
+        let error = plan
+            .fused_decode_launch_descriptor(&buffer, &[vec![0.1; 8]])
+            .expect_err("unsupported head dim should reject fused launch");
+
+        assert_eq!(
+            error,
+            TurboQuantCodecError::FusedDecodeLaunchRejected {
+                status: TurboQuantFusedDecodeCandidateStatus::UnsupportedHeadDim,
             }
         );
     }

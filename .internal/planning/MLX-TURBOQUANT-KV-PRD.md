@@ -250,6 +250,18 @@ Implemented fused decode candidate gate slice on 2026-05-06:
 - Keeps the gate as CPU-only metadata; it does not launch a kernel, allocate MLX
   storage, change SDPA, change generation, or expose a user-facing switch.
 
+Implemented fused decode launch descriptor slice on 2026-05-06:
+
+- Added `TurboQuantFusedDecodeLaunchDescriptor` as the deterministic kernel
+  geometry contract for the first fused decode candidate.
+- Added `TurboQuantCompressedDecodePlan::fused_decode_launch_descriptor` to
+  compose input readiness, candidate gating, and slot layout offsets/strides.
+- Reports block tokens, KV heads, head dimension, compressed block bytes, value
+  grouping, per-head slot size, token stride, block size, and payload offsets.
+- Fails closed for non-candidates before producing a descriptor.
+- Keeps the descriptor CPU-only; it does not launch a kernel, allocate MLX
+  storage, change SDPA, change generation, or expose a user-facing switch.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
