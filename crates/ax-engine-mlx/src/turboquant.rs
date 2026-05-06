@@ -1139,6 +1139,7 @@ pub struct TurboQuantCompressedBlockBuffer {
     bytes: Vec<u8>,
     written_slots: Vec<bool>,
     token_count: usize,
+    written_slot_count: usize,
 }
 
 impl TurboQuantCompressedBlockBuffer {
@@ -1148,6 +1149,7 @@ impl TurboQuantCompressedBlockBuffer {
             bytes: Vec::new(),
             written_slots: Vec::new(),
             token_count: 0,
+            written_slot_count: 0,
         }
     }
 
@@ -1164,10 +1166,7 @@ impl TurboQuantCompressedBlockBuffer {
     }
 
     pub fn written_slot_count(&self) -> usize {
-        self.written_slots
-            .iter()
-            .filter(|written| **written)
-            .count()
+        self.written_slot_count
     }
 
     pub fn block_count(&self) -> usize {
@@ -1192,6 +1191,9 @@ impl TurboQuantCompressedBlockBuffer {
         self.write_compressed_slot_at(&address, &key, &value)?;
 
         let slot_index = self.slot_index(token_index, head_index)?;
+        if !self.written_slots[slot_index] {
+            self.written_slot_count = self.written_slot_count.saturating_add(1);
+        }
         self.written_slots[slot_index] = true;
         self.token_count = self.token_count.max(token_index.saturating_add(1));
         Ok(())
@@ -1226,6 +1228,9 @@ impl TurboQuantCompressedBlockBuffer {
             self.zero_slot(&address)?;
             self.write_compressed_slot_at(&address, &slot.key, &slot.value)?;
             let slot_index = self.slot_index(token_index, head_index)?;
+            if !self.written_slots[slot_index] {
+                self.written_slot_count = self.written_slot_count.saturating_add(1);
+            }
             self.written_slots[slot_index] = true;
         }
         self.token_count = self.token_count.max(token_index.saturating_add(1));
@@ -1453,7 +1458,6 @@ impl TurboQuantCompressedBlockBuffer {
     fn write_bytes(&mut self, offset: usize, len: usize, source: &[u8]) {
         let end = offset + len;
         let target = &mut self.bytes[offset..end];
-        target.fill(0);
         target[..source.len()].copy_from_slice(source);
     }
 
@@ -1855,7 +1859,7 @@ pub fn reference_decode_attention(
         .iter()
         .map(|score| (*score - max_score).exp())
         .collect::<Vec<_>>();
-    let weight_sum = weights.iter().sum::<f32>().max(f32::EPSILON);
+    let weight_sum = weights.iter().sum::<f32>().max(f32::MIN_POSITIVE);
     let mut output = vec![0.0f32; value_dim];
 
     for (weight, (_, value)) in weights.iter().zip(kv_tokens) {
@@ -1962,7 +1966,7 @@ pub fn merge_attention_partition_stats(
         }
     }
 
-    let denom = denom.max(f32::EPSILON);
+    let denom = denom.max(f32::MIN_POSITIVE);
     for value in &mut output {
         *value /= denom;
     }
@@ -2080,13 +2084,52 @@ pub fn encode_key_vector(
     preset: MlxTurboQuantPreset,
 ) -> Result<QuantizedKeyVector, TurboQuantCodecError> {
     let bit_width = preset.key_bits();
-    let centroids = key_centroids(bit_width)?;
-    encode_key_vector_with_centroids(vector, bit_width, &centroids)
+    validate_supported_key_bits(bit_width)?;
+    validate_key_shape(vector)?;
+
+    let levels = 1usize << bit_width;
+    let l2_norm_val = l2_norm(vector);
+    let norm = l2_norm_val.max(f32::EPSILON);
+    let mut rotated: Vec<f32> = vector.iter().map(|v| v / norm).collect();
+    hadamard_in_place(&mut rotated)?;
+
+    let indices: Vec<u8> = rotated
+        .iter()
+        .map(|&v| uniform_centroid_index(v, levels))
+        .collect();
+    let packed_indices = pack_indices(&indices, bit_width)?;
+
+    Ok(QuantizedKeyVector {
+        dim: vector.len(),
+        bit_width,
+        l2_norm: l2_norm_val,
+        packed_indices,
+    })
 }
 
 pub fn decode_key_vector(encoded: &QuantizedKeyVector) -> Result<Vec<f32>, TurboQuantCodecError> {
-    let centroids = key_centroids(encoded.bit_width)?;
-    decode_key_vector_with_centroids(encoded, &centroids)
+    if encoded.dim == 0 {
+        return Err(TurboQuantCodecError::EmptyVector);
+    }
+    if !encoded.dim.is_power_of_two() {
+        return Err(TurboQuantCodecError::NonPowerOfTwoDimension(encoded.dim));
+    }
+    validate_supported_key_bits(encoded.bit_width)?;
+
+    let levels = 1usize << encoded.bit_width;
+    let max_index = (levels - 1) as f32;
+    let indices = unpack_indices(&encoded.packed_indices, encoded.dim, encoded.bit_width)?;
+    let mut rotated: Vec<f32> = indices
+        .into_iter()
+        .map(|index| -1.0 + 2.0 * index as f32 / max_index)
+        .collect();
+    hadamard_in_place(&mut rotated)?;
+
+    for v in &mut rotated {
+        *v *= encoded.l2_norm;
+    }
+
+    Ok(rotated)
 }
 
 pub fn encode_key_vector_with_centroids(
@@ -2196,20 +2239,47 @@ pub fn pack_indices(indices: &[u8], bit_width: u32) -> Result<Vec<u8>, TurboQuan
     let max_value = (1u16 << bit_width) - 1;
     let mut packed = vec![0u8; packed_index_bytes(indices.len(), bit_width)?];
 
-    for (index, value) in indices.iter().copied().enumerate() {
-        if value as u16 > max_value {
-            return Err(TurboQuantCodecError::PackedIndexOutOfRange {
-                bit_width,
-                index,
-                value,
-            });
+    match bit_width {
+        8 => {
+            for (i, &value) in indices.iter().enumerate() {
+                if value as u16 > max_value {
+                    return Err(TurboQuantCodecError::PackedIndexOutOfRange {
+                        bit_width,
+                        index: i,
+                        value,
+                    });
+                }
+                packed[i] = value;
+            }
         }
-
-        let bit_offset = index * bit_width as usize;
-        for bit in 0..bit_width as usize {
-            if ((value >> bit) & 1) == 1 {
-                let target_bit = bit_offset + bit;
-                packed[target_bit / 8] |= 1 << (target_bit % 8);
+        4 => {
+            for (i, &value) in indices.iter().enumerate() {
+                if value as u16 > max_value {
+                    return Err(TurboQuantCodecError::PackedIndexOutOfRange {
+                        bit_width,
+                        index: i,
+                        value,
+                    });
+                }
+                packed[i >> 1] |= (value & 0x0f) << ((i & 1) << 2);
+            }
+        }
+        _ => {
+            for (index, value) in indices.iter().copied().enumerate() {
+                if value as u16 > max_value {
+                    return Err(TurboQuantCodecError::PackedIndexOutOfRange {
+                        bit_width,
+                        index,
+                        value,
+                    });
+                }
+                let bit_offset = index * bit_width as usize;
+                for bit in 0..bit_width as usize {
+                    if ((value >> bit) & 1) == 1 {
+                        let target_bit = bit_offset + bit;
+                        packed[target_bit / 8] |= 1 << (target_bit % 8);
+                    }
+                }
             }
         }
     }
@@ -2235,15 +2305,32 @@ pub fn unpack_indices(
     }
 
     let mut indices = Vec::with_capacity(index_count);
-    for index in 0..index_count {
-        let bit_offset = index * bit_width as usize;
-        let mut value = 0u8;
-        for bit in 0..bit_width as usize {
-            let source_bit = bit_offset + bit;
-            let bit_value = (packed[source_bit / 8] >> (source_bit % 8)) & 1;
-            value |= bit_value << bit;
+    match bit_width {
+        8 => {
+            indices.extend_from_slice(&packed[..index_count]);
         }
-        indices.push(value);
+        4 => {
+            for i in 0..index_count {
+                let byte = packed[i >> 1];
+                indices.push(if i & 1 == 0 {
+                    byte & 0x0f
+                } else {
+                    (byte >> 4) & 0x0f
+                });
+            }
+        }
+        _ => {
+            for index in 0..index_count {
+                let bit_offset = index * bit_width as usize;
+                let mut value = 0u8;
+                for bit in 0..bit_width as usize {
+                    let source_bit = bit_offset + bit;
+                    let bit_value = (packed[source_bit / 8] >> (source_bit % 8)) & 1;
+                    value |= bit_value << bit;
+                }
+                indices.push(value);
+            }
+        }
     }
 
     Ok(indices)
@@ -2426,6 +2513,20 @@ fn validate_centroid_count(bit_width: u32, centroids: &[f32]) -> Result<(), Turb
 
 fn l2_norm(values: &[f32]) -> f32 {
     values.iter().map(|value| value * value).sum::<f32>().sqrt()
+}
+
+fn validate_supported_key_bits(bit_width: u32) -> Result<(), TurboQuantCodecError> {
+    match bit_width {
+        3 | 4 | 8 => Ok(()),
+        other => Err(TurboQuantCodecError::UnsupportedKeyBits(other)),
+    }
+}
+
+fn uniform_centroid_index(value: f32, levels: usize) -> u8 {
+    let max_index = (levels - 1) as f32;
+    ((value + 1.0) * 0.5 * max_index)
+        .round()
+        .clamp(0.0, max_index) as u8
 }
 
 fn vector_cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
@@ -4980,5 +5081,60 @@ mod tests {
                 actual: 2,
             }
         );
+    }
+
+    #[test]
+    fn uniform_centroid_index_matches_linear_scan_for_all_bit_widths() {
+        for &bit_width in &[3u32, 4, 8] {
+            let centroids = key_centroids(bit_width).expect("centroids");
+            let levels = 1usize << bit_width;
+            let steps = 200;
+            for step in 0..=steps {
+                let value = -1.0 + 2.0 * step as f32 / steps as f32;
+                let fast_index = uniform_centroid_index(value, levels);
+                let scan_index = nearest_centroid_index(value, &centroids);
+                let fast_dist = (value - centroids[fast_index as usize]).abs();
+                let scan_dist = (value - centroids[scan_index as usize]).abs();
+                assert!(
+                    (fast_dist - scan_dist).abs() < 1e-6,
+                    "bit_width={bit_width} value={value:.4}: \
+                     fast_index={fast_index} (dist={fast_dist:.6}) vs \
+                     scan_index={scan_index} (dist={scan_dist:.6})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn written_slot_count_is_maintained_incrementally() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 4,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        assert_eq!(buffer.written_slot_count(), 0);
+
+        let heads = vec![
+            (
+                vec![0.5, -0.5, 0.25, -0.25, 0.1, -0.1, 0.75, -0.75],
+                vec![0.1, 0.2, 0.3, 0.4, -0.1, -0.2, -0.3, -0.4],
+            ),
+            (
+                vec![-0.5, 0.5, -0.25, 0.25, -0.1, 0.1, -0.75, 0.75],
+                vec![-0.1, -0.2, -0.3, -0.4, 0.1, 0.2, 0.3, 0.4],
+            ),
+        ];
+        buffer.write_token(0, &heads).expect("write token 0");
+        assert_eq!(buffer.written_slot_count(), 2);
+
+        buffer.write_token(1, &heads).expect("write token 1");
+        assert_eq!(buffer.written_slot_count(), 4);
+
+        buffer.write_token(0, &heads).expect("overwrite token 0");
+        assert_eq!(buffer.written_slot_count(), 4, "overwrite must not double-count");
     }
 }
