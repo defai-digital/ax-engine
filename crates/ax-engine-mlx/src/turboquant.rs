@@ -37,6 +37,8 @@ pub enum TurboQuantCodecError {
     MismatchedKvVectorLengths { key_len: usize, value_len: usize },
     #[error("KV prototype expected vector dimension {expected}, got {actual}")]
     MismatchedVectorDimension { expected: usize, actual: usize },
+    #[error("TurboQuant expected {expected} KV heads, got {actual}")]
+    MismatchedKvHeadCount { expected: usize, actual: usize },
     #[error("TurboQuant reference attention requires at least one KV token")]
     EmptyKvHistory,
     #[error("invalid TurboQuant layout parameter {name}={value}")]
@@ -349,6 +351,41 @@ impl TurboQuantCompressedBlockBuffer {
         Ok(())
     }
 
+    pub fn write_token(
+        &mut self,
+        token_index: usize,
+        heads: &[FullPrecisionKvTokenVectors],
+    ) -> Result<(), TurboQuantCodecError> {
+        if heads.len() != self.layout.config.n_kv_heads {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: self.layout.config.n_kv_heads,
+                actual: heads.len(),
+            });
+        }
+
+        let compressed_heads = heads
+            .iter()
+            .map(|(key, value)| {
+                self.validate_slot_vectors(key, value)?;
+                Ok(TurboQuantCompressedHeadSlot {
+                    key: encode_key_vector(key, self.layout.config.preset)?,
+                    value: encode_value_groups_4bit(value, self.layout.config.value_group_size)?,
+                })
+            })
+            .collect::<Result<Vec<_>, TurboQuantCodecError>>()?;
+
+        self.ensure_capacity_for_tokens(token_index.saturating_add(1))?;
+        for (head_index, slot) in compressed_heads.iter().enumerate() {
+            let address = self.layout.address_for_token(token_index, head_index)?;
+            self.zero_slot(&address)?;
+            self.write_compressed_slot_at(&address, &slot.key, &slot.value)?;
+            let slot_index = self.slot_index(token_index, head_index)?;
+            self.written_slots[slot_index] = true;
+        }
+        self.token_count = self.token_count.max(token_index.saturating_add(1));
+        Ok(())
+    }
+
     pub fn read_compressed_slot(
         &self,
         token_index: usize,
@@ -363,6 +400,15 @@ impl TurboQuantCompressedBlockBuffer {
         })
     }
 
+    pub fn read_compressed_token(
+        &self,
+        token_index: usize,
+    ) -> Result<Vec<TurboQuantCompressedHeadSlot>, TurboQuantCodecError> {
+        (0..self.layout.config.n_kv_heads)
+            .map(|head_index| self.read_compressed_slot(token_index, head_index))
+            .collect()
+    }
+
     pub fn debug_reconstruct_slot(
         &self,
         token_index: usize,
@@ -373,6 +419,15 @@ impl TurboQuantCompressedBlockBuffer {
             decode_key_vector(&slot.key)?,
             decode_value_groups_4bit(&slot.value)?,
         ))
+    }
+
+    pub fn debug_reconstruct_token(
+        &self,
+        token_index: usize,
+    ) -> Result<Vec<FullPrecisionKvTokenVectors>, TurboQuantCodecError> {
+        (0..self.layout.config.n_kv_heads)
+            .map(|head_index| self.debug_reconstruct_slot(token_index, head_index))
+            .collect()
     }
 
     fn validate_slot_vectors(
@@ -1626,6 +1681,120 @@ mod tests {
                 name: "head_index",
                 index: 2,
                 limit: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn compressed_block_buffer_writes_and_reads_full_token_heads() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let heads = vec![
+            (
+                vec![0.5, -1.0, 2.0, 0.25, -0.75, 1.5, -2.5, 0.0],
+                vec![-1.0, -0.6, -0.2, 0.0, 0.2, 0.5, 0.9, 1.0],
+            ),
+            (
+                vec![0.25, 0.75, -1.5, 2.0, 0.0, -0.5, 1.25, -2.25],
+                vec![1.0, 0.7, 0.4, 0.1, -0.2, -0.4, -0.8, -1.0],
+            ),
+        ];
+
+        buffer
+            .write_token(3, &heads)
+            .expect("full token write should work");
+
+        assert_eq!(buffer.token_count(), 4);
+        assert_eq!(buffer.block_count(), 2);
+        assert_eq!(
+            buffer
+                .read_compressed_token(3)
+                .expect("compressed token should read")
+                .len(),
+            2
+        );
+
+        let reconstructed = buffer
+            .debug_reconstruct_token(3)
+            .expect("token reconstruct should work");
+        assert_eq!(reconstructed.len(), heads.len());
+        for ((expected_key, expected_value), (actual_key, actual_value)) in
+            heads.iter().zip(reconstructed)
+        {
+            assert!(cosine_similarity(expected_key, &actual_key) > 0.999);
+            assert!(max_abs_diff(expected_value, &actual_value) <= 0.08);
+        }
+    }
+
+    #[test]
+    fn compressed_block_buffer_token_write_fails_closed_for_head_count() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            value_group_size: 2,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let error = buffer
+            .write_token(0, &[(vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 2.0, 3.0])])
+            .expect_err("head count mismatch should fail");
+
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: 2,
+                actual: 1,
+            }
+        );
+        assert_eq!(buffer.token_count(), 0);
+    }
+
+    #[test]
+    fn compressed_block_buffer_token_write_does_not_leave_partial_slots() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            value_group_size: 2,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let error = buffer
+            .write_token(
+                0,
+                &[
+                    (vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 2.0, 3.0]),
+                    (vec![0.0, 1.0], vec![3.0, 2.0, 1.0, 0.0]),
+                ],
+            )
+            .expect_err("second head dimension mismatch should fail");
+
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedVectorDimension {
+                expected: 4,
+                actual: 2,
+            }
+        );
+        assert_eq!(buffer.token_count(), 0);
+        let error = buffer
+            .read_compressed_slot(0, 0)
+            .expect_err("first head should not be partially written");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::CompressedSlotUnwritten {
+                token_index: 0,
+                head_index: 0,
             }
         );
     }
