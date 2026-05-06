@@ -1398,9 +1398,7 @@ pub enum MlxRunnerError {
 fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(), MlxRunnerError> {
     let manifest = artifacts.manifest();
     if manifest.model_family == "glm4_moe_lite" || has_glm_mla_tensors(artifacts) {
-        return Err(MlxRunnerError::UnsupportedFeature(
-            "glm4_moe_lite manifests are draft-only until GLM MLA attention, sigmoid router correction bias, and latent-KV cache support are implemented".to_string(),
-        ));
+        validate_glm4_moe_lite_manifest(manifest)?;
     }
     if manifest.linear_attention.is_enabled() || has_linear_attention_tensors(artifacts) {
         validate_qwen_gated_delta_linear_attention(manifest)?;
@@ -1414,6 +1412,102 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
         validate_gemma4_interleaved_attention(manifest)?;
     }
     Ok(())
+}
+
+fn validate_glm4_moe_lite_manifest(manifest: &NativeModelManifest) -> Result<(), MlxRunnerError> {
+    if manifest.model_family != "glm4_moe_lite" {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "GLM MLA tensor roles are supported only for glm4_moe_lite manifests".to_string(),
+        ));
+    }
+    if !manifest.mla_attention.is_enabled() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite requires mla_attention metadata".to_string(),
+        ));
+    }
+    if !manifest.glm_router.is_enabled() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite requires glm_router metadata".to_string(),
+        ));
+    }
+    if !manifest.moe.is_enabled() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite requires moe metadata".to_string(),
+        ));
+    }
+
+    let first_dense_layers = manifest.glm_router.first_dense_layer_count.ok_or_else(|| {
+        MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite requires glm_router.first_dense_layer_count".to_string(),
+        )
+    })?;
+    let has_shared_experts = manifest.glm_router.has_shared_experts;
+
+    for layer_index in 0..manifest.layer_count {
+        for role in [
+            NativeTensorRole::AttentionNorm,
+            NativeTensorRole::AttentionQa,
+            NativeTensorRole::AttentionQaNorm,
+            NativeTensorRole::AttentionQb,
+            NativeTensorRole::AttentionKvA,
+            NativeTensorRole::AttentionKvANorm,
+            NativeTensorRole::AttentionEmbedQ,
+            NativeTensorRole::AttentionUnembedOut,
+            NativeTensorRole::AttentionO,
+            NativeTensorRole::AttentionPostNorm,
+        ] {
+            require_manifest_role(manifest, layer_index, role)?;
+        }
+
+        if layer_index < first_dense_layers {
+            require_manifest_role(manifest, layer_index, NativeTensorRole::FfnGate)?;
+            require_manifest_role(manifest, layer_index, NativeTensorRole::FfnUp)?;
+            require_manifest_role(manifest, layer_index, NativeTensorRole::FfnDown)?;
+        } else {
+            require_manifest_role(manifest, layer_index, NativeTensorRole::FfnGateInp)?;
+            require_manifest_role(
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnGateInpCorrectionBias,
+            )?;
+            require_manifest_role(manifest, layer_index, NativeTensorRole::FfnGateExps)?;
+            require_manifest_role(manifest, layer_index, NativeTensorRole::FfnUpExps)?;
+            require_manifest_role(manifest, layer_index, NativeTensorRole::FfnDownExps)?;
+            if has_shared_experts {
+                require_manifest_role(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::FfnSharedExpertGate,
+                )?;
+                require_manifest_role(manifest, layer_index, NativeTensorRole::FfnSharedExpertUp)?;
+                require_manifest_role(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::FfnSharedExpertDown,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn require_manifest_role(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+    role: NativeTensorRole,
+) -> Result<(), MlxRunnerError> {
+    if manifest
+        .tensors
+        .iter()
+        .any(|tensor| tensor.layer_index == Some(layer_index) && tensor.role == role)
+    {
+        return Ok(());
+    }
+
+    Err(MlxRunnerError::UnsupportedFeature(format!(
+        "glm4_moe_lite layer {layer_index} is missing required tensor role {role:?}"
+    )))
 }
 
 fn has_glm_mla_tensors(artifacts: &NativeModelArtifacts) -> bool {
@@ -1665,6 +1759,7 @@ fn validate_gemma4_interleaved_attention(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_engine_core::model::{NativeGlmRouterConfig, NativeMlaAttentionConfig};
     use ax_engine_core::scheduler::PositionRange;
     use ax_engine_core::{
         AX_NATIVE_MODEL_MANIFEST_FILE, NativeLinearAttentionConfig, NativeModelManifest,
@@ -2157,6 +2252,90 @@ mod tests {
         manifest
     }
 
+    fn glm4_moe_lite_manifest() -> NativeModelManifest {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "glm4_moe_lite".to_string();
+        manifest.layer_count = 2;
+        manifest.attention_head_dim = 4;
+        manifest.mla_attention = NativeMlaAttentionConfig {
+            q_lora_rank: Some(2),
+            kv_lora_rank: Some(2),
+            qk_nope_head_dim: Some(2),
+            qk_rope_head_dim: Some(2),
+            value_head_dim: Some(2),
+        };
+        manifest.moe = NativeMoeConfig {
+            expert_count: Some(4),
+            experts_per_token: Some(2),
+            expert_intermediate_size: Some(8),
+        };
+        manifest.glm_router = NativeGlmRouterConfig {
+            first_dense_layer_count: Some(1),
+            routed_scaling_factor: Some(1.8),
+            n_group: Some(1),
+            topk_group: Some(1),
+            has_shared_experts: true,
+        };
+        manifest.tensors.retain(|tensor| {
+            !matches!(
+                tensor.role,
+                NativeTensorRole::AttentionQ
+                    | NativeTensorRole::AttentionK
+                    | NativeTensorRole::AttentionV
+                    | NativeTensorRole::AttentionQkvPacked
+            )
+        });
+        for tensor in &mut manifest.tensors {
+            if tensor.role == NativeTensorRole::AttentionO {
+                tensor.shape = vec![4, 2];
+            }
+        }
+
+        for layer in 0..2 {
+            for (role, shape) in [
+                (NativeTensorRole::AttentionPostNorm, vec![4]),
+                (NativeTensorRole::AttentionQa, vec![2, 4]),
+                (NativeTensorRole::AttentionQaNorm, vec![2]),
+                (NativeTensorRole::AttentionQb, vec![4, 2]),
+                (NativeTensorRole::AttentionKvA, vec![4, 4]),
+                (NativeTensorRole::AttentionKvANorm, vec![2]),
+                (NativeTensorRole::AttentionEmbedQ, vec![1, 2, 2]),
+                (NativeTensorRole::AttentionUnembedOut, vec![1, 2, 2]),
+            ] {
+                manifest.tensors.push(tensor(
+                    &format!("model.layers.{layer}.{role:?}.weight"),
+                    role,
+                    Some(layer),
+                    shape,
+                ));
+            }
+
+            if layer == 1 {
+                for (role, shape) in [
+                    (NativeTensorRole::AttentionNorm, vec![4]),
+                    (NativeTensorRole::AttentionO, vec![4, 2]),
+                    (NativeTensorRole::FfnGateInp, vec![4, 4]),
+                    (NativeTensorRole::FfnGateInpCorrectionBias, vec![4]),
+                    (NativeTensorRole::FfnGateExps, vec![4, 8, 4]),
+                    (NativeTensorRole::FfnUpExps, vec![4, 8, 4]),
+                    (NativeTensorRole::FfnDownExps, vec![4, 4, 8]),
+                    (NativeTensorRole::FfnSharedExpertGate, vec![8, 4]),
+                    (NativeTensorRole::FfnSharedExpertUp, vec![8, 4]),
+                    (NativeTensorRole::FfnSharedExpertDown, vec![4, 8]),
+                ] {
+                    manifest.tensors.push(tensor(
+                        &format!("model.layers.{layer}.{role:?}.weight"),
+                        role,
+                        Some(layer),
+                        shape,
+                    ));
+                }
+            }
+        }
+
+        manifest
+    }
+
     #[test]
     fn mlx_manifest_validation_rejects_linear_attention_for_non_qwen35() {
         let mut manifest = dense_manifest();
@@ -2177,7 +2356,7 @@ mod tests {
     }
 
     #[test]
-    fn mlx_manifest_validation_rejects_glm_draft_roles_even_if_ready_is_forced() {
+    fn mlx_manifest_validation_rejects_incomplete_glm_contract() {
         let mut manifest = dense_manifest();
         manifest.model_family = "glm4_moe_lite".to_string();
         manifest.tensors.push(tensor(
@@ -2186,16 +2365,23 @@ mod tests {
             Some(0),
             vec![4, 4],
         ));
-        let artifacts = write_artifacts(manifest);
 
-        let error = validate_mlx_supported_manifest(&artifacts)
-            .expect_err("GLM draft roles should fail closed");
+        let error = validate_glm4_moe_lite_manifest(&manifest)
+            .expect_err("incomplete GLM runtime contract should fail closed");
 
         assert!(
             error
                 .to_string()
-                .contains("glm4_moe_lite manifests are draft-only")
+                .contains("glm4_moe_lite requires mla_attention metadata")
         );
+    }
+
+    #[test]
+    fn mlx_manifest_validation_allows_glm4_moe_lite_contract() {
+        let artifacts = write_artifacts(glm4_moe_lite_manifest());
+
+        validate_mlx_supported_manifest(&artifacts)
+            .expect("GLM4MoELite runtime contract is wired for the MLX path");
     }
 
     #[test]
