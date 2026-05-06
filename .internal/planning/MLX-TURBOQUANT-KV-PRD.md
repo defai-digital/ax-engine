@@ -204,6 +204,18 @@ Implemented compressed decode planning slice on 2026-05-06:
 - Keeps the plan disconnected from MLX allocation, runtime KV storage, SDPA,
   generation, and user-visible defaults.
 
+Implemented compressed decode coverage guard slice on 2026-05-06:
+
+- Added `TurboQuantCompressedDecodePlan::validate_compressed_buffer` to verify
+  that a compressed buffer contains every cold token/head slot required by the
+  plan before a future fused decode path can consume it.
+- Fails closed for mismatched compressed-buffer layouts and incomplete cold-slot
+  coverage.
+- Skips compressed coverage validation for hot-window-only decode plans because
+  they do not require compressed decode.
+- Keeps the guard disconnected from MLX allocation, runtime KV storage, SDPA,
+  generation, and user-visible defaults.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

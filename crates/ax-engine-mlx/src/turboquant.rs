@@ -58,6 +58,16 @@ pub enum TurboQuantCodecError {
         token_index: usize,
         head_index: usize,
     },
+    #[error("TurboQuant compressed decode plan layout does not match compressed buffer layout")]
+    CompressedDecodePlanLayoutMismatch,
+    #[error(
+        "TurboQuant compressed decode plan expected {required_slots} written cold slots for {cold_tokens} cold tokens, got {written_slots}"
+    )]
+    CompressedDecodePlanIncomplete {
+        cold_tokens: usize,
+        required_slots: usize,
+        written_slots: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -360,6 +370,43 @@ impl TurboQuantCompressedDecodePlan {
             self.decode_path,
             TurboQuantCompressedDecodePath::CompressedColdWithHotWindow
         )
+    }
+
+    pub fn validate_compressed_buffer(
+        self,
+        buffer: &TurboQuantCompressedBlockBuffer,
+    ) -> Result<(), TurboQuantCodecError> {
+        if !self.needs_compressed_decode() {
+            return Ok(());
+        }
+        if buffer.layout != self.layout {
+            return Err(TurboQuantCodecError::CompressedDecodePlanLayoutMismatch);
+        }
+
+        let mut written_slots = 0usize;
+        for token_index in 0..self.cold_tokens {
+            for head_index in 0..self.layout.config.n_kv_heads {
+                let slot_index = buffer.slot_index(token_index, head_index)?;
+                if buffer
+                    .written_slots
+                    .get(slot_index)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    written_slots = written_slots.saturating_add(1);
+                }
+            }
+        }
+
+        if written_slots != self.required_compressed_slots {
+            return Err(TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens: self.cold_tokens,
+                required_slots: self.required_compressed_slots,
+                written_slots,
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -1981,6 +2028,107 @@ mod tests {
                 value: 0,
             }
         );
+    }
+
+    #[test]
+    fn compressed_decode_plan_validates_required_cold_slots() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 3, 1).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let token = vec![(vec![0.1; 8], vec![0.2; 8]), (vec![0.3; 8], vec![0.4; 8])];
+
+        let error = plan
+            .validate_compressed_buffer(&buffer)
+            .expect_err("empty compressed buffer must fail coverage");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens: 2,
+                required_slots: 4,
+                written_slots: 0,
+            }
+        );
+
+        buffer.write_token(0, &token).expect("first cold token");
+        let error = plan
+            .validate_compressed_buffer(&buffer)
+            .expect_err("partial compressed buffer must fail coverage");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens: 2,
+                required_slots: 4,
+                written_slots: 2,
+            }
+        );
+
+        buffer.write_token(1, &token).expect("second cold token");
+        plan.validate_compressed_buffer(&buffer)
+            .expect("complete cold coverage should pass");
+    }
+
+    #[test]
+    fn compressed_decode_plan_rejects_mismatched_buffer_layout() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let other_layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K4V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("other layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 3, 1).expect("plan should build");
+        let buffer = TurboQuantCompressedBlockBuffer::new(other_layout);
+
+        let error = plan
+            .validate_compressed_buffer(&buffer)
+            .expect_err("layout mismatch must fail closed");
+
+        assert_eq!(
+            error,
+            TurboQuantCodecError::CompressedDecodePlanLayoutMismatch
+        );
+    }
+
+    #[test]
+    fn compressed_decode_plan_skips_buffer_validation_for_hot_window_only_path() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let other_layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K4V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("other layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 1, 2).expect("plan should build");
+        let buffer = TurboQuantCompressedBlockBuffer::new(other_layout);
+
+        assert!(!plan.needs_compressed_decode());
+        plan.validate_compressed_buffer(&buffer)
+            .expect("hot-window-only plan does not require compressed coverage");
     }
 
     #[test]

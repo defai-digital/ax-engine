@@ -163,6 +163,13 @@ compressed blocks, buffer bytes, slot writes, decode path, and quality profile,
 and fails closed for empty histories. This remains CPU-only and does not alter
 runtime defaults, KV storage, SDPA, or generation.
 
+The compressed decode coverage guard is accepted as the fail-closed check between
+store-side writes and future fused decode reads. `validate_compressed_buffer`
+requires matching layout and complete cold token/head slot coverage before a
+compressed decode plan can proceed, while hot-window-only plans bypass the check
+because they do not read compressed storage. This remains CPU-only and does not
+alter runtime defaults, KV storage, SDPA, or generation.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a
