@@ -137,6 +137,12 @@ K8V4 reference, and loose research thresholds so tests and future benchmark
 harnesses share one vocabulary without enabling TurboQuant in runtime KV
 storage, SDPA, or generation.
 
+The decode quality profile mapping is accepted as the contract above raw
+thresholds. `K8V4` maps to the reference profile; `K4V4` and `K3V4Research`
+remain on the loose research profile until model-specific gates justify
+promotion. This keeps benchmark harnesses explicit without changing runtime
+defaults or enabling compressed KV storage.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

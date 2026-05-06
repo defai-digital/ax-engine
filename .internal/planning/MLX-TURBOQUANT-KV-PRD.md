@@ -156,6 +156,17 @@ Implemented decode quality preset slice on 2026-05-06:
 - Keeps the presets disconnected from MLX allocation, runtime KV storage, SDPA,
   generation, and user-visible defaults.
 
+Implemented decode quality profile mapping slice on 2026-05-06:
+
+- Added `TurboQuantDecodeQualityProfile` as the named layer above gate
+  thresholds.
+- Mapped `K8V4` to the reference profile and kept `K4V4` / `K3V4Research` on
+  the loose research profile until model-specific quality evidence promotes
+  them.
+- Added tests for profile-to-gate and quantization-preset-to-profile mapping.
+- Keeps the mapping disconnected from MLX allocation, runtime KV storage, SDPA,
+  generation, and user-visible defaults.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
