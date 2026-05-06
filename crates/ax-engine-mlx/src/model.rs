@@ -1123,6 +1123,83 @@ fn glm_mla_positional_scores(cfg: &ModelConfig, q_pe: &MlxArray, k_pe: &MlxArray
     matmul(&q_pe, &transpose(k_pe, &[0, 1, 3, 2], None), None)
 }
 
+#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
+fn glm_mla_embed_q_prefill(cfg: &ModelConfig, w: &LayerWeights, kv_latent: &MlxArray) -> MlxArray {
+    let mla_cfg = cfg
+        .glm_mla_attention
+        .as_ref()
+        .expect("GLM MLA attention config");
+    let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");
+    let weight = glm_mla_embed_q_heads(cfg, mla_cfg, mla_w);
+    matmul(kv_latent, &weight, None)
+}
+
+#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
+fn glm_mla_embed_q_decode(cfg: &ModelConfig, w: &LayerWeights, q_nope: &MlxArray) -> MlxArray {
+    let mla_cfg = cfg
+        .glm_mla_attention
+        .as_ref()
+        .expect("GLM MLA attention config");
+    let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");
+    let weight = glm_mla_embed_q_heads(cfg, mla_cfg, mla_w);
+    let weight = transpose(&weight, &[0, 2, 1], None);
+    matmul(q_nope, &weight, None)
+}
+
+#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
+fn glm_mla_unembed_out(cfg: &ModelConfig, w: &LayerWeights, latent: &MlxArray) -> MlxArray {
+    let mla_cfg = cfg
+        .glm_mla_attention
+        .as_ref()
+        .expect("GLM MLA attention config");
+    let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");
+    let weight = glm_mla_unembed_out_heads(cfg, mla_cfg, mla_w);
+    let weight = transpose(&weight, &[0, 2, 1], None);
+    matmul(latent, &weight, None)
+}
+
+#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
+fn glm_mla_embed_q_heads(
+    cfg: &ModelConfig,
+    mla_cfg: &GlmMlaAttentionConfig,
+    mla_w: &crate::weights::GlmMlaAttentionWeights,
+) -> MlxArray {
+    assert!(
+        mla_w.embed_q.scales.is_none(),
+        "GLM MLA quantized embed_q MultiLinear is not wired yet"
+    );
+    reshape(
+        &mla_w.embed_q.weight,
+        &[
+            cfg.n_heads as i32,
+            mla_cfg.kv_lora_rank as i32,
+            mla_cfg.qk_nope_head_dim as i32,
+        ],
+        None,
+    )
+}
+
+#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
+fn glm_mla_unembed_out_heads(
+    cfg: &ModelConfig,
+    mla_cfg: &GlmMlaAttentionConfig,
+    mla_w: &crate::weights::GlmMlaAttentionWeights,
+) -> MlxArray {
+    assert!(
+        mla_w.unembed_out.scales.is_none(),
+        "GLM MLA quantized unembed_out MultiLinear is not wired yet"
+    );
+    reshape(
+        &mla_w.unembed_out.weight,
+        &[
+            cfg.n_heads as i32,
+            mla_cfg.value_head_dim as i32,
+            mla_cfg.kv_lora_rank as i32,
+        ],
+        None,
+    )
+}
+
 fn attention_output_projection(
     attn_flat: &MlxArray,
     attn_gate: Option<&MlxArray>,
@@ -2389,6 +2466,36 @@ mod tests {
         assert_eq!(cached.k_pe.shape(), vec![1, 1, 3, 2]);
         assert_eq!(cached.positional_scores.shape(), vec![1, 2, 1, 3]);
         assert_eq!(cache.collect_eval_refs().len(), 2);
+    }
+
+    #[test]
+    fn glm_mla_multilinear_matches_prefill_and_decode_shape_contracts() {
+        let mut manifest = glm4_moe_lite_manifest();
+        manifest.hidden_size = 8;
+        manifest.attention_head_count = 2;
+        manifest.kv_head_count = 2;
+        manifest.attention_head_dim = 4;
+        manifest.mla_attention.q_lora_rank = Some(4);
+        manifest.mla_attention.kv_lora_rank = Some(4);
+        manifest.mla_attention.qk_nope_head_dim = Some(2);
+        manifest.mla_attention.qk_rope_head_dim = Some(2);
+        manifest.mla_attention.value_head_dim = Some(3);
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let weights = glm_mla_layer_weights(&cfg);
+
+        let kv_latent = zeros(&[1, 1, 3, 4], MlxDtype::Float32, None);
+        let prefill_k = glm_mla_embed_q_prefill(&cfg, &weights, &kv_latent);
+        let prefill_v = glm_mla_unembed_out(&cfg, &weights, &kv_latent);
+        eval(&[&prefill_k, &prefill_v]);
+        assert_eq!(prefill_k.shape(), vec![1, 2, 3, 2]);
+        assert_eq!(prefill_v.shape(), vec![1, 2, 3, 3]);
+
+        let q_nope = zeros(&[1, 2, 1, 2], MlxDtype::Float32, None);
+        let decode_q = glm_mla_embed_q_decode(&cfg, &weights, &q_nope);
+        let decode_out = glm_mla_unembed_out(&cfg, &weights, &decode_q);
+        eval(&[&decode_q, &decode_out]);
+        assert_eq!(decode_q.shape(), vec![1, 2, 1, 4]);
+        assert_eq!(decode_out.shape(), vec![1, 2, 1, 3]);
     }
 
     #[test]
