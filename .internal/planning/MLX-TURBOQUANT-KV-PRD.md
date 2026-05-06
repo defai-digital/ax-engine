@@ -100,6 +100,16 @@ Implemented compressed block writer prototype slice on 2026-05-06:
 - Keeps the writer disconnected from MLX allocation, runtime KV storage, SDPA,
   and generation.
 
+Implemented compressed head decode oracle slice on 2026-05-06:
+
+- Added CPU-only per-head decode attention over `TurboQuantCompressedBlockBuffer`.
+- Reconstructs the requested head history for a caller-specified token count.
+- Reuses the scalar reference attention oracle for deterministic output.
+- Fails closed for invalid heads, missing slots inside the requested history,
+  empty histories, and query shape errors.
+- Keeps the oracle disconnected from MLX allocation, runtime KV storage, SDPA,
+  and generation.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

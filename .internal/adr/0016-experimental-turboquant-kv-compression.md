@@ -104,6 +104,13 @@ and can reconstruct debug vectors. It tracks written slots and fails closed for
 unwritten reads or invalid dimensions, but remains disconnected from MLX
 allocation, runtime KV storage, SDPA, and generation.
 
+The compressed head decode oracle is accepted as the next contract layer.
+`TurboQuantCompressedBlockBuffer::debug_decode_attention_for_head` reconstructs
+one KV head over a caller-specified token history and runs the scalar reference
+attention oracle. This gives future fused compressed decode kernels a
+per-head comparison target while still avoiding MLX allocation, runtime KV
+storage changes, SDPA integration, or generation behavior changes.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a
