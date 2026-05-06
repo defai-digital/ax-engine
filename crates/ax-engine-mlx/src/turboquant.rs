@@ -94,6 +94,60 @@ pub struct TurboQuantDecodeComparisonReport {
     pub min_cosine_similarity: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TurboQuantDecodeQualityGate {
+    pub max_abs_diff: f32,
+    pub mean_abs_diff: f32,
+    pub min_cosine_similarity: f32,
+}
+
+impl TurboQuantDecodeQualityGate {
+    pub const fn new(max_abs_diff: f32, mean_abs_diff: f32, min_cosine_similarity: f32) -> Self {
+        Self {
+            max_abs_diff,
+            mean_abs_diff,
+            min_cosine_similarity,
+        }
+    }
+
+    pub fn evaluate(
+        self,
+        report: &TurboQuantDecodeComparisonReport,
+    ) -> TurboQuantDecodeQualityDecision {
+        let max_abs_diff_passed = report.max_abs_diff <= self.max_abs_diff;
+        let mean_abs_diff_passed = report.mean_abs_diff <= self.mean_abs_diff;
+        let min_cosine_similarity_passed =
+            report.min_cosine_similarity >= self.min_cosine_similarity;
+
+        TurboQuantDecodeQualityDecision {
+            passed: max_abs_diff_passed && mean_abs_diff_passed && min_cosine_similarity_passed,
+            max_abs_diff_passed,
+            mean_abs_diff_passed,
+            min_cosine_similarity_passed,
+            max_abs_diff: report.max_abs_diff,
+            max_abs_diff_limit: self.max_abs_diff,
+            mean_abs_diff: report.mean_abs_diff,
+            mean_abs_diff_limit: self.mean_abs_diff,
+            min_cosine_similarity: report.min_cosine_similarity,
+            min_cosine_similarity_limit: self.min_cosine_similarity,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TurboQuantDecodeQualityDecision {
+    pub passed: bool,
+    pub max_abs_diff_passed: bool,
+    pub mean_abs_diff_passed: bool,
+    pub min_cosine_similarity_passed: bool,
+    pub max_abs_diff: f32,
+    pub max_abs_diff_limit: f32,
+    pub mean_abs_diff: f32,
+    pub mean_abs_diff_limit: f32,
+    pub min_cosine_similarity: f32,
+    pub min_cosine_similarity_limit: f32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TurboQuantLayerSupportReason {
     Eligible,
@@ -2165,6 +2219,46 @@ mod tests {
     }
 
     #[test]
+    fn decode_quality_gate_passes_when_all_metrics_are_inside_limits() {
+        let report = compare_decode_outputs(
+            &[vec![1.0, 2.0, 3.0], vec![0.5, -0.5, 1.0]],
+            &[vec![1.0, 2.01, 2.99], vec![0.51, -0.49, 0.99]],
+        )
+        .expect("compare outputs");
+        let gate = TurboQuantDecodeQualityGate::new(0.02, 0.02, 0.999);
+
+        let decision = gate.evaluate(&report);
+
+        assert!(decision.passed);
+        assert!(decision.max_abs_diff_passed);
+        assert!(decision.mean_abs_diff_passed);
+        assert!(decision.min_cosine_similarity_passed);
+        assert_eq!(decision.max_abs_diff_limit, 0.02);
+        assert_eq!(decision.mean_abs_diff_limit, 0.02);
+        assert_eq!(decision.min_cosine_similarity_limit, 0.999);
+    }
+
+    #[test]
+    fn decode_quality_gate_reports_individual_failed_conditions() {
+        let report = compare_decode_outputs(
+            &[vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]],
+            &[vec![0.0, 1.0, 0.0], vec![0.2, 0.9, 0.0]],
+        )
+        .expect("compare outputs");
+        let gate = TurboQuantDecodeQualityGate::new(0.5, 0.1, 0.99);
+
+        let decision = gate.evaluate(&report);
+
+        assert!(!decision.passed);
+        assert!(!decision.max_abs_diff_passed);
+        assert!(!decision.mean_abs_diff_passed);
+        assert!(!decision.min_cosine_similarity_passed);
+        assert!(decision.max_abs_diff > decision.max_abs_diff_limit);
+        assert!(decision.mean_abs_diff > decision.mean_abs_diff_limit);
+        assert!(decision.min_cosine_similarity < decision.min_cosine_similarity_limit);
+    }
+
+    #[test]
     fn compressed_block_buffer_compares_all_head_decode_against_full_precision_oracle() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
             preset: MlxTurboQuantPreset::K8V4,
@@ -2229,6 +2323,9 @@ mod tests {
             report.min_cosine_similarity > 0.999,
             "report was {report:?}"
         );
+
+        let gate = TurboQuantDecodeQualityGate::new(0.02, 0.01, 0.999);
+        assert!(gate.evaluate(&report).passed);
     }
 
     #[test]
