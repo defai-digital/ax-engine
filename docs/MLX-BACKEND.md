@@ -175,6 +175,13 @@ Use `ax-engine-bench scenario`, `replay`, `matrix`, `compare`, `matrix-compare`,
 determinism, prefix reuse, trace shape, regression comparison, trusted baseline
 snapshots, and bounded manifest-knob exploration.
 
+`ax-engine-bench doctor` also emits structured `performance_advice`. This advice
+does not replace benchmark rows; it turns the current MLX contract into local
+next steps, including that N-gram acceleration is enabled by default, batch=1 is
+the supported MLX performance shape today, `mlx-swift-lm` is a baseline adapter
+rather than a hybrid prefill/decode path, and model-specific quantization claims
+must be checked with `--mlx-model-artifacts-dir`.
+
 Interpretation rule:
 
 - `bench_mlx_inference_stack.py` supports repo-owned MLX model-inference claims only

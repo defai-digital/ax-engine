@@ -13,6 +13,9 @@ Start here:
 
 - `GETTING-STARTED.md`: installation, first commands, and runtime-path choice
 - `SUPPORTED-MODELS.md`: model support tiers and what each tier means
+- `FAQ.md`: common runtime-path and performance-boundary questions
+- `API-COMPATIBILITY.md`: current OpenAI-compatible endpoint contract and
+  compatibility boundaries
 - `SERVER.md`: local HTTP server routes and backend behavior
 - `CLI.md`: `ax-engine-bench` and server command surfaces
 - `BENCHMARKS.md`: how to interpret performance and workload-contract evidence

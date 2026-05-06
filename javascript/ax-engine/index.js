@@ -151,6 +151,13 @@ export class AxEngineClient {
     });
   }
 
+  async embeddings(request) {
+    return this.#requestJson("/v1/embeddings", {
+      method: "POST",
+      body: request,
+    });
+  }
+
   async *streamGenerate(request) {
     yield* this.#stream("/v1/generate/stream", request);
   }

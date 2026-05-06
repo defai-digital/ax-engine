@@ -2319,6 +2319,79 @@ sys.stdout.write(f"server::{prompt}")
     }
 
     #[tokio::test]
+    async fn openai_embeddings_endpoint_rejects_empty_input() {
+        let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/embeddings")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "model": "qwen3_dense",
+                        "input": []
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json.get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str),
+            Some("invalid_request")
+        );
+        assert!(
+            json.get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("input must not be empty")
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_embeddings_endpoint_rejects_unknown_pooling() {
+        let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/embeddings")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "model": "qwen3_dense",
+                        "input": [1, 2, 3],
+                        "pooling": "max"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json.get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str),
+            Some("invalid_request")
+        );
+        assert!(
+            json.get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("unknown pooling strategy")
+        );
+    }
+
+    #[tokio::test]
     async fn openai_chat_completions_endpoint_requires_max_tokens() {
         let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
         let (status, json) = json_response(

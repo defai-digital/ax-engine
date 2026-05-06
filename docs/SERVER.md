@@ -13,7 +13,9 @@ The current preview server is intentionally narrow:
 - explicit backend and support-tier reporting
 - preview generation endpoint for bring-up and integration testing
 - preview OpenAI-compatible `/v1/completions` and `/v1/chat/completions`
-  endpoints for llama.cpp-backed integration
+  endpoints for delegated text integration
+- OpenAI-shaped `/v1/embeddings` response envelopes for embedding-capable
+  repo-owned MLX sessions
 - stepwise request lifecycle endpoints that mirror the SDK preview contract for
   repo-owned MLX sessions plus the llama.cpp delegated path
 
@@ -31,6 +33,7 @@ Current preview endpoints:
 - `GET /healthz`
 - `GET /v1/runtime`
 - `GET /v1/models`
+- `POST /v1/embeddings`
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
 - `POST /v1/requests`
@@ -62,6 +65,43 @@ cargo run -p ax-engine-server -- \
   --mlx \
   --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
   --port 8080
+```
+
+For common repo-owned MLX targets, use a preset to select the model id, MLX
+runtime, support tier, and current safe defaults while keeping model artifacts
+explicit:
+
+```text
+cargo run -p ax-engine-server -- \
+  --preset gemma4-e2b \
+  --mlx-model-artifacts-dir /absolute/path/to/gemma-4-e2b-it-4bit \
+  --port 8080
+```
+
+`--list-presets` prints the built-in preset names. Presets do not download
+weights and do not silently scan local caches. If the model directory is already
+available through `AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`, the explicit path flag can
+be omitted.
+
+Hugging Face cache discovery is opt-in:
+
+```text
+cargo run -p ax-engine-server -- \
+  --preset gemma4-e2b \
+  --resolve-model-artifacts hf-cache \
+  --port 8080
+```
+
+By default the resolver searches `HF_HUB_CACHE`, `HF_HOME/hub`, and
+`~/.cache/huggingface/hub`; pass `--hf-cache-root <path>` to pin a specific
+cache root. Resolution succeeds only when exactly one matching AX-ready artifact
+directory is found. The directory must contain `config.json`,
+`model-manifest.json`, and safetensors, and its `model_type` must match the
+preset. Plain Hugging Face snapshots without `model-manifest.json` fail closed;
+generate the manifest first with:
+
+```text
+cargo run -p ax-engine-core --bin generate-manifest -- /absolute/path/to/model
 ```
 
 The preview server requires a local Apple M4-or-newer host.
@@ -141,6 +181,10 @@ python -m ax_engine.openai_server \
 ```
 
 Install the optional server dependencies with `pip install 'ax-engine[openai]'`.
+
+See `docs/API-COMPATIBILITY.md` for the exact OpenAI-shaped endpoint matrix,
+including supported request fields, runtime paths, and non-goals such as tool
+calling.
 
 To run a repo-owned end-to-end smoke check that starts the preview binary and
 exercises health, runtime, one-shot generate, cancel, and SSE streaming over
@@ -290,6 +334,20 @@ curl http://127.0.0.1:8080/v1/chat/completions \
       }
     ],
     "max_tokens": 32
+}'
+```
+
+For embedding-capable repo-owned MLX sessions, the server also exposes an
+OpenAI-shaped embedding response over token-array input:
+
+```text
+curl http://127.0.0.1:8080/v1/embeddings \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "qwen3_embedding",
+    "input": [1, 2, 3, 4],
+    "pooling": "last",
+    "normalize": true
   }'
 ```
 
