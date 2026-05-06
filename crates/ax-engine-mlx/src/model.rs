@@ -1694,11 +1694,7 @@ fn moe_router_qwen3(
     (top_k_indices, top_k_weights)
 }
 
-fn moe_router_glm(
-    cfg: &ModelConfig,
-    w: &LayerWeights,
-    normed: &MlxArray,
-) -> (MlxArray, MlxArray) {
+fn moe_router_glm(cfg: &ModelConfig, w: &LayerWeights, normed: &MlxArray) -> (MlxArray, MlxArray) {
     let logits = qw(
         normed,
         w.router_proj
@@ -2765,6 +2761,73 @@ mod tests {
         weights.down_proj = Some(dense_weight(&[
             cfg.hidden_size as i32,
             cfg.intermediate_size as i32,
+        ]));
+        let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
+        let mut cache = MlxKVCache::new(cfg.layer_count);
+
+        let out = layer_forward(&cfg, &weights, &hidden, &mut cache, 0, 0, None);
+        eval(&[&out]);
+
+        assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
+        assert_eq!(cache.collect_eval_refs().len(), 2);
+    }
+
+    #[test]
+    fn layer_forward_routes_glm_moe_with_correction_bias_and_shared_expert() {
+        let mut manifest = glm4_moe_lite_manifest();
+        manifest.hidden_size = 8;
+        manifest.intermediate_size = 6;
+        manifest.layer_count = 1;
+        manifest.attention_head_count = 2;
+        manifest.kv_head_count = 2;
+        manifest.attention_head_dim = 4;
+        manifest.mla_attention.q_lora_rank = Some(4);
+        manifest.mla_attention.kv_lora_rank = Some(4);
+        manifest.mla_attention.qk_nope_head_dim = Some(2);
+        manifest.mla_attention.qk_rope_head_dim = Some(2);
+        manifest.mla_attention.value_head_dim = Some(3);
+        manifest.moe.expert_count = Some(4);
+        manifest.moe.experts_per_token = Some(2);
+        manifest.moe.expert_intermediate_size = Some(3);
+        manifest.glm_router.first_dense_layer_count = Some(0);
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let mut weights = glm_mla_layer_weights(&cfg);
+        weights.router_proj = Some(dense_weight(&[
+            cfg.moe_expert_count as i32,
+            cfg.hidden_size as i32,
+        ]));
+        weights.router_correction_bias = Some(zeros(
+            &[cfg.moe_expert_count as i32],
+            MlxDtype::Float32,
+            None,
+        ));
+        weights.gate_exps = Some(dense_weight(&[
+            cfg.moe_expert_count as i32,
+            cfg.moe_expert_intermediate_size as i32,
+            cfg.hidden_size as i32,
+        ]));
+        weights.up_exps = Some(dense_weight(&[
+            cfg.moe_expert_count as i32,
+            cfg.moe_expert_intermediate_size as i32,
+            cfg.hidden_size as i32,
+        ]));
+        weights.down_exps = Some(dense_weight(&[
+            cfg.moe_expert_count as i32,
+            cfg.hidden_size as i32,
+            cfg.moe_expert_intermediate_size as i32,
+        ]));
+        weights.shared_expert_gate = Some(dense_weight(&[1, cfg.hidden_size as i32]));
+        weights.shared_gate_proj = Some(dense_weight(&[
+            cfg.moe_expert_intermediate_size as i32,
+            cfg.hidden_size as i32,
+        ]));
+        weights.shared_up_proj = Some(dense_weight(&[
+            cfg.moe_expert_intermediate_size as i32,
+            cfg.hidden_size as i32,
+        ]));
+        weights.shared_down_proj = Some(dense_weight(&[
+            cfg.hidden_size as i32,
+            cfg.moe_expert_intermediate_size as i32,
         ]));
         let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
         let mut cache = MlxKVCache::new(cfg.layer_count);
