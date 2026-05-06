@@ -430,6 +430,27 @@ impl TurboQuantCompressedBlockBuffer {
             .collect()
     }
 
+    pub fn debug_reconstruct_head_history(
+        &self,
+        head_index: usize,
+        token_count: usize,
+    ) -> Result<Vec<FullPrecisionKvTokenVectors>, TurboQuantCodecError> {
+        self.validate_head_index(head_index)?;
+        (0..token_count)
+            .map(|token_index| self.debug_reconstruct_slot(token_index, head_index))
+            .collect()
+    }
+
+    pub fn debug_decode_attention_for_head(
+        &self,
+        query: &[f32],
+        head_index: usize,
+        token_count: usize,
+    ) -> Result<Vec<f32>, TurboQuantCodecError> {
+        let tokens = self.debug_reconstruct_head_history(head_index, token_count)?;
+        reference_decode_attention(query, &tokens)
+    }
+
     fn validate_slot_vectors(
         &self,
         key: &[f32],
@@ -561,13 +582,7 @@ impl TurboQuantCompressedBlockBuffer {
         token_index: usize,
         head_index: usize,
     ) -> Result<(), TurboQuantCodecError> {
-        if head_index >= self.layout.config.n_kv_heads {
-            return Err(TurboQuantCodecError::LayoutAddressOutOfRange {
-                name: "head_index",
-                index: head_index,
-                limit: self.layout.config.n_kv_heads,
-            });
-        }
+        self.validate_head_index(head_index)?;
         let slot_index = self.slot_index(token_index, head_index)?;
         if token_index >= self.token_count
             || !self.written_slots.get(slot_index).copied().unwrap_or(false)
@@ -575,6 +590,17 @@ impl TurboQuantCompressedBlockBuffer {
             return Err(TurboQuantCodecError::CompressedSlotUnwritten {
                 token_index,
                 head_index,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_head_index(&self, head_index: usize) -> Result<(), TurboQuantCodecError> {
+        if head_index >= self.layout.config.n_kv_heads {
+            return Err(TurboQuantCodecError::LayoutAddressOutOfRange {
+                name: "head_index",
+                index: head_index,
+                limit: self.layout.config.n_kv_heads,
             });
         }
         Ok(())
@@ -1272,6 +1298,8 @@ mod tests {
             moe_norm_topk_prob: false,
             hidden_size_per_layer_input: 0,
             linear_attention: None,
+            glm_mla_attention: None,
+            glm_router: None,
         }
     }
 
@@ -1797,6 +1825,117 @@ mod tests {
                 head_index: 0,
             }
         );
+    }
+
+    #[test]
+    fn compressed_block_buffer_decodes_attention_for_one_head_history() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let tokens = (0..3)
+            .map(|token| {
+                vec![
+                    (
+                        (0..8)
+                            .map(|idx| token as f32 * 0.11 + idx as f32 * 0.07 - 0.2)
+                            .collect::<Vec<_>>(),
+                        (0..8)
+                            .map(|idx| token as f32 * 0.03 - idx as f32 * 0.02)
+                            .collect::<Vec<_>>(),
+                    ),
+                    (
+                        (0..8)
+                            .map(|idx| token as f32 * -0.09 + idx as f32 * 0.05 + 0.4)
+                            .collect::<Vec<_>>(),
+                        (0..8)
+                            .map(|idx| token as f32 * 0.04 + idx as f32 * 0.01 - 0.3)
+                            .collect::<Vec<_>>(),
+                    ),
+                ]
+            })
+            .collect::<Vec<_>>();
+        for (token_index, heads) in tokens.iter().enumerate() {
+            buffer
+                .write_token(token_index, heads)
+                .expect("token write should work");
+        }
+        let query = vec![0.3, -0.1, 0.2, 0.6, -0.4, 0.1, 0.5, -0.2];
+
+        let reconstructed_history = buffer
+            .debug_reconstruct_head_history(1, 3)
+            .expect("head history should reconstruct");
+        let expected =
+            reference_decode_attention(&query, &reconstructed_history).expect("reference decode");
+        let actual = buffer
+            .debug_decode_attention_for_head(&query, 1, 3)
+            .expect("buffer decode should work");
+
+        assert_eq!(actual, expected);
+
+        let original_history = tokens
+            .iter()
+            .map(|heads| heads[1].clone())
+            .collect::<Vec<_>>();
+        let full_precision =
+            reference_decode_attention(&query, &original_history).expect("full precision decode");
+        assert!(cosine_similarity(&full_precision, &actual) > 0.999);
+        assert!(max_abs_diff(&full_precision, &actual) < 0.02);
+    }
+
+    #[test]
+    fn compressed_block_buffer_head_decode_fails_closed_for_invalid_history() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            value_group_size: 2,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        buffer
+            .write_token(
+                0,
+                &[
+                    (vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 2.0, 3.0]),
+                    (vec![0.0, 1.0, 0.0, 0.0], vec![3.0, 2.0, 1.0, 0.0]),
+                ],
+            )
+            .expect("token write should work");
+
+        let error = buffer
+            .debug_decode_attention_for_head(&[1.0, 0.0, 0.0, 0.0], 2, 1)
+            .expect_err("invalid head should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::LayoutAddressOutOfRange {
+                name: "head_index",
+                index: 2,
+                limit: 2,
+            }
+        );
+
+        let error = buffer
+            .debug_decode_attention_for_head(&[1.0, 0.0, 0.0, 0.0], 0, 2)
+            .expect_err("unwritten token in history should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::CompressedSlotUnwritten {
+                token_index: 1,
+                head_index: 0,
+            }
+        );
+
+        let error = buffer
+            .debug_decode_attention_for_head(&[1.0, 0.0, 0.0, 0.0], 0, 0)
+            .expect_err("empty history should fail");
+        assert_eq!(error, TurboQuantCodecError::EmptyKvHistory);
     }
 
     #[test]
