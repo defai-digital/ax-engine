@@ -36,23 +36,36 @@ throughput baselines.
   compiles Python scripts, and runs the MLX inference-stack contract tests.
 - `bench_mlx_inference_stack.py`: MLX model-inference comparison against
   `mlx_lm.benchmark`. It can pass through
-  `--experimental-mlx-kv-compression turboquant-shadow` for AX rows and records
-  TurboQuant KV compression route counters when the runtime emits them.
+  `--experimental-mlx-kv-compression turboquant-shadow` or
+  `turboquant-fused-experimental` for AX rows and records TurboQuant KV
+  compression route counters, including shadow-storage sync calls and wall time
+  plus fused decode candidate/attempt/success/fallback counters and fallback
+  reason labels, when the runtime emits them.
 - `test_bench_mlx_inference_stack.py`: unit tests for the MLX benchmark
   contract, parser, prompt artifact hash checks, and secondary adapter shape.
 - `check_turboquant_quality_artifact.py`: fail-closed validator for internal
   TurboQuant long-context quality gate artifacts. It checks model identity,
-  long-context shape, baseline/candidate provenance, K8/V4 route metadata,
-  decode quality thresholds, throughput ratio, and memory-savings evidence.
+  long-context shape, baseline/candidate provenance, candidate mode
+  `turboquant-fused-experimental`, K8/V4 route metadata schema `>= 2`,
+  fused_compressed_decode path code `2`, fused decode successes, zero
+  fallbacks, decode quality thresholds, throughput ratio, and memory-savings
+  evidence.
+- `check_turboquant_microbench_artifact.py`: fail-closed validator for
+  standalone fused cold-decode microbenchmark artifacts. It checks K8/V4
+  metadata, long-cold-context coverage, `two_stage_scores` quality, memory
+  savings, and speedup against the CPU reference plus `dim_parallel` when
+  present.
 - `build_turboquant_quality_artifact.py`: compiles a TurboQuant quality artifact
   from MLX inference-stack benchmark output and a quality-metrics JSON file,
   then validates it through the same fail-closed gate. Full-precision shadow
-  rows are rejected as promotion evidence.
+  and CPU oracle rows are rejected as promotion evidence.
 - `build_turboquant_quality_metrics.py`: compares baseline and candidate decode
   output vectors and emits the max/mean absolute error plus minimum cosine
   similarity JSON consumed by the TurboQuant quality artifact builder.
 - `test_turboquant_quality_artifact.py`: unit tests for the TurboQuant quality
   artifact validator.
+- `test_turboquant_microbench_artifact.py`: unit tests for the TurboQuant fused
+  microbenchmark artifact validator.
 - `probe_mlx_model_support.py`: support-contract probe for downloaded MLX
   model artifacts. It reads `config.json`, safetensors index metadata, and
   local reference implementations so new architectures fail closed with named
@@ -65,6 +78,18 @@ throughput baselines.
   TurboQuant quality evidence. It builds synthetic quality metrics, compiles a
   quality artifact, validates it, and proves `full_precision_shadow` candidates
   fail promotion.
+- `check-turboquant-microbench-gate.sh`: lightweight CLI pipeline check for
+  TurboQuant fused-kernel evidence. It validates a synthetic speed-positive
+  `two_stage_scores` artifact and proves a CPU-regressed artifact fails.
+- `check_turboquant_public_docs.py`: lightweight public-docs contract check for
+  the optional TurboQuant switch, telemetry-only shadow boundary, and sync
+  timing docs.
+- `cargo run -p ax-engine-mlx --release --bin turboquant-microbench -- ...`:
+  TurboQuant fused cold-decode microbenchmark. It compares the K8/V4 MLX/Metal
+  kernels against the CPU reference oracle and writes
+  `ax.turboquant_fused_decode_microbench.v1` JSON artifacts. Use `--variants`
+  to limit longer sweeps to selected kernel variants and `--hot-tokens` to
+  include shared log-sum-exp hot-tail merge evidence.
 - `reproduce-mlx-inference-benchmark.sh`: public reproduction wrapper for
   external Apple Silicon benchmark bundles. It records doctor output, command
   logs, prompt artifacts, environment metadata, and raw JSON results.

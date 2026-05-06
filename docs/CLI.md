@@ -87,9 +87,26 @@ python3 scripts/bench_mlx_inference_stack.py \
 ```
 
 This mode is optional, disabled by default, and records TurboQuant route
-metadata only when the runtime emits it. It is not a production support claim
-and should be paired with `scripts/check_turboquant_quality_artifact.py` before
-being used as promotion evidence.
+metadata only when the runtime emits it. The current implementation is the
+full-precision shadow path: generation still uses the existing MLX KV decode
+path, while the optional side path records eligibility, estimated saved KiB,
+runtime shadow-storage writes, shadow-storage sync calls and wall time, current
+compression decode path, and fused decode candidate/attempt/success/fallback
+counters. It is not a production support claim and should be paired with
+`scripts/check_turboquant_quality_artifact.py` before being used as promotion
+evidence.
+
+For runner-route experiments, `--experimental-mlx-kv-compression
+turboquant-fused-experimental` requests compressed decode selection and may
+report `fused_compressed_decode` when the eligible K8/V4 single-token path uses
+the two-stage Metal cold decode plus full-precision hot-tail merge. If Metal is
+unavailable but the reference fallback works, it reports
+`cpu_oracle_compressed_decode`. A fallback reason label of
+`runner_not_integrated` means no runtime decode attempt was observed yet;
+`cpu_oracle_unavailable` means both compressed-decode attempts fell back to the
+full-precision MLX KV path. Only `fused_compressed_decode` route evidence with
+successful attempts and zero fallbacks can feed the internal quality artifact
+gate; shadow and CPU oracle rows are diagnostic only.
 
 ## Delegated llama.cpp Checks
 

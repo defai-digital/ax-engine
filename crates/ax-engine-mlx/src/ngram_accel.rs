@@ -5,7 +5,10 @@ use mlx_sys::{MlxArray, argmax, eval};
 use crate::sampling::{Xorshift64, sample_categorical};
 
 use crate::kv_cache::MlxKVCache;
-use crate::model::{ModelConfig, forward_all_positions};
+use crate::model::{
+    ModelConfig, TurboQuantModelDecodeContext, forward_all_positions,
+    forward_with_turboquant_context,
+};
 use crate::weights::ModelWeights;
 
 /// Default number of draft tokens to attempt per n-gram acceleration step.
@@ -474,8 +477,38 @@ pub fn single_decode(
     temperature: f32,
     rng: &mut Xorshift64,
 ) -> Vec<u32> {
+    single_decode_with_turboquant_context(
+        cfg,
+        weights,
+        cache,
+        ngram,
+        last_token,
+        temperature,
+        rng,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn single_decode_with_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    ngram: &mut NgramTable,
+    last_token: u32,
+    temperature: f32,
+    rng: &mut Xorshift64,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> Vec<u32> {
     let token_offset = cache.seq_len;
-    let logits = crate::model::forward(cfg, weights, &[last_token], cache, token_offset);
+    let logits = forward_with_turboquant_context(
+        cfg,
+        weights,
+        &[last_token],
+        cache,
+        token_offset,
+        turboquant_context,
+    );
     cache.seq_len += 1;
 
     let kv_refs = cache.collect_eval_refs();

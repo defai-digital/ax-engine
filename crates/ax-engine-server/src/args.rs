@@ -25,6 +25,8 @@ pub enum PreviewMlxKvCompression {
     Disabled,
     #[value(name = "turboquant-shadow")]
     TurboQuantShadow,
+    #[value(name = "turboquant-fused-experimental")]
+    TurboQuantFusedExperimental,
 }
 
 impl PreviewMlxKvCompression {
@@ -41,6 +43,12 @@ impl PreviewMlxKvCompression {
             },
             Self::TurboQuantShadow => MlxKvCompressionConfig {
                 mode: MlxKvCompressionMode::TurboQuantShadow,
+                preset: MlxTurboQuantPreset::K8V4,
+                hot_window_tokens,
+                min_context_tokens,
+            },
+            Self::TurboQuantFusedExperimental => MlxKvCompressionConfig {
+                mode: MlxKvCompressionMode::TurboQuantFusedExperimental,
                 preset: MlxTurboQuantPreset::K8V4,
                 hot_window_tokens,
                 min_context_tokens,
@@ -972,6 +980,29 @@ mod tests {
             actual.mlx_kv_compression,
             MlxKvCompressionConfig {
                 mode: MlxKvCompressionMode::TurboQuantShadow,
+                preset: MlxTurboQuantPreset::K8V4,
+                hot_window_tokens: 384,
+                min_context_tokens: 768,
+            }
+        );
+    }
+
+    #[test]
+    fn experimental_mlx_kv_compression_flag_can_request_fused_route_selection() {
+        let args = ServerArgs {
+            mlx: true,
+            experimental_mlx_kv_compression: PreviewMlxKvCompression::TurboQuantFusedExperimental,
+            experimental_mlx_kv_compression_hot_window_tokens: 384,
+            experimental_mlx_kv_compression_min_context_tokens: 768,
+            ..base_args()
+        };
+
+        let actual = args.session_config().expect("session config should build");
+
+        assert_eq!(
+            actual.mlx_kv_compression,
+            MlxKvCompressionConfig {
+                mode: MlxKvCompressionMode::TurboQuantFusedExperimental,
                 preset: MlxTurboQuantPreset::K8V4,
                 hot_window_tokens: 384,
                 min_context_tokens: 768,

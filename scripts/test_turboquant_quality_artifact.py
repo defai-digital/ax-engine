@@ -60,6 +60,7 @@ def valid_artifact(root: Path) -> dict:
         },
         "candidate": {
             "backend": "mlx",
+            "kv_compression_mode": checker.REQUIRED_CANDIDATE_COMPRESSION_MODE,
             "preset": "k8v4",
             "quality_profile": "reference_k8v4",
             "decode_path": "fused_compressed_decode",
@@ -73,9 +74,9 @@ def valid_artifact(root: Path) -> dict:
         },
         "route_metadata": {
             "crossover_decisions": {
-                "ax_mlx_kv_compression_route_metadata_schema": 1,
+                "ax_mlx_kv_compression_route_metadata_schema": 2,
                 "ax_mlx_kv_compression_production_ready": 0,
-                "ax_mlx_kv_compression_production_blockers": 2,
+                "ax_mlx_kv_compression_production_blockers": 1,
                 "ax_mlx_kv_compression_preset": 1,
                 "ax_mlx_kv_compression_key_bits": 8,
                 "ax_mlx_kv_compression_value_bits": 4,
@@ -83,6 +84,12 @@ def valid_artifact(root: Path) -> dict:
                 "ax_mlx_kv_compression_candidate_token_layers": 120000,
                 "ax_mlx_kv_compression_estimated_saved_kib": 4096,
                 "ax_mlx_kv_compression_runtime_storage_written_slots": 5000,
+                "ax_mlx_kv_compression_decode_path": 2,
+                "ax_mlx_kv_compression_fused_decode_candidates": 1,
+                "ax_mlx_kv_compression_fused_decode_attempts": 1,
+                "ax_mlx_kv_compression_fused_decode_successes": 1,
+                "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
+                "ax_mlx_kv_compression_fused_decode_fallback_reason": 0,
             }
         },
         "artifacts": [
@@ -104,7 +111,18 @@ def valid_artifact(root: Path) -> dict:
     }
 
 
-def benchmark_doc(*, compressed: bool, decode_path: str | None = None) -> dict:
+def benchmark_doc(
+    *,
+    compressed: bool,
+    decode_path: str | None = None,
+    compression_mode: str = checker.REQUIRED_CANDIDATE_COMPRESSION_MODE,
+) -> dict:
+    resolved_decode_path = decode_path or "fused_compressed_decode"
+    decode_path_code = {
+        "full_precision_shadow": 1,
+        "fused_compressed_decode": 2,
+        "cpu_oracle_compressed_decode": 3,
+    }.get(resolved_decode_path, 1)
     row = {
         "engine": "ax_engine_mlx",
         "prompt_tokens": 8192,
@@ -115,12 +133,12 @@ def benchmark_doc(*, compressed: bool, decode_path: str | None = None) -> dict:
     if compressed:
         row.update(
             {
-                "experimental_mlx_kv_compression": "turboquant-shadow",
-                "kv_compression_decode_path": decode_path or "fused_compressed_decode",
+                "experimental_mlx_kv_compression": compression_mode,
+                "kv_compression_decode_path": resolved_decode_path,
                 "kv_compression_telemetry": {
-                    "ax_mlx_kv_compression_route_metadata_schema": 1,
+                    "ax_mlx_kv_compression_route_metadata_schema": 2,
                     "ax_mlx_kv_compression_production_ready": 0,
-                    "ax_mlx_kv_compression_production_blockers": 2,
+                    "ax_mlx_kv_compression_production_blockers": 1,
                     "ax_mlx_kv_compression_preset": 1,
                     "ax_mlx_kv_compression_key_bits": 8,
                     "ax_mlx_kv_compression_value_bits": 4,
@@ -128,6 +146,18 @@ def benchmark_doc(*, compressed: bool, decode_path: str | None = None) -> dict:
                     "ax_mlx_kv_compression_candidate_token_layers": 120000,
                     "ax_mlx_kv_compression_estimated_saved_kib": 4096,
                     "ax_mlx_kv_compression_runtime_storage_written_slots": 5000,
+                    "ax_mlx_kv_compression_decode_path": decode_path_code,
+                    "ax_mlx_kv_compression_fused_decode_candidates": 1,
+                    "ax_mlx_kv_compression_fused_decode_attempts": 1
+                    if decode_path_code == 2
+                    else 0,
+                    "ax_mlx_kv_compression_fused_decode_successes": 1
+                    if decode_path_code == 2
+                    else 0,
+                    "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
+                    "ax_mlx_kv_compression_fused_decode_fallback_reason": 0
+                    if decode_path_code == 2
+                    else 1,
                 },
             }
         )
@@ -236,6 +266,67 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(checker.ArtifactValidationError, "missing required keys"):
                 checker.validate_artifact(artifact, root=root)
 
+    def test_stale_route_schema_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_route_metadata_schema"
+            ] = 1
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "schema must be >= 2"):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_cpu_oracle_route_fails_closed_as_promotion_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_decode_path"
+            ] = 3
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "path code 2"):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_shadow_mode_fails_closed_as_promotion_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["candidate"]["kv_compression_mode"] = "turboquant-shadow"
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "kv_compression_mode"):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_missing_fused_decode_success_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_fused_decode_successes"
+            ] = 0
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "successes"):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_fused_decode_fallback_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_fused_decode_fallbacks"
+            ] = 1
+            artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_fused_decode_fallback_reason"
+            ] = 5
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "zero fused decode fallbacks"):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_stale_runtime_production_blockers_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_production_blockers"
+            ] = checker.MAX_RUNTIME_PRODUCTION_BLOCKERS + 1
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "unexpected production blockers"):
+                checker.validate_artifact(artifact, root=root)
+
     def test_public_docs_approval_is_not_part_of_quality_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -323,6 +414,54 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 builder.checker.ArtifactValidationError,
                 "decode_path",
+            ):
+                builder.build_quality_artifact(
+                    baseline_benchmark=baseline,
+                    candidate_benchmark=candidate,
+                    quality_metrics=metrics,
+                    manifest=manifest,
+                    model_id="qwen3_5_9b_q4",
+                    model_family="qwen3_dense",
+                    model_revision="test",
+                    head_dim=128,
+                    context_tokens=8192,
+                    generation_tokens=256,
+                    baseline_engine="ax_engine_mlx",
+                    candidate_engine="ax_engine_mlx",
+                    root=root,
+                )
+
+    def test_builder_rejects_shadow_mode_as_promotion_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "benchmarks/manifests/scenario/long_context_qwen_8k.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}")
+            baseline = root / "baseline.json"
+            candidate = root / "candidate.json"
+            metrics = root / "metrics.json"
+            baseline.write_text(json.dumps(benchmark_doc(compressed=False)))
+            candidate.write_text(
+                json.dumps(
+                    benchmark_doc(
+                        compressed=True,
+                        compression_mode="turboquant-shadow",
+                    )
+                )
+            )
+            metrics.write_text(
+                json.dumps(
+                    {
+                        "max_abs_diff": 0.03,
+                        "mean_abs_diff": 0.01,
+                        "min_cosine_similarity": 0.999,
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                builder.checker.ArtifactValidationError,
+                "kv_compression_mode",
             ):
                 builder.build_quality_artifact(
                     baseline_benchmark=baseline,

@@ -4930,13 +4930,13 @@ fn derive_model_bound_direct_decode_result_from_hidden_states(
     let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
 
     for item in &input.execution_batch.items {
-        let token_base = attention_index.saturating_mul(token_width);
+        let Some((token_base, token_end, hidden_index)) =
+            direct_decode_token_indices(attention_index, token_width, item.scheduled_token_count)
+        else {
+            return ModelBoundDirectDecodeResult::default();
+        };
         if sampleable_request_ids.contains(&item.request_id) {
             let decode_item = item.mode == ExecutionMode::Decode;
-            let token_end = token_base.saturating_add(token_width);
-            let hidden_index = attention_index
-                .saturating_add(item.scheduled_token_count as usize)
-                .saturating_sub(1);
             if let Some(bits) = attention_output_bits.get(token_base..token_end) {
                 if request_uses_deterministic_argmax_sampling(input, item.request_id) {
                     if let Some((
@@ -5001,7 +5001,12 @@ fn derive_model_bound_direct_decode_result_from_hidden_states(
                 }
             }
         }
-        attention_index = attention_index.saturating_add(item.scheduled_token_count as usize);
+        let Some(next_attention_index) =
+            advance_direct_decode_attention_index(attention_index, item.scheduled_token_count)
+        else {
+            return ModelBoundDirectDecodeResult::default();
+        };
+        attention_index = next_attention_index;
     }
 
     ModelBoundDirectDecodeResult {
@@ -5012,6 +5017,29 @@ fn derive_model_bound_direct_decode_result_from_hidden_states(
         execution_tally,
         native_dense_tally,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn direct_decode_token_indices(
+    attention_index: usize,
+    token_width: usize,
+    scheduled_token_count: u32,
+) -> Option<(usize, usize, usize)> {
+    let scheduled_token_count = scheduled_token_count as usize;
+    let token_base = attention_index.checked_mul(token_width)?;
+    let token_end = token_base.checked_add(token_width)?;
+    let hidden_index = attention_index
+        .checked_add(scheduled_token_count)?
+        .checked_sub(1)?;
+    Some((token_base, token_end, hidden_index))
+}
+
+#[cfg(target_os = "macos")]
+fn advance_direct_decode_attention_index(
+    attention_index: usize,
+    scheduled_token_count: u32,
+) -> Option<usize> {
+    attention_index.checked_add(scheduled_token_count as usize)
 }
 
 #[cfg(target_os = "macos")]

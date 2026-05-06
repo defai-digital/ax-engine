@@ -267,8 +267,16 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_kv_compression_estimated_saved_kib": 20,
                     "ax_mlx_kv_compression_route_metadata_schema": 1,
                     "ax_mlx_kv_compression_production_ready": 0,
-                    "ax_mlx_kv_compression_production_blockers": 2,
+                    "ax_mlx_kv_compression_production_blockers": 1,
                     "ax_mlx_kv_compression_runtime_storage_written_slots": 50,
+                    "ax_mlx_kv_compression_shadow_sync_calls": 1,
+                    "ax_mlx_kv_compression_shadow_sync_wall_us": 1234,
+                    "ax_mlx_kv_compression_decode_path": 1,
+                    "ax_mlx_kv_compression_fused_decode_candidates": 1,
+                    "ax_mlx_kv_compression_fused_decode_attempts": 0,
+                    "ax_mlx_kv_compression_fused_decode_successes": 0,
+                    "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
+                    "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
                     "unrelated": 99,
                 }
             }
@@ -280,6 +288,13 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             telemetry["ax_mlx_kv_compression_runtime_storage_written_slots"],
             50,
         )
+        self.assertEqual(telemetry["ax_mlx_kv_compression_shadow_sync_calls"], 1)
+        self.assertEqual(telemetry["ax_mlx_kv_compression_shadow_sync_wall_us"], 1234)
+        self.assertEqual(telemetry["ax_mlx_kv_compression_decode_path"], 1)
+        self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_candidates"], 1)
+        self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_attempts"], 0)
+        self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_fallbacks"], 0)
+        self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1)
         self.assertNotIn("unrelated", telemetry)
 
         summary = bench.summarize_ax_mlx_kv_compression_telemetry(
@@ -291,6 +306,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_mlx_kv_compression_status": 2,
                         "ax_mlx_kv_compression_preset": 1,
                         "ax_mlx_kv_compression_runtime_storage_written_slots": 75,
+                        "ax_mlx_kv_compression_shadow_sync_calls": 1,
+                        "ax_mlx_kv_compression_shadow_sync_wall_us": 4321,
+                        "ax_mlx_kv_compression_decode_path": 1,
+                        "ax_mlx_kv_compression_fused_decode_candidates": 1,
+                        "ax_mlx_kv_compression_fused_decode_attempts": 0,
+                        "ax_mlx_kv_compression_fused_decode_successes": 0,
+                        "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
+                        "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
                     }
                 },
             ]
@@ -303,6 +326,43 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             summary["ax_mlx_kv_compression_runtime_storage_written_slots"],
             125,
         )
+        self.assertEqual(summary["ax_mlx_kv_compression_shadow_sync_calls"], 2)
+        self.assertEqual(summary["ax_mlx_kv_compression_shadow_sync_wall_us"], 5555)
+        self.assertEqual(summary["ax_mlx_kv_compression_decode_path"], 1)
+        self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_candidates"], 2)
+        self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_attempts"], 0)
+        self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_successes"], 0)
+        self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_fallbacks"], 0)
+        self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1)
+        self.assertEqual(
+            bench.kv_compression_decode_path_label(summary),
+            "full_precision_shadow",
+        )
+        self.assertEqual(
+            bench.kv_compression_fused_decode_fallback_reason_label(summary),
+            "shadow_only",
+        )
+
+        summary["ax_mlx_kv_compression_decode_path"] = 2
+        self.assertEqual(
+            bench.kv_compression_decode_path_label(summary),
+            "fused_compressed_decode",
+        )
+        summary["ax_mlx_kv_compression_decode_path"] = 3
+        self.assertEqual(
+            bench.kv_compression_decode_path_label(summary),
+            "cpu_oracle_compressed_decode",
+        )
+        summary["ax_mlx_kv_compression_fused_decode_fallback_reason"] = 4
+        self.assertEqual(
+            bench.kv_compression_fused_decode_fallback_reason_label(summary),
+            "runner_not_integrated",
+        )
+        summary["ax_mlx_kv_compression_fused_decode_fallback_reason"] = 5
+        self.assertEqual(
+            bench.kv_compression_fused_decode_fallback_reason_label(summary),
+            "cpu_oracle_unavailable",
+        )
 
     def test_absent_ax_mlx_kv_compression_telemetry_stays_silent(self) -> None:
         self.assertEqual(
@@ -310,6 +370,17 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 {"crossover_decisions": {"ax_mlx_decode_steps": 2}}
             ),
             {},
+        )
+
+    def test_ax_step_timing_classifies_chunked_prefill_by_scheduled_tokens(self) -> None:
+        self.assertTrue(
+            bench.is_ax_prefill_step({"scheduled_tokens": 1}, seen_prefill=False)
+        )
+        self.assertTrue(
+            bench.is_ax_prefill_step({"scheduled_tokens": 2048}, seen_prefill=True)
+        )
+        self.assertFalse(
+            bench.is_ax_prefill_step({"scheduled_tokens": 1}, seen_prefill=True)
         )
 
     def test_axengine_command_can_enable_experimental_kv_compression(self) -> None:
@@ -330,6 +401,20 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIn("turboquant-shadow", command)
         self.assertIn("--experimental-mlx-kv-compression-hot-window-tokens", command)
         self.assertIn("--experimental-mlx-kv-compression-min-context-tokens", command)
+
+    def test_axengine_command_can_request_fused_experimental_kv_compression(self) -> None:
+        with patch.object(bench.subprocess, "Popen") as popen:
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                direct_mode=True,
+                kv_compression="turboquant-fused-experimental",
+            )
+
+        command = popen.call_args.args[0]
+        self.assertIn("--experimental-mlx-kv-compression", command)
+        self.assertIn("turboquant-fused-experimental", command)
 
     def test_route_with_more_decisions_keeps_step_telemetry_over_response_route(self) -> None:
         step_route = {

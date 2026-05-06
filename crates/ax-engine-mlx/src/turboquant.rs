@@ -9,7 +9,7 @@ pub type FullPrecisionKvTokenVectors = (Vec<f32>, Vec<f32>);
 
 pub const TURBOQUANT_SLOT_ALIGNMENT_BYTES: usize = 16;
 pub const TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM: usize = 128;
-pub const TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION: u32 = 1;
+pub const TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TurboQuantProductionRequirements {
@@ -42,7 +42,7 @@ impl TurboQuantProductionRequirements {
             runtime_kv_storage: true,
             runner_route_metadata: true,
             long_context_benchmark_artifact: false,
-            public_switch_and_docs: false,
+            public_switch_and_docs: true,
         }
     }
 
@@ -1262,6 +1262,16 @@ impl TurboQuantCompressedBlockBuffer {
         reference_decode_attention(query, &tokens)
     }
 
+    pub fn debug_decode_partition_stats_for_head(
+        &self,
+        query: &[f32],
+        head_index: usize,
+        token_count: usize,
+    ) -> Result<TurboQuantAttentionPartitionStats, TurboQuantCodecError> {
+        let tokens = self.debug_reconstruct_head_history(head_index, token_count)?;
+        reference_decode_attention_partition_stats(query, &tokens)
+    }
+
     pub fn debug_decode_attention_for_all_heads(
         &self,
         queries: &[Vec<f32>],
@@ -1279,6 +1289,27 @@ impl TurboQuantCompressedBlockBuffer {
             .enumerate()
             .map(|(head_index, query)| {
                 self.debug_decode_attention_for_head(query, head_index, token_count)
+            })
+            .collect()
+    }
+
+    pub fn debug_decode_partition_stats_for_all_heads(
+        &self,
+        queries: &[Vec<f32>],
+        token_count: usize,
+    ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+        if queries.len() != self.layout.config.n_kv_heads {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: self.layout.config.n_kv_heads,
+                actual: queries.len(),
+            });
+        }
+
+        queries
+            .iter()
+            .enumerate()
+            .map(|(head_index, query)| {
+                self.debug_decode_partition_stats_for_head(query, head_index, token_count)
             })
             .collect()
     }
@@ -1654,8 +1685,19 @@ impl TurboQuantKvPrototypeStore {
     }
 
     pub fn debug_decode_attention(&self, query: &[f32]) -> Result<Vec<f32>, TurboQuantCodecError> {
-        let tokens = self.debug_reconstruct()?;
-        reference_decode_attention(query, &tokens)
+        let mut cold_tokens = Vec::with_capacity(self.cold.len());
+        for token in &self.cold {
+            cold_tokens.push((
+                decode_key_vector(&token.key)?,
+                decode_value_groups_4bit(&token.value)?,
+            ));
+        }
+        let hot_tokens = self
+            .hot
+            .iter()
+            .map(|token| (token.key.clone(), token.value.clone()))
+            .collect::<Vec<_>>();
+        reference_decode_attention_split(query, &cold_tokens, &hot_tokens)
     }
 
     pub fn stats(&self) -> TurboQuantKvPrototypeStats {
@@ -1779,6 +1821,125 @@ pub fn reference_decode_attention(
     }
 
     Ok(output)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurboQuantAttentionPartitionStats {
+    pub token_count: usize,
+    pub value_dim: usize,
+    pub max_score: f32,
+    pub exp_sum: f32,
+    pub weighted_value_sum: Vec<f32>,
+}
+
+pub fn reference_decode_attention_partition_stats(
+    query: &[f32],
+    kv_tokens: &[FullPrecisionKvTokenVectors],
+) -> Result<TurboQuantAttentionPartitionStats, TurboQuantCodecError> {
+    validate_key_shape(query)?;
+    if kv_tokens.is_empty() {
+        return Err(TurboQuantCodecError::EmptyKvHistory);
+    }
+
+    let value_dim = kv_tokens[0].1.len();
+    let scale = (query.len() as f32).sqrt().recip();
+    let mut scores = Vec::with_capacity(kv_tokens.len());
+    for (key, value) in kv_tokens {
+        validate_attention_token(query.len(), value_dim, key, value)?;
+        scores.push(
+            query
+                .iter()
+                .zip(key)
+                .map(|(left, right)| left * right)
+                .sum::<f32>()
+                * scale,
+        );
+    }
+
+    let max_score = scores
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, |acc, score| acc.max(score));
+    let mut exp_sum = 0.0f32;
+    let mut weighted_value_sum = vec![0.0f32; value_dim];
+    for (score, (_, value)) in scores.iter().zip(kv_tokens) {
+        let weight = (*score - max_score).exp();
+        exp_sum += weight;
+        for (acc, value) in weighted_value_sum.iter_mut().zip(value) {
+            *acc += weight * value;
+        }
+    }
+
+    Ok(TurboQuantAttentionPartitionStats {
+        token_count: kv_tokens.len(),
+        value_dim,
+        max_score,
+        exp_sum,
+        weighted_value_sum,
+    })
+}
+
+pub fn merge_attention_partition_stats(
+    partitions: &[TurboQuantAttentionPartitionStats],
+) -> Result<Vec<f32>, TurboQuantCodecError> {
+    if partitions.is_empty() {
+        return Err(TurboQuantCodecError::EmptyKvHistory);
+    }
+
+    let value_dim = partitions[0].value_dim;
+    for partition in partitions {
+        if partition.value_dim != value_dim {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: value_dim,
+                actual: partition.value_dim,
+            });
+        }
+        if partition.weighted_value_sum.len() != value_dim {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: value_dim,
+                actual: partition.weighted_value_sum.len(),
+            });
+        }
+    }
+
+    let global_max = partitions
+        .iter()
+        .map(|partition| partition.max_score)
+        .fold(f32::NEG_INFINITY, |acc, score| acc.max(score));
+    let mut denom = 0.0f32;
+    let mut output = vec![0.0f32; value_dim];
+
+    for partition in partitions {
+        let partition_scale = (partition.max_score - global_max).exp();
+        denom += partition.exp_sum * partition_scale;
+        for (out, value_sum) in output.iter_mut().zip(&partition.weighted_value_sum) {
+            *out += partition_scale * value_sum;
+        }
+    }
+
+    let denom = denom.max(f32::EPSILON);
+    for value in &mut output {
+        *value /= denom;
+    }
+
+    Ok(output)
+}
+
+pub fn reference_decode_attention_split(
+    query: &[f32],
+    cold_tokens: &[FullPrecisionKvTokenVectors],
+    hot_tokens: &[FullPrecisionKvTokenVectors],
+) -> Result<Vec<f32>, TurboQuantCodecError> {
+    match (cold_tokens.is_empty(), hot_tokens.is_empty()) {
+        (true, true) => Err(TurboQuantCodecError::EmptyKvHistory),
+        (true, false) => reference_decode_attention(query, hot_tokens),
+        (false, true) => reference_decode_attention(query, cold_tokens),
+        (false, false) => {
+            let cold = reference_decode_attention_partition_stats(query, cold_tokens)?;
+            let hot = reference_decode_attention_partition_stats(query, hot_tokens)?;
+            merge_attention_partition_stats(&[cold, hot])
+        }
+    }
 }
 
 pub fn compare_decode_outputs(
@@ -2348,16 +2509,13 @@ mod tests {
     }
 
     #[test]
-    fn production_readiness_marks_shadow_fused_kernel_storage_and_metadata_gates_present() {
+    fn production_readiness_marks_runtime_docs_and_metadata_gates_present() {
         let readiness = TurboQuantProductionRequirements::mlx_shadow_fused_kernel().evaluate();
 
         assert!(!readiness.is_ready());
         assert_eq!(
             readiness.blockers,
-            vec![
-                TurboQuantProductionBlocker::LongContextBenchmarkArtifact,
-                TurboQuantProductionBlocker::PublicSwitchAndDocs,
-            ]
+            vec![TurboQuantProductionBlocker::LongContextBenchmarkArtifact]
         );
     }
 
@@ -3801,6 +3959,103 @@ mod tests {
     }
 
     #[test]
+    fn compressed_block_buffer_partition_stats_merge_with_hot_tail() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let cold_tokens = (0..3)
+            .map(|token| {
+                vec![
+                    (
+                        (0..8)
+                            .map(|idx| token as f32 * 0.11 + idx as f32 * 0.07 - 0.2)
+                            .collect::<Vec<_>>(),
+                        (0..8)
+                            .map(|idx| token as f32 * 0.03 - idx as f32 * 0.02)
+                            .collect::<Vec<_>>(),
+                    ),
+                    (
+                        (0..8)
+                            .map(|idx| token as f32 * -0.09 + idx as f32 * 0.05 + 0.4)
+                            .collect::<Vec<_>>(),
+                        (0..8)
+                            .map(|idx| token as f32 * 0.04 + idx as f32 * 0.01 - 0.3)
+                            .collect::<Vec<_>>(),
+                    ),
+                ]
+            })
+            .collect::<Vec<_>>();
+        for (token_index, heads) in cold_tokens.iter().enumerate() {
+            buffer
+                .write_token(token_index, heads)
+                .expect("token write should work");
+        }
+
+        let hot_tokens = [
+            (
+                vec![0.3, -0.2, 0.1, 0.4, -0.1, 0.2, 0.7, -0.5],
+                vec![0.1, -0.2, 0.4, 0.0, 0.2, -0.1, 0.3, 0.5],
+            ),
+            (
+                vec![-0.1, 0.2, 0.4, -0.3, 0.6, 0.1, -0.2, 0.5],
+                vec![0.0, 0.1, -0.1, 0.3, 0.5, -0.2, 0.2, 0.4],
+            ),
+        ];
+        let query = vec![0.3, -0.1, 0.2, 0.6, -0.4, 0.1, 0.5, -0.2];
+        let cold_head = buffer
+            .debug_reconstruct_head_history(1, cold_tokens.len())
+            .expect("cold head should reconstruct");
+        let hot_head = hot_tokens.to_vec();
+        let mut full_history = cold_head.clone();
+        full_history.extend(hot_head.clone());
+
+        let expected =
+            reference_decode_attention(&query, &full_history).expect("full split attention");
+        let cold_stats = buffer
+            .debug_decode_partition_stats_for_head(&query, 1, cold_tokens.len())
+            .expect("cold partition stats");
+        let hot_stats = reference_decode_attention_partition_stats(&query, &hot_head)
+            .expect("hot partition stats");
+        let actual =
+            merge_attention_partition_stats(&[cold_stats, hot_stats]).expect("merged attention");
+
+        assert!(
+            max_abs_diff(&expected, &actual) < 1e-6,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    #[test]
+    fn compressed_block_buffer_partition_stats_validate_query_heads() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let buffer = TurboQuantCompressedBlockBuffer::new(layout);
+
+        let error = buffer
+            .debug_decode_partition_stats_for_all_heads(&[vec![0.0; 8]], 1)
+            .expect_err("query heads should fail closed");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: 2,
+                actual: 1,
+            }
+        );
+    }
+
+    #[test]
     fn compressed_block_buffer_head_decode_fails_closed_for_invalid_history() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
             preset: MlxTurboQuantPreset::K8V4,
@@ -4349,6 +4604,86 @@ mod tests {
         assert!((output[1] - second_weight).abs() < 1e-6);
         assert_eq!(output[2], 0.0);
         assert_eq!(output[3], 0.0);
+    }
+
+    #[test]
+    fn reference_decode_attention_split_matches_full_softmax_contract() {
+        let query = vec![0.25, 0.5, -0.25, 1.0];
+        let cold_tokens = vec![
+            (vec![0.5, -0.5, 1.0, 0.0], vec![0.2, 0.0, -0.2, 0.4]),
+            (vec![0.0, 1.0, -0.5, 0.5], vec![0.1, 0.3, 0.5, -0.1]),
+            (vec![-0.5, 0.25, 0.0, 1.0], vec![0.6, -0.2, 0.0, 0.2]),
+        ];
+        let hot_tokens = vec![
+            (vec![0.75, 0.0, -0.25, 0.5], vec![0.0, 0.2, 0.4, 0.6]),
+            (vec![-0.5, 0.5, 0.75, -0.25], vec![0.3, -0.1, 0.2, 0.1]),
+        ];
+        let all_tokens = cold_tokens
+            .iter()
+            .chain(&hot_tokens)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let expected = reference_decode_attention(&query, &all_tokens).expect("full attention");
+        let actual = reference_decode_attention_split(&query, &cold_tokens, &hot_tokens)
+            .expect("split attention");
+
+        assert!(
+            max_abs_diff(&expected, &actual) < 1e-6,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    #[test]
+    fn reference_decode_attention_split_handles_single_partition_fallbacks() {
+        let query = vec![0.25, 0.5, -0.25, 1.0];
+        let tokens = vec![
+            (vec![0.5, -0.5, 1.0, 0.0], vec![0.2, 0.0, -0.2, 0.4]),
+            (vec![0.0, 1.0, -0.5, 0.5], vec![0.1, 0.3, 0.5, -0.1]),
+        ];
+
+        let expected = reference_decode_attention(&query, &tokens).expect("full attention");
+        assert_eq!(
+            reference_decode_attention_split(&query, &tokens, &[]).expect("cold-only attention"),
+            expected
+        );
+        assert_eq!(
+            reference_decode_attention_split(&query, &[], &tokens).expect("hot-only attention"),
+            expected
+        );
+        assert_eq!(
+            reference_decode_attention_split(&query, &[], &[]).expect_err("empty split"),
+            TurboQuantCodecError::EmptyKvHistory
+        );
+    }
+
+    #[test]
+    fn merge_attention_partition_stats_rejects_value_dim_mismatch() {
+        let error = merge_attention_partition_stats(&[
+            TurboQuantAttentionPartitionStats {
+                token_count: 1,
+                value_dim: 2,
+                max_score: 0.0,
+                exp_sum: 1.0,
+                weighted_value_sum: vec![1.0, 0.0],
+            },
+            TurboQuantAttentionPartitionStats {
+                token_count: 1,
+                value_dim: 3,
+                max_score: 0.0,
+                exp_sum: 1.0,
+                weighted_value_sum: vec![1.0, 0.0, 0.0],
+            },
+        ])
+        .expect_err("partition merge should fail closed");
+
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedVectorDimension {
+                expected: 2,
+                actual: 3
+            }
+        );
     }
 
     #[test]

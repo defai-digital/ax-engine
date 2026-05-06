@@ -1,15 +1,15 @@
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, argsort_axis,
-    astype, broadcast_to, concatenate, dequantize, divide, expand_dims, expand_dims_axes,
+    astype, broadcast_to, concatenate, dequantize, divide, eval, expand_dims, expand_dims_axes,
     gather_mm, gather_qmm, gelu, gelu_approx, matmul, multiply, put_along_axis, quantized_matmul,
     reshape, rms_norm, rope, scaled_dot_product_attention_with_mask, slice, slice_last_dim,
     softmax, sum_axis, take, take_along_axis, tanh, transpose, where_cond, zeros,
 };
 
-use ax_engine_core::NativeModelManifest;
+use ax_engine_core::{MlxKvCompressionConfig, MlxTurboQuantPreset, NativeModelManifest};
 
 use crate::attention_mask::create_causal_mask;
-use crate::kv_cache::MlxKVCache;
+use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeOutcome};
 use crate::linear_attention::{
     compute_gated_delta_g, gated_delta_kernel, linear_attention_conv1d,
     normalize_linear_attention_qk, rms_norm_gated, split_linear_attention_qkv,
@@ -17,6 +17,105 @@ use crate::linear_attention::{
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 
 const SWITCH_GLU_SORT_THRESHOLD: usize = 64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurboQuantModelDecodeCandidateStatus {
+    Disabled,
+    PrefillOnly,
+    LinearAttentionLayer,
+    GlmMlaLayer,
+    SlidingWindowLayer,
+    KvSharedLayer,
+    IneligibleLayer,
+    UnsupportedPreset,
+    UnsupportedHeadDim,
+    GroupedQueryAttention,
+    MissingRuntimeStorage,
+    Ready,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantModelDecodeCandidate {
+    pub status: TurboQuantModelDecodeCandidateStatus,
+    pub cold_tokens: usize,
+    pub hot_tokens: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TurboQuantModelDecodeContext<'a> {
+    pub config: MlxKvCompressionConfig,
+    pub layer_eligible: &'a [bool],
+}
+
+impl TurboQuantModelDecodeCandidate {
+    pub const fn disabled() -> Self {
+        Self {
+            status: TurboQuantModelDecodeCandidateStatus::Disabled,
+            cold_tokens: 0,
+            hot_tokens: 0,
+        }
+    }
+}
+
+impl<'a> TurboQuantModelDecodeContext<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_candidate(
+        self,
+        cfg: &ModelConfig,
+        cache: &MlxKVCache,
+        layer_idx: usize,
+        seq: usize,
+        head_dim: usize,
+        kv_heads: usize,
+        sliding_window: Option<usize>,
+        kv_source: Option<usize>,
+        has_glm_mla_attention: bool,
+    ) -> TurboQuantModelDecodeCandidate {
+        let status = if !self.config.requests_fused_decode() {
+            TurboQuantModelDecodeCandidateStatus::Disabled
+        } else if seq != 1 {
+            TurboQuantModelDecodeCandidateStatus::PrefillOnly
+        } else if cfg.is_linear_attention_layer(layer_idx) {
+            TurboQuantModelDecodeCandidateStatus::LinearAttentionLayer
+        } else if has_glm_mla_attention {
+            TurboQuantModelDecodeCandidateStatus::GlmMlaLayer
+        } else if sliding_window.is_some() {
+            TurboQuantModelDecodeCandidateStatus::SlidingWindowLayer
+        } else if kv_source.is_some() {
+            TurboQuantModelDecodeCandidateStatus::KvSharedLayer
+        } else if !self.layer_eligible.get(layer_idx).copied().unwrap_or(false) {
+            TurboQuantModelDecodeCandidateStatus::IneligibleLayer
+        } else if self.config.preset != MlxTurboQuantPreset::K8V4 {
+            TurboQuantModelDecodeCandidateStatus::UnsupportedPreset
+        } else if head_dim != 128 {
+            TurboQuantModelDecodeCandidateStatus::UnsupportedHeadDim
+        } else if cfg.n_heads != kv_heads {
+            TurboQuantModelDecodeCandidateStatus::GroupedQueryAttention
+        } else if cache
+            .turboquant_shadow_storage_cold_tokens(layer_idx)
+            .unwrap_or(0)
+            == 0
+        {
+            TurboQuantModelDecodeCandidateStatus::MissingRuntimeStorage
+        } else {
+            TurboQuantModelDecodeCandidateStatus::Ready
+        };
+
+        let cold_tokens = if status == TurboQuantModelDecodeCandidateStatus::Ready {
+            cache
+                .turboquant_shadow_storage_cold_tokens(layer_idx)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let total_tokens = cache.seq_len.saturating_add(seq);
+        TurboQuantModelDecodeCandidate {
+            status,
+            cold_tokens,
+            hot_tokens: total_tokens.saturating_sub(cold_tokens),
+        }
+    }
+}
 
 /// Per-layer hyperparameters for interleaved-SWA models (Gemma4).
 #[derive(Clone, Debug)]
@@ -384,7 +483,13 @@ fn layer_params(
 
 /// Forward pass for one transformer layer.
 ///
+/// `shared_mask`: pre-computed SDPA mask for this layer — `None` computes it
+/// internally from `seq`, `key_len`, and `sliding_window`.  Pass `Some(&m)`
+/// from `build_layer_masks` in `forward*` to avoid creating identical mask
+/// graphs for every layer of the same attention type.
+///
 /// Returns updated hidden states.
+#[allow(clippy::too_many_arguments)]
 pub fn layer_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -393,6 +498,32 @@ pub fn layer_forward(
     layer_idx: usize,
     token_offset: usize,
     per_layer_input: Option<&MlxArray>, // [1, seq, per_layer_dim] or None
+    shared_mask: Option<&Option<MlxArray>>,
+) -> MlxArray {
+    layer_forward_with_turboquant_context(
+        cfg,
+        w,
+        hidden,
+        cache,
+        layer_idx,
+        token_offset,
+        per_layer_input,
+        shared_mask,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn layer_forward_with_turboquant_context(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray, // [1, seq, hidden]
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    token_offset: usize,
+    per_layer_input: Option<&MlxArray>, // [1, seq, per_layer_dim] or None
+    shared_mask: Option<&Option<MlxArray>>,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
     let (head_dim, rope_theta, rope_dims, sliding_window, kv_source, v_norm_no_scale) =
         layer_params(cfg, layer_idx);
@@ -513,24 +644,74 @@ pub fn layer_forward(
             let (ck, cv) = cache.append(layer_idx, k_rope, v);
             (q_rope, ck, cv, attn_gate_raw)
         };
+        let turboquant_candidate = turboquant_context
+            .map(|context| {
+                context.decode_candidate(
+                    cfg,
+                    cache,
+                    layer_idx,
+                    seq,
+                    head_dim,
+                    cached_k.shape()[1] as usize,
+                    sliding_window,
+                    kv_source,
+                    false,
+                )
+            })
+            .unwrap_or_else(TurboQuantModelDecodeCandidate::disabled);
 
         // 8. SDPA (GQA: MLX broadcasts KV heads internally). Sliding attention is
         // enforced by an array mask, not by truncating K/V, matching mlx-lm.
         let key_len = cached_k.shape()[2] as usize;
-        let mask_array = attention_mask_array(seq, key_len, sliding_window);
-        let mask = match mask_array.as_ref() {
-            Some(mask) => ScaledDotProductAttentionMask::Array(mask),
-            None if seq > 1 => ScaledDotProductAttentionMask::Causal,
-            None => ScaledDotProductAttentionMask::None,
+        let local_mask: Option<MlxArray>;
+        let mask_opt: &Option<MlxArray> = if let Some(m) = shared_mask {
+            m
+        } else {
+            local_mask = attention_mask_array(seq, key_len, sliding_window);
+            &local_mask
         };
-        let attn_sdpa = scaled_dot_product_attention_with_mask(
-            &q_rope,
-            &cached_k,
-            &cached_v,
-            cfg.query_scale,
-            mask,
-            None,
-        );
+        let attn_sdpa =
+            if turboquant_candidate.status == TurboQuantModelDecodeCandidateStatus::Ready {
+                let turboquant_out = turboquant_decode_attention_experimental(
+                    cache,
+                    layer_idx,
+                    &q_rope,
+                    seq,
+                    cfg.n_heads,
+                    head_dim,
+                    cfg.query_scale,
+                    turboquant_context
+                        .expect("ready TurboQuant candidate requires context")
+                        .config
+                        .hot_window_tokens,
+                );
+                let outcome = turboquant_out
+                    .as_ref()
+                    .map(|output| output.outcome)
+                    .unwrap_or(MlxKvCompressionDecodeOutcome::Fallback);
+                cache.record_turboquant_fused_decode_attempt(outcome);
+                turboquant_out
+                    .map(|output| output.attention)
+                    .unwrap_or_else(|| {
+                        full_precision_attention(
+                            &q_rope,
+                            &cached_k,
+                            &cached_v,
+                            cfg.query_scale,
+                            seq,
+                            mask_opt,
+                        )
+                    })
+            } else {
+                full_precision_attention(
+                    &q_rope,
+                    &cached_k,
+                    &cached_v,
+                    cfg.query_scale,
+                    seq,
+                    mask_opt,
+                )
+            };
 
         // 10. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
         let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
@@ -679,16 +860,39 @@ pub fn forward(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> MlxArray {
+    forward_with_turboquant_context(cfg, weights, token_ids, cache, token_offset, None)
+}
+
+pub fn forward_with_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> MlxArray {
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
 
+    let seq = token_ids.len();
+    let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
     let per_layer_inputs = compute_per_layer_inputs(cfg, weights, token_ids, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
-        hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset, pli);
+        hidden = layer_forward_with_turboquant_context(
+            cfg,
+            layer_w,
+            &hidden,
+            cache,
+            li,
+            token_offset,
+            pli,
+            Some(&masks[li]),
+            turboquant_context,
+        );
     }
 
     // Slice to last token only: [1, seq, hidden] → [1, 1, hidden].
@@ -727,19 +931,49 @@ pub fn forward_all_positions(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> MlxArray {
+    forward_all_positions_with_turboquant_context(
+        cfg,
+        weights,
+        token_ids,
+        cache,
+        token_offset,
+        None,
+    )
+}
+
+pub fn forward_all_positions_with_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> MlxArray {
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
 
+    let seq = token_ids.len();
+    let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
     let per_layer_inputs = compute_per_layer_inputs(cfg, weights, token_ids, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
-        hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset, pli);
+        hidden = layer_forward_with_turboquant_context(
+            cfg,
+            layer_w,
+            &hidden,
+            cache,
+            li,
+            token_offset,
+            pli,
+            Some(&masks[li]),
+            turboquant_context,
+        );
     }
 
-    let seq = token_ids.len() as i32;
+    let seq = seq as i32;
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
@@ -766,10 +1000,21 @@ pub fn forward_for_embedding(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
+    let seq = token_ids.len();
+    let masks = build_layer_masks(cfg, weights.layers.len(), seq, seq);
     let per_layer_inputs = compute_per_layer_inputs(cfg, weights, token_ids, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
-        hidden = layer_forward(cfg, layer_w, &hidden, &mut cache, li, 0, pli);
+        hidden = layer_forward(
+            cfg,
+            layer_w,
+            &hidden,
+            &mut cache,
+            li,
+            0,
+            pli,
+            Some(&masks[li]),
+        );
     }
     rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None)
 }
@@ -795,6 +1040,17 @@ pub fn forward_lazy_single(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> MlxArray {
+    forward_lazy_single_with_turboquant_context(cfg, weights, token_arr, cache, token_offset, None)
+}
+
+pub fn forward_lazy_single_with_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_arr: &MlxArray, // scalar or [1] u32; may be unevaluated (lazy)
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> MlxArray {
     // Normalise to [1] for embedding take (reshape is a no-op if already [1]).
     let tok_1d = reshape(token_arr, &[1_i32], None);
 
@@ -803,10 +1059,21 @@ pub fn forward_lazy_single(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
+    let masks = build_layer_masks(cfg, weights.layers.len(), 1, token_offset + 1);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &tok_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
-        hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset, pli);
+        hidden = layer_forward_with_turboquant_context(
+            cfg,
+            layer_w,
+            &hidden,
+            cache,
+            li,
+            token_offset,
+            pli,
+            Some(&masks[li]),
+            turboquant_context,
+        );
     }
     // Single token: hidden shape is [1, 1, hidden_size] — no sequence slice needed.
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
@@ -876,18 +1143,21 @@ fn compute_per_layer_inputs_arr(
     let combined = scale_hidden(&combined, combined_scale);
     // combined shape: [1, seq, num_layers, per_layer_dim]
 
-    // 4. Split per layer using take on axis 2
+    // 4. Split per layer using direct slice on axis 2.
+    // combined: [1, seq, num_layers, per_layer_dim] — contiguous after add + scale.
+    // slice(li..li+1) creates a strided view ([1, seq, 1, per_layer_dim]) with no GPU gather
+    // dispatch, matching Python's arr[:, :, i, :] behaviour. The 35 gather+upload overhead
+    // from take(MlxArray::from_raw_data(li)) adds ~0.5 ms/step on fast small models (E2B).
     let per_layer = (0..num_layers)
         .map(|li| {
-            let idx_arr = MlxArray::from_raw_data(
-                &(li as u32) as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-                &[1_i32],
-                MlxDtype::Uint32,
+            let s = slice(
+                &combined,
+                &[0, 0, li as i32, 0],
+                &[1, seq, li as i32 + 1, per_layer_dim as i32],
+                &[1, 1, 1, 1],
+                None,
             );
-            // take on axis 2: [1, seq, 1, per_layer_dim] → squeeze → [1, seq, per_layer_dim]
-            let slice = take(&combined, &idx_arr, 2, None);
-            reshape(&slice, &[1, seq, per_layer_dim as i32], None)
+            reshape(&s, &[1, seq, per_layer_dim as i32], None)
         })
         .collect();
 
@@ -975,6 +1245,140 @@ fn attention_mask_array(
     None
 }
 
+fn full_precision_attention(
+    q_rope: &MlxArray,
+    cached_k: &MlxArray,
+    cached_v: &MlxArray,
+    query_scale: f32,
+    seq: usize,
+    mask_opt: &Option<MlxArray>,
+) -> MlxArray {
+    let mask = match mask_opt.as_ref() {
+        Some(mask) => ScaledDotProductAttentionMask::Array(mask),
+        None if seq > 1 => ScaledDotProductAttentionMask::Causal,
+        None => ScaledDotProductAttentionMask::None,
+    };
+    scaled_dot_product_attention_with_mask(q_rope, cached_k, cached_v, query_scale, mask, None)
+}
+
+struct TurboQuantExperimentalDecodeOutput {
+    attention: MlxArray,
+    outcome: MlxKvCompressionDecodeOutcome,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn turboquant_decode_attention_experimental(
+    cache: &MlxKVCache,
+    layer_idx: usize,
+    q_rope: &MlxArray,
+    seq: usize,
+    n_heads: usize,
+    head_dim: usize,
+    query_scale: f32,
+    hot_window_tokens: usize,
+) -> Option<TurboQuantExperimentalDecodeOutput> {
+    if seq != 1 {
+        return None;
+    }
+    let expected_scale = (head_dim as f32).sqrt().recip();
+    if (query_scale - expected_scale).abs() > 1.0e-6 {
+        return None;
+    }
+
+    let q_f32 = astype(q_rope, MlxDtype::Float32, None);
+    eval(&[&q_f32]);
+    let q_data = q_f32.data_f32();
+    if q_data.len() != n_heads.saturating_mul(head_dim) {
+        return None;
+    }
+    let queries = q_data
+        .chunks_exact(head_dim)
+        .map(|chunk| chunk.to_vec())
+        .collect::<Vec<_>>();
+    if queries.len() != n_heads {
+        return None;
+    }
+
+    let total_tokens = cache.seq_len.saturating_add(seq);
+    if let Ok(outputs) = cache
+        .debug_turboquant_shadow_decode_attention_metal_for_layer_with_total_tokens(
+            layer_idx,
+            &queries,
+            total_tokens,
+        )
+    {
+        return turboquant_attention_output_array(outputs, n_heads, head_dim, q_rope.dtype()).map(
+            |attention| TurboQuantExperimentalDecodeOutput {
+                attention,
+                outcome: MlxKvCompressionDecodeOutcome::Metal,
+            },
+        );
+    }
+
+    let outputs = cache
+        .debug_turboquant_shadow_decode_attention_for_layer_with_total_tokens(
+            layer_idx,
+            &queries,
+            hot_window_tokens,
+            total_tokens,
+        )
+        .ok()?;
+    turboquant_attention_output_array(outputs, n_heads, head_dim, q_rope.dtype()).map(|attention| {
+        TurboQuantExperimentalDecodeOutput {
+            attention,
+            outcome: MlxKvCompressionDecodeOutcome::CpuOracle,
+        }
+    })
+}
+
+fn turboquant_attention_output_array(
+    outputs: Vec<Vec<f32>>,
+    n_heads: usize,
+    head_dim: usize,
+    dtype: MlxDtype,
+) -> Option<MlxArray> {
+    if outputs.len() != n_heads || outputs.iter().any(|head| head.len() != head_dim) {
+        return None;
+    }
+
+    let flat = outputs.into_iter().flatten().collect::<Vec<_>>();
+    let out = MlxArray::from_raw_data(
+        flat.as_ptr().cast(),
+        flat.len() * std::mem::size_of::<f32>(),
+        &[1, n_heads as i32, 1, head_dim as i32],
+        MlxDtype::Float32,
+    );
+    Some(astype(&out, dtype, None))
+}
+
+/// Pre-compute one SDPA mask per unique sliding-window size before the layer
+/// loop.  Mirrors Python mlx_lm's `_make_masks` and Swift's `maskByType`:
+/// all layers of the same attention type share one mask object, avoiding
+/// N redundant `create_causal_mask` calls (= N × ~7 MLX graph nodes) per
+/// forward pass.
+fn build_layer_masks(
+    cfg: &ModelConfig,
+    n_layers: usize,
+    seq: usize,
+    key_len: usize,
+) -> Vec<Option<MlxArray>> {
+    if cfg.layer_configs.is_empty() {
+        let m = attention_mask_array(seq, key_len, None);
+        (0..n_layers).map(|_| m.clone()).collect()
+    } else {
+        let mut memo: std::collections::HashMap<Option<usize>, Option<MlxArray>> =
+            std::collections::HashMap::new();
+        cfg.layer_configs
+            .iter()
+            .map(|lc| {
+                memo.entry(lc.sliding_window)
+                    .or_insert_with(|| attention_mask_array(seq, key_len, lc.sliding_window))
+                    .clone()
+            })
+            .collect()
+    }
+}
+
 /// Apply optional RMS norm; pass `x` through if `norm` is None.
 fn rms_norm_opt(x: &MlxArray, norm: Option<&MlxArray>, eps: f32) -> MlxArray {
     if let Some(n) = norm {
@@ -1059,8 +1463,6 @@ struct GlmMlaCachedInputs {
     kv_latent: MlxArray,
     /// `[1, 1, total_seq, qk_rope_head_dim]`, with RoPE applied.
     k_pe: MlxArray,
-    /// `[1, n_heads, new_seq, total_seq]`.
-    positional_scores: MlxArray,
 }
 
 /// GLM4MoELite MLA input projection up to the latent-cache boundary.
@@ -1153,14 +1555,12 @@ fn glm_mla_project_and_cache_inputs(
 ) -> GlmMlaCachedInputs {
     let projected = glm_mla_project_inputs(cfg, w, x, token_offset);
     let (kv_latent, k_pe) = cache.append_glm_mla(layer_idx, projected.kv_latent, projected.k_pe);
-    let positional_scores = glm_mla_positional_scores(cfg, &projected.q_pe, &k_pe);
 
     GlmMlaCachedInputs {
         q_nope: projected.q_nope,
         q_pe: projected.q_pe,
         kv_latent,
         k_pe,
-        positional_scores,
     }
 }
 
@@ -1176,6 +1576,15 @@ fn glm_mla_positional_scores(cfg: &ModelConfig, q_pe: &MlxArray, k_pe: &MlxArray
 }
 
 /// GLM4MoELite MLA attention up to the output projection boundary.
+///
+/// Uses packed SDPA matching Swift's GLM4MoELite implementation:
+/// Q = concat([embed_q(q_nope), q_pe], axis=-1)  [n_heads, seq, kv_lora_rank+rope_dim]
+/// K = concat([kv_latent, k_pe], axis=-1)         [1, key_len, kv_lora_rank+rope_dim]
+/// V = kv_latent                                   [1, key_len, kv_lora_rank]
+///
+/// scale * Q @ K.T = scale * (embed_q(q_nope) @ kv_latent.T + q_pe @ k_pe.T), which is
+/// identical to the old separate pe_scores additive mask approach — but avoids the
+/// expensive embed_q_prefill(kv_latent) quantized matmul during prefill.
 #[allow(dead_code)] // Staged GLM contract; manifest validation remains fail-closed.
 fn glm_mla_attention_forward(
     cfg: &ModelConfig,
@@ -1191,33 +1600,31 @@ fn glm_mla_attention_forward(
         .expect("GLM MLA attention config");
     let seq = x.shape()[1] as usize;
     let cached = glm_mla_project_and_cache_inputs(cfg, w, x, cache, layer_idx, token_offset);
-    let key_len = cached.kv_latent.shape()[2] as usize;
-    let positional_scores =
-        glm_mla_causal_positional_scores(seq, key_len, &cached.positional_scores);
 
-    let attn_out = if seq == 1 {
-        let q_nope = glm_mla_embed_q_decode(cfg, w, &cached.q_nope);
-        let out = scaled_dot_product_attention_with_mask(
-            &q_nope,
-            &cached.kv_latent,
-            &cached.kv_latent,
-            mla_cfg.query_scale,
-            ScaledDotProductAttentionMask::Array(&positional_scores),
-            None,
-        );
-        glm_mla_unembed_out(cfg, w, &out)
+    // embed_q maps q_nope [n_heads, seq, nope_dim] → [n_heads, seq, kv_lora_rank].
+    // Same quantized op as decode; works for any seq length.
+    let q_nope_proj = glm_mla_embed_q_decode(cfg, w, &cached.q_nope);
+
+    // Pack rope components into Q and K so a single SDPA fuses both score contributions.
+    let q_packed = concatenate(&[&q_nope_proj, &cached.q_pe], -1, None);
+    let k_packed = concatenate(&[&cached.kv_latent, &cached.k_pe], -1, None);
+
+    let mask = if seq > 1 {
+        ScaledDotProductAttentionMask::Causal
     } else {
-        let k = glm_mla_embed_q_prefill(cfg, w, &cached.kv_latent);
-        let v = glm_mla_unembed_out(cfg, w, &cached.kv_latent);
-        scaled_dot_product_attention_with_mask(
-            &cached.q_nope,
-            &k,
-            &v,
-            mla_cfg.query_scale,
-            ScaledDotProductAttentionMask::Array(&positional_scores),
-            None,
-        )
+        ScaledDotProductAttentionMask::None
     };
+
+    // V stays as kv_latent [1, key_len, kv_lora_rank]; unembed_out maps output → value space.
+    let out = scaled_dot_product_attention_with_mask(
+        &q_packed,
+        &k_packed,
+        &cached.kv_latent,
+        mla_cfg.query_scale,
+        mask,
+        None,
+    );
+    let attn_out = glm_mla_unembed_out(cfg, w, &out);
 
     let attn_out = transpose(&attn_out, &[0, 2, 1, 3], None);
     let attn_flat = reshape(
@@ -1253,6 +1660,7 @@ fn glm_mla_causal_positional_scores(
 /// Prefill path: `kv_latent [B,1,seq,kv_lora_rank] @ embed_q [n_heads,kv_lora_rank,qk_nope_head_dim]`
 /// → `[B,n_heads,seq,qk_nope_head_dim]`.  Uses quantized_matmul (transpose=false) so the 4-bit
 /// packed weight is never materialized as float — equivalent to mlx-lm QuantizedMultiLinear(transpose=False).
+#[allow(dead_code)] // Kept as a parity reference for the packed-MLA SDPA implementation.
 fn glm_mla_embed_q_prefill(cfg: &ModelConfig, w: &LayerWeights, kv_latent: &MlxArray) -> MlxArray {
     let mla_cfg = cfg
         .glm_mla_attention
@@ -1973,7 +2381,11 @@ fn moe_experts_forward(
     let top_k_axis = seq_dim - 2; // second-to-last dim
     let scores_exp = expand_dims(top_k_weights, top_k_weights.ndim() as i32, None);
     let weighted = multiply(&down_out, &scores_exp, None);
-    sum_axis(&weighted, top_k_axis, false, None)
+    let out = sum_axis(&weighted, top_k_axis, false, None);
+    // Cast back to the input dtype. GLM scores are f32 (sigmoid over astype→f32),
+    // so without this the weighted sum is f32 and contaminates all downstream
+    // residuals and projections. Python's MoE does `.astype(y.dtype)` here.
+    astype(&out, x.dtype(), None)
 }
 
 struct SwitchGatherInputs {
@@ -2133,6 +2545,204 @@ mod tests {
             glm_mla_attention: None,
             glm_router: None,
             rms_norm_eps: 1e-6,
+        }
+    }
+
+    fn turboquant_decode_config() -> MlxKvCompressionConfig {
+        MlxKvCompressionConfig {
+            hot_window_tokens: 2,
+            min_context_tokens: 4,
+            ..MlxKvCompressionConfig::turboquant_fused_experimental()
+        }
+    }
+
+    fn turboquant_dense_cfg() -> ModelConfig {
+        let mut cfg = cfg(false);
+        cfg.hidden_size = 256;
+        cfg.n_heads = 2;
+        cfg.n_kv_heads = 2;
+        cfg.head_dim = 128;
+        cfg.rope_dims = 128;
+        cfg.query_scale = 1.0 / (128.0_f32).sqrt();
+        cfg
+    }
+
+    fn turboquant_cache_with_runtime_storage() -> MlxKVCache {
+        let mut cache = MlxKVCache::new(1);
+        let elements = 2 * 6 * 128;
+        let k = zeros(&[1, 2, 6, 128], MlxDtype::Float32, None);
+        let v_data = (0..elements)
+            .map(|idx| ((idx % 17) as f32 - 8.0) / 16.0)
+            .collect::<Vec<_>>();
+        let v = MlxArray::from_raw_data(
+            v_data.as_ptr().cast(),
+            v_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 6, 128],
+            MlxDtype::Float32,
+        );
+        let compression = turboquant_decode_config();
+        cache.append(0, k, v);
+        cache.seq_len = 6;
+        cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
+        cache
+    }
+
+    fn turboquant_cache_with_runtime_storage_and_current_decode_token() -> MlxKVCache {
+        let mut cache = MlxKVCache::new(1);
+        let initial_elements = 2 * 6 * 128;
+        let initial_k = zeros(&[1, 2, 6, 128], MlxDtype::Float32, None);
+        let initial_v_data = (0..initial_elements)
+            .map(|idx| ((idx % 17) as f32 - 8.0) / 16.0)
+            .collect::<Vec<_>>();
+        let initial_v = MlxArray::from_raw_data(
+            initial_v_data.as_ptr().cast(),
+            initial_v_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 6, 128],
+            MlxDtype::Float32,
+        );
+        cache.append(0, initial_k, initial_v);
+        cache.seq_len = 6;
+        cache.sync_turboquant_shadow_storage(&[None], turboquant_decode_config(), Some(&[true]));
+
+        let current_elements = 2 * 128;
+        let current_k = zeros(&[1, 2, 1, 128], MlxDtype::Float32, None);
+        let current_v_data = (0..current_elements)
+            .map(|idx| ((idx % 11) as f32 - 5.0) / 13.0)
+            .collect::<Vec<_>>();
+        let current_v = MlxArray::from_raw_data(
+            current_v_data.as_ptr().cast(),
+            current_v_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 1, 128],
+            MlxDtype::Float32,
+        );
+        cache.append(0, current_k, current_v);
+        cache
+    }
+
+    #[test]
+    fn turboquant_model_decode_context_gates_candidate_layers() {
+        let cfg = turboquant_dense_cfg();
+        let compression = turboquant_decode_config();
+        let context = TurboQuantModelDecodeContext {
+            config: compression,
+            layer_eligible: &[true],
+        };
+        let mut cache = MlxKVCache::new(1);
+        cache.seq_len = 6;
+
+        assert_eq!(
+            context
+                .decode_candidate(&cfg, &cache, 0, 2, 128, 2, None, None, false)
+                .status,
+            TurboQuantModelDecodeCandidateStatus::PrefillOnly
+        );
+        assert_eq!(
+            context
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, None, false)
+                .status,
+            TurboQuantModelDecodeCandidateStatus::MissingRuntimeStorage
+        );
+        assert_eq!(
+            context
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, Some(128), None, false)
+                .status,
+            TurboQuantModelDecodeCandidateStatus::SlidingWindowLayer
+        );
+        assert_eq!(
+            context
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, Some(0), false)
+                .status,
+            TurboQuantModelDecodeCandidateStatus::KvSharedLayer
+        );
+        assert_eq!(
+            context
+                .decode_candidate(&cfg, &cache, 0, 1, 64, 2, None, None, false)
+                .status,
+            TurboQuantModelDecodeCandidateStatus::UnsupportedHeadDim
+        );
+        assert_eq!(
+            context
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 1, None, None, false)
+                .status,
+            TurboQuantModelDecodeCandidateStatus::GroupedQueryAttention
+        );
+
+        let context = TurboQuantModelDecodeContext {
+            config: compression,
+            layer_eligible: &[false],
+        };
+        assert_eq!(
+            context
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, None, false)
+                .status,
+            TurboQuantModelDecodeCandidateStatus::IneligibleLayer
+        );
+    }
+
+    #[test]
+    fn turboquant_model_decode_context_marks_runtime_storage_ready() {
+        let cfg = turboquant_dense_cfg();
+        let cache = turboquant_cache_with_runtime_storage();
+        let context = TurboQuantModelDecodeContext {
+            config: turboquant_decode_config(),
+            layer_eligible: &[true],
+        };
+
+        let candidate = context.decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, None, false);
+
+        assert_eq!(
+            candidate.status,
+            TurboQuantModelDecodeCandidateStatus::Ready
+        );
+        assert_eq!(candidate.cold_tokens, 4);
+        assert_eq!(candidate.hot_tokens, 3);
+    }
+
+    #[test]
+    fn turboquant_decode_attention_experimental_prefers_metal_runtime_storage() {
+        let cache = turboquant_cache_with_runtime_storage_and_current_decode_token();
+        let q_data = (0..(2 * 128))
+            .map(|idx| ((idx % 19) as f32 - 9.0) / 31.0)
+            .collect::<Vec<_>>();
+        let q_rope = MlxArray::from_raw_data(
+            q_data.as_ptr().cast(),
+            q_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 1, 128],
+            MlxDtype::Float32,
+        );
+        let expected_queries = q_data
+            .chunks_exact(128)
+            .map(|chunk| chunk.to_vec())
+            .collect::<Vec<_>>();
+        let expected = cache
+            .debug_turboquant_shadow_decode_attention_for_layer_with_total_tokens(
+                0,
+                &expected_queries,
+                turboquant_decode_config().hot_window_tokens,
+                7,
+            )
+            .expect("runtime storage should decode cold and hot partitions");
+
+        let actual = turboquant_decode_attention_experimental(
+            &cache,
+            0,
+            &q_rope,
+            1,
+            2,
+            128,
+            (128.0_f32).sqrt().recip(),
+            turboquant_decode_config().hot_window_tokens,
+        )
+        .expect("ready TurboQuant decoder should decode from runtime storage");
+        assert_eq!(actual.outcome, MlxKvCompressionDecodeOutcome::Metal);
+        eval(&[&actual.attention]);
+
+        assert_eq!(actual.attention.shape(), vec![1, 2, 1, 128]);
+        let actual_data = actual.attention.data_f32();
+        let expected_data = expected.into_iter().flatten().collect::<Vec<_>>();
+        assert_eq!(actual_data.len(), expected_data.len());
+        for (actual, expected) in actual_data.iter().zip(expected_data) {
+            assert!((actual - expected).abs() <= 0.05);
         }
     }
 
@@ -2783,7 +3393,7 @@ mod tests {
     }
 
     #[test]
-    fn glm_mla_projection_updates_latent_cache_and_positional_scores() {
+    fn glm_mla_projection_updates_latent_cache_and_rope_keys() {
         let mut manifest = glm4_moe_lite_manifest();
         manifest.hidden_size = 8;
         manifest.layer_count = 1;
@@ -2806,12 +3416,10 @@ mod tests {
             &cached.q_pe,
             &cached.kv_latent,
             &cached.k_pe,
-            &cached.positional_scores,
         ]);
         assert_eq!(cached.q_nope.shape(), vec![1, 2, 2, 2]);
         assert_eq!(cached.kv_latent.shape(), vec![1, 1, 2, 4]);
         assert_eq!(cached.k_pe.shape(), vec![1, 1, 2, 2]);
-        assert_eq!(cached.positional_scores.shape(), vec![1, 2, 2, 2]);
 
         cache.seq_len = 2;
         let hidden = zeros(&[1, 1, cfg.hidden_size as i32], MlxDtype::Float32, None);
@@ -2821,13 +3429,11 @@ mod tests {
             &cached.q_pe,
             &cached.kv_latent,
             &cached.k_pe,
-            &cached.positional_scores,
         ]);
 
         assert_eq!(cached.q_nope.shape(), vec![1, 2, 1, 2]);
         assert_eq!(cached.kv_latent.shape(), vec![1, 1, 3, 4]);
         assert_eq!(cached.k_pe.shape(), vec![1, 1, 3, 2]);
-        assert_eq!(cached.positional_scores.shape(), vec![1, 2, 1, 3]);
         assert_eq!(cache.collect_eval_refs().len(), 2);
     }
 
@@ -2968,7 +3574,7 @@ mod tests {
         let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
         let mut cache = MlxKVCache::new(cfg.layer_count);
 
-        let out = layer_forward(&cfg, &weights, &hidden, &mut cache, 0, 0, None);
+        let out = layer_forward(&cfg, &weights, &hidden, &mut cache, 0, 0, None, None);
         eval(&[&out]);
 
         assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
@@ -2999,7 +3605,7 @@ mod tests {
         let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
         let mut cache = MlxKVCache::new(cfg.layer_count);
 
-        let out = layer_forward(&cfg, &weights, &hidden, &mut cache, 0, 0, None);
+        let out = layer_forward(&cfg, &weights, &hidden, &mut cache, 0, 0, None, None);
         eval(&[&out]);
 
         assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
@@ -3031,7 +3637,7 @@ mod tests {
         let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
         let mut cache = MlxKVCache::new(cfg.layer_count);
 
-        let out = layer_forward(&cfg, &weights, &hidden, &mut cache, 0, 0, None);
+        let out = layer_forward(&cfg, &weights, &hidden, &mut cache, 0, 0, None, None);
         eval(&[&out]);
 
         assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);

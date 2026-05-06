@@ -44,6 +44,17 @@ fn skip_metal_heavy_test_unless_opted_in(test_name: &str) -> bool {
     true
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn direct_decode_token_indices_use_checked_arithmetic() {
+    assert_eq!(direct_decode_token_indices(2, 4, 3), Some((8, 12, 4)));
+    assert_eq!(advance_direct_decode_attention_index(2, 3), Some(5));
+
+    assert!(direct_decode_token_indices(usize::MAX, 2, 1).is_none());
+    assert!(direct_decode_token_indices(0, 4, 0).is_none());
+    assert!(advance_direct_decode_attention_index(usize::MAX, 1).is_none());
+}
+
 fn simulated_numeric_trace(reference: &SimulatedNumericPath) -> MetalDispatchNumericTrace {
     MetalDispatchNumericTrace {
         attention_output_bits: reference
