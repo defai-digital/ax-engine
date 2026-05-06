@@ -176,6 +176,14 @@ count and dimensions; `validate_decode_inputs` composes that with compressed
 coverage validation. The check remains CPU-only and does not alter runtime
 defaults, KV storage, SDPA, or generation.
 
+The compressed decode readiness report is accepted as the launch metadata
+contract above future fused decode kernels. `decode_readiness` validates query
+shape and compressed cold-slot coverage, then reports decode path, hot/cold
+token split, compressed bytes, required and written compressed slots, and the
+quality profile. Hot-window-only plans remain independent from compressed buffer
+layout checks. This remains CPU-only and does not alter runtime defaults, KV
+storage, SDPA, or generation.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

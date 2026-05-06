@@ -227,6 +227,18 @@ Implemented compressed decode input validation slice on 2026-05-06:
 - Keeps the validation disconnected from MLX allocation, runtime KV storage,
   SDPA, generation, and user-visible defaults.
 
+Implemented compressed decode readiness report slice on 2026-05-06:
+
+- Added `TurboQuantCompressedDecodeReadiness` as the CPU-only launch metadata
+  report above future fused compressed decode kernels.
+- Added `TurboQuantCompressedDecodePlan::decode_readiness` to validate query
+  shape, compressed cold-slot coverage, decode path, buffer bytes, slot counts,
+  and quality profile in one deterministic contract.
+- Keeps hot-window-only plans independent from compressed buffer layout checks,
+  matching the existing fallback semantics.
+- Keeps the report disconnected from MLX allocation, runtime KV storage, SDPA,
+  generation, and user-visible defaults.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
