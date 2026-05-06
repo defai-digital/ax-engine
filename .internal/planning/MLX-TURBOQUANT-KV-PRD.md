@@ -245,8 +245,9 @@ Implemented fused decode candidate gate slice on 2026-05-06:
 - Added `TurboQuantFusedDecodeCandidate` and status values for candidate,
   full-precision-only, unsupported head dimension, and unsupported preset.
 - Gates the first fused decode candidate to compressed-path `K8V4` with
-  `head_dim=128`, matching the initial promotion target while keeping lower-bit
-  presets behind future quality work.
+  `head_dim=128`, `head_dim=256`, or `head_dim=512` and valid query-head to
+  KV-head grouping, matching the initial local real-model promotion targets
+  while keeping lower-bit presets behind future quality work.
 - Keeps the gate as CPU-only metadata; it does not launch a kernel, allocate MLX
   storage, change SDPA, change generation, or expose a user-facing switch.
 
@@ -462,15 +463,15 @@ Implemented promotion readiness report slice on 2026-05-06:
 
 - Added `scripts/check_turboquant_promotion_readiness.py` to scan local model
   manifests and saved quality-gate artifacts before any public support claim.
-- The report currently blocks promotion because the local model set uses
-  `attention_head_dim=256` and/or grouped-query, linear-attention, or MLA
-  layouts, while the first fused K8/V4 promotion gate accepts only
-  `head_dim=128`, non-GQA full-attention decode with `fused_compressed_decode`
-  successes and zero fallbacks.
+- The report still blocks promotion when no saved long-context quality artifact
+  proves the real-model fused path. The current fused K8/V4 promotion gate now
+  accepts `head_dim=128`, `head_dim=256`, or `head_dim=512` with valid GQA/MQA
+  mapping for full-attention layers, `fused_compressed_decode` successes, and
+  zero fallbacks.
 - This makes the correct current decision explicit: public docs remain
-  experimental until either a qualifying `head_dim=128` model artifact passes,
-  or the fused kernel, runtime gate, and quality artifact validator are extended
-  and revalidated for 256-dim/GQA model families.
+  experimental until a qualifying real-model artifact passes. Linear attention,
+  MLA, unsupported head dimensions, invalid GQA mappings, and fused launch
+  fallbacks stay outside the production support claim.
 
 ## 2. Reference Lessons
 
@@ -731,8 +732,8 @@ Status: implemented as a CPU/reference prototype store. It is not a runtime
 - Combine packed cold history with hot full-precision K/V.
 - Implement online softmax over cold and hot regions without full-cache
   dequantization.
-- Support only validated head dimensions initially, expected first target:
-  `head_dim=128`.
+- Support only validated head dimensions initially: `head_dim=128`,
+  `head_dim=256`, and `head_dim=512`.
 
 Acceptance:
 

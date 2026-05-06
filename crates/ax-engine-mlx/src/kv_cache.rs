@@ -5,7 +5,7 @@ use crate::turboquant::{
     FullPrecisionKvTokenVectors, TurboQuantAttentionPartitionStats, TurboQuantBlockLayout,
     TurboQuantBlockLayoutConfig, TurboQuantCodecError, TurboQuantCompressedBlockBuffer,
     TurboQuantCompressedDecodePlan, merge_attention_partition_stats, packed_kv_bytes_per_token,
-    reference_decode_attention_partition_stats,
+    reference_decode_attention_partition_stats, turboquant_query_head_to_kv_head,
 };
 use crate::turboquant_metal::turboquant_fused_cold_decode_metal_two_stage_partition_stats;
 
@@ -260,6 +260,14 @@ pub struct MlxKvCompressionUsage {
     pub fused_decode_successes: u64,
     pub fused_decode_metal_successes: u64,
     pub fused_decode_fallbacks: u64,
+    pub fused_decode_ready_candidates: u64,
+    pub fused_decode_blocked_prefill_only: u64,
+    pub fused_decode_blocked_attention_kind: u64,
+    pub fused_decode_blocked_ineligible_layer: u64,
+    pub fused_decode_blocked_unsupported_preset: u64,
+    pub fused_decode_blocked_unsupported_head_dim: u64,
+    pub fused_decode_blocked_gqa: u64,
+    pub fused_decode_blocked_missing_storage: u64,
     /// 0 disabled, 1 compression storage active, 2 short context, 3 no eligible layer.
     pub status_code: u32,
     pub preset_code: u32,
@@ -284,6 +292,14 @@ pub struct MlxKvCompressionDecodeUsage {
     pub fused_decode_successes: u64,
     pub fused_decode_metal_successes: u64,
     pub fused_decode_fallbacks: u64,
+    pub fused_decode_ready_candidates: u64,
+    pub fused_decode_blocked_prefill_only: u64,
+    pub fused_decode_blocked_attention_kind: u64,
+    pub fused_decode_blocked_ineligible_layer: u64,
+    pub fused_decode_blocked_unsupported_preset: u64,
+    pub fused_decode_blocked_unsupported_head_dim: u64,
+    pub fused_decode_blocked_gqa: u64,
+    pub fused_decode_blocked_missing_storage: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -293,11 +309,32 @@ pub enum MlxKvCompressionDecodeOutcome {
     Metal,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MlxKvCompressionDecodeCandidate {
+    Disabled,
+    PrefillOnly,
+    AttentionKind,
+    IneligibleLayer,
+    UnsupportedPreset,
+    UnsupportedHeadDim,
+    GroupedQueryAttention,
+    MissingRuntimeStorage,
+    Ready,
+}
+
 #[derive(Clone)]
 struct LayerKV {
     /// Full backing buffer: `[1, n_kv_heads, capacity, head_dim]`.
     k: MlxArray,
     v: MlxArray,
+    /// Cached view `[1, n_kv_heads, 0..seq_len, head_dim]` returned by the last
+    /// `append` call.  KV-shared layers (Gemma4 layers 24-41) read this directly
+    /// via `peek_source_kv` instead of creating a second identical `slice` node.
+    /// Having two separate `slice` nodes on the same backing buffer caused MLX to
+    /// dispatch the slice kernel twice, adding ~12 µs × 40 dispatches ≈ 0.5 ms per
+    /// decode step for E2B.
+    last_k_view: Option<MlxArray>,
+    last_v_view: Option<MlxArray>,
     n_kv_heads: i32,
     head_dim: i32,
     capacity: usize,
@@ -431,6 +468,69 @@ impl MlxKVCache {
         }
     }
 
+    pub fn record_turboquant_decode_candidate(
+        &mut self,
+        candidate: MlxKvCompressionDecodeCandidate,
+    ) {
+        match candidate {
+            MlxKvCompressionDecodeCandidate::Disabled => {}
+            MlxKvCompressionDecodeCandidate::Ready => {
+                self.turboquant_decode_usage.fused_decode_ready_candidates = self
+                    .turboquant_decode_usage
+                    .fused_decode_ready_candidates
+                    .saturating_add(1);
+            }
+            MlxKvCompressionDecodeCandidate::PrefillOnly => {
+                self.turboquant_decode_usage
+                    .fused_decode_blocked_prefill_only = self
+                    .turboquant_decode_usage
+                    .fused_decode_blocked_prefill_only
+                    .saturating_add(1);
+            }
+            MlxKvCompressionDecodeCandidate::AttentionKind => {
+                self.turboquant_decode_usage
+                    .fused_decode_blocked_attention_kind = self
+                    .turboquant_decode_usage
+                    .fused_decode_blocked_attention_kind
+                    .saturating_add(1);
+            }
+            MlxKvCompressionDecodeCandidate::IneligibleLayer => {
+                self.turboquant_decode_usage
+                    .fused_decode_blocked_ineligible_layer = self
+                    .turboquant_decode_usage
+                    .fused_decode_blocked_ineligible_layer
+                    .saturating_add(1);
+            }
+            MlxKvCompressionDecodeCandidate::UnsupportedPreset => {
+                self.turboquant_decode_usage
+                    .fused_decode_blocked_unsupported_preset = self
+                    .turboquant_decode_usage
+                    .fused_decode_blocked_unsupported_preset
+                    .saturating_add(1);
+            }
+            MlxKvCompressionDecodeCandidate::UnsupportedHeadDim => {
+                self.turboquant_decode_usage
+                    .fused_decode_blocked_unsupported_head_dim = self
+                    .turboquant_decode_usage
+                    .fused_decode_blocked_unsupported_head_dim
+                    .saturating_add(1);
+            }
+            MlxKvCompressionDecodeCandidate::GroupedQueryAttention => {
+                self.turboquant_decode_usage.fused_decode_blocked_gqa = self
+                    .turboquant_decode_usage
+                    .fused_decode_blocked_gqa
+                    .saturating_add(1);
+            }
+            MlxKvCompressionDecodeCandidate::MissingRuntimeStorage => {
+                self.turboquant_decode_usage
+                    .fused_decode_blocked_missing_storage = self
+                    .turboquant_decode_usage
+                    .fused_decode_blocked_missing_storage
+                    .saturating_add(1);
+            }
+        }
+    }
+
     pub fn take_turboquant_decode_usage(&mut self) -> MlxKvCompressionDecodeUsage {
         std::mem::take(&mut self.turboquant_decode_usage)
     }
@@ -445,6 +545,25 @@ impl MlxKVCache {
         layer: usize,
         new_k: MlxArray,
         new_v: MlxArray,
+    ) -> (MlxArray, MlxArray) {
+        self.append_with_retained_window(layer, new_k, new_v, None)
+    }
+
+    /// Append new K/V tokens and return a logical view retained to `window` tokens.
+    ///
+    /// This is used for Gemma-family sliding-window decode.  Upstream `mlx_lm`
+    /// and `mlx-swift-lm` use rotating caches for sliding layers, so SDPA only
+    /// sees the retained window instead of the full context.  AX keeps the full
+    /// backing buffer for accounting and rollback, but returns a shorter view
+    /// for decode-time attention.
+    ///
+    /// `window = None` preserves the full-view behavior of `append`.
+    pub fn append_with_retained_window(
+        &mut self,
+        layer: usize,
+        new_k: MlxArray,
+        new_v: MlxArray,
+        window: Option<usize>,
     ) -> (MlxArray, MlxArray) {
         let append = validate_append_inputs(layer, self.layers.len(), &new_k, &new_v);
         let new_tokens = append.new_tokens;
@@ -470,6 +589,8 @@ impl MlxKVCache {
                 *entry = Some(LayerKV {
                     k: k_out,
                     v: v_out,
+                    last_k_view: None,
+                    last_v_view: None,
                     n_kv_heads,
                     head_dim,
                     capacity,
@@ -501,6 +622,9 @@ impl MlxKVCache {
                     lkv.k = slice_update(&k_new, &lkv.k, &zero_start, &old_stop, &ones, None);
                     lkv.v = slice_update(&v_new, &lkv.v, &zero_start, &old_stop, &ones, None);
                     lkv.capacity = new_capacity;
+                    // Invalidate cached views — they point to the old (smaller) buffer.
+                    lkv.last_k_view = None;
+                    lkv.last_v_view = None;
                     self.growth_count = self.growth_count.saturating_add(1);
                 }
                 let start = [0i32, 0, write_start as i32, 0];
@@ -511,22 +635,31 @@ impl MlxKVCache {
             }
         }
 
-        let lkv = self.layers[layer].as_ref().unwrap();
+        let lkv = self.layers[layer].as_mut().unwrap();
+        let view_start = window
+            .filter(|window| *window > 0)
+            .map(|window| write_end.saturating_sub(window))
+            .unwrap_or(0);
+        let start = view_start as i32;
         let end = write_end as i32;
         let k_view = slice(
             &lkv.k,
-            &[0, 0, 0, 0],
+            &[0, 0, start, 0],
             &[1, lkv.n_kv_heads, end, lkv.head_dim],
             &[1, 1, 1, 1],
             None,
         );
         let v_view = slice(
             &lkv.v,
-            &[0, 0, 0, 0],
+            &[0, 0, start, 0],
             &[1, lkv.n_kv_heads, end, lkv.head_dim],
             &[1, 1, 1, 1],
             None,
         );
+        // Cache the views so KV-shared layers (Gemma4) can reuse them without
+        // creating a second identical slice node on the same backing buffer.
+        lkv.last_k_view = Some(k_view.clone());
+        lkv.last_v_view = Some(v_view.clone());
         (k_view, v_view)
     }
 
@@ -910,7 +1043,7 @@ impl MlxKVCache {
                 written_slots: 0,
             })?;
         let n_kv_heads = usize::try_from(lkv.n_kv_heads).unwrap_or(usize::MAX);
-        if queries.len() != n_kv_heads {
+        if queries.is_empty() || !queries.len().is_multiple_of(n_kv_heads) {
             return Err(TurboQuantCodecError::MismatchedKvHeadCount {
                 expected: n_kv_heads,
                 actual: queries.len(),
@@ -958,7 +1091,7 @@ impl MlxKVCache {
                 written_slots: 0,
             })?;
         let n_kv_heads = usize::try_from(lkv.n_kv_heads).unwrap_or(usize::MAX);
-        if queries.len() != n_kv_heads {
+        if queries.is_empty() || !queries.len().is_multiple_of(n_kv_heads) {
             return Err(TurboQuantCodecError::MismatchedKvHeadCount {
                 expected: n_kv_heads,
                 actual: queries.len(),
@@ -1005,28 +1138,33 @@ impl MlxKVCache {
             },
         )?;
         let n_kv_heads = usize::try_from(lkv.n_kv_heads).unwrap_or(usize::MAX);
-        if cold_stats.len() != n_kv_heads {
+        if cold_stats.len() != queries.len()
+            || queries.is_empty()
+            || !queries.len().is_multiple_of(n_kv_heads)
+        {
             return Err(TurboQuantCodecError::MismatchedKvHeadCount {
-                expected: n_kv_heads,
+                expected: queries.len(),
                 actual: cold_stats.len(),
             });
         }
         eval(&[&lkv.k, &lkv.v]);
 
-        let mut outputs = Vec::with_capacity(n_kv_heads);
-        for (head_index, query) in queries.iter().enumerate() {
-            let cold_tokens = cold_stats[head_index].token_count;
+        let mut outputs = Vec::with_capacity(queries.len());
+        for (query_head_index, query) in queries.iter().enumerate() {
+            let kv_head_index =
+                turboquant_query_head_to_kv_head(query_head_index, queries.len(), n_kv_heads)?;
+            let cold_tokens = cold_stats[query_head_index].token_count;
             let hot_tokens = (cold_tokens..total_tokens)
-                .map(|token_index| kv_heads_for_token(lkv, token_index)[head_index].clone())
+                .map(|token_index| kv_heads_for_token(lkv, token_index)[kv_head_index].clone())
                 .collect::<Vec<_>>();
             if hot_tokens.is_empty() {
-                outputs.push(merge_attention_partition_stats(&[
-                    cold_stats[head_index].clone()
-                ])?);
+                outputs.push(merge_attention_partition_stats(&[cold_stats
+                    [query_head_index]
+                    .clone()])?);
             } else {
                 let hot_stats = reference_decode_attention_partition_stats(query, &hot_tokens)?;
                 outputs.push(merge_attention_partition_stats(&[
-                    cold_stats[head_index].clone(),
+                    cold_stats[query_head_index].clone(),
                     hot_stats,
                 ])?);
             }
@@ -1316,28 +1454,40 @@ impl MlxKVCache {
     /// Used by KV-shared layers (e.g. Gemma4 layers 24-41) that attend against
     /// a prior layer's cache instead of computing their own K/V projections.
     ///
-    /// `new_tokens` must equal the number of new tokens being processed this
-    /// step (matches the `write_end = seq_len + new_tokens` slice written by the
-    /// source layer's `append` call earlier in the same forward pass).
+    /// Returns the views cached by the last `append` call, which are identical to
+    /// what a fresh `slice(lkv.k, 0..seq_len+new_tokens)` would produce.  Reusing
+    /// the same MLX graph node avoids a duplicate GPU kernel dispatch per KV-shared
+    /// layer: for E2B (20 shared layers) this eliminates 40 extra slice kernels
+    /// (~12 µs each), saving ~0.5 ms per decode step.
+    ///
+    /// `new_tokens` is retained for the panic check that validates the source layer
+    /// was updated in the current forward pass.
     pub fn peek_source_kv(&self, source_layer: usize, new_tokens: usize) -> (MlxArray, MlxArray) {
         let lkv = self.layers[source_layer]
             .as_ref()
             .expect("KV-shared source layer has no cached KV — source layer must appear earlier");
-        let end = (self.seq_len + new_tokens) as i32;
-        let k_view = slice(
-            &lkv.k,
-            &[0, 0, 0, 0],
-            &[1, lkv.n_kv_heads, end, lkv.head_dim],
-            &[1, 1, 1, 1],
-            None,
-        );
-        let v_view = slice(
-            &lkv.v,
-            &[0, 0, 0, 0],
-            &[1, lkv.n_kv_heads, end, lkv.head_dim],
-            &[1, 1, 1, 1],
-            None,
-        );
+        let (k_view, v_view) = match (&lkv.last_k_view, &lkv.last_v_view) {
+            (Some(k), Some(v)) => (k.clone(), v.clone()),
+            _ => {
+                // Fallback: create fresh views (e.g., first append in a grow-then-slice sequence).
+                let end = (self.seq_len + new_tokens) as i32;
+                let k = slice(
+                    &lkv.k,
+                    &[0, 0, 0, 0],
+                    &[1, lkv.n_kv_heads, end, lkv.head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let v = slice(
+                    &lkv.v,
+                    &[0, 0, 0, 0],
+                    &[1, lkv.n_kv_heads, end, lkv.head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                (k, v)
+            }
+        };
         (k_view, v_view)
     }
 
@@ -1868,5 +2018,55 @@ mod tests {
         let usage = cache.usage_snapshot();
         assert_eq!(usage.linear_state_layers, 1);
         assert_eq!(usage.linear_state_bytes, 936);
+    }
+
+    #[test]
+    fn peek_source_kv_reuses_cached_views_from_append() {
+        use mlx_sys::eval;
+        // Two-layer cache: layer 0 is the source, layer 1 is a KV-shared consumer.
+        let mut cache = MlxKVCache::new(2);
+
+        let k = zeros(&[1, 1, 4, 8], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 1, 4, 8], MlxDtype::Bfloat16, None);
+        let (k_from_append, _) = cache.append(0, k, v);
+        cache.seq_len = 4;
+
+        let (k_from_peek, _) = cache.peek_source_kv(0, 0);
+
+        // Materialise both arrays. If peek returned the same lazy node as append,
+        // the results must be numerically identical (same shape and dtype).
+        eval(&[&k_from_append, &k_from_peek]);
+        assert_eq!(k_from_append.shape(), k_from_peek.shape());
+        assert_eq!(k_from_append.dtype(), k_from_peek.dtype());
+
+        // After a buffer grow, last_k_view is cleared and peek falls back to a
+        // fresh slice — verify the fallback also produces the correct shape.
+        let k2 = zeros(&[1, 1, 300, 8], MlxDtype::Bfloat16, None);
+        let v2 = zeros(&[1, 1, 300, 8], MlxDtype::Bfloat16, None);
+        cache.append(0, k2, v2);
+        cache.seq_len = 304;
+
+        let (k_grow, _) = cache.peek_source_kv(0, 0);
+        eval(&[&k_grow]);
+        assert_eq!(k_grow.shape(), vec![1, 1, 304, 8]);
+    }
+
+    #[test]
+    fn append_with_retained_window_returns_windowed_cached_views() {
+        use mlx_sys::eval;
+
+        let mut cache = MlxKVCache::new(2);
+        let k = zeros(&[1, 1, 6, 8], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 1, 6, 8], MlxDtype::Bfloat16, None);
+
+        let (k_from_append, v_from_append) = cache.append_with_retained_window(0, k, v, Some(4));
+        cache.seq_len = 6;
+        let (k_from_peek, v_from_peek) = cache.peek_source_kv(0, 0);
+
+        eval(&[&k_from_append, &v_from_append, &k_from_peek, &v_from_peek]);
+        assert_eq!(k_from_append.shape(), vec![1, 1, 4, 8]);
+        assert_eq!(v_from_append.shape(), vec![1, 1, 4, 8]);
+        assert_eq!(k_from_peek.shape(), vec![1, 1, 4, 8]);
+        assert_eq!(v_from_peek.shape(), vec![1, 1, 4, 8]);
     }
 }

@@ -136,6 +136,14 @@ AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
     "ax_mlx_kv_compression_fused_decode_successes",
     "ax_mlx_kv_compression_fused_decode_fallbacks",
     "ax_mlx_kv_compression_fused_decode_fallback_reason",
+    "ax_mlx_kv_compression_fused_decode_ready_candidates",
+    "ax_mlx_kv_compression_fused_decode_blocked_prefill_only",
+    "ax_mlx_kv_compression_fused_decode_blocked_attention_kind",
+    "ax_mlx_kv_compression_fused_decode_blocked_ineligible_layer",
+    "ax_mlx_kv_compression_fused_decode_blocked_unsupported_preset",
+    "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim",
+    "ax_mlx_kv_compression_fused_decode_blocked_gqa",
+    "ax_mlx_kv_compression_fused_decode_blocked_missing_storage",
 ]
 
 
@@ -721,7 +729,13 @@ def is_ax_prefill_step(step: dict[str, Any], *, seen_prefill: bool) -> bool:
     return not seen_prefill or scheduled_tokens > 1
 
 
-def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> dict[str, Any]:
+def axengine_one_run(
+    port: int,
+    tokens: list[int],
+    generation_tokens: int,
+    *,
+    capture_output_token_ids: bool = False,
+) -> dict[str, Any]:
     payload = json.dumps(
         {"input_tokens": tokens, "max_output_tokens": generation_tokens}
     ).encode()
@@ -745,6 +759,7 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
     seen_prefill = False
     decode_us = 0
     output_tokens = 0
+    output_token_ids: list[int] = []
     current_event = ""
     final_route: dict[str, Any] | None = None
 
@@ -776,6 +791,8 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
         elif current_event == "response":
             response_tokens = obj.get("response", {}).get("output_tokens", [])
             output_tokens = len(response_tokens) or output_tokens
+            if capture_output_token_ids and isinstance(response_tokens, list):
+                output_token_ids = [int(token) for token in response_tokens]
             final_route = route_with_more_decisions(
                 obj.get("response", {}).get("route"),
                 final_route,
@@ -793,6 +810,8 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
         "decode_tok_s": measured_decode_tokens / decode_s if decode_s > 0 else 0.0,
         "output_tokens": float(output_tokens),
     }
+    if capture_output_token_ids:
+        run["output_token_ids"] = output_token_ids
     telemetry = extract_ax_ngram_telemetry(final_route)
     if telemetry:
         run["ngram_acceleration_telemetry"] = telemetry
@@ -834,6 +853,7 @@ def bench_axengine(
     model_metadata: dict[str, Any],
     direct_mode: bool = False,
     kv_compression: str = "disabled",
+    capture_output_token_ids: bool = False,
 ) -> dict[str, Any]:
     engine_key = AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
     decode_policy = ax_decode_policy(
@@ -851,7 +871,12 @@ def bench_axengine(
 
     runs = []
     for index in range(repetitions):
-        run = axengine_one_run(port, tokens, generation_tokens)
+        run = axengine_one_run(
+            port,
+            tokens,
+            generation_tokens,
+            capture_output_token_ids=capture_output_token_ids,
+        )
         runs.append(run)
         print(
             f"    rep {index + 1}: prefill={run['prefill_tok_s']:.1f} tok/s "
@@ -1208,6 +1233,15 @@ def main() -> None:
         help="Directory for canonical mlx_lm random-token prompt JSON files",
     )
     parser.add_argument(
+        "--capture-output-token-ids",
+        action="store_true",
+        help=(
+            "Record AX response output token IDs in each trial. This is opt-in "
+            "because it increases artifact size and is intended for TurboQuant "
+            "quality-gate evidence."
+        ),
+    )
+    parser.add_argument(
         "--mlx-swift-lm-command",
         help=(
             "Optional mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation "
@@ -1347,6 +1381,7 @@ def main() -> None:
                             model_metadata=model_metadata,
                             direct_mode=direct_mode,
                             kv_compression=args.experimental_mlx_kv_compression,
+                            capture_output_token_ids=args.capture_output_token_ids,
                         )
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size

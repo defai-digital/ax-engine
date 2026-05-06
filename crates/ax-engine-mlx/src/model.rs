@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, argsort_axis,
     astype, broadcast_to, concatenate, dequantize, divide, eval, expand_dims, expand_dims_axes,
-    gather_mm, gather_qmm, gelu, gelu_approx, matmul, multiply, put_along_axis, quantized_matmul,
+    gather_mm, gather_qmm, gelu_approx, matmul, multiply, put_along_axis, quantized_matmul,
     reshape, rms_norm, rope, scaled_dot_product_attention_with_mask, slice, slice_last_dim,
     softmax, sum_axis, take, take_along_axis, tanh, transpose, where_cond, zeros,
 };
@@ -9,11 +9,12 @@ use mlx_sys::{
 use ax_engine_core::{MlxKvCompressionConfig, MlxTurboQuantPreset, NativeModelManifest};
 
 use crate::attention_mask::create_causal_mask;
-use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeOutcome};
+use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeCandidate, MlxKvCompressionDecodeOutcome};
 use crate::linear_attention::{
     compute_gated_delta_g, gated_delta_kernel, linear_attention_conv1d,
     normalize_linear_attention_qk, rms_norm_gated, split_linear_attention_qkv,
 };
+use crate::turboquant::turboquant_fused_decode_head_dim_supported;
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 
 const SWITCH_GLU_SORT_THRESHOLD: usize = 64;
@@ -55,6 +56,39 @@ impl TurboQuantModelDecodeCandidate {
             hot_tokens: 0,
         }
     }
+
+    pub const fn telemetry_status(self) -> MlxKvCompressionDecodeCandidate {
+        match self.status {
+            TurboQuantModelDecodeCandidateStatus::Disabled => {
+                MlxKvCompressionDecodeCandidate::Disabled
+            }
+            TurboQuantModelDecodeCandidateStatus::PrefillOnly => {
+                MlxKvCompressionDecodeCandidate::PrefillOnly
+            }
+            TurboQuantModelDecodeCandidateStatus::LinearAttentionLayer
+            | TurboQuantModelDecodeCandidateStatus::GlmMlaLayer
+            | TurboQuantModelDecodeCandidateStatus::SlidingWindowLayer
+            | TurboQuantModelDecodeCandidateStatus::KvSharedLayer => {
+                MlxKvCompressionDecodeCandidate::AttentionKind
+            }
+            TurboQuantModelDecodeCandidateStatus::IneligibleLayer => {
+                MlxKvCompressionDecodeCandidate::IneligibleLayer
+            }
+            TurboQuantModelDecodeCandidateStatus::UnsupportedPreset => {
+                MlxKvCompressionDecodeCandidate::UnsupportedPreset
+            }
+            TurboQuantModelDecodeCandidateStatus::UnsupportedHeadDim => {
+                MlxKvCompressionDecodeCandidate::UnsupportedHeadDim
+            }
+            TurboQuantModelDecodeCandidateStatus::GroupedQueryAttention => {
+                MlxKvCompressionDecodeCandidate::GroupedQueryAttention
+            }
+            TurboQuantModelDecodeCandidateStatus::MissingRuntimeStorage => {
+                MlxKvCompressionDecodeCandidate::MissingRuntimeStorage
+            }
+            TurboQuantModelDecodeCandidateStatus::Ready => MlxKvCompressionDecodeCandidate::Ready,
+        }
+    }
 }
 
 impl<'a> TurboQuantModelDecodeContext<'a> {
@@ -87,9 +121,9 @@ impl<'a> TurboQuantModelDecodeContext<'a> {
             TurboQuantModelDecodeCandidateStatus::IneligibleLayer
         } else if self.config.preset != MlxTurboQuantPreset::K8V4 {
             TurboQuantModelDecodeCandidateStatus::UnsupportedPreset
-        } else if head_dim != 128 {
+        } else if !turboquant_fused_decode_head_dim_supported(head_dim) {
             TurboQuantModelDecodeCandidateStatus::UnsupportedHeadDim
-        } else if cfg.n_heads != kv_heads {
+        } else if kv_heads == 0 || !cfg.n_heads.is_multiple_of(kv_heads) {
             TurboQuantModelDecodeCandidateStatus::GroupedQueryAttention
         } else if cache
             .turboquant_shadow_storage_cold_tokens(layer_idx)
@@ -641,7 +675,11 @@ pub fn layer_forward_with_turboquant_context(
                 None,
             );
 
-            let (ck, cv) = cache.append(layer_idx, k_rope, v);
+            let (ck, cv) = if seq == 1 {
+                cache.append_with_retained_window(layer_idx, k_rope, v, sliding_window)
+            } else {
+                cache.append(layer_idx, k_rope, v)
+            };
             (q_rope, ck, cv, attn_gate_raw)
         };
         let turboquant_candidate = turboquant_context
@@ -659,9 +697,11 @@ pub fn layer_forward_with_turboquant_context(
                 )
             })
             .unwrap_or_else(TurboQuantModelDecodeCandidate::disabled);
+        cache.record_turboquant_decode_candidate(turboquant_candidate.telemetry_status());
 
-        // 8. SDPA (GQA: MLX broadcasts KV heads internally). Sliding attention is
-        // enforced by an array mask, not by truncating K/V, matching mlx-lm.
+        // 8. SDPA (GQA: MLX broadcasts KV heads internally). For decode, Gemma
+        // sliding-window layers present only the retained window to SDPA, matching
+        // mlx_lm/mlx-swift-lm rotating-cache behavior.
         let key_len = cached_k.shape()[2] as usize;
         let local_mask: Option<MlxArray>;
         let mask_opt: &Option<MlxArray> = if let Some(m) = shared_mask {
@@ -1245,6 +1285,15 @@ fn attention_mask_array(
     None
 }
 
+fn attention_mask_key_len(seq_len: usize, key_len: usize, sliding_window: Option<usize>) -> usize {
+    if seq_len == 1 {
+        if let Some(window) = sliding_window.filter(|window| *window > 0) {
+            return key_len.min(window);
+        }
+    }
+    key_len
+}
+
 fn full_precision_attention(
     q_rope: &MlxArray,
     cached_k: &MlxArray,
@@ -1281,7 +1330,7 @@ fn turboquant_decode_attention_experimental(
         return None;
     }
     let expected_scale = (head_dim as f32).sqrt().recip();
-    if (query_scale - expected_scale).abs() > 1.0e-6 {
+    if !query_scale.is_finite() || query_scale <= 0.0 {
         return None;
     }
 
@@ -1291,12 +1340,20 @@ fn turboquant_decode_attention_experimental(
     if q_data.len() != n_heads.saturating_mul(head_dim) {
         return None;
     }
-    let queries = q_data
+    let mut queries = q_data
         .chunks_exact(head_dim)
         .map(|chunk| chunk.to_vec())
         .collect::<Vec<_>>();
     if queries.len() != n_heads {
         return None;
+    }
+    let query_multiplier = query_scale / expected_scale;
+    if (query_multiplier - 1.0).abs() > 1.0e-6 {
+        for query in &mut queries {
+            for value in query {
+                *value *= query_multiplier;
+            }
+        }
     }
 
     let total_tokens = cache.seq_len.saturating_add(seq);
@@ -1366,13 +1423,14 @@ fn build_layer_masks(
         let m = attention_mask_array(seq, key_len, None);
         (0..n_layers).map(|_| m.clone()).collect()
     } else {
-        let mut memo: std::collections::HashMap<Option<usize>, Option<MlxArray>> =
+        let mut memo: std::collections::HashMap<(Option<usize>, usize), Option<MlxArray>> =
             std::collections::HashMap::new();
         cfg.layer_configs
             .iter()
             .map(|lc| {
-                memo.entry(lc.sliding_window)
-                    .or_insert_with(|| attention_mask_array(seq, key_len, lc.sliding_window))
+                let mask_key_len = attention_mask_key_len(seq, key_len, lc.sliding_window);
+                memo.entry((lc.sliding_window, mask_key_len))
+                    .or_insert_with(|| attention_mask_array(seq, mask_key_len, lc.sliding_window))
                     .clone()
             })
             .collect()
@@ -2015,9 +2073,10 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
         (gate, up)
     };
 
-    // Gemma4 uses GEGLU (GELU gate); Qwen3 uses SwiGLU (SiLU gate).
+    // Gemma4 uses GEGLU with fast-approx GELU gate (matches mlx_lm's `nn.gelu_approx`).
+    // Qwen3 uses SwiGLU (SiLU gate).
     let gate_act = if cfg.uses_geglu {
-        gelu(&gate_out, None)
+        gelu_approx(&gate_out, None)
     } else {
         mlx_sys::ops::silu(&gate_out, None)
     };
@@ -2359,9 +2418,10 @@ fn moe_experts_forward(
         )
     };
 
-    // Gemma4 experts use GEGLU (GELU gate); Qwen3 uses SwiGLU (SiLU gate).
+    // Gemma4 experts use GEGLU with fast-approx GELU (matches mlx_lm's `nn.gelu_approx`).
+    // Qwen3 uses SwiGLU (SiLU gate).
     let gate_act = if cfg.uses_geglu {
-        gelu(&gate_out, None)
+        gelu_approx(&gate_out, None)
     } else {
         mlx_sys::ops::silu(&gate_out, None)
     };
@@ -2644,6 +2704,12 @@ mod tests {
         );
         assert_eq!(
             context
+                .decode_candidate(&cfg, &cache, 0, 1, 256, 1, None, None, false)
+                .status,
+            TurboQuantModelDecodeCandidateStatus::MissingRuntimeStorage
+        );
+        assert_eq!(
+            context
                 .decode_candidate(&cfg, &cache, 0, 1, 128, 2, Some(128), None, false)
                 .status,
             TurboQuantModelDecodeCandidateStatus::SlidingWindowLayer
@@ -2662,7 +2728,7 @@ mod tests {
         );
         assert_eq!(
             context
-                .decode_candidate(&cfg, &cache, 0, 1, 128, 1, None, None, false)
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 3, None, None, false)
                 .status,
             TurboQuantModelDecodeCandidateStatus::GroupedQueryAttention
         );
@@ -2738,6 +2804,55 @@ mod tests {
         eval(&[&actual.attention]);
 
         assert_eq!(actual.attention.shape(), vec![1, 2, 1, 128]);
+        let actual_data = actual.attention.data_f32();
+        let expected_data = expected.into_iter().flatten().collect::<Vec<_>>();
+        assert_eq!(actual_data.len(), expected_data.len());
+        for (actual, expected) in actual_data.iter().zip(expected_data) {
+            assert!((actual - expected).abs() <= 0.05);
+        }
+    }
+
+    #[test]
+    fn turboquant_decode_attention_experimental_applies_model_query_scale() {
+        let cache = turboquant_cache_with_runtime_storage_and_current_decode_token();
+        let q_data = (0..(2 * 128))
+            .map(|idx| ((idx % 23) as f32 - 11.0) / 37.0)
+            .collect::<Vec<_>>();
+        let q_rope = MlxArray::from_raw_data(
+            q_data.as_ptr().cast(),
+            q_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 1, 128],
+            MlxDtype::Float32,
+        );
+        let base_scale = (128.0_f32).sqrt().recip();
+        let query_scale = base_scale * 2.0;
+        let expected_queries = q_data
+            .chunks_exact(128)
+            .map(|chunk| chunk.iter().map(|value| value * 2.0).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let expected = cache
+            .debug_turboquant_shadow_decode_attention_for_layer_with_total_tokens(
+                0,
+                &expected_queries,
+                turboquant_decode_config().hot_window_tokens,
+                7,
+            )
+            .expect("runtime storage should decode scaled queries");
+
+        let actual = turboquant_decode_attention_experimental(
+            &cache,
+            0,
+            &q_rope,
+            1,
+            2,
+            128,
+            query_scale,
+            turboquant_decode_config().hot_window_tokens,
+        )
+        .expect("ready TurboQuant decoder should accept model-specific query scale");
+        assert_eq!(actual.outcome, MlxKvCompressionDecodeOutcome::Metal);
+        eval(&[&actual.attention]);
+
         let actual_data = actual.attention.data_f32();
         let expected_data = expected.into_iter().flatten().collect::<Vec<_>>();
         assert_eq!(actual_data.len(), expected_data.len());
@@ -4205,5 +4320,12 @@ mod tests {
         let mask = attention_mask_array(1, 6, Some(4)).expect("decode needs sliding mask");
 
         assert_eq!(mask.shape(), vec![1, 6]);
+    }
+
+    #[test]
+    fn attention_mask_key_len_matches_decode_windowed_kv_views() {
+        assert_eq!(attention_mask_key_len(1, 6, Some(4)), 4);
+        assert_eq!(attention_mask_key_len(1, 6, None), 6);
+        assert_eq!(attention_mask_key_len(2, 6, Some(4)), 6);
     }
 }

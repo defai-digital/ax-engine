@@ -9,7 +9,9 @@ pub type FullPrecisionKvTokenVectors = (Vec<f32>, Vec<f32>);
 
 pub const TURBOQUANT_SLOT_ALIGNMENT_BYTES: usize = 16;
 pub const TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM: usize = 128;
-pub const TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION: u32 = 2;
+pub const TURBOQUANT_EXTENDED_FUSED_DECODE_HEAD_DIM: usize = 256;
+pub const TURBOQUANT_GEMMA4_FULL_ATTENTION_FUSED_DECODE_HEAD_DIM: usize = 512;
+pub const TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TurboQuantProductionRequirements {
@@ -438,6 +440,35 @@ pub enum TurboQuantFusedDecodeCandidateStatus {
     UnsupportedPreset,
 }
 
+pub fn turboquant_fused_decode_head_dim_supported(head_dim: usize) -> bool {
+    matches!(
+        head_dim,
+        TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM
+            | TURBOQUANT_EXTENDED_FUSED_DECODE_HEAD_DIM
+            | TURBOQUANT_GEMMA4_FULL_ATTENTION_FUSED_DECODE_HEAD_DIM
+    )
+}
+
+pub fn turboquant_query_head_to_kv_head(
+    query_head_index: usize,
+    query_heads: usize,
+    kv_heads: usize,
+) -> Result<usize, TurboQuantCodecError> {
+    if query_heads == 0 || kv_heads == 0 || !query_heads.is_multiple_of(kv_heads) {
+        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: kv_heads,
+            actual: query_heads,
+        });
+    }
+    if query_head_index >= query_heads {
+        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: query_heads,
+            actual: query_head_index.saturating_add(1),
+        });
+    }
+    Ok(query_head_index / (query_heads / kv_heads))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TurboQuantFusedDecodeCandidate {
     pub status: TurboQuantFusedDecodeCandidateStatus,
@@ -458,7 +489,7 @@ impl TurboQuantCompressedDecodeReadiness {
     pub fn fused_decode_candidate(self) -> TurboQuantFusedDecodeCandidate {
         let status = if self.decode_path == TurboQuantCompressedDecodePath::FullPrecisionOnly {
             TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly
-        } else if self.query_head_dim != TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM {
+        } else if !turboquant_fused_decode_head_dim_supported(self.query_head_dim) {
             TurboQuantFusedDecodeCandidateStatus::UnsupportedHeadDim
         } else if self.preset != MlxTurboQuantPreset::K8V4 {
             TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset
@@ -485,6 +516,7 @@ pub struct TurboQuantFusedDecodeLaunchDescriptor {
     pub total_tokens: usize,
     pub cold_tokens: usize,
     pub hot_tokens: usize,
+    pub n_query_heads: usize,
     pub n_kv_heads: usize,
     pub head_dim: usize,
     pub block_tokens: usize,
@@ -536,6 +568,7 @@ pub struct TurboQuantFusedDecodeBenchmarkEstimate {
     pub total_tokens: usize,
     pub cold_tokens: usize,
     pub hot_tokens: usize,
+    pub n_query_heads: usize,
     pub n_kv_heads: usize,
     pub head_dim: usize,
     pub compressed_blocks: usize,
@@ -669,9 +702,9 @@ impl TurboQuantFusedDecodeLaunchDescriptor {
             compressed_raw_slot_bytes.saturating_add(hot_full_precision_kv_bytes);
 
         TurboQuantFusedDecodeLaunchWorkload {
-            cold_score_elements: self.cold_tokens * self.n_kv_heads,
-            hot_score_elements: self.hot_tokens * self.n_kv_heads,
-            output_elements: self.n_kv_heads * self.head_dim,
+            cold_score_elements: self.cold_tokens * self.n_query_heads,
+            hot_score_elements: self.hot_tokens * self.n_query_heads,
+            output_elements: self.n_query_heads * self.head_dim,
             full_precision_cold_kv_bytes,
             full_precision_total_kv_bytes,
             compressed_key_payload_bytes,
@@ -702,6 +735,7 @@ impl TurboQuantFusedDecodeLaunchDescriptor {
             total_tokens: self.total_tokens,
             cold_tokens: self.cold_tokens,
             hot_tokens: self.hot_tokens,
+            n_query_heads: self.n_query_heads,
             n_kv_heads: self.n_kv_heads,
             head_dim: self.head_dim,
             compressed_blocks: self.compressed_blocks,
@@ -823,7 +857,7 @@ impl TurboQuantCompressedDecodePlan {
     }
 
     pub fn validate_queries(self, queries: &[Vec<f32>]) -> Result<(), TurboQuantCodecError> {
-        if queries.len() != self.layout.config.n_kv_heads {
+        if queries.is_empty() || !queries.len().is_multiple_of(self.layout.config.n_kv_heads) {
             return Err(TurboQuantCodecError::MismatchedKvHeadCount {
                 expected: self.layout.config.n_kv_heads,
                 actual: queries.len(),
@@ -905,7 +939,8 @@ impl TurboQuantCompressedDecodePlan {
             total_tokens: readiness.total_tokens,
             cold_tokens: readiness.cold_tokens,
             hot_tokens: readiness.hot_tokens,
-            n_kv_heads: readiness.query_heads,
+            n_query_heads: readiness.query_heads,
+            n_kv_heads: self.layout.config.n_kv_heads,
             head_dim: readiness.query_head_dim,
             block_tokens: self.layout.config.block_tokens,
             compressed_blocks: readiness.compressed_blocks,
@@ -1277,7 +1312,7 @@ impl TurboQuantCompressedBlockBuffer {
         queries: &[Vec<f32>],
         token_count: usize,
     ) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
-        if queries.len() != self.layout.config.n_kv_heads {
+        if queries.is_empty() || !queries.len().is_multiple_of(self.layout.config.n_kv_heads) {
             return Err(TurboQuantCodecError::MismatchedKvHeadCount {
                 expected: self.layout.config.n_kv_heads,
                 actual: queries.len(),
@@ -1287,8 +1322,13 @@ impl TurboQuantCompressedBlockBuffer {
         queries
             .iter()
             .enumerate()
-            .map(|(head_index, query)| {
-                self.debug_decode_attention_for_head(query, head_index, token_count)
+            .map(|(query_head_index, query)| {
+                let kv_head_index = turboquant_query_head_to_kv_head(
+                    query_head_index,
+                    queries.len(),
+                    self.layout.config.n_kv_heads,
+                )?;
+                self.debug_decode_attention_for_head(query, kv_head_index, token_count)
             })
             .collect()
     }
@@ -1298,7 +1338,7 @@ impl TurboQuantCompressedBlockBuffer {
         queries: &[Vec<f32>],
         token_count: usize,
     ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
-        if queries.len() != self.layout.config.n_kv_heads {
+        if queries.is_empty() || !queries.len().is_multiple_of(self.layout.config.n_kv_heads) {
             return Err(TurboQuantCodecError::MismatchedKvHeadCount {
                 expected: self.layout.config.n_kv_heads,
                 actual: queries.len(),
@@ -1308,8 +1348,13 @@ impl TurboQuantCompressedBlockBuffer {
         queries
             .iter()
             .enumerate()
-            .map(|(head_index, query)| {
-                self.debug_decode_partition_stats_for_head(query, head_index, token_count)
+            .map(|(query_head_index, query)| {
+                let kv_head_index = turboquant_query_head_to_kv_head(
+                    query_head_index,
+                    queries.len(),
+                    self.layout.config.n_kv_heads,
+                )?;
+                self.debug_decode_partition_stats_for_head(query, kv_head_index, token_count)
             })
             .collect()
     }
@@ -2952,6 +2997,8 @@ mod tests {
 
         plan.validate_queries(&[vec![0.1; 8], vec![0.2; 8]])
             .expect("matching per-head queries should pass");
+        plan.validate_queries(&[vec![0.1; 8], vec![0.2; 8], vec![0.3; 8], vec![0.4; 8]])
+            .expect("GQA query heads should pass when divisible by KV heads");
 
         let error = plan
             .validate_queries(&[vec![0.1; 8]])
@@ -3126,6 +3173,7 @@ mod tests {
                 total_tokens: 2,
                 cold_tokens: 1,
                 hot_tokens: 1,
+                n_query_heads: 1,
                 n_kv_heads: 1,
                 head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
                 block_tokens: 2,
@@ -3243,6 +3291,7 @@ mod tests {
                 total_tokens: 2,
                 cold_tokens: 1,
                 hot_tokens: 1,
+                n_query_heads: 1,
                 n_kv_heads: 1,
                 head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
                 compressed_blocks: 1,
@@ -3379,6 +3428,7 @@ mod tests {
             total_tokens: 2,
             cold_tokens: 1,
             hot_tokens: 1,
+            n_query_heads: 1,
             n_kv_heads: 1,
             head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
             block_tokens: 2,
@@ -3441,6 +3491,7 @@ mod tests {
             total_tokens: 2,
             cold_tokens: 1,
             hot_tokens: 1,
+            n_query_heads: 1,
             n_kv_heads: 1,
             head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
             block_tokens: 2,
@@ -4160,6 +4211,65 @@ mod tests {
         assert_eq!(actual, expected);
         assert_eq!(actual.len(), 2);
         assert!(actual.iter().all(|head| head.len() == 8));
+    }
+
+    #[test]
+    fn compressed_block_buffer_decodes_attention_for_grouped_query_heads() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        for token_index in 0..2 {
+            let heads = vec![
+                (
+                    (0..8)
+                        .map(|idx| token_index as f32 * 0.03 + idx as f32 * 0.02 - 0.2)
+                        .collect::<Vec<_>>(),
+                    (0..8)
+                        .map(|idx| token_index as f32 * 0.04 - idx as f32 * 0.01)
+                        .collect::<Vec<_>>(),
+                ),
+                (
+                    (0..8)
+                        .map(|idx| token_index as f32 * -0.02 + idx as f32 * 0.03 + 0.1)
+                        .collect::<Vec<_>>(),
+                    (0..8)
+                        .map(|idx| token_index as f32 * 0.01 + idx as f32 * 0.02 - 0.1)
+                        .collect::<Vec<_>>(),
+                ),
+            ];
+            buffer
+                .write_token(token_index, &heads)
+                .expect("token write should work");
+        }
+        let queries = vec![
+            vec![0.1, -0.2, 0.3, 0.4, -0.1, 0.2, 0.5, -0.3],
+            vec![0.3, 0.1, -0.2, 0.6, -0.4, 0.0, 0.2, 0.5],
+            vec![0.0, 0.2, 0.4, -0.1, 0.1, -0.3, 0.6, 0.2],
+            vec![-0.2, 0.3, 0.1, 0.5, 0.0, 0.4, -0.1, 0.2],
+        ];
+
+        let actual = buffer
+            .debug_decode_attention_for_all_heads(&queries, 2)
+            .expect("GQA decode should work");
+        let expected = queries
+            .iter()
+            .enumerate()
+            .map(|(query_head_index, query)| {
+                let kv_head_index = query_head_index / 2;
+                buffer
+                    .debug_decode_attention_for_head(query, kv_head_index, 2)
+                    .expect("single-head decode should work")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 4);
     }
 
     #[test]

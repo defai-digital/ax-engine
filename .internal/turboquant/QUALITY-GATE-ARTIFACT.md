@@ -13,7 +13,8 @@ python3 scripts/check_turboquant_quality_artifact.py <artifact.json>
 The validator is intentionally fail-closed. A passing artifact must include:
 
 - schema version `ax.turboquant_quality_gate.v1`
-- model id, family, revision, and `head_dim=128`
+- model id, family, revision, and `head_dim=128`, `head_dim=256`, or
+  `head_dim=512`
 - workload manifest, prompt hash, at least 8192 context tokens, and at least
   128 generation tokens
 - MLX full-precision baseline metadata
@@ -47,25 +48,64 @@ Use the builder after producing:
 Produce the quality metrics JSON from same-shaped decode output vectors:
 
 ```text
+scripts/run-turboquant-quality-artifact.sh \
+  --model-dir .internal/models/gemma-4-e2b-it-4bit \
+  --context-tokens 8192 \
+  --generation-tokens 256 \
+  --repetitions 1 \
+  --model-revision phase1-canonical
+```
+
+Use `--dry-run` first to verify inferred model metadata, output paths, and the
+exact command sequence without loading a model.
+
+The runner performs the full real-model pipeline:
+
+```text
+bench_mlx_inference_stack.py --capture-output-token-ids  # baseline
+bench_mlx_inference_stack.py --capture-output-token-ids \
+  --experimental-mlx-kv-compression turboquant-fused-experimental
+build_turboquant_decode_outputs.py  # baseline and candidate token vectors
+build_turboquant_quality_metrics.py
+build_turboquant_quality_artifact.py
+check_turboquant_promotion_readiness.py --artifact quality-gate.json
+```
+
+The decomposed commands are still available for debugging:
+
+```text
+python3 scripts/build_turboquant_decode_outputs.py \
+  --benchmark benchmarks/results/turboquant/baseline.json \
+  --context-tokens 8192 \
+  --generation-tokens 256 \
+  --compression-mode disabled \
+  --output benchmarks/results/turboquant/baseline-decode-outputs.json
+
+python3 scripts/build_turboquant_decode_outputs.py \
+  --benchmark benchmarks/results/turboquant/candidate.json \
+  --context-tokens 8192 \
+  --generation-tokens 256 \
+  --compression-mode turboquant-fused-experimental \
+  --output benchmarks/results/turboquant/candidate-decode-outputs.json
+
 python3 scripts/build_turboquant_quality_metrics.py \
   --baseline-outputs benchmarks/results/turboquant/baseline-decode-outputs.json \
   --candidate-outputs benchmarks/results/turboquant/candidate-decode-outputs.json \
   --output benchmarks/results/turboquant/quality-metrics.json
-```
 
-The metrics builder rejects empty vectors, non-finite values, and shape
-mismatches.
-
-```text
 python3 scripts/build_turboquant_quality_artifact.py \
   --baseline-benchmark benchmarks/results/turboquant/baseline.json \
   --candidate-benchmark benchmarks/results/turboquant/candidate.json \
   --quality-metrics benchmarks/results/turboquant/quality-metrics.json \
   --output benchmarks/results/turboquant/quality-gate.json \
-  --model-id qwen3_5_9b_q4 \
-  --model-family qwen3_dense \
-  --model-revision phase1-canonical
+  --model-id gemma-4-e2b-it-4bit \
+  --model-family gemma4 \
+  --model-revision phase1-canonical \
+  --head-dim 256
 ```
+
+The metrics builder rejects empty vectors, non-finite values, and shape
+mismatches.
 
 The builder validates the produced artifact before writing it. Candidate rows
 that are only `full_precision_shadow` or `cpu_oracle_compressed_decode`
@@ -74,10 +114,11 @@ evidence.
 
 The initial promotion gate is intentionally narrower than the benchmark
 telemetry surface: it accepts only K8/V4 `turboquant-fused-experimental`
-artifacts with `head_dim=128`, `fused_compressed_decode`, positive fused decode
-successes, and zero fused decode fallbacks. If the local model set contains
-only `attention_head_dim=256` manifests, the correct outcome is a blocked
-readiness report, not a public support claim.
+artifacts with `head_dim=128`, `head_dim=256`, or `head_dim=512`,
+`fused_compressed_decode`, positive fused decode successes, and zero fused
+decode fallbacks. If the local model set cannot produce a passing long-context
+fused-path quality artifact, the correct outcome is a blocked readiness report,
+not a public support claim.
 
 Check the current promotion boundary without running a model:
 

@@ -40,6 +40,8 @@ REQUIRED_SNIPPETS = {
         "cpu_oracle_compressed_decode rows",
         "check_turboquant_promotion_readiness.py",
         "head_dim=128",
+        "head_dim=256",
+        "head_dim=512",
         "promoted TurboQuant support still requires a long-context quality artifact",
     ],
     "scripts/README.md": [

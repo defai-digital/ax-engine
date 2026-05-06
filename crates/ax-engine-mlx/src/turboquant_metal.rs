@@ -14,6 +14,30 @@ static TURBOQUANT_FUSED_COLD_DECODE_SCORE_KERNEL: OnceLock<MlxMetalKernel> = Onc
 static TURBOQUANT_FUSED_COLD_DECODE_AGGREGATE_STATS_KERNEL: OnceLock<MlxMetalKernel> =
     OnceLock::new();
 
+fn validate_query_head_mapping(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    actual_queries: usize,
+) -> Result<(), TurboQuantCodecError> {
+    if actual_queries != descriptor.n_query_heads {
+        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: descriptor.n_query_heads,
+            actual: actual_queries,
+        });
+    }
+    if descriptor.n_query_heads == 0
+        || descriptor.n_kv_heads == 0
+        || !descriptor
+            .n_query_heads
+            .is_multiple_of(descriptor.n_kv_heads)
+    {
+        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: descriptor.n_kv_heads,
+            actual: descriptor.n_query_heads,
+        });
+    }
+    Ok(())
+}
+
 pub fn turboquant_fused_cold_decode_metal(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
     buffer: &TurboQuantCompressedBlockBuffer,
@@ -34,14 +58,9 @@ pub fn turboquant_fused_cold_decode_metal(
             status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly,
         });
     }
-    if queries.len() != descriptor.n_kv_heads {
-        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
-            expected: descriptor.n_kv_heads,
-            actual: queries.len(),
-        });
-    }
+    validate_query_head_mapping(descriptor, queries.len())?;
 
-    let mut rotated_queries = Vec::with_capacity(descriptor.n_kv_heads * descriptor.head_dim);
+    let mut rotated_queries = Vec::with_capacity(descriptor.n_query_heads * descriptor.head_dim);
     for query in queries {
         if query.len() != descriptor.head_dim {
             return Err(TurboQuantCodecError::MismatchedVectorDimension {
@@ -63,7 +82,7 @@ pub fn turboquant_fused_cold_decode_metal(
     let query = MlxArray::from_raw_data(
         rotated_queries.as_ptr().cast(),
         rotated_queries.len() * std::mem::size_of::<f32>(),
-        &[descriptor.n_kv_heads as i32, descriptor.head_dim as i32],
+        &[descriptor.n_query_heads as i32, descriptor.head_dim as i32],
         MlxDtype::Float32,
     );
 
@@ -81,7 +100,7 @@ pub fn turboquant_fused_cold_decode_metal(
     let outputs = kernel.apply_with_template(
         &[&compressed, &query],
         &[KernelOutputSpec {
-            shape: vec![descriptor.n_kv_heads as i32, descriptor.head_dim as i32],
+            shape: vec![descriptor.n_query_heads as i32, descriptor.head_dim as i32],
             dtype: MlxDtype::Float32,
         }],
         &[
@@ -91,6 +110,10 @@ pub fn turboquant_fused_cold_decode_metal(
             },
             KernelTemplateArg::Int {
                 name: "HEADS",
+                value: descriptor.n_query_heads as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "KV_HEADS",
                 value: descriptor.n_kv_heads as i32,
             },
             KernelTemplateArg::Int {
@@ -138,7 +161,11 @@ pub fn turboquant_fused_cold_decode_metal(
                 value: descriptor.value_group_size as i32,
             },
         ],
-        (descriptor.head_dim as i32, descriptor.n_kv_heads as i32, 1),
+        (
+            descriptor.head_dim as i32,
+            descriptor.n_query_heads as i32,
+            1,
+        ),
         (1, 1, 1),
         None,
     );
@@ -175,17 +202,12 @@ pub fn turboquant_fused_cold_decode_metal_head_serial(
             status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly,
         });
     }
-    if descriptor.head_dim != 128 {
+    if descriptor.head_dim != 128 || descriptor.n_query_heads != descriptor.n_kv_heads {
         return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
             status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::UnsupportedHeadDim,
         });
     }
-    if queries.len() != descriptor.n_kv_heads {
-        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
-            expected: descriptor.n_kv_heads,
-            actual: queries.len(),
-        });
-    }
+    validate_query_head_mapping(descriptor, queries.len())?;
 
     let mut rotated_queries = Vec::with_capacity(descriptor.n_kv_heads * descriptor.head_dim);
     for query in queries {
@@ -340,14 +362,9 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
             status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly,
         });
     }
-    if queries.len() != descriptor.n_kv_heads {
-        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
-            expected: descriptor.n_kv_heads,
-            actual: queries.len(),
-        });
-    }
+    validate_query_head_mapping(descriptor, queries.len())?;
 
-    let mut rotated_queries = Vec::with_capacity(descriptor.n_kv_heads * descriptor.head_dim);
+    let mut rotated_queries = Vec::with_capacity(descriptor.n_query_heads * descriptor.head_dim);
     for query in queries {
         if query.len() != descriptor.head_dim {
             return Err(TurboQuantCodecError::MismatchedVectorDimension {
@@ -369,7 +386,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
     let query = MlxArray::from_raw_data(
         rotated_queries.as_ptr().cast(),
         rotated_queries.len() * std::mem::size_of::<f32>(),
-        &[descriptor.n_kv_heads as i32, descriptor.head_dim as i32],
+        &[descriptor.n_query_heads as i32, descriptor.head_dim as i32],
         MlxDtype::Float32,
     );
 
@@ -386,7 +403,10 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
     let score_outputs = score_kernel.apply_with_template(
         &[&compressed, &query],
         &[KernelOutputSpec {
-            shape: vec![descriptor.n_kv_heads as i32, descriptor.cold_tokens as i32],
+            shape: vec![
+                descriptor.n_query_heads as i32,
+                descriptor.cold_tokens as i32,
+            ],
             dtype: MlxDtype::Float32,
         }],
         &[
@@ -396,6 +416,10 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
             },
             KernelTemplateArg::Int {
                 name: "HEADS",
+                value: descriptor.n_query_heads as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "KV_HEADS",
                 value: descriptor.n_kv_heads as i32,
             },
             KernelTemplateArg::Int {
@@ -429,7 +453,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
         ],
         (
             descriptor.cold_tokens as i32,
-            descriptor.n_kv_heads as i32,
+            descriptor.n_query_heads as i32,
             1,
         ),
         (1, 1, 1),
@@ -454,15 +478,15 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
         &[&compressed, &scores],
         &[
             KernelOutputSpec {
-                shape: vec![descriptor.n_kv_heads as i32],
+                shape: vec![descriptor.n_query_heads as i32],
                 dtype: MlxDtype::Float32,
             },
             KernelOutputSpec {
-                shape: vec![descriptor.n_kv_heads as i32],
+                shape: vec![descriptor.n_query_heads as i32],
                 dtype: MlxDtype::Float32,
             },
             KernelOutputSpec {
-                shape: vec![descriptor.n_kv_heads as i32, descriptor.head_dim as i32],
+                shape: vec![descriptor.n_query_heads as i32, descriptor.head_dim as i32],
                 dtype: MlxDtype::Float32,
             },
         ],
@@ -473,6 +497,10 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
             },
             KernelTemplateArg::Int {
                 name: "HEADS",
+                value: descriptor.n_query_heads as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "KV_HEADS",
                 value: descriptor.n_kv_heads as i32,
             },
             KernelTemplateArg::Int {
@@ -512,7 +540,11 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
                 value: descriptor.value_group_size as i32,
             },
         ],
-        (descriptor.head_dim as i32, descriptor.n_kv_heads as i32, 1),
+        (
+            descriptor.head_dim as i32,
+            descriptor.n_query_heads as i32,
+            1,
+        ),
         (1, 1, 1),
         None,
     );
@@ -530,8 +562,8 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
     let max_scores = max_scores.data_f32();
     let exp_sums = exp_sums.data_f32();
     let weighted_value_sum = weighted_value_sum.data_f32();
-    let mut stats = Vec::with_capacity(descriptor.n_kv_heads);
-    for head_index in 0..descriptor.n_kv_heads {
+    let mut stats = Vec::with_capacity(descriptor.n_query_heads);
+    for head_index in 0..descriptor.n_query_heads {
         let offset = head_index * descriptor.head_dim;
         stats.push(TurboQuantAttentionPartitionStats {
             token_count: descriptor.cold_tokens,
@@ -570,6 +602,7 @@ const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_SOURCE: &str = r#"
     if (dim >= HEAD_DIM || head >= HEADS) {
       return;
     }
+    const int kv_head = head / (HEADS / KV_HEADS);
 
     const float inv_sqrt_dim = rsqrt((float)HEAD_DIM);
     float max_score = -3.4028234663852886e+38f;
@@ -579,7 +612,7 @@ const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_SOURCE: &str = r#"
       const int token_offset = token - block * BLOCK_TOKENS;
       const int slot = block * BLOCK_BYTES
         + token_offset * TOKEN_STRIDE_BYTES
-        + head * SLOT_BYTES;
+        + kv_head * SLOT_BYTES;
       const int key_payload = slot + KEY_PAYLOAD_OFFSET;
       const float key_norm = tq_read_f32(compressed, slot + KEY_NORM_OFFSET);
 
@@ -599,7 +632,7 @@ const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_SOURCE: &str = r#"
       const int token_offset = token - block * BLOCK_TOKENS;
       const int slot = block * BLOCK_BYTES
         + token_offset * TOKEN_STRIDE_BYTES
-        + head * SLOT_BYTES;
+        + kv_head * SLOT_BYTES;
       const int key_payload = slot + KEY_PAYLOAD_OFFSET;
       const float key_norm = tq_read_f32(compressed, slot + KEY_NORM_OFFSET);
 
@@ -697,12 +730,13 @@ const TURBOQUANT_FUSED_COLD_DECODE_SCORE_KERNEL_SOURCE: &str = r#"
     if (token >= COLD_TOKENS || head >= HEADS) {
       return;
     }
+    const int kv_head = head / (HEADS / KV_HEADS);
 
     const int block = token / BLOCK_TOKENS;
     const int token_offset = token - block * BLOCK_TOKENS;
     const int slot = block * BLOCK_BYTES
       + token_offset * TOKEN_STRIDE_BYTES
-      + head * SLOT_BYTES;
+      + kv_head * SLOT_BYTES;
     const int key_payload = slot + KEY_PAYLOAD_OFFSET;
     const float key_norm = tq_read_f32(compressed, slot + KEY_NORM_OFFSET);
     const float inv_sqrt_dim = rsqrt((float)HEAD_DIM);
@@ -721,6 +755,7 @@ const TURBOQUANT_FUSED_COLD_DECODE_AGGREGATE_STATS_KERNEL_SOURCE: &str = r#"
     if (dim >= HEAD_DIM || head >= HEADS) {
       return;
     }
+    const int kv_head = head / (HEADS / KV_HEADS);
 
     float max_score = -3.4028234663852886e+38f;
     for (int token = 0; token < COLD_TOKENS; ++token) {
@@ -734,7 +769,7 @@ const TURBOQUANT_FUSED_COLD_DECODE_AGGREGATE_STATS_KERNEL_SOURCE: &str = r#"
       const int token_offset = token - block * BLOCK_TOKENS;
       const int slot = block * BLOCK_BYTES
         + token_offset * TOKEN_STRIDE_BYTES
-        + head * SLOT_BYTES;
+        + kv_head * SLOT_BYTES;
       const float weight = exp(scores[head * COLD_TOKENS + token] - max_score);
       const int group = dim / VALUE_GROUP_SIZE;
       const int value_payload = slot + VALUE_PAYLOAD_OFFSET;
@@ -853,6 +888,88 @@ mod tests {
                 report.max_abs_diff < 0.0001,
                 "{variant} Metal fused decode diverged from reference: {report:?}"
             );
+        }
+    }
+
+    #[test]
+    fn turboquant_two_stage_metal_matches_reference_for_256_dim_gqa() {
+        assert_two_stage_metal_matches_reference_for_dim(256);
+    }
+
+    #[test]
+    fn turboquant_two_stage_metal_matches_reference_for_512_dim_gqa() {
+        assert_two_stage_metal_matches_reference_for_dim(512);
+    }
+
+    fn assert_two_stage_metal_matches_reference_for_dim(head_dim: usize) {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 256,
+            n_kv_heads: 2,
+            head_dim,
+            value_group_size: 32,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 2, 0).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        for token_index in 0..2 {
+            let heads = vec![
+                (
+                    (0..head_dim)
+                        .map(|idx| ((idx % 17) as f32 - 8.0) / 16.0 + token_index as f32 * 0.01)
+                        .collect::<Vec<_>>(),
+                    (0..head_dim)
+                        .map(|idx| ((idx % 11) as f32 - 5.0) / 8.0 - token_index as f32 * 0.02)
+                        .collect::<Vec<_>>(),
+                ),
+                (
+                    (0..head_dim)
+                        .map(|idx| ((idx % 13) as f32 - 6.0) / 12.0 - token_index as f32 * 0.01)
+                        .collect::<Vec<_>>(),
+                    (0..head_dim)
+                        .map(|idx| ((idx % 7) as f32 - 3.0) / 6.0 + token_index as f32 * 0.02)
+                        .collect::<Vec<_>>(),
+                ),
+            ];
+            buffer
+                .write_token(token_index, &heads)
+                .expect("token should compress");
+        }
+        let queries = (0..4)
+            .map(|head_index| {
+                (0..head_dim)
+                    .map(|idx| ((idx % 19) as f32 - 9.0) / 10.0 + head_index as f32 * 0.005)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let descriptor = plan
+            .fused_decode_launch_descriptor(&buffer, &queries)
+            .expect("descriptor should build");
+        assert_eq!(descriptor.n_query_heads, 4);
+        assert_eq!(descriptor.n_kv_heads, 2);
+        assert_eq!(descriptor.head_dim, head_dim);
+
+        let expected = buffer
+            .debug_decode_partition_stats_for_all_heads(&queries, 2)
+            .expect("reference partition stats should work");
+        let actual = turboquant_fused_cold_decode_metal_two_stage_partition_stats(
+            descriptor, &buffer, &queries,
+        )
+        .expect("two-stage Metal partition stats should launch");
+
+        assert_eq!(actual.len(), expected.len());
+        for (expected, actual) in expected.iter().zip(&actual) {
+            assert_eq!(actual.token_count, expected.token_count);
+            assert_eq!(actual.value_dim, expected.value_dim);
+            assert!((actual.max_score - expected.max_score).abs() < 0.0001);
+            assert!((actual.exp_sum - expected.exp_sum).abs() < 0.0001);
+            for (expected, actual) in expected
+                .weighted_value_sum
+                .iter()
+                .zip(&actual.weighted_value_sum)
+            {
+                assert!((actual - expected).abs() < 0.0001);
+            }
         }
     }
 }

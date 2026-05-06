@@ -22,9 +22,17 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_GQA,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_INELIGIBLE_LAYER,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_MISSING_STORAGE,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_PREFILL_ONLY,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_HEAD_DIM,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_PRESET,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_READY_CANDIDATES,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET,
@@ -432,6 +440,14 @@ struct KvCacheTelemetry {
     compression_fused_decode_successes: u64,
     compression_fused_decode_fallbacks: u64,
     compression_fused_decode_fallback_reason: u32,
+    compression_fused_decode_ready_candidates: u64,
+    compression_fused_decode_blocked_prefill_only: u64,
+    compression_fused_decode_blocked_attention_kind: u64,
+    compression_fused_decode_blocked_ineligible_layer: u64,
+    compression_fused_decode_blocked_unsupported_preset: u64,
+    compression_fused_decode_blocked_unsupported_head_dim: u64,
+    compression_fused_decode_blocked_gqa: u64,
+    compression_fused_decode_blocked_missing_storage: u64,
 }
 
 impl KvCacheTelemetry {
@@ -537,6 +553,30 @@ impl KvCacheTelemetry {
             if fused_decode_candidate {
                 self.compression_fused_decode_candidates =
                     self.compression_fused_decode_candidates.saturating_add(1);
+                self.compression_fused_decode_ready_candidates = self
+                    .compression_fused_decode_ready_candidates
+                    .saturating_add(compression.fused_decode_ready_candidates);
+                self.compression_fused_decode_blocked_prefill_only = self
+                    .compression_fused_decode_blocked_prefill_only
+                    .saturating_add(compression.fused_decode_blocked_prefill_only);
+                self.compression_fused_decode_blocked_attention_kind = self
+                    .compression_fused_decode_blocked_attention_kind
+                    .saturating_add(compression.fused_decode_blocked_attention_kind);
+                self.compression_fused_decode_blocked_ineligible_layer = self
+                    .compression_fused_decode_blocked_ineligible_layer
+                    .saturating_add(compression.fused_decode_blocked_ineligible_layer);
+                self.compression_fused_decode_blocked_unsupported_preset = self
+                    .compression_fused_decode_blocked_unsupported_preset
+                    .saturating_add(compression.fused_decode_blocked_unsupported_preset);
+                self.compression_fused_decode_blocked_unsupported_head_dim = self
+                    .compression_fused_decode_blocked_unsupported_head_dim
+                    .saturating_add(compression.fused_decode_blocked_unsupported_head_dim);
+                self.compression_fused_decode_blocked_gqa = self
+                    .compression_fused_decode_blocked_gqa
+                    .saturating_add(compression.fused_decode_blocked_gqa);
+                self.compression_fused_decode_blocked_missing_storage = self
+                    .compression_fused_decode_blocked_missing_storage
+                    .saturating_add(compression.fused_decode_blocked_missing_storage);
                 if compression.fused_decode_attempts > 0 {
                     self.compression_fused_decode_attempts = self
                         .compression_fused_decode_attempts
@@ -765,6 +805,42 @@ impl KvCacheTelemetry {
                 (
                     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON,
                     self.compression_fused_decode_fallback_reason,
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_READY_CANDIDATES,
+                    saturating_u32_from_u64(self.compression_fused_decode_ready_candidates),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_PREFILL_ONLY,
+                    saturating_u32_from_u64(self.compression_fused_decode_blocked_prefill_only),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND,
+                    saturating_u32_from_u64(self.compression_fused_decode_blocked_attention_kind),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_INELIGIBLE_LAYER,
+                    saturating_u32_from_u64(self.compression_fused_decode_blocked_ineligible_layer),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_PRESET,
+                    saturating_u32_from_u64(
+                        self.compression_fused_decode_blocked_unsupported_preset,
+                    ),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_HEAD_DIM,
+                    saturating_u32_from_u64(
+                        self.compression_fused_decode_blocked_unsupported_head_dim,
+                    ),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_GQA,
+                    saturating_u32_from_u64(self.compression_fused_decode_blocked_gqa),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_MISSING_STORAGE,
+                    saturating_u32_from_u64(self.compression_fused_decode_blocked_missing_storage),
                 ),
             ];
 
@@ -1150,6 +1226,7 @@ impl MlxRunner {
         };
 
         let temperature = ctx.map(|c| c.temperature).unwrap_or(0.0);
+        let mut kv_compression_shadow_sync_wall_us = None;
 
         // GPU work — mutex is NOT held during prefill, decode, or n-gram acceleration steps.
         let sampled_token = match item.mode {
@@ -1181,6 +1258,16 @@ impl MlxRunner {
                     state.ngram_disabled_steps = 0;
                     state.linear_ngram_no_draft_streak = 0;
                     state.ngram_acceleration_disabled_for_request = false;
+
+                    if self.kv_compression.is_enabled() {
+                        let sync_started = Instant::now();
+                        state.cache.sync_turboquant_shadow_storage(
+                            &self.kv_layer_windows,
+                            self.kv_compression,
+                            Some(self.kv_compression_layer_eligible.as_slice()),
+                        );
+                        kv_compression_shadow_sync_wall_us = Some(elapsed_us(sync_started));
+                    }
 
                     // Bootstrap the double-buffer direct pipeline: submit the second token's
                     // forward pass to the GPU asynchronously so the first decode step can
@@ -1234,10 +1321,10 @@ impl MlxRunner {
         } else {
             None
         };
-        let mut kv_compression_shadow_sync_wall_us = None;
         if self.kv_compression.is_enabled() {
-            let force_shadow_sync =
-                (matches!(item.mode, ExecutionMode::Prefill) && prefill_completes_prompt);
+            let force_shadow_sync = matches!(item.mode, ExecutionMode::Prefill)
+                && prefill_completes_prompt
+                && kv_compression_shadow_sync_wall_us.is_none();
             if force_shadow_sync
                 || state.cache.turboquant_shadow_storage_sync_due(
                     &self.kv_layer_windows,
@@ -1270,6 +1357,28 @@ impl MlxRunner {
             turboquant_decode_usage.fused_decode_metal_successes;
         kv_usage.kv_compression.fused_decode_fallbacks =
             turboquant_decode_usage.fused_decode_fallbacks;
+        kv_usage.kv_compression.fused_decode_ready_candidates =
+            turboquant_decode_usage.fused_decode_ready_candidates;
+        kv_usage.kv_compression.fused_decode_blocked_prefill_only =
+            turboquant_decode_usage.fused_decode_blocked_prefill_only;
+        kv_usage.kv_compression.fused_decode_blocked_attention_kind =
+            turboquant_decode_usage.fused_decode_blocked_attention_kind;
+        kv_usage
+            .kv_compression
+            .fused_decode_blocked_ineligible_layer =
+            turboquant_decode_usage.fused_decode_blocked_ineligible_layer;
+        kv_usage
+            .kv_compression
+            .fused_decode_blocked_unsupported_preset =
+            turboquant_decode_usage.fused_decode_blocked_unsupported_preset;
+        kv_usage
+            .kv_compression
+            .fused_decode_blocked_unsupported_head_dim =
+            turboquant_decode_usage.fused_decode_blocked_unsupported_head_dim;
+        kv_usage.kv_compression.fused_decode_blocked_gqa =
+            turboquant_decode_usage.fused_decode_blocked_gqa;
+        kv_usage.kv_compression.fused_decode_blocked_missing_storage =
+            turboquant_decode_usage.fused_decode_blocked_missing_storage;
         if stop_reason.is_none() {
             let mut states = self.states.lock().unwrap();
             states.insert(item.request_id, state);
