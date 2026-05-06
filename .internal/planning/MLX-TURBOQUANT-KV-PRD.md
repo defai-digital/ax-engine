@@ -323,6 +323,17 @@ Implemented fused decode promotion evidence slice on 2026-05-06:
   allocate MLX storage, change SDPA, change generation, publish route metadata,
   or expose a user-facing switch.
 
+Implemented fused decode promotion evidence summary slice on 2026-05-06:
+
+- Added stable numeric codes for decode quality profiles and fused decode
+  promotion statuses.
+- Added `TurboQuantFusedDecodePromotionEvidenceSummary` and evidence `summary()`
+  for artifact-friendly ready/status/preset/profile codes, quality pass status,
+  micro-unit quality metrics, saved KiB, and compression ratio.
+- Keeps summary generation CPU-only and internal; it does not launch a kernel,
+  allocate MLX storage, change SDPA, change generation, publish route metadata,
+  or expose a user-facing switch.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

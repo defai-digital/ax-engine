@@ -238,6 +238,13 @@ absolute error, cosine similarity, and their gate limits. This remains internal
 and CPU-only; it does not launch kernels, allocate MLX storage, alter SDPA,
 change generation, publish route metadata, or expose a public switch.
 
+The fused decode promotion evidence summary is accepted as the stable numeric
+view for future artifacts. Evidence `summary()` reports ready/status/preset/
+profile codes, quality pass status, micro-unit quality metrics, saved KiB, and
+compression ratio. This remains internal and CPU-only; it does not launch
+kernels, allocate MLX storage, alter SDPA, change generation, publish route
+metadata, or expose a public switch.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a
