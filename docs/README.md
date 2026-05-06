@@ -14,6 +14,8 @@ Start here:
 - `GETTING-STARTED.md`: installation, first commands, and runtime-path choice
 - `SUPPORTED-MODELS.md`: model support tiers and what each tier means
 - `FAQ.md`: common runtime-path and performance-boundary questions
+- `PERFORMANCE.md`: current performance-table methodology, interpretation, and
+  artifact provenance
 - `API-COMPATIBILITY.md`: current OpenAI-compatible endpoint contract and
   compatibility boundaries
 - `SERVER.md`: local HTTP server routes and backend behavior
@@ -23,8 +25,9 @@ Start here:
 - `JAVASCRIPT.md`: preview HTTP client usage
 - `ARCHITECTURE.md`: crate boundaries and dependency rules
 
-Start with `BENCHMARKS.md` before interpreting any benchmark number. It defines
-the project split between `ax-engine-bench` workload-contract artifacts,
+Start with `PERFORMANCE.md` for the current public result-table context, then
+use `BENCHMARKS.md` for the benchmark evidence taxonomy. `BENCHMARKS.md`
+defines the project split between `ax-engine-bench` workload-contract artifacts,
 `scripts/bench_mlx_inference_stack.py` repo-owned MLX model-inference
 comparisons with a required matching `mlx_lm.benchmark` primary baseline, optional
 `mlx-swift-lm` secondary baseline adapter rows, delegated `mlx_lm_delegated`

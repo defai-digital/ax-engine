@@ -20,7 +20,7 @@ AX surface for broader model coverage.
 | Path | Select it when | Notes |
 |---|---|---|
 | Repo-owned MLX runtime | You have a supported Qwen/Gemma MLX model artifact and want repo-owned runtime behavior or performance evidence | Use `--mlx` plus `--mlx-model-artifacts-dir`; benchmark claims must use the MLX inference-stack harness |
-| `mlx_lm_delegated` | Upstream `mlx-lm` supports the MLX text model but AX does not yet have a repo-owned graph | Requires a running `mlx_lm.server`; supports text generation, fake SSE, and OpenAI-compatible text completion/chat shapes |
+| `mlx_lm_delegated` | Upstream `mlx-lm` supports the MLX text model but AX does not yet have a repo-owned graph | Requires a running `mlx_lm.server`; supports blocking text generation and OpenAI-compatible text completion/chat shapes; streaming endpoints fail closed |
 | `llama_cpp` | You have GGUF/non-MLX local inference needs | Use a llama.cpp server or CLI target; these are delegated route-contract claims |
 
 ```mermaid
@@ -249,9 +249,12 @@ that Rust-owned path for smoke checks and automation.
 When the same output directory already holds validated compiled assets for the
 current checked-in contract, that build command now reuses them instead of
 rerunning the full toolchain pipeline.
-That checked-in build graph keeps the explicit `metal-ar` archive stage as part
-of AX's own artifact contract, and the current MLX Metal bring-up contract
-stays intentionally narrow by validating only `block_size_tokens=16`.
+That checked-in build graph uses `xcrun metal` and `xcrun metallib` as the
+required compiler tools. When `metal-ar` is available, AX keeps the archive
+stage in the generated artifact report; when only Command Line Tools are
+installed, the builder compiles the `.metallib` directly from the `.air` file.
+The current MLX Metal bring-up contract stays intentionally narrow by
+validating only `block_size_tokens=16`.
 
 To validate the checked-in Metal kernel inventory, manifest, and gated build
 contract in one repo-owned smoke check:
