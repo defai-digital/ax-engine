@@ -248,6 +248,12 @@ fn elapsed_us(started: Instant) -> u32 {
     saturating_u32_from_u128(started.elapsed().as_micros())
 }
 
+fn direct_pipeline_clear_cache_due(emitted_tokens: u32, cadence: u32) -> bool {
+    cadence != 0
+        && emitted_tokens != 0
+        && (emitted_tokens == 1 || emitted_tokens.saturating_sub(1) % cadence == 0)
+}
+
 fn kib_ceil(bytes: u64) -> u32 {
     if bytes == 0 {
         0
@@ -886,6 +892,8 @@ struct RequestState {
     ///
     /// Only set when `disable_ngram_acceleration = true` and `temperature == 0.0`.
     pending_direct: Option<MlxArray>,
+    /// Direct-pipeline tokens emitted since the current generation started.
+    direct_pipeline_emitted_tokens: u32,
     /// Cumulative per-request counters surfaced through route metadata for
     /// benchmark auditability.
     ngram_acceleration: NgramAccelerationTelemetry,
@@ -906,6 +914,7 @@ impl RequestState {
             bonus_queue: VecDeque::new(),
             next_model_last_token: None,
             pending_direct: None,
+            direct_pipeline_emitted_tokens: 0,
             ngram_acceleration: NgramAccelerationTelemetry::default(),
             decode_telemetry: DecodeTelemetry::default(),
         }
@@ -933,6 +942,10 @@ pub struct MlxRunner {
     kv_compression: MlxKvCompressionConfig,
     /// Per-layer compression eligibility. Empty when compression is disabled.
     kv_compression_layer_eligible: Vec<bool>,
+    /// Experimental Gemma sliding-window rotating backing store for direct decode.
+    rotating_sliding_decode: bool,
+    /// Optional mlx_lm-style `clear_cache` cadence for the direct decode pipeline.
+    direct_clear_cache_cadence: u32,
 }
 
 impl fmt::Debug for MlxRunner {
@@ -976,6 +989,12 @@ impl MlxRunner {
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
         let terminal_token_ids = resolve_terminal_token_ids(artifacts);
         let kv_layer_windows = kv_layer_windows_from_config(&cfg);
+        let rotating_sliding_decode = disable_ngram_acceleration
+            && std::env::var("AX_MLX_ROTATING_SLIDING_DECODE").as_deref() == Ok("1");
+        let direct_clear_cache_cadence = std::env::var("AX_MLX_DIRECT_CLEAR_CACHE_CADENCE")
+            .ok()
+            .and_then(|raw| raw.parse::<u32>().ok())
+            .unwrap_or(0);
         let kv_compression_layer_eligible = if kv_compression.is_enabled() {
             turboquant_support_report(&cfg, kv_compression.preset)
                 .map_err(|error| {
@@ -1026,6 +1045,8 @@ impl MlxRunner {
             disable_ngram_acceleration,
             kv_compression,
             kv_compression_layer_eligible,
+            rotating_sliding_decode,
+            direct_clear_cache_cadence,
         })
     }
 
@@ -1226,6 +1247,9 @@ impl MlxRunner {
         };
 
         let temperature = ctx.map(|c| c.temperature).unwrap_or(0.0);
+        state
+            .cache
+            .set_rotating_sliding_decode(self.rotating_sliding_decode && temperature == 0.0);
         let mut kv_compression_shadow_sync_wall_us = None;
 
         // GPU work — mutex is NOT held during prefill, decode, or n-gram acceleration steps.
@@ -1255,6 +1279,7 @@ impl MlxRunner {
                     state.bonus_queue.clear();
                     state.next_model_last_token = None;
                     state.pending_direct = None;
+                    state.direct_pipeline_emitted_tokens = 0;
                     state.ngram_disabled_steps = 0;
                     state.linear_ngram_no_draft_streak = 0;
                     state.ngram_acceleration_disabled_for_request = false;
@@ -1440,6 +1465,7 @@ impl MlxRunner {
                 .decode_telemetry
                 .record_direct_pipeline(elapsed_us(branch_started));
             state.pending_direct = Some(next_pending);
+            self.maybe_clear_direct_pipeline_cache(state);
             return tok;
         }
 
@@ -1489,8 +1515,20 @@ impl MlxRunner {
             .decode_telemetry
             .record_direct_pipeline(elapsed_us(branch_started));
         state.pending_direct = Some(next_pending);
+        self.maybe_clear_direct_pipeline_cache(state);
         state.ngram.feed(&[tok]);
         tok
+    }
+
+    fn maybe_clear_direct_pipeline_cache(&self, state: &mut RequestState) {
+        state.direct_pipeline_emitted_tokens =
+            state.direct_pipeline_emitted_tokens.saturating_add(1);
+        if direct_pipeline_clear_cache_due(
+            state.direct_pipeline_emitted_tokens,
+            self.direct_clear_cache_cadence,
+        ) {
+            clear_cache();
+        }
     }
 
     /// Run one model decode step, updating the n-gram accept-rate gate.
@@ -2956,6 +2994,18 @@ mod tests {
         assert_eq!(decisions.get("ax_mlx_ngram_decode_wall_us"), Some(&17));
         assert_eq!(decisions.get("ax_mlx_bonus_tokens"), Some(&2));
         assert_eq!(decisions.get("other_counter"), Some(&3));
+    }
+
+    #[test]
+    fn direct_pipeline_clear_cache_cadence_matches_mlx_lm_loop() {
+        let due_tokens = (0..=260)
+            .filter(|emitted| direct_pipeline_clear_cache_due(*emitted, 256))
+            .collect::<Vec<_>>();
+
+        assert_eq!(due_tokens, vec![1, 257]);
+        assert!(!direct_pipeline_clear_cache_due(1, 0));
+        assert!(direct_pipeline_clear_cache_due(1, 1));
+        assert!(direct_pipeline_clear_cache_due(2, 1));
     }
 
     #[test]
