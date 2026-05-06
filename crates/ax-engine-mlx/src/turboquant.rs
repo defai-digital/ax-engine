@@ -206,6 +206,25 @@ pub fn evaluate_decode_quality_for_preset(
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurboQuantDecodeQualityCheck {
+    pub comparison: TurboQuantDecodeComparisonReport,
+    pub evaluation: TurboQuantDecodeQualityEvaluation,
+}
+
+impl TurboQuantDecodeQualityCheck {
+    pub fn for_preset(
+        preset: MlxTurboQuantPreset,
+        comparison: TurboQuantDecodeComparisonReport,
+    ) -> Self {
+        let evaluation = evaluate_decode_quality_for_preset(preset, &comparison);
+        Self {
+            comparison,
+            evaluation,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TurboQuantLayerSupportReason {
     Eligible,
@@ -609,6 +628,20 @@ impl TurboQuantCompressedBlockBuffer {
     ) -> Result<TurboQuantDecodeComparisonReport, TurboQuantCodecError> {
         let actual_outputs = self.debug_decode_attention_for_all_heads(queries, token_count)?;
         compare_decode_outputs(expected_outputs, &actual_outputs)
+    }
+
+    pub fn debug_evaluate_attention_quality_for_all_heads(
+        &self,
+        queries: &[Vec<f32>],
+        expected_outputs: &[Vec<f32>],
+        token_count: usize,
+    ) -> Result<TurboQuantDecodeQualityCheck, TurboQuantCodecError> {
+        let comparison =
+            self.debug_compare_attention_for_all_heads(queries, expected_outputs, token_count)?;
+        Ok(TurboQuantDecodeQualityCheck::for_preset(
+            self.layout.config.preset,
+            comparison,
+        ))
     }
 
     fn validate_slot_vectors(
@@ -2411,6 +2444,23 @@ mod tests {
     }
 
     #[test]
+    fn decode_quality_check_wraps_comparison_and_preset_evaluation() {
+        let comparison =
+            compare_decode_outputs(&[vec![1.0, 0.0, 0.0, 0.0]], &[vec![0.99, 0.0, 0.0, 0.0]])
+                .expect("compare outputs");
+
+        let check = TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, comparison);
+
+        assert_eq!(check.evaluation.preset, MlxTurboQuantPreset::K8V4);
+        assert_eq!(
+            check.evaluation.profile,
+            TurboQuantDecodeQualityProfile::ReferenceK8V4
+        );
+        assert!(check.evaluation.decision.passed, "check was {check:?}");
+        assert_eq!(check.comparison.heads.len(), 1);
+    }
+
+    #[test]
     fn compressed_block_buffer_compares_all_head_decode_against_full_precision_oracle() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
             preset: MlxTurboQuantPreset::K8V4,
@@ -2467,6 +2517,13 @@ mod tests {
         let report = buffer
             .debug_compare_attention_for_all_heads(&queries, &expected_outputs, tokens.len())
             .expect("decode comparison should work");
+        let check = buffer
+            .debug_evaluate_attention_quality_for_all_heads(
+                &queries,
+                &expected_outputs,
+                tokens.len(),
+            )
+            .expect("decode quality check should work");
 
         assert_eq!(report.heads.len(), 2);
         assert!(report.max_abs_diff < 0.02, "report was {report:?}");
@@ -2480,6 +2537,16 @@ mod tests {
             TurboQuantDecodeQualityGate::REFERENCE_K8V4
                 .evaluate(&report)
                 .passed
+        );
+        assert_eq!(check.comparison, report);
+        assert_eq!(check.evaluation.preset, MlxTurboQuantPreset::K8V4);
+        assert_eq!(
+            check.evaluation.profile,
+            TurboQuantDecodeQualityProfile::ReferenceK8V4
+        );
+        assert!(
+            check.evaluation.decision.passed,
+            "quality check was {check:?}"
         );
     }
 
