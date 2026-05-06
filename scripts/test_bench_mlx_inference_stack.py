@@ -168,6 +168,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_ngram_draft_attempts": 3,
                     "ax_ngram_draft_tokens": 12,
                     "ax_ngram_accepted_tokens": 9,
+                    "ax_ngram_request_disable_events": 1,
+                    "ax_ngram_request_disabled_steps": 4,
                     "unrelated": 99,
                 }
             }
@@ -179,6 +181,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_ngram_complete_misses"], 0)
         self.assertEqual(telemetry["ax_ngram_cooldown_steps"], 0)
         self.assertEqual(telemetry["ax_ngram_cooldown_events"], 0)
+        self.assertEqual(telemetry["ax_ngram_request_disable_events"], 1)
+        self.assertEqual(telemetry["ax_ngram_request_disabled_steps"], 4)
         self.assertEqual(telemetry["ax_ngram_accept_rate_micros"], 750000)
         self.assertNotIn("unrelated", telemetry)
 
@@ -189,6 +193,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ngram_acceleration_telemetry": {
                         "ax_ngram_draft_tokens": 8,
                         "ax_ngram_accepted_tokens": 4,
+                        "ax_ngram_request_disabled_steps": 2,
                         "ax_ngram_accept_rate_micros": 500000,
                     }
                 },
@@ -196,6 +201,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ngram_acceleration_telemetry": {
                         "ax_ngram_draft_tokens": 12,
                         "ax_ngram_accepted_tokens": 11,
+                        "ax_ngram_request_disabled_steps": 3,
                         "ax_ngram_accept_rate_micros": 916667,
                     }
                 },
@@ -204,6 +210,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(summary["ax_ngram_draft_tokens"], 20)
         self.assertEqual(summary["ax_ngram_accepted_tokens"], 15)
+        self.assertEqual(summary["ax_ngram_request_disabled_steps"], 5)
         self.assertEqual(summary["ax_ngram_accept_rate_micros"], 750000)
 
     def test_ax_mlx_telemetry_is_extracted_and_summarized(self) -> None:
@@ -264,6 +271,25 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIs(
             bench.route_with_more_decisions(response_route, step_route),
             step_route,
+        )
+
+    def test_route_with_more_decisions_prefers_nonzero_counters_on_equal_keys(self) -> None:
+        prefill_route = {
+            "crossover_decisions": {
+                "ax_ngram_draft_attempts": 0,
+                "ax_ngram_accepted_tokens": 0,
+            },
+        }
+        decode_route = {
+            "crossover_decisions": {
+                "ax_ngram_draft_attempts": 2,
+                "ax_ngram_accepted_tokens": 7,
+            },
+        }
+
+        self.assertIs(
+            bench.route_with_more_decisions(decode_route, prefill_route),
+            decode_route,
         )
 
     def test_attach_baseline_requires_matching_mlx_lm_row(self) -> None:
