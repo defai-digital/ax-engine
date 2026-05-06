@@ -306,7 +306,7 @@ impl ServerArgs {
             {
                 return Ok(Some(path));
             }
-            if env::var_os(MODEL_ARTIFACTS_ENV).is_some() {
+            if env::var_os(MODEL_ARTIFACTS_ENV).is_some_and(|v| !v.is_empty()) {
                 return Ok(None);
             }
             if self.resolve_model_artifacts == ModelArtifactResolution::HfCache {
