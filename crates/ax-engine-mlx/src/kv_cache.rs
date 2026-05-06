@@ -162,6 +162,41 @@ fn kv_vector_for_token_head(
         .collect()
 }
 
+fn copy_token_range_to_rotating(
+    source: &MlxArray,
+    dest: &MlxArray,
+    lkv: &LayerKV,
+    token_start: usize,
+    token_end: usize,
+    window: usize,
+) -> MlxArray {
+    let mut out = dest.clone();
+    let mut src_start = token_start;
+    while src_start < token_end {
+        let dst_start = src_start % window;
+        let len = (token_end - src_start).min(window - dst_start);
+        let src_stop = src_start + len;
+        let dst_stop = dst_start + len;
+        let segment = slice(
+            source,
+            &[0, 0, src_start as i32, 0],
+            &[1, lkv.n_kv_heads, src_stop as i32, lkv.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        out = slice_update(
+            &out,
+            &segment,
+            &[0, 0, dst_start as i32, 0],
+            &[1, lkv.n_kv_heads, dst_stop as i32, lkv.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        src_start = src_stop;
+    }
+    out
+}
+
 fn array_element_as_f32(array: &MlxArray, dtype: MlxDtype, element_index: usize) -> f32 {
     let ptr = array.data_raw();
     if ptr.is_null() {
@@ -338,6 +373,7 @@ struct LayerKV {
     n_kv_heads: i32,
     head_dim: i32,
     capacity: usize,
+    rotating_window: Option<usize>,
     dtype: MlxDtype,
 }
 
@@ -403,6 +439,7 @@ pub struct MlxKVCache {
     pub seq_len: usize,
     growth_count: u64,
     turboquant_decode_usage: MlxKvCompressionDecodeUsage,
+    use_rotating_sliding_decode: bool,
 }
 
 impl Clone for MlxKVCache {
@@ -415,6 +452,7 @@ impl Clone for MlxKVCache {
             seq_len: self.seq_len,
             growth_count: self.growth_count,
             turboquant_decode_usage: self.turboquant_decode_usage,
+            use_rotating_sliding_decode: self.use_rotating_sliding_decode,
         }
     }
 }
@@ -431,7 +469,12 @@ impl MlxKVCache {
             seq_len: 0,
             growth_count: 0,
             turboquant_decode_usage: MlxKvCompressionDecodeUsage::default(),
+            use_rotating_sliding_decode: false,
         }
+    }
+
+    pub fn set_rotating_sliding_decode(&mut self, enabled: bool) {
+        self.use_rotating_sliding_decode = enabled;
     }
 
     pub fn record_turboquant_fused_decode_attempt(
@@ -553,9 +596,10 @@ impl MlxKVCache {
     ///
     /// This is used for Gemma-family sliding-window decode.  Upstream `mlx_lm`
     /// and `mlx-swift-lm` use rotating caches for sliding layers, so SDPA only
-    /// sees the retained window instead of the full context.  AX keeps the full
-    /// backing buffer for accounting and rollback, but returns a shorter view
-    /// for decode-time attention.
+    /// sees the retained window instead of the full context.  AX uses the same
+    /// bounded backing store only when the request is on the non-rollback direct
+    /// decode path; rollback-capable paths keep full backing storage and return a
+    /// shorter view.
     ///
     /// `window = None` preserves the full-view behavior of `append`.
     pub fn append_with_retained_window(
@@ -572,6 +616,15 @@ impl MlxKVCache {
         let n_kv_heads = append.n_kv_heads;
         let head_dim = append.head_dim;
         let dtype = append.dtype;
+
+        if self.use_rotating_sliding_decode
+            && new_tokens == 1
+            && let Some(window) = window.filter(|window| *window > 0)
+            && write_end > window
+            && self.layers[layer].is_some()
+        {
+            return self.append_rotating_retained_window(layer, new_k, new_v, window, write_start);
+        }
 
         let entry = &mut self.layers[layer];
         match entry {
@@ -594,6 +647,7 @@ impl MlxKVCache {
                     n_kv_heads,
                     head_dim,
                     capacity,
+                    rotating_window: None,
                     dtype,
                 });
             }
@@ -625,6 +679,7 @@ impl MlxKVCache {
                     // Invalidate cached views — they point to the old (smaller) buffer.
                     lkv.last_k_view = None;
                     lkv.last_v_view = None;
+                    lkv.rotating_window = None;
                     self.growth_count = self.growth_count.saturating_add(1);
                 }
                 let start = [0i32, 0, write_start as i32, 0];
@@ -661,6 +716,48 @@ impl MlxKVCache {
         lkv.last_k_view = Some(k_view.clone());
         lkv.last_v_view = Some(v_view.clone());
         (k_view, v_view)
+    }
+
+    fn append_rotating_retained_window(
+        &mut self,
+        layer: usize,
+        new_k: MlxArray,
+        new_v: MlxArray,
+        window: usize,
+        write_start: usize,
+    ) -> (MlxArray, MlxArray) {
+        let lkv = self.layers[layer]
+            .as_mut()
+            .expect("rotating sliding decode requires an existing prefill cache");
+        if lkv.rotating_window != Some(window) || lkv.capacity != window {
+            let k_old = lkv.k.clone();
+            let v_old = lkv.v.clone();
+            let buf_shape = [1i32, lkv.n_kv_heads, window as i32, lkv.head_dim];
+            let k_new = zeros(&buf_shape, lkv.dtype, None);
+            let v_new = zeros(&buf_shape, lkv.dtype, None);
+            let old_start = write_start.saturating_add(1).saturating_sub(window);
+            let old_end = write_start;
+            let k_new =
+                copy_token_range_to_rotating(&k_old, &k_new, lkv, old_start, old_end, window);
+            let v_new =
+                copy_token_range_to_rotating(&v_old, &v_new, lkv, old_start, old_end, window);
+            lkv.k = k_new;
+            lkv.v = v_new;
+            lkv.capacity = window;
+            lkv.rotating_window = Some(window);
+            lkv.last_k_view = None;
+            lkv.last_v_view = None;
+        }
+
+        let write_pos = (write_start % window) as i32;
+        let start = [0i32, 0, write_pos, 0];
+        let stop = [1i32, lkv.n_kv_heads, write_pos + 1, lkv.head_dim];
+        let strides = [1i32, 1, 1, 1];
+        lkv.k = slice_update(&lkv.k, &new_k, &start, &stop, &strides, None);
+        lkv.v = slice_update(&lkv.v, &new_v, &start, &stop, &strides, None);
+        lkv.last_k_view = Some(lkv.k.clone());
+        lkv.last_v_view = Some(lkv.v.clone());
+        (lkv.k.clone(), lkv.v.clone())
     }
 
     /// Append GLM4MoELite MLA cache tokens and return full logical latent/KRoPE views.
@@ -809,6 +906,15 @@ impl MlxKVCache {
     /// the cache and make SDPA attend to unwritten positions.
     #[must_use]
     pub fn trim_to(&mut self, prefix_len: usize) -> bool {
+        if prefix_len < self.seq_len
+            && self
+                .layers
+                .iter()
+                .flatten()
+                .any(|lkv| lkv.rotating_window.is_some())
+        {
+            return false;
+        }
         let valid = prefix_len <= self.seq_len;
         self.seq_len = prefix_len.min(self.seq_len);
         for storage in self.turboquant_shadow_layers.iter_mut().flatten() {
@@ -2068,5 +2174,45 @@ mod tests {
         assert_eq!(v_from_append.shape(), vec![1, 1, 4, 8]);
         assert_eq!(k_from_peek.shape(), vec![1, 1, 4, 8]);
         assert_eq!(v_from_peek.shape(), vec![1, 1, 4, 8]);
+    }
+
+    #[test]
+    fn rotating_sliding_decode_uses_bounded_backing_store() {
+        let mut cache = MlxKVCache::new(1);
+        cache.set_rotating_sliding_decode(true);
+
+        let k = zeros(&[1, 1, 6, 8], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 1, 6, 8], MlxDtype::Bfloat16, None);
+        let (prefill_k, _) = cache.append(0, k, v);
+        cache.seq_len = 6;
+        assert_eq!(prefill_k.shape(), vec![1, 1, 6, 8]);
+
+        let next_k = zeros(&[1, 1, 1, 8], MlxDtype::Bfloat16, None);
+        let next_v = zeros(&[1, 1, 1, 8], MlxDtype::Bfloat16, None);
+        let (decode_k, decode_v) = cache.append_with_retained_window(0, next_k, next_v, Some(4));
+
+        let lkv = cache.layers[0].as_ref().expect("layer cache");
+        assert_eq!(lkv.capacity, 4);
+        assert_eq!(lkv.rotating_window, Some(4));
+        assert_eq!(decode_k.shape(), vec![1, 1, 4, 8]);
+        assert_eq!(decode_v.shape(), vec![1, 1, 4, 8]);
+    }
+
+    #[test]
+    fn trim_to_rejects_rollback_after_rotating_sliding_decode() {
+        let mut cache = MlxKVCache::new(1);
+        cache.set_rotating_sliding_decode(true);
+        let k = zeros(&[1, 1, 4, 8], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 1, 4, 8], MlxDtype::Bfloat16, None);
+        cache.append(0, k, v);
+        cache.seq_len = 4;
+
+        let next_k = zeros(&[1, 1, 1, 8], MlxDtype::Bfloat16, None);
+        let next_v = zeros(&[1, 1, 1, 8], MlxDtype::Bfloat16, None);
+        cache.append_with_retained_window(0, next_k, next_v, Some(4));
+        cache.seq_len = 5;
+
+        assert!(!cache.trim_to(4));
+        assert_eq!(cache.seq_len, 5);
     }
 }
