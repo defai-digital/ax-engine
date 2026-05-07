@@ -39,6 +39,13 @@ def ngram_telemetry(*, attempts: int, accepted: int, fallback_steps: int = 0) ->
         "ax_ngram_cooldown_steps_scheduled": 0,
         "ax_ngram_request_disable_events": 0,
         "ax_ngram_request_disabled_steps": 0,
+        "ax_ngram_fallback_no_candidate_steps": fallback_steps,
+        "ax_ngram_fallback_confidence_filtered_steps": 0,
+        "ax_ngram_fallback_short_output_steps": 0,
+        "ax_ngram_fallback_linear_no_draft_steps": 0,
+        "ax_ngram_policy_variant": 1,
+        "ax_ngram_adaptive_draft_len_steps": attempts,
+        "ax_ngram_adaptive_draft_len_total": accepted,
     }
 
 

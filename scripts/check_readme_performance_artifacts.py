@@ -71,6 +71,13 @@ AX_NGRAM_TELEMETRY_COUNTERS = {
     "ax_ngram_cooldown_steps_scheduled",
     "ax_ngram_request_disable_events",
     "ax_ngram_request_disabled_steps",
+    "ax_ngram_fallback_no_candidate_steps",
+    "ax_ngram_fallback_confidence_filtered_steps",
+    "ax_ngram_fallback_short_output_steps",
+    "ax_ngram_fallback_linear_no_draft_steps",
+    "ax_ngram_policy_variant",
+    "ax_ngram_adaptive_draft_len_steps",
+    "ax_ngram_adaptive_draft_len_total",
 }
 
 PUBLIC_CLAIM_EVIDENCE = {
