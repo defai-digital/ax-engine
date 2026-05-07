@@ -1,3 +1,4 @@
+use std::io::{BufRead, BufReader, Read};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -78,6 +79,149 @@ pub enum MlxLmBackendError {
     },
     #[error("mlx-lm backend HTTP response from {endpoint} did not include a completion choice")]
     MissingCompletionChoice { endpoint: String },
+    #[error("mlx-lm backend SSE read from {endpoint} failed: {source}")]
+    SseRead {
+        endpoint: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("mlx-lm backend SSE chunk from {endpoint} was not valid JSON: {source}")]
+    InvalidStreamChunk {
+        endpoint: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("mlx-lm backend SSE stream from {endpoint} did not include a choice in chunk")]
+    MissingStreamChoice { endpoint: String },
+}
+
+pub(crate) struct MlxLmStreamChunkResult {
+    pub text: String,
+    pub finish_reason: Option<String>,
+    pub prompt_token_count: Option<u32>,
+    pub output_token_count: Option<u32>,
+}
+
+pub(crate) struct MlxLmStreamHandle {
+    endpoint: String,
+    reader: BufReader<Box<dyn Read + Send>>,
+}
+
+impl MlxLmStreamHandle {
+    fn new(endpoint: String, reader: Box<dyn Read + Send>) -> Self {
+        Self {
+            endpoint,
+            reader: BufReader::new(reader),
+        }
+    }
+
+    pub(crate) fn next_chunk(
+        &mut self,
+    ) -> Result<Option<MlxLmStreamChunkResult>, MlxLmBackendError> {
+        loop {
+            let mut line = String::new();
+            let bytes_read = self.reader.read_line(&mut line).map_err(|source| {
+                MlxLmBackendError::SseRead {
+                    endpoint: self.endpoint.clone(),
+                    source,
+                }
+            })?;
+
+            if bytes_read == 0 {
+                return Ok(None);
+            }
+
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() {
+                continue;
+            }
+
+            let data = match line.strip_prefix("data: ") {
+                Some(data) => data,
+                None => continue,
+            };
+
+            if data == "[DONE]" {
+                return Ok(None);
+            }
+
+            let chunk: MlxLmStreamChunk =
+                serde_json::from_str(data).map_err(|source| MlxLmBackendError::InvalidStreamChunk {
+                    endpoint: self.endpoint.clone(),
+                    source,
+                })?;
+
+            let choice = chunk.choices.into_iter().next().ok_or_else(|| {
+                MlxLmBackendError::MissingStreamChoice {
+                    endpoint: self.endpoint.clone(),
+                }
+            })?;
+
+            return Ok(Some(MlxLmStreamChunkResult {
+                text: choice.text,
+                finish_reason: choice.finish_reason,
+                prompt_token_count: chunk.usage.as_ref().map(|u| u.prompt_tokens),
+                output_token_count: chunk.usage.as_ref().map(|u| u.completion_tokens),
+            }));
+        }
+    }
+}
+
+impl std::fmt::Debug for MlxLmStreamHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MlxLmStreamHandle")
+            .field("endpoint", &self.endpoint)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) fn start_streaming_generate(
+    runtime: &RuntimeReport,
+    config: &MlxLmConfig,
+    request: &GenerateRequest,
+) -> Result<MlxLmStreamHandle, MlxLmBackendError> {
+    if runtime.selected_backend != SelectedBackend::MlxLmDelegated {
+        return Err(MlxLmBackendError::BackendConfigMismatch {
+            configured_backend: SelectedBackend::MlxLmDelegated,
+            resolved_backend: runtime.selected_backend,
+        });
+    }
+
+    match config {
+        MlxLmConfig::ServerCompletion(config) => {
+            start_mlx_lm_server_completion_stream(config, request)
+        }
+    }
+}
+
+fn start_mlx_lm_server_completion_stream(
+    config: &MlxLmServerCompletionConfig,
+    request: &GenerateRequest,
+) -> Result<MlxLmStreamHandle, MlxLmBackendError> {
+    if !request.input_tokens.is_empty() {
+        return Err(MlxLmBackendError::UnsupportedTokenPrompt);
+    }
+    let prompt = request
+        .input_text
+        .clone()
+        .ok_or(MlxLmBackendError::MissingInputText)?;
+
+    let endpoint = config.completions_url();
+    let payload = MlxLmCompletionRequest {
+        model: &request.model_id,
+        prompt: &prompt,
+        max_tokens: request.max_output_tokens,
+        temperature: request.sampling.temperature,
+        top_p: request.sampling.top_p,
+        top_k: request.sampling.top_k,
+        repetition_penalty: request.sampling.repetition_penalty,
+        seed: request.sampling.seed,
+        stream: true,
+    };
+
+    let response = send_json_post_request(&endpoint, &payload)?;
+    let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
+    Ok(MlxLmStreamHandle::new(endpoint, reader))
 }
 
 pub fn run_blocking_generate(
@@ -226,12 +370,28 @@ fn normalize_base_url(mut value: String) -> String {
     value
 }
 
-fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateFinishReason> {
+pub(crate) fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateFinishReason> {
     match value {
         Some("stop") => Some(GenerateFinishReason::Stop),
         Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
         Some(_) | None => None,
     }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct MlxLmStreamChoice {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MlxLmStreamChunk {
+    #[serde(default)]
+    choices: Vec<MlxLmStreamChoice>,
+    #[serde(default)]
+    usage: Option<MlxLmCompletionUsage>,
 }
 
 #[derive(Debug, Serialize)]

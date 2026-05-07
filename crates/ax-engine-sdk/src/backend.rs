@@ -147,7 +147,7 @@ impl CapabilityReport {
     pub const fn mlx_lm_delegated_text() -> Self {
         Self {
             text_generation: true,
-            token_streaming: false,
+            token_streaming: true,
             deterministic_mode: false,
             prefix_reuse: false,
             long_context_validation: CapabilityLevel::Unsupported,

@@ -25,12 +25,17 @@ use crate::llama_cpp::{
     LlamaCppBackendError, LlamaCppConfig, LlamaCppPromptProgress, LlamaCppStreamChunk,
     LlamaCppStreamHandle, run_blocking_generate, start_streaming_generate,
 };
-use crate::mlx_lm::{MlxLmBackendError, MlxLmConfig, run_blocking_generate as run_mlx_lm_generate};
+use crate::mlx_lm::{
+    MlxLmBackendError, MlxLmConfig, MlxLmStreamChunkResult, MlxLmStreamHandle,
+    finish_reason_from_mlx_lm, run_blocking_generate as run_mlx_lm_generate,
+    start_streaming_generate as start_mlx_lm_streaming_generate,
+};
 use crate::request::{
     EngineStepReport, MetalDispatchStepReport, SessionRequestReport, SessionRequestState,
 };
 
 const LLAMA_CPP_STREAM_EXECUTION_PLAN: &str = "llama_cpp.server_completion_stream";
+const MLX_LM_STREAM_EXECUTION_PLAN: &str = "mlx_lm_delegated.server_completion_stream";
 const NATIVE_METAL_BUILD_DIR_ENV: &str = "AX_ENGINE_METAL_BUILD_DIR";
 const NATIVE_MODEL_DIR_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 const MAX_LLAMA_CPP_TERMINAL_REQUESTS: usize = 1024;
@@ -385,8 +390,11 @@ impl StatelessGenerateContext {
         &self.config
     }
 
-    pub fn supports_llama_cpp_streaming(&self) -> bool {
-        self.config.resolved_backend.selected_backend == SelectedBackend::LlamaCpp
+    pub fn supports_stateless_streaming(&self) -> bool {
+        matches!(
+            self.config.resolved_backend.selected_backend,
+            SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated
+        )
     }
 
     pub fn generate_with_request_id(
@@ -419,9 +427,6 @@ impl StatelessGenerateContext {
                 selected_backend: self.config.resolved_backend.selected_backend,
             });
         }
-        if self.config.resolved_backend.selected_backend == SelectedBackend::MlxLmDelegated {
-            return Err(EngineSessionError::MlxLmDoesNotSupportStreaming);
-        }
 
         EngineSession::validate_generate_request(request_id, &request)?;
         let runtime =
@@ -430,15 +435,36 @@ impl StatelessGenerateContext {
                 .ok_or(EngineSessionError::MissingDelegatedRuntime {
                     selected_backend: self.config.resolved_backend.selected_backend,
                 })?;
-        let (runtime, stream, route_backend) =
-            start_llama_cpp_stream_prevalidated(&self.config, runtime, request_id, &request)?;
-        Ok(build_llama_cpp_stream_state(
-            request_id,
-            request,
-            runtime,
-            stream,
-            route_backend,
-        ))
+
+        match self.config.resolved_backend.selected_backend {
+            SelectedBackend::LlamaCpp => {
+                let (runtime, stream, route_backend) =
+                    start_llama_cpp_stream_prevalidated(&self.config, runtime, request_id, &request)?;
+                Ok(build_llama_cpp_stream_state(
+                    request_id,
+                    request,
+                    runtime,
+                    stream,
+                    route_backend,
+                ))
+            }
+            SelectedBackend::MlxLmDelegated => {
+                let mlx_lm_backend = self
+                    .config
+                    .mlx_lm_backend
+                    .as_ref()
+                    .ok_or(EngineSessionError::MissingMlxLmConfig)?;
+                let stream = start_mlx_lm_streaming_generate(runtime, mlx_lm_backend, &request)
+                    .map_err(EngineSessionError::from)?;
+                Ok(build_mlx_lm_stream_state(
+                    request_id,
+                    request,
+                    runtime.clone(),
+                    stream,
+                ))
+            }
+            SelectedBackend::Mlx => unreachable!("is_mlx() was already checked"),
+        }
     }
 
     pub fn next_stream_event(
@@ -450,6 +476,7 @@ impl StatelessGenerateContext {
                 state.as_mut(),
                 self.config.resolved_backend.selected_backend,
             ),
+            GenerateStreamState::MlxLm(state) => next_mlx_lm_stream_event(state.as_mut()),
             GenerateStreamState::Native(_) => {
                 Err(EngineSessionError::StatelessStreamRequiresLlamaCpp {
                     selected_backend: self.config.resolved_backend.selected_backend,
@@ -552,6 +579,7 @@ pub struct GenerateStream<'a> {
 pub enum GenerateStreamState {
     Native(Box<NativeGenerateStreamState>),
     LlamaCpp(Box<LlamaCppGenerateStreamState>),
+    MlxLm(Box<MlxLmGenerateStreamState>),
 }
 
 #[derive(Debug)]
@@ -581,6 +609,21 @@ pub struct LlamaCppGenerateStreamState {
     ttft_step: Option<u64>,
     terminal_chunk_seen: bool,
     stream: LlamaCppStreamHandle,
+    phase: GenerateStreamPhase,
+}
+
+#[derive(Debug)]
+pub struct MlxLmGenerateStreamState {
+    request_id: u64,
+    runtime: RuntimeReport,
+    current_report: SessionRequestReport,
+    prompt_text: Option<String>,
+    output_text: String,
+    prompt_token_count: Option<u32>,
+    output_token_count: Option<u32>,
+    step_count: u64,
+    ttft_step: Option<u64>,
+    stream: MlxLmStreamHandle,
     phase: GenerateStreamPhase,
 }
 
@@ -1141,7 +1184,16 @@ impl EngineSession {
                     self.llama_cpp_stream_state_with_request_id(request_id, request)
                 }
                 SelectedBackend::MlxLmDelegated => {
-                    Err(EngineSessionError::MlxLmDoesNotSupportStreaming)
+                    let mlx_lm_backend = self
+                        .config
+                        .mlx_lm_backend
+                        .as_ref()
+                        .ok_or(EngineSessionError::MissingMlxLmConfig)?;
+                    let runtime = self.config.runtime_report();
+                    let stream =
+                        start_mlx_lm_streaming_generate(&runtime, mlx_lm_backend, &request)
+                            .map_err(EngineSessionError::from)?;
+                    Ok(build_mlx_lm_stream_state(request_id, request, runtime, stream))
                 }
                 SelectedBackend::Mlx => unreachable!("uses_mlx_runtime was already checked"),
             };
@@ -1161,6 +1213,7 @@ impl EngineSession {
                 state.as_mut(),
                 self.config.resolved_backend.selected_backend,
             ),
+            GenerateStreamState::MlxLm(state) => next_mlx_lm_stream_event(state.as_mut()),
         }
     }
 
@@ -1368,6 +1421,7 @@ impl GenerateStreamState {
         match self {
             Self::Native(state) => state.request_id,
             Self::LlamaCpp(state) => state.request_id,
+            Self::MlxLm(state) => state.request_id,
         }
     }
 
@@ -1375,6 +1429,7 @@ impl GenerateStreamState {
         match self {
             Self::Native(state) => state.phase = GenerateStreamPhase::Done,
             Self::LlamaCpp(state) => state.phase = GenerateStreamPhase::Done,
+            Self::MlxLm(state) => state.phase = GenerateStreamPhase::Done,
         }
     }
 }
@@ -1534,6 +1589,177 @@ impl LlamaCppGenerateStreamState {
             },
         })
     }
+}
+
+impl MlxLmGenerateStreamState {
+    fn new(
+        request_id: u64,
+        runtime: RuntimeReport,
+        mut current_report: SessionRequestReport,
+        prompt_text: Option<String>,
+        stream: MlxLmStreamHandle,
+    ) -> Self {
+        current_report.prompt_len = current_report.prompt_tokens.len() as u32;
+        Self {
+            request_id,
+            runtime,
+            current_report,
+            prompt_text,
+            output_text: String::new(),
+            prompt_token_count: None,
+            output_token_count: None,
+            step_count: 0,
+            ttft_step: None,
+            stream,
+            phase: GenerateStreamPhase::Request,
+        }
+    }
+
+    fn step_event_from_chunk(&mut self, chunk: MlxLmStreamChunkResult) -> GenerateStreamEvent {
+        self.step_count += 1;
+        let delta_text = chunk.text;
+        let is_terminal = chunk.finish_reason.is_some();
+
+        let ttft_events = if self.ttft_step.is_none() && !delta_text.is_empty() {
+            self.ttft_step = Some(self.step_count);
+            1
+        } else {
+            0
+        };
+
+        self.output_text.push_str(&delta_text);
+
+        let finish_reason = finish_reason_from_mlx_lm(chunk.finish_reason.as_deref());
+        if finish_reason.is_some() {
+            self.current_report.finish_reason = finish_reason;
+            self.current_report.terminal_stop_reason =
+                terminal_stop_reason_from_finish_reason(finish_reason);
+        }
+        if let Some(pt) = chunk.prompt_token_count {
+            self.prompt_token_count = Some(pt);
+        }
+        if let Some(ct) = chunk.output_token_count {
+            self.output_token_count = Some(ct);
+        }
+        self.current_report.state = if is_terminal {
+            SessionRequestState::Finished
+        } else if !delta_text.is_empty() {
+            SessionRequestState::Running
+        } else {
+            self.current_report.state
+        };
+
+        GenerateStreamEvent::Step(GenerateStreamStepEvent {
+            request: self.current_report.clone(),
+            step: EngineStepReport {
+                step_id: None,
+                scheduled_requests: u32::from(!delta_text.is_empty() || is_terminal),
+                scheduled_tokens: 0,
+                ttft_events,
+                prefix_hits: 0,
+                kv_usage_blocks: 0,
+                evictions: 0,
+                cpu_time_us: 0,
+                runner_time_us: 0,
+                route: None,
+                metal_dispatch: None,
+            },
+            delta_tokens: Vec::new(),
+            delta_token_logprobs: Vec::new(),
+            delta_text: if delta_text.is_empty() {
+                None
+            } else {
+                Some(delta_text)
+            },
+        })
+    }
+}
+
+fn next_mlx_lm_stream_event(
+    state: &mut MlxLmGenerateStreamState,
+) -> Result<Option<GenerateStreamEvent>, EngineSessionError> {
+    match state.phase {
+        GenerateStreamPhase::Request => {
+            state.phase = GenerateStreamPhase::Step;
+            Ok(Some(GenerateStreamEvent::Request(GenerateStreamRequestEvent {
+                request: state.current_report.clone(),
+                runtime: state.runtime.clone(),
+            })))
+        }
+        GenerateStreamPhase::Step => match state.stream.next_chunk()? {
+            Some(chunk) => Ok(Some(state.step_event_from_chunk(chunk))),
+            None => {
+                state.phase = GenerateStreamPhase::Done;
+                Ok(Some(GenerateStreamEvent::Response(
+                    GenerateStreamResponseEvent {
+                        response: crate::generate::GenerateResponse {
+                            request_id: state.request_id,
+                            model_id: state.current_report.model_id.clone(),
+                            prompt_tokens: state.current_report.prompt_tokens.clone(),
+                            prompt_text: state.prompt_text.clone(),
+                            output_tokens: state.current_report.output_tokens.clone(),
+                            output_token_logprobs: state
+                                .current_report
+                                .output_token_logprobs
+                                .clone(),
+                            output_text: Some(state.output_text.clone()),
+                            prompt_token_count: state.prompt_token_count,
+                            output_token_count: state.output_token_count,
+                            status: crate::generate::GenerateStatus::Finished,
+                            finish_reason: state.current_report.finish_reason,
+                            step_count: state.step_count,
+                            ttft_step: state.ttft_step,
+                            route: state.current_report.route.clone(),
+                            runtime: state.runtime.clone(),
+                        },
+                    },
+                )))
+            }
+        },
+        GenerateStreamPhase::Done => Ok(None),
+    }
+}
+
+fn build_mlx_lm_stream_state(
+    request_id: u64,
+    request: GenerateRequest,
+    runtime: RuntimeReport,
+    stream: MlxLmStreamHandle,
+) -> GenerateStreamState {
+    let route = crate::generate::GenerateRouteReport {
+        execution_plan: Some(MLX_LM_STREAM_EXECUTION_PLAN.to_string()),
+        attention_route: None,
+        kv_mode: None,
+        prefix_cache_path: None,
+        barrier_mode: None,
+        crossover_decisions: Default::default(),
+    };
+    let current_report = SessionRequestReport {
+        request_id,
+        model_id: request.model_id.clone(),
+        state: SessionRequestState::Waiting,
+        prompt_tokens: request.input_tokens.clone(),
+        processed_prompt_tokens: 0,
+        output_tokens: Vec::new(),
+        output_token_logprobs: Vec::new(),
+        prompt_len: 0,
+        output_len: 0,
+        max_output_tokens: request.max_output_tokens,
+        cancel_requested: false,
+        execution_plan_ref: route.execution_plan.clone(),
+        route,
+        finish_reason: None,
+        terminal_stop_reason: None,
+        last_error: None,
+    };
+
+    GenerateStreamState::MlxLm(Box::new(MlxLmGenerateStreamState::new(
+        request_id,
+        runtime,
+        current_report,
+        request.input_text,
+        stream,
+    )))
 }
 
 fn apply_llama_cpp_stream_chunk(
@@ -3016,7 +3242,7 @@ sys.exit(17)
         assert_eq!(runtime.selected_backend, SelectedBackend::MlxLmDelegated);
         assert_eq!(runtime.support_tier, SupportTier::MlxLmDelegated);
         assert!(runtime.capabilities.text_generation);
-        assert!(!runtime.capabilities.token_streaming);
+        assert!(runtime.capabilities.token_streaming);
         assert!(runtime.mlx_runtime.is_none());
     }
 

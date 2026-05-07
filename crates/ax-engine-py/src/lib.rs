@@ -1114,6 +1114,9 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxLm(MlxLmBackendError::HttpStatus { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::InvalidResponseJson { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::SseRead { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::InvalidStreamChunk { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. })
         | EngineSessionError::UnsupportedHostHardware { .. }
         | EngineSessionError::RequestReportInvariantViolation { .. }
         | EngineSessionError::StreamEndedWithoutResponse { .. }
