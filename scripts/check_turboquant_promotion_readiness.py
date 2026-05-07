@@ -109,20 +109,30 @@ def discover_quality_artifacts(results_root: Path) -> list[Path]:
     return sorted(results_root.rglob("*quality-gate*.json"))
 
 
-def inspect_quality_artifact(path: Path, *, require_files: bool) -> dict[str, Any]:
+def inspect_quality_artifact(
+    path: Path,
+    *,
+    require_files: bool,
+    root: Path = REPO_ROOT,
+) -> dict[str, Any]:
     try:
         doc = _load_json(path)
-        checker.validate_artifact(doc, root=REPO_ROOT, require_files=require_files)
+        checker.validate_artifact(doc, root=root, require_files=require_files)
     except Exception as exc:  # noqa: BLE001 - report fail-closed reason verbatim.
         return {
             "path": _relative(path),
             "passes_quality_gate": False,
-            "blocker": str(exc),
+            "passes_performance_gate": False,
+            "quality_blocker": str(exc),
+            "performance_blockers": [],
         }
+    performance_blockers = checker.performance_gate_blockers(doc.get("metrics", {}))
     return {
         "path": _relative(path),
         "passes_quality_gate": True,
-        "blocker": None,
+        "passes_performance_gate": not performance_blockers,
+        "quality_blocker": None,
+        "performance_blockers": performance_blockers,
     }
 
 
@@ -132,23 +142,39 @@ def build_report(
     results_root: Path,
     artifacts: list[Path],
     require_artifact_files: bool,
+    root: Path = REPO_ROOT,
 ) -> dict[str, Any]:
     manifests = [inspect_manifest(path) for path in discover_manifests(models_root)]
     artifact_paths = artifacts or discover_quality_artifacts(results_root)
     quality_artifacts = [
-        inspect_quality_artifact(path, require_files=require_artifact_files)
+        inspect_quality_artifact(
+            path,
+            require_files=require_artifact_files,
+            root=root,
+        )
         for path in artifact_paths
     ]
     eligible_models = [item for item in manifests if item["eligible_for_current_fused_gate"]]
-    passing_artifacts = [item for item in quality_artifacts if item["passes_quality_gate"]]
+    passing_quality_artifacts = [
+        item for item in quality_artifacts if item["passes_quality_gate"]
+    ]
+    passing_performance_artifacts = [
+        item
+        for item in passing_quality_artifacts
+        if item["passes_performance_gate"]
+    ]
 
     blockers: list[str] = []
     if not eligible_models:
         blockers.append(
             "no local model manifest can exercise the current fused K8/V4 promotion gate"
         )
-    if not passing_artifacts:
+    if not passing_quality_artifacts:
         blockers.append("no passing long-context fused-path quality artifact was found")
+    elif not passing_performance_artifacts:
+        blockers.append(
+            "no passing long-context fused-path performance promotion artifact was found"
+        )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -196,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             results_root=args.results_root,
             artifacts=args.artifact,
             require_artifact_files=not args.no_require_artifact_files,
+            root=REPO_ROOT,
         )
         text = json.dumps(report, indent=2) + "\n"
         if args.output:

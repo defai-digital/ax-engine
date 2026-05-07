@@ -202,6 +202,7 @@ def build_quality_artifact(
             "kv_saved_kib": kv_saved_kib,
         }
     )
+    performance_blockers = checker.performance_gate_blockers(metrics)
 
     artifact = {
         "schema_version": checker.SCHEMA_VERSION,
@@ -253,6 +254,9 @@ def build_quality_artifact(
         ],
         "decision": {
             "passed": True,
+            "quality_gate_passed": True,
+            "performance_promotion_ready": not performance_blockers,
+            "performance_blockers": performance_blockers,
             "public_support_docs_approved": False,
         },
     }

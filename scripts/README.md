@@ -66,8 +66,9 @@ throughput baselines.
   long-context shape, baseline/candidate provenance, candidate mode
   `turboquant-fused-experimental`, K8/V4 route metadata schema `>= 2`,
   fused_compressed_decode path code `2`, fused decode successes, zero
-  fallbacks, decode quality thresholds, throughput ratio, and memory-savings
-  evidence.
+  fallbacks, decode quality thresholds, recorded throughput ratio, and
+  memory-savings evidence. Decode-throughput promotion is checked separately by
+  the readiness report.
 - `check_turboquant_microbench_artifact.py`: fail-closed validator for
   standalone fused cold-decode microbenchmark artifacts. It checks K8/V4
   metadata, long-cold-context coverage, `two_stage_scores` quality, memory
@@ -172,7 +173,8 @@ throughput baselines.
 - `check_turboquant_promotion_readiness.py`: fail-closed readiness report for
   TurboQuant public-support promotion. It scans local model manifests and
   quality-gate artifacts, then reports whether public docs must remain
-  experimental.
+  experimental. Passing quality/path evidence alone is not enough for public
+  promotion when the decode-throughput performance gate is still blocked.
 - `cargo run -p ax-engine-mlx --release --bin turboquant-microbench -- ...`:
   TurboQuant fused cold-decode microbenchmark. It compares the K8/V4 MLX/Metal
   kernels against the CPU reference oracle and writes

@@ -408,3 +408,24 @@ The 128-token decode row retained effective n-gram acceleration at 196.8 tok/s
 acceleration, while the matching direct row stayed near reference parity
 (0.991x `mlx_lm`). This keeps the Phase 3 throughput claim scoped to rows with
 observed draft acceptance.
+
+### Slice 16: TurboQuant Fused Path Quality Gate
+
+The sixteenth slice completes Phase 4's experimental quality/path gate without
+turning it into a premature public performance claim. The real MLX runner can
+exercise `turboquant-fused-experimental` on eligible K8/V4 single-token decode
+layers, and route metadata distinguishes candidate snapshots, attempts,
+successes, fallbacks, fallback reasons, runtime compressed-slot writes, and
+estimated byte savings.
+
+The artifact contract now separates two decisions:
+
+- the long-context quality/path gate, which requires fused_compressed_decode
+  attempts and successes, zero fused fallbacks, K8/V4 metadata, runtime storage
+  writes, byte savings, and reference-quality logits/output evidence
+- the public-support performance gate, which remains blocked until fused decode
+  throughput reaches the configured decode-ratio threshold
+
+This split lets Phase 4 close honestly: real-runner fused compressed decode can
+produce auditable long-context quality evidence, while public TurboQuant support
+wording remains experimental until the performance gate is also satisfied.
