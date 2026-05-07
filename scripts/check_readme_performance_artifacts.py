@@ -18,6 +18,7 @@ ARTIFACT_LABELS = {
     "gemma-4-e2b-it-5bit": ("Gemma 4 E2B", "5-bit · group=64 · affine"),
     "gemma-4-e2b-it-6bit": ("Gemma 4 E2B", "6-bit · group=64 · affine"),
     "gemma-4-e2b-it-8bit": ("Gemma 4 E2B", "8-bit · group=64 · affine"),
+    "gemma-4-e4b-it-4bit": ("Gemma 4 E4B", "4-bit · group=64 · affine"),
     "gemma-4-26b-a4b-it-4bit": ("Gemma 4 26B A4B", "4-bit · group=64 · affine"),
     "gemma-4-31b-it-4bit": ("Gemma 4 31B", "4-bit · group=64 · affine"),
     "qwen3_5-9b-mlx-4bit": ("Qwen 3.5 9B", "4-bit · group=64 · affine"),
@@ -94,6 +95,11 @@ def parse_numeric_cell(cell: str) -> float:
     return float(match.group(0))
 
 
+def is_unavailable_cell(cell: str) -> bool:
+    normalized = cell.strip().lower()
+    return normalized in {"n/a", "na", "-"}
+
+
 def split_markdown_row(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
@@ -150,6 +156,8 @@ def parse_readme_table(
         for header, cell in zip(normalized_headers[3:], cells[3:]):
             engine = column_map.get(header)
             if engine is None:
+                continue
+            if is_unavailable_cell(cell):
                 continue
             rows.append(
                 ReadmeMetric(
@@ -395,7 +403,7 @@ def check_readme_performance(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 13 * 2 * (4 + 3),
+    expected_metric_count: int | None = 196,
 ) -> list[str]:
     resolved_readme = readme_path.resolve()
     resolved_artifact_dir = (artifact_dir or default_artifact_dir(resolved_readme)).resolve()
