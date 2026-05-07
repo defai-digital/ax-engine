@@ -197,6 +197,12 @@ impl NgramPrediction {
             .iter()
             .find(|stats| stats.token == self.token)
     }
+
+    fn latest_continuation(&self) -> Option<&ContinuationStats> {
+        self.continuations
+            .iter()
+            .max_by_key(|stats| stats.last_seen)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -210,6 +216,55 @@ enum NgramContextKey {
 struct DraftStep {
     token: u32,
     source: NgramContextKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NgramPolicyVariant {
+    MajorityRecency,
+    LlamaMapLatest,
+    SharedPoolMajority,
+}
+
+impl NgramPolicyVariant {
+    pub fn route_code(self) -> u32 {
+        match self {
+            Self::MajorityRecency => 1,
+            Self::LlamaMapLatest => 2,
+            Self::SharedPoolMajority => 3,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NgramDraftRejection {
+    NoCandidate,
+    ConfidenceFiltered,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NgramDraftOutcome {
+    pub draft: Vec<u32>,
+    pub rejection: Option<NgramDraftRejection>,
+    pub requested_max_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NgramDraftPolicy {
+    pub variant: NgramPolicyVariant,
+    pub max_len: usize,
+    pub min_support: u32,
+    pub confidence_threshold: f32,
+}
+
+impl NgramDraftPolicy {
+    pub fn majority(max_len: usize, min_support: u32, confidence_threshold: f32) -> Self {
+        Self {
+            variant: NgramPolicyVariant::MajorityRecency,
+            max_len,
+            min_support,
+            confidence_threshold,
+        }
+    }
 }
 
 /// Snapshot of the n-gram proposer table.
@@ -368,7 +423,16 @@ impl NgramTable {
         min_support: u32,
         conf_threshold: f32,
     ) -> Vec<u32> {
-        let mut draft = Vec::with_capacity(max_len);
+        self.predict_with_policy(NgramDraftPolicy::majority(
+            max_len,
+            min_support,
+            conf_threshold,
+        ))
+        .draft
+    }
+
+    pub fn predict_with_policy(&self, policy: NgramDraftPolicy) -> NgramDraftOutcome {
+        let mut draft = Vec::with_capacity(policy.max_len);
         // Fixed-size ring; self.tail has at most 4 elements.
         let mut buf = [0u32; 4];
         let mut len = self.tail.len().min(4);
@@ -376,16 +440,24 @@ impl NgramTable {
             buf[i] = t;
         }
 
-        for _ in 0..max_len {
-            match self.select_draft_step(&buf, len, min_support, conf_threshold) {
-                Some(step) => {
+        let mut rejection = None;
+        for _ in 0..policy.max_len {
+            match self.select_draft_step(&buf, len, policy) {
+                DraftStepSelection::Selected(step) => {
                     draft.push(step.token);
                     push_prediction_context_token(&mut buf, &mut len, step.token);
                 }
-                None => break,
+                DraftStepSelection::Rejected(reason) => {
+                    rejection = Some(reason);
+                    break;
+                }
             }
         }
-        draft
+        NgramDraftOutcome {
+            draft,
+            rejection,
+            requested_max_len: policy.max_len,
+        }
     }
 
     /// Record verifier feedback for a draft generated from the current tail.
@@ -419,8 +491,11 @@ impl NgramTable {
 
         for (index, &token) in draft.iter().take(feedback_len).enumerate() {
             let accepted = index < accept_count;
-            if let Some(step) = self.select_draft_step(&buf, len, min_support, conf_threshold)
-                && step.token == token
+            if let DraftStepSelection::Selected(step) = self.select_draft_step(
+                &buf,
+                len,
+                NgramDraftPolicy::majority(draft.len(), min_support, conf_threshold),
+            ) && step.token == token
             {
                 self.record_feedback_for_context(step.source, token, accepted);
             }
@@ -432,68 +507,90 @@ impl NgramTable {
         &self,
         buf: &[u32; 4],
         len: usize,
-        min_support: u32,
-        conf_threshold: f32,
-    ) -> Option<DraftStep> {
+        policy: NgramDraftPolicy,
+    ) -> DraftStepSelection {
+        let mut filtered = false;
         if len >= 4 {
             let key = (buf[0], buf[1], buf[2], buf[3]);
-            if let Some(prediction) = self.fourgrams.get(&key)
-                && prediction_passes(prediction, min_support, conf_threshold)
-            {
-                return Some(DraftStep {
-                    token: prediction.token,
-                    source: NgramContextKey::Fourgram(key),
-                });
+            if let Some(prediction) = self.fourgrams.get(&key) {
+                match draft_step_from_prediction(prediction, policy) {
+                    Some(token) => {
+                        return DraftStepSelection::Selected(DraftStep {
+                            token,
+                            source: NgramContextKey::Fourgram(key),
+                        });
+                    }
+                    None => filtered = true,
+                }
             }
             let key = (buf[1], buf[2], buf[3]);
-            if let Some(prediction) = self.trigrams.get(&key)
-                && prediction_passes(prediction, min_support, conf_threshold)
-            {
-                return Some(DraftStep {
-                    token: prediction.token,
-                    source: NgramContextKey::Trigram(key),
-                });
+            if let Some(prediction) = self.trigrams.get(&key) {
+                match draft_step_from_prediction(prediction, policy) {
+                    Some(token) => {
+                        return DraftStepSelection::Selected(DraftStep {
+                            token,
+                            source: NgramContextKey::Trigram(key),
+                        });
+                    }
+                    None => filtered = true,
+                }
             }
             let key = (buf[2], buf[3]);
-            if let Some(prediction) = self.bigrams.get(&key)
-                && prediction_passes(prediction, min_support, conf_threshold)
-            {
-                return Some(DraftStep {
-                    token: prediction.token,
-                    source: NgramContextKey::Bigram(key),
-                });
+            if let Some(prediction) = self.bigrams.get(&key) {
+                match draft_step_from_prediction(prediction, policy) {
+                    Some(token) => {
+                        return DraftStepSelection::Selected(DraftStep {
+                            token,
+                            source: NgramContextKey::Bigram(key),
+                        });
+                    }
+                    None => filtered = true,
+                }
             }
         } else if len == 3 {
             let key = (buf[0], buf[1], buf[2]);
-            if let Some(prediction) = self.trigrams.get(&key)
-                && prediction_passes(prediction, min_support, conf_threshold)
-            {
-                return Some(DraftStep {
-                    token: prediction.token,
-                    source: NgramContextKey::Trigram(key),
-                });
+            if let Some(prediction) = self.trigrams.get(&key) {
+                match draft_step_from_prediction(prediction, policy) {
+                    Some(token) => {
+                        return DraftStepSelection::Selected(DraftStep {
+                            token,
+                            source: NgramContextKey::Trigram(key),
+                        });
+                    }
+                    None => filtered = true,
+                }
             }
             let key = (buf[1], buf[2]);
-            if let Some(prediction) = self.bigrams.get(&key)
-                && prediction_passes(prediction, min_support, conf_threshold)
-            {
-                return Some(DraftStep {
-                    token: prediction.token,
-                    source: NgramContextKey::Bigram(key),
-                });
+            if let Some(prediction) = self.bigrams.get(&key) {
+                match draft_step_from_prediction(prediction, policy) {
+                    Some(token) => {
+                        return DraftStepSelection::Selected(DraftStep {
+                            token,
+                            source: NgramContextKey::Bigram(key),
+                        });
+                    }
+                    None => filtered = true,
+                }
             }
         } else if len == 2 {
             let key = (buf[0], buf[1]);
-            if let Some(prediction) = self.bigrams.get(&key)
-                && prediction_passes(prediction, min_support, conf_threshold)
-            {
-                return Some(DraftStep {
-                    token: prediction.token,
-                    source: NgramContextKey::Bigram(key),
-                });
+            if let Some(prediction) = self.bigrams.get(&key) {
+                match draft_step_from_prediction(prediction, policy) {
+                    Some(token) => {
+                        return DraftStepSelection::Selected(DraftStep {
+                            token,
+                            source: NgramContextKey::Bigram(key),
+                        });
+                    }
+                    None => filtered = true,
+                }
             }
         }
-        None
+        DraftStepSelection::Rejected(if filtered {
+            NgramDraftRejection::ConfidenceFiltered
+        } else {
+            NgramDraftRejection::NoCandidate
+        })
     }
 
     fn record_feedback_for_context(
@@ -519,8 +616,41 @@ impl NgramTable {
     }
 }
 
-fn prediction_passes(prediction: &NgramPrediction, min_support: u32, conf_threshold: f32) -> bool {
-    prediction.support >= min_support && prediction.effective_confidence() >= conf_threshold
+enum DraftStepSelection {
+    Selected(DraftStep),
+    Rejected(NgramDraftRejection),
+}
+
+fn draft_step_from_prediction(
+    prediction: &NgramPrediction,
+    policy: NgramDraftPolicy,
+) -> Option<u32> {
+    match policy.variant {
+        NgramPolicyVariant::MajorityRecency | NgramPolicyVariant::SharedPoolMajority => {
+            prediction_passes(
+                prediction.support,
+                prediction.effective_confidence(),
+                policy.min_support,
+                policy.confidence_threshold,
+            )
+            .then_some(prediction.token)
+        }
+        NgramPolicyVariant::LlamaMapLatest => {
+            let latest = prediction.latest_continuation()?;
+            let confidence = latest.count as f32 / prediction.total as f32;
+            prediction_passes(
+                latest.count,
+                confidence,
+                policy.min_support,
+                policy.confidence_threshold,
+            )
+            .then_some(latest.token)
+        }
+    }
+}
+
+fn prediction_passes(support: u32, confidence: f32, min_support: u32, conf_threshold: f32) -> bool {
+    support >= min_support && confidence >= conf_threshold
 }
 
 fn push_prediction_context_token(buf: &mut [u32; 4], len: &mut usize, token: u32) {
@@ -1080,6 +1210,54 @@ mod tests {
         assert!(
             t.predict_with_confidence(1, 1, 0.75).is_empty(),
             "recency tie-break must not bypass confidence filtering"
+        );
+    }
+
+    #[test]
+    fn llama_map_latest_policy_is_available_behind_flag_shape() {
+        let mut t = NgramTable::new();
+        t.feed(&[1, 2, 3, 1, 2, 3, 1, 2, 9]);
+        t.feed(&[5, 1, 2]);
+
+        let default = t.predict_with_policy(NgramDraftPolicy {
+            variant: NgramPolicyVariant::MajorityRecency,
+            max_len: 1,
+            min_support: 1,
+            confidence_threshold: 0.0,
+        });
+        let latest = t.predict_with_policy(NgramDraftPolicy {
+            variant: NgramPolicyVariant::LlamaMapLatest,
+            max_len: 1,
+            min_support: 1,
+            confidence_threshold: 0.0,
+        });
+
+        assert_eq!(default.draft, vec![3]);
+        assert_eq!(
+            latest.draft,
+            vec![9],
+            "llama-map/latest policy should model overwrite-style continuation lookup"
+        );
+    }
+
+    #[test]
+    fn draft_outcome_labels_no_candidate_and_confidence_filtering() {
+        let empty = NgramTable::new();
+        let no_candidate = empty.predict_with_policy(NgramDraftPolicy::majority(1, 1, 0.4));
+        assert_eq!(no_candidate.draft, Vec::<u32>::new());
+        assert_eq!(
+            no_candidate.rejection,
+            Some(NgramDraftRejection::NoCandidate)
+        );
+
+        let mut contested = NgramTable::new();
+        contested.feed(&[3, 1, 2, 3, 1, 4, 3, 1, 5]);
+        contested.feed(&[9, 3, 1]);
+        let filtered = contested.predict_with_policy(NgramDraftPolicy::majority(1, 1, 0.4));
+        assert_eq!(filtered.draft, Vec::<u32>::new());
+        assert_eq!(
+            filtered.rejection,
+            Some(NgramDraftRejection::ConfidenceFiltered)
         );
     }
 

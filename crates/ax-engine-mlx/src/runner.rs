@@ -71,7 +71,8 @@ use crate::model::{
 };
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, DRAFT_CONFIDENCE_THRESHOLD, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN,
-    NgramTable, ngram_accel_decode_step, single_decode_with_turboquant_context,
+    NgramDraftOutcome, NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
+    ngram_accel_decode_step, single_decode_with_turboquant_context,
 };
 use crate::sampling::Xorshift64;
 use crate::turboquant::{
@@ -94,6 +95,9 @@ const NGRAM_BETA_PRIOR_BETA: f32 = 1.0;
 const NGRAM_BETA_MAX_TOTAL: f32 = 100.0;
 
 const NGRAM_ACCEPT_THRESHOLD: f32 = 0.5;
+const NGRAM_DRAFT_LEN_LOW_CONFIDENCE: usize = 2;
+const NGRAM_DRAFT_LEN_EXTEND_THRESHOLD: f32 = 0.80;
+const NGRAM_DRAFT_LEN_SHRINK_THRESHOLD: f32 = 0.60;
 const NGRAM_RETRY_INTERVAL: u32 = 8;
 /// Steps to suppress n-gram acceleration after a complete miss (0 draft tokens accepted)
 /// on a linear-attention model.  Recompute cost is O(1) token regardless of context
@@ -378,6 +382,13 @@ struct NgramAccelerationTelemetry {
     cooldown_steps_scheduled: u32,
     request_disable_events: u32,
     request_disabled_steps: u32,
+    fallback_no_candidate_steps: u32,
+    fallback_confidence_filtered_steps: u32,
+    fallback_short_output_steps: u32,
+    fallback_linear_no_draft_steps: u32,
+    policy_variant_code: u32,
+    adaptive_draft_len_steps: u32,
+    adaptive_draft_len_total: u32,
 }
 
 impl NgramAccelerationTelemetry {
@@ -404,6 +415,19 @@ impl NgramAccelerationTelemetry {
         self.no_draft_steps = self.no_draft_steps.saturating_add(1);
     }
 
+    fn record_no_draft_reason(&mut self, reason: Option<NgramDraftRejection>) {
+        match reason {
+            Some(NgramDraftRejection::ConfidenceFiltered) => {
+                self.fallback_confidence_filtered_steps =
+                    self.fallback_confidence_filtered_steps.saturating_add(1);
+            }
+            Some(NgramDraftRejection::NoCandidate) | None => {
+                self.fallback_no_candidate_steps =
+                    self.fallback_no_candidate_steps.saturating_add(1);
+            }
+        }
+    }
+
     fn record_cooldown_step(&mut self) {
         self.cooldown_steps = self.cooldown_steps.saturating_add(1);
     }
@@ -420,6 +444,28 @@ impl NgramAccelerationTelemetry {
 
     fn record_request_disabled_step(&mut self) {
         self.request_disabled_steps = self.request_disabled_steps.saturating_add(1);
+    }
+
+    fn record_request_disabled_reason(&mut self, reason: NgramRequestDisableReason) {
+        match reason {
+            NgramRequestDisableReason::None => {}
+            NgramRequestDisableReason::ShortOutputBudget => {
+                self.fallback_short_output_steps =
+                    self.fallback_short_output_steps.saturating_add(1);
+            }
+            NgramRequestDisableReason::LinearNoDraft => {
+                self.fallback_linear_no_draft_steps =
+                    self.fallback_linear_no_draft_steps.saturating_add(1);
+            }
+        }
+    }
+
+    fn record_policy(&mut self, variant: NgramPolicyVariant, requested_draft_len: usize) {
+        self.policy_variant_code = variant.route_code();
+        self.adaptive_draft_len_steps = self.adaptive_draft_len_steps.saturating_add(1);
+        self.adaptive_draft_len_total = self
+            .adaptive_draft_len_total
+            .saturating_add(saturating_u32(requested_draft_len));
     }
 
     fn merge_from(&mut self, other: Self) {
@@ -442,6 +488,25 @@ impl NgramAccelerationTelemetry {
         self.request_disabled_steps = self
             .request_disabled_steps
             .saturating_add(other.request_disabled_steps);
+        self.fallback_no_candidate_steps = self
+            .fallback_no_candidate_steps
+            .saturating_add(other.fallback_no_candidate_steps);
+        self.fallback_confidence_filtered_steps = self
+            .fallback_confidence_filtered_steps
+            .saturating_add(other.fallback_confidence_filtered_steps);
+        self.fallback_short_output_steps = self
+            .fallback_short_output_steps
+            .saturating_add(other.fallback_short_output_steps);
+        self.fallback_linear_no_draft_steps = self
+            .fallback_linear_no_draft_steps
+            .saturating_add(other.fallback_linear_no_draft_steps);
+        self.policy_variant_code = self.policy_variant_code.max(other.policy_variant_code);
+        self.adaptive_draft_len_steps = self
+            .adaptive_draft_len_steps
+            .saturating_add(other.adaptive_draft_len_steps);
+        self.adaptive_draft_len_total = self
+            .adaptive_draft_len_total
+            .saturating_add(other.adaptive_draft_len_total);
     }
 
     fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
@@ -467,6 +532,31 @@ impl NgramAccelerationTelemetry {
             (
                 "ax_ngram_request_disabled_steps",
                 self.request_disabled_steps,
+            ),
+            (
+                "ax_ngram_fallback_no_candidate_steps",
+                self.fallback_no_candidate_steps,
+            ),
+            (
+                "ax_ngram_fallback_confidence_filtered_steps",
+                self.fallback_confidence_filtered_steps,
+            ),
+            (
+                "ax_ngram_fallback_short_output_steps",
+                self.fallback_short_output_steps,
+            ),
+            (
+                "ax_ngram_fallback_linear_no_draft_steps",
+                self.fallback_linear_no_draft_steps,
+            ),
+            ("ax_ngram_policy_variant", self.policy_variant_code),
+            (
+                "ax_ngram_adaptive_draft_len_steps",
+                self.adaptive_draft_len_steps,
+            ),
+            (
+                "ax_ngram_adaptive_draft_len_total",
+                self.adaptive_draft_len_total,
             ),
         ];
 
@@ -1246,6 +1336,7 @@ struct RequestState {
     /// Request-local fallback: once a linear-attention request proves it has no
     /// useful n-gram support, finish it on the direct pipeline.
     ngram_acceleration_disabled_for_request: bool,
+    ngram_request_disable_reason: NgramRequestDisableReason,
     /// Pre-verified bonus tokens ready to serve without a model run.
     bonus_queue: VecDeque<u32>,
     /// The token to use as `last_token` for the next model run.
@@ -1267,6 +1358,14 @@ struct RequestState {
     decode_telemetry: DecodeTelemetry,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum NgramRequestDisableReason {
+    #[default]
+    None,
+    ShortOutputBudget,
+    LinearNoDraft,
+}
+
 impl RequestState {
     fn new(num_layers: usize, request_id: RequestId) -> Self {
         Self {
@@ -1280,6 +1379,7 @@ impl RequestState {
             ngram_disabled_steps: 0,
             linear_ngram_no_draft_streak: 0,
             ngram_acceleration_disabled_for_request: false,
+            ngram_request_disable_reason: NgramRequestDisableReason::None,
             bonus_queue: VecDeque::new(),
             next_model_last_token: None,
             pending_direct: None,
@@ -1307,6 +1407,7 @@ pub struct MlxRunner {
     _stream: MlxStream,
     /// When true, disable n-gram acceleration and use the direct decode path.
     disable_ngram_acceleration: bool,
+    ngram_policy_variant: NgramPolicyVariant,
     /// Optional KV compression policy. Disabled by default and never changes logits in shadow mode.
     kv_compression: MlxKvCompressionConfig,
     /// Per-layer compression eligibility. Empty when compression is disabled.
@@ -1362,6 +1463,7 @@ impl MlxRunner {
         let kv_layer_windows = kv_layer_windows_from_config(&cfg);
         let rotating_sliding_decode = disable_ngram_acceleration
             && std::env::var("AX_MLX_ROTATING_SLIDING_DECODE").as_deref() == Ok("1");
+        let ngram_policy_variant = ngram_policy_variant_from_env();
         let direct_clear_cache_cadence = std::env::var("AX_MLX_DIRECT_CLEAR_CACHE_CADENCE")
             .ok()
             .and_then(|raw| raw.parse::<u32>().ok())
@@ -1416,6 +1518,7 @@ impl MlxRunner {
             states: Mutex::new(HashMap::new()),
             _stream: stream,
             disable_ngram_acceleration,
+            ngram_policy_variant,
             kv_compression,
             kv_compression_layer_eligible,
             prefix_cache: Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy::from_env())),
@@ -2108,6 +2211,9 @@ impl MlxRunner {
         is_greedy: bool,
     ) -> Vec<u32> {
         state.ngram_acceleration.record_request_disabled_step();
+        state
+            .ngram_acceleration
+            .record_request_disabled_reason(state.ngram_request_disable_reason);
         if is_greedy {
             vec![self.run_direct_pipeline_decode(state, last_token)]
         } else {
@@ -2122,14 +2228,17 @@ impl MlxRunner {
         temperature: f32,
         has_linear_attention: bool,
         is_greedy: bool,
+        rejection: Option<NgramDraftRejection>,
     ) -> Option<Vec<u32>> {
         state.ngram_acceleration.record_no_draft();
+        state.ngram_acceleration.record_no_draft_reason(rejection);
         if has_linear_attention {
             state.linear_ngram_no_draft_streak =
                 state.linear_ngram_no_draft_streak.saturating_add(1);
             if is_greedy && linear_ngram_no_draft_should_disable(state.linear_ngram_no_draft_streak)
             {
                 state.ngram_acceleration_disabled_for_request = true;
+                state.ngram_request_disable_reason = NgramRequestDisableReason::LinearNoDraft;
                 state.ngram_acceleration.record_request_disable_event();
                 return Some(self.run_request_disabled_decode(
                     state,
@@ -2267,6 +2376,11 @@ impl MlxRunner {
         // max_output_tokens is smaller than two full retry windows.
         state.ngram_acceleration_disabled_for_request =
             max_output < NGRAM_MIN_OUTPUT_FOR_ACCELERATION;
+        state.ngram_request_disable_reason = if state.ngram_acceleration_disabled_for_request {
+            NgramRequestDisableReason::ShortOutputBudget
+        } else {
+            NgramRequestDisableReason::None
+        };
 
         let kv_compression_shadow_sync_wall_us =
             self.sync_turboquant_shadow_storage_if_needed(state, true, layer_eligible);
@@ -2306,7 +2420,18 @@ impl MlxRunner {
             return result;
         }
 
-        let draft = ngram_acceleration_draft(&state.ngram, has_linear_attention);
+        let draft_outcome = ngram_acceleration_draft(
+            &state.ngram,
+            has_linear_attention,
+            state.ngram_posterior_mean(),
+            self.ngram_policy_variant,
+        );
+        state
+            .ngram_acceleration
+            .record_policy(self.ngram_policy_variant, draft_outcome.requested_max_len);
+        let NgramDraftOutcome {
+            draft, rejection, ..
+        } = draft_outcome;
         if draft.is_empty() {
             if let Some(result) = self.run_no_draft_decode(
                 state,
@@ -2314,6 +2439,7 @@ impl MlxRunner {
                 temperature,
                 has_linear_attention,
                 is_greedy,
+                rejection,
             ) {
                 return result;
             }
@@ -2501,19 +2627,61 @@ fn linear_ngram_no_draft_should_disable(streak: u32) -> bool {
     streak >= LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD
 }
 
-fn ngram_acceleration_draft(ngram: &NgramTable, has_linear_attention: bool) -> Vec<u32> {
-    if has_linear_attention {
+fn ngram_policy_variant_from_env() -> NgramPolicyVariant {
+    match std::env::var("AX_MLX_NGRAM_POLICY")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .replace('_', "-")
+        .as_str()
+    {
+        "llama-map" | "llama" | "latest" => NgramPolicyVariant::LlamaMapLatest,
+        "shared-pool" | "shared" => NgramPolicyVariant::SharedPoolMajority,
+        _ => NgramPolicyVariant::MajorityRecency,
+    }
+}
+
+fn ngram_acceleration_draft(
+    ngram: &NgramTable,
+    has_linear_attention: bool,
+    posterior_mean: f32,
+    variant: NgramPolicyVariant,
+) -> NgramDraftOutcome {
+    let max_len = adaptive_ngram_draft_len(has_linear_attention, posterior_mean);
+    let policy = if has_linear_attention {
         // Dense rollback is O(1); linear-attention partial-reject pays
         // branch/recompute, so cap at DEFAULT_DRAFT_LEN to bound recompute cost.
-        ngram.predict_with_confidence(
-            DEFAULT_DRAFT_LEN,
-            LINEAR_MIN_NGRAM_SUPPORT,
-            DRAFT_CONFIDENCE_THRESHOLD,
-        )
+        NgramDraftPolicy {
+            variant,
+            max_len,
+            min_support: LINEAR_MIN_NGRAM_SUPPORT,
+            confidence_threshold: DRAFT_CONFIDENCE_THRESHOLD,
+        }
     } else {
-        // Dense models extend up to MAX_DRAFT_LEN when the n-gram chain is
-        // high-confidence; the confidence gate stops the chain early otherwise.
-        ngram.predict_with_confidence(MAX_DRAFT_LEN, 1, DRAFT_CONFIDENCE_THRESHOLD)
+        // Dense models extend up to MAX_DRAFT_LEN when the posterior and n-gram
+        // chain are high-confidence; otherwise probe shorter drafts first.
+        NgramDraftPolicy {
+            variant,
+            max_len,
+            min_support: 1,
+            confidence_threshold: DRAFT_CONFIDENCE_THRESHOLD,
+        }
+    };
+    ngram.predict_with_policy(policy)
+}
+
+fn adaptive_ngram_draft_len(has_linear_attention: bool, posterior_mean: f32) -> usize {
+    if has_linear_attention {
+        if posterior_mean < NGRAM_DRAFT_LEN_SHRINK_THRESHOLD {
+            NGRAM_DRAFT_LEN_LOW_CONFIDENCE
+        } else {
+            DEFAULT_DRAFT_LEN
+        }
+    } else if posterior_mean >= NGRAM_DRAFT_LEN_EXTEND_THRESHOLD {
+        MAX_DRAFT_LEN
+    } else if posterior_mean < NGRAM_DRAFT_LEN_SHRINK_THRESHOLD {
+        NGRAM_DRAFT_LEN_LOW_CONFIDENCE
+    } else {
+        DEFAULT_DRAFT_LEN
     }
 }
 
@@ -3690,6 +3858,10 @@ mod tests {
         telemetry.record_cooldown_event(4);
         telemetry.record_request_disable_event();
         telemetry.record_request_disabled_step();
+        telemetry.record_request_disabled_reason(NgramRequestDisableReason::LinearNoDraft);
+        telemetry.record_no_draft_reason(Some(NgramDraftRejection::NoCandidate));
+        telemetry.record_no_draft_reason(Some(NgramDraftRejection::ConfidenceFiltered));
+        telemetry.record_policy(NgramPolicyVariant::SharedPoolMajority, MAX_DRAFT_LEN);
 
         let mut decisions = Vec::new();
         telemetry.append_route_decisions(&mut decisions);
@@ -3719,6 +3891,24 @@ mod tests {
         assert_eq!(decisions.get("ax_ngram_cooldown_steps_scheduled"), Some(&4));
         assert_eq!(decisions.get("ax_ngram_request_disable_events"), Some(&1));
         assert_eq!(decisions.get("ax_ngram_request_disabled_steps"), Some(&1));
+        assert_eq!(
+            decisions.get("ax_ngram_fallback_no_candidate_steps"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_ngram_fallback_confidence_filtered_steps"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_ngram_fallback_linear_no_draft_steps"),
+            Some(&1)
+        );
+        assert_eq!(decisions.get("ax_ngram_policy_variant"), Some(&3));
+        assert_eq!(decisions.get("ax_ngram_adaptive_draft_len_steps"), Some(&1));
+        assert_eq!(
+            decisions.get("ax_ngram_adaptive_draft_len_total"),
+            Some(&(MAX_DRAFT_LEN as u32))
+        );
 
         let mut zero_decisions = Vec::new();
         NgramAccelerationTelemetry::default().append_route_decisions(&mut zero_decisions);
@@ -4543,7 +4733,9 @@ mod tests {
         ngram.feed(&[1, 2, 3, 1, 2, 3]);
 
         // Dense: 3-token cycle builds high-confidence bigrams → draft up to MAX_DRAFT_LEN.
-        let dense_draft = ngram_acceleration_draft(&ngram, false);
+        let dense_draft =
+            ngram_acceleration_draft(&ngram, false, 0.95, NgramPolicyVariant::MajorityRecency)
+                .draft;
         assert!(!dense_draft.is_empty(), "dense draft should be non-empty");
         assert!(
             dense_draft.len() <= MAX_DRAFT_LEN,
@@ -4552,12 +4744,15 @@ mod tests {
 
         // Linear-attention: min_support=2 filters one-off n-grams.
         assert!(
-            ngram_acceleration_draft(&ngram, true).is_empty(),
+            ngram_acceleration_draft(&ngram, true, 0.95, NgramPolicyVariant::MajorityRecency,)
+                .draft
+                .is_empty(),
             "linear attention should not probe one-off prompt n-grams"
         );
 
         ngram.feed(&[1, 2, 3]);
-        let lin_draft = ngram_acceleration_draft(&ngram, true);
+        let lin_draft =
+            ngram_acceleration_draft(&ngram, true, 0.95, NgramPolicyVariant::MajorityRecency).draft;
         assert!(
             !lin_draft.is_empty(),
             "linear attention draft should be non-empty after second repeat"
@@ -4565,6 +4760,25 @@ mod tests {
         assert!(
             lin_draft.len() <= DEFAULT_DRAFT_LEN,
             "linear attention draft must not exceed DEFAULT_DRAFT_LEN"
+        );
+    }
+
+    #[test]
+    fn ngram_adaptive_draft_len_shrinks_and_extends_from_acceptance() {
+        assert_eq!(adaptive_ngram_draft_len(false, 0.95), MAX_DRAFT_LEN);
+        assert_eq!(adaptive_ngram_draft_len(false, 0.70), DEFAULT_DRAFT_LEN);
+        assert_eq!(
+            adaptive_ngram_draft_len(false, 0.40),
+            NGRAM_DRAFT_LEN_LOW_CONFIDENCE
+        );
+        assert_eq!(
+            adaptive_ngram_draft_len(true, 0.95),
+            DEFAULT_DRAFT_LEN,
+            "linear attention stays capped even at high confidence"
+        );
+        assert_eq!(
+            adaptive_ngram_draft_len(true, 0.40),
+            NGRAM_DRAFT_LEN_LOW_CONFIDENCE
         );
     }
 

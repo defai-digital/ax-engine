@@ -156,6 +156,14 @@ Acceptance:
 
 ### Phase 3: N-Gram Decode Policy Hardening
 
+Status: completed for the repo-owned MLX n-gram policy path. The proposer now
+has an explicit draft policy object with majority+recency default selection,
+llama-map/latest and shared-pool policy variants behind `AX_MLX_NGRAM_POLICY`,
+confidence-filtered vs no-candidate draft outcome labels, request-local fallback
+labels, and adaptive draft length based on the observed acceptance posterior.
+Benchmark and README artifact telemetry now carry the policy, fallback, and
+adaptive draft counters.
+
 Keep AX's current verifier semantics, but improve proposal quality:
 
 - preserve majority continuation against one-off outliers
@@ -366,3 +374,26 @@ The P2 artifact path extracts these counters from route metadata, writes
 `scheduler_evidence` into concurrent-prefill artifacts, validates the evidence
 fail-closed, and renders the scheduled prefill/decode/mixed-batch counts in the
 Markdown report.
+
+### Slice 15: N-Gram Policy Hardening
+
+The fifteenth slice completes Phase 3 for the MLX runner's n-gram decode policy.
+The table keeps the current verifier semantics but makes draft selection
+explicit: majority+recency remains the default, late one-off outliers no longer
+replace a supported continuation, and equal-support ties still prefer the most
+recent continuation. Empty drafts now carry a reason (`no_candidate` or
+`confidence_filtered`) so no-draft fallback claims can be audited from route
+metadata.
+
+The runner records request-local fallback labels for short-output direct
+fallback and linear-attention no-draft disablement. It also chooses draft length
+from the request-local acceptance posterior: dense models can extend to the
+high-confidence draft ceiling, middling confidence uses the default draft size,
+and low confidence shrinks probes before cooldown. Linear-attention routes stay
+capped to the bounded recompute cost profile.
+
+`AX_MLX_NGRAM_POLICY` now exposes policy variants for evaluation:
+`majority-recency` (default), `llama-map` / `latest`, and `shared-pool`.
+Artifacts include the selected policy code, adaptive draft length counters, and
+fallback reason counters so coding-shaped benchmark rows can distinguish real
+throughput gains from direct fallback.

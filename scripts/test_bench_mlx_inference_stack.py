@@ -543,6 +543,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_ngram_accepted_tokens": 9,
                     "ax_ngram_request_disable_events": 1,
                     "ax_ngram_request_disabled_steps": 4,
+                    "ax_ngram_fallback_confidence_filtered_steps": 2,
+                    "ax_ngram_policy_variant": 1,
+                    "ax_ngram_adaptive_draft_len_steps": 3,
+                    "ax_ngram_adaptive_draft_len_total": 14,
                     "unrelated": 99,
                 }
             }
@@ -556,6 +560,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_ngram_cooldown_events"], 0)
         self.assertEqual(telemetry["ax_ngram_request_disable_events"], 1)
         self.assertEqual(telemetry["ax_ngram_request_disabled_steps"], 4)
+        self.assertEqual(telemetry["ax_ngram_fallback_confidence_filtered_steps"], 2)
+        self.assertEqual(telemetry["ax_ngram_policy_variant"], 1)
+        self.assertEqual(telemetry["ax_ngram_adaptive_draft_len_steps"], 3)
+        self.assertEqual(telemetry["ax_ngram_adaptive_draft_len_total"], 14)
         self.assertEqual(telemetry["ax_ngram_accept_rate_micros"], 750000)
         self.assertNotIn("unrelated", telemetry)
 
@@ -567,6 +575,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_ngram_draft_tokens": 8,
                         "ax_ngram_accepted_tokens": 4,
                         "ax_ngram_request_disabled_steps": 2,
+                        "ax_ngram_fallback_short_output_steps": 1,
+                        "ax_ngram_adaptive_draft_len_total": 6,
                         "ax_ngram_accept_rate_micros": 500000,
                     }
                 },
@@ -575,6 +585,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_ngram_draft_tokens": 12,
                         "ax_ngram_accepted_tokens": 11,
                         "ax_ngram_request_disabled_steps": 3,
+                        "ax_ngram_fallback_short_output_steps": 2,
+                        "ax_ngram_adaptive_draft_len_total": 8,
                         "ax_ngram_accept_rate_micros": 916667,
                     }
                 },
@@ -584,6 +596,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_ngram_draft_tokens"], 20)
         self.assertEqual(summary["ax_ngram_accepted_tokens"], 15)
         self.assertEqual(summary["ax_ngram_request_disabled_steps"], 5)
+        self.assertEqual(summary["ax_ngram_fallback_short_output_steps"], 3)
+        self.assertEqual(summary["ax_ngram_adaptive_draft_len_total"], 14)
         self.assertEqual(summary["ax_ngram_accept_rate_micros"], 750000)
 
     def test_ax_decode_claim_status_distinguishes_no_draft_fallback(self) -> None:
