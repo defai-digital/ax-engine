@@ -213,6 +213,40 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_ngram_request_disabled_steps"], 5)
         self.assertEqual(summary["ax_ngram_accept_rate_micros"], 750000)
 
+    def test_ax_decode_claim_status_distinguishes_no_draft_fallback(self) -> None:
+        self.assertEqual(
+            bench.ax_decode_claim_status(
+                True,
+                {
+                    "ax_ngram_draft_attempts": 0,
+                    "ax_ngram_no_draft_steps": 17,
+                },
+            ),
+            "direct_same_policy_baseline",
+        )
+        self.assertEqual(
+            bench.ax_decode_claim_status(
+                False,
+                {
+                    "ax_ngram_draft_attempts": 0,
+                    "ax_ngram_no_draft_steps": 17,
+                    "ax_ngram_request_disabled_steps": 111,
+                },
+            ),
+            "ngram_no_draft_direct_fallback",
+        )
+        self.assertEqual(
+            bench.ax_decode_claim_status(
+                False,
+                {
+                    "ax_ngram_draft_attempts": 3,
+                    "ax_ngram_draft_tokens": 12,
+                    "ax_ngram_accepted_tokens": 12,
+                },
+            ),
+            "ngram_acceleration_effective_throughput",
+        )
+
     def test_ax_mlx_telemetry_is_extracted_and_summarized(self) -> None:
         telemetry = bench.extract_ax_mlx_telemetry(
             {

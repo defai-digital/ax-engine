@@ -2630,7 +2630,10 @@ sys.stdout.write(f"server::{prompt}")
                     .filter(|s| !s.is_empty())
             })
             .collect();
-        assert!(!text_chunks.is_empty(), "streaming response should have text chunks");
+        assert!(
+            !text_chunks.is_empty(),
+            "streaming response should have text chunks"
+        );
     }
 
     #[tokio::test]

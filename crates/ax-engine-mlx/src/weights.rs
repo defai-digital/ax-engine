@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
-use mlx_sys::{MlxArray, load_safetensors};
+use mlx_sys::{MlxArray, concatenate, load_safetensors};
 
 use ax_engine_core::{
     NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
@@ -80,10 +80,11 @@ pub struct LayerWeights {
 
 /// Weights for a GLM4MoELite MLA attention layer.
 pub struct GlmMlaAttentionWeights {
-    pub q_a_proj: QuantizedWeight,
+    /// q_a_proj and kv_a_proj fused into one `[q_lora_rank + kv_lora_rank + qk_rope_head_dim, hidden]`
+    /// weight. Eliminates one matmul kernel launch per layer during prefill.
+    pub qa_kva_fused: QuantizedWeight,
     pub q_a_norm: MlxArray,
     pub q_b_proj: QuantizedWeight,
-    pub kv_a_proj: QuantizedWeight,
     pub kv_a_norm: MlxArray,
     pub embed_q: QuantizedWeight,
     pub unembed_out: QuantizedWeight,
@@ -865,14 +866,22 @@ fn load_glm_mla_attention_weights(
     name_map: &mut HashMap<String, MlxArray>,
     layer_index: Option<u32>,
 ) -> Result<GlmMlaAttentionWeights, WeightLoadError> {
+    let q_a_proj = take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::AttentionQa,
+        layer_index,
+        "glm_q_a_proj",
+    )?;
+    let kv_a_proj = take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::AttentionKvA,
+        layer_index,
+        "glm_kv_a_proj",
+    )?;
     Ok(GlmMlaAttentionWeights {
-        q_a_proj: take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::AttentionQa,
-            layer_index,
-            "glm_q_a_proj",
-        )?,
+        qa_kva_fused: concat_quantized_weight_rows(&q_a_proj, &kv_a_proj),
         q_a_norm: take_weight(
             specs,
             name_map,
@@ -887,13 +896,6 @@ fn load_glm_mla_attention_weights(
             NativeTensorRole::AttentionQb,
             layer_index,
             "glm_q_b_proj",
-        )?,
-        kv_a_proj: take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::AttentionKvA,
-            layer_index,
-            "glm_kv_a_proj",
         )?,
         kv_a_norm: take_weight(
             specs,
@@ -918,6 +920,41 @@ fn load_glm_mla_attention_weights(
             "glm_unembed_out",
         )?,
     })
+}
+
+/// Concatenate two weight matrices along the output (row) dimension.
+///
+/// Used to fuse parallel projections that read the same input (e.g. q_a_proj
+/// and kv_a_proj in GLM MLA), replacing two matmul kernel launches with one.
+fn concat_quantized_weight_rows(a: &QuantizedWeight, b: &QuantizedWeight) -> QuantizedWeight {
+    let weight = concatenate(&[&a.weight, &b.weight], 0, None);
+    let (scales, biases) = match (&a.scales, &b.scales) {
+        (Some(sa), Some(sb)) => {
+            assert_eq!(
+                a.group_size, b.group_size,
+                "cannot fuse weights with different group sizes"
+            );
+            assert_eq!(
+                a.bits, b.bits,
+                "cannot fuse weights with different bit widths"
+            );
+            let biases = a
+                .biases
+                .as_ref()
+                .zip(b.biases.as_ref())
+                .map(|(ba, bb)| concatenate(&[ba, bb], 0, None));
+            (Some(concatenate(&[sa, sb], 0, None)), biases)
+        }
+        (None, None) => (None, None),
+        _ => panic!("cannot fuse one quantized and one non-quantized weight"),
+    };
+    QuantizedWeight {
+        weight,
+        scales,
+        biases,
+        group_size: a.group_size,
+        bits: a.bits,
+    }
 }
 
 /// Load a weight tensor together with its `.scales` and `.biases` siblings
@@ -1163,9 +1200,8 @@ mod tests {
 
         assert_eq!(weights.q_a_norm.shape(), vec![1, 1]);
         assert_eq!(weights.kv_a_norm.shape(), vec![1, 1]);
-        assert!(weights.q_a_proj.scales.is_none());
+        assert!(weights.qa_kva_fused.scales.is_none());
         assert!(weights.q_b_proj.scales.is_none());
-        assert!(weights.kv_a_proj.scales.is_none());
         assert!(weights.embed_q.scales.is_none());
         assert!(weights.unembed_out.scales.is_none());
         assert!(name_map.is_empty());

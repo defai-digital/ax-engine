@@ -120,12 +120,13 @@ impl MlxLmStreamHandle {
     ) -> Result<Option<MlxLmStreamChunkResult>, MlxLmBackendError> {
         loop {
             let mut line = String::new();
-            let bytes_read = self.reader.read_line(&mut line).map_err(|source| {
-                MlxLmBackendError::SseRead {
-                    endpoint: self.endpoint.clone(),
-                    source,
-                }
-            })?;
+            let bytes_read =
+                self.reader
+                    .read_line(&mut line)
+                    .map_err(|source| MlxLmBackendError::SseRead {
+                        endpoint: self.endpoint.clone(),
+                        source,
+                    })?;
 
             if bytes_read == 0 {
                 return Ok(None);
@@ -145,11 +146,12 @@ impl MlxLmStreamHandle {
                 return Ok(None);
             }
 
-            let chunk: MlxLmStreamChunk =
-                serde_json::from_str(data).map_err(|source| MlxLmBackendError::InvalidStreamChunk {
+            let chunk: MlxLmStreamChunk = serde_json::from_str(data).map_err(|source| {
+                MlxLmBackendError::InvalidStreamChunk {
                     endpoint: self.endpoint.clone(),
                     source,
-                })?;
+                }
+            })?;
 
             let choice = chunk.choices.into_iter().next().ok_or_else(|| {
                 MlxLmBackendError::MissingStreamChoice {

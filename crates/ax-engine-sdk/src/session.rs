@@ -438,8 +438,12 @@ impl StatelessGenerateContext {
 
         match self.config.resolved_backend.selected_backend {
             SelectedBackend::LlamaCpp => {
-                let (runtime, stream, route_backend) =
-                    start_llama_cpp_stream_prevalidated(&self.config, runtime, request_id, &request)?;
+                let (runtime, stream, route_backend) = start_llama_cpp_stream_prevalidated(
+                    &self.config,
+                    runtime,
+                    request_id,
+                    &request,
+                )?;
                 Ok(build_llama_cpp_stream_state(
                     request_id,
                     request,
@@ -1193,7 +1197,9 @@ impl EngineSession {
                     let stream =
                         start_mlx_lm_streaming_generate(&runtime, mlx_lm_backend, &request)
                             .map_err(EngineSessionError::from)?;
-                    Ok(build_mlx_lm_stream_state(request_id, request, runtime, stream))
+                    Ok(build_mlx_lm_stream_state(
+                        request_id, request, runtime, stream,
+                    ))
                 }
                 SelectedBackend::Mlx => unreachable!("uses_mlx_runtime was already checked"),
             };
@@ -1681,10 +1687,12 @@ fn next_mlx_lm_stream_event(
     match state.phase {
         GenerateStreamPhase::Request => {
             state.phase = GenerateStreamPhase::Step;
-            Ok(Some(GenerateStreamEvent::Request(GenerateStreamRequestEvent {
-                request: state.current_report.clone(),
-                runtime: state.runtime.clone(),
-            })))
+            Ok(Some(GenerateStreamEvent::Request(
+                GenerateStreamRequestEvent {
+                    request: state.current_report.clone(),
+                    runtime: state.runtime.clone(),
+                },
+            )))
         }
         GenerateStreamPhase::Step => match state.stream.next_chunk()? {
             Some(chunk) => Ok(Some(state.step_event_from_chunk(chunk))),

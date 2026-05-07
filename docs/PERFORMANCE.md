@@ -6,7 +6,7 @@ page carries methodology, artifact provenance, and caveats.
 
 ## Current Result Set
 
-The current public table was refreshed on 2026-05-06 on:
+The current public table was refreshed on 2026-05-07 on:
 
 - Apple M5 Max
 - 128 GB memory
@@ -22,24 +22,47 @@ Benchmark shape:
 - 3 timed trials plus 1 AX warmup
 
 AX rows in the README were refreshed from
-`benchmarks/results/mlx-inference/2026-05-06-ax-rework-r4/`. Reference
-`mlx_lm` and `mlx_swift_lm` rows were reused from matching checked-in artifacts,
-so the table is an AX-only rework refresh against stable references.
+`benchmarks/results/mlx-inference/2026-05-07-v4.4.1-readme-refresh/`.
+Most reference `mlx_lm` and `mlx_swift_lm` rows were reused from matching
+checked-in artifacts, so the table is primarily an AX-only refresh against
+stable references. Qwen 3.5 `mlx_lm` was rerun fresh after investigation showed
+the older reused 512-token row was an outlier for current comparisons. Qwen 3.5
+AX rows were then rerun after rebuilding the release server binary.
 
-`ax engine` is the direct same-policy comparison against `mlx_lm`.
-`ax engine + n-gram accel` reports observed effective throughput from AX's
+`ax direct baseline` is the direct same-policy comparison against `mlx_lm`; the
+benchmark starts the AX server with n-gram acceleration disabled for this row.
+`ax default n-gram` reports observed effective throughput from AX's default
 n-gram acceleration policy. It is not raw model-kernel decode speed.
 
 ## Interpretation
 
-The 2026-05-06 r4 AX refresh is not a universal direct-decode win. Direct AX
-decode is positive only for Qwen 3.6 UD 4-bit and the 512-token Qwen 3.6 8-bit
-shape. GLM 4.7, Qwen Coder Next, and Gemma remain below the matching `mlx_lm`
-decode baseline in direct mode.
+The 2026-05-07 v4.4.1 AX refresh is not a universal direct-decode win. Direct
+AX is intentionally measured with n-gram acceleration disabled, and it remains
+behind `mlx_lm` on the Gemma 4 E2B direct rows. The Qwen 3.5 direct rows are
+around parity in repeated runs and moved across the baseline after the release
+server was rebuilt. The artifact telemetry shows direct rows are pure
+direct-pipeline runs (`ax_mlx_direct_pipeline_steps=381`,
+`ax_mlx_ngram_decode_steps=0` across three trials), so any direct-row gap is the
+same-policy baseline rather than a failed n-gram path.
 
-N-gram acceleration is also not universally effective. It remains strong for
-Gemma, Qwen Coder Next, GLM 4.7, and some Qwen 3.6 shapes, but Qwen 3.5 and
-Qwen 3.6 5-bit are negative for both prompt shapes.
+N-gram acceleration is the default AX user path and is the better headline row
+for throughput expectations. In the same Gemma 4 E2B rows it accepts every
+draft token in the random-token contract (`ax_ngram_accept_rate_micros=1000000`)
+and reports 421-572 tok/s decode throughput, well ahead of both reference
+runtimes. Qwen 3.5 at 512 prompt tokens is the row where the default n-gram
+path remains slightly below the fresh `mlx_lm` reference: it records zero draft
+attempts before falling back to the direct pipeline after the no-draft probe
+window, while the direct row is +0.9% in the current artifact. The benchmark
+harness now labels this condition as
+`ngram_no_draft_direct_fallback` so artifacts do not describe a no-draft
+fallback as n-gram effective throughput.
+
+The earlier larger Qwen 3.5 512-token gap was a benchmark-comparison artifact:
+the AX-only README refresh reused an older 2026-05-05 `mlx_lm` row at 101.3
+tok/s, while a fresh same-turn `mlx_lm` rerun on 2026-05-07 reports 93.4 tok/s
+for the same prompt/decode contract. The current README row uses the fresh
+reference for Qwen 3.5, so the direct AX row is now reported as +0.9% rather
+than a stale-reference -8% to -12% regression.
 
 Qwen-family linear-attention n-gram rows use a rollback-safe branch/recompute
 path for SSM state. Acceleration is prompt/output-pattern dependent. Benchmark

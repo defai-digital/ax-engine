@@ -1681,7 +1681,12 @@ fn glm_mla_project_inputs(
     let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");
     let seq = x.shape()[1];
 
-    let q_a = qw(x, &mla_w.q_a_proj);
+    // Single matmul replaces separate q_a_proj and kv_a_proj launches.
+    // Output: [seq, q_lora_rank + kv_lora_rank + qk_rope_head_dim].
+    let qa_kva = qw(x, &mla_w.qa_kva_fused);
+    let q_split = mla_cfg.q_lora_rank as i32;
+    let kva_end = (mla_cfg.q_lora_rank + mla_cfg.kv_lora_rank + mla_cfg.qk_rope_head_dim) as i32;
+    let q_a = slice_last_dim(&qa_kva, 0, q_split, None);
     let q_a = rms_norm(&q_a, Some(&mla_w.q_a_norm), cfg.rms_norm_eps, None);
     let q = qw(&q_a, &mla_w.q_b_proj);
     let q = reshape(
@@ -1708,7 +1713,7 @@ fn glm_mla_project_inputs(
         None,
     );
 
-    let compressed_kv = qw(x, &mla_w.kv_a_proj);
+    let compressed_kv = slice_last_dim(&qa_kva, q_split, kva_end, None);
     let kv_latent_raw = slice_last_dim(&compressed_kv, 0, mla_cfg.kv_lora_rank as i32, None);
     let k_pe = slice_last_dim(
         &compressed_kv,
@@ -3193,15 +3198,14 @@ mod tests {
             ])),
             linear_attn: None,
             glm_mla_attn: Some(GlmMlaAttentionWeights {
-                q_a_proj: dense_weight(&[mla.q_lora_rank as i32, cfg.hidden_size as i32]),
+                qa_kva_fused: dense_weight(&[
+                    (mla.q_lora_rank + mla.kv_lora_rank + mla.qk_rope_head_dim) as i32,
+                    cfg.hidden_size as i32,
+                ]),
                 q_a_norm: zeros(&[mla.q_lora_rank as i32], MlxDtype::Float32, None),
                 q_b_proj: dense_weight(&[
                     (cfg.n_heads * mla.q_head_dim) as i32,
                     mla.q_lora_rank as i32,
-                ]),
-                kv_a_proj: dense_weight(&[
-                    (mla.kv_lora_rank + mla.qk_rope_head_dim) as i32,
-                    cfg.hidden_size as i32,
                 ]),
                 kv_a_norm: zeros(&[mla.kv_lora_rank as i32], MlxDtype::Float32, None),
                 embed_q: dense_weight(&[
@@ -3245,15 +3249,14 @@ mod tests {
         let mla = cfg.glm_mla_attention.as_ref().expect("GLM MLA config");
         let mut weights = glm_mla_layer_weights(cfg);
         weights.glm_mla_attn = Some(GlmMlaAttentionWeights {
-            q_a_proj: dense_weight(&[mla.q_lora_rank as i32, cfg.hidden_size as i32]),
+            qa_kva_fused: dense_weight(&[
+                (mla.q_lora_rank + mla.kv_lora_rank + mla.qk_rope_head_dim) as i32,
+                cfg.hidden_size as i32,
+            ]),
             q_a_norm: zeros(&[mla.q_lora_rank as i32], MlxDtype::Float32, None),
             q_b_proj: dense_weight(&[
                 (cfg.n_heads * mla.q_head_dim) as i32,
                 mla.q_lora_rank as i32,
-            ]),
-            kv_a_proj: dense_weight(&[
-                (mla.kv_lora_rank + mla.qk_rope_head_dim) as i32,
-                cfg.hidden_size as i32,
             ]),
             kv_a_norm: zeros(&[mla.kv_lora_rank as i32], MlxDtype::Float32, None),
             embed_q: quantized_zero_weight(

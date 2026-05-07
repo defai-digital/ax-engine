@@ -202,7 +202,7 @@ pub fn gated_delta_kernel(
 
     let kernel = GATED_DELTA_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "qwen35_gated_delta_v2",
+            "qwen35_gated_delta_v3",
             &[
                 "q", "k", "v", "a_log", "a_raw", "dt_bias", "b_raw", "state_in", "seq_len",
             ],
@@ -315,9 +315,25 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     const float exp_a_log = exp(static_cast<float>(a_log[hv_idx]));
     const float dt_bias_v = static_cast<float>(dt_bias[hv_idx]);
 
-    // a_raw: [B, T, Hv] InT; b_raw: [B, T, Hv] InT
-    auto a_ptr = a_raw + b_idx * t_len * Hv;
-    auto b_ptr = b_raw + b_idx * t_len * Hv;
+    // Precompute g_t and beta_t for all timesteps cooperatively across the
+    // threadgroup (32x4x1 = 128 threads). All threads share the same hv_idx
+    // so they would otherwise recompute identical transcendental values in
+    // every iteration of the hot loop — 127/128 redundant calls eliminated.
+    // 512 * 2 * 4 = 4 KB, well within the 32 KB threadgroup memory limit.
+    threadgroup float g_t_cache[512];
+    threadgroup float beta_t_cache[512];
+
+    auto a_base = a_raw + b_idx * t_len * Hv;
+    auto b_base = b_raw + b_idx * t_len * Hv;
+    const uint tid = thread_index_in_threadgroup;
+    for (uint fill_t = tid; fill_t < (uint)t_len; fill_t += 128) {
+      float a_plus_dt = static_cast<float>(a_base[fill_t * Hv + hv_idx]) + dt_bias_v;
+      float sp = a_plus_dt > 20.0f ? a_plus_dt : log1p(exp(a_plus_dt));
+      g_t_cache[fill_t] = exp(-exp_a_log * sp);
+      float b_val = static_cast<float>(b_base[fill_t * Hv + hv_idx]);
+      beta_t_cache[fill_t] = 1.0f / (1.0f + exp(-b_val));
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // state_in, state_out: [B, Hv, Dv, Dk] StT
     auto i_state = state_in + (n * Dv + dv_idx) * Dk;
@@ -332,16 +348,8 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     }
 
     for (int t = 0; t < t_len; ++t) {
-      // g_t = exp(-exp(A_log[hv]) * softplus(a[t,hv] + dt_bias[hv]))
-      // Uses numerically stable softplus: log1p(exp(x)) clamped for large x.
-      const float a_plus_dt = static_cast<float>(a_ptr[hv_idx]) + dt_bias_v;
-      const float sp = a_plus_dt > 20.0f ? a_plus_dt : log1p(exp(a_plus_dt));
-      const float g_t = exp(-exp_a_log * sp);
-
-      // beta_t = sigmoid(b[t,hv])
-      const float b_val = static_cast<float>(b_ptr[hv_idx]);
-      const float beta_t = 1.0f / (1.0f + exp(-b_val));
-
+      const float g_t = g_t_cache[t];
+      const float beta_t = beta_t_cache[t];
       const float v_t = static_cast<float>(v_[dv_idx]);
 
       float kv_mem = 0.0f;
@@ -367,8 +375,6 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
       k_ += Hk * Dk;
       v_ += Hv * Dv;
       y += Hv * Dv;
-      a_ptr += Hv;
-      b_ptr += Hv;
     }
 
     for (int i = 0; i < n_per_t; ++i) {
