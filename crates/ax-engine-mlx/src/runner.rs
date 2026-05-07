@@ -126,6 +126,242 @@ const KV_COMPRESSION_FUSED_DECODE_FALLBACK_MISSING_RUNTIME_STORAGE: u32 = 2;
 const KV_COMPRESSION_FUSED_DECODE_FALLBACK_UNSUPPORTED_PRESET: u32 = 3;
 const KV_COMPRESSION_FUSED_DECODE_FALLBACK_RUNNER_NOT_INTEGRATED: u32 = 4;
 const KV_COMPRESSION_FUSED_DECODE_FALLBACK_CPU_ORACLE_UNAVAILABLE: u32 = 5;
+const DEFAULT_PREFIX_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
+const DEFAULT_PREFIX_CACHE_MAX_ENTRIES: usize = 64;
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_HITS: &str = "ax_mlx_prefix_cache_hits";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_MISSES: &str = "ax_mlx_prefix_cache_misses";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED: &str = "ax_mlx_prefix_cache_blocked";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES: &str = "ax_mlx_prefix_cache_stores";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS: &str = "ax_mlx_prefix_cache_evictions";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_REUSED_TOKENS: &str = "ax_mlx_prefix_cache_reused_tokens";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_WARMUP_TOKENS: &str = "ax_mlx_prefix_cache_warmup_tokens";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_ENTRIES: &str = "ax_mlx_prefix_cache_entries";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BYTES_KIB: &str = "ax_mlx_prefix_cache_bytes_kib";
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct MlxPrefixCacheKey {
+    model_id: String,
+    route_policy: String,
+    layer_layout: String,
+    block_size_tokens: u32,
+    token_count: u32,
+    token_hash: u64,
+}
+
+#[derive(Clone)]
+struct MlxPrefixSnapshot {
+    cache: MlxKVCache,
+    token_count: usize,
+    bytes: u64,
+    greedy_prefill_output_token: Option<u32>,
+}
+
+struct MlxPrefixCacheEntry {
+    snapshot: Arc<MlxPrefixSnapshot>,
+    touch_tick: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MlxPrefixCachePolicy {
+    max_bytes: u64,
+    max_entries: usize,
+}
+
+impl MlxPrefixCachePolicy {
+    fn from_env() -> Self {
+        Self {
+            max_bytes: std::env::var("AX_MLX_PREFIX_CACHE_MAX_BYTES")
+                .ok()
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .unwrap_or(DEFAULT_PREFIX_CACHE_MAX_BYTES),
+            max_entries: std::env::var("AX_MLX_PREFIX_CACHE_MAX_ENTRIES")
+                .ok()
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .unwrap_or(DEFAULT_PREFIX_CACHE_MAX_ENTRIES),
+        }
+    }
+
+    fn enabled(self) -> bool {
+        self.max_bytes > 0 && self.max_entries > 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MlxPrefixCacheStats {
+    entries: u32,
+    bytes: u64,
+}
+
+#[derive(Default)]
+struct MlxPrefixCache {
+    policy: MlxPrefixCachePolicy,
+    entries: HashMap<MlxPrefixCacheKey, MlxPrefixCacheEntry>,
+    lru: VecDeque<(MlxPrefixCacheKey, u64)>,
+    bytes: u64,
+    next_touch_tick: u64,
+}
+
+impl MlxPrefixCache {
+    fn new(policy: MlxPrefixCachePolicy) -> Self {
+        Self {
+            policy,
+            ..Self::default()
+        }
+    }
+
+    fn get(&mut self, key: &MlxPrefixCacheKey) -> Option<Arc<MlxPrefixSnapshot>> {
+        if !self.policy.enabled() {
+            return None;
+        }
+        let touch_tick = self.allocate_touch_tick();
+        let entry = self.entries.get_mut(key)?;
+        entry.touch_tick = touch_tick;
+        self.lru.push_back((key.clone(), touch_tick));
+        Some(Arc::clone(&entry.snapshot))
+    }
+
+    fn insert(
+        &mut self,
+        key: MlxPrefixCacheKey,
+        snapshot: MlxPrefixSnapshot,
+    ) -> MlxPrefixCacheInsertOutcome {
+        if !self.policy.enabled() || snapshot.token_count == 0 {
+            return MlxPrefixCacheInsertOutcome::default();
+        }
+
+        if let Some(previous) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(previous.snapshot.bytes);
+        }
+
+        let touch_tick = self.allocate_touch_tick();
+        self.bytes = self.bytes.saturating_add(snapshot.bytes);
+        self.entries.insert(
+            key.clone(),
+            MlxPrefixCacheEntry {
+                snapshot: Arc::new(snapshot),
+                touch_tick,
+            },
+        );
+        self.lru.push_back((key.clone(), touch_tick));
+
+        let evictions = self.evict_until_within_policy();
+        MlxPrefixCacheInsertOutcome {
+            stored: self.entries.contains_key(&key),
+            evictions,
+        }
+    }
+
+    fn stats(&self) -> MlxPrefixCacheStats {
+        MlxPrefixCacheStats {
+            entries: saturating_u32(self.entries.len()),
+            bytes: self.bytes,
+        }
+    }
+
+    fn allocate_touch_tick(&mut self) -> u64 {
+        let tick = self.next_touch_tick;
+        self.next_touch_tick = self.next_touch_tick.wrapping_add(1);
+        tick
+    }
+
+    fn evict_until_within_policy(&mut self) -> u32 {
+        let mut evictions = 0u32;
+        while self.bytes > self.policy.max_bytes || self.entries.len() > self.policy.max_entries {
+            let Some((key, touch_tick)) = self.lru.pop_front() else {
+                break;
+            };
+            let Some(entry) = self.entries.get(&key) else {
+                continue;
+            };
+            if entry.touch_tick != touch_tick {
+                continue;
+            }
+            if let Some(removed) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(removed.snapshot.bytes);
+                evictions = evictions.saturating_add(1);
+            }
+        }
+        evictions
+    }
+}
+
+impl Default for MlxPrefixCachePolicy {
+    fn default() -> Self {
+        Self {
+            max_bytes: DEFAULT_PREFIX_CACHE_MAX_BYTES,
+            max_entries: DEFAULT_PREFIX_CACHE_MAX_ENTRIES,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MlxPrefixCacheInsertOutcome {
+    stored: bool,
+    evictions: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MlxPrefixCacheTelemetry {
+    hits: u32,
+    misses: u32,
+    blocked: u32,
+    stores: u32,
+    evictions: u32,
+    reused_tokens: u32,
+    warmup_tokens: u32,
+    entries: u32,
+    bytes: u64,
+}
+
+impl MlxPrefixCacheTelemetry {
+    fn record_stats(&mut self, stats: MlxPrefixCacheStats) {
+        self.entries = stats.entries;
+        self.bytes = stats.bytes;
+    }
+
+    fn merge_from(&mut self, other: Self) {
+        self.hits = self.hits.saturating_add(other.hits);
+        self.misses = self.misses.saturating_add(other.misses);
+        self.blocked = self.blocked.saturating_add(other.blocked);
+        self.stores = self.stores.saturating_add(other.stores);
+        self.evictions = self.evictions.saturating_add(other.evictions);
+        self.reused_tokens = self.reused_tokens.saturating_add(other.reused_tokens);
+        self.warmup_tokens = self.warmup_tokens.saturating_add(other.warmup_tokens);
+        self.entries = self.entries.max(other.entries);
+        self.bytes = self.bytes.max(other.bytes);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+        if *self == Self::default() {
+            return;
+        }
+
+        let entries = [
+            (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_HITS, self.hits),
+            (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_MISSES, self.misses),
+            (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED, self.blocked),
+            (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES, self.stores),
+            (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS, self.evictions),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_REUSED_TOKENS,
+                self.reused_tokens,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_WARMUP_TOKENS,
+                self.warmup_tokens,
+            ),
+            (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_ENTRIES, self.entries),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BYTES_KIB,
+                kib_ceil(self.bytes),
+            ),
+        ];
+
+        for (key, value) in entries {
+            upsert_route_decision(decisions, key, value);
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct NgramAccelerationTelemetry {
@@ -989,6 +1225,8 @@ impl KvCacheTelemetry {
 /// Per-request mutable state persisted across prefill → decode steps.
 struct RequestState {
     cache: MlxKVCache,
+    prompt_prefix_tokens: Vec<u32>,
+    cached_prefill_output_token: Option<u32>,
     ngram: NgramTable,
     /// Per-request PRNG for temperature sampling.  Seeded from request_id so
     /// deterministic seeds produce reproducible outputs.
@@ -1033,6 +1271,8 @@ impl RequestState {
     fn new(num_layers: usize, request_id: RequestId) -> Self {
         Self {
             cache: MlxKVCache::new(num_layers),
+            prompt_prefix_tokens: Vec::new(),
+            cached_prefill_output_token: None,
             ngram: NgramTable::new(),
             rng: Xorshift64::new(request_id.0),
             ngram_beta_alpha: NGRAM_BETA_PRIOR_ALPHA,
@@ -1071,6 +1311,8 @@ pub struct MlxRunner {
     kv_compression: MlxKvCompressionConfig,
     /// Per-layer compression eligibility. Empty when compression is disabled.
     kv_compression_layer_eligible: Vec<bool>,
+    /// Immutable MLX KV snapshots for block-aligned exact prompt prefixes.
+    prefix_cache: Mutex<MlxPrefixCache>,
     /// Experimental Gemma sliding-window rotating backing store for direct decode.
     rotating_sliding_decode: bool,
     /// Optional mlx_lm-style `clear_cache` cadence for the direct decode pipeline.
@@ -1176,6 +1418,7 @@ impl MlxRunner {
             disable_ngram_acceleration,
             kv_compression,
             kv_compression_layer_eligible,
+            prefix_cache: Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy::from_env())),
             rotating_sliding_decode,
             direct_clear_cache_cadence,
         })
@@ -1204,6 +1447,7 @@ impl ExecutionRunner for MlxRunner {
         let mut gemma4_moe_profile = Gemma4MoeProfileSnapshot::default();
         let mut linear_attention_profile = LinearAttentionProfileSnapshot::default();
         let mut kv_cache = KvCacheTelemetry::default();
+        let mut prefix_cache = MlxPrefixCacheTelemetry::default();
 
         for item in &input.execution_batch.items {
             let ctx = input
@@ -1211,12 +1455,18 @@ impl ExecutionRunner for MlxRunner {
                 .iter()
                 .find(|c| c.request_id == item.request_id);
 
-            let result = self.run_item(item, ctx);
+            let result = self.run_item(
+                item,
+                ctx,
+                &input.execution_batch.model_id,
+                input.block_size_tokens,
+            );
             ngram_acceleration.merge_from(result.ngram_acceleration);
             decode_telemetry.merge_from(result.decode_telemetry);
             gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
             linear_attention_profile.merge_from(result.linear_attention_profile);
             kv_cache.merge_from(result.kv_usage);
+            prefix_cache.merge_from(result.prefix_cache);
             if let Some(wall_us) = result.kv_compression_shadow_sync_wall_us {
                 kv_cache.record_compression_shadow_sync(wall_us);
             }
@@ -1227,6 +1477,7 @@ impl ExecutionRunner for MlxRunner {
         gemma4_moe_profile.append_route_decisions(&mut route_metadata.crossover_decisions);
         linear_attention_profile.append_route_decisions(&mut route_metadata.crossover_decisions);
         kv_cache.append_route_decisions(&mut route_metadata.crossover_decisions);
+        prefix_cache.append_route_decisions(&mut route_metadata.crossover_decisions);
 
         let tokens_written: u32 = input
             .execution_batch
@@ -1346,6 +1597,8 @@ impl MlxRunner {
         &self,
         item: &ax_engine_core::ExecutionItem,
         ctx: Option<&RunnerRequestContext>,
+        model_id: &str,
+        block_size_tokens: u32,
     ) -> MlxItemRun {
         let token_ids = &item.input_token_slice;
         if token_ids.is_empty() {
@@ -1362,6 +1615,7 @@ impl MlxRunner {
                 gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
                 linear_attention_profile: LinearAttentionProfileSnapshot::default(),
                 kv_usage: MlxKVCacheUsage::default(),
+                prefix_cache: MlxPrefixCacheTelemetry::default(),
                 kv_compression_shadow_sync_wall_us: None,
             };
         }
@@ -1370,6 +1624,8 @@ impl MlxRunner {
         let generated_len = ctx.map(|c| c.generated_len).unwrap_or(0);
         let prefill_completes_prompt = prefill_item_completes_prompt(item, ctx);
         let is_prefill = matches!(item.mode, ExecutionMode::Prefill);
+        let temperature = ctx.map(|c| c.temperature).unwrap_or(0.0);
+        let is_greedy = temperature == 0.0;
 
         // Extract per-request state from the map and release the lock before GPU
         // work.  This ensures a long prefill for one request does not block state
@@ -1385,9 +1641,15 @@ impl MlxRunner {
                 .remove(&item.request_id)
                 .unwrap_or_else(|| RequestState::new(self.cfg.layer_count, item.request_id))
         };
+        let mut prefix_cache = self.restore_reused_prefix_state(
+            &mut state,
+            item,
+            ctx,
+            model_id,
+            block_size_tokens,
+            temperature,
+        );
 
-        let temperature = ctx.map(|c| c.temperature).unwrap_or(0.0);
-        let is_greedy = temperature == 0.0;
         let kv_compression_layer_eligible = if self.kv_compression.is_enabled() {
             Some(self.kv_compression_layer_eligible.as_slice())
         } else {
@@ -1411,6 +1673,17 @@ impl MlxRunner {
                     temperature,
                     &mut state.rng,
                 );
+                extend_prompt_prefix_tokens(&mut state, item, token_ids);
+                prefix_cache.merge_from(
+                    self.store_prompt_prefix_snapshots(
+                        model_id,
+                        block_size_tokens,
+                        &state,
+                        prefill_completes_prompt
+                            .then_some(tok)
+                            .filter(|_| is_greedy),
+                    ),
+                );
                 if prefill_completes_prompt {
                     kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
                         &mut state,
@@ -1429,7 +1702,24 @@ impl MlxRunner {
             }
             ExecutionMode::Decode => {
                 let decode_started = Instant::now();
-                let tok = self.decode_one(&mut state, token_ids, temperature, is_greedy);
+                let tok = if generated_len == 0 {
+                    if let Some(tok) = state.cached_prefill_output_token.take() {
+                        let prompt_prefix_tokens = state.prompt_prefix_tokens.clone();
+                        kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
+                            &mut state,
+                            &prompt_prefix_tokens,
+                            tok,
+                            max_output,
+                            is_greedy,
+                            kv_compression_layer_eligible,
+                        );
+                        tok
+                    } else {
+                        self.decode_one(&mut state, token_ids, temperature, is_greedy)
+                    }
+                } else {
+                    self.decode_one(&mut state, token_ids, temperature, is_greedy)
+                };
                 state
                     .decode_telemetry
                     .record_decode(elapsed_us(decode_started));
@@ -1525,8 +1815,201 @@ impl MlxRunner {
             gemma4_moe_profile,
             linear_attention_profile,
             kv_usage,
+            prefix_cache,
             kv_compression_shadow_sync_wall_us,
         }
+    }
+
+    fn prefix_cache_supported(&self) -> bool {
+        self.cfg.linear_attention.is_none()
+            && self.cfg.glm_mla_attention.is_none()
+            && self.kv_layer_windows.iter().all(Option::is_none)
+    }
+
+    fn prefix_cache_route_policy(&self) -> String {
+        let decode_policy = if self.disable_ngram_acceleration {
+            "direct"
+        } else {
+            "ngram"
+        };
+        format!(
+            "{decode_policy};kv_mode={:?};kv_preset={:?};hot={};min={}",
+            self.kv_compression.mode,
+            self.kv_compression.preset,
+            self.kv_compression.hot_window_tokens,
+            self.kv_compression.min_context_tokens
+        )
+    }
+
+    fn prefix_cache_layer_layout(&self) -> String {
+        format!("layers={};full_attention_only", self.cfg.layer_count)
+    }
+
+    fn prefix_cache_key(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        tokens: &[u32],
+    ) -> MlxPrefixCacheKey {
+        MlxPrefixCacheKey {
+            model_id: model_id.to_string(),
+            route_policy: self.prefix_cache_route_policy(),
+            layer_layout: self.prefix_cache_layer_layout(),
+            block_size_tokens,
+            token_count: saturating_u32(tokens.len()),
+            token_hash: hash_prefix_tokens(tokens),
+        }
+    }
+
+    fn restore_reused_prefix_state(
+        &self,
+        state: &mut RequestState,
+        item: &ax_engine_core::ExecutionItem,
+        ctx: Option<&RunnerRequestContext>,
+        model_id: &str,
+        block_size_tokens: u32,
+        temperature: f32,
+    ) -> MlxPrefixCacheTelemetry {
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        let reused_tokens = &item.reused_prefix_token_slice;
+        if reused_tokens.is_empty() || state.cache.seq_len != 0 {
+            return telemetry;
+        }
+        let capture_prefill_output =
+            item.mode == ExecutionMode::Decode && ctx.is_some_and(|ctx| ctx.generated_len == 0);
+
+        if !self.prefix_cache_supported() {
+            telemetry.blocked = telemetry.blocked.saturating_add(1);
+            self.warm_reused_prefix_without_cache(
+                state,
+                item.request_id,
+                reused_tokens,
+                temperature,
+                capture_prefill_output,
+            );
+            telemetry.warmup_tokens = telemetry
+                .warmup_tokens
+                .saturating_add(saturating_u32(reused_tokens.len()));
+            return telemetry;
+        }
+
+        let key = self.prefix_cache_key(model_id, block_size_tokens, reused_tokens);
+        let hit = {
+            let mut cache = self.prefix_cache.lock().unwrap();
+            let hit = cache.get(&key);
+            telemetry.record_stats(cache.stats());
+            hit
+        };
+
+        if let Some(snapshot) = hit {
+            state.cache = snapshot.cache.clone();
+            state.prompt_prefix_tokens = reused_tokens.to_vec();
+            state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
+            telemetry.hits = telemetry.hits.saturating_add(1);
+            telemetry.reused_tokens = telemetry
+                .reused_tokens
+                .saturating_add(saturating_u32(snapshot.token_count));
+            return telemetry;
+        }
+
+        telemetry.misses = telemetry.misses.saturating_add(1);
+        self.warm_reused_prefix_without_cache(
+            state,
+            item.request_id,
+            reused_tokens,
+            temperature,
+            capture_prefill_output,
+        );
+        telemetry.warmup_tokens = telemetry
+            .warmup_tokens
+            .saturating_add(saturating_u32(reused_tokens.len()));
+        telemetry
+    }
+
+    fn warm_reused_prefix_without_cache(
+        &self,
+        state: &mut RequestState,
+        request_id: RequestId,
+        tokens: &[u32],
+        temperature: f32,
+        capture_prefill_output: bool,
+    ) {
+        let mut warmup_rng = if capture_prefill_output {
+            state.rng
+        } else {
+            Xorshift64::new(request_id.0 ^ 0xA5A5_5A5A_F00D_CAFE)
+        };
+        let prefill_output_token = chunked_prefill(
+            &self.cfg,
+            &self.weights,
+            tokens,
+            &mut state.cache,
+            self.prefill_chunk,
+            if capture_prefill_output {
+                temperature
+            } else {
+                0.0
+            },
+            &mut warmup_rng,
+        );
+        if capture_prefill_output {
+            state.rng = warmup_rng;
+            state.cached_prefill_output_token = Some(prefill_output_token);
+        }
+        state.prompt_prefix_tokens = tokens.to_vec();
+    }
+
+    fn store_prompt_prefix_snapshots(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        state: &RequestState,
+        greedy_prefill_output_token: Option<u32>,
+    ) -> MlxPrefixCacheTelemetry {
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        if block_size_tokens == 0 || state.prompt_prefix_tokens.is_empty() {
+            return telemetry;
+        }
+        if !self.prefix_cache_supported() {
+            telemetry.blocked = telemetry.blocked.saturating_add(1);
+            return telemetry;
+        }
+
+        let block_size = block_size_tokens as usize;
+        let available_tokens = state.prompt_prefix_tokens.len().min(state.cache.seq_len);
+        let full_block_tokens = available_tokens - (available_tokens % block_size);
+        if full_block_tokens == 0 {
+            return telemetry;
+        }
+
+        let mut cache = self.prefix_cache.lock().unwrap();
+        for prefix_len in (block_size..=full_block_tokens).step_by(block_size) {
+            let tokens = &state.prompt_prefix_tokens[..prefix_len];
+            let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
+            let mut snapshot_cache = state.cache.clone();
+            if !snapshot_cache.trim_to(prefix_len) {
+                telemetry.blocked = telemetry.blocked.saturating_add(1);
+                continue;
+            }
+            let usage = snapshot_cache.usage_snapshot_with_layer_windows(&self.kv_layer_windows);
+            let outcome = cache.insert(
+                key,
+                MlxPrefixSnapshot {
+                    cache: snapshot_cache,
+                    token_count: prefix_len,
+                    bytes: usage.logical_bytes,
+                    greedy_prefill_output_token: (prefix_len == available_tokens)
+                        .then_some(greedy_prefill_output_token)
+                        .flatten(),
+                },
+            );
+            if outcome.stored {
+                telemetry.stores = telemetry.stores.saturating_add(1);
+            }
+            telemetry.evictions = telemetry.evictions.saturating_add(outcome.evictions);
+        }
+        telemetry.record_stats(cache.stats());
+        telemetry
     }
 
     /// Produce one output token for a decode step.
@@ -1952,6 +2435,29 @@ fn prefill_item_completes_prompt(
     .unwrap_or(true)
 }
 
+fn hash_prefix_tokens(tokens: &[u32]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for token in tokens {
+        hash ^= u64::from(*token);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash ^ (tokens.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+}
+
+fn extend_prompt_prefix_tokens(
+    state: &mut RequestState,
+    item: &ax_engine_core::ExecutionItem,
+    token_ids: &[u32],
+) {
+    let expected_start = item.position_range.start as usize;
+    if state.prompt_prefix_tokens.len() > expected_start {
+        state.prompt_prefix_tokens.truncate(expected_start);
+    } else if state.prompt_prefix_tokens.len() < expected_start {
+        state.prompt_prefix_tokens = item.reused_prefix_token_slice.clone();
+    }
+    state.prompt_prefix_tokens.extend_from_slice(token_ids);
+}
+
 struct MlxItemRun {
     update: RequestExecutionUpdate,
     ngram_acceleration: NgramAccelerationTelemetry,
@@ -1959,6 +2465,7 @@ struct MlxItemRun {
     gemma4_moe_profile: Gemma4MoeProfileSnapshot,
     linear_attention_profile: LinearAttentionProfileSnapshot,
     kv_usage: MlxKVCacheUsage,
+    prefix_cache: MlxPrefixCacheTelemetry,
     kv_compression_shadow_sync_wall_us: Option<u32>,
 }
 
@@ -2430,6 +2937,103 @@ mod tests {
             !states.contains_key(&id),
             "completed request must not leave orphaned state"
         );
+    }
+
+    fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {
+        MlxPrefixCacheKey {
+            model_id: "model".into(),
+            route_policy: "direct".into(),
+            layer_layout: "layers=2;full_attention_only".into(),
+            block_size_tokens: 4,
+            token_count: 4,
+            token_hash: hash_prefix_tokens(&[token; 4]),
+        }
+    }
+
+    fn test_prefix_snapshot(token_count: usize, bytes: u64) -> MlxPrefixSnapshot {
+        MlxPrefixSnapshot {
+            cache: MlxKVCache::new(2),
+            token_count,
+            bytes,
+            greedy_prefill_output_token: Some(7),
+        }
+    }
+
+    #[test]
+    fn prefix_cache_returns_exact_snapshot_and_updates_stats() {
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 4,
+        });
+        let key = test_prefix_key(1);
+
+        let outcome = cache.insert(key.clone(), test_prefix_snapshot(4, 128));
+        assert!(outcome.stored);
+        assert_eq!(outcome.evictions, 0);
+
+        let hit = cache.get(&key).expect("prefix snapshot should hit");
+        assert_eq!(hit.token_count, 4);
+        assert_eq!(hit.greedy_prefill_output_token, Some(7));
+        assert_eq!(
+            cache.stats(),
+            MlxPrefixCacheStats {
+                entries: 1,
+                bytes: 128,
+            }
+        );
+    }
+
+    #[test]
+    fn prefix_cache_eviction_is_lru_and_visible() {
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 256,
+            max_entries: 2,
+        });
+        let key1 = test_prefix_key(1);
+        let key2 = test_prefix_key(2);
+        let key3 = test_prefix_key(3);
+
+        assert!(
+            cache
+                .insert(key1.clone(), test_prefix_snapshot(4, 100))
+                .stored
+        );
+        assert!(
+            cache
+                .insert(key2.clone(), test_prefix_snapshot(4, 100))
+                .stored
+        );
+        assert!(cache.get(&key1).is_some(), "key1 should become most recent");
+        let outcome = cache.insert(key3.clone(), test_prefix_snapshot(4, 100));
+
+        assert!(outcome.stored);
+        assert_eq!(outcome.evictions, 1);
+        assert!(cache.get(&key1).is_some());
+        assert!(cache.get(&key2).is_none());
+        assert!(cache.get(&key3).is_some());
+    }
+
+    #[test]
+    fn prefix_cache_telemetry_writes_route_counters() {
+        let telemetry = MlxPrefixCacheTelemetry {
+            hits: 1,
+            misses: 2,
+            blocked: 3,
+            stores: 4,
+            evictions: 5,
+            reused_tokens: 16,
+            warmup_tokens: 8,
+            entries: 2,
+            bytes: 4096,
+        };
+        let mut decisions = Vec::new();
+
+        telemetry.append_route_decisions(&mut decisions);
+
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_hits".into(), 1)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_misses".into(), 2)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_evictions".into(), 5)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_bytes_kib".into(), 4)));
     }
 
     #[test]

@@ -753,6 +753,29 @@ struct LlamaCppCompletionResponse {
     tokens_evaluated: u32,
 }
 
+fn llama_cpp_server_completion_route(
+    execution_plan: &str,
+    tokens_cached: u32,
+) -> GenerateRouteReport {
+    let mut route = GenerateRouteReport {
+        execution_plan: Some(execution_plan.to_string()),
+        attention_route: None,
+        kv_mode: None,
+        prefix_cache_path: None,
+        barrier_mode: None,
+        crossover_decisions: Default::default(),
+    };
+
+    if tokens_cached > 0 {
+        route.prefix_cache_path = Some("delegated_prompt_cache".to_string());
+        route
+            .crossover_decisions
+            .insert("delegated_cached_tokens".to_string(), tokens_cached);
+    }
+
+    route
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,27 +808,4 @@ mod tests {
         assert_eq!(strip_bos_leading_space("hello".to_string()), "hello");
         assert_eq!(strip_bos_leading_space("  hi".to_string()), " hi");
     }
-}
-
-fn llama_cpp_server_completion_route(
-    execution_plan: &str,
-    tokens_cached: u32,
-) -> GenerateRouteReport {
-    let mut route = GenerateRouteReport {
-        execution_plan: Some(execution_plan.to_string()),
-        attention_route: None,
-        kv_mode: None,
-        prefix_cache_path: None,
-        barrier_mode: None,
-        crossover_decisions: Default::default(),
-    };
-
-    if tokens_cached > 0 {
-        route.prefix_cache_path = Some("delegated_prompt_cache".to_string());
-        route
-            .crossover_decisions
-            .insert("delegated_cached_tokens".to_string(), tokens_cached);
-    }
-
-    route
 }

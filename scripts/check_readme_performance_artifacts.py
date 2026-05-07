@@ -293,6 +293,12 @@ def validate_phase0_artifact_gate(
         raise ArtifactCheckError(
             f"{artifact_path} lacks concurrent prefill overlap classification"
         )
+    prefix_reuse = artifact.get("prefix_reuse_evidence")
+    if not isinstance(prefix_reuse, dict):
+        raise ArtifactCheckError(f"{artifact_path} lacks prefix reuse evidence")
+    for counter in ("hit_count", "miss_count"):
+        if counter not in prefix_reuse:
+            raise ArtifactCheckError(f"{artifact_path} prefix reuse evidence lacks {counter}")
     validate_public_claim_evidence(artifact_path=artifact_path, artifact=artifact)
 
 

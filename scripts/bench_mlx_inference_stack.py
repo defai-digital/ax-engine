@@ -121,6 +121,15 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_ngram_decode_steps",
     "ax_mlx_ngram_decode_wall_us",
     "ax_mlx_bonus_tokens",
+    "ax_mlx_prefix_cache_hits",
+    "ax_mlx_prefix_cache_misses",
+    "ax_mlx_prefix_cache_blocked",
+    "ax_mlx_prefix_cache_stores",
+    "ax_mlx_prefix_cache_evictions",
+    "ax_mlx_prefix_cache_reused_tokens",
+    "ax_mlx_prefix_cache_warmup_tokens",
+    "ax_mlx_prefix_cache_entries",
+    "ax_mlx_prefix_cache_bytes_kib",
 ]
 
 AX_MLX_GEMMA4_MOE_PROFILE_KEYS = [
@@ -905,6 +914,44 @@ def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
         for key, value in (run.get("ax_mlx_telemetry") or {}).items():
             totals[key] = totals.get(key, 0) + int(value)
     return totals
+
+
+def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, int]:
+    evidence = {
+        "hit_count": 0,
+        "miss_count": 0,
+        "blocked_count": 0,
+        "stored_prefix_count": 0,
+        "eviction_count": 0,
+        "reused_token_count": 0,
+        "warmup_token_count": 0,
+        "cache_entry_count": 0,
+        "cache_bytes_kib": 0,
+    }
+    for row in results:
+        if not str(row.get("engine", "")).startswith("ax_engine"):
+            continue
+        telemetry = row.get("ax_mlx_telemetry") or {}
+        evidence["hit_count"] += int(telemetry.get("ax_mlx_prefix_cache_hits", 0))
+        evidence["miss_count"] += int(telemetry.get("ax_mlx_prefix_cache_misses", 0))
+        evidence["blocked_count"] += int(telemetry.get("ax_mlx_prefix_cache_blocked", 0))
+        evidence["stored_prefix_count"] += int(telemetry.get("ax_mlx_prefix_cache_stores", 0))
+        evidence["eviction_count"] += int(telemetry.get("ax_mlx_prefix_cache_evictions", 0))
+        evidence["reused_token_count"] += int(
+            telemetry.get("ax_mlx_prefix_cache_reused_tokens", 0)
+        )
+        evidence["warmup_token_count"] += int(
+            telemetry.get("ax_mlx_prefix_cache_warmup_tokens", 0)
+        )
+        evidence["cache_entry_count"] = max(
+            evidence["cache_entry_count"],
+            int(telemetry.get("ax_mlx_prefix_cache_entries", 0)),
+        )
+        evidence["cache_bytes_kib"] = max(
+            evidence["cache_bytes_kib"],
+            int(telemetry.get("ax_mlx_prefix_cache_bytes_kib", 0)),
+        )
+    return evidence
 
 
 def summarize_ax_mlx_gemma4_moe_profile(runs: list[dict[str, Any]]) -> dict[str, int]:
@@ -1863,6 +1910,7 @@ def main() -> None:
             "continuous_batching_claim": False,
             "concurrency": 1,
         },
+        "prefix_reuse_evidence": summarize_prefix_reuse_evidence(results),
         "ax_gemma4_moe_profile": bool(args.ax_gemma4_moe_profile),
         "ax_linear_attention_profile": bool(args.gateddelta_prefill_profile),
         "results": results,

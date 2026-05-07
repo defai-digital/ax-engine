@@ -153,6 +153,17 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 "continuous_batching_claim": False,
                 "concurrency": 1,
             },
+            "prefix_reuse_evidence": {
+                "hit_count": 0,
+                "miss_count": 0,
+                "blocked_count": 0,
+                "stored_prefix_count": 0,
+                "eviction_count": 0,
+                "reused_token_count": 0,
+                "warmup_token_count": 0,
+                "cache_entry_count": 0,
+                "cache_bytes_kib": 0,
+            },
             "reference_contract": {
                 "prompt_contract": {
                     "artifacts": [
@@ -278,6 +289,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
             artifact = json.loads(artifact_path.read_text())
             artifact["public_claims"] = ["prefix_reuse"]
+            artifact.pop("prefix_reuse_evidence")
             artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
 
             with self.assertRaisesRegex(
