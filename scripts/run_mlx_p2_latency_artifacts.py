@@ -171,7 +171,7 @@ def start_direct_server(model_dir: Path, port: int) -> tuple[subprocess.Popen[An
     return proc, process_spawn_ms, server_ready_ms
 
 
-def run_one_request(port: int, prompt: PromptDoc, server_pid: int | None) -> dict[str, float]:
+def run_one_request(port: int, prompt: PromptDoc, server_pid: int | None) -> dict[str, Any]:
     started = time.perf_counter()
     run = bench.axengine_one_run(
         port,
@@ -185,6 +185,7 @@ def run_one_request(port: int, prompt: PromptDoc, server_pid: int | None) -> dic
         "decode_tok_s": float(run["decode_tok_s"]),
         "wall_ms": wall_ms,
         "peak_memory_gb": float(run.get("peak_memory_gb", 0.0)),
+        "scheduler_telemetry": run.get("scheduler_telemetry", {}),
     }
 
 
@@ -419,6 +420,29 @@ def overlap_classification(value: float) -> str:
     return "serialized"
 
 
+def summarize_scheduler_evidence(trials: list[dict[str, Any]]) -> dict[str, int]:
+    evidence = {
+        "scheduled_prefill_tokens": 0,
+        "scheduled_decode_tokens": 0,
+        "skipped_prefill_tokens": 0,
+        "skipped_decode_tokens": 0,
+        "mixed_prefill_decode_batches": 0,
+    }
+    key_map = {
+        "ax_scheduler_scheduled_prefill_tokens": "scheduled_prefill_tokens",
+        "ax_scheduler_scheduled_decode_tokens": "scheduled_decode_tokens",
+        "ax_scheduler_skipped_prefill_tokens": "skipped_prefill_tokens",
+        "ax_scheduler_skipped_decode_tokens": "skipped_decode_tokens",
+        "ax_scheduler_mixed_prefill_decode_batches": "mixed_prefill_decode_batches",
+    }
+    for trial in trials:
+        for observation in trial.get("observations", []):
+            telemetry = observation.get("scheduler_telemetry") or {}
+            for source_key, evidence_key in key_map.items():
+                evidence[evidence_key] += int(telemetry.get(source_key, 0))
+    return evidence
+
+
 def concurrent_row(
     *,
     prompts: list[PromptDoc],
@@ -459,6 +483,7 @@ def concurrent_row(
             "classification": overlap_classification(statistics.median(overlap_values)),
             "overlap_efficiency": metric(overlap_values),
         },
+        "scheduler_evidence": summarize_scheduler_evidence(trials),
         "trials": trials,
     }
     if single_row is not None:

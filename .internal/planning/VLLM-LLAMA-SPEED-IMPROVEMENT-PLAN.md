@@ -129,6 +129,16 @@ Acceptance:
 
 ### Phase 2: Token-Budget Scheduling
 
+Status: completed for the core scheduler contract and P2 artifact evidence
+path. The scheduler now prioritizes decode work for the selected model, then
+uses remaining token budget for compatible bounded prefill chunks. Mixed
+prefill/decode batches stay conservative: same-mode routes must still match
+exactly, while prefill/decode mixing is allowed only when route metadata is
+compatible. Route metadata records scheduled prefill tokens, scheduled decode
+tokens, skipped prefill/decode tokens, and whether the batch mixed prefill with
+decode. The P2 concurrent artifact runner/checker/report path now carries this
+scheduler evidence fail-closed.
+
 Move from item-serial MLX execution toward a scheduler contract that can mix:
 
 - decode tokens from running requests
@@ -336,3 +346,23 @@ and sliding-window layouts rewarm the reused prefix and record blocked/warmup
 telemetry. The route metadata and benchmark artifact now expose enough
 hit/miss/eviction evidence for public prefix-reuse claims to stay gated by
 Phase 0.
+
+### Slice 14: Decode-First Token-Budget Scheduler
+
+The fourteenth slice completes Phase 2's first scheduler contract. Core
+scheduling now selects decode items before prefill items for the oldest runnable
+model family, so a request that has already finished prefill can make decode
+progress even while other long prompts are still being chunked. Remaining token
+budget is assigned to bounded prefill chunks; unscheduled prefill/decode work is
+counted as skipped token-budget work rather than disappearing from telemetry.
+
+The route contract remains conservative. Same-mode items still require exact
+execution-plan and route-metadata matches. Mixed prefill/decode batches are
+allowed only when their metadata is compatible, and they are labeled as
+`phase2.token_budget` / `mixed_prefill_decode`. Allocation rebuild now preserves
+the scheduler token-budget counters while appending prefix-reuse metadata.
+
+The P2 artifact path extracts these counters from route metadata, writes
+`scheduler_evidence` into concurrent-prefill artifacts, validates the evidence
+fail-closed, and renders the scheduled prefill/decode/mixed-batch counts in the
+Markdown report.

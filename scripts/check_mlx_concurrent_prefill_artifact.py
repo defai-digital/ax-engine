@@ -15,6 +15,13 @@ from typing import Any
 SCHEMA_VERSION = "ax.mlx_concurrent_prefill.v1"
 PROMPT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 OVERLAP_CLASSIFICATIONS = {"serialized", "partial_overlap", "overlapped"}
+SCHEDULER_EVIDENCE_KEYS = {
+    "scheduled_prefill_tokens",
+    "scheduled_decode_tokens",
+    "skipped_prefill_tokens",
+    "skipped_decode_tokens",
+    "mixed_prefill_decode_batches",
+}
 
 
 class ConcurrentPrefillArtifactError(RuntimeError):
@@ -187,6 +194,13 @@ def parse_row(
             f"{owner}.prefill_overlap.classification must be one of {sorted(OVERLAP_CLASSIFICATIONS)}"
         )
     require_metric(overlap, "overlap_efficiency", "median", owner=f"{owner}.prefill_overlap", positive=False)
+    scheduler_evidence = require_mapping(row, "scheduler_evidence", owner=owner)
+    for key in sorted(SCHEDULER_EVIDENCE_KEYS):
+        value = scheduler_evidence.get(key)
+        if not isinstance(value, int) or value < 0:
+            raise ConcurrentPrefillArtifactError(
+                f"{owner}.scheduler_evidence.{key} must be a non-negative integer"
+            )
 
     return ConcurrentPrefillRow(
         artifact_path=path,

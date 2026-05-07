@@ -138,12 +138,15 @@ def render_concurrent_section(path: Path) -> list[str]:
             f"repetitions={benchmark.get('repetitions', 'unknown')}"
         ),
         "",
-        "| Requests | Request TTFT ms | TTFT vs single | Total wall ms | Wall vs single | Queue delay ms | Failures max | Peak GB | Memory vs single | Overlap |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Requests | Request TTFT ms | TTFT vs single | Total wall ms | Wall vs single | Queue delay ms | Failures max | Peak GB | Memory vs single | Overlap | Scheduled prefill | Scheduled decode | Mixed batches |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|",
     ]
     for row in rows:
         overlap = row.get("prefill_overlap", {})
         classification = overlap.get("classification", "unknown") if isinstance(overlap, dict) else "unknown"
+        scheduler_evidence = row.get("scheduler_evidence", {})
+        if not isinstance(scheduler_evidence, dict):
+            scheduler_evidence = {}
         lines.append(
             "| "
             f"{int(row['concurrent_requests'])} | "
@@ -155,7 +158,10 @@ def render_concurrent_section(path: Path) -> list[str]:
             f"{fmt_number(metric_value(row, 'failure_count', 'max'), digits=0)} | "
             f"{fmt_number(metric_value(row, 'peak_memory_gb', 'max'))} | "
             f"{fmt_ratio(ratio_value(row, 'ratios_to_single_request', 'peak_memory_gb'))} | "
-            f"{classification} |"
+            f"{classification} | "
+            f"{int(scheduler_evidence.get('scheduled_prefill_tokens', 0))} | "
+            f"{int(scheduler_evidence.get('scheduled_decode_tokens', 0))} | "
+            f"{int(scheduler_evidence.get('mixed_prefill_decode_batches', 0))} |"
         )
     lines.extend(
         [

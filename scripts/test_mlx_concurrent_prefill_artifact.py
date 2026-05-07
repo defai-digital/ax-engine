@@ -63,6 +63,13 @@ def row(
             "classification": "partial_overlap" if concurrent_requests > 1 else "serialized",
             "overlap_efficiency": metric(0.45 if concurrent_requests > 1 else 0.0),
         },
+        "scheduler_evidence": {
+            "scheduled_prefill_tokens": 8192 * concurrent_requests,
+            "scheduled_decode_tokens": max(concurrent_requests - 1, 0),
+            "skipped_prefill_tokens": 2048 if concurrent_requests > 1 else 0,
+            "skipped_decode_tokens": 0,
+            "mixed_prefill_decode_batches": 1 if concurrent_requests > 1 else 0,
+        },
     }
     if ratios is not None:
         payload["ratios_to_single_request"] = ratios
@@ -162,6 +169,14 @@ class ConcurrentPrefillArtifactTests(unittest.TestCase):
         path = self.write_fixture(artifact)
 
         with self.assertRaisesRegex(checker.ConcurrentPrefillArtifactError, "failure_count"):
+            checker.validate_mlx_concurrent_prefill_artifact(path)
+
+    def test_missing_scheduler_evidence_fails(self) -> None:
+        artifact = valid_artifact()
+        del artifact["rows"][1]["scheduler_evidence"]
+        path = self.write_fixture(artifact)
+
+        with self.assertRaisesRegex(checker.ConcurrentPrefillArtifactError, "scheduler_evidence"):
             checker.validate_mlx_concurrent_prefill_artifact(path)
 
     def test_stale_ratio_fails(self) -> None:
