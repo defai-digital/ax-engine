@@ -3471,6 +3471,7 @@ sys.exit(17)
                 input_text: None,
                 max_output_tokens: 2,
                 sampling: Default::default(),
+                stop_sequences: Vec::new(),
                 metadata: None,
             })
             .expect("llama.cpp stream should start")
@@ -3560,6 +3561,7 @@ sys.exit(17)
                 input_text: Some("cli fallback stream".to_string()),
                 max_output_tokens: 2,
                 sampling: Default::default(),
+                stop_sequences: Vec::new(),
                 metadata: None,
             })
             .expect_err("cli fallback streaming should fail closed");
@@ -3599,6 +3601,7 @@ sys.exit(17)
                 input_text: Some("unsupported lifecycle".to_string()),
                 max_output_tokens: 2,
                 sampling: Default::default(),
+                stop_sequences: Vec::new(),
                 metadata: None,
             })
             .expect_err("llama.cpp CLI submit should fail closed");
@@ -3646,6 +3649,7 @@ sys.exit(17)
                 input_text: None,
                 max_output_tokens: 2,
                 sampling: Default::default(),
+                stop_sequences: Vec::new(),
                 metadata: None,
             })
             .expect("llama.cpp submit should succeed");
@@ -3742,6 +3746,7 @@ sys.exit(17)
                 input_text: None,
                 max_output_tokens: 2,
                 sampling: Default::default(),
+                stop_sequences: Vec::new(),
                 metadata: None,
             })
             .expect("llama.cpp submit should succeed");
@@ -3833,6 +3838,7 @@ sys.exit(17)
                 input_text: None,
                 max_output_tokens: 2,
                 sampling: Default::default(),
+                stop_sequences: Vec::new(),
                 metadata: None,
             })
             .expect("first llama.cpp submit should succeed");
@@ -3844,6 +3850,7 @@ sys.exit(17)
                 input_text: None,
                 max_output_tokens: 2,
                 sampling: Default::default(),
+                stop_sequences: Vec::new(),
                 metadata: None,
             })
             .expect("second llama.cpp submit should also succeed");
@@ -3925,6 +3932,7 @@ sys.exit(17)
                 input_text: None,
                 max_output_tokens: 2,
                 sampling: Default::default(),
+                stop_sequences: Vec::new(),
                 metadata: None,
             })
             .expect("first llama.cpp submit should succeed");
@@ -3935,6 +3943,7 @@ sys.exit(17)
                 input_text: None,
                 max_output_tokens: 2,
                 sampling: Default::default(),
+                stop_sequences: Vec::new(),
                 metadata: None,
             })
             .expect("second llama.cpp submit should succeed");
@@ -4187,6 +4196,7 @@ sys.exit(17)
                     input_text: None,
                     max_output_tokens: 1,
                     sampling: Default::default(),
+                    stop_sequences: Vec::new(),
                     metadata: None,
                 },
             )
