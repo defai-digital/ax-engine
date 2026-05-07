@@ -1,0 +1,292 @@
+# vLLM and llama.cpp Speed Improvement Plan
+
+Status: In Progress
+Date: 2026-05-07
+Owner: AX Engine
+
+## 1. Summary
+
+AX Engine should absorb vLLM and llama.cpp lessons in layers instead of trying
+to clone either runtime wholesale.
+
+The recommended sequence is:
+
+1. Benchmark and telemetry gates for serving-shaped workloads.
+2. MLX exact-prefix KV reuse for repeated agent prompts.
+3. Token-budget scheduling for chunked prefill and decode fairness.
+4. N-gram decode policy hardening.
+5. TurboQuant fused compressed decode promotion.
+6. llama.cpp delegated backend presets and metrics pass-through.
+
+This keeps repo-owned MLX work separate from the delegated llama.cpp route
+defined by ADR 0012.
+
+## 2. Reference Lessons
+
+### vLLM
+
+vLLM's speed comes primarily from serving architecture:
+
+- PagedAttention manages KV cache in reusable blocks.
+- Continuous batching schedules active requests into each engine step.
+- Chunked prefill prevents long prompts from monopolizing the engine.
+- Prefix caching skips repeated prefill work.
+- Speculative decoding improves effective decode throughput.
+- Disaggregated prefill/decode separates compute-bound and bandwidth-bound
+  stages at larger deployment scale.
+
+For AX Engine, the portable lessons are the contracts: block-level KV ownership,
+token-budget scheduling, prefix reuse accounting, and decode telemetry. CUDA
+graph and Triton-specific implementation details are not directly portable to
+the current MLX runtime.
+
+### llama.cpp
+
+llama.cpp is the right reference for local delegated inference:
+
+- `llama-server` exposes parallel slots and continuous batching.
+- `cache_prompt` skips repeated prompt suffix processing.
+- slot save/restore persists prompt cache state.
+- `-b` and `-ub` separate logical and physical batch sizing.
+- speculative decode includes draft-model and draftless n-gram variants.
+- n-gram variants include simple recency lookup, map-based support counts, and
+  shared hash-pool modes.
+
+For AX Engine, the portable lessons are practical knobs and observability:
+parallelism presets, cache hit metrics, request deferral metrics, and n-gram
+policy variants.
+
+## 3. Current AX Baseline
+
+MLX mode already has:
+
+- chunked prefill
+- chunked KV backing buffers with `slice_update`
+- direct double-buffer decode for deterministic direct rows
+- n-gram self-speculative decode with telemetry
+- Qwen linear-attention safe fallback behavior
+- TurboQuant compressed-KV shadow storage and fused-decode telemetry
+
+Known gaps:
+
+- MLX runner execution is still effectively item-serial for batch throughput.
+- MLX KV append and cache state are batch=1.
+- Prefix reuse is not yet a repo-owned MLX runtime feature.
+- Concurrent 8k prefill evidence currently classifies 4-request behavior as
+  serialized.
+- TurboQuant fused compressed decode is not yet a default production path.
+
+## 4. Implementation Phases
+
+### Phase 0: Claim Gate
+
+Add or preserve benchmark gates that fail closed for:
+
+- same prompt hash across AX and reference rows
+- selected backend and route identity
+- direct-vs-n-gram decode policy
+- prefill/decode split
+- concurrent prefill overlap classification
+- prefix reuse hit/miss counters once implemented
+- llama.cpp delegated metrics when delegated mode is used
+
+Acceptance:
+
+- Public tables cannot claim continuous batching, prefix reuse, or long-context
+  prefill improvement without a matching artifact.
+
+### Phase 1: Exact Prefix KV Reuse
+
+Implement an MLX prefix cache for safe full-attention models:
+
+- cache key: model id, tokenizer id/hash, route policy, token prefix hash,
+  layer layout, dtype, sliding-window support marker
+- cache value: immutable per-layer KV snapshot plus logical token count
+- lookup: longest exact block-aligned prefix
+- policy: byte cap, sequence cap, refcount, LRU eviction
+- fail-closed for hybrid recurrent state until state snapshot/restore is proven
+
+Acceptance:
+
+- repeated-prefix replay shows reused tokens and lower TTFT
+- deterministic replay matches direct baseline
+- memory cap eviction is visible in route metadata
+
+### Phase 2: Token-Budget Scheduling
+
+Move from item-serial MLX execution toward a scheduler contract that can mix:
+
+- decode tokens from running requests
+- bounded prefill chunks from waiting requests
+- skipped long prefill chunks when token budget is exhausted
+
+The first version does not need full vLLM-style paged attention. It should
+prove that long prefill no longer blocks all decode progress.
+
+Acceptance:
+
+- 2/4 concurrent long-prompt artifact moves from serialized toward partial or
+  full overlap without correctness regressions
+- route metadata records scheduled prefill tokens and scheduled decode tokens
+
+### Phase 3: N-Gram Decode Policy Hardening
+
+Keep AX's current verifier semantics, but improve proposal quality:
+
+- preserve majority continuation against one-off outliers
+- break equal-support ties by recency
+- expose per-request no-draft fallback labels
+- evaluate llama.cpp-style map and shared-pool variants behind policy flags
+- auto-tune draft length from observed acceptance and model family
+
+Acceptance:
+
+- unit tests cover majority, recency tie-break, confidence filtering, and
+  no-draft fallback labels
+- coding-shaped benchmark rows retain or improve effective throughput
+
+### Phase 4: TurboQuant Fused Compressed Decode
+
+Promote fused compressed decode only after it is integrated into real runner
+decode, not only microbenchmarks.
+
+Acceptance:
+
+- long-context quality gate passes
+- route metadata records attempts, successes, fallbacks, and byte savings
+- fallback path is deterministic and observable
+
+### Phase 5: Delegated llama.cpp Presets
+
+For non-MLX delegated routes, expose safe presets rather than hiding llama.cpp
+performance controls:
+
+- parallel slots
+- continuous batching toggle
+- logical/physical batch sizing
+- cache prompt
+- slot save/restore path
+- speculative decode mode
+- metrics endpoint capture
+
+Acceptance:
+
+- delegated artifacts record llama.cpp prompt/decode throughput, KV usage,
+  requests processing/deferred, and cache reuse where available
+
+## 5. Implemented Slices
+
+### Slice 1: Recency-Aware N-Gram Tie-Breaking
+
+The first code slice is Phase 3: recency-aware n-gram tie-breaking. It is small,
+local to the draft proposer, and does not change verifier semantics. It improves
+proposal choice for repeated code/tool patterns where two continuations have
+equal support but the latest local pattern is more likely to continue.
+
+### Slice 2: Four-Token N-Gram Context
+
+The second code slice extends the local n-gram proposer from 2/3-token contexts
+to 2/3/4-token contexts. Prediction now tries the most specific 4-token context
+first, then falls back to trigram and bigram suffixes when the longer context is
+missing, sparse, or below the confidence threshold.
+
+This pulls in the same practical lesson as vLLM and llama.cpp's longer prompt
+lookup windows without changing AX's verifier semantics, scheduler, or KV
+layout.
+
+### Slice 3: Bounded N-Gram Context Tables
+
+The third code slice keeps each n-gram order bounded with a recency-based
+eviction policy. AX's proposer stores richer per-context continuation counts
+than llama.cpp's constant-memory `ngram-mod`, so long generations should not
+allow bigram, trigram, or fourgram maps to grow without a cap.
+
+The cap is per order, and eviction removes the least recently observed context
+key. This preserves recent code/tool-output patterns while making proposer
+memory predictable.
+
+### Slice 4: Bounded Continuations Per Context
+
+The fourth code slice bounds the continuation candidates stored under each
+context key. Each context now keeps only a small recent set of candidate
+continuations, then recomputes the selected champion from the retained
+statistics. This follows the practical shape of llama.cpp's bounded n-gram map
+variants while preserving AX's support, confidence, and recency tie-break
+semantics.
+
+This prevents a single high-entropy context from accumulating an unbounded
+continuation histogram during long outputs.
+
+### Slice 5: Small-Vector Continuation Storage
+
+The fifth code slice changes each context's continuation storage from a nested
+hash map to a small bounded vector. Since Slice 4 caps each context at four
+candidate continuations, linear scans are cheaper and more predictable than
+allocating and hashing inside every context record.
+
+This keeps the same majority, confidence, and recency semantics while reducing
+per-context metadata overhead.
+
+### Slice 6: Acceptance-Aware N-Gram Confidence
+
+The sixth code slice records verifier feedback on accepted draft tokens and the
+first rejected draft token. Confidence-gated prediction now discounts a
+candidate after real verifier rejection while leaving raw no-threshold
+prediction available for callers that explicitly want it.
+
+This follows the same practical lesson as llama.cpp's n-gram map variants,
+where used n-grams track accepted-token outcomes, but keeps AX's existing
+single verifier path and KV rollback semantics unchanged.
+
+### Slice 7: Source-Aware N-Gram Feedback
+
+The seventh code slice makes verifier feedback use the same source-selection
+logic as draft prediction. If a longer context fails the confidence/support gate
+and a shorter suffix context creates the draft, acceptance or rejection is
+charged to the fallback source instead of whichever longer context happens to
+contain the same token.
+
+This keeps the acceptance-aware confidence signal precise and avoids poisoning
+or rewarding context orders that did not actually propose the verified token.
+
+### Slice 8: N-Gram Table Stats Snapshot
+
+The eighth code slice adds an aggregate stats snapshot for the n-gram proposer.
+It reports context counts, continuation pressure, configured caps, and verifier
+feedback totals without exposing token content.
+
+This gives future benchmark artifacts and route metadata a safe, stable source
+for distinguishing no-draft fallback, table-growth pressure, and verifier
+accept/reject behavior.
+
+### Slice 9: Batched Context Pruning
+
+The ninth code slice reduces long-generation maintenance overhead once n-gram
+context maps reach their cap. Instead of scanning a full map every time one new
+context crosses the cap, the proposer evicts a small batch of the oldest
+contexts in one pass and then has headroom before the next prune.
+
+The table remains under the configured cap after pruning, while steady-state
+long outputs perform fewer full-map pruning scans.
+
+### Slice 10: Bounded Oldest-Set Pruning
+
+The tenth code slice keeps the batched pruning behavior but avoids cloning and
+sorting every context key on each prune. Pruning now maintains only the bounded
+set of oldest candidates needed for the eviction batch, then removes that set.
+
+This lowers pruning allocation and sort overhead while preserving the same
+oldest-context eviction contract.
+
+### Slice 11: Insert-Only Context Prune Gate
+
+The eleventh code slice avoids entering the context-prune path when an observed
+n-gram only updates an existing context key. Since map size cannot grow on an
+existing-key update, pruning is now checked only after inserting a new context.
+
+This removes avoidable cap checks and function calls for repetitive prompts or
+generated loops where most n-gram observations hit existing contexts.
+
+These slices intentionally do not touch `runner.rs`, scheduler, or KV ownership
+because there are active local changes on those surfaces and the larger Phase 1
+and Phase 2 work need separate tests and artifacts.

@@ -40,6 +40,13 @@ pub const LINEAR_MIN_NGRAM_SUPPORT: u32 = 2;
 /// recently observed context when long generations exceed the budget.
 const MAX_CONTEXTS_PER_ORDER: usize = 4096;
 
+/// Number of oldest context keys to evict when one n-gram order crosses cap.
+///
+/// Pruning a hash map requires scanning context metadata.  Evicting a small
+/// batch at once keeps the table under cap while avoiding one full scan per
+/// token after long generations reach steady state.
+const CONTEXT_PRUNE_BATCH: usize = 64;
+
 /// Maximum continuation candidates tracked for one context key.
 ///
 /// This mirrors the practical shape of llama.cpp's bounded n-gram map variants:
@@ -51,6 +58,8 @@ struct ContinuationStats {
     token: u32,
     count: u32,
     last_seen: u64,
+    accepted: u32,
+    rejected: u32,
 }
 
 #[derive(Clone)]
@@ -81,6 +90,8 @@ impl NgramPrediction {
             token,
             count: 1,
             last_seen,
+            accepted: 0,
+            rejected: 0,
         }];
         Self {
             token,
@@ -112,10 +123,42 @@ impl NgramPrediction {
                 token,
                 count: 1,
                 last_seen,
+                accepted: 0,
+                rejected: 0,
             });
         }
         self.prune_oldest_continuations(MAX_CONTINUATIONS_PER_CONTEXT);
         self.recompute_champion();
+    }
+
+    fn effective_confidence(&self) -> f32 {
+        let lexical_confidence = self.confidence();
+        let Some(stats) = self.selected_continuation() else {
+            return lexical_confidence;
+        };
+        let feedback_count = stats.accepted.saturating_add(stats.rejected);
+        if feedback_count == 0 {
+            return lexical_confidence;
+        }
+        let acceptance_confidence =
+            (stats.accepted.saturating_add(1)) as f32 / (feedback_count.saturating_add(2)) as f32;
+        lexical_confidence * acceptance_confidence
+    }
+
+    fn record_feedback(&mut self, token: u32, accepted: bool) -> bool {
+        let Some(stats) = self
+            .continuations
+            .iter_mut()
+            .find(|stats| stats.token == token)
+        else {
+            return false;
+        };
+        if accepted {
+            stats.accepted = stats.accepted.saturating_add(1);
+        } else {
+            stats.rejected = stats.rejected.saturating_add(1);
+        }
+        true
     }
 
     fn prune_oldest_continuations(&mut self, max_entries: usize) {
@@ -148,6 +191,43 @@ impl NgramPrediction {
             self.last_seen = self.key_last_seen;
         }
     }
+
+    fn selected_continuation(&self) -> Option<&ContinuationStats> {
+        self.continuations
+            .iter()
+            .find(|stats| stats.token == self.token)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NgramContextKey {
+    Bigram((u32, u32)),
+    Trigram((u32, u32, u32)),
+    Fourgram((u32, u32, u32, u32)),
+}
+
+#[derive(Clone, Copy)]
+struct DraftStep {
+    token: u32,
+    source: NgramContextKey,
+}
+
+/// Snapshot of the n-gram proposer table.
+///
+/// This intentionally reports aggregate pressure only.  It is safe to expose in
+/// tests or future route metadata without leaking generated token content.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NgramTableStats {
+    pub bigram_contexts: usize,
+    pub trigram_contexts: usize,
+    pub fourgram_contexts: usize,
+    pub total_contexts: usize,
+    pub total_continuations: usize,
+    pub accepted_feedback: u64,
+    pub rejected_feedback: u64,
+    pub max_contexts_per_order: usize,
+    pub max_continuations_per_context: usize,
+    pub context_prune_batch: usize,
 }
 
 /// N-gram lookup table for self-drafting decoding.
@@ -182,6 +262,41 @@ impl NgramTable {
         }
     }
 
+    /// Return aggregate table pressure and verifier-feedback counters.
+    pub fn stats(&self) -> NgramTableStats {
+        let bigram_stats = ngram_prediction_map_stats(&self.bigrams);
+        let trigram_stats = ngram_prediction_map_stats(&self.trigrams);
+        let fourgram_stats = ngram_prediction_map_stats(&self.fourgrams);
+
+        let bigram_contexts = self.bigrams.len();
+        let trigram_contexts = self.trigrams.len();
+        let fourgram_contexts = self.fourgrams.len();
+
+        NgramTableStats {
+            bigram_contexts,
+            trigram_contexts,
+            fourgram_contexts,
+            total_contexts: bigram_contexts
+                .saturating_add(trigram_contexts)
+                .saturating_add(fourgram_contexts),
+            total_continuations: bigram_stats
+                .continuations
+                .saturating_add(trigram_stats.continuations)
+                .saturating_add(fourgram_stats.continuations),
+            accepted_feedback: bigram_stats
+                .accepted_feedback
+                .saturating_add(trigram_stats.accepted_feedback)
+                .saturating_add(fourgram_stats.accepted_feedback),
+            rejected_feedback: bigram_stats
+                .rejected_feedback
+                .saturating_add(trigram_stats.rejected_feedback)
+                .saturating_add(fourgram_stats.rejected_feedback),
+            max_contexts_per_order: MAX_CONTEXTS_PER_ORDER,
+            max_continuations_per_context: MAX_CONTINUATIONS_PER_CONTEXT,
+            context_prune_batch: CONTEXT_PRUNE_BATCH,
+        }
+    }
+
     /// Record one token and update the n-gram table.
     fn observe(&mut self, t: u32) {
         self.observation_index = self.observation_index.saturating_add(1);
@@ -190,24 +305,32 @@ impl NgramTable {
         if n >= 2 {
             let a = self.tail[n - 2];
             let b = self.tail[n - 1];
-            update_prediction(&mut self.bigrams, (a, b), t, observation_index);
-            prune_oldest_prediction(&mut self.bigrams, MAX_CONTEXTS_PER_ORDER);
+            update_prediction_and_prune(
+                &mut self.bigrams,
+                (a, b),
+                t,
+                observation_index,
+                MAX_CONTEXTS_PER_ORDER,
+                CONTEXT_PRUNE_BATCH,
+            );
             if n >= 3 {
-                update_prediction(
+                update_prediction_and_prune(
                     &mut self.trigrams,
                     (self.tail[n - 3], a, b),
                     t,
                     observation_index,
+                    MAX_CONTEXTS_PER_ORDER,
+                    CONTEXT_PRUNE_BATCH,
                 );
-                prune_oldest_prediction(&mut self.trigrams, MAX_CONTEXTS_PER_ORDER);
                 if n >= 4 {
-                    update_prediction(
+                    update_prediction_and_prune(
                         &mut self.fourgrams,
                         (self.tail[n - 4], self.tail[n - 3], a, b),
                         t,
                         observation_index,
+                        MAX_CONTEXTS_PER_ORDER,
+                        CONTEXT_PRUNE_BATCH,
                     );
-                    prune_oldest_prediction(&mut self.fourgrams, MAX_CONTEXTS_PER_ORDER);
                 }
             }
         }
@@ -253,70 +376,199 @@ impl NgramTable {
             buf[i] = t;
         }
 
-        let passes =
-            |p: &&NgramPrediction| p.support >= min_support && p.confidence() >= conf_threshold;
-
         for _ in 0..max_len {
-            let next = if len >= 4 {
-                self.fourgrams
-                    .get(&(buf[0], buf[1], buf[2], buf[3]))
-                    .filter(passes)
-                    .map(|p| p.token)
-                    .or_else(|| {
-                        self.trigrams
-                            .get(&(buf[1], buf[2], buf[3]))
-                            .filter(passes)
-                            .map(|p| p.token)
-                    })
-                    .or_else(|| {
-                        self.bigrams
-                            .get(&(buf[2], buf[3]))
-                            .filter(passes)
-                            .map(|p| p.token)
-                    })
-            } else if len == 3 {
-                self.trigrams
-                    .get(&(buf[0], buf[1], buf[2]))
-                    .filter(passes)
-                    .map(|p| p.token)
-                    .or_else(|| {
-                        self.bigrams
-                            .get(&(buf[1], buf[2]))
-                            .filter(passes)
-                            .map(|p| p.token)
-                    })
-            } else if len == 2 {
-                self.bigrams
-                    .get(&(buf[0], buf[1]))
-                    .filter(passes)
-                    .map(|p| p.token)
-            } else {
-                None
-            };
-
-            match next {
-                Some(t) => {
-                    draft.push(t);
-                    if len < 4 {
-                        buf[len] = t;
-                        len += 1;
-                    } else {
-                        buf[0] = buf[1];
-                        buf[1] = buf[2];
-                        buf[2] = buf[3];
-                        buf[3] = t;
-                    }
+            match self.select_draft_step(&buf, len, min_support, conf_threshold) {
+                Some(step) => {
+                    draft.push(step.token);
+                    push_prediction_context_token(&mut buf, &mut len, step.token);
                 }
                 None => break,
             }
         }
         draft
     }
+
+    /// Record verifier feedback for a draft generated from the current tail.
+    ///
+    /// Feedback is applied to accepted draft positions and the first rejected
+    /// position only. Later draft tokens were verified under an already-wrong
+    /// speculative context, so treating them as rejected would over-penalize
+    /// unrelated continuations.
+    fn record_draft_feedback(
+        &mut self,
+        draft: &[u32],
+        accept_count: usize,
+        min_support: u32,
+        conf_threshold: f32,
+    ) {
+        if draft.is_empty() {
+            return;
+        }
+
+        let mut buf = [0u32; 4];
+        let mut len = self.tail.len().min(4);
+        for (i, &t) in self.tail.iter().take(len).enumerate() {
+            buf[i] = t;
+        }
+
+        let feedback_len = if accept_count < draft.len() {
+            accept_count + 1
+        } else {
+            accept_count
+        };
+
+        for (index, &token) in draft.iter().take(feedback_len).enumerate() {
+            let accepted = index < accept_count;
+            if let Some(step) = self.select_draft_step(&buf, len, min_support, conf_threshold)
+                && step.token == token
+            {
+                self.record_feedback_for_context(step.source, token, accepted);
+            }
+            push_prediction_context_token(&mut buf, &mut len, token);
+        }
+    }
+
+    fn select_draft_step(
+        &self,
+        buf: &[u32; 4],
+        len: usize,
+        min_support: u32,
+        conf_threshold: f32,
+    ) -> Option<DraftStep> {
+        if len >= 4 {
+            let key = (buf[0], buf[1], buf[2], buf[3]);
+            if let Some(prediction) = self.fourgrams.get(&key)
+                && prediction_passes(prediction, min_support, conf_threshold)
+            {
+                return Some(DraftStep {
+                    token: prediction.token,
+                    source: NgramContextKey::Fourgram(key),
+                });
+            }
+            let key = (buf[1], buf[2], buf[3]);
+            if let Some(prediction) = self.trigrams.get(&key)
+                && prediction_passes(prediction, min_support, conf_threshold)
+            {
+                return Some(DraftStep {
+                    token: prediction.token,
+                    source: NgramContextKey::Trigram(key),
+                });
+            }
+            let key = (buf[2], buf[3]);
+            if let Some(prediction) = self.bigrams.get(&key)
+                && prediction_passes(prediction, min_support, conf_threshold)
+            {
+                return Some(DraftStep {
+                    token: prediction.token,
+                    source: NgramContextKey::Bigram(key),
+                });
+            }
+        } else if len == 3 {
+            let key = (buf[0], buf[1], buf[2]);
+            if let Some(prediction) = self.trigrams.get(&key)
+                && prediction_passes(prediction, min_support, conf_threshold)
+            {
+                return Some(DraftStep {
+                    token: prediction.token,
+                    source: NgramContextKey::Trigram(key),
+                });
+            }
+            let key = (buf[1], buf[2]);
+            if let Some(prediction) = self.bigrams.get(&key)
+                && prediction_passes(prediction, min_support, conf_threshold)
+            {
+                return Some(DraftStep {
+                    token: prediction.token,
+                    source: NgramContextKey::Bigram(key),
+                });
+            }
+        } else if len == 2 {
+            let key = (buf[0], buf[1]);
+            if let Some(prediction) = self.bigrams.get(&key)
+                && prediction_passes(prediction, min_support, conf_threshold)
+            {
+                return Some(DraftStep {
+                    token: prediction.token,
+                    source: NgramContextKey::Bigram(key),
+                });
+            }
+        }
+        None
+    }
+
+    fn record_feedback_for_context(
+        &mut self,
+        source: NgramContextKey,
+        token: u32,
+        accepted: bool,
+    ) -> bool {
+        match source {
+            NgramContextKey::Bigram(key) => self
+                .bigrams
+                .get_mut(&key)
+                .is_some_and(|prediction| prediction.record_feedback(token, accepted)),
+            NgramContextKey::Trigram(key) => self
+                .trigrams
+                .get_mut(&key)
+                .is_some_and(|prediction| prediction.record_feedback(token, accepted)),
+            NgramContextKey::Fourgram(key) => self
+                .fourgrams
+                .get_mut(&key)
+                .is_some_and(|prediction| prediction.record_feedback(token, accepted)),
+        }
+    }
 }
 
-fn update_prediction<K>(map: &mut HashMap<K, NgramPrediction>, key: K, token: u32, last_seen: u64)
-where
-    K: Eq + std::hash::Hash,
+fn prediction_passes(prediction: &NgramPrediction, min_support: u32, conf_threshold: f32) -> bool {
+    prediction.support >= min_support && prediction.effective_confidence() >= conf_threshold
+}
+
+fn push_prediction_context_token(buf: &mut [u32; 4], len: &mut usize, token: u32) {
+    if *len < 4 {
+        buf[*len] = token;
+        *len += 1;
+    } else {
+        buf[0] = buf[1];
+        buf[1] = buf[2];
+        buf[2] = buf[3];
+        buf[3] = token;
+    }
+}
+
+#[derive(Default)]
+struct NgramPredictionMapStats {
+    continuations: usize,
+    accepted_feedback: u64,
+    rejected_feedback: u64,
+}
+
+fn ngram_prediction_map_stats<K>(map: &HashMap<K, NgramPrediction>) -> NgramPredictionMapStats {
+    let mut stats = NgramPredictionMapStats::default();
+    for prediction in map.values() {
+        stats.continuations = stats
+            .continuations
+            .saturating_add(prediction.continuations.len());
+        for continuation in &prediction.continuations {
+            stats.accepted_feedback = stats
+                .accepted_feedback
+                .saturating_add(continuation.accepted as u64);
+            stats.rejected_feedback = stats
+                .rejected_feedback
+                .saturating_add(continuation.rejected as u64);
+        }
+    }
+    stats
+}
+
+fn update_prediction_and_prune<K>(
+    map: &mut HashMap<K, NgramPrediction>,
+    key: K,
+    token: u32,
+    last_seen: u64,
+    max_entries: usize,
+    prune_batch: usize,
+) where
+    K: Clone + Eq + std::hash::Hash,
 {
     match map.get_mut(&key) {
         Some(p) => {
@@ -324,23 +576,47 @@ where
         }
         None => {
             map.insert(key, NgramPrediction::new(token, last_seen));
+            prune_oldest_predictions(map, max_entries, prune_batch);
         }
     }
 }
 
-fn prune_oldest_prediction<K>(map: &mut HashMap<K, NgramPrediction>, max_entries: usize)
-where
+fn prune_oldest_predictions<K>(
+    map: &mut HashMap<K, NgramPrediction>,
+    max_entries: usize,
+    prune_batch: usize,
+) where
     K: Clone + Eq + std::hash::Hash,
 {
-    while map.len() > max_entries {
-        let Some(oldest_key) = map
+    if map.len() <= max_entries {
+        return;
+    }
+
+    let overflow = map.len().saturating_sub(max_entries);
+    let remove_count = prune_batch.max(overflow).min(map.len());
+    let mut oldest: Vec<(K, u64)> = Vec::with_capacity(remove_count);
+    for (key, prediction) in map.iter() {
+        let last_seen = prediction.key_last_seen;
+        if oldest.len() < remove_count {
+            oldest.push((key.clone(), last_seen));
+            continue;
+        }
+
+        let Some((newest_old_index, newest_old_last_seen)) = oldest
             .iter()
-            .min_by_key(|(_, prediction)| prediction.key_last_seen)
-            .map(|(key, _)| key.clone())
+            .enumerate()
+            .max_by_key(|(_, (_, last_seen))| *last_seen)
+            .map(|(index, (_, last_seen))| (index, *last_seen))
         else {
-            break;
+            continue;
         };
-        map.remove(&oldest_key);
+        if last_seen < newest_old_last_seen {
+            oldest[newest_old_index] = (key.clone(), last_seen);
+        }
+    }
+
+    for (key, _) in oldest {
+        map.remove(&key);
     }
 }
 
@@ -421,6 +697,13 @@ pub fn ngram_accel_decode_step(
     );
 
     // Update n-gram table.
+    let (feedback_min_support, feedback_confidence) = ngram_feedback_policy(cfg);
+    ngram.record_draft_feedback(
+        draft,
+        verification.accept_count,
+        feedback_min_support,
+        feedback_confidence,
+    );
     ngram.feed(&draft[..verification.accept_count]);
     ngram.feed(&verification.result[verification.accept_count..]); // correction or bonus
 
@@ -471,10 +754,25 @@ fn ngram_accel_decode_step_linear_safe(
         );
     }
 
+    let (feedback_min_support, feedback_confidence) = ngram_feedback_policy(cfg);
+    ngram.record_draft_feedback(
+        draft,
+        verification.accept_count,
+        feedback_min_support,
+        feedback_confidence,
+    );
     ngram.feed(&draft[..verification.accept_count]);
     ngram.feed(&verification.result[verification.accept_count..]); // correction or bonus
 
     verification.result
+}
+
+fn ngram_feedback_policy(cfg: &ModelConfig) -> (u32, f32) {
+    if cfg.linear_attention.is_some() {
+        (LINEAR_MIN_NGRAM_SUPPORT, DRAFT_CONFIDENCE_THRESHOLD)
+    } else {
+        (1, DRAFT_CONFIDENCE_THRESHOLD)
+    }
 }
 
 struct DraftVerification {
@@ -861,6 +1159,210 @@ mod tests {
         }
         assert_eq!(prediction.total, MAX_CONTINUATIONS_PER_CONTEXT as u32);
         assert_eq!(t.predict(1), vec![50]);
+    }
+
+    #[test]
+    fn stats_report_context_and_continuation_pressure() {
+        let t = table_from_sequence(&[1, 2, 3, 1, 2, 4, 1, 2, 3, 1, 2]);
+        let stats = t.stats();
+
+        assert_eq!(
+            stats.total_contexts,
+            stats.bigram_contexts + stats.trigram_contexts + stats.fourgram_contexts
+        );
+        assert!(stats.bigram_contexts > 0);
+        assert!(stats.trigram_contexts > 0);
+        assert!(stats.fourgram_contexts > 0);
+        assert!(stats.total_continuations >= stats.total_contexts);
+        assert_eq!(stats.accepted_feedback, 0);
+        assert_eq!(stats.rejected_feedback, 0);
+        assert_eq!(stats.max_contexts_per_order, MAX_CONTEXTS_PER_ORDER);
+        assert_eq!(
+            stats.max_continuations_per_context,
+            MAX_CONTINUATIONS_PER_CONTEXT
+        );
+        assert_eq!(stats.context_prune_batch, CONTEXT_PRUNE_BATCH);
+    }
+
+    #[test]
+    fn stats_report_verifier_feedback_without_tokens() {
+        let mut t = NgramTable::new();
+        t.feed(&[1, 2, 3, 9, 1, 2]);
+
+        t.record_draft_feedback(&[3], 0, 1, 0.4);
+        let rejected = t.stats();
+        assert_eq!(rejected.accepted_feedback, 0);
+        assert_eq!(rejected.rejected_feedback, 1);
+
+        t.record_draft_feedback(&[3], 1, 1, 0.0);
+        let accepted = t.stats();
+        assert_eq!(accepted.accepted_feedback, 1);
+        assert_eq!(accepted.rejected_feedback, 1);
+    }
+
+    #[test]
+    fn context_pruning_evicts_oldest_entries_in_batches() {
+        let max_entries = 128;
+        let prune_batch = 16;
+        let mut map = HashMap::new();
+        for token in 0..=max_entries as u32 {
+            map.insert(token, NgramPrediction::new(token, token as u64));
+        }
+
+        prune_oldest_predictions(&mut map, max_entries, prune_batch);
+
+        assert_eq!(map.len(), max_entries + 1 - prune_batch);
+        for token in 0..prune_batch as u32 {
+            assert!(!map.contains_key(&token));
+        }
+        assert!(
+            map.contains_key(&(max_entries as u32)),
+            "newest contexts should survive batched pruning"
+        );
+    }
+
+    #[test]
+    fn context_pruning_removes_full_overflow_when_larger_than_batch() {
+        let max_entries = 128;
+        let prune_batch = 16;
+        let overflow = prune_batch + 9;
+        let mut map = HashMap::new();
+        for token in 0..(max_entries + overflow) as u32 {
+            map.insert(token, NgramPrediction::new(token, token as u64));
+        }
+
+        prune_oldest_predictions(&mut map, max_entries, prune_batch);
+
+        assert_eq!(map.len(), max_entries);
+        for token in 0..overflow as u32 {
+            assert!(!map.contains_key(&token));
+        }
+        assert!(map.contains_key(&((max_entries + overflow - 1) as u32)));
+    }
+
+    #[test]
+    fn updating_existing_context_does_not_trigger_prune() {
+        let max_entries = 2;
+        let prune_batch = 1;
+        let mut map = HashMap::new();
+        update_prediction_and_prune(&mut map, 1, 10, 1, max_entries, prune_batch);
+        update_prediction_and_prune(&mut map, 2, 20, 2, max_entries, prune_batch);
+
+        update_prediction_and_prune(&mut map, 1, 11, 3, max_entries, prune_batch);
+
+        assert_eq!(
+            map.len(),
+            max_entries,
+            "existing-key updates should not enter the prune path"
+        );
+        assert!(map.contains_key(&1));
+        assert!(map.contains_key(&2));
+
+        update_prediction_and_prune(&mut map, 3, 30, 4, max_entries, prune_batch);
+        assert_eq!(map.len(), max_entries);
+        assert!(
+            !map.contains_key(&2),
+            "oldest untouched context should prune first"
+        );
+    }
+
+    #[test]
+    fn rejected_draft_feedback_suppresses_low_quality_context() {
+        let mut t = NgramTable::new();
+        t.feed(&[1, 2, 3, 9, 1, 2]);
+
+        assert_eq!(t.predict_with_confidence(1, 1, 0.4), vec![3]);
+        t.record_draft_feedback(&[3], 0, 1, 0.4);
+
+        assert!(
+            t.predict_with_confidence(1, 1, 0.4).is_empty(),
+            "one verifier rejection should suppress a one-off candidate under confidence gating"
+        );
+        assert_eq!(
+            t.predict(1),
+            vec![3],
+            "raw predict remains available for callers that intentionally disable confidence gating"
+        );
+    }
+
+    #[test]
+    fn accepted_draft_feedback_keeps_context_above_threshold() {
+        let mut t = NgramTable::new();
+        t.feed(&[1, 2, 3, 9, 1, 2]);
+
+        t.record_draft_feedback(&[3], 1, 1, 0.4);
+
+        assert_eq!(
+            t.predict_with_confidence(1, 1, 0.4),
+            vec![3],
+            "accepted verifier feedback should keep a candidate eligible"
+        );
+    }
+
+    #[test]
+    fn draft_feedback_only_marks_verified_prefix_and_first_reject() {
+        let mut t = NgramTable::new();
+        t.feed(&[1, 2, 3, 4, 1, 2]);
+
+        let draft = t.predict_with_confidence(2, 1, 0.4);
+        assert_eq!(draft, vec![3, 4]);
+
+        t.record_draft_feedback(&draft, 1, 1, 0.4);
+
+        let first = t
+            .bigrams
+            .get(&(1, 2))
+            .and_then(NgramPrediction::selected_continuation)
+            .expect("first draft context should be tracked");
+        assert_eq!(first.accepted, 1);
+        assert_eq!(first.rejected, 0);
+
+        let second = t
+            .trigrams
+            .get(&(1, 2, 3))
+            .and_then(NgramPrediction::selected_continuation)
+            .expect("first rejected context should be tracked");
+        assert_eq!(second.accepted, 0);
+        assert_eq!(second.rejected, 1);
+    }
+
+    #[test]
+    fn draft_feedback_updates_fallback_context_that_created_draft() {
+        let mut t = NgramTable::new();
+        t.feed(&[
+            0, 1, 2, 3, 98, // fourgram and trigram observe 98
+            0, 1, 2, 3, 97, // fourgram and trigram observe 97
+            5, 1, 2, 3, 99, // trigram observes a supported 99 without this fourgram
+            0, 1, 2, 3, 99, // fourgram and trigram observe 99
+            0, 1, 2, 3, // put the tail back on the contested four-token context
+        ]);
+
+        assert_eq!(
+            t.predict_with_confidence(1, 1, 0.4),
+            vec![99],
+            "fourgram confidence is too low, so the predictor should fall back to the trigram"
+        );
+
+        t.record_draft_feedback(&[99], 0, 1, 0.4);
+
+        let fourgram = t
+            .fourgrams
+            .get(&(0, 1, 2, 3))
+            .and_then(NgramPrediction::selected_continuation)
+            .expect("contested fourgram continuation should be tracked");
+        assert_eq!(fourgram.token, 99);
+        assert_eq!(
+            fourgram.rejected, 0,
+            "feedback must not be charged to a longer context that failed the predictor gate"
+        );
+
+        let trigram = t
+            .trigrams
+            .get(&(1, 2, 3))
+            .and_then(NgramPrediction::selected_continuation)
+            .expect("fallback trigram continuation should be tracked");
+        assert_eq!(trigram.token, 99);
+        assert_eq!(trigram.rejected, 1);
     }
 
     #[test]
