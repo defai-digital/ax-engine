@@ -113,6 +113,10 @@ const LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD: u32 = LINEAR_NGRAM_RETRY_INTERVAL
 /// table with useless bigrams that trigger false-positive n-gram acceleration and force
 /// expensive recompute on the very first n-gram acceleration attempt.
 const NGRAM_PROMPT_FEED_MAX: usize = 64;
+/// Minimum max_output_tokens budget required to enable n-gram acceleration.
+/// Below this, failed speculation attempts + cooldown intervals (8-16 steps)
+/// consume a disproportionate share of the total generation window.
+const NGRAM_MIN_OUTPUT_FOR_ACCELERATION: u32 = 64;
 const KV_COMPRESSION_DECODE_PATH_FULL_PRECISION_SHADOW: u32 = 1;
 const KV_COMPRESSION_DECODE_PATH_FUSED_COMPRESSED_DECODE: u32 = 2;
 const KV_COMPRESSION_DECODE_PATH_CPU_ORACLE_COMPRESSED_DECODE: u32 = 3;
@@ -1417,7 +1421,11 @@ impl MlxRunner {
                     state.direct_pipeline_emitted_tokens = 0;
                     state.ngram_disabled_steps = 0;
                     state.linear_ngram_no_draft_streak = 0;
-                    state.ngram_acceleration_disabled_for_request = false;
+                    // Skip n-gram entirely for short output budgets: failed speculation
+                    // attempts and cooldown intervals (8-16 steps) are a net loss when
+                    // max_output_tokens is smaller than two full retry windows.
+                    state.ngram_acceleration_disabled_for_request =
+                        max_output < NGRAM_MIN_OUTPUT_FOR_ACCELERATION;
 
                     if self.kv_compression.is_enabled() {
                         let sync_started = Instant::now();
