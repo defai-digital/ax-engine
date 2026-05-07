@@ -216,9 +216,11 @@ fn start_mlx_lm_server_completion_stream(
         temperature: request.sampling.temperature,
         top_p: request.sampling.top_p,
         top_k: request.sampling.top_k,
+        min_p: request.sampling.min_p,
         repetition_penalty: request.sampling.repetition_penalty,
         seed: request.sampling.seed,
         stream: true,
+        stop: request.stop_sequences.clone(),
     };
 
     let response = send_json_post_request(&endpoint, &payload)?;
@@ -268,9 +270,11 @@ fn run_mlx_lm_server_completion_generate(
         temperature: request.sampling.temperature,
         top_p: request.sampling.top_p,
         top_k: request.sampling.top_k,
+        min_p: request.sampling.min_p,
         repetition_penalty: request.sampling.repetition_penalty,
         seed: request.sampling.seed,
         stream: false,
+        stop: request.stop_sequences.clone(),
     };
 
     let response = send_json_post_request(&endpoint, &payload)?;
@@ -404,9 +408,13 @@ struct MlxLmCompletionRequest<'a> {
     temperature: f32,
     top_p: f32,
     top_k: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_p: Option<f32>,
     repetition_penalty: f32,
     seed: u64,
     stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stop: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -547,6 +555,7 @@ mod tests {
             input_text: Some(prompt.to_string()),
             max_output_tokens: 3,
             sampling: GenerateSampling::default(),
+            stop_sequences: Vec::new(),
             metadata: None,
         }
     }

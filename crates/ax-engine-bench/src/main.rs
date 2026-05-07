@@ -551,6 +551,7 @@ impl InferenceArgs {
             input_text: self.input_text.clone(),
             max_output_tokens: self.max_output_tokens,
             sampling: self.sampling.clone(),
+            stop_sequences: Vec::new(),
             metadata: self.metadata.clone(),
         }
     }
@@ -8469,10 +8470,12 @@ fn generate_request_from_spec(
             temperature: manifest.sampling.temperature,
             top_p: manifest.sampling.top_p,
             top_k: manifest.sampling.top_k,
+            min_p: None,
             repetition_penalty: 1.0,
             seed: manifest.sampling.seed,
             deterministic: Some(manifest.runtime.deterministic),
         },
+        stop_sequences: Vec::new(),
         metadata: spec.metadata.clone(),
     }
 }

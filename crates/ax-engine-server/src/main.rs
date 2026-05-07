@@ -155,6 +155,14 @@ struct OpenAiCompletionHttpRequest {
     #[serde(default)]
     top_p: Option<f32>,
     #[serde(default)]
+    top_k: Option<u32>,
+    #[serde(default)]
+    min_p: Option<f32>,
+    #[serde(default)]
+    repetition_penalty: Option<f32>,
+    #[serde(default)]
+    stop: Option<OpenAiStopInput>,
+    #[serde(default)]
     seed: Option<u64>,
     #[serde(default)]
     stream: bool,
@@ -174,11 +182,36 @@ struct OpenAiChatCompletionHttpRequest {
     #[serde(default)]
     top_p: Option<f32>,
     #[serde(default)]
+    top_k: Option<u32>,
+    #[serde(default)]
+    min_p: Option<f32>,
+    #[serde(default)]
+    repetition_penalty: Option<f32>,
+    #[serde(default)]
+    stop: Option<OpenAiStopInput>,
+    #[serde(default)]
     seed: Option<u64>,
     #[serde(default)]
     stream: bool,
     #[serde(default)]
     metadata: Option<String>,
+}
+
+/// OpenAI `stop` field: either a single string or an array of strings.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OpenAiStopInput {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl OpenAiStopInput {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            OpenAiStopInput::Single(s) => vec![s],
+            OpenAiStopInput::Multiple(v) => v,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1083,6 +1116,7 @@ fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> Gen
         input_text: request.input_text,
         max_output_tokens: request.max_output_tokens.unwrap_or(256),
         sampling: request.sampling.unwrap_or_default(),
+        stop_sequences: Vec::new(),
         metadata: request.metadata,
     }
 }
@@ -1107,11 +1141,16 @@ fn build_openai_completion_request(
             sampling: GenerateSampling {
                 temperature: request.temperature.unwrap_or(0.0),
                 top_p: request.top_p.unwrap_or(1.0),
-                top_k: 0,
-                repetition_penalty: 1.0,
+                top_k: request.top_k.unwrap_or(0),
+                min_p: request.min_p,
+                repetition_penalty: request.repetition_penalty.unwrap_or(1.0),
                 seed: request.seed.unwrap_or(0),
                 deterministic: None,
             },
+            stop_sequences: request
+                .stop
+                .map(OpenAiStopInput::into_vec)
+                .unwrap_or_default(),
             metadata: request.metadata,
         },
         stream: request.stream,
@@ -1134,11 +1173,16 @@ fn build_openai_chat_request(
             sampling: GenerateSampling {
                 temperature: request.temperature.unwrap_or(0.0),
                 top_p: request.top_p.unwrap_or(1.0),
-                top_k: 0,
-                repetition_penalty: 1.0,
+                top_k: request.top_k.unwrap_or(0),
+                min_p: request.min_p,
+                repetition_penalty: request.repetition_penalty.unwrap_or(1.0),
                 seed: request.seed.unwrap_or(0),
                 deterministic: None,
             },
+            stop_sequences: request
+                .stop
+                .map(OpenAiStopInput::into_vec)
+                .unwrap_or_default(),
             metadata: request.metadata,
         },
         stream: request.stream,
@@ -1472,6 +1516,7 @@ mod tests {
             input_text: None,
             max_output_tokens,
             sampling: GenerateSampling::default(),
+            stop_sequences: Vec::new(),
             metadata: None,
         }
     }

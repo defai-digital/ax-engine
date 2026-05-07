@@ -131,7 +131,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, repetition_penalty=1.0, seed=0, deterministic=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, seed=0, deterministic=None, stop_sequences=None, metadata=None))]
     fn generate<'py>(
         &mut self,
         py: Python<'py>,
@@ -141,9 +141,11 @@ impl Session {
         temperature: f32,
         top_p: f32,
         top_k: u32,
+        min_p: Option<f32>,
         repetition_penalty: f32,
         seed: u64,
         deterministic: Option<bool>,
+        stop_sequences: Option<Vec<String>>,
         metadata: Option<String>,
     ) -> PyResult<Py<PyDict>> {
         let model_id = self.model_id.clone();
@@ -156,10 +158,12 @@ impl Session {
                 temperature,
                 top_p,
                 top_k,
+                min_p,
                 repetition_penalty,
                 seed,
                 deterministic,
             },
+            stop_sequences.unwrap_or_default(),
             metadata,
         );
         let inner = Arc::clone(&self.inner);
@@ -182,7 +186,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, repetition_penalty=1.0, seed=0, deterministic=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, seed=0, deterministic=None, stop_sequences=None, metadata=None))]
     fn submit(
         &mut self,
         input_tokens: Option<Vec<u32>>,
@@ -191,9 +195,11 @@ impl Session {
         temperature: f32,
         top_p: f32,
         top_k: u32,
+        min_p: Option<f32>,
         repetition_penalty: f32,
         seed: u64,
         deterministic: Option<bool>,
+        stop_sequences: Option<Vec<String>>,
         metadata: Option<String>,
     ) -> PyResult<u64> {
         let model_id = self.model_id.clone();
@@ -206,10 +212,12 @@ impl Session {
                 temperature,
                 top_p,
                 top_k,
+                min_p,
                 repetition_penalty,
                 seed,
                 deterministic,
             },
+            stop_sequences.unwrap_or_default(),
             metadata,
         );
         let inner = Arc::clone(&self.inner);
@@ -278,7 +286,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, repetition_penalty=1.0, seed=0, deterministic=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, seed=0, deterministic=None, stop_sequences=None, metadata=None))]
     fn stream_generate<'py>(
         &mut self,
         py: Python<'py>,
@@ -288,9 +296,11 @@ impl Session {
         temperature: f32,
         top_p: f32,
         top_k: u32,
+        min_p: Option<f32>,
         repetition_penalty: f32,
         seed: u64,
         deterministic: Option<bool>,
+        stop_sequences: Option<Vec<String>>,
         metadata: Option<String>,
     ) -> PyResult<Py<GenerateStreamIterator>> {
         let model_id = self.model_id.clone();
@@ -320,10 +330,12 @@ impl Session {
                 temperature,
                 top_p,
                 top_k,
+                min_p,
                 repetition_penalty,
                 seed,
                 deterministic,
             },
+            stop_sequences.unwrap_or_default(),
             metadata,
         );
         let state = match py.allow_threads(|| session.stream_generate_state(request)) {
@@ -449,6 +461,7 @@ fn build_generate_request(
     input_text: Option<String>,
     max_output_tokens: u32,
     sampling: GenerateSampling,
+    stop_sequences: Vec<String>,
     metadata: Option<String>,
 ) -> GenerateRequest {
     GenerateRequest {
@@ -457,6 +470,7 @@ fn build_generate_request(
         input_text,
         max_output_tokens,
         sampling,
+        stop_sequences,
         metadata,
     }
 }
@@ -1427,6 +1441,7 @@ mod tests {
             input_text: None,
             max_output_tokens,
             sampling: GenerateSampling::default(),
+            stop_sequences: Vec::new(),
             metadata: None,
         }
     }
@@ -1589,8 +1604,10 @@ sys.stdout.write(f"python::{prompt}")
                     0.0,
                     1.0,
                     0,
+                    None,
                     1.0,
                     0,
+                    None,
                     None,
                     None,
                 )
@@ -1656,8 +1673,10 @@ sys.stdout.write(f"python::{prompt}")
                     0.0,
                     1.0,
                     0,
+                    None,
                     1.0,
                     0,
+                    None,
                     None,
                     None,
                 )
@@ -1718,8 +1737,10 @@ sys.stdout.write(f"python::{prompt}")
                     0.0,
                     1.0,
                     0,
+                    None,
                     1.0,
                     0,
+                    None,
                     None,
                     None,
                 )
@@ -1798,8 +1819,10 @@ sys.stdout.write(f"python::{prompt}")
                     0.0,
                     1.0,
                     0,
+                    None,
                     1.0,
                     0,
+                    None,
                     None,
                     None,
                 )
@@ -1901,8 +1924,10 @@ sys.stdout.write(f"python::{prompt}")
                     0.0,
                     1.0,
                     0,
+                    None,
                     1.0,
                     0,
+                    None,
                     None,
                     None,
                 )
@@ -1915,8 +1940,10 @@ sys.stdout.write(f"python::{prompt}")
                     0.0,
                     1.0,
                     0,
+                    None,
                     1.0,
                     0,
+                    None,
                     None,
                     None,
                 )
@@ -1999,8 +2026,10 @@ sys.stdout.write(f"python::{prompt}")
                     0.0,
                     1.0,
                     0,
+                    None,
                     1.0,
                     0,
+                    None,
                     None,
                     None,
                 )

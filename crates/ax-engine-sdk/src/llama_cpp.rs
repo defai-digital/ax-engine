@@ -363,6 +363,7 @@ fn run_llama_cpp_cli_generate(
         .arg(request.max_output_tokens.to_string());
 
     append_sampling_args(&mut command, &request.sampling);
+    append_stop_sequence_args(&mut command, &request.stop_sequences);
     command.args(&config.extra_args);
 
     let output = run_command_with_timeout(command, command_display.clone(), LLAMA_CPP_CLI_TIMEOUT)?;
@@ -425,12 +426,14 @@ fn run_llama_cpp_server_completion_generate(
         temperature: request.sampling.temperature,
         top_p: request.sampling.top_p,
         top_k: request.sampling.top_k,
+        min_p: request.sampling.min_p,
         repeat_penalty: request.sampling.repetition_penalty,
         seed: request.sampling.seed,
         n_predict: request.max_output_tokens,
         stream: false,
         return_tokens: true,
         return_progress: false,
+        stop: request.stop_sequences.clone(),
     };
 
     let response = send_json_post_request(&endpoint, &payload, None)?;
@@ -477,12 +480,14 @@ fn start_llama_cpp_server_completion_stream(
         temperature: request.sampling.temperature,
         top_p: request.sampling.top_p,
         top_k: request.sampling.top_k,
+        min_p: request.sampling.min_p,
         repeat_penalty: request.sampling.repetition_penalty,
         seed: request.sampling.seed,
         n_predict: request.max_output_tokens,
         stream: true,
         return_tokens: true,
         return_progress: true,
+        stop: request.stop_sequences.clone(),
     };
 
     let response = send_json_post_request(&endpoint, &payload, Some("text/event-stream"))?;
@@ -523,8 +528,8 @@ fn finish_reason_from_stop_type(
 
     match stop_type {
         Some("limit") => Some(GenerateFinishReason::MaxOutputTokens),
-        Some("eos") => Some(GenerateFinishReason::Stop),
-        _ => Some(GenerateFinishReason::MaxOutputTokens),
+        // "eos" = natural end-of-sequence, "word" = stop string match — both are Stop.
+        _ => Some(GenerateFinishReason::Stop),
     }
 }
 
@@ -605,6 +610,15 @@ fn append_sampling_args(command: &mut Command, sampling: &GenerateSampling) {
         .arg(sampling.top_k.to_string())
         .arg("--repeat-penalty")
         .arg(sampling.repetition_penalty.to_string());
+    if let Some(min_p) = sampling.min_p {
+        command.arg("--min-p").arg(min_p.to_string());
+    }
+}
+
+fn append_stop_sequence_args(command: &mut Command, stop_sequences: &[String]) {
+    for seq in stop_sequences {
+        command.arg("--stopping-string").arg(seq);
+    }
 }
 
 fn trim_single_trailing_newline(mut value: String) -> String {
@@ -696,12 +710,16 @@ struct LlamaCppCompletionRequest<'a> {
     temperature: f32,
     top_p: f32,
     top_k: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_p: Option<f32>,
     repeat_penalty: f32,
     seed: u64,
     n_predict: u32,
     stream: bool,
     return_tokens: bool,
     return_progress: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stop: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

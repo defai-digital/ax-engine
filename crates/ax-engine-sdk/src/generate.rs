@@ -15,6 +15,10 @@ pub struct GenerateRequest {
     pub max_output_tokens: u32,
     #[serde(default)]
     pub sampling: GenerateSampling,
+    /// Strings that terminate generation early. The matching string is excluded
+    /// from the output. Empty vec means no early stop strings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_sequences: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<String>,
 }
@@ -142,6 +146,11 @@ pub struct GenerateSampling {
     pub top_p: f32,
     #[serde(default)]
     pub top_k: u32,
+    /// Minimum probability threshold for nucleus sampling.
+    /// Tokens with probability < min_p * max_token_probability are discarded.
+    /// None / 0.0 disables min-p filtering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_p: Option<f32>,
     #[serde(default = "default_repetition_penalty")]
     pub repetition_penalty: f32,
     #[serde(default)]
@@ -156,6 +165,7 @@ impl Default for GenerateSampling {
             temperature: 0.0,
             top_p: 1.0,
             top_k: 0,
+            min_p: None,
             repetition_penalty: 1.0,
             seed: 0,
             deterministic: None,
