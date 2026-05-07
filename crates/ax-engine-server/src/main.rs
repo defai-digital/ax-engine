@@ -594,15 +594,10 @@ async fn generate_stream(
     validate_model(&state, request.model.as_deref())?;
 
     let request = build_generate_request(&state, request);
-    if state.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated {
-        return Err(streaming_not_supported_error(
-            SelectedBackend::MlxLmDelegated,
-        ));
-    }
     let request_id = allocate_request_id(&state);
     if state
         .stateless_generate_context
-        .supports_llama_cpp_streaming()
+        .supports_stateless_streaming()
     {
         let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
         let drive_context = Arc::clone(&stateless_generate_context);
@@ -650,15 +645,10 @@ async fn stream_openai_request(
     request: GenerateRequest,
     stream_kind: OpenAiStreamKind,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    if state.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated {
-        return Err(streaming_not_supported_error(
-            SelectedBackend::MlxLmDelegated,
-        ));
-    }
     let request_id = allocate_request_id(&state);
     if state
         .stateless_generate_context
-        .supports_llama_cpp_streaming()
+        .supports_stateless_streaming()
     {
         let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
         let drive_context = Arc::clone(&stateless_generate_context);
@@ -1066,18 +1056,6 @@ fn map_blocking_task_error(error: tokio::task::JoinError) -> (StatusCode, Json<E
     )
 }
 
-fn streaming_not_supported_error(
-    selected_backend: SelectedBackend,
-) -> (StatusCode, Json<ErrorResponse>) {
-    error_response(
-        StatusCode::BAD_REQUEST,
-        "streaming_not_supported",
-        format!(
-            "{selected_backend:?} does not support true token streaming; use /v1/generate or a backend with runtime.capabilities.token_streaming=true"
-        ),
-    )
-}
-
 fn server_info_response(state: &AppState) -> ServerInfoResponse {
     ServerInfoResponse {
         service: "ax-engine-server",
@@ -1388,7 +1366,8 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
                 error.to_string(),
             )
         }
-        EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. }) => {
+        EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. }) => {
             error_response(StatusCode::BAD_GATEWAY, "backend_error", error.to_string())
         }
         EngineSessionError::BackendContract(_)
@@ -1410,6 +1389,8 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         | EngineSessionError::MlxLm(MlxLmBackendError::HttpRequest { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::HttpStatus { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::InvalidResponseJson { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::SseRead { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::InvalidStreamChunk { .. })
         | EngineSessionError::UnsupportedHostHardware { .. } => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "unsupported_host",
@@ -2367,9 +2348,29 @@ sys.stdout.write(f"server::{prompt}")
     }
 
     #[tokio::test]
-    async fn mlx_lm_delegated_generate_stream_endpoint_rejects_fake_streaming() {
-        let app = build_router(mlx_lm_delegated_state("http://127.0.0.1:1".to_string()));
-        let (status, json) = json_response(
+    async fn mlx_lm_delegated_generate_stream_endpoint_emits_sse_chunks() {
+        let (mlx_lm_server_url, mlx_lm_server_handle) = spawn_llama_cpp_completion_stream_server(
+            1,
+            vec![
+                serde_json::json!({
+                    "choices": [{"index": 0, "text": " hello", "finish_reason": null}],
+                    "usage": null
+                }),
+                serde_json::json!({
+                    "choices": [{"index": 0, "text": " world", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4}
+                }),
+            ],
+            |payload| {
+                assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
+                assert_eq!(
+                    payload.get("prompt"),
+                    Some(&Value::String("hello delegated stream".to_string()))
+                );
+            },
+        );
+        let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));
+        let (status, content_type, body) = text_response(
             &app,
             Request::builder()
                 .method("POST")
@@ -2383,16 +2384,25 @@ sys.stdout.write(f"server::{prompt}")
         )
         .await;
 
+        mlx_lm_server_handle
+            .join()
+            .expect("mlx-lm server thread should finish");
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(content_type.starts_with("text/event-stream"));
+
+        let events = parse_sse_events(&body);
+        let response_event = events
+            .iter()
+            .find(|(name, _)| name == "response")
+            .expect("SSE stream should contain a response event");
         assert_eq!(
-            status,
-            StatusCode::BAD_REQUEST,
-            "mlx-lm delegated must not expose fake SSE when token_streaming=false"
-        );
-        assert_eq!(
-            json.get("error")
-                .and_then(|error| error.get("code"))
+            response_event
+                .1
+                .get("response")
+                .and_then(|r| r.get("output_text"))
                 .and_then(Value::as_str),
-            Some("streaming_not_supported")
+            Some(" hello world")
         );
     }
 
@@ -2564,9 +2574,25 @@ sys.stdout.write(f"server::{prompt}")
     }
 
     #[tokio::test]
-    async fn openai_chat_stream_endpoint_rejects_mlx_lm_delegated_fake_streaming() {
-        let app = build_router(mlx_lm_delegated_state("http://127.0.0.1:1".to_string()));
-        let (status, json) = json_response(
+    async fn openai_chat_stream_endpoint_emits_sse_for_mlx_lm_delegated() {
+        let (mlx_lm_server_url, mlx_lm_server_handle) = spawn_llama_cpp_completion_stream_server(
+            1,
+            vec![
+                serde_json::json!({
+                    "choices": [{"index": 0, "text": " hello", "finish_reason": null}],
+                    "usage": null
+                }),
+                serde_json::json!({
+                    "choices": [{"index": 0, "text": " world", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4}
+                }),
+            ],
+            |payload| {
+                assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
+            },
+        );
+        let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));
+        let (status, content_type, body) = text_response(
             &app,
             Request::builder()
                 .method("POST")
@@ -2584,13 +2610,27 @@ sys.stdout.write(f"server::{prompt}")
         )
         .await;
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            json.get("error")
-                .and_then(|error| error.get("code"))
-                .and_then(Value::as_str),
-            Some("streaming_not_supported")
-        );
+        mlx_lm_server_handle
+            .join()
+            .expect("mlx-lm server thread should finish");
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(content_type.starts_with("text/event-stream"));
+
+        let payloads = parse_openai_sse_payloads(&body);
+        let text_chunks: Vec<&str> = payloads
+            .iter()
+            .filter_map(|p| {
+                p.get("choices")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("content"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+            })
+            .collect();
+        assert!(!text_chunks.is_empty(), "streaming response should have text chunks");
     }
 
     #[tokio::test]
