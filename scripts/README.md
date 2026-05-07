@@ -187,7 +187,9 @@ throughput baselines.
 - `diagnose_server_rss.py`: long-lived RSS diagnostic for MLX and delegated
   llama.cpp server routes. It is not a throughput benchmark.
 - `check-bench-*.sh`: smoke checks for `ax-engine-bench` workload-contract
-  commands.
+  commands. `check-bench-preview.sh` covers the delegated llama.cpp preset and
+  artifact contract, including safe preset metadata, processing/deferred
+  request events, KV usage when available, and backend prompt-cache reuse.
 - `check-server-preview.sh`, `check-python-preview.sh`: preview transport and
   binding smoke checks.
 - `build-metal-kernels.sh`, `check-metal-kernel-contract.sh`: Metal artifact

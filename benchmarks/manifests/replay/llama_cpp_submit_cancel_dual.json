@@ -19,6 +19,18 @@
       "kind": "llama_cpp_server_completion",
       "server_url": "http://127.0.0.1:8081"
     },
+    "llama_cpp_preset": {
+      "name": "safe_stepwise_server",
+      "parallel_slots": 2,
+      "continuous_batching": true,
+      "logical_batch_size": 2048,
+      "physical_batch_size": 512,
+      "cache_prompt": false,
+      "slot_save_path": null,
+      "slot_restore_path": null,
+      "speculative_decode_mode": "disabled",
+      "metrics_endpoint": "server:/metrics"
+    },
     "deterministic": true,
     "max_batch_tokens": 2048,
     "flags": {

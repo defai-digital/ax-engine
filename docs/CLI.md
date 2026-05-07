@@ -112,8 +112,14 @@ gate; shadow and CPU oracle rows are diagnostic only.
 
 `ax-engine-bench` can run delegated llama.cpp scenario and replay manifests
 through the SDK-owned backend contract. Those runs validate non-MLX route
-behavior, submit/cancel behavior, and backend prompt-cache evidence. They are
-not repo-owned MLX model-inference benchmarks.
+behavior, submit/cancel behavior, safe delegated preset metadata, and backend
+prompt-cache evidence. The manifests expose parallel slots, continuous
+batching, logical/physical batch sizing, cache-prompt intent, slot
+save/restore path state, speculative decode mode, and metrics endpoint capture.
+Artifacts keep the preset in `runtime.llama_cpp_preset` and record delegated
+prompt/decode throughput, KV usage when available, processing/deferred request
+events, and cache reuse under `metrics.delegated_llama_cpp`. They are not
+repo-owned MLX model-inference benchmarks.
 
 Checked-in examples:
 
