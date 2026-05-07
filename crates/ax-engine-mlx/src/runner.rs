@@ -1369,6 +1369,7 @@ impl MlxRunner {
         let max_output = ctx.map(|c| c.max_output_tokens).unwrap_or(1);
         let generated_len = ctx.map(|c| c.generated_len).unwrap_or(0);
         let prefill_completes_prompt = prefill_item_completes_prompt(item, ctx);
+        let is_prefill = matches!(item.mode, ExecutionMode::Prefill);
 
         // Extract per-request state from the map and release the lock before GPU
         // work.  This ensures a long prefill for one request does not block state
@@ -1386,9 +1387,15 @@ impl MlxRunner {
         };
 
         let temperature = ctx.map(|c| c.temperature).unwrap_or(0.0);
+        let is_greedy = temperature == 0.0;
+        let kv_compression_layer_eligible = if self.kv_compression.is_enabled() {
+            Some(self.kv_compression_layer_eligible.as_slice())
+        } else {
+            None
+        };
         state
             .cache
-            .set_rotating_sliding_decode(self.rotating_sliding_decode && temperature == 0.0);
+            .set_rotating_sliding_decode(self.rotating_sliding_decode && is_greedy);
         let mut kv_compression_shadow_sync_wall_us = None;
 
         // GPU work — mutex is NOT held during prefill, decode, or n-gram acceleration steps.
@@ -1405,56 +1412,14 @@ impl MlxRunner {
                     &mut state.rng,
                 );
                 if prefill_completes_prompt {
-                    // Seed the n-gram table with the tail of the prompt.
-                    // Only the last NGRAM_PROMPT_FEED_MAX tokens are fed: long prompts
-                    // (e.g. random-token benchmarks with 512+ tokens) would otherwise
-                    // inject hundreds of useless bigrams, causing a false-positive spec
-                    // attempt on the very first decode step and disabling n-gram acceleration
-                    // for LINEAR_NGRAM_RETRY_INTERVAL steps — wiping out most of the
-                    // generation window.
-                    let feed_start = token_ids.len().saturating_sub(NGRAM_PROMPT_FEED_MAX);
-                    state.ngram.feed(&token_ids[feed_start..]);
-                    // Reset bonus state for this new generation.
-                    state.bonus_queue.clear();
-                    state.next_model_last_token = None;
-                    state.pending_direct = None;
-                    state.direct_pipeline_emitted_tokens = 0;
-                    state.ngram_disabled_steps = 0;
-                    state.linear_ngram_no_draft_streak = 0;
-                    // Skip n-gram entirely for short output budgets: failed speculation
-                    // attempts and cooldown intervals (8-16 steps) are a net loss when
-                    // max_output_tokens is smaller than two full retry windows.
-                    state.ngram_acceleration_disabled_for_request =
-                        max_output < NGRAM_MIN_OUTPUT_FOR_ACCELERATION;
-
-                    if self.kv_compression.is_enabled() {
-                        let sync_started = Instant::now();
-                        state.cache.sync_turboquant_shadow_storage(
-                            &self.kv_layer_windows,
-                            self.kv_compression,
-                            Some(self.kv_compression_layer_eligible.as_slice()),
-                        );
-                        kv_compression_shadow_sync_wall_us = Some(elapsed_us(sync_started));
-                    }
-
-                    // Bootstrap the double-buffer direct pipeline: submit the second token's
-                    // forward pass to the GPU asynchronously so the first decode step can
-                    // materialise it while the GPU is already computing the third token.
-                    // Only for direct same-policy runs with temperature = 0.
-                    if self.disable_ngram_acceleration && temperature == 0.0 {
-                        let bootstrap_started = Instant::now();
-                        let turboquant_context = self.turboquant_model_decode_context();
-                        state.pending_direct = Some(start_direct_pipeline_with_turboquant_context(
-                            &self.cfg,
-                            &self.weights,
-                            tok,
-                            &mut state.cache,
-                            turboquant_context.as_ref(),
-                        ));
-                        state
-                            .decode_telemetry
-                            .record_direct_bootstrap(elapsed_us(bootstrap_started));
-                    }
+                    kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
+                        &mut state,
+                        token_ids,
+                        tok,
+                        max_output,
+                        is_greedy,
+                        kv_compression_layer_eligible,
+                    );
                 }
 
                 state
@@ -1464,7 +1429,7 @@ impl MlxRunner {
             }
             ExecutionMode::Decode => {
                 let decode_started = Instant::now();
-                let tok = self.decode_one(&mut state, token_ids, temperature);
+                let tok = self.decode_one(&mut state, token_ids, temperature, is_greedy);
                 state
                     .decode_telemetry
                     .record_decode(elapsed_us(decode_started));
@@ -1486,29 +1451,17 @@ impl MlxRunner {
         let decode_telemetry = state.decode_telemetry;
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
         let linear_attention_profile = take_linear_attention_profile_snapshot();
-        let kv_compression_layer_eligible = if self.kv_compression.is_enabled() {
-            Some(self.kv_compression_layer_eligible.as_slice())
-        } else {
-            None
-        };
-        if self.kv_compression.is_enabled() {
-            let force_shadow_sync = matches!(item.mode, ExecutionMode::Prefill)
+        {
+            let force_shadow_sync = is_prefill
                 && prefill_completes_prompt
                 && kv_compression_shadow_sync_wall_us.is_none();
-            if force_shadow_sync
-                || state.cache.turboquant_shadow_storage_sync_due(
-                    &self.kv_layer_windows,
-                    self.kv_compression,
-                    kv_compression_layer_eligible,
-                )
-            {
-                let sync_started = Instant::now();
-                state.cache.sync_turboquant_shadow_storage(
-                    &self.kv_layer_windows,
-                    self.kv_compression,
-                    kv_compression_layer_eligible,
-                );
-                kv_compression_shadow_sync_wall_us = Some(elapsed_us(sync_started));
+            let sync_wall_us = self.sync_turboquant_shadow_storage_if_needed(
+                &mut state,
+                force_shadow_sync,
+                kv_compression_layer_eligible,
+            );
+            if sync_wall_us.is_some() {
+                kv_compression_shadow_sync_wall_us = sync_wall_us;
             }
         }
         let mut kv_usage = state
@@ -1582,7 +1535,13 @@ impl MlxRunner {
     /// Uses the double-buffer direct pipeline when `disable_ngram_acceleration = true` and
     /// `temperature == 0.0` (bootstrapped during prefill).
     /// Otherwise runs an n-gram accelerated or single-token decode pass.
-    fn decode_one(&self, state: &mut RequestState, input_tokens: &[u32], temperature: f32) -> u32 {
+    fn decode_one(
+        &self,
+        state: &mut RequestState,
+        input_tokens: &[u32],
+        temperature: f32,
+        is_greedy: bool,
+    ) -> u32 {
         // Serve pre-verified bonus tokens without re-running the model.
         // (Bonus tokens only exist on the n-gram acceleration path; the direct pipeline
         // never populates the bonus queue.)
@@ -1595,25 +1554,8 @@ impl MlxRunner {
         // simultaneously submitting the next step to the GPU.  This mirrors
         // mlx_lm's `_step(y)` → `async_eval(next_y)` → `eval(y)` loop and
         // eliminates the GPU idle gap between consecutive direct decode steps.
-        if self.disable_ngram_acceleration
-            && temperature == 0.0
-            && let Some(pending) = state.pending_direct.take()
-        {
-            let branch_started = Instant::now();
-            let turboquant_context = self.turboquant_model_decode_context();
-            let (tok, next_pending) = advance_direct_pipeline_with_turboquant_context(
-                &self.cfg,
-                &self.weights,
-                &pending,
-                &mut state.cache,
-                turboquant_context.as_ref(),
-            );
-            state
-                .decode_telemetry
-                .record_direct_pipeline(elapsed_us(branch_started));
-            state.pending_direct = Some(next_pending);
-            self.maybe_clear_direct_pipeline_cache(state);
-            return tok;
+        if self.disable_ngram_acceleration && is_greedy && state.pending_direct.is_some() {
+            return self.run_direct_pipeline_continue(state);
         }
 
         let last_token = state
@@ -1621,7 +1563,7 @@ impl MlxRunner {
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
 
-        let result = self.run_model_decode(state, last_token, temperature);
+        let result = self.run_model_decode(state, last_token, temperature, is_greedy);
         apply_decode_result(state, &result, &self.terminal_token_ids)
     }
 
@@ -1632,39 +1574,119 @@ impl MlxRunner {
     /// pipeline may keep the cache one lazy token ahead, so callers must continue
     /// using this path until the request finishes.
     fn run_direct_pipeline_decode(&self, state: &mut RequestState, last_token: u32) -> u32 {
+        let tok = self.run_direct_pipeline_bootstrap(state, last_token);
+        state.ngram.feed(&[tok]);
+        tok
+    }
+
+    fn run_direct_pipeline_continue(&self, state: &mut RequestState) -> u32 {
+        let bootstrap_token = state
+            .pending_direct
+            .take()
+            .expect("direct pipeline continue requires pending_direct to be initialized");
+        self.run_direct_pipeline_once(state, bootstrap_token)
+    }
+
+    fn run_direct_pipeline_bootstrap(&self, state: &mut RequestState, last_token: u32) -> u32 {
+        let turboquant_context = self.turboquant_model_decode_context();
+        let bootstrap_token = start_direct_pipeline_with_turboquant_context(
+            &self.cfg,
+            &self.weights,
+            last_token,
+            &mut state.cache,
+            turboquant_context.as_ref(),
+        );
+        self.run_direct_pipeline_once(state, bootstrap_token)
+    }
+
+    fn run_direct_pipeline_once(&self, state: &mut RequestState, bootstrap_token: MlxArray) -> u32 {
         let branch_started = Instant::now();
         let turboquant_context = self.turboquant_model_decode_context();
-        let (tok, next_pending) = if let Some(pending) = state.pending_direct.take() {
-            advance_direct_pipeline_with_turboquant_context(
-                &self.cfg,
-                &self.weights,
-                &pending,
-                &mut state.cache,
-                turboquant_context.as_ref(),
-            )
-        } else {
-            let pending = start_direct_pipeline_with_turboquant_context(
-                &self.cfg,
-                &self.weights,
-                last_token,
-                &mut state.cache,
-                turboquant_context.as_ref(),
-            );
-            advance_direct_pipeline_with_turboquant_context(
-                &self.cfg,
-                &self.weights,
-                &pending,
-                &mut state.cache,
-                turboquant_context.as_ref(),
-            )
-        };
+        let (tok, next_pending) = advance_direct_pipeline_with_turboquant_context(
+            &self.cfg,
+            &self.weights,
+            &bootstrap_token,
+            &mut state.cache,
+            turboquant_context.as_ref(),
+        );
         state
             .decode_telemetry
             .record_direct_pipeline(elapsed_us(branch_started));
         state.pending_direct = Some(next_pending);
         self.maybe_clear_direct_pipeline_cache(state);
-        state.ngram.feed(&[tok]);
         tok
+    }
+
+    fn run_request_disabled_decode(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        temperature: f32,
+        is_greedy: bool,
+    ) -> Vec<u32> {
+        state.ngram_acceleration.record_request_disabled_step();
+        if is_greedy {
+            vec![self.run_direct_pipeline_decode(state, last_token)]
+        } else {
+            self.run_single_decode(state, last_token, temperature)
+        }
+    }
+
+    fn run_no_draft_decode(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        temperature: f32,
+        has_linear_attention: bool,
+        is_greedy: bool,
+    ) -> Option<Vec<u32>> {
+        state.ngram_acceleration.record_no_draft();
+        if has_linear_attention {
+            state.linear_ngram_no_draft_streak =
+                state.linear_ngram_no_draft_streak.saturating_add(1);
+            if is_greedy && linear_ngram_no_draft_should_disable(state.linear_ngram_no_draft_streak)
+            {
+                state.ngram_acceleration_disabled_for_request = true;
+                state.ngram_acceleration.record_request_disable_event();
+                return Some(self.run_request_disabled_decode(
+                    state,
+                    last_token,
+                    temperature,
+                    is_greedy,
+                ));
+            }
+        }
+        None
+    }
+
+    fn run_non_ngram_decode(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        temperature: f32,
+        is_greedy: bool,
+    ) -> Option<Vec<u32>> {
+        if self.disable_ngram_acceleration {
+            return Some(self.run_single_decode(state, last_token, temperature));
+        }
+
+        if state.ngram_acceleration_disabled_for_request {
+            return Some(self.run_request_disabled_decode(
+                state,
+                last_token,
+                temperature,
+                is_greedy,
+            ));
+        }
+
+        // N-gram acceleration disabled: count down and use single decode.
+        if state.ngram_disabled_steps > 0 {
+            state.ngram_disabled_steps -= 1;
+            state.ngram_acceleration.record_cooldown_step();
+            return Some(self.run_single_decode(state, last_token, temperature));
+        }
+
+        None
     }
 
     fn maybe_clear_direct_pipeline_cache(&self, state: &mut RequestState) {
@@ -1678,108 +1700,141 @@ impl MlxRunner {
         }
     }
 
+    fn sync_turboquant_shadow_storage_if_needed(
+        &self,
+        state: &mut RequestState,
+        force: bool,
+        layer_eligible: Option<&[bool]>,
+    ) -> Option<u32> {
+        if !self.kv_compression.is_enabled() {
+            return None;
+        }
+
+        let should_sync = force
+            || state.cache.turboquant_shadow_storage_sync_due(
+                &self.kv_layer_windows,
+                self.kv_compression,
+                layer_eligible,
+            );
+
+        if should_sync {
+            let sync_started = Instant::now();
+            state.cache.sync_turboquant_shadow_storage(
+                &self.kv_layer_windows,
+                self.kv_compression,
+                layer_eligible,
+            );
+            Some(elapsed_us(sync_started))
+        } else {
+            None
+        }
+    }
+
+    fn run_single_decode(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        temperature: f32,
+    ) -> Vec<u32> {
+        let branch_started = Instant::now();
+        let turboquant_context = self.turboquant_model_decode_context();
+        let result = single_decode_with_turboquant_context(
+            &self.cfg,
+            &self.weights,
+            &mut state.cache,
+            &mut state.ngram,
+            last_token,
+            temperature,
+            &mut state.rng,
+            turboquant_context.as_ref(),
+        );
+        state
+            .decode_telemetry
+            .record_single_decode(elapsed_us(branch_started));
+        result
+    }
+
+    fn initialize_generation_state(
+        &self,
+        state: &mut RequestState,
+        token_ids: &[u32],
+        bootstrap_token: u32,
+        max_output: u32,
+        is_greedy: bool,
+        layer_eligible: Option<&[bool]>,
+    ) -> Option<u32> {
+        // Seed the n-gram table with the tail of the prompt.
+        // Only the last NGRAM_PROMPT_FEED_MAX tokens are fed: long prompts
+        // (e.g. random-token benchmarks with 512+ tokens) would otherwise inject
+        // hundreds of useless bigrams, causing a false-positive spec attempt on
+        // the first decode step and disabling n-gram acceleration for
+        // LINEAR_NGRAM_RETRY_INTERVAL steps — wiping out most of the generation.
+        let feed_start = token_ids.len().saturating_sub(NGRAM_PROMPT_FEED_MAX);
+        state.ngram.feed(&token_ids[feed_start..]);
+
+        // Reset per-generation state.
+        state.bonus_queue.clear();
+        state.next_model_last_token = None;
+        state.pending_direct = None;
+        state.direct_pipeline_emitted_tokens = 0;
+        state.ngram_disabled_steps = 0;
+        state.linear_ngram_no_draft_streak = 0;
+        // Skip n-gram entirely for short output budgets: failed speculation
+        // attempts and cooldown intervals (8-16 steps) are a net loss when
+        // max_output_tokens is smaller than two full retry windows.
+        state.ngram_acceleration_disabled_for_request =
+            max_output < NGRAM_MIN_OUTPUT_FOR_ACCELERATION;
+
+        let kv_compression_shadow_sync_wall_us =
+            self.sync_turboquant_shadow_storage_if_needed(state, true, layer_eligible);
+
+        // Bootstrap the double-buffer direct pipeline: submit the second token's
+        // forward pass to the GPU asynchronously so the first decode step can
+        // materialise it while the GPU is already computing the third token.
+        // Only for direct same-policy runs with temperature = 0.
+        if self.disable_ngram_acceleration && is_greedy {
+            let bootstrap_started = Instant::now();
+            let turboquant_context = self.turboquant_model_decode_context();
+            state.pending_direct = Some(start_direct_pipeline_with_turboquant_context(
+                &self.cfg,
+                &self.weights,
+                bootstrap_token,
+                &mut state.cache,
+                turboquant_context.as_ref(),
+            ));
+            state
+                .decode_telemetry
+                .record_direct_bootstrap(elapsed_us(bootstrap_started));
+        }
+
+        kv_compression_shadow_sync_wall_us
+    }
+
     /// Run one model decode step, updating the n-gram accept-rate gate.
     fn run_model_decode(
         &self,
         state: &mut RequestState,
         last_token: u32,
         temperature: f32,
+        is_greedy: bool,
     ) -> Vec<u32> {
-        if self.disable_ngram_acceleration {
-            let branch_started = Instant::now();
-            let turboquant_context = self.turboquant_model_decode_context();
-            let result = single_decode_with_turboquant_context(
-                &self.cfg,
-                &self.weights,
-                &mut state.cache,
-                &mut state.ngram,
-                last_token,
-                temperature,
-                &mut state.rng,
-                turboquant_context.as_ref(),
-            );
-            state
-                .decode_telemetry
-                .record_single_decode(elapsed_us(branch_started));
+        let has_linear_attention = self.cfg.linear_attention.is_some();
+        if let Some(result) = self.run_non_ngram_decode(state, last_token, temperature, is_greedy) {
             return result;
         }
 
-        if state.ngram_acceleration_disabled_for_request {
-            state.ngram_acceleration.record_request_disabled_step();
-            if temperature == 0.0 {
-                return vec![self.run_direct_pipeline_decode(state, last_token)];
-            }
-            let branch_started = Instant::now();
-            let turboquant_context = self.turboquant_model_decode_context();
-            let result = single_decode_with_turboquant_context(
-                &self.cfg,
-                &self.weights,
-                &mut state.cache,
-                &mut state.ngram,
-                last_token,
-                temperature,
-                &mut state.rng,
-                turboquant_context.as_ref(),
-            );
-            state
-                .decode_telemetry
-                .record_single_decode(elapsed_us(branch_started));
-            return result;
-        }
-
-        // N-gram acceleration disabled: count down and use single decode.
-        if state.ngram_disabled_steps > 0 {
-            state.ngram_disabled_steps -= 1;
-            state.ngram_acceleration.record_cooldown_step();
-            let branch_started = Instant::now();
-            let turboquant_context = self.turboquant_model_decode_context();
-            let result = single_decode_with_turboquant_context(
-                &self.cfg,
-                &self.weights,
-                &mut state.cache,
-                &mut state.ngram,
-                last_token,
-                temperature,
-                &mut state.rng,
-                turboquant_context.as_ref(),
-            );
-            state
-                .decode_telemetry
-                .record_single_decode(elapsed_us(branch_started));
-            return result;
-        }
-
-        let draft = ngram_acceleration_draft(&state.ngram, self.cfg.linear_attention.is_some());
+        let draft = ngram_acceleration_draft(&state.ngram, has_linear_attention);
         if draft.is_empty() {
-            state.ngram_acceleration.record_no_draft();
-            if self.cfg.linear_attention.is_some() {
-                state.linear_ngram_no_draft_streak =
-                    state.linear_ngram_no_draft_streak.saturating_add(1);
-                if temperature == 0.0
-                    && linear_ngram_no_draft_should_disable(state.linear_ngram_no_draft_streak)
-                {
-                    state.ngram_acceleration_disabled_for_request = true;
-                    state.ngram_acceleration.record_request_disable_event();
-                    state.ngram_acceleration.record_request_disabled_step();
-                    return vec![self.run_direct_pipeline_decode(state, last_token)];
-                }
-            }
-            let branch_started = Instant::now();
-            let turboquant_context = self.turboquant_model_decode_context();
-            let result = single_decode_with_turboquant_context(
-                &self.cfg,
-                &self.weights,
-                &mut state.cache,
-                &mut state.ngram,
+            if let Some(result) = self.run_no_draft_decode(
+                state,
                 last_token,
                 temperature,
-                &mut state.rng,
-                turboquant_context.as_ref(),
-            );
-            state
-                .decode_telemetry
-                .record_single_decode(elapsed_us(branch_started));
-            return result;
+                has_linear_attention,
+                is_greedy,
+            ) {
+                return result;
+            }
+            return self.run_single_decode(state, last_token, temperature);
         }
 
         state.linear_ngram_no_draft_streak = 0;
@@ -1819,7 +1874,7 @@ impl MlxRunner {
         }
 
         if let Some(disabled_steps) = ngram_acceleration_disabled_steps(
-            self.cfg.linear_attention.is_some(),
+            has_linear_attention,
             accept_count,
             draft_len,
             state.ngram_posterior_mean(),
