@@ -218,6 +218,7 @@ fn start_mlx_lm_server_completion_stream(
         top_k: request.sampling.top_k,
         min_p: request.sampling.min_p,
         repetition_penalty: request.sampling.repetition_penalty,
+        repetition_context_size: request.sampling.repetition_context_size,
         seed: request.sampling.seed,
         stream: true,
         stop: request.stop_sequences.clone(),
@@ -272,6 +273,7 @@ fn run_mlx_lm_server_completion_generate(
         top_k: request.sampling.top_k,
         min_p: request.sampling.min_p,
         repetition_penalty: request.sampling.repetition_penalty,
+        repetition_context_size: request.sampling.repetition_context_size,
         seed: request.sampling.seed,
         stream: false,
         stop: request.stop_sequences.clone(),
@@ -411,6 +413,8 @@ struct MlxLmCompletionRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     min_p: Option<f32>,
     repetition_penalty: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repetition_context_size: Option<u32>,
     seed: u64,
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]

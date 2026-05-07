@@ -161,6 +161,8 @@ struct OpenAiCompletionHttpRequest {
     #[serde(default)]
     repetition_penalty: Option<f32>,
     #[serde(default)]
+    repetition_context_size: Option<u32>,
+    #[serde(default)]
     stop: Option<OpenAiStopInput>,
     #[serde(default)]
     seed: Option<u64>,
@@ -187,6 +189,8 @@ struct OpenAiChatCompletionHttpRequest {
     min_p: Option<f32>,
     #[serde(default)]
     repetition_penalty: Option<f32>,
+    #[serde(default)]
+    repetition_context_size: Option<u32>,
     #[serde(default)]
     stop: Option<OpenAiStopInput>,
     #[serde(default)]
@@ -1144,6 +1148,7 @@ fn build_openai_completion_request(
                 top_k: request.top_k.unwrap_or(0),
                 min_p: request.min_p,
                 repetition_penalty: request.repetition_penalty.unwrap_or(1.0),
+                repetition_context_size: request.repetition_context_size,
                 seed: request.seed.unwrap_or(0),
                 deterministic: None,
             },
@@ -1176,6 +1181,7 @@ fn build_openai_chat_request(
                 top_k: request.top_k.unwrap_or(0),
                 min_p: request.min_p,
                 repetition_penalty: request.repetition_penalty.unwrap_or(1.0),
+                repetition_context_size: request.repetition_context_size,
                 seed: request.seed.unwrap_or(0),
                 deterministic: None,
             },
