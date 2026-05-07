@@ -82,6 +82,7 @@ pub(crate) struct LlamaCppStreamHandle {
     endpoint: String,
     format: LlamaCppStreamFormat,
     reader: BufReader<Box<dyn Read + Send>>,
+    bos_space_stripped: bool,
 }
 
 impl LlamaCppStreamHandle {
@@ -90,6 +91,7 @@ impl LlamaCppStreamHandle {
             endpoint,
             format,
             reader: BufReader::new(reader),
+            bos_space_stripped: false,
         }
     }
 
@@ -133,13 +135,20 @@ impl LlamaCppStreamHandle {
             }
         }
 
-        let chunk = match self.format {
+        let mut chunk: LlamaCppStreamChunk = match self.format {
             LlamaCppStreamFormat::LlamaCppCompletion => serde_json::from_str(&payload),
         }
         .map_err(|source| LlamaCppBackendError::InvalidResponseJson {
             endpoint: self.endpoint.clone(),
             source,
         })?;
+
+        if !self.bos_space_stripped && !chunk.content.is_empty() {
+            self.bos_space_stripped = true;
+            if chunk.content.starts_with(' ') {
+                chunk.content.remove(0);
+            }
+        }
 
         Ok(Some(chunk))
     }
@@ -375,7 +384,7 @@ fn run_llama_cpp_cli_generate(
             command: config.cli_path.display().to_string(),
             source,
         })?;
-    let output_text = trim_single_trailing_newline(output_text);
+    let output_text = extract_cli_response(output_text);
 
     Ok(GenerateResponse {
         request_id,
@@ -442,7 +451,7 @@ fn run_llama_cpp_server_completion_generate(
         prompt_text: request.input_text.clone(),
         output_tokens,
         output_token_logprobs,
-        output_text: Some(response.content),
+        output_text: Some(strip_bos_leading_space(response.content)),
         prompt_token_count,
         output_token_count: None,
         status: GenerateStatus::Finished,
@@ -608,6 +617,29 @@ fn trim_single_trailing_newline(mut value: String) -> String {
     value
 }
 
+// llama.cpp server prepends a BOS-space to the first decoded token; strip it.
+fn strip_bos_leading_space(mut s: String) -> String {
+    if s.starts_with(' ') {
+        s.remove(0);
+    }
+    s
+}
+
+// llama-cli with --simple-io emits: [preamble] "assistant:\n\n" {RESPONSE} "\n[ Prompt: …" "\nExiting…"
+// Strip everything outside the assistant body.
+fn extract_cli_response(raw: String) -> String {
+    const ASSISTANT_MARKER: &str = "assistant:\n\n";
+    if let Some(start) = raw.find(ASSISTANT_MARKER) {
+        let body = &raw[start + ASSISTANT_MARKER.len()..];
+        let end = body
+            .find("\n[ Prompt:")
+            .or_else(|| body.find("\nExiting..."))
+            .unwrap_or(body.len());
+        return body[..end].trim_end().to_string();
+    }
+    trim_single_trailing_newline(raw)
+}
+
 fn run_command_with_timeout(
     mut command: Command,
     command_display: String,
@@ -693,6 +725,40 @@ struct LlamaCppCompletionResponse {
     tokens_cached: u32,
     #[serde(default)]
     tokens_evaluated: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_cli_response_strips_preamble_and_stats() {
+        let raw = "ggml backend loaded\n\
+                   llama-cli v1.0 ...\n\
+                   > user: hello\n\
+                   assistant:\n\
+                   \n\
+                   Hello there!\n\
+                   \n\
+                   [ Prompt: 14.2 t/s | Generation: 25.8 t/s ]\n\
+                   \n\
+                   Exiting...\n"
+            .to_string();
+        assert_eq!(extract_cli_response(raw), "Hello there!");
+    }
+
+    #[test]
+    fn extract_cli_response_no_marker_falls_back_to_trim() {
+        let raw = "direct output\n".to_string();
+        assert_eq!(extract_cli_response(raw), "direct output");
+    }
+
+    #[test]
+    fn strip_bos_leading_space_removes_single_space() {
+        assert_eq!(strip_bos_leading_space(" hello".to_string()), "hello");
+        assert_eq!(strip_bos_leading_space("hello".to_string()), "hello");
+        assert_eq!(strip_bos_leading_space("  hi".to_string()), " hi");
+    }
 }
 
 fn llama_cpp_server_completion_route(
