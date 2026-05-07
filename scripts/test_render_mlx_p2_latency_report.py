@@ -126,6 +126,13 @@ def concurrent_row(
             "classification": "partial_overlap" if requests > 1 else "serialized",
             "overlap_efficiency": metric(0.5 if requests > 1 else 0.0),
         },
+        "scheduler_evidence": {
+            "scheduled_prefill_tokens": 8192 * requests,
+            "scheduled_decode_tokens": max(requests - 1, 0),
+            "skipped_prefill_tokens": 2048 if requests > 1 else 0,
+            "skipped_decode_tokens": 0,
+            "mixed_prefill_decode_batches": 1 if requests > 1 else 0,
+        },
     }
     if ratios is not None:
         row["ratios_to_single_request"] = ratios

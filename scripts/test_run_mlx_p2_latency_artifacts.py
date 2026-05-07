@@ -49,7 +49,17 @@ class P2LatencyRunnerTests(unittest.TestCase):
                     "queue_delay_ms": 20.0,
                     "failure_count": 0.0,
                     "peak_memory_gb": 20.0,
-                    "observations": [],
+                    "observations": [
+                        {
+                            "scheduler_telemetry": {
+                                "ax_scheduler_scheduled_prefill_tokens": 8192,
+                                "ax_scheduler_scheduled_decode_tokens": 0,
+                                "ax_scheduler_skipped_prefill_tokens": 0,
+                                "ax_scheduler_skipped_decode_tokens": 0,
+                                "ax_scheduler_mixed_prefill_decode_batches": 0,
+                            }
+                        }
+                    ],
                 },
                 {
                     "request_ttft_ms": 110.0,
@@ -79,7 +89,17 @@ class P2LatencyRunnerTests(unittest.TestCase):
                     "queue_delay_ms": 80.0,
                     "failure_count": 0.0,
                     "peak_memory_gb": 30.0,
-                    "observations": [],
+                    "observations": [
+                        {
+                            "scheduler_telemetry": {
+                                "ax_scheduler_scheduled_prefill_tokens": 2047,
+                                "ax_scheduler_scheduled_decode_tokens": 1,
+                                "ax_scheduler_skipped_prefill_tokens": 4096,
+                                "ax_scheduler_skipped_decode_tokens": 0,
+                                "ax_scheduler_mixed_prefill_decode_batches": 1,
+                            }
+                        }
+                    ],
                 },
                 {
                     "request_ttft_ms": 330.0,
@@ -109,6 +129,14 @@ class P2LatencyRunnerTests(unittest.TestCase):
         self.assertEqual(
             multi_row["prefill_overlap"]["classification"],
             "partial_overlap",
+        )
+        self.assertEqual(
+            multi_row["scheduler_evidence"]["scheduled_decode_tokens"],
+            1,
+        )
+        self.assertEqual(
+            multi_row["scheduler_evidence"]["mixed_prefill_decode_batches"],
+            1,
         )
 
     def test_startup_rows_keep_warm_load_metrics_out_of_benchmark_warm(self) -> None:

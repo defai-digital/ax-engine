@@ -132,6 +132,14 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_prefix_cache_bytes_kib",
 ]
 
+AX_SCHEDULER_TELEMETRY_KEYS = [
+    "ax_scheduler_scheduled_prefill_tokens",
+    "ax_scheduler_scheduled_decode_tokens",
+    "ax_scheduler_skipped_prefill_tokens",
+    "ax_scheduler_skipped_decode_tokens",
+    "ax_scheduler_mixed_prefill_decode_batches",
+]
+
 AX_MLX_GEMMA4_MOE_PROFILE_KEYS = [
     "ax_mlx_gemma4_moe_profile_enabled",
     "ax_mlx_gemma4_moe_profile_decode_layers",
@@ -824,6 +832,13 @@ def extract_ax_mlx_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
     return {key: int(decisions.get(key, 0)) for key in AX_MLX_TELEMETRY_KEYS}
 
 
+def extract_scheduler_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
+    if not route:
+        return {}
+    decisions = route.get("crossover_decisions") or {}
+    return {key: int(decisions.get(key, 0)) for key in AX_SCHEDULER_TELEMETRY_KEYS}
+
+
 def extract_ax_mlx_gemma4_moe_profile(
     route: dict[str, Any] | None,
 ) -> dict[str, int]:
@@ -912,6 +927,14 @@ def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for run in runs:
         for key, value in (run.get("ax_mlx_telemetry") or {}).items():
+            totals[key] = totals.get(key, 0) + int(value)
+    return totals
+
+
+def summarize_scheduler_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for run in runs:
+        for key, value in (run.get("scheduler_telemetry") or {}).items():
             totals[key] = totals.get(key, 0) + int(value)
     return totals
 
@@ -1125,6 +1148,9 @@ def axengine_one_run(
     mlx_telemetry = extract_ax_mlx_telemetry(final_route)
     if mlx_telemetry:
         run["ax_mlx_telemetry"] = mlx_telemetry
+    scheduler_telemetry = extract_scheduler_telemetry(final_route)
+    if scheduler_telemetry:
+        run["scheduler_telemetry"] = scheduler_telemetry
     gemma4_moe_profile = extract_ax_mlx_gemma4_moe_profile(final_route)
     if gemma4_moe_profile:
         run["ax_mlx_gemma4_moe_profile"] = gemma4_moe_profile
@@ -1222,6 +1248,7 @@ def bench_axengine(
         "decode_s": summarize_runs(runs, "decode_s"),
         "ngram_acceleration_telemetry": ngram_summary,
         "ax_mlx_telemetry": summarize_ax_mlx_telemetry(runs),
+        "scheduler_telemetry": summarize_scheduler_telemetry(runs),
         "ax_mlx_gemma4_moe_profile": summarize_ax_mlx_gemma4_moe_profile(runs),
         "ax_mlx_linear_attention_profile": summarize_ax_mlx_linear_attention_profile(runs),
         "trials": runs,

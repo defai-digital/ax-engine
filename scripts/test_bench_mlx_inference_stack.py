@@ -668,6 +668,41 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_prefix_cache_hits"], 1)
         self.assertEqual(summary["ax_mlx_prefix_cache_reused_tokens"], 16)
 
+    def test_scheduler_telemetry_is_extracted_and_summarized(self) -> None:
+        telemetry = bench.extract_scheduler_telemetry(
+            {
+                "crossover_decisions": {
+                    "ax_scheduler_scheduled_prefill_tokens": 2047,
+                    "ax_scheduler_scheduled_decode_tokens": 1,
+                    "ax_scheduler_skipped_prefill_tokens": 4096,
+                    "ax_scheduler_mixed_prefill_decode_batches": 1,
+                    "unrelated": 99,
+                }
+            }
+        )
+
+        self.assertEqual(telemetry["ax_scheduler_scheduled_prefill_tokens"], 2047)
+        self.assertEqual(telemetry["ax_scheduler_scheduled_decode_tokens"], 1)
+        self.assertEqual(telemetry["ax_scheduler_skipped_prefill_tokens"], 4096)
+        self.assertEqual(telemetry["ax_scheduler_skipped_decode_tokens"], 0)
+        self.assertEqual(telemetry["ax_scheduler_mixed_prefill_decode_batches"], 1)
+        self.assertNotIn("unrelated", telemetry)
+
+        summary = bench.summarize_scheduler_telemetry(
+            [
+                {"scheduler_telemetry": telemetry},
+                {
+                    "scheduler_telemetry": {
+                        "ax_scheduler_scheduled_prefill_tokens": 3,
+                        "ax_scheduler_scheduled_decode_tokens": 2,
+                    }
+                },
+            ]
+        )
+        self.assertEqual(summary["ax_scheduler_scheduled_prefill_tokens"], 2050)
+        self.assertEqual(summary["ax_scheduler_scheduled_decode_tokens"], 3)
+        self.assertEqual(summary["ax_scheduler_skipped_prefill_tokens"], 4096)
+
     def test_prefix_reuse_evidence_summarizes_ax_rows(self) -> None:
         evidence = bench.summarize_prefix_reuse_evidence(
             [

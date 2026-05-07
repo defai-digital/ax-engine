@@ -1038,7 +1038,7 @@ impl EngineCore {
             }
             .into(),
         );
-        execution_batch.route_metadata.crossover_decisions = vec![
+        execution_batch.route_metadata.crossover_decisions.extend([
             ("prefix_reused_requests".into(), prefix_reuse.len() as u32),
             ("live_share_hits".into(), live_share_hits),
             ("retained_cache_hits".into(), retained_cache_hits),
@@ -1067,7 +1067,7 @@ impl EngineCore {
                 "max_prefix_blocks_reused_per_request".into(),
                 max_reused_blocks_per_request,
             ),
-        ];
+        ]);
         execution_batch.items = allocated_items;
         Some(execution_batch)
     }

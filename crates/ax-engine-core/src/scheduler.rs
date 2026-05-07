@@ -114,6 +114,23 @@ pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_GQA: &str =
     "ax_mlx_kv_compression_fused_decode_blocked_gqa";
 pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_MISSING_STORAGE: &str =
     "ax_mlx_kv_compression_fused_decode_blocked_missing_storage";
+pub const ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS: &str =
+    "ax_scheduler_scheduled_prefill_tokens";
+pub const ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS: &str =
+    "ax_scheduler_scheduled_decode_tokens";
+pub const ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS: &str =
+    "ax_scheduler_skipped_prefill_tokens";
+pub const ROUTE_DECISION_AX_SCHEDULER_SKIPPED_DECODE_TOKENS: &str =
+    "ax_scheduler_skipped_decode_tokens";
+pub const ROUTE_DECISION_AX_SCHEDULER_MIXED_PREFILL_DECODE_BATCHES: &str =
+    "ax_scheduler_mixed_prefill_decode_batches";
+pub const ROUTE_DECISION_AX_SCHEDULER_TOKEN_BUDGET_KEYS: [&str; 5] = [
+    ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS,
+    ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS,
+    ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS,
+    ROUTE_DECISION_AX_SCHEDULER_SKIPPED_DECODE_TOKENS,
+    ROUTE_DECISION_AX_SCHEDULER_MIXED_PREFILL_DECODE_BATCHES,
+];
 pub const ROUTE_DECISION_AX_MLX_KV_KEYS: [&str; 13] = [
     ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS,
     ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS,
@@ -212,6 +229,72 @@ pub struct SchedulePlan {
     pub execution_batch: Option<ExecutionBatch>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BatchRouteSeed {
+    mode: ExecutionMode,
+    execution_plan_ref: Option<String>,
+    route_metadata: RouteMetadata,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct TokenBudgetTelemetry {
+    scheduled_prefill_tokens: u32,
+    scheduled_decode_tokens: u32,
+    skipped_prefill_tokens: u32,
+    skipped_decode_tokens: u32,
+    mixed_prefill_decode_batches: u32,
+}
+
+impl TokenBudgetTelemetry {
+    fn record_scheduled(&mut self, mode: ExecutionMode, tokens: u32) {
+        match mode {
+            ExecutionMode::Prefill => {
+                self.scheduled_prefill_tokens =
+                    self.scheduled_prefill_tokens.saturating_add(tokens);
+            }
+            ExecutionMode::Decode => {
+                self.scheduled_decode_tokens = self.scheduled_decode_tokens.saturating_add(tokens);
+            }
+        }
+    }
+
+    fn record_skipped(&mut self, mode: ExecutionMode, tokens: u32) {
+        match mode {
+            ExecutionMode::Prefill => {
+                self.skipped_prefill_tokens = self.skipped_prefill_tokens.saturating_add(tokens);
+            }
+            ExecutionMode::Decode => {
+                self.skipped_decode_tokens = self.skipped_decode_tokens.saturating_add(tokens);
+            }
+        }
+    }
+
+    fn append_route_decisions(&self, route_metadata: &mut RouteMetadata) {
+        route_metadata.crossover_decisions.extend([
+            (
+                ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS.into(),
+                self.scheduled_prefill_tokens,
+            ),
+            (
+                ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS.into(),
+                self.scheduled_decode_tokens,
+            ),
+            (
+                ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS.into(),
+                self.skipped_prefill_tokens,
+            ),
+            (
+                ROUTE_DECISION_AX_SCHEDULER_SKIPPED_DECODE_TOKENS.into(),
+                self.skipped_decode_tokens,
+            ),
+            (
+                ROUTE_DECISION_AX_SCHEDULER_MIXED_PREFILL_DECODE_BATCHES.into(),
+                self.mixed_prefill_decode_batches,
+            ),
+        ]);
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scheduler;
 
@@ -253,43 +336,40 @@ impl Scheduler {
         }
 
         let batch_model_id = runnable[0].model_id.clone();
-        let batch_mode = runnable
-            .iter()
-            .filter(|snapshot| snapshot.model_id == batch_model_id)
-            .find_map(|snapshot| {
-                let mode = self.request_mode(snapshot)?;
-                (mode == ExecutionMode::Prefill).then_some(mode)
-            })
-            .or_else(|| {
-                runnable
-                    .iter()
-                    .filter(|snapshot| snapshot.model_id == batch_model_id)
-                    .find_map(|snapshot| self.request_mode(snapshot))
-            });
-        let execution_plan_ref = runnable
-            .iter()
-            .filter(|snapshot| snapshot.model_id == batch_model_id)
-            .find_map(|snapshot| {
-                let mode = self.request_mode(snapshot)?;
-                (Some(mode) == batch_mode).then(|| snapshot.execution_plan_ref.clone())
-            })
-            .flatten();
-        let route_metadata_seed = runnable
-            .iter()
-            .filter(|snapshot| snapshot.model_id == batch_model_id)
-            .find_map(|snapshot| {
-                let mode = self.request_mode(snapshot)?;
-                (Some(mode) == batch_mode && snapshot.execution_plan_ref == execution_plan_ref)
-                    .then(|| route_seed(snapshot, batch_mode))
-            })
-            .unwrap_or_else(RouteMetadata::empty);
         let mut remaining_budget = input.global_token_budget;
         let mut selected_requests = Vec::new();
         let mut deferred_requests = Vec::new();
         let mut items = Vec::new();
+        let mut candidates = Vec::new();
+        let mut route_seed_anchor: Option<BatchRouteSeed> = None;
+        let mut batch_mixes_prefill_decode = false;
+        let mut token_budget = TokenBudgetTelemetry::default();
 
         for snapshot in runnable {
-            if snapshot.model_id != batch_model_id || remaining_budget == 0 {
+            if snapshot.model_id != batch_model_id {
+                deferred_requests.push(snapshot.request_id);
+                continue;
+            }
+
+            let Some(mode) = self.request_mode(&snapshot) else {
+                deferred_requests.push(snapshot.request_id);
+                continue;
+            };
+            candidates.push((snapshot, mode));
+        }
+
+        candidates.sort_by_key(|(snapshot, mode)| {
+            (
+                execution_mode_priority(*mode),
+                snapshot.arrival_sequence,
+                snapshot.request_id,
+            )
+        });
+
+        for (snapshot, mode) in candidates {
+            let requested_tokens = schedulable_token_count(&snapshot, mode);
+            if remaining_budget == 0 {
+                token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
                 continue;
             }
@@ -299,15 +379,33 @@ impl Scheduler {
                 continue;
             };
 
-            if Some(item.mode) != batch_mode
-                || snapshot.execution_plan_ref != execution_plan_ref
-                || route_seed(&snapshot, batch_mode) != route_metadata_seed
-            {
+            let candidate_route = BatchRouteSeed {
+                mode,
+                execution_plan_ref: snapshot.execution_plan_ref.clone(),
+                route_metadata: route_seed(&snapshot, Some(mode)),
+            };
+            let can_join = route_seed_anchor
+                .as_ref()
+                .is_none_or(|anchor| route_seed_can_join_batch(anchor, &candidate_route));
+            if !can_join {
                 deferred_requests.push(snapshot.request_id);
                 continue;
             }
 
+            if let Some(anchor) = &route_seed_anchor {
+                if anchor.mode != mode {
+                    batch_mixes_prefill_decode = true;
+                }
+            } else {
+                route_seed_anchor = Some(candidate_route);
+            }
+
             remaining_budget -= item.scheduled_token_count;
+            token_budget.record_scheduled(item.mode, item.scheduled_token_count);
+            if requested_tokens > item.scheduled_token_count {
+                token_budget
+                    .record_skipped(item.mode, requested_tokens - item.scheduled_token_count);
+            }
 
             selected_requests.push(snapshot.request_id);
             items.push(item);
@@ -317,13 +415,19 @@ impl Scheduler {
             None
         } else {
             let total_scheduled_tokens = items.iter().map(|item| item.scheduled_token_count).sum();
+            if batch_mixes_prefill_decode {
+                token_budget.mixed_prefill_decode_batches = 1;
+            }
+            let mut route_metadata =
+                route_metadata_for_batch(route_seed_anchor.as_ref(), batch_mixes_prefill_decode);
+            token_budget.append_route_decisions(&mut route_metadata);
             Some(ExecutionBatch {
                 step_id: input.step_id,
                 model_id: batch_model_id.0.clone(),
-                execution_plan_ref,
+                execution_plan_ref: route_metadata.execution_plan.clone(),
                 total_scheduled_tokens,
                 items,
-                route_metadata: route_metadata_seed,
+                route_metadata,
             })
         };
 
@@ -410,6 +514,56 @@ impl Scheduler {
             .or_else(|| snapshot.prompt_tokens.last().copied())
             .map(|_| ExecutionMode::Decode)
     }
+}
+
+fn execution_mode_priority(mode: ExecutionMode) -> u8 {
+    match mode {
+        ExecutionMode::Decode => 0,
+        ExecutionMode::Prefill => 1,
+    }
+}
+
+fn schedulable_token_count(snapshot: &RequestSnapshot, mode: ExecutionMode) -> u32 {
+    match mode {
+        ExecutionMode::Prefill => snapshot
+            .prompt_len
+            .saturating_sub(snapshot.processed_prompt_tokens),
+        ExecutionMode::Decode => 1,
+    }
+}
+
+fn route_seed_can_join_batch(anchor: &BatchRouteSeed, candidate: &BatchRouteSeed) -> bool {
+    if anchor.mode == candidate.mode {
+        return anchor.execution_plan_ref == candidate.execution_plan_ref
+            && anchor.route_metadata == candidate.route_metadata;
+    }
+
+    mixed_route_metadata_compatible(&anchor.route_metadata, &candidate.route_metadata)
+}
+
+fn mixed_route_metadata_compatible(anchor: &RouteMetadata, candidate: &RouteMetadata) -> bool {
+    if *anchor == RouteMetadata::empty() && *candidate == RouteMetadata::empty() {
+        return true;
+    }
+
+    anchor.kv_mode == candidate.kv_mode
+        && anchor.barrier_mode == candidate.barrier_mode
+        && anchor.prefix_cache_path == candidate.prefix_cache_path
+}
+
+fn route_metadata_for_batch(
+    anchor: Option<&BatchRouteSeed>,
+    mixed_prefill_decode: bool,
+) -> RouteMetadata {
+    let Some(anchor) = anchor else {
+        return RouteMetadata::empty();
+    };
+    let mut route_metadata = anchor.route_metadata.clone();
+    if mixed_prefill_decode {
+        route_metadata.execution_plan = Some("phase2.token_budget".into());
+        route_metadata.attention_route = Some("mixed_prefill_decode".into());
+    }
+    route_metadata
 }
 
 fn route_seed(snapshot: &RequestSnapshot, batch_mode: Option<ExecutionMode>) -> RouteMetadata {
@@ -516,6 +670,32 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_token_budget_route_decision_keys_are_stable_and_unique() {
+        assert_eq!(
+            ROUTE_DECISION_AX_SCHEDULER_TOKEN_BUDGET_KEYS.len(),
+            ROUTE_DECISION_AX_SCHEDULER_TOKEN_BUDGET_KEYS
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+        );
+        assert!(
+            ROUTE_DECISION_AX_SCHEDULER_TOKEN_BUDGET_KEYS
+                .iter()
+                .all(|key| key.starts_with("ax_scheduler_"))
+        );
+        assert!(
+            ROUTE_DECISION_AX_SCHEDULER_TOKEN_BUDGET_KEYS
+                .iter()
+                .all(|key| key.is_ascii())
+        );
+        assert!(
+            ROUTE_DECISION_AX_SCHEDULER_TOKEN_BUDGET_KEYS
+                .iter()
+                .all(|key| !key.contains('-'))
+        );
+    }
+
+    #[test]
     fn batches_oldest_model_family_first_with_chunked_prefill() {
         let scheduler = Scheduler::new();
         let schedule_plan = scheduler.plan(&SchedulerInput {
@@ -606,26 +786,108 @@ mod tests {
     }
 
     #[test]
-    fn does_not_mix_prefill_and_decode_items_in_one_batch() {
+    fn mixes_decode_with_bounded_prefill_when_routes_are_compatible() {
         let scheduler = Scheduler::new();
+        let mut prefill = make_snapshot(1, 1, "qwen3", &[10, 11, 12, 13], 0, &[], 16);
+        prefill.execution_plan_ref = Some("phase1.qwen3.dense_prefill".into());
+        prefill.route_metadata_hint = RouteMetadata {
+            execution_plan: Some("phase1.qwen3.dense_prefill".into()),
+            attention_route: Some("qwen3_prefill".into()),
+            kv_mode: Some("paged_metadata".into()),
+            prefix_cache_path: None,
+            barrier_mode: Some("serial".into()),
+            crossover_decisions: Vec::new(),
+        };
+        let mut decode = make_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 4, &[99], 16);
+        decode.execution_plan_ref = Some("phase1.qwen3.paged_decode".into());
+        decode.route_metadata_hint = RouteMetadata {
+            execution_plan: Some("phase1.qwen3.paged_decode".into()),
+            attention_route: Some("qwen3_paged_decode".into()),
+            kv_mode: Some("paged_metadata".into()),
+            prefix_cache_path: None,
+            barrier_mode: Some("serial".into()),
+            crossover_decisions: Vec::new(),
+        };
+
         let schedule_plan = scheduler.plan(&SchedulerInput {
             step_id: StepId(11),
+            request_snapshots: vec![prefill, decode],
+            memory_pressure: None,
+            global_token_budget: 3,
+        });
+
+        assert_eq!(
+            schedule_plan.selected_requests,
+            vec![RequestId(2), RequestId(1)]
+        );
+        assert!(schedule_plan.deferred_requests.is_empty());
+        let execution_batch = schedule_plan.execution_batch.unwrap();
+        assert_eq!(
+            execution_batch.execution_plan_ref.as_deref(),
+            Some("phase2.token_budget")
+        );
+        assert_eq!(
+            execution_batch.route_metadata.attention_route.as_deref(),
+            Some("mixed_prefill_decode")
+        );
+        assert_eq!(execution_batch.total_scheduled_tokens, 3);
+        assert_eq!(execution_batch.items[0].mode, ExecutionMode::Decode);
+        assert_eq!(execution_batch.items[0].scheduled_token_count, 1);
+        assert_eq!(execution_batch.items[1].mode, ExecutionMode::Prefill);
+        assert_eq!(execution_batch.items[1].input_token_slice, vec![10, 11]);
+
+        let decisions = execution_batch
+            .route_metadata
+            .crossover_decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_MIXED_PREFILL_DECODE_BATCHES),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn defers_prefill_when_decode_exhausts_token_budget() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(14),
             request_snapshots: vec![
                 make_snapshot(1, 1, "qwen3", &[10, 11, 12, 13], 0, &[], 16),
                 make_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 4, &[99], 16),
             ],
             memory_pressure: None,
-            global_token_budget: 8,
+            global_token_budget: 1,
         });
 
-        assert_eq!(schedule_plan.selected_requests, vec![RequestId(1)]);
-        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(2)]);
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(2)]);
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
+        let decisions = schedule_plan
+            .execution_batch
+            .unwrap()
+            .route_metadata
+            .crossover_decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
         assert_eq!(
-            schedule_plan
-                .execution_batch
-                .as_ref()
-                .map(|batch| batch.items[0].mode),
-            Some(ExecutionMode::Prefill)
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS),
+            Some(&4)
         );
     }
 
