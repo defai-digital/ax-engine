@@ -21,7 +21,7 @@ pub const DEFAULT_DRAFT_LEN: usize = 4;
 /// keep `DEFAULT_DRAFT_LEN` because partial-reject triggers branch/recompute.
 pub const MAX_DRAFT_LEN: usize = 6;
 
-/// Minimum confidence (support/total) for a bigram/trigram to be drafted.
+/// Minimum confidence (support/total) for an n-gram to be drafted.
 ///
 /// A prediction with confidence below this threshold stops the draft chain.
 /// Calibration: conf=0.4 filters contexts where at most 2 out of 5 observed
@@ -33,6 +33,26 @@ pub const DRAFT_CONFIDENCE_THRESHOLD: f32 = 0.4;
 /// evidence before probing that path.
 pub const LINEAR_MIN_NGRAM_SUPPORT: u32 = 2;
 
+/// Maximum number of context keys to retain per n-gram order.
+///
+/// llama.cpp's draftless n-gram implementations keep memory bounded; AX keeps a
+/// richer per-key continuation table, so cap each order and evict the least
+/// recently observed context when long generations exceed the budget.
+const MAX_CONTEXTS_PER_ORDER: usize = 4096;
+
+/// Maximum continuation candidates tracked for one context key.
+///
+/// This mirrors the practical shape of llama.cpp's bounded n-gram map variants:
+/// keep the most recent few alternatives, not an unbounded histogram.
+const MAX_CONTINUATIONS_PER_CONTEXT: usize = 4;
+
+#[derive(Clone)]
+struct ContinuationStats {
+    token: u32,
+    count: u32,
+    last_seen: u64,
+}
+
 #[derive(Clone)]
 struct NgramPrediction {
     token: u32,
@@ -40,31 +60,107 @@ struct NgramPrediction {
     support: u32,
     /// Total observations for this context key across all continuations.
     total: u32,
+    /// Observation index for the selected continuation.  Used to break equal
+    /// support ties toward the newest local pattern.
+    last_seen: u64,
+    /// Observation index for this context key, regardless of which continuation
+    /// is currently selected. Used for bounded-table eviction.
+    key_last_seen: u64,
     /// Per-continuation counts for this context key.
     ///
     /// The previous implementation let the latest observed continuation replace
     /// the prediction, even when an older continuation was clearly dominant.
     /// Keeping counts makes the draft source stable for repeated prompts with
     /// occasional outliers.
-    counts: HashMap<u32, u32>,
+    continuations: Vec<ContinuationStats>,
 }
 
 impl NgramPrediction {
+    fn new(token: u32, last_seen: u64) -> Self {
+        let continuations = vec![ContinuationStats {
+            token,
+            count: 1,
+            last_seen,
+        }];
+        Self {
+            token,
+            support: 1,
+            total: 1,
+            last_seen,
+            key_last_seen: last_seen,
+            continuations,
+        }
+    }
+
     /// Fraction of observations that produced `token`.
     fn confidence(&self) -> f32 {
         self.support as f32 / self.total as f32
+    }
+
+    fn record(&mut self, token: u32, last_seen: u64) {
+        self.total = self.total.saturating_add(1);
+        self.key_last_seen = last_seen;
+        if let Some(stats) = self
+            .continuations
+            .iter_mut()
+            .find(|stats| stats.token == token)
+        {
+            stats.count = stats.count.saturating_add(1);
+            stats.last_seen = last_seen;
+        } else {
+            self.continuations.push(ContinuationStats {
+                token,
+                count: 1,
+                last_seen,
+            });
+        }
+        self.prune_oldest_continuations(MAX_CONTINUATIONS_PER_CONTEXT);
+        self.recompute_champion();
+    }
+
+    fn prune_oldest_continuations(&mut self, max_entries: usize) {
+        while self.continuations.len() > max_entries {
+            let Some(oldest_index) = self
+                .continuations
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, stats)| stats.last_seen)
+                .map(|(index, _)| index)
+            else {
+                break;
+            };
+            let removed = self.continuations.remove(oldest_index);
+            self.total = self.total.saturating_sub(removed.count);
+        }
+    }
+
+    fn recompute_champion(&mut self) {
+        if let Some(stats) = self
+            .continuations
+            .iter()
+            .max_by_key(|stats| (stats.count, stats.last_seen))
+        {
+            self.token = stats.token;
+            self.support = stats.count;
+            self.last_seen = stats.last_seen;
+        } else {
+            self.support = 0;
+            self.last_seen = self.key_last_seen;
+        }
     }
 }
 
 /// N-gram lookup table for self-drafting decoding.
 ///
-/// Tracks bigrams and trigrams observed in the prompt and generated tokens.
+/// Tracks 2/3/4-token contexts observed in the prompt and generated tokens.
 /// `predict()` chains lookups to produce a draft sequence.
 pub struct NgramTable {
     bigrams: HashMap<(u32, u32), NgramPrediction>,
     trigrams: HashMap<(u32, u32, u32), NgramPrediction>,
-    /// Last 3 observed tokens — context window for next prediction.
+    fourgrams: HashMap<(u32, u32, u32, u32), NgramPrediction>,
+    /// Last 4 observed tokens — context window for next prediction.
     tail: VecDeque<u32>,
+    observation_index: u64,
 }
 
 impl NgramTable {
@@ -72,7 +168,9 @@ impl NgramTable {
         Self {
             bigrams: HashMap::new(),
             trigrams: HashMap::new(),
-            tail: VecDeque::with_capacity(4),
+            fourgrams: HashMap::new(),
+            tail: VecDeque::with_capacity(5),
+            observation_index: 0,
         }
     }
 
@@ -86,17 +184,35 @@ impl NgramTable {
 
     /// Record one token and update the n-gram table.
     fn observe(&mut self, t: u32) {
+        self.observation_index = self.observation_index.saturating_add(1);
+        let observation_index = self.observation_index;
         let n = self.tail.len();
         if n >= 2 {
             let a = self.tail[n - 2];
             let b = self.tail[n - 1];
-            update_prediction(&mut self.bigrams, (a, b), t);
+            update_prediction(&mut self.bigrams, (a, b), t, observation_index);
+            prune_oldest_prediction(&mut self.bigrams, MAX_CONTEXTS_PER_ORDER);
             if n >= 3 {
-                update_prediction(&mut self.trigrams, (self.tail[n - 3], a, b), t);
+                update_prediction(
+                    &mut self.trigrams,
+                    (self.tail[n - 3], a, b),
+                    t,
+                    observation_index,
+                );
+                prune_oldest_prediction(&mut self.trigrams, MAX_CONTEXTS_PER_ORDER);
+                if n >= 4 {
+                    update_prediction(
+                        &mut self.fourgrams,
+                        (self.tail[n - 4], self.tail[n - 3], a, b),
+                        t,
+                        observation_index,
+                    );
+                    prune_oldest_prediction(&mut self.fourgrams, MAX_CONTEXTS_PER_ORDER);
+                }
             }
         }
         self.tail.push_back(t);
-        if self.tail.len() > 3 {
+        if self.tail.len() > 4 {
             self.tail.pop_front();
         }
     }
@@ -117,10 +233,10 @@ impl NgramTable {
     /// Predict up to `max_len` draft tokens, stopping when a step's n-gram
     /// confidence (support/total) drops below `conf_threshold`.
     ///
-    /// Trigrams are preferred; if a trigram fails either filter the predictor
-    /// falls back to the bigram for the same terminal pair.  This mirrors the
-    /// chain-fallback in `predict_with_min_support` and is important when a
-    /// trigram is contested but the corresponding bigram is dominant.
+    /// Longer contexts are preferred; if a 4-gram or trigram fails either
+    /// filter, the predictor falls back to the shorter suffix context.  This
+    /// mirrors llama.cpp/vLLM-style longer lookup windows while preserving a
+    /// useful fallback when a longer context is sparse or contested.
     ///
     /// `conf_threshold = 0.0` makes this equivalent to `predict_with_min_support`.
     pub fn predict_with_confidence(
@@ -130,9 +246,9 @@ impl NgramTable {
         conf_threshold: f32,
     ) -> Vec<u32> {
         let mut draft = Vec::with_capacity(max_len);
-        // Fixed-size ring; self.tail has at most 3 elements.
-        let mut buf = [0u32; 3];
-        let mut len = self.tail.len().min(3);
+        // Fixed-size ring; self.tail has at most 4 elements.
+        let mut buf = [0u32; 4];
+        let mut len = self.tail.len().min(4);
         for (i, &t) in self.tail.iter().take(len).enumerate() {
             buf[i] = t;
         }
@@ -141,7 +257,24 @@ impl NgramTable {
             |p: &&NgramPrediction| p.support >= min_support && p.confidence() >= conf_threshold;
 
         for _ in 0..max_len {
-            let next = if len >= 3 {
+            let next = if len >= 4 {
+                self.fourgrams
+                    .get(&(buf[0], buf[1], buf[2], buf[3]))
+                    .filter(passes)
+                    .map(|p| p.token)
+                    .or_else(|| {
+                        self.trigrams
+                            .get(&(buf[1], buf[2], buf[3]))
+                            .filter(passes)
+                            .map(|p| p.token)
+                    })
+                    .or_else(|| {
+                        self.bigrams
+                            .get(&(buf[2], buf[3]))
+                            .filter(passes)
+                            .map(|p| p.token)
+                    })
+            } else if len == 3 {
                 self.trigrams
                     .get(&(buf[0], buf[1], buf[2]))
                     .filter(passes)
@@ -164,13 +297,14 @@ impl NgramTable {
             match next {
                 Some(t) => {
                     draft.push(t);
-                    if len < 3 {
+                    if len < 4 {
                         buf[len] = t;
                         len += 1;
                     } else {
                         buf[0] = buf[1];
                         buf[1] = buf[2];
-                        buf[2] = t;
+                        buf[2] = buf[3];
+                        buf[3] = t;
                     }
                 }
                 None => break,
@@ -180,36 +314,33 @@ impl NgramTable {
     }
 }
 
-fn update_prediction<K>(map: &mut HashMap<K, NgramPrediction>, key: K, token: u32)
+fn update_prediction<K>(map: &mut HashMap<K, NgramPrediction>, key: K, token: u32, last_seen: u64)
 where
     K: Eq + std::hash::Hash,
 {
     match map.get_mut(&key) {
         Some(p) => {
-            p.total = p.total.saturating_add(1);
-            let count = p
-                .counts
-                .entry(token)
-                .and_modify(|count| *count = count.saturating_add(1))
-                .or_insert(1);
-            if *count > p.support {
-                p.token = token;
-                p.support = *count;
-            }
+            p.record(token, last_seen);
         }
         None => {
-            let mut counts = HashMap::new();
-            counts.insert(token, 1);
-            map.insert(
-                key,
-                NgramPrediction {
-                    token,
-                    support: 1,
-                    total: 1,
-                    counts,
-                },
-            );
+            map.insert(key, NgramPrediction::new(token, last_seen));
         }
+    }
+}
+
+fn prune_oldest_prediction<K>(map: &mut HashMap<K, NgramPrediction>, max_entries: usize)
+where
+    K: Clone + Eq + std::hash::Hash,
+{
+    while map.len() > max_entries {
+        let Some(oldest_key) = map
+            .iter()
+            .min_by_key(|(_, prediction)| prediction.key_last_seen)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        map.remove(&oldest_key);
     }
 }
 
@@ -551,6 +682,13 @@ mod tests {
         t
     }
 
+    fn continuations_contain(prediction: &NgramPrediction, token: u32) -> bool {
+        prediction
+            .continuations
+            .iter()
+            .any(|stats| stats.token == token)
+    }
+
     #[test]
     fn predict_returns_empty_for_empty_table() {
         let t = NgramTable::new();
@@ -572,9 +710,30 @@ mod tests {
     fn predict_chains_trigrams_over_bigrams() {
         // Repeated pattern builds trigrams; predict reconstructs the cycle.
         let t = table_from_sequence(&[1, 2, 3, 1, 2, 3, 1, 2, 3]);
-        // tail=[1,2,3]; trigrams: (1,2,3)→1, (2,3,1)→2, (3,1,2)→3
+        // tail=[3,1,2,3]; longer contexts and trigrams reconstruct the cycle.
         let draft = t.predict(4);
         assert_eq!(draft, vec![1, 2, 3, 1]);
+    }
+
+    #[test]
+    fn predict_prefers_fourgram_over_trigram_and_bigram() {
+        let mut t = NgramTable::new();
+        // Make trigram(1,2,3) prefer 10, then add one more specific
+        // fourgram(0,1,2,3) continuation to 99.
+        t.feed(&[1, 2, 3, 10, 8, 1, 2, 3, 10]);
+        t.feed(&[0, 1, 2, 3, 99]);
+        t.feed(&[0, 1, 2, 3]);
+
+        assert_eq!(
+            t.predict(1),
+            vec![99],
+            "the most specific matching context should be used first"
+        );
+        assert_eq!(
+            t.predict_with_min_support(1, 2),
+            vec![10],
+            "if the fourgram is too sparse, prediction should fall back to the supported trigram"
+        );
     }
 
     #[test]
@@ -610,6 +769,23 @@ mod tests {
     }
 
     #[test]
+    fn prediction_breaks_equal_support_ties_by_recency() {
+        let mut t = NgramTable::new();
+        t.feed(&[1, 2, 10, 1, 2, 20]);
+        t.feed(&[5, 1, 2]);
+
+        assert_eq!(
+            t.predict(1),
+            vec![20],
+            "equal-support continuations should prefer the newest local pattern"
+        );
+        assert!(
+            t.predict_with_confidence(1, 1, 0.75).is_empty(),
+            "recency tie-break must not bypass confidence filtering"
+        );
+    }
+
+    #[test]
     fn predict_deterministic_across_calls() {
         // predict() must not mutate the table; two calls return identical drafts.
         let tokens: Vec<u32> = (1u32..=5).cycle().take(20).collect();
@@ -635,6 +811,56 @@ mod tests {
         let t = table_from_sequence(&tokens);
         assert!(t.predict(2).len() <= 2);
         assert!(t.predict(0).is_empty());
+    }
+
+    #[test]
+    fn table_evicts_oldest_contexts_when_cap_is_exceeded() {
+        let token_count = MAX_CONTEXTS_PER_ORDER + 20;
+        let tokens: Vec<u32> = (0..token_count as u32).collect();
+        let t = table_from_sequence(&tokens);
+
+        assert!(t.bigrams.len() <= MAX_CONTEXTS_PER_ORDER);
+        assert!(t.trigrams.len() <= MAX_CONTEXTS_PER_ORDER);
+        assert!(t.fourgrams.len() <= MAX_CONTEXTS_PER_ORDER);
+        assert!(!t.bigrams.contains_key(&(0, 1)));
+        assert!(!t.trigrams.contains_key(&(0, 1, 2)));
+        assert!(!t.fourgrams.contains_key(&(0, 1, 2, 3)));
+
+        let last_recorded = token_count as u32 - 1;
+        assert!(
+            t.bigrams
+                .contains_key(&(last_recorded - 2, last_recorded - 1))
+        );
+        assert!(t.trigrams.contains_key(&(
+            last_recorded - 3,
+            last_recorded - 2,
+            last_recorded - 1
+        )));
+        assert!(t.fourgrams.contains_key(&(
+            last_recorded - 4,
+            last_recorded - 3,
+            last_recorded - 2,
+            last_recorded - 1
+        )));
+    }
+
+    #[test]
+    fn context_evicts_oldest_continuations_when_cap_is_exceeded() {
+        let mut t = NgramTable::new();
+        t.feed(&[1, 2, 10, 1, 2, 20, 1, 2, 30, 1, 2, 40, 1, 2, 50]);
+        t.feed(&[9, 1, 2]);
+
+        let prediction = t
+            .bigrams
+            .get(&(1, 2))
+            .expect("bigram context should be retained");
+        assert!(prediction.continuations.len() <= MAX_CONTINUATIONS_PER_CONTEXT);
+        assert!(!continuations_contain(prediction, 10));
+        for token in [20, 30, 40, 50] {
+            assert!(continuations_contain(prediction, token));
+        }
+        assert_eq!(prediction.total, MAX_CONTINUATIONS_PER_CONTEXT as u32);
+        assert_eq!(t.predict(1), vec![50]);
     }
 
     #[test]
