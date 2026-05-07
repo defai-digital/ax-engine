@@ -104,6 +104,14 @@ Acceptance:
 
 ### Phase 1: Exact Prefix KV Reuse
 
+Status: completed for safe repo-owned MLX full-attention routes. The MLX
+runner now restores block-aligned exact prompt-prefix KV snapshots when core
+prefix metadata reports a reusable prefix. Linear-attention, MLA, and
+sliding-window routes fail closed by rewarming the prefix without claiming a
+cache hit. New benchmark artifacts expose `prefix_reuse_evidence` and route
+counters for hits, misses, blocked fallbacks, stored prefixes, reused tokens,
+warmup tokens, entries, bytes, and evictions.
+
 Implement an MLX prefix cache for safe full-attention models:
 
 - cache key: model id, tokenizer id/hash, route policy, token prefix hash,
@@ -312,3 +320,19 @@ The checker remains compatible with older README artifacts that were generated
 before the Phase 0 schema existed, so the historical public table can still be
 validated while all newly generated claim-gated artifacts use the stricter
 contract.
+
+### Slice 13: MLX Exact Prefix KV Snapshot Cache
+
+The thirteenth slice completes Phase 1 for safe full-attention MLX routes. The
+runner owns an LRU-bounded prefix snapshot cache keyed by model id, route
+policy, layer layout, block size, prefix token count, and token hash. When core
+prefix metadata marks a request as reusable, the MLX runner restores the exact
+block-aligned KV snapshot instead of rebuilding the reused prefix. Full-prompt
+greedy hits also carry the cached prefill output token so deterministic replay
+can emit the same first token without duplicating the last prompt token.
+
+Unsafe hybrid paths do not use the snapshot cache: linear attention, GLM MLA,
+and sliding-window layouts rewarm the reused prefix and record blocked/warmup
+telemetry. The route metadata and benchmark artifact now expose enough
+hit/miss/eviction evidence for public prefix-reuse claims to stay gated by
+Phase 0.

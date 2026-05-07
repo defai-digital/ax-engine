@@ -3,6 +3,7 @@
 /// Used for per-request temperature sampling.  Each request gets its own
 /// independent RNG seeded from the request ID so deterministic seeds produce
 /// reproducible outputs.
+#[derive(Clone, Copy)]
 pub struct Xorshift64(pub u64);
 
 impl Xorshift64 {

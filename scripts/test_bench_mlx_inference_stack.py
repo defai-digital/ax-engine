@@ -630,6 +630,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_decode_wall_us": 80,
                     "ax_mlx_direct_pipeline_steps": 2,
                     "ax_mlx_direct_pipeline_wall_us": 70,
+                    "ax_mlx_prefix_cache_hits": 1,
+                    "ax_mlx_prefix_cache_reused_tokens": 16,
                     "unrelated": 99,
                 }
             }
@@ -641,6 +643,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_decode_wall_us"], 80)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_steps"], 2)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_wall_us"], 70)
+        self.assertEqual(telemetry["ax_mlx_prefix_cache_hits"], 1)
+        self.assertEqual(telemetry["ax_mlx_prefix_cache_reused_tokens"], 16)
+        self.assertEqual(telemetry["ax_mlx_prefix_cache_evictions"], 0)
         self.assertEqual(telemetry["ax_mlx_single_decode_steps"], 0)
         self.assertEqual(telemetry["ax_mlx_bonus_tokens"], 0)
         self.assertNotIn("unrelated", telemetry)
@@ -660,6 +665,47 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_prefill_steps"], 2)
         self.assertEqual(summary["ax_mlx_decode_steps"], 5)
         self.assertEqual(summary["ax_mlx_decode_wall_us"], 200)
+        self.assertEqual(summary["ax_mlx_prefix_cache_hits"], 1)
+        self.assertEqual(summary["ax_mlx_prefix_cache_reused_tokens"], 16)
+
+    def test_prefix_reuse_evidence_summarizes_ax_rows(self) -> None:
+        evidence = bench.summarize_prefix_reuse_evidence(
+            [
+                {"engine": "mlx_lm", "ax_mlx_telemetry": {"ax_mlx_prefix_cache_hits": 99}},
+                {
+                    "engine": "ax_engine_mlx",
+                    "ax_mlx_telemetry": {
+                        "ax_mlx_prefix_cache_hits": 1,
+                        "ax_mlx_prefix_cache_misses": 2,
+                        "ax_mlx_prefix_cache_blocked": 3,
+                        "ax_mlx_prefix_cache_stores": 4,
+                        "ax_mlx_prefix_cache_evictions": 5,
+                        "ax_mlx_prefix_cache_reused_tokens": 16,
+                        "ax_mlx_prefix_cache_warmup_tokens": 8,
+                        "ax_mlx_prefix_cache_entries": 6,
+                        "ax_mlx_prefix_cache_bytes_kib": 128,
+                    },
+                },
+                {
+                    "engine": "ax_engine_mlx_ngram_accel",
+                    "ax_mlx_telemetry": {
+                        "ax_mlx_prefix_cache_hits": 1,
+                        "ax_mlx_prefix_cache_entries": 2,
+                        "ax_mlx_prefix_cache_bytes_kib": 64,
+                    },
+                },
+            ]
+        )
+
+        self.assertEqual(evidence["hit_count"], 2)
+        self.assertEqual(evidence["miss_count"], 2)
+        self.assertEqual(evidence["blocked_count"], 3)
+        self.assertEqual(evidence["stored_prefix_count"], 4)
+        self.assertEqual(evidence["eviction_count"], 5)
+        self.assertEqual(evidence["reused_token_count"], 16)
+        self.assertEqual(evidence["warmup_token_count"], 8)
+        self.assertEqual(evidence["cache_entry_count"], 6)
+        self.assertEqual(evidence["cache_bytes_kib"], 128)
 
     def test_ax_mlx_gemma4_moe_profile_is_extracted_and_summarized(self) -> None:
         profile = bench.extract_ax_mlx_gemma4_moe_profile(
