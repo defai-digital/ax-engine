@@ -171,6 +171,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(row["ttft_ms"]["median"], 300.0)
         self.assertEqual(row["ttft_source"], "ax_engine_runner_prefill_time")
+        self.assertEqual(row["runtime_identity"]["selected_backend"], "mlx")
+        self.assertEqual(row["runtime_identity"]["route_identity"], "repo_owned_mlx")
         self.assertEqual(row["peak_memory_gb"]["max"], 13.0)
         self.assertEqual(row["memory_source"], "server_process_rss_after_stream")
 

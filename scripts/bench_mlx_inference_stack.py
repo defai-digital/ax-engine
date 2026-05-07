@@ -75,6 +75,20 @@ GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS = [512, 2048, 8192, 32768]
 
 AX_ENGINE_DIRECT_KEY = "ax_engine_mlx"
 AX_ENGINE_NGRAM_ACCEL_KEY = "ax_engine_mlx_ngram_accel"
+PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
+
+AX_MLX_RUNTIME_IDENTITY = {
+    "selected_backend": "mlx",
+    "route_identity": "repo_owned_mlx",
+    "resolution_policy": "mlx_only",
+    "benchmark_surface": "mlx_inference_stack",
+}
+
+CLAIMS_REQUIRING_ARTIFACT_EVIDENCE = [
+    "continuous_batching",
+    "prefix_reuse",
+    "long_context_prefill_improvement",
+]
 
 AX_NGRAM_TELEMETRY_KEYS = [
     "ax_ngram_draft_attempts",
@@ -1145,6 +1159,7 @@ def bench_axengine(
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
         "timing_scope": "ax_engine_runner_time_us",
+        "runtime_identity": dict(AX_MLX_RUNTIME_IDENTITY),
         "ax_decode_policy": decode_policy,
         "ax_decode_claim_status": ax_decode_claim_status(direct_mode, ngram_summary),
         "prompt_contract": "mlx_lm_random_tokens_seed_0",
@@ -1793,6 +1808,15 @@ def main() -> None:
 
     doc = {
         "schema_version": "ax.mlx_inference_stack.v2",
+        "claim_gate": {
+            "schema_version": PHASE0_CLAIM_GATE_SCHEMA_VERSION,
+            "scope": "mlx_inference_stack_public_readme",
+            "requires_prompt_hash_parity": True,
+            "requires_runtime_identity": True,
+            "requires_decode_policy_identity": True,
+            "requires_prefill_decode_split": True,
+            "forbidden_public_claims_without_artifacts": CLAIMS_REQUIRING_ARTIFACT_EVIDENCE,
+        },
         "host": collect_host_metadata(),
         "build": collect_build_metadata(),
         "model": args.model,
@@ -1834,6 +1858,11 @@ def main() -> None:
         "cooldown": args.cooldown,
         "prefill_step_size": args.prefill_step_size,
         "concurrency": 1,
+        "concurrent_prefill_overlap_classification": {
+            "classification": "single_request_no_overlap",
+            "continuous_batching_claim": False,
+            "concurrency": 1,
+        },
         "ax_gemma4_moe_profile": bool(args.ax_gemma4_moe_profile),
         "ax_linear_attention_profile": bool(args.gateddelta_prefill_profile),
         "results": results,
