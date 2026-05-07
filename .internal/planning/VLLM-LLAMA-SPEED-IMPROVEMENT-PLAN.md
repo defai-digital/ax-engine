@@ -189,6 +189,13 @@ Acceptance:
 - route metadata records attempts, successes, fallbacks, and byte savings
 - fallback path is deterministic and observable
 
+Status: complete for the experimental quality/path gate. The validated
+long-context artifact is
+`benchmarks/results/turboquant/quality-runs/20260506T205715Z-gemma-4-e2b-it-4bit-actual-performance/quality-gate.json`.
+It records fused decode attempts/successes/fallbacks as `3/3/0`, positive byte
+savings, and runtime compressed-slot writes. Public-support promotion remains
+blocked by the separate decode-throughput performance gate.
+
 ### Phase 5: Delegated llama.cpp Presets
 
 For non-MLX delegated routes, expose safe presets rather than hiding llama.cpp
