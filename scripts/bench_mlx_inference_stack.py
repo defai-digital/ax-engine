@@ -410,6 +410,12 @@ def ax_decode_policy(
 def ax_decode_claim_status(direct_mode: bool, telemetry: dict[str, int]) -> str:
     if direct_mode:
         return "direct_same_policy_baseline"
+    if not telemetry or (
+        int(telemetry.get("ax_ngram_draft_attempts", 0)) == 0
+        and int(telemetry.get("ax_ngram_no_draft_steps", 0)) == 0
+        and int(telemetry.get("ax_ngram_request_disabled_steps", 0)) == 0
+    ):
+        return "ngram_no_observed_draft_path"
     if int(telemetry.get("ax_ngram_draft_attempts", 0)) == 0 and (
         int(telemetry.get("ax_ngram_no_draft_steps", 0)) > 0
         or int(telemetry.get("ax_ngram_request_disabled_steps", 0)) > 0
@@ -896,19 +902,36 @@ def route_with_more_decisions(
         return current
     if not current:
         return candidate
-    candidate_count = len(candidate.get("crossover_decisions") or {})
-    current_count = len(current.get("crossover_decisions") or {})
-    if candidate_count > current_count:
+    candidate_decisions = candidate.get("crossover_decisions") or {}
+    current_decisions = current.get("crossover_decisions") or {}
+    priority_keys = {
+        *AX_NGRAM_TELEMETRY_KEYS,
+        "ax_mlx_decode_steps",
+        "ax_mlx_decode_wall_us",
+        "ax_mlx_direct_pipeline_steps",
+        "ax_mlx_direct_pipeline_wall_us",
+        "ax_mlx_single_decode_steps",
+        "ax_mlx_single_decode_wall_us",
+        "ax_mlx_ngram_decode_steps",
+        "ax_mlx_ngram_decode_wall_us",
+        "ax_mlx_bonus_tokens",
+    }
+
+    def priority_score(decisions: dict[str, Any]) -> tuple[int, int, int, int]:
+        priority_values = [
+            int(decisions.get(key, 0))
+            for key in priority_keys
+            if int(decisions.get(key, 0)) > 0
+        ]
+        return (
+            len(priority_values),
+            sum(priority_values),
+            len(decisions),
+            sum(int(value) for value in decisions.values()),
+        )
+
+    if priority_score(candidate_decisions) > priority_score(current_decisions):
         return candidate
-    if candidate_count == current_count:
-        candidate_total = sum(
-            int(value) for value in (candidate.get("crossover_decisions") or {}).values()
-        )
-        current_total = sum(
-            int(value) for value in (current.get("crossover_decisions") or {}).values()
-        )
-        if candidate_total > current_total:
-            return candidate
     return current
 
 
@@ -918,7 +941,10 @@ def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
         for key, value in (run.get("ngram_acceleration_telemetry") or {}).items():
             if key == AX_NGRAM_ACCEPT_RATE_KEY:
                 continue
-            totals[key] = totals.get(key, 0) + int(value)
+            if key == "ax_ngram_policy_variant":
+                totals[key] = max(totals.get(key, 0), int(value))
+            else:
+                totals[key] = totals.get(key, 0) + int(value)
     if totals.get("ax_ngram_draft_tokens", 0) > 0:
         totals[AX_NGRAM_ACCEPT_RATE_KEY] = int(
             round(
