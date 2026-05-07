@@ -428,6 +428,7 @@ fn run_llama_cpp_server_completion_generate(
         top_k: request.sampling.top_k,
         min_p: request.sampling.min_p,
         repeat_penalty: request.sampling.repetition_penalty,
+        repeat_last_n: request.sampling.repetition_context_size,
         seed: request.sampling.seed,
         n_predict: request.max_output_tokens,
         stream: false,
@@ -482,6 +483,7 @@ fn start_llama_cpp_server_completion_stream(
         top_k: request.sampling.top_k,
         min_p: request.sampling.min_p,
         repeat_penalty: request.sampling.repetition_penalty,
+        repeat_last_n: request.sampling.repetition_context_size,
         seed: request.sampling.seed,
         n_predict: request.max_output_tokens,
         stream: true,
@@ -613,6 +615,9 @@ fn append_sampling_args(command: &mut Command, sampling: &GenerateSampling) {
     if let Some(min_p) = sampling.min_p {
         command.arg("--min-p").arg(min_p.to_string());
     }
+    if let Some(ctx) = sampling.repetition_context_size {
+        command.arg("--repeat-last-n").arg(ctx.to_string());
+    }
 }
 
 fn append_stop_sequence_args(command: &mut Command, stop_sequences: &[String]) {
@@ -713,6 +718,9 @@ struct LlamaCppCompletionRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     min_p: Option<f32>,
     repeat_penalty: f32,
+    /// Number of tokens to look back when applying repeat penalty (llama.cpp: repeat_last_n).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeat_last_n: Option<u32>,
     seed: u64,
     n_predict: u32,
     stream: bool,

@@ -153,6 +153,10 @@ pub struct GenerateSampling {
     pub min_p: Option<f32>,
     #[serde(default = "default_repetition_penalty")]
     pub repetition_penalty: f32,
+    /// Number of most-recent tokens considered when applying repetition penalty.
+    /// None lets each backend use its own default (typically 64 for llama.cpp, 20 for mlx-lm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repetition_context_size: Option<u32>,
     #[serde(default)]
     pub seed: u64,
     #[serde(default)]
@@ -167,6 +171,7 @@ impl Default for GenerateSampling {
             top_k: 0,
             min_p: None,
             repetition_penalty: 1.0,
+            repetition_context_size: None,
             seed: 0,
             deterministic: None,
         }

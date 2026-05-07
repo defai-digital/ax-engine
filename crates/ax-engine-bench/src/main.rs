@@ -8472,6 +8472,7 @@ fn generate_request_from_spec(
             top_k: manifest.sampling.top_k,
             min_p: None,
             repetition_penalty: 1.0,
+            repetition_context_size: None,
             seed: manifest.sampling.seed,
             deterministic: Some(manifest.runtime.deterministic),
         },
