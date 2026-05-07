@@ -182,7 +182,9 @@ AX Engine columns were refreshed on 2026-05-07 (v4.4.1) from
 `mlx_lm` and `mlx_swift_lm` columns remain matched reference rows reused by the
 harness; Qwen 3.5 `mlx_lm` was rerun fresh after investigation showed the
 older reused row was an outlier for the 512-token shape. The Qwen 3.5 AX rows
-were rerun after rebuilding the release server binary.
+were rerun after rebuilding the release server binary. Gemma 4 E4B was added
+from a full local benchmark run in
+`benchmarks/results/mlx-inference/2026-05-07-gemma-4-e4b-it-4bit-full/`.
 The direct AX column is a same-policy diagnostic baseline with n-gram
 acceleration disabled, while the n-gram column is the default AX decode policy
 and the row to use for user-facing throughput expectations.
@@ -216,6 +218,8 @@ evidence for long-context serving claims, not as proof of continuous batching.
 |    |    | 512 | 154.2 | 147.1 (-4.6%) | 148.2 (-3.9%) | **417.3 (+170.6%)** |
 | Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 139.4 | 134.9 (-3.2%) | 136.8 (-1.8%) | **453.3 (+225.1%)** |
 |    |    | 512 | 134.5 | 130.8 (-2.8%) | 132.7 (-1.3%) | **449.9 (+234.4%)** |
+| Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 121.3 | 116.4 (-4.0%) | 114.1 (-6.0%) | **318.4 (+162.5%)** |
+|    |    | 512 | 120.0 | 117.9 (-1.7%) | 106.7 (-11.0%) | **322.1 (+168.5%)** |
 | Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 118.3 | 109.4 (-7.5%) | 119.3 (+0.8%) | **270.1 (+128.4%)** |
 |    |    | 512 | 113.1 | 104.7 (-7.5%) | 116.5 (+3.0%) | **220.7 (+95.2%)** |
 | Gemma 4 31B | 4-bit · group=64 · affine | 128 | 26.2 | 24.8 (-5.5%) | 27.2 (+3.8%) | **64.5 (+145.9%)** |
@@ -247,6 +251,8 @@ evidence for long-context serving claims, not as proof of continuous batching.
 |    |    | 512 | 7,320.7 | 7,962.3 (+8.8%) | 7,375.6 (+0.8%) |
 | Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 1,911.7 | 3,082.0 (+61.2%) | 3,209.1 (+67.9%) |
 |    |    | 512 | 6,582.8 | 6,758.1 (+2.7%) | 7,434.7 (+12.9%) |
+| Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 1,586.0 | 2,006.2 (+26.5%) | 2,469.9 (+55.7%) |
+|    |    | 512 | 4,432.6 | 4,362.5 (-1.6%) | 4,069.3 (-8.2%) |
 | Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 545.3 | 1,227.3 (+125.1%) | 1,221.3 (+124.0%) |
 |    |    | 512 | 1,620.7 | 2,938.6 (+81.3%) | 2,958.1 (+82.5%) |
 | Gemma 4 31B | 4-bit · group=64 · affine | 128 | 336.5 | 641.6 (+90.7%) | 556.5 (+65.4%) |
