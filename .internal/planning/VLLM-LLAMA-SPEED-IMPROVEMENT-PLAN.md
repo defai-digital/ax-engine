@@ -80,6 +80,13 @@ Known gaps:
 
 ### Phase 0: Claim Gate
 
+Status: completed for the public MLX inference benchmark path. New
+`ax.mlx_inference_stack.v2` artifacts emitted by
+`scripts/bench_mlx_inference_stack.py` carry `ax.phase0_claim_gate.v1`, runtime
+identity, and overlap classification metadata. The README artifact checker
+enforces the gated contract while preserving compatibility with older artifacts
+that predate the schema.
+
 Add or preserve benchmark gates that fail closed for:
 
 - same prompt hash across AX and reference rows
@@ -290,3 +297,18 @@ generated loops where most n-gram observations hit existing contexts.
 These slices intentionally do not touch `runner.rs`, scheduler, or KV ownership
 because there are active local changes on those surfaces and the larger Phase 1
 and Phase 2 work need separate tests and artifacts.
+
+### Slice 12: Phase 0 Public Claim Gate
+
+The twelfth slice completes Phase 0 for the public MLX inference benchmark
+path. New artifacts carry a claim-gate schema, explicit repo-owned MLX runtime
+identity, and a single-request/no-overlap classification. The README artifact
+checker now fail-closes gated artifacts if AX rows lose their runtime identity,
+direct-vs-n-gram policy identity, prefill/decode split, n-gram telemetry, or
+unproven public claims for continuous batching, prefix reuse, or long-context
+prefill improvement.
+
+The checker remains compatible with older README artifacts that were generated
+before the Phase 0 schema existed, so the historical public table can still be
+validated while all newly generated claim-gated artifacts use the stricter
+contract.

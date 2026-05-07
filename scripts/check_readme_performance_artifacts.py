@@ -55,6 +55,30 @@ PREFILL_TABLE_COLUMNS = {
     "ax engine": "ax_engine_mlx",
 }
 
+PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
+
+AX_NGRAM_TELEMETRY_COUNTERS = {
+    "ax_ngram_draft_attempts",
+    "ax_ngram_draft_tokens",
+    "ax_ngram_accepted_tokens",
+    "ax_ngram_rejected_tokens",
+    "ax_ngram_full_accepts",
+    "ax_ngram_partial_rejects",
+    "ax_ngram_complete_misses",
+    "ax_ngram_no_draft_steps",
+    "ax_ngram_cooldown_steps",
+    "ax_ngram_cooldown_events",
+    "ax_ngram_cooldown_steps_scheduled",
+    "ax_ngram_request_disable_events",
+    "ax_ngram_request_disabled_steps",
+}
+
+PUBLIC_CLAIM_EVIDENCE = {
+    "continuous_batching": "concurrent_prefill_overlap_classification",
+    "prefix_reuse": "prefix_reuse_evidence",
+    "long_context_prefill_improvement": "long_context_prefill_evidence",
+}
+
 
 class ArtifactCheckError(RuntimeError):
     pass
@@ -212,6 +236,156 @@ def metric_median(row: dict[str, Any], table: str) -> float:
     return float(metric["median"])
 
 
+def has_metric_summary(row: dict[str, Any], key: str) -> bool:
+    metric = row.get(key)
+    return isinstance(metric, dict) and "median" in metric
+
+
+def phase0_claim_gate_enabled(artifact: dict[str, Any]) -> bool:
+    gate = artifact.get("claim_gate")
+    return (
+        isinstance(gate, dict)
+        and gate.get("schema_version") == PHASE0_CLAIM_GATE_SCHEMA_VERSION
+    )
+
+
+def public_claim_names(artifact: dict[str, Any]) -> set[str]:
+    claims = artifact.get("public_claims") or []
+    names: set[str] = set()
+    if not isinstance(claims, list):
+        raise ArtifactCheckError("public_claims must be a list when present")
+    for claim in claims:
+        if isinstance(claim, str):
+            names.add(claim)
+        elif isinstance(claim, dict) and isinstance(claim.get("name"), str):
+            names.add(str(claim["name"]))
+        else:
+            raise ArtifactCheckError(f"invalid public claim entry: {claim!r}")
+    return names
+
+
+def validate_public_claim_evidence(
+    *, artifact_path: Path, artifact: dict[str, Any]
+) -> None:
+    for claim, evidence_key in PUBLIC_CLAIM_EVIDENCE.items():
+        if claim not in public_claim_names(artifact):
+            continue
+        evidence = artifact.get(evidence_key)
+        if not isinstance(evidence, dict):
+            raise ArtifactCheckError(
+                f"{artifact_path} claims {claim} without {evidence_key}"
+            )
+        if claim == "prefix_reuse":
+            for counter in ("hit_count", "miss_count"):
+                if counter not in evidence:
+                    raise ArtifactCheckError(
+                        f"{artifact_path} prefix_reuse evidence lacks {counter}"
+                    )
+
+
+def validate_phase0_artifact_gate(
+    *, artifact_path: Path, artifact: dict[str, Any]
+) -> None:
+    if not phase0_claim_gate_enabled(artifact):
+        return
+    overlap = artifact.get("concurrent_prefill_overlap_classification")
+    if not isinstance(overlap, dict) or not overlap.get("classification"):
+        raise ArtifactCheckError(
+            f"{artifact_path} lacks concurrent prefill overlap classification"
+        )
+    validate_public_claim_evidence(artifact_path=artifact_path, artifact=artifact)
+
+
+def validate_metric_summary(
+    *, artifact_path: Path, row: dict[str, Any], key: str
+) -> None:
+    if not has_metric_summary(row, key):
+        raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks {key}.median")
+
+
+def validate_phase0_runtime_identity(
+    *, artifact_path: Path, row: dict[str, Any]
+) -> None:
+    runtime = row.get("runtime_identity")
+    if not isinstance(runtime, dict):
+        raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks runtime_identity")
+    if runtime.get("selected_backend") != "mlx":
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} runtime identity is not MLX"
+        )
+    if runtime.get("route_identity") != "repo_owned_mlx":
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} lacks repo-owned MLX route identity"
+        )
+
+
+def validate_ax_prefill_decode_split(
+    *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
+) -> None:
+    validate_metric_summary(artifact_path=artifact_path, row=row, key="prefill_s")
+    validate_metric_summary(artifact_path=artifact_path, row=row, key="decode_s")
+    telemetry = row.get("ax_mlx_telemetry")
+    if not isinstance(telemetry, dict):
+        raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks AX MLX telemetry")
+    for key in ("ax_mlx_prefill_steps", "ax_mlx_decode_steps"):
+        if key not in telemetry:
+            raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks {key}")
+    if require_phase0:
+        if row.get("timing_scope") != "ax_engine_runner_time_us":
+            raise ArtifactCheckError(
+                f"{artifact_path} {row.get('engine')} lacks AX runner timing scope"
+            )
+        if row.get("ttft_source") != "ax_engine_runner_prefill_time":
+            raise ArtifactCheckError(
+                f"{artifact_path} {row.get('engine')} lacks AX TTFT source"
+            )
+        validate_phase0_runtime_identity(artifact_path=artifact_path, row=row)
+
+
+def validate_ngram_claim_telemetry(
+    *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
+) -> None:
+    telemetry = row.get("ngram_acceleration_telemetry")
+    if not isinstance(telemetry, dict):
+        raise ArtifactCheckError(f"{artifact_path} n-gram row lacks telemetry")
+    if not require_phase0:
+        return
+    missing = sorted(AX_NGRAM_TELEMETRY_COUNTERS - set(telemetry))
+    if missing:
+        raise ArtifactCheckError(
+            f"{artifact_path} n-gram row lacks telemetry counters: {', '.join(missing)}"
+        )
+    status = row.get("ax_decode_claim_status")
+    attempts = int(telemetry.get("ax_ngram_draft_attempts", 0))
+    accepted = int(telemetry.get("ax_ngram_accepted_tokens", 0))
+    fallback_steps = int(telemetry.get("ax_ngram_no_draft_steps", 0)) + int(
+        telemetry.get("ax_ngram_request_disabled_steps", 0)
+    )
+    if status == "ngram_acceleration_effective_throughput" and (
+        attempts <= 0 or accepted <= 0
+    ):
+        raise ArtifactCheckError(
+            f"{artifact_path} claims n-gram throughput without draft acceptance"
+        )
+    if status == "ngram_no_draft_direct_fallback" and (
+        attempts != 0 or fallback_steps <= 0
+    ):
+        raise ArtifactCheckError(
+            f"{artifact_path} claims n-gram fallback without fallback telemetry"
+        )
+
+
+def validate_delegated_metrics_if_present(
+    *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
+) -> None:
+    if not require_phase0:
+        return
+    engine = str(row.get("engine", ""))
+    delegated = row.get("delegated_backend") == "llama.cpp" or engine.startswith("llama_cpp")
+    if delegated and not isinstance(row.get("llama_cpp_delegated_metrics"), dict):
+        raise ArtifactCheckError(f"{artifact_path} llama.cpp delegated row lacks metrics")
+
+
 def assert_display_matches(metric: ReadmeMetric, artifact_row: ArtifactRow) -> None:
     actual = metric_median(artifact_row.row, metric.table)
     if abs(actual - metric.displayed_value) > 0.051:
@@ -292,6 +466,7 @@ def validate_artifact_row(
     prompt_hashes: dict[tuple[int, int], str],
 ) -> None:
     engine = row.get("engine")
+    require_phase0 = phase0_claim_gate_enabled(artifact)
     prompt_tokens = int(row.get("prompt_tokens", -1))
     generation_tokens = int(row.get("generation_tokens", -1))
     shape = (prompt_tokens, generation_tokens)
@@ -328,6 +503,17 @@ def validate_artifact_row(
             raise ArtifactCheckError(f"{artifact_path} direct AX row lacks direct policy")
         if row.get("ax_decode_claim_status") != "direct_same_policy_baseline":
             raise ArtifactCheckError(f"{artifact_path} direct AX row lacks claim status")
+        validate_ax_prefill_decode_split(
+            artifact_path=artifact_path,
+            row=row,
+            require_phase0=require_phase0,
+        )
+        if require_phase0:
+            telemetry = row.get("ngram_acceleration_telemetry")
+            if not isinstance(telemetry, dict):
+                raise ArtifactCheckError(f"{artifact_path} direct AX row lacks n-gram telemetry")
+            if int(telemetry.get("ax_ngram_draft_attempts", 0)) != 0:
+                raise ArtifactCheckError(f"{artifact_path} direct AX row has draft attempts")
     elif engine == "ax_engine_mlx_ngram_accel":
         if not str(row.get("ax_decode_policy", "")).startswith("ngram_acceleration"):
             raise ArtifactCheckError(f"{artifact_path} n-gram row lacks n-gram policy")
@@ -336,8 +522,16 @@ def validate_artifact_row(
             "ngram_no_draft_direct_fallback",
         }:
             raise ArtifactCheckError(f"{artifact_path} n-gram row lacks claim status")
-        if not isinstance(row.get("ngram_acceleration_telemetry"), dict):
-            raise ArtifactCheckError(f"{artifact_path} n-gram row lacks telemetry")
+        validate_ax_prefill_decode_split(
+            artifact_path=artifact_path,
+            row=row,
+            require_phase0=require_phase0,
+        )
+        validate_ngram_claim_telemetry(
+            artifact_path=artifact_path,
+            row=row,
+            require_phase0=require_phase0,
+        )
 
 
 def collect_artifact_rows(repo_root: Path, artifact_dir: Path) -> dict[tuple[str, str, int, str], ArtifactRow]:
@@ -355,6 +549,8 @@ def collect_artifact_rows(repo_root: Path, artifact_dir: Path) -> dict[tuple[str
         artifact = json.loads(path.read_text())
         if artifact.get("schema_version") != "ax.mlx_inference_stack.v2":
             raise ArtifactCheckError(f"{path} has unexpected schema_version")
+        validate_public_claim_evidence(artifact_path=path, artifact=artifact)
+        validate_phase0_artifact_gate(artifact_path=path, artifact=artifact)
         model, quantization = label
         prompt_hashes = prompt_contract_by_shape(
             repo_root=repo_root,
@@ -365,6 +561,11 @@ def collect_artifact_rows(repo_root: Path, artifact_dir: Path) -> dict[tuple[str
         for row in artifact.get("results", []):
             if not isinstance(row, dict):
                 continue
+            validate_delegated_metrics_if_present(
+                artifact_path=path,
+                row=row,
+                require_phase0=phase0_claim_gate_enabled(artifact),
+            )
             engine = row.get("engine")
             if engine not in {
                 "mlx_lm",
