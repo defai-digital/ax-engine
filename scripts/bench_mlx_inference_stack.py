@@ -266,6 +266,17 @@ def ax_decode_policy(
     return "ngram_acceleration_kv_trim"
 
 
+def ax_decode_claim_status(direct_mode: bool, telemetry: dict[str, int]) -> str:
+    if direct_mode:
+        return "direct_same_policy_baseline"
+    if int(telemetry.get("ax_ngram_draft_attempts", 0)) == 0 and (
+        int(telemetry.get("ax_ngram_no_draft_steps", 0)) > 0
+        or int(telemetry.get("ax_ngram_request_disabled_steps", 0)) > 0
+    ):
+        return "ngram_no_draft_direct_fallback"
+    return "ngram_acceleration_effective_throughput"
+
+
 MLX_AVERAGES_RE = re.compile(
     r"Averages:\s+prompt_tps=(?P<prompt>[0-9.]+),\s+"
     r"generation_tps=(?P<generation>[0-9.]+),\s+"
@@ -930,16 +941,13 @@ def bench_axengine(
         if cooldown > 0 and index < repetitions - 1:
             time.sleep(cooldown)
 
+    ngram_summary = summarize_telemetry(runs)
     row = {
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
         "timing_scope": "ax_engine_runner_time_us",
         "ax_decode_policy": decode_policy,
-        "ax_decode_claim_status": (
-            "direct_same_policy_baseline"
-            if direct_mode
-            else "ngram_acceleration_effective_throughput"
-        ),
+        "ax_decode_claim_status": ax_decode_claim_status(direct_mode, ngram_summary),
         "prompt_contract": "mlx_lm_random_tokens_seed_0",
         "random_seed": MLX_LM_RANDOM_SEED,
         "batch_size": 1,
@@ -949,7 +957,7 @@ def bench_axengine(
         "decode_tok_s": summarize_runs(runs, "decode_tok_s"),
         "prefill_s": summarize_runs(runs, "prefill_s"),
         "decode_s": summarize_runs(runs, "decode_s"),
-        "ngram_acceleration_telemetry": summarize_telemetry(runs),
+        "ngram_acceleration_telemetry": ngram_summary,
         "ax_mlx_telemetry": summarize_ax_mlx_telemetry(runs),
         "ax_mlx_gemma4_moe_profile": summarize_ax_mlx_gemma4_moe_profile(runs),
         "trials": runs,
@@ -1241,7 +1249,10 @@ def main() -> None:
         "--ax-ngram-accel",
         dest="ax_ngram_accel",
         action="store_true",
-        help="Run only AX n-gram acceleration effective-throughput rows.",
+        help=(
+            "Run only AX default n-gram policy rows. Row claim status reports "
+            "whether acceleration was effective or fell back without drafts."
+        ),
     )
     parser.add_argument(
         "--ax-compare-policies",
@@ -1474,7 +1485,8 @@ def main() -> None:
                 "mlx_lm.benchmark row for the same random-token prompt and "
                 "generation shape. ax_engine_mlx is the default direct "
                 "same-policy comparison; ax_engine_mlx_ngram_accel rows are "
-                "n-gram acceleration effective-throughput rows."
+                "AX default n-gram policy rows whose ax_decode_claim_status "
+                "distinguishes effective acceleration from no-draft fallback."
             ),
             "secondary_reference_policy": (
                 "mlx-swift-lm rows are admitted only through an explicit "
