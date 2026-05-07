@@ -235,17 +235,33 @@ def load_single_run(output_root: Path) -> tuple[Path, dict, dict, dict]:
 scenario_run_dir, scenario_environment, scenario_metrics, scenario_artifacts = load_single_run(scenario_output)
 assert scenario_environment["software"]["tool_mode"] == "llama_cpp_stepwise_runtime"
 assert scenario_environment["runtime"]["backend_adapter"]["kind"] == "llama_cpp_server_completion"
+assert scenario_environment["runtime"]["llama_cpp_preset"]["name"] == "safe_stepwise_server"
+assert scenario_environment["runtime"]["llama_cpp_preset"]["parallel_slots"] == 1
+assert scenario_environment["runtime"]["llama_cpp_preset"]["continuous_batching"] is True
+assert scenario_environment["runtime"]["llama_cpp_preset"]["logical_batch_size"] == 2048
+assert scenario_environment["runtime"]["llama_cpp_preset"]["physical_batch_size"] == 512
+assert scenario_environment["runtime"]["llama_cpp_preset"]["cache_prompt"] is False
+assert scenario_environment["runtime"]["llama_cpp_preset"]["speculative_decode_mode"] == "disabled"
+assert scenario_environment["runtime"]["llama_cpp_preset"]["metrics_endpoint"] == "server:/metrics"
 assert scenario_environment["route"]["prefix_cache_evidence"] == "none_observed"
 assert scenario_environment["route"]["prefix_reuse_provenance"] == "none_observed"
 assert scenario_metrics["correctness"]["passed"] is True
 assert scenario_metrics["determinism"]["passed"] is True
 assert scenario_metrics["replay_status"] == "not_applicable"
 assert scenario_metrics["step_count"] == 2
+assert scenario_metrics["metrics"]["prefill_tok_s"] > 0.0
+assert scenario_metrics["delegated_llama_cpp"]["kv_usage_blocks"] == 0
+assert scenario_metrics["delegated_llama_cpp"]["requests_processing_events"] >= 1
+assert scenario_metrics["delegated_llama_cpp"]["requests_deferred_events"] == 0
+assert scenario_metrics["delegated_llama_cpp"]["cache_reuse_observed"] is False
 assert scenario_artifacts["route"]["execution_plan"] == "llama_cpp.server_completion_stream"
+assert scenario_artifacts["runtime"]["llama_cpp_preset"]["cache_prompt"] is False
 assert len(scenario_artifacts["trace"]["steps"]) == 2
 
 shared_prefix_run_dir, shared_prefix_environment, shared_prefix_metrics, shared_prefix_artifacts = load_single_run(shared_prefix_output)
 assert shared_prefix_environment["software"]["tool_mode"] == "llama_cpp_stepwise_runtime"
+assert shared_prefix_environment["runtime"]["llama_cpp_preset"]["parallel_slots"] == 2
+assert shared_prefix_environment["runtime"]["llama_cpp_preset"]["cache_prompt"] is True
 assert shared_prefix_environment["route"]["prefix_cache_path"] == "delegated_prompt_cache"
 assert shared_prefix_environment["route"]["prefix_cache_evidence"] == "backend_reported_cached_prompt_tokens"
 assert shared_prefix_environment["route"]["prefix_reuse_provenance"] == "delegated_backend_prompt_cache"
@@ -253,19 +269,26 @@ assert shared_prefix_environment["route"]["backend_reported_cached_prompt_tokens
 assert shared_prefix_metrics["correctness"]["passed"] is True
 assert shared_prefix_metrics["determinism"]["passed"] is True
 assert shared_prefix_metrics["metrics"]["prefix_hit_rate"] > 0.0
+assert shared_prefix_metrics["metrics"]["prefill_tok_s"] > 0.0
+assert shared_prefix_metrics["delegated_llama_cpp"]["backend_reported_cached_prompt_tokens"] == 64
+assert shared_prefix_metrics["delegated_llama_cpp"]["cache_reuse_observed"] is True
 assert shared_prefix_metrics["step_count"] == 2
 assert shared_prefix_artifacts["route"]["execution_plan"] == "llama_cpp.server_completion_stream"
 assert shared_prefix_artifacts["route"]["prefix_cache_path"] == "delegated_prompt_cache"
 assert shared_prefix_artifacts["route"]["prefix_cache_evidence"] == "backend_reported_cached_prompt_tokens"
 assert shared_prefix_artifacts["route"]["prefix_reuse_provenance"] == "delegated_backend_prompt_cache"
 assert shared_prefix_artifacts["route"]["backend_reported_cached_prompt_tokens"] == 64
+assert shared_prefix_artifacts["runtime"]["llama_cpp_preset"]["cache_prompt"] is True
 assert len(shared_prefix_artifacts["trace"]["steps"]) == 2
 shared_prefix_summary = (shared_prefix_run_dir / "summary.md").read_text()
 assert "delegated_backend_prompt_cache" in shared_prefix_summary
 assert "backend_reported_cached_prompt_tokens: `64`" in shared_prefix_summary
+assert "llama_cpp_preset:" in shared_prefix_summary
+assert "llama_cpp_processing_request_events:" in shared_prefix_summary
 
 replay_run_dir, replay_environment, replay_metrics, replay_artifacts = load_single_run(replay_cancel_output)
 assert replay_environment["software"]["tool_mode"] == "llama_cpp_stepwise_runtime"
+assert replay_environment["runtime"]["llama_cpp_preset"]["parallel_slots"] == 2
 assert replay_environment["route"]["prefix_cache_evidence"] == "none_observed"
 assert replay_environment["route"]["prefix_reuse_provenance"] == "none_observed"
 assert replay_metrics["correctness"]["passed"] is True
@@ -282,6 +305,8 @@ assert "llama_cpp_server_completion" in summary
 
 replay_reuse_run_dir, replay_reuse_environment, replay_reuse_metrics, replay_reuse_artifacts = load_single_run(replay_reuse_output)
 assert replay_reuse_environment["software"]["tool_mode"] == "llama_cpp_stepwise_runtime"
+assert replay_reuse_environment["runtime"]["llama_cpp_preset"]["parallel_slots"] == 2
+assert replay_reuse_environment["runtime"]["llama_cpp_preset"]["cache_prompt"] is True
 assert replay_reuse_environment["route"]["prefix_cache_path"] == "delegated_prompt_cache"
 assert replay_reuse_environment["route"]["prefix_cache_evidence"] == "backend_reported_cached_prompt_tokens"
 assert replay_reuse_environment["route"]["prefix_reuse_provenance"] == "delegated_backend_prompt_cache"
@@ -290,6 +315,7 @@ assert replay_reuse_metrics["determinism"]["passed"] is True
 assert replay_reuse_metrics["replay_status"] == "not_applicable"
 assert replay_reuse_metrics["churn_status"] == "pass"
 assert replay_reuse_metrics["metrics"]["prefix_hit_rate"] > 0.0
+assert replay_reuse_metrics["delegated_llama_cpp"]["cache_reuse_observed"] is True
 assert replay_reuse_metrics["step_count"] >= 2
 assert replay_reuse_artifacts["route"]["execution_plan"] == "llama_cpp.server_completion_stream"
 assert replay_reuse_artifacts["route"]["prefix_cache_path"] == "delegated_prompt_cache"
@@ -334,6 +360,8 @@ assert "prefix_cache_evidence: `backend_reported_cached_prompt_tokens`" in compa
 assert "prefix_reuse_provenance: `delegated_backend_prompt_cache`" in comparison_summary
 assert regression["runtime"]["tool_mode"] == "llama_cpp_stepwise_runtime"
 assert regression["runtime"]["selected_backend"] == "llama_cpp"
+assert regression["runtime"]["llama_cpp_preset"]["name"] == "safe_stepwise_server"
+assert regression["runtime"]["llama_cpp_preset"]["cache_prompt"] is True
 assert regression["summary"]["result"] == "llama_cpp_stepwise_compare"
 assert regression["summary"]["prefix_cache_path"] == "delegated_prompt_cache"
 assert regression["summary"]["prefix_cache_evidence"] == "backend_reported_cached_prompt_tokens"
@@ -343,6 +371,7 @@ assert regression["contract"]["prefix_cache_path"]["baseline"] == "delegated_pro
 assert regression["contract"]["prefix_cache_evidence"]["baseline"] == "backend_reported_cached_prompt_tokens"
 assert regression["contract"]["prefix_reuse_provenance"]["baseline"] == "delegated_backend_prompt_cache"
 assert regression["contract"]["backend_reported_cached_prompt_tokens"]["baseline"] == 24
+assert regression["contract"]["runtime"]["llama_cpp_preset"]["baseline"]["cache_prompt"] is True
 
 failure_output.mkdir(parents=True, exist_ok=True)
 failure_result = subprocess.run(

@@ -214,6 +214,15 @@ Acceptance:
 - delegated artifacts record llama.cpp prompt/decode throughput, KV usage,
   requests processing/deferred, and cache reuse where available
 
+Status: complete for the delegated llama.cpp preset/artifact contract. The
+checked-in llama.cpp scenario and replay manifests expose `safe_stepwise_server`
+controls for parallel slots, continuous batching, logical/physical batch sizing,
+cache-prompt intent, slot save/restore path state, speculative decode mode, and
+metrics endpoint capture. `ax-engine-bench` artifacts preserve the preset under
+`runtime.llama_cpp_preset` and record delegated prompt/decode throughput, KV
+usage when available, processing/deferred request events, and backend
+prompt-cache reuse.
+
 ## 5. Implemented Slices
 
 ### Slice 1: Recency-Aware N-Gram Tie-Breaking
@@ -436,3 +445,21 @@ The artifact contract now separates two decisions:
 This split lets Phase 4 close honestly: real-runner fused compressed decode can
 produce auditable long-context quality evidence, while public TurboQuant support
 wording remains experimental until the performance gate is also satisfied.
+
+### Slice 17: Delegated llama.cpp Preset Artifacts
+
+The seventeenth slice completes Phase 5 by making delegated llama.cpp controls
+explicit in benchmark manifests and run artifacts. The canonical llama.cpp
+scenario/replay manifests now declare `runtime.llama_cpp_preset` instead of
+hiding server launch assumptions outside the artifact. The preset records
+parallel slots, continuous batching, logical/physical batch sizing, cache-prompt
+intent, slot save/restore path state, speculative decode mode, and metrics
+endpoint capture.
+
+The `ax-engine-bench` runtime metadata preserves this preset in
+`environment.json`, `routes.json`, `metrics.json`, `trace.json`, and compare
+artifacts. Delegated llama.cpp metrics now include prompt/decode throughput,
+KV-usage blocks when the backend/session reports them, processing/deferred
+request events, backend-reported cached prompt tokens, and a boolean cache-reuse
+signal. The preview smoke test validates those fields across single-request,
+shared-prefix, submit/cancel, replay reuse, and compare paths.

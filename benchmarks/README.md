@@ -84,8 +84,10 @@ The llama.cpp examples validate non-MLX delegation contracts only:
 - `benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json`
 
 They cover the SDK-owned `llama.cpp /completion` route, submit/cancel behavior,
-and backend-reported prompt-cache evidence. They are not AX-owned MLX
-model-inference throughput baselines.
+safe delegated preset metadata, and backend-reported prompt-cache evidence.
+Artifacts preserve `runtime.llama_cpp_preset` plus delegated prompt/decode
+throughput, KV usage when available, processing/deferred request events, and
+cache reuse. They are not AX-owned MLX model-inference throughput baselines.
 
 When running them directly, update `runtime.backend_adapter.server_url`. The
 repo smoke path is:

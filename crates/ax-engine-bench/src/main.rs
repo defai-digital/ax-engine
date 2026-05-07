@@ -6184,6 +6184,7 @@ fn validate_comparable_environments(baseline: &Value, candidate: &Value) -> Resu
     )?;
     validate_matching_optional_json_field(baseline, candidate, &["runtime", "fallback_reason"])?;
     validate_matching_optional_json_field(baseline, candidate, &["runtime", "backend_adapter"])?;
+    validate_matching_optional_json_field(baseline, candidate, &["runtime", "llama_cpp_preset"])?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
@@ -6737,6 +6738,17 @@ fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
             "kv_block_usage": execution.observation.kv_peak_blocks as f64,
             "evictions": execution.observation.evictions as f64
         },
+        "delegated_llama_cpp": {
+            "kv_usage_blocks": execution.observation.kv_peak_blocks,
+            "requests_processing_events": execution.observation.llama_cpp_processing_request_events,
+            "requests_deferred_events": execution.observation.llama_cpp_deferred_request_events,
+            "backend_reported_cached_prompt_tokens": backend_reported_cached_prompt_tokens(
+                &execution.observation.route_metadata
+            ).unwrap_or(0),
+            "cache_reuse_observed": backend_reported_cached_prompt_tokens(
+                &execution.observation.route_metadata
+            ).is_some()
+        },
         "correctness": {
             "passed": execution.correctness.passed,
             "reason": execution.correctness.reason
@@ -7027,6 +7039,15 @@ fn build_execution_summary_markdown(
         backend_reported_cached_prompt_tokens(&execution.observation.route_metadata)
             .map(|value| value.to_string())
             .unwrap_or_else(|| "none".to_string());
+    let llama_cpp_preset = execution
+        .runtime
+        .llama_cpp_preset
+        .as_ref()
+        .map(|preset| serde_json::to_string(preset).unwrap_or_else(|_| "unknown".to_string()))
+        .unwrap_or_else(|| "none".to_string());
+    let llama_cpp_processing_request_events =
+        execution.observation.llama_cpp_processing_request_events;
+    let llama_cpp_deferred_request_events = execution.observation.llama_cpp_deferred_request_events;
     let prefix_projection_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
         mlx_metal_prefix_projection_row_count,
         metal_prefix_cpu_projection_row_count,
@@ -7169,7 +7190,7 @@ fn build_execution_summary_markdown(
     };
 
     format!(
-        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-engine-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- mlx_metal_readiness: `{mlx_metal_readiness_status}`\n- mlx_metal_hot_path_cpu_fallback_free: `{mlx_metal_hot_path_cpu_fallback_free}`\n- mlx_metal_batched_direct_decode_logits_ready: `{mlx_metal_batched_direct_decode_logits_ready}`\n- mlx_metal_prefix_min_dispatch_share: `{mlx_metal_prefix_min_dispatch_share}`\n- mlx_metal_direct_decode_min_dispatch_share: `{mlx_metal_direct_decode_min_dispatch_share}`\n- mlx_metal_readiness_blockers: `{mlx_metal_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- mlx_metal_prefix_projection_row_count: `{mlx_metal_prefix_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_mlx_metal_dispatch_share: `{prefix_projection_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_rms_norm_element_count: `{mlx_metal_prefix_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_mlx_metal_dispatch_share: `{prefix_rms_norm_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_ffn_activation_element_count: `{mlx_metal_prefix_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_mlx_metal_dispatch_share: `{prefix_ffn_activation_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_residual_add_element_count: `{mlx_metal_prefix_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_mlx_metal_dispatch_share: `{prefix_residual_add_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_scale_element_count: `{mlx_metal_prefix_scale_element_count}`\n- metal_prefix_cpu_scale_element_count: `{metal_prefix_cpu_scale_element_count}`\n- metal_prefix_scale_mlx_metal_dispatch_share: `{prefix_scale_mlx_metal_dispatch_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- mlx_metal_projection_source_quantized_binding_count: `{mlx_metal_projection_source_quantized_binding_count}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n- mlx_metal_rms_norm_source_quantized_binding_count: `{mlx_metal_rms_norm_source_quantized_binding_count}`\n- mlx_metal_direct_decode_projection_row_count: `{mlx_metal_direct_decode_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_mlx_metal_dispatch_share: `{direct_decode_projection_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_rms_norm_element_count: `{mlx_metal_direct_decode_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_mlx_metal_dispatch_share: `{direct_decode_rms_norm_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_ffn_activation_element_count: `{mlx_metal_direct_decode_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_mlx_metal_dispatch_share: `{direct_decode_ffn_activation_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_residual_add_element_count: `{mlx_metal_direct_decode_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_mlx_metal_dispatch_share: `{direct_decode_residual_add_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_scale_element_count: `{mlx_metal_direct_decode_scale_element_count}`\n- metal_direct_decode_cpu_scale_element_count: `{metal_direct_decode_cpu_scale_element_count}`\n- metal_direct_decode_scale_mlx_metal_dispatch_share: `{direct_decode_scale_mlx_metal_dispatch_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
+        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-engine-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- llama_cpp_preset: `{llama_cpp_preset}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- mlx_metal_readiness: `{mlx_metal_readiness_status}`\n- mlx_metal_hot_path_cpu_fallback_free: `{mlx_metal_hot_path_cpu_fallback_free}`\n- mlx_metal_batched_direct_decode_logits_ready: `{mlx_metal_batched_direct_decode_logits_ready}`\n- mlx_metal_prefix_min_dispatch_share: `{mlx_metal_prefix_min_dispatch_share}`\n- mlx_metal_direct_decode_min_dispatch_share: `{mlx_metal_direct_decode_min_dispatch_share}`\n- mlx_metal_readiness_blockers: `{mlx_metal_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- mlx_metal_prefix_projection_row_count: `{mlx_metal_prefix_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_mlx_metal_dispatch_share: `{prefix_projection_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_rms_norm_element_count: `{mlx_metal_prefix_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_mlx_metal_dispatch_share: `{prefix_rms_norm_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_ffn_activation_element_count: `{mlx_metal_prefix_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_mlx_metal_dispatch_share: `{prefix_ffn_activation_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_residual_add_element_count: `{mlx_metal_prefix_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_mlx_metal_dispatch_share: `{prefix_residual_add_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_scale_element_count: `{mlx_metal_prefix_scale_element_count}`\n- metal_prefix_cpu_scale_element_count: `{metal_prefix_cpu_scale_element_count}`\n- metal_prefix_scale_mlx_metal_dispatch_share: `{prefix_scale_mlx_metal_dispatch_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- mlx_metal_projection_source_quantized_binding_count: `{mlx_metal_projection_source_quantized_binding_count}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n- mlx_metal_rms_norm_source_quantized_binding_count: `{mlx_metal_rms_norm_source_quantized_binding_count}`\n- mlx_metal_direct_decode_projection_row_count: `{mlx_metal_direct_decode_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_mlx_metal_dispatch_share: `{direct_decode_projection_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_rms_norm_element_count: `{mlx_metal_direct_decode_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_mlx_metal_dispatch_share: `{direct_decode_rms_norm_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_ffn_activation_element_count: `{mlx_metal_direct_decode_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_mlx_metal_dispatch_share: `{direct_decode_ffn_activation_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_residual_add_element_count: `{mlx_metal_direct_decode_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_mlx_metal_dispatch_share: `{direct_decode_residual_add_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_scale_element_count: `{mlx_metal_direct_decode_scale_element_count}`\n- metal_direct_decode_cpu_scale_element_count: `{metal_direct_decode_cpu_scale_element_count}`\n- metal_direct_decode_scale_mlx_metal_dispatch_share: `{direct_decode_scale_mlx_metal_dispatch_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- llama_cpp_processing_request_events: `{llama_cpp_processing_request_events}`\n- llama_cpp_deferred_request_events: `{llama_cpp_deferred_request_events}`\n- kv_peak_blocks: `{}`\n{}",
         manifest_path.display(),
         execution.status_label(),
         execution.tool_mode,
@@ -7734,6 +7755,10 @@ fn build_regression_json(
         nested_value(baseline_environment, &["runtime", "backend_adapter"]).cloned();
     let candidate_backend_adapter =
         nested_value(candidate_environment, &["runtime", "backend_adapter"]).cloned();
+    let baseline_llama_cpp_preset =
+        nested_value(baseline_environment, &["runtime", "llama_cpp_preset"]).cloned();
+    let candidate_llama_cpp_preset =
+        nested_value(candidate_environment, &["runtime", "llama_cpp_preset"]).cloned();
     let baseline_mlx_dense_dequantized_source = nested_value(baseline_environment, &["runtime"])
         .is_some_and(native_dense_dequantized_source_from_runtime_json);
     let candidate_mlx_dense_dequantized_source = nested_value(candidate_environment, &["runtime"])
@@ -7763,6 +7788,12 @@ fn build_regression_json(
             .expect("regression runtime should serialize as object")
             .insert("backend_adapter".to_string(), backend_adapter);
     }
+    if let Some(llama_cpp_preset) = baseline_llama_cpp_preset.clone() {
+        runtime
+            .as_object_mut()
+            .expect("regression runtime should serialize as object")
+            .insert("llama_cpp_preset".to_string(), llama_cpp_preset);
+    }
     let mut contract_runtime = json!({
         "selected_backend": {
             "baseline": baseline_selected_backend,
@@ -7786,6 +7817,18 @@ fn build_regression_json(
                 json!({
                     "baseline": baseline_backend_adapter,
                     "candidate": candidate_backend_adapter
+                }),
+            );
+    }
+    if baseline_llama_cpp_preset.is_some() || candidate_llama_cpp_preset.is_some() {
+        contract_runtime
+            .as_object_mut()
+            .expect("regression contract runtime should serialize as object")
+            .insert(
+                "llama_cpp_preset".to_string(),
+                json!({
+                    "baseline": baseline_llama_cpp_preset,
+                    "candidate": candidate_llama_cpp_preset
                 }),
             );
     }
@@ -8381,6 +8424,11 @@ fn runtime_config_from_manifest(manifest: &BenchmarkManifest) -> Result<RuntimeC
                 backend_adapter.selected_backend()
             )));
         }
+        if manifest.runtime.llama_cpp_preset.is_some() {
+            return Err(CliError::Contract(
+                "runtime.llama_cpp_preset must be omitted when selected_backend is mlx".to_string(),
+            ));
+        }
     } else {
         let backend_adapter = manifest.runtime.backend_adapter.as_ref().ok_or_else(|| {
             CliError::Contract(
@@ -8396,6 +8444,17 @@ fn runtime_config_from_manifest(manifest: &BenchmarkManifest) -> Result<RuntimeC
             )));
         }
     }
+    let llama_cpp_preset = if resolved_backend.selected_backend == SelectedBackend::LlamaCpp {
+        let preset = manifest
+            .runtime
+            .llama_cpp_preset
+            .clone()
+            .unwrap_or_default();
+        validate_llama_cpp_preset(&preset, manifest)?;
+        Some(preset)
+    } else {
+        None
+    };
 
     let default_session_config = EngineSessionConfig::default();
     let mlx_model_artifacts_dir = manifest
@@ -8416,12 +8475,55 @@ fn runtime_config_from_manifest(manifest: &BenchmarkManifest) -> Result<RuntimeC
         block_size_tokens: 16,
         kv_total_blocks: manifest.runtime.kv_total_blocks,
         flags: manifest.runtime.flags.clone(),
+        llama_cpp_preset,
         backend_policy,
         resolved_backend,
         backend_adapter: manifest.runtime.backend_adapter.clone(),
         mlx_model_artifacts_dir,
         mlx_model_artifacts_source,
     })
+}
+
+fn validate_llama_cpp_preset(
+    preset: &LlamaCppPresetManifest,
+    manifest: &BenchmarkManifest,
+) -> Result<(), CliError> {
+    if preset.parallel_slots == 0 {
+        return Err(CliError::Contract(
+            "runtime.llama_cpp_preset.parallel_slots must be greater than zero".to_string(),
+        ));
+    }
+    if let Some(logical_batch_size) = preset.logical_batch_size {
+        if logical_batch_size == 0 {
+            return Err(CliError::Contract(
+                "runtime.llama_cpp_preset.logical_batch_size must be greater than zero".to_string(),
+            ));
+        }
+    }
+    if let Some(physical_batch_size) = preset.physical_batch_size {
+        if physical_batch_size == 0 {
+            return Err(CliError::Contract(
+                "runtime.llama_cpp_preset.physical_batch_size must be greater than zero"
+                    .to_string(),
+            ));
+        }
+    }
+    if let (Some(logical), Some(physical)) = (preset.logical_batch_size, preset.physical_batch_size)
+    {
+        if physical > logical {
+            return Err(CliError::Contract(
+                "runtime.llama_cpp_preset.physical_batch_size must not exceed logical_batch_size"
+                    .to_string(),
+            ));
+        }
+    }
+    if manifest.checks.require_prefix_reuse && !preset.cache_prompt {
+        return Err(CliError::Contract(
+            "runtime.llama_cpp_preset.cache_prompt must be true when checks.require_prefix_reuse is true"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_runtime_for_test_execution(
@@ -9820,6 +9922,16 @@ fn serialize_runtime_metadata(
         "metal_toolchain": current_metal_toolchain_report()
     });
 
+    if let Some(preset) = runtime.llama_cpp_preset.as_ref() {
+        runtime_json
+            .as_object_mut()
+            .expect("runtime metadata should serialize as object")
+            .insert(
+                "llama_cpp_preset".to_string(),
+                serde_json::to_value(preset).expect("llama.cpp preset should serialize"),
+            );
+    }
+
     if let Some(actual_runtime) = actual_runtime {
         let runtime_object = runtime_json
             .as_object_mut()
@@ -10398,6 +10510,8 @@ struct RuntimeManifest {
     fallback_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     backend_adapter: Option<BackendAdapterManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    llama_cpp_preset: Option<LlamaCppPresetManifest>,
     #[serde(default = "default_true")]
     deterministic: bool,
     #[serde(default)]
@@ -10408,6 +10522,47 @@ struct RuntimeManifest {
     mlx_model_artifacts_dir: Option<PathBuf>,
     #[serde(default)]
     flags: RuntimeFlags,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct LlamaCppPresetManifest {
+    #[serde(default = "default_llama_cpp_preset_name")]
+    name: String,
+    #[serde(default = "default_llama_cpp_parallel_slots")]
+    parallel_slots: u32,
+    #[serde(default)]
+    continuous_batching: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    logical_batch_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    physical_batch_size: Option<u32>,
+    #[serde(default)]
+    cache_prompt: bool,
+    #[serde(default)]
+    slot_save_path: Option<String>,
+    #[serde(default)]
+    slot_restore_path: Option<String>,
+    #[serde(default = "default_llama_cpp_speculative_decode_mode")]
+    speculative_decode_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metrics_endpoint: Option<String>,
+}
+
+impl Default for LlamaCppPresetManifest {
+    fn default() -> Self {
+        Self {
+            name: default_llama_cpp_preset_name(),
+            parallel_slots: default_llama_cpp_parallel_slots(),
+            continuous_batching: true,
+            logical_batch_size: Some(2048),
+            physical_batch_size: Some(512),
+            cache_prompt: true,
+            slot_save_path: None,
+            slot_restore_path: None,
+            speculative_decode_mode: default_llama_cpp_speculative_decode_mode(),
+            metrics_endpoint: Some("server:/metrics".to_string()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -10534,6 +10689,18 @@ const fn default_top_p() -> f32 {
     1.0
 }
 
+fn default_llama_cpp_preset_name() -> String {
+    "safe_stepwise_server".to_string()
+}
+
+const fn default_llama_cpp_parallel_slots() -> u32 {
+    1
+}
+
+fn default_llama_cpp_speculative_decode_mode() -> String {
+    "disabled".to_string()
+}
+
 #[derive(Clone, Debug)]
 struct RuntimeConfig {
     deterministic: bool,
@@ -10541,6 +10708,7 @@ struct RuntimeConfig {
     block_size_tokens: u32,
     kv_total_blocks: Option<u32>,
     flags: RuntimeFlags,
+    llama_cpp_preset: Option<LlamaCppPresetManifest>,
     backend_policy: BackendPolicy,
     resolved_backend: ResolvedBackend,
     backend_adapter: Option<BackendAdapterManifest>,
@@ -10721,6 +10889,8 @@ struct RuntimeObservation {
     memory_peak_mb: f64,
     evictions: u64,
     cleanup_count: usize,
+    llama_cpp_processing_request_events: u64,
+    llama_cpp_deferred_request_events: u64,
     route_metadata: RouteMetadata,
     step_trace: Vec<StepTraceEntry>,
     final_requests: Vec<FinalRequestState>,
@@ -10852,6 +11022,7 @@ impl RuntimeObservation {
         self.total_cpu_time_us += step.cpu_time_us;
         self.total_runner_time_us += step.runner_time_us;
         self.evictions = self.evictions.saturating_add(u64::from(step.evictions));
+        self.kv_peak_blocks = self.kv_peak_blocks.max(step.kv_usage_blocks);
 
         if self.ttft_ms.is_none() && step.ttft_events > 0 {
             self.ttft_ms = Some(current_time_ms);
@@ -10861,6 +11032,12 @@ impl RuntimeObservation {
         let mut items = Vec::new();
         let mut step_route_metadata = RouteMetadata::empty();
         let mut saw_prefill_progress = false;
+        let live_request_ids = reports_after
+            .iter()
+            .filter_map(|(request_id, report)| {
+                (!llama_cpp_request_is_terminal(report.state)).then_some(*request_id)
+            })
+            .collect::<BTreeSet<_>>();
 
         for (request_id, report_after) in reports_after {
             let report_before = reports_before.get(request_id);
@@ -10902,10 +11079,25 @@ impl RuntimeObservation {
         if saw_prefill_progress {
             self.prefill_steps += 1;
         }
+        let selected_request_set = selected_request_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let deferred_request_ids = live_request_ids
+            .difference(&selected_request_set)
+            .copied()
+            .collect::<Vec<_>>();
+        self.llama_cpp_processing_request_events = self
+            .llama_cpp_processing_request_events
+            .saturating_add(live_request_ids.len() as u64);
+        self.llama_cpp_deferred_request_events = self
+            .llama_cpp_deferred_request_events
+            .saturating_add(deferred_request_ids.len() as u64);
 
         self.step_trace
             .push(StepTraceEntry::capture_llama_cpp_shared(
                 selected_request_ids,
+                deferred_request_ids,
                 step,
                 current_time_ms,
                 step_route_metadata,
@@ -10951,6 +11143,8 @@ impl RuntimeObservation {
             "memory_blocked_steps": self.memory_blocked_steps,
             "memory_blocked_request_events": self.memory_blocked_request_events,
             "cleanup_count": self.cleanup_count,
+            "llama_cpp_processing_request_events": self.llama_cpp_processing_request_events,
+            "llama_cpp_deferred_request_events": self.llama_cpp_deferred_request_events,
             "route": serialize_route_metadata(&self.route_metadata),
             "requests": final_requests.iter().map(FinalRequestState::digest_json).collect::<Vec<_>>()
         });
@@ -10965,6 +11159,10 @@ impl RuntimeObservation {
     ) {
         self.e2e_latency_ms = elapsed_ms;
         self.memory_peak_mb = 0.0;
+        self.prefill_tokens = final_reports
+            .iter()
+            .map(|(_, report)| u64::from(report.prompt_len))
+            .sum();
         let delegated_cached_tokens_total = final_reports
             .iter()
             .map(|(_, report)| delegated_cached_tokens_from_generate_route(&report.route))
@@ -11002,6 +11200,8 @@ impl RuntimeObservation {
             "memory_blocked_steps": self.memory_blocked_steps,
             "memory_blocked_request_events": self.memory_blocked_request_events,
             "cleanup_count": self.cleanup_count,
+            "llama_cpp_processing_request_events": self.llama_cpp_processing_request_events,
+            "llama_cpp_deferred_request_events": self.llama_cpp_deferred_request_events,
             "route": serialize_route_metadata(&self.route_metadata),
             "requests": self
                 .final_requests
@@ -11234,6 +11434,8 @@ impl Default for RuntimeObservation {
             memory_peak_mb: 0.0,
             evictions: 0,
             cleanup_count: 0,
+            llama_cpp_processing_request_events: 0,
+            llama_cpp_deferred_request_events: 0,
             route_metadata: RouteMetadata::empty(),
             step_trace: Vec::new(),
             final_requests: Vec::new(),
@@ -11678,6 +11880,7 @@ impl StepTraceEntry {
 
     fn capture_llama_cpp_shared(
         selected_request_ids: Vec<RequestId>,
+        deferred_request_ids: Vec<RequestId>,
         step: &EngineStepReport,
         current_time_ms: u64,
         route_metadata: RouteMetadata,
@@ -11688,7 +11891,7 @@ impl StepTraceEntry {
             step_id: step.step_id.map(StepId),
             admitted_request_ids: Vec::new(),
             selected_request_ids,
-            deferred_request_ids: Vec::new(),
+            deferred_request_ids,
             memory_blocked_request_ids: Vec::new(),
             cleanup_request_ids: Vec::new(),
             scheduled_tokens: step.scheduled_tokens,
@@ -12228,6 +12431,7 @@ mod tests {
                 block_size_tokens: 4,
                 kv_total_blocks: Some(2),
                 flags: RuntimeFlags::default(),
+                llama_cpp_preset: None,
                 backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
                 resolved_backend: ResolvedBackend::new(
                     SelectedBackend::Mlx,
@@ -13565,6 +13769,7 @@ mod tests {
             block_size_tokens: 16,
             kv_total_blocks: Some(32),
             flags: RuntimeFlags::default(),
+            llama_cpp_preset: None,
             backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
             resolved_backend: ResolvedBackend::new(
                 SelectedBackend::Mlx,
@@ -13634,6 +13839,7 @@ mod tests {
             block_size_tokens: 16,
             kv_total_blocks: Some(32),
             flags: RuntimeFlags::default(),
+            llama_cpp_preset: None,
             backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
             resolved_backend: ResolvedBackend::new(
                 SelectedBackend::Mlx,
@@ -13680,6 +13886,7 @@ mod tests {
             block_size_tokens: 16,
             kv_total_blocks: Some(32),
             flags: RuntimeFlags::default(),
+            llama_cpp_preset: None,
             backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
             resolved_backend: ResolvedBackend::new(
                 SelectedBackend::Mlx,
@@ -13712,6 +13919,7 @@ mod tests {
             block_size_tokens: 16,
             kv_total_blocks: Some(32),
             flags: RuntimeFlags::default(),
+            llama_cpp_preset: None,
             backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
             resolved_backend: ResolvedBackend::new(
                 SelectedBackend::Mlx,

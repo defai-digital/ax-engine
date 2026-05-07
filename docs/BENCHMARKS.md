@@ -511,8 +511,15 @@ The repo carries delegated non-MLX examples:
 - `benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json`
 
 These validate the SDK-owned llama.cpp adapter contract, submit/cancel behavior,
-and backend-reported prompt-cache evidence. They must not be described as
-repo-owned model-inference throughput benchmarks.
+safe delegated preset metadata, and backend-reported prompt-cache evidence.
+Each manifest records the delegated controls that must otherwise live in
+llama.cpp launch flags: parallel slots, continuous batching, logical/physical
+batch sizing, cache-prompt intent, slot save/restore path state, speculative
+decode mode, and metrics endpoint capture. Run artifacts preserve that preset
+under `runtime.llama_cpp_preset` and record delegated prompt/decode throughput,
+KV usage when available, processing/deferred request events, and cache reuse
+under `metrics.delegated_llama_cpp`. They must not be described as repo-owned
+model-inference throughput benchmarks.
 
 When running them directly, update `runtime.backend_adapter.server_url` for the
 local llama.cpp server. The repo smoke path is:
