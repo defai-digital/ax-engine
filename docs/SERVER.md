@@ -84,7 +84,9 @@ attempt, success, fallback, and fallback-reason counters. Fallback reason label
 `cpu_oracle_unavailable` means both compressed-decode attempts fell back to the
 full-precision MLX KV path. Only `fused_compressed_decode` route evidence with
 successful attempts and zero fallbacks can feed the internal quality artifact
-gate; shadow and CPU oracle rows are diagnostic only.
+gate; shadow and CPU oracle rows are diagnostic only. Public-support promotion
+remains blocked unless the separate readiness report also passes the
+decode-throughput performance gate.
 
 ```text
 cargo run -p ax-engine-server -- \

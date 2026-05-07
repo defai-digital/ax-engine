@@ -351,12 +351,14 @@ when the runtime emits them. It is artifact evidence only; promoted TurboQuant
 support still requires a long-context quality artifact validated by
 `scripts/check_turboquant_quality_artifact.py`.
 
-The quality artifact gate is stricter than telemetry collection. Promotion
+The quality artifact gate is stricter than telemetry collection. Quality/path
 evidence must use candidate mode `turboquant-fused-experimental`, route
 metadata schema `>= 2`, K8/V4, fused_compressed_decode path code `2`, fused
 decode attempts and successes greater than zero, and zero fused decode
 fallbacks. Shadow rows and cpu_oracle_compressed_decode rows are useful for
-diagnosis, but they are rejected as promotion evidence.
+diagnosis, but they are rejected as quality evidence. Public-support promotion
+also requires the readiness report's decode-throughput performance gate to
+pass; a quality artifact can pass while public docs remain experimental.
 For model-level quality evidence, run the baseline and fused candidate AX rows
 with `bench_mlx_inference_stack.py --capture-output-token-ids`, then extract
 same-shaped output vectors with `scripts/build_turboquant_decode_outputs.py`

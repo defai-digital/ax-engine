@@ -35,6 +35,14 @@ assert DECODE_OUTPUTS_SPEC and DECODE_OUTPUTS_SPEC.loader
 decode_outputs_builder = importlib.util.module_from_spec(DECODE_OUTPUTS_SPEC)
 DECODE_OUTPUTS_SPEC.loader.exec_module(decode_outputs_builder)
 
+READINESS_PATH = Path(__file__).with_name("check_turboquant_promotion_readiness.py")
+READINESS_SPEC = importlib.util.spec_from_file_location(
+    "check_turboquant_promotion_readiness", READINESS_PATH
+)
+assert READINESS_SPEC and READINESS_SPEC.loader
+readiness = importlib.util.module_from_spec(READINESS_SPEC)
+READINESS_SPEC.loader.exec_module(readiness)
+
 SHA = "a" * 64
 
 
@@ -114,6 +122,9 @@ def valid_artifact(root: Path) -> dict:
         ],
         "decision": {
             "passed": True,
+            "quality_gate_passed": True,
+            "performance_promotion_ready": True,
+            "performance_blockers": [],
             "public_support_docs_approved": False,
         },
     }
@@ -125,6 +136,7 @@ def benchmark_doc(
     decode_path: str | None = None,
     compression_mode: str = checker.REQUIRED_CANDIDATE_COMPRESSION_MODE,
     output_token_ids: list[int] | None = None,
+    decode_tok_s: float | None = None,
 ) -> dict:
     resolved_decode_path = decode_path or "fused_compressed_decode"
     decode_path_code = {
@@ -137,7 +149,15 @@ def benchmark_doc(
         "prompt_tokens": 8192,
         "generation_tokens": 256,
         "prompt_token_ids_sha256": SHA,
-        "decode_tok_s": {"median": 100.0 if not compressed else 90.0},
+        "decode_tok_s": {
+            "median": (
+                decode_tok_s
+                if decode_tok_s is not None
+                else 90.0
+                if compressed
+                else 100.0
+            )
+        },
     }
     if output_token_ids is not None:
         row["trials"] = [
@@ -329,6 +349,22 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(checker.ArtifactValidationError, "min_cosine_similarity"):
                 checker.validate_artifact(artifact, root=root)
 
+    def test_decode_speed_regression_does_not_fail_quality_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["metrics"]["decode_tok_s_ratio_to_baseline"] = 0.1
+            artifact["decision"]["performance_promotion_ready"] = False
+            artifact["decision"]["performance_blockers"] = [
+                "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
+            ]
+
+            checker.validate_artifact(artifact, root=root)
+            self.assertEqual(
+                checker.performance_gate_blockers(artifact["metrics"]),
+                ["metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"],
+            )
+
     def test_missing_runtime_storage_metadata_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -454,7 +490,97 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
 
             self.assertEqual(artifact["candidate"]["decode_path"], "fused_compressed_decode")
             self.assertEqual(artifact["metrics"]["decode_tok_s_ratio_to_baseline"], 0.9)
+            self.assertTrue(artifact["decision"]["performance_promotion_ready"])
             checker.validate_artifact(artifact, root=root)
+
+    def test_builder_compiles_quality_artifact_when_performance_is_not_promoted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "benchmarks/manifests/scenario/long_context_qwen_8k.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}")
+            baseline = root / "baseline.json"
+            candidate = root / "candidate.json"
+            metrics = root / "metrics.json"
+            baseline.write_text(json.dumps(benchmark_doc(compressed=False)))
+            candidate.write_text(
+                json.dumps(benchmark_doc(compressed=True, decode_tok_s=10.0))
+            )
+            metrics.write_text(
+                json.dumps(
+                    {
+                        "max_abs_diff": 0.03,
+                        "mean_abs_diff": 0.01,
+                        "min_cosine_similarity": 0.999,
+                    }
+                )
+            )
+
+            artifact = builder.build_quality_artifact(
+                baseline_benchmark=baseline,
+                candidate_benchmark=candidate,
+                quality_metrics=metrics,
+                manifest=manifest,
+                model_id="qwen3_5_9b_q4",
+                model_family="qwen3_dense",
+                model_revision="test",
+                head_dim=128,
+                context_tokens=8192,
+                generation_tokens=256,
+                baseline_engine="ax_engine_mlx",
+                candidate_engine="ax_engine_mlx",
+                root=root,
+            )
+
+            self.assertEqual(artifact["metrics"]["decode_tok_s_ratio_to_baseline"], 0.1)
+            self.assertFalse(artifact["decision"]["performance_promotion_ready"])
+            self.assertTrue(artifact["decision"]["performance_blockers"])
+            checker.validate_artifact(artifact, root=root)
+
+    def test_readiness_keeps_public_claim_blocked_on_performance_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models_root = root / "models"
+            model_dir = models_root / "gemma"
+            model_dir.mkdir(parents=True)
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "gemma4",
+                        "attention_head_dim": 256,
+                        "global_head_dim": 512,
+                        "attention_head_count": 8,
+                        "kv_head_count": 1,
+                        "layer_types": ["full_attention"],
+                    }
+                )
+            )
+            artifact_path = root / "quality-gate.json"
+            artifact = valid_artifact(root)
+            artifact["metrics"]["decode_tok_s_ratio_to_baseline"] = 0.1
+            artifact["decision"]["performance_promotion_ready"] = False
+            artifact["decision"]["performance_blockers"] = [
+                "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
+            ]
+            artifact_path.write_text(json.dumps(artifact))
+
+            report = readiness.build_report(
+                models_root=models_root,
+                results_root=root / "empty-results",
+                artifacts=[artifact_path],
+                require_artifact_files=True,
+                root=root,
+            )
+
+            self.assertFalse(report["decision"]["can_make_public_support_claim"])
+            self.assertEqual(
+                report["decision"]["blockers"],
+                [
+                    "no passing long-context fused-path performance promotion artifact was found"
+                ],
+            )
+            self.assertTrue(report["quality_artifacts"][0]["passes_quality_gate"])
+            self.assertFalse(report["quality_artifacts"][0]["passes_performance_gate"])
 
     def test_builder_rejects_shadow_decode_path_as_promotion_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

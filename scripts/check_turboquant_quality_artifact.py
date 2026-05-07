@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Validate TurboQuant long-context quality gate artifacts.
+"""Validate TurboQuant long-context quality/path gate artifacts.
 
 This script intentionally validates an evidence artifact instead of running a
 model. The model run can be expensive and host-specific; the contract here keeps
-the promotion decision fail-closed once such a run has been produced.
+the fused-path quality decision fail-closed once such a run has been produced.
+Public-support promotion is stricter: the readiness checker also requires the
+separate decode-throughput performance gate to pass.
 """
 from __future__ import annotations
 
@@ -128,6 +130,23 @@ def _validate_quality_gate(metrics: dict[str, Any], profile: str) -> None:
         min_cos >= gates["min_cosine_similarity"],
         "metrics.min_cosine_similarity is below reference_k8v4 limit",
     )
+
+
+def performance_gate_blockers(metrics: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    try:
+        ratio = _number(
+            metrics.get("decode_tok_s_ratio_to_baseline"),
+            "metrics.decode_tok_s_ratio_to_baseline",
+        )
+    except ArtifactValidationError as exc:
+        return [str(exc)]
+    if ratio < MIN_DECODE_RATIO_TO_BASELINE:
+        blockers.append(
+            "metrics.decode_tok_s_ratio_to_baseline must be >= "
+            f"{MIN_DECODE_RATIO_TO_BASELINE}"
+        )
+    return blockers
 
 
 def _validate_route_metadata(route_metadata: dict[str, Any]) -> None:
@@ -285,10 +304,9 @@ def validate_artifact(doc: dict[str, Any], *, root: Path = REPO_ROOT, require_fi
 
     metrics = _mapping(doc.get("metrics"), "metrics")
     _validate_quality_gate(metrics, candidate["quality_profile"])
-    _require(
-        _number(metrics.get("decode_tok_s_ratio_to_baseline"), "metrics.decode_tok_s_ratio_to_baseline")
-        >= MIN_DECODE_RATIO_TO_BASELINE,
-        f"metrics.decode_tok_s_ratio_to_baseline must be >= {MIN_DECODE_RATIO_TO_BASELINE}",
+    _number(
+        metrics.get("decode_tok_s_ratio_to_baseline"),
+        "metrics.decode_tok_s_ratio_to_baseline",
     )
     _require(
         _integer(metrics.get("kv_saved_kib"), "metrics.kv_saved_kib") >= MIN_SAVED_KIB,
@@ -310,6 +328,10 @@ def validate_artifact(doc: dict[str, Any], *, root: Path = REPO_ROOT, require_fi
 
     decision = _mapping(doc.get("decision"), "decision")
     _require(decision.get("passed") is True, "decision.passed must be true")
+    _require(
+        decision.get("quality_gate_passed", True) is True,
+        "decision.quality_gate_passed must be true",
+    )
     _require(
         decision.get("public_support_docs_approved") is False,
         "decision.public_support_docs_approved must remain false for this internal gate",
