@@ -397,3 +397,14 @@ capped to the bounded recompute cost profile.
 Artifacts include the selected policy code, adaptive draft length counters, and
 fallback reason counters so coding-shaped benchmark rows can distinguish real
 throughput gains from direct fallback.
+
+Follow-up validation on 2026-05-07 used the rebuilt release server and the
+existing Qwen3.5 9B 4-bit reference rows:
+`benchmarks/results/mlx-inference/2026-05-07-phase3/qwen3_5-9b-mlx-4bit-phase3.json`.
+The 128-token decode row retained effective n-gram acceleration at 196.8 tok/s
+(2.067x `mlx_lm`) with 69 draft attempts and 276 accepted draft tokens. The
+512-token random-prompt row produced no draft candidates and is now labeled
+`ngram_no_draft_direct_fallback` instead of being counted as effective
+acceleration, while the matching direct row stayed near reference parity
+(0.991x `mlx_lm`). This keeps the Phase 3 throughput claim scoped to rows with
+observed draft acceptance.

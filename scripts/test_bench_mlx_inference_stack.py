@@ -576,6 +576,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_ngram_accepted_tokens": 4,
                         "ax_ngram_request_disabled_steps": 2,
                         "ax_ngram_fallback_short_output_steps": 1,
+                        "ax_ngram_policy_variant": 1,
                         "ax_ngram_adaptive_draft_len_total": 6,
                         "ax_ngram_accept_rate_micros": 500000,
                     }
@@ -586,6 +587,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_ngram_accepted_tokens": 11,
                         "ax_ngram_request_disabled_steps": 3,
                         "ax_ngram_fallback_short_output_steps": 2,
+                        "ax_ngram_policy_variant": 1,
                         "ax_ngram_adaptive_draft_len_total": 8,
                         "ax_ngram_accept_rate_micros": 916667,
                     }
@@ -597,6 +599,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_ngram_accepted_tokens"], 15)
         self.assertEqual(summary["ax_ngram_request_disabled_steps"], 5)
         self.assertEqual(summary["ax_ngram_fallback_short_output_steps"], 3)
+        self.assertEqual(summary["ax_ngram_policy_variant"], 1)
         self.assertEqual(summary["ax_ngram_adaptive_draft_len_total"], 14)
         self.assertEqual(summary["ax_ngram_accept_rate_micros"], 750000)
 
@@ -621,6 +624,17 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 },
             ),
             "ngram_no_draft_direct_fallback",
+        )
+        self.assertEqual(
+            bench.ax_decode_claim_status(
+                False,
+                {
+                    "ax_ngram_draft_attempts": 0,
+                    "ax_ngram_no_draft_steps": 0,
+                    "ax_ngram_request_disabled_steps": 0,
+                },
+            ),
+            "ngram_no_observed_draft_path",
         )
         self.assertEqual(
             bench.ax_decode_claim_status(
@@ -1080,6 +1094,31 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "crossover_decisions": {
                 "ax_ngram_draft_attempts": 2,
                 "ax_ngram_accepted_tokens": 7,
+            },
+        }
+
+        self.assertIs(
+            bench.route_with_more_decisions(decode_route, prefill_route),
+            decode_route,
+        )
+
+    def test_route_with_more_decisions_prefers_decode_signals_over_prefill_totals(self) -> None:
+        prefill_route = {
+            "crossover_decisions": {
+                "ax_scheduler_scheduled_prefill_tokens": 512,
+                "ax_mlx_prefill_steps": 1,
+                "ax_mlx_prefix_cache_blocked": 1,
+                "ax_ngram_draft_attempts": 0,
+                "ax_ngram_policy_variant": 0,
+            },
+        }
+        decode_route = {
+            "crossover_decisions": {
+                "ax_scheduler_scheduled_prefill_tokens": 0,
+                "ax_mlx_ngram_decode_steps": 18,
+                "ax_ngram_draft_attempts": 18,
+                "ax_ngram_accepted_tokens": 108,
+                "ax_ngram_policy_variant": 1,
             },
         }
 
