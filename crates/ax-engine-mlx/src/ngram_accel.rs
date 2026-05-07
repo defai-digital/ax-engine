@@ -33,18 +33,25 @@ pub const DRAFT_CONFIDENCE_THRESHOLD: f32 = 0.4;
 /// evidence before probing that path.
 pub const LINEAR_MIN_NGRAM_SUPPORT: u32 = 2;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct NgramPrediction {
     token: u32,
     /// Observations where `token` was the continuation for this context key.
     support: u32,
     /// Total observations for this context key across all continuations.
     total: u32,
+    /// Per-continuation counts for this context key.
+    ///
+    /// The previous implementation let the latest observed continuation replace
+    /// the prediction, even when an older continuation was clearly dominant.
+    /// Keeping counts makes the draft source stable for repeated prompts with
+    /// occasional outliers.
+    counts: HashMap<u32, u32>,
 }
 
 impl NgramPrediction {
     /// Fraction of observations that produced `token`.
-    fn confidence(self) -> f32 {
+    fn confidence(&self) -> f32 {
         self.support as f32 / self.total as f32
     }
 }
@@ -178,25 +185,28 @@ where
     K: Eq + std::hash::Hash,
 {
     match map.get_mut(&key) {
-        Some(p) if p.token == token => {
-            p.support = p.support.saturating_add(1);
-            p.total = p.total.saturating_add(1);
-        }
         Some(p) => {
-            // A different continuation was observed: the new token takes over as
-            // the best prediction but total accumulates across all continuations,
-            // which reduces confidence and prevents drafting contested contexts.
-            p.token = token;
-            p.support = 1;
             p.total = p.total.saturating_add(1);
+            let count = p
+                .counts
+                .entry(token)
+                .and_modify(|count| *count = count.saturating_add(1))
+                .or_insert(1);
+            if *count > p.support {
+                p.token = token;
+                p.support = *count;
+            }
         }
         None => {
+            let mut counts = HashMap::new();
+            counts.insert(token, 1);
             map.insert(
                 key,
                 NgramPrediction {
                     token,
                     support: 1,
                     total: 1,
+                    counts,
                 },
             );
         }
@@ -579,6 +589,24 @@ mod tests {
 
         let t = table_from_sequence(&[9, 8, 7, 9, 8, 7, 9, 8, 7]);
         assert_eq!(t.predict_with_min_support(3, 2), vec![9, 8, 7]);
+    }
+
+    #[test]
+    fn prediction_keeps_majority_continuation_after_late_outlier() {
+        let mut t = NgramTable::new();
+        t.feed(&[1, 2, 3, 1, 2, 3, 1, 2, 9]);
+        t.feed(&[5, 1, 2]);
+
+        assert_eq!(
+            t.predict(1),
+            vec![3],
+            "late one-off continuation must not replace the majority continuation"
+        );
+        assert_eq!(
+            t.predict_with_confidence(1, 2, 0.4),
+            vec![3],
+            "majority support should satisfy the linear-attention draft filters"
+        );
     }
 
     #[test]

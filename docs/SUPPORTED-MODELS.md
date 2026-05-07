@@ -87,10 +87,10 @@ Meaning:
 
 - request is handled by an explicitly configured `mlx_lm.server`
 - this is broad MLX text-model compatibility, not repo-owned MLX runtime support
-- supports text-only blocking generation and OpenAI-compatible text
-  completion/chat response shapes
-- streaming endpoints fail closed because this route does not provide
-  AX-owned token IDs or per-token deltas
+- supports text-only blocking generation, SSE text generation, and
+  OpenAI-compatible text completion/chat response shapes
+- streaming surfaces forward delegated text deltas through AX envelopes; they are
+  route-contract evidence, not AX-owned token IDs, KV state, or MLX throughput
 - token-array prompts and multimodal inputs fail closed
 - benchmark evidence must be labeled as delegated route-contract evidence, not
   repo-owned MLX throughput

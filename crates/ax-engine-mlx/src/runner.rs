@@ -65,8 +65,9 @@ use crate::generate::{
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
-    Gemma4MoeProfileSnapshot, ModelConfig, TurboQuantModelDecodeContext,
-    take_gemma4_moe_profile_snapshot,
+    Gemma4MoeProfileSnapshot, LinearAttentionProfileSnapshot, ModelConfig,
+    TurboQuantModelDecodeContext, take_gemma4_moe_profile_snapshot,
+    take_linear_attention_profile_snapshot,
 };
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, DRAFT_CONFIDENCE_THRESHOLD, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN,
@@ -467,6 +468,59 @@ impl Gemma4MoeProfileSnapshot {
                 self.expert_wall_us,
             ),
             ("ax_mlx_gemma4_moe_profile_post_wall_us", self.post_wall_us),
+        ];
+
+        for (key, value) in entries {
+            upsert_route_decision(decisions, key, value);
+        }
+    }
+}
+
+impl LinearAttentionProfileSnapshot {
+    fn merge_from(&mut self, other: Self) {
+        self.enabled = self.enabled.max(other.enabled);
+        self.layers = self.layers.saturating_add(other.layers);
+        self.tokens = self.tokens.saturating_add(other.tokens);
+        self.projection_wall_us = self
+            .projection_wall_us
+            .saturating_add(other.projection_wall_us);
+        self.conv_wall_us = self.conv_wall_us.saturating_add(other.conv_wall_us);
+        self.qk_norm_wall_us = self.qk_norm_wall_us.saturating_add(other.qk_norm_wall_us);
+        self.recurrent_wall_us = self
+            .recurrent_wall_us
+            .saturating_add(other.recurrent_wall_us);
+        self.output_wall_us = self.output_wall_us.saturating_add(other.output_wall_us);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+        if self.enabled == 0 {
+            return;
+        }
+
+        let entries = [
+            ("ax_mlx_linear_attention_profile_enabled", self.enabled),
+            ("ax_mlx_linear_attention_profile_layers", self.layers),
+            ("ax_mlx_linear_attention_profile_tokens", self.tokens),
+            (
+                "ax_mlx_linear_attention_profile_projection_wall_us",
+                self.projection_wall_us,
+            ),
+            (
+                "ax_mlx_linear_attention_profile_conv_wall_us",
+                self.conv_wall_us,
+            ),
+            (
+                "ax_mlx_linear_attention_profile_qk_norm_wall_us",
+                self.qk_norm_wall_us,
+            ),
+            (
+                "ax_mlx_linear_attention_profile_recurrent_wall_us",
+                self.recurrent_wall_us,
+            ),
+            (
+                "ax_mlx_linear_attention_profile_output_wall_us",
+                self.output_wall_us,
+            ),
         ];
 
         for (key, value) in entries {
@@ -1101,6 +1155,7 @@ impl MlxRunner {
             );
         }
         let _ = take_gemma4_moe_profile_snapshot();
+        let _ = take_linear_attention_profile_snapshot();
 
         // Qwen3.5 linear-attention uses `ngram_accel_decode_step_linear_safe` which
         // clones the cache for verification and recomputes the committed prefix on
@@ -1143,6 +1198,7 @@ impl ExecutionRunner for MlxRunner {
         let mut ngram_acceleration = NgramAccelerationTelemetry::default();
         let mut decode_telemetry = DecodeTelemetry::default();
         let mut gemma4_moe_profile = Gemma4MoeProfileSnapshot::default();
+        let mut linear_attention_profile = LinearAttentionProfileSnapshot::default();
         let mut kv_cache = KvCacheTelemetry::default();
 
         for item in &input.execution_batch.items {
@@ -1155,6 +1211,7 @@ impl ExecutionRunner for MlxRunner {
             ngram_acceleration.merge_from(result.ngram_acceleration);
             decode_telemetry.merge_from(result.decode_telemetry);
             gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
+            linear_attention_profile.merge_from(result.linear_attention_profile);
             kv_cache.merge_from(result.kv_usage);
             if let Some(wall_us) = result.kv_compression_shadow_sync_wall_us {
                 kv_cache.record_compression_shadow_sync(wall_us);
@@ -1164,6 +1221,7 @@ impl ExecutionRunner for MlxRunner {
         ngram_acceleration.append_route_decisions(&mut route_metadata.crossover_decisions);
         decode_telemetry.append_route_decisions(&mut route_metadata.crossover_decisions);
         gemma4_moe_profile.append_route_decisions(&mut route_metadata.crossover_decisions);
+        linear_attention_profile.append_route_decisions(&mut route_metadata.crossover_decisions);
         kv_cache.append_route_decisions(&mut route_metadata.crossover_decisions);
 
         let tokens_written: u32 = input
@@ -1298,6 +1356,7 @@ impl MlxRunner {
                 ngram_acceleration: NgramAccelerationTelemetry::default(),
                 decode_telemetry: DecodeTelemetry::default(),
                 gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
+                linear_attention_profile: LinearAttentionProfileSnapshot::default(),
                 kv_usage: MlxKVCacheUsage::default(),
                 kv_compression_shadow_sync_wall_us: None,
             };
@@ -1418,6 +1477,7 @@ impl MlxRunner {
         let ngram_acceleration = state.ngram_acceleration;
         let decode_telemetry = state.decode_telemetry;
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
+        let linear_attention_profile = take_linear_attention_profile_snapshot();
         let kv_compression_layer_eligible = if self.kv_compression.is_enabled() {
             Some(self.kv_compression_layer_eligible.as_slice())
         } else {
@@ -1502,6 +1562,7 @@ impl MlxRunner {
             ngram_acceleration,
             decode_telemetry,
             gemma4_moe_profile,
+            linear_attention_profile,
             kv_usage,
             kv_compression_shadow_sync_wall_us,
         }
@@ -1833,6 +1894,7 @@ struct MlxItemRun {
     ngram_acceleration: NgramAccelerationTelemetry,
     decode_telemetry: DecodeTelemetry,
     gemma4_moe_profile: Gemma4MoeProfileSnapshot,
+    linear_attention_profile: LinearAttentionProfileSnapshot,
     kv_usage: MlxKVCacheUsage,
     kv_compression_shadow_sync_wall_us: Option<u32>,
 }
@@ -3058,6 +3120,61 @@ mod tests {
 
         let mut disabled_decisions = Vec::new();
         Gemma4MoeProfileSnapshot::default().append_route_decisions(&mut disabled_decisions);
+        assert!(disabled_decisions.is_empty());
+    }
+
+    #[test]
+    fn linear_attention_profile_route_decisions_emit_only_when_enabled() {
+        let mut profile = LinearAttentionProfileSnapshot {
+            enabled: 1,
+            layers: 2,
+            tokens: 1024,
+            projection_wall_us: 100,
+            conv_wall_us: 80,
+            qk_norm_wall_us: 30,
+            recurrent_wall_us: 90,
+            output_wall_us: 20,
+        };
+        profile.merge_from(LinearAttentionProfileSnapshot {
+            enabled: 1,
+            layers: 3,
+            tokens: 2048,
+            projection_wall_us: 150,
+            conv_wall_us: 120,
+            qk_norm_wall_us: 45,
+            recurrent_wall_us: 135,
+            output_wall_us: 30,
+        });
+
+        let mut decisions = Vec::new();
+        profile.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_profile_enabled"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_profile_layers"),
+            Some(&5)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_profile_tokens"),
+            Some(&3072)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_profile_projection_wall_us"),
+            Some(&250)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_profile_recurrent_wall_us"),
+            Some(&225)
+        );
+
+        let mut disabled_decisions = Vec::new();
+        LinearAttentionProfileSnapshot::default().append_route_decisions(&mut disabled_decisions);
         assert!(disabled_decisions.is_empty());
     }
 

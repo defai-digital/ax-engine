@@ -20,6 +20,31 @@ bash -n scripts/*.sh scripts/lib/common.sh
 "$PYTHON_BIN" -m py_compile \
   scripts/bench_mlx_inference_stack.py \
   scripts/test_bench_mlx_inference_stack.py \
+  scripts/build_mlx_prefill_scaling_artifact.py \
+  scripts/test_build_mlx_prefill_scaling_artifact.py \
+  scripts/check_mlx_prefill_scaling_artifact.py \
+  scripts/test_mlx_prefill_scaling_artifact.py \
+  scripts/render_mlx_prefill_scaling_report.py \
+  scripts/test_render_mlx_prefill_scaling_report.py \
+  scripts/check_mlx_prefill_scaling_campaign.py \
+  scripts/test_mlx_prefill_scaling_campaign.py \
+  scripts/check_mlx_startup_latency_artifact.py \
+  scripts/test_mlx_startup_latency_artifact.py \
+  scripts/check_mlx_concurrent_prefill_artifact.py \
+  scripts/test_mlx_concurrent_prefill_artifact.py \
+  scripts/render_mlx_p2_latency_report.py \
+  scripts/test_render_mlx_p2_latency_report.py \
+  scripts/run_mlx_p2_latency_artifacts.py \
+  scripts/test_run_mlx_p2_latency_artifacts.py \
+  scripts/check_gateddelta_prefill_profile_artifact.py \
+  scripts/test_gateddelta_prefill_profile_artifact.py \
+  scripts/render_gateddelta_prefill_profile_report.py \
+  scripts/test_render_gateddelta_prefill_profile_report.py \
+  scripts/check_gateddelta_prefill_model.py \
+  scripts/test_gateddelta_prefill_model.py \
+  scripts/test_run_gateddelta_prefill_profile.py \
+  scripts/check_readme_performance_artifacts.py \
+  scripts/test_readme_performance_artifacts.py \
   scripts/build_turboquant_decode_outputs.py \
   scripts/build_turboquant_quality_metrics.py \
   scripts/build_turboquant_quality_artifact.py \

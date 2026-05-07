@@ -938,11 +938,11 @@ fn concat_quantized_weight_rows(a: &QuantizedWeight, b: &QuantizedWeight) -> Qua
                 a.bits, b.bits,
                 "cannot fuse weights with different bit widths"
             );
-            let biases = a
-                .biases
-                .as_ref()
-                .zip(b.biases.as_ref())
-                .map(|(ba, bb)| concatenate(&[ba, bb], 0, None));
+            let biases = match (a.biases.as_ref(), b.biases.as_ref()) {
+                (Some(ba), Some(bb)) => Some(concatenate(&[ba, bb], 0, None)),
+                (None, None) => None,
+                _ => panic!("cannot fuse weights where only one has biases"),
+            };
             (Some(concatenate(&[sa, sb], 0, None)), biases)
         }
         (None, None) => (None, None),

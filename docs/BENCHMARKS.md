@@ -98,6 +98,133 @@ The default AX row is the direct same-policy comparison against the primary MLX
 baseline. AX n-gram acceleration rows are effective-throughput evidence and
 must not be treated as the same decode policy as the primary MLX baseline.
 
+Long-context prefill and TTFT claims require a separate scaling artifact. For a
+fresh run, use the repo-owned wrapper:
+
+```text
+scripts/run-mlx-prefill-scaling-artifact.sh \
+  --model-dir /path/to/local/mlx-model \
+  --prompt-tokens 1024,2048,4096,8192,16384 \
+  --run-label qwen35-prefill-scaling
+```
+
+Saved artifacts use schema `ax.mlx_prefill_scaling.v1`. Build and validate
+them from an already completed MLX inference-stack run with:
+
+```text
+python3 scripts/build_mlx_prefill_scaling_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.json
+
+python3 scripts/check_mlx_prefill_scaling_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.json
+
+python3 scripts/render_mlx_prefill_scaling_report.py \
+  benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.md
+
+python3 scripts/check_mlx_prefill_scaling_campaign.py \
+  benchmarks/results/mlx-inference/<date>/gemma-prefill-scaling.json \
+  benchmarks/results/mlx-inference/<date>/qwen-prefill-scaling.json \
+  benchmarks/results/mlx-inference/<date>/glm-prefill-scaling.json \
+  --default-required-families \
+  --output benchmarks/results/mlx-inference/<date>/prefill-scaling-campaign.md
+```
+
+New AX rows from `bench_mlx_inference_stack.py` include runner-derived
+`ttft_ms` and server-process RSS memory. The builder derives `mlx_lm` TTFT from
+reported prefill throughput because the upstream benchmark does not emit a
+separate first-token event in this artifact shape. The checker requires a
+`mlx_lm` primary reference row and a direct `ax_engine_mlx` row for each
+context/generation shape, shared prompt hashes,
+`direct_no_ngram_acceleration` labeling on the AX row, median prefill tok/s,
+median TTFT, peak memory, and ratios back to the matching `mlx_lm` row. Keep
+these artifacts separate from n-gram decode-throughput rows so prefill wins are
+not accidentally credited to a decode acceleration policy.
+The renderer is intentionally downstream of the validator, so Markdown reports
+cannot become the source of truth for unvalidated long-context claims.
+Use the campaign checker when the claim is representative model-family coverage
+rather than a single-model result. By default it can require Gemma/Qwen/GLM
+coverage and one host identity, so mixed-host evidence must be labeled
+explicitly with `--allow-mixed-host`.
+
+The latest checked-in real-model P1 example is:
+
+- [Qwen3-4B-4bit prefill scaling, 2026-05-07](../benchmarks/results/mlx-inference/2026-05-07-real-p1/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md)
+
+This example is intentionally expectation-management evidence: AX beats
+`mlx_lm` at 1k in that run, is near parity at 2k, and is below `mlx_lm` at
+4k/8k. Do not cite it as a broad AX prefill win.
+
+Cold-start and warm-throughput claims require a separate startup-latency
+artifact:
+
+```text
+python3 scripts/check_mlx_startup_latency_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>-startup-latency.json
+```
+
+The repo-owned real-model runner can capture both P2 artifacts:
+
+```text
+scripts/run-mlx-p2-latency-artifacts.sh \
+  --model-dir /path/to/local/mlx-model \
+  --output-root benchmarks/results/mlx-inference/<date> \
+  --run-label <model>-p2-latency \
+  --context-tokens 8192 \
+  --startup-generation-tokens 128 \
+  --concurrent-generation-tokens 1 \
+  --concurrency-levels 1,2,4 \
+  --host-label "Apple M5 Max"
+```
+
+It builds the release AX server, starts AX in direct MLX mode, writes
+deterministic prompt-token artifacts, captures `startup-latency.json` and
+`concurrent-prefill.json`, validates both outputs, and writes `p2-latency.md`
+before returning. Use `--dry-run` first when preparing a long run. To
+regenerate the report from saved artifacts:
+
+```text
+python3 scripts/render_mlx_p2_latency_report.py \
+  --startup-artifact benchmarks/results/mlx-inference/<date>/<model>-p2-latency/startup-latency.json \
+  --concurrent-artifact benchmarks/results/mlx-inference/<date>/<model>-p2-latency/concurrent-prefill.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-p2-latency/p2-latency.md
+```
+
+Saved artifacts use schema `ax.mlx_startup_latency.v1`. The checker requires
+`process_cold`, `model_warm`, and `benchmark_warm` rows for the same model,
+prompt hash, context, and generation shape. Cold rows carry server-ready,
+model-load, first-request TTFT, TTFT, decode, and peak-memory metrics; the warm
+row carries warm TTFT, warmed decode, and peak memory without startup/load
+metrics mixed in. Ratios are checked against the benchmark-warm row so stale
+cold/warm comparisons fail closed. Keep this evidence separate from the MLX
+throughput table: a warm benchmark win is not a cold-start win.
+
+Concurrent prefill claims require a separate concurrency artifact:
+
+```text
+python3 scripts/check_mlx_concurrent_prefill_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>-concurrent-prefill.json
+```
+
+Saved artifacts use schema `ax.mlx_concurrent_prefill.v1`. The checker requires
+a single-request baseline plus at least one multi-request row, one prompt hash
+per concurrent request, direct AX policy labeling, route identity, per-request
+TTFT, total wall time, queue delay, zero failures, peak memory, overlap
+classification, and ratios back to the single-request baseline. Keep this
+evidence separate from batch=1 throughput rows: concurrent long-prompt serving
+needs server-path queueing and memory-pressure evidence, not only raw runner
+throughput.
+
+The latest checked-in real-model P2 example is:
+
+- [Qwen3-4B-4bit startup and concurrent prefill, 2026-05-07](../benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md)
+
+This report records the 8k cold/model-warm/benchmark-warm split and
+concurrency 1/2/4 behavior. The 4-request row is classified as serialized, so
+it should be used as a boundary on concurrent-prefill claims rather than a
+positive continuous-batching claim.
+
 Use `--ax-compare-policies` when n-gram acceleration is part of the question:
 
 ```text
@@ -116,6 +243,63 @@ row, `ngram_acceleration_kv_trim` for dense/full-attention n-gram acceleration
 rows, and `ngram_acceleration_linear_attention_branch_recompute` for Qwen3.5-style
 recurrent linear-attention rows, where repeated n-gram evidence is required
 before probing and partial accepts trigger a longer cooldown.
+
+For Qwen3.5/Qwen3-Next GatedDelta prefill profiling, use the evidence-first
+profile mode:
+
+```text
+scripts/run-gateddelta-prefill-profile.sh \
+  --model-dir /path/to/qwen-linear-attention-mlx-model \
+  --run-label qwen-gateddelta-profile
+```
+
+This mode requires a linear-attention MLX manifest, forces the direct AX row,
+and records the 512, 2048, 8192, and 32768 prompt-token matrix in the artifact
+under `gateddelta_prefill_profile`. It also starts AX with
+`AX_MLX_LINEAR_ATTENTION_PROFILE=1`, which inserts diagnostic timing barriers
+and emits projection/conv/QK-normalization/recurrent/output stage counters in
+`ax_mlx_linear_attention_profile`. Treat these rows as prefill slope evidence
+before GatedDelta scan or fusion kernel changes. Do not infer n-gram, learned
+draft, tree-speculation, or KV-compression claims from this profile.
+
+The wrapper preflights `config.json` and `model-manifest.json` before building
+the release server. It fails closed unless the manifest is `qwen3_5` or
+`qwen3_next`, has enabled `linear_attention`, and includes the gated-delta kernel
+dimensions required by the runtime. Valid profile artifacts also record that
+normalized `ax.gateddelta_prefill_model_preflight.v1` result under
+`gateddelta_prefill_profile.model_preflight`, so the JSON evidence remains
+auditable after logs are gone.
+
+Validate saved GatedDelta profile artifacts with:
+
+```text
+python3 scripts/check_gateddelta_prefill_profile_artifact.py \
+  benchmarks/results/mlx-inference/<date>/gateddelta-prefill-profile.json
+```
+
+When `--gateddelta-prefill-profile` is combined with `--output`, the benchmark
+harness runs this validator immediately after writing the JSON artifact.
+
+The wrapper above also renders the Markdown report during capture. The lower
+level harness command is:
+
+```text
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-dir /path/to/qwen-linear-attention-mlx-model \
+  --gateddelta-prefill-profile \
+  --generation-tokens 128 \
+  --output benchmarks/results/mlx-inference/<date>/gateddelta-prefill-profile.json \
+  --gateddelta-prefill-profile-report-output \
+    benchmarks/results/mlx-inference/<date>/gateddelta-prefill-profile.md
+```
+
+If the report was not rendered during capture, render the validated profile with:
+
+```text
+python3 scripts/render_gateddelta_prefill_profile_report.py \
+  benchmarks/results/mlx-inference/<date>/gateddelta-prefill-profile.json \
+  --output benchmarks/results/mlx-inference/<date>/gateddelta-prefill-profile.md
+```
 
 For Gemma 4 26B A4B direct-decode investigation, enable the opt-in MoE profile:
 
@@ -352,10 +536,11 @@ the current DeepSeek V4 SwiftLM port that drops compressor/indexer and
 hash-routing tensors, must stay fail-closed.
 
 The delegated route supports text generation through upstream
-`mlx_lm.server`, including AX fake-SSE surfaces that wrap the blocking
-delegated response. Token-array prompts, stepwise lifecycle calls, and
-visual/multimodal contracts are intentionally unsupported until a separate
-route and artifact contract exists.
+`mlx_lm.server`, including AX SSE surfaces that forward upstream text deltas.
+Those streams validate route compatibility only; they do not create repo-owned
+MLX throughput evidence or AX-owned token/KV accounting. Token-array prompts,
+stepwise lifecycle calls, and visual/multimodal contracts are intentionally
+unsupported until a separate route and artifact contract exists.
 
 ## Readiness
 
@@ -413,6 +598,7 @@ rules.
 Use these repo-owned checks to validate the benchmark surfaces:
 
 ```text
+python3 scripts/check_readme_performance_artifacts.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-bench-doctor.sh
 bash scripts/check-bench-mlx.sh

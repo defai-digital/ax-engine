@@ -23,6 +23,19 @@ high entropy, very short, or intentionally diverse. It can also back off when
 acceptance falls below the runtime gate, which is expected behavior rather than
 a failure.
 
+Coding workflows are the clearest user-facing fit when they contain repeated
+local structure. Code completion, edit application, structured diffs, imports,
+indentation, repeated identifiers, boilerplate, JSON/tool output, and test or
+config generation often reuse local token patterns. In those cases, n-gram
+acceleration can draft short spans that the target model verifies in one forward
+pass, improving effective decode throughput without a second draft model.
+
+That is not a promise that every coding request speeds up. Novel algorithms,
+open-ended explanations, high-entropy generated text, short answers, or outputs
+with low draft acceptance can see little benefit. AX treats n-gram acceleration
+as opportunistic: when the draft table stops helping, the gate backs off so the
+request behaves closer to the direct decode path.
+
 Benchmark rows labeled with N-gram acceleration are effective-throughput
 measurements. They should not be described as raw model-kernel speedups. Use
 the MLX inference-stack harness with `--ax-compare-policies` to compare the

@@ -35,6 +35,18 @@ pub struct Gemma4MoeProfileSnapshot {
     pub post_wall_us: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LinearAttentionProfileSnapshot {
+    pub enabled: u32,
+    pub layers: u32,
+    pub tokens: u32,
+    pub projection_wall_us: u32,
+    pub conv_wall_us: u32,
+    pub qk_norm_wall_us: u32,
+    pub recurrent_wall_us: u32,
+    pub output_wall_us: u32,
+}
+
 #[derive(Clone, Copy)]
 enum Gemma4MoeProfileStage {
     Attention,
@@ -44,7 +56,17 @@ enum Gemma4MoeProfileStage {
     Post,
 }
 
+#[derive(Clone, Copy)]
+enum LinearAttentionProfileStage {
+    Projection,
+    Conv,
+    QkNorm,
+    Recurrent,
+    Output,
+}
+
 static GEMMA4_MOE_PROFILE: OnceLock<Mutex<Gemma4MoeProfileSnapshot>> = OnceLock::new();
+static LINEAR_ATTENTION_PROFILE: OnceLock<Mutex<LinearAttentionProfileSnapshot>> = OnceLock::new();
 
 fn gemma4_moe_profile_enabled() -> bool {
     matches!(
@@ -53,8 +75,19 @@ fn gemma4_moe_profile_enabled() -> bool {
     )
 }
 
+fn linear_attention_profile_enabled() -> bool {
+    matches!(
+        std::env::var("AX_MLX_LINEAR_ATTENTION_PROFILE").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 fn gemma4_moe_profile() -> &'static Mutex<Gemma4MoeProfileSnapshot> {
     GEMMA4_MOE_PROFILE.get_or_init(|| Mutex::new(Gemma4MoeProfileSnapshot::default()))
+}
+
+fn linear_attention_profile() -> &'static Mutex<LinearAttentionProfileSnapshot> {
+    LINEAR_ATTENTION_PROFILE.get_or_init(|| Mutex::new(LinearAttentionProfileSnapshot::default()))
 }
 
 fn saturating_profile_us(started: Instant) -> u32 {
@@ -88,6 +121,28 @@ fn record_gemma4_moe_profile_stage(stage: Gemma4MoeProfileStage, wall_us: u32) {
     *target = target.saturating_add(wall_us);
 }
 
+fn record_linear_attention_profile_layer(tokens: i32) {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    profile.enabled = 1;
+    profile.layers = profile.layers.saturating_add(1);
+    profile.tokens = profile
+        .tokens
+        .saturating_add(tokens.max(0).min(u32::MAX as i32) as u32);
+}
+
+fn record_linear_attention_profile_stage(stage: LinearAttentionProfileStage, wall_us: u32) {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    profile.enabled = 1;
+    let target = match stage {
+        LinearAttentionProfileStage::Projection => &mut profile.projection_wall_us,
+        LinearAttentionProfileStage::Conv => &mut profile.conv_wall_us,
+        LinearAttentionProfileStage::QkNorm => &mut profile.qk_norm_wall_us,
+        LinearAttentionProfileStage::Recurrent => &mut profile.recurrent_wall_us,
+        LinearAttentionProfileStage::Output => &mut profile.output_wall_us,
+    };
+    *target = target.saturating_add(wall_us);
+}
+
 fn profile_eval_elapsed(
     enabled: bool,
     stage: Gemma4MoeProfileStage,
@@ -100,10 +155,29 @@ fn profile_eval_elapsed(
     }
 }
 
+fn linear_attention_profile_eval_elapsed(
+    enabled: bool,
+    stage: LinearAttentionProfileStage,
+    started: Instant,
+    targets: &[&MlxArray],
+) {
+    if enabled {
+        eval(targets);
+        record_linear_attention_profile_stage(stage, saturating_profile_us(started));
+    }
+}
+
 pub fn take_gemma4_moe_profile_snapshot() -> Gemma4MoeProfileSnapshot {
     let mut profile = gemma4_moe_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = Gemma4MoeProfileSnapshot::default();
+    snapshot
+}
+
+pub fn take_linear_attention_profile_snapshot() -> LinearAttentionProfileSnapshot {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    let snapshot = *profile;
+    *profile = LinearAttentionProfileSnapshot::default();
     snapshot
 }
 
@@ -1999,17 +2073,43 @@ fn linear_attention_forward(
         .as_ref()
         .expect("linear attention layer requires linear attention weights");
     let seq = x.shape()[1];
+    let profile_enabled = linear_attention_profile_enabled();
+    if profile_enabled {
+        record_linear_attention_profile_layer(seq);
+    }
 
+    let profile_started = Instant::now();
     let (qkv, z, a, b) = linear_attention_inputs(linear_cfg, linear_w, x, seq);
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::Projection,
+        profile_started,
+        &[&qkv, &z, &a, &b],
+    );
 
     let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
+    let profile_started = Instant::now();
     let conv_weight = linear_conv_weight(&linear_w.conv1d);
     let (conv_out, new_conv_state) =
         linear_attention_conv1d(linear_cfg, &qkv, &conv_weight, conv_state, None);
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::Conv,
+        profile_started,
+        &[&conv_out, &new_conv_state],
+    );
     let qkv = split_linear_attention_qkv(linear_cfg, &conv_out);
+    let profile_started = Instant::now();
     let (q, k) = normalize_linear_attention_qk(linear_cfg, &qkv.q, &qkv.k);
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::QkNorm,
+        profile_started,
+        &[&q, &k],
+    );
     // Cast a_log and dt_bias to float32: mlx_lm preserves A_log as float32 and
     // computes g in float32 precision.  dt_bias may be BF16 in quantized models.
+    let profile_started = Instant::now();
     let a_log_f32 = astype(&linear_w.a_log, MlxDtype::Float32, None);
     let dt_bias_f32 = astype(&linear_w.dt_bias, MlxDtype::Float32, None);
     // State is always float32: mlx_lm initialises state as mx.zeros(..., dtype=mx.float32).
@@ -2029,11 +2129,25 @@ fn linear_attention_forward(
     // lazy MLX ops, eliminating ~8 kernel dispatches per layer.
     let (out, new_recurrent_state) =
         gated_delta_kernel(&q, &k, &qkv.v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::Recurrent,
+        profile_started,
+        &[&out, &new_recurrent_state],
+    );
     cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
 
+    let profile_started = Instant::now();
     let out = rms_norm_gated(&out, &z, &linear_w.norm);
     let flat = reshape(&out, &[1, seq, linear_cfg.value_dim() as i32], None);
-    qw(&flat, &linear_w.out_proj)
+    let out = qw(&flat, &linear_w.out_proj);
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::Output,
+        profile_started,
+        &[&out],
+    );
+    out
 }
 
 fn linear_attention_inputs(

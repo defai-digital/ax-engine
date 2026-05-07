@@ -58,6 +58,11 @@ matching benchmark shapes:
 - **N-gram acceleration** reaches up to 3.3x mlx_lm decode
   throughput on high-hit benchmark rows — with no second draft model and no
   model changes
+- **Coding-shaped decode is a natural fit when local repetition exists**:
+  completion, edit loops, structured diffs, JSON/tool output, imports,
+  indentation, and repeated identifiers often contain patterns that n-gram
+  acceleration can predict and the target model can verify. Novel, high-entropy,
+  or very short coding requests may see little or no gain.
 - **AX-owned request lifecycle** provides deterministic, auditable scheduling,
   KV block management, and prefix reuse that upstream Python runtimes do not
   expose as stable contracts
@@ -76,7 +81,7 @@ workloads.
 | Path | Use it for | Current scope |
 |---|---|---|
 | Repo-owned MLX runtime | Supported Qwen/Gemma MLX model artifacts and repo-owned performance claims | Local Apple Silicon inference, token-based server/SDK requests, benchmarked direct and n-gram acceleration modes |
-| `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | Blocking text generation through a user-provided `mlx_lm.server`; `/v1/generate` and OpenAI-compatible completion/chat text endpoints. Token streaming is not exposed because this route does not provide AX-owned token IDs or per-token deltas |
+| `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | Blocking and SSE text generation through a user-provided `mlx_lm.server`; `/v1/generate`, `/v1/generate/stream`, and OpenAI-compatible completion/chat text endpoints. Streaming is delegated text compatibility evidence, not repo-owned token/KV performance |
 | `llama_cpp` | GGUF and non-MLX local inference | Delegated llama.cpp server/CLI compatibility; route-contract evidence, not repo-owned MLX throughput |
 
 The runtime report exposes `selected_backend`, `support_tier`, and
@@ -158,7 +163,10 @@ files are present.
   weights. Raw HF checkpoints for hybrid models need norm-weight `+1.0` and
   conv1d `moveaxis(2,1)` transformations that the converter does not apply.
 - **N-gram acceleration rows**: effective-throughput measurements, not raw model-kernel
-  speedups. n-gram hit rate is prompt/output-pattern dependent.
+  speedups. n-gram hit rate is prompt/output-pattern dependent. Coding-like
+  workloads with repeated local structure are the intended high-value case;
+  random, high-entropy, very short, or deliberately diverse outputs may see
+  little benefit, and the runtime can back off toward the direct path.
 - **TurboQuant KV compression**: experimental and off by default. The
   `turboquant-shadow` and `turboquant-fused-experimental` modes are evidence
   and route-telemetry surfaces, not production support claims. Public support
@@ -178,10 +186,23 @@ were rerun after rebuilding the release server binary.
 The direct AX column is a same-policy diagnostic baseline with n-gram
 acceleration disabled, while the n-gram column is the default AX decode policy
 and the row to use for user-facing throughput expectations.
+The prefill table uses the direct AX row because n-gram acceleration is a
+decode policy, not a prefill optimization.
 For Qwen 3.5 at 512 prompt tokens, the default n-gram row is slightly below the
 fresh `mlx_lm` reference because it records zero n-gram draft attempts and
 falls back to the direct pipeline after the no-draft probe window. The direct
 baseline is around parity in repeated runs and is +0.9% in the current artifact.
+
+Additional long-context validation artifacts are checked in separately from the
+short/mid-prompt public tables. On 2026-05-07, `mlx-community/Qwen3-4B-4bit`
+was run on Apple M5 Max through the P1 prefill-scaling gate and the P2
+startup/concurrent-prefill gate:
+[P1 prefill scaling](benchmarks/results/mlx-inference/2026-05-07-real-p1/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md),
+[P2 startup and concurrency](benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md).
+These artifacts measure direct AX MLX behavior, not n-gram decode acceleration:
+the 8k P1 AX/MLX prefill ratio was 0.840x, and the 4-request P2 concurrent
+prefill row was classified as serialized. Treat them as expectation-management
+evidence for long-context serving claims, not as proof of continuous batching.
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
@@ -230,8 +251,8 @@ baseline is around parity in repeated runs and is +0.9% in the current artifact.
 |    |    | 512 | 1,620.7 | 2,938.6 (+81.3%) | 2,958.1 (+82.5%) |
 | Gemma 4 31B | 4-bit · group=64 · affine | 128 | 336.5 | 641.6 (+90.7%) | 556.5 (+65.4%) |
 |    |    | 512 | 563.5 | 760.6 (+35.0%) | 714.4 (+26.8%) |
-| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 1,131.5 | 2,101.1 (+85.7%) | 2,169.9 (+91.8%) |
-|    |    | 512 | 2,285.3 | 3,165.8 (+38.5%) | 2,862.9 (+25.3%) |
+| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 1,131.5 | 2,101.1 (+85.7%) | 1,917.1 (+69.4%) |
+|    |    | 512 | 2,285.3 | 3,165.8 (+38.5%) | 2,770.9 (+21.3%) |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine | 128 | 531.7 | 963.2 (+81.1%) | 1,011.1 (+90.2%) |
 |    |    | 512 | 1,594.2 | 2,546.5 (+59.7%) | 2,498.2 (+56.7%) |
 | Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine | 128 | 474.4 | 861.8 (+81.7%) | 960.8 (+102.5%) |
@@ -335,8 +356,10 @@ mlx_lm.server --model /path/to/local/mlx-model --host 127.0.0.1 --port 8090
 `mlx_lm_delegated` is a compatibility route, not a repo-owned MLX throughput
 claim. It forwards text generation to upstream `mlx_lm.server`, preserves AX
 sampling fields such as `temperature`, `top_p`, `top_k`, `repetition_penalty`,
-and `seed`, and exposes blocking plus fake-SSE text surfaces through AX. Tool
-calls and visual/multimodal inputs are not yet AX compatibility contracts.
+and `seed`, and exposes blocking plus SSE text surfaces through AX. Streamed
+chunks are delegated text deltas; they are not AX-owned token IDs, KV state, or
+model-kernel throughput evidence. Tool calls and visual/multimodal inputs are
+not yet AX compatibility contracts.
 
 ```bash
 # Primary benchmark: AX vs mlx_lm vs mlx-swift-lm

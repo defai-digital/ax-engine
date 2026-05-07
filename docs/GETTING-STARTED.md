@@ -20,7 +20,7 @@ AX surface for broader model coverage.
 | Path | Select it when | Notes |
 |---|---|---|
 | Repo-owned MLX runtime | You have a supported Qwen/Gemma MLX model artifact and want repo-owned runtime behavior or performance evidence | Use `--mlx` plus `--mlx-model-artifacts-dir`; benchmark claims must use the MLX inference-stack harness |
-| `mlx_lm_delegated` | Upstream `mlx-lm` supports the MLX text model but AX does not yet have a repo-owned graph | Requires a running `mlx_lm.server`; supports blocking text generation and OpenAI-compatible text completion/chat shapes; streaming endpoints fail closed |
+| `mlx_lm_delegated` | Upstream `mlx-lm` supports the MLX text model but AX does not yet have a repo-owned graph | Requires a running `mlx_lm.server`; supports blocking and SSE text generation plus OpenAI-compatible text completion/chat shapes; route-contract evidence only |
 | `llama_cpp` | You have GGUF/non-MLX local inference needs | Use a llama.cpp server or CLI target; these are delegated route-contract claims |
 
 ```mermaid
@@ -163,8 +163,8 @@ ax-engine-bench generate \
 ```
 
 That route is explicit compatibility only. It is text-only, supports AX
-blocking and fake-SSE text surfaces, and is not a repo-owned MLX performance
-claim.
+blocking and SSE text surfaces, and is not a repo-owned MLX performance claim.
+Streamed chunks are delegated text deltas, not AX-owned token/KV evidence.
 
 To run a checked-in scenario manifest through the current workload-contract
 path:

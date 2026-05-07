@@ -43,6 +43,24 @@ throughput baselines.
   reason labels, when the runtime emits them.
 - `test_bench_mlx_inference_stack.py`: unit tests for the MLX benchmark
   contract, parser, prompt artifact hash checks, and secondary adapter shape.
+- `check_gateddelta_prefill_profile_artifact.py`: fail-closed validator for
+  `--gateddelta-prefill-profile` artifacts. It requires Qwen-style
+  linear-attention metadata, the 512/2048/8192/32768 prompt matrix, direct AX
+  rows, `mlx_lm` primary-reference rows, no n-gram/KV-compression evidence, and
+  opt-in `ax_mlx_linear_attention_profile` stage counters. The artifact must
+  also carry versioned `gateddelta_prefill_profile.model_preflight` evidence
+  from `check_gateddelta_prefill_model.py`.
+- `test_gateddelta_prefill_profile_artifact.py`: unit tests for the GatedDelta
+  prefill profile artifact validator.
+- `render_gateddelta_prefill_profile_report.py`: renders a validated
+  GatedDelta prefill profile artifact as a Markdown review table with
+  linear-attention stage timings, recurrent share, dominant stage, and next-step
+  hints for scan/fusion experiments. The benchmark harness can call it during
+  capture with `--gateddelta-prefill-profile-report-output`.
+- `check_gateddelta_prefill_model.py`: fail-closed preflight for real-model
+  GatedDelta profile runs. It checks `config.json` plus `model-manifest.json`
+  before release-server build and requires a `qwen3_5`/`qwen3_next`
+  linear-attention manifest with the gated-delta kernel dimensions configured.
 - `check_turboquant_quality_artifact.py`: fail-closed validator for internal
   TurboQuant long-context quality gate artifacts. It checks model identity,
   long-context shape, baseline/candidate provenance, candidate mode
@@ -70,6 +88,62 @@ throughput baselines.
   decode vectors, builds quality metrics, validates the quality artifact, and
   writes a promotion-readiness report. Use `--dry-run` first to inspect
   inferred metadata and planned commands without loading a model.
+- `run-mlx-prefill-scaling-artifact.sh`: real-model P1 prefill/TTFT scaling
+  runner. It runs the MLX inference-stack benchmark with direct AX rows, writes
+  the raw `ax.mlx_inference_stack.v2` artifact, builds
+  `ax.mlx_prefill_scaling.v1`, validates the scaling artifact, and renders a
+  Markdown review report. Use `--dry-run` first to inspect the planned
+  long-context run.
+- `run-gateddelta-prefill-profile.sh`: real-model Qwen/GatedDelta prefill
+  profile runner. It preflights the model manifest before building the release
+  server, runs `--gateddelta-prefill-profile`, writes and validates the raw
+  inference-stack artifact, and renders the Markdown stage-profile report. Use
+  `--dry-run` first to inspect the planned profile run.
+- `run-mlx-p2-latency-artifacts.sh`: real-model P2 startup/concurrency wrapper.
+  It builds the release AX server, invokes `run_mlx_p2_latency_artifacts.py`,
+  and writes `startup-latency.json`, `concurrent-prefill.json`, and
+  `p2-latency.md`. Use `--dry-run` first to inspect the output directory and
+  generated command without building or starting the server.
+- `build_mlx_prefill_scaling_artifact.py`: converts completed MLX
+  inference-stack artifacts into the fail-closed prefill/TTFT scaling artifact
+  consumed by `check_mlx_prefill_scaling_artifact.py`.
+- `check_mlx_prefill_scaling_artifact.py`: validates long-context prefill/TTFT
+  evidence, including `mlx_lm` baseline coverage, direct AX policy labeling,
+  shared prompt hashes, TTFT, peak memory, and ratios to baseline.
+- `render_mlx_prefill_scaling_report.py`: renders a validated prefill-scaling
+  artifact as a Markdown review table with prefill, TTFT, memory, ratios, and
+  first-bend marking.
+- `check_mlx_prefill_scaling_campaign.py`: validates a multi-model prefill
+  scaling campaign by checking per-artifact contracts, required model-family
+  coverage, host consistency, maximum context coverage, and first-bend summary.
+- `check_mlx_startup_latency_artifact.py`: validates P2 cold-vs-warm startup
+  artifacts. It requires `process_cold`, `model_warm`, and `benchmark_warm`
+  rows for the same prompt hash and direct AX policy, separates server-ready
+  and model-load metrics from warm rows, and checks cold/warm ratios against
+  the benchmark-warm row.
+- `test_mlx_startup_latency_artifact.py`: unit tests for the startup latency
+  artifact validator.
+- `check_mlx_concurrent_prefill_artifact.py`: validates P2 concurrent-prefill
+  artifacts. It requires a single-request baseline plus multi-request rows,
+  one prompt hash per request, direct AX policy, per-request TTFT, total wall
+  time, queue delay, zero failures, peak memory, overlap classification, and
+  ratios to the single-request baseline.
+- `test_mlx_concurrent_prefill_artifact.py`: unit tests for the concurrent
+  prefill artifact validator.
+- `run_mlx_p2_latency_artifacts.py`: real-model P2 runner for startup and
+  concurrent-prefill evidence. It starts the AX MLX server in direct mode,
+  writes prompt-token artifacts, captures `ax.mlx_startup_latency.v1` and
+  `ax.mlx_concurrent_prefill.v1`, validates both outputs, and writes
+  `p2-latency.md` before returning. Use `--dry-run` first to inspect the output
+  paths without starting a server.
+- `test_run_mlx_p2_latency_artifacts.py`: unit tests for the P2 latency runner
+  artifact assembly, ratio calculations, and dry-run CLI.
+- `render_mlx_p2_latency_report.py`: renders validated P2 startup and/or
+  concurrent-prefill artifacts as a Markdown review report with cold/warm
+  ratios, concurrency ratios, queue delay, memory pressure, and overlap
+  classification.
+- `test_render_mlx_p2_latency_report.py`: unit tests for the P2 latency report
+  renderer.
 - `build_turboquant_quality_metrics.py`: compares baseline and candidate decode
   output vectors and emits the max/mean absolute error plus minimum cosine
   similarity JSON consumed by the TurboQuant quality artifact builder.
