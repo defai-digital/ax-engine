@@ -50,7 +50,7 @@ Current preview endpoints:
 - `--mlx` selects the repo-owned MLX runtime for supported local model
   artifacts
 - `--support-tier mlx_lm_delegated` delegates text generation to a
-  user-provided `mlx_lm.server` while preserving AX blocking, fake-SSE, and
+  user-provided `mlx_lm.server` while preserving AX blocking, SSE, and
   OpenAI-compatible text surfaces
 - `--support-tier llama_cpp` or a GGUF target delegates non-MLX inference to
   llama.cpp
@@ -193,7 +193,9 @@ cargo run -p ax-engine-server -- \
 
 `mlx_lm_delegated` is text-only and delegates model execution to an explicitly
 configured upstream `mlx_lm.server`. It is not a repo-owned MLX performance
-claim, and it is not a visual/multimodal contract.
+claim, and it is not a visual/multimodal contract. Streaming responses on this
+route are delegated text deltas through AX's HTTP/SSE surfaces, not AX-owned
+token IDs or KV-cache evidence.
 
 The preview server now also exposes thin OpenAI-compatible endpoints over that
 same llama.cpp-backed path:
@@ -445,21 +447,22 @@ it creates fresh SDK sessions internally.
 `POST /v1/generate/stream` uses the same stateless request shape but streams
 preview SSE events named `request`, `step`, `response`, and `error`.
 `POST /v1/completions` and `POST /v1/chat/completions` are thin response-shape
-adapters over that same stateless llama.cpp-backed request flow; their
-streaming mode emits unnamed SSE `data:` chunks plus `[DONE]` in the familiar
-OpenAI-style envelope instead of AX-specific lifecycle event names.
+adapters over the same stateless text request flow for server-backed
+`llama_cpp` and `mlx_lm_delegated`; their streaming mode emits unnamed SSE
+`data:` chunks plus `[DONE]` in the familiar OpenAI-style envelope instead of
+AX-specific lifecycle event names.
 The `/v1/requests` and `/v1/step` endpoints instead operate on one shared
 preview session held by the server so they can surface the same request
 lifecycle contract as the SDK.
 The server allocates request ids from one process-local sequence across both
 paths so transport logs and client correlation do not collide when clients mix
 blocking and stepwise APIs.
-The `mlx_lm_delegated` backend supports blocking `/v1/generate` through
-`mlx_lm.server` `/v1/completions`. It does not expose `/v1/generate/stream` or
-streamed OpenAI-compatible completion/chat endpoints because the delegated
-completion route does not provide AX-owned token IDs or per-token deltas. Those
-requests fail closed with `streaming_not_supported`, matching
-`runtime.capabilities.token_streaming=false`.
+The `mlx_lm_delegated` backend supports blocking `/v1/generate` and SSE
+`/v1/generate/stream` through `mlx_lm.server` `/v1/completions`. It also
+supports streamed OpenAI-compatible completion/chat endpoints by forwarding
+upstream text deltas through AX response envelopes. These streams are
+compatibility surfaces: AX does not tokenize the upstream text response and does
+not claim AX-owned token IDs, KV state, or MLX kernel throughput for this route.
 
 For delegated text responses, `output_text` is authoritative. `output_tokens`
 is intentionally empty because AX did not tokenize the upstream text response;

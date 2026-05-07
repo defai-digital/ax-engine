@@ -100,6 +100,17 @@ over `[last_token, D1, D2, …, D_n]`.  EMA accept-rate gating (α=0.1, threshol
 0.5) disables n-gram probing for 8 steps after the EMA drops below threshold,
 letting the n-gram table recover before re-enabling.
 
+The intended high-value product case is coding-shaped generation with repeated
+local structure: completions, edits, structured diffs, imports, indentation,
+repeated identifiers, JSON/tool payloads, tests, and config files. Those outputs
+often have local token regularity, so AX can draft short spans cheaply and rely
+on the target model to verify them. This is opportunistic acceleration, not a
+universal coding guarantee: novel code, high-entropy explanations, very short
+answers, or low-acceptance outputs can fall back toward direct decode. Random-token
+benchmarks are useful for repeatable comparison, but real coding workloads are
+the user-facing case where repeated local structure should be expected most
+often.
+
 Dense/full-attention models use the chunked KV cache's O(1) `trim_to` rollback.
 Linear-attention models such as Qwen3.5 use a rollback-safe branch path instead:
 verification mutates a cloned cache, all-accepted drafts commit that branch, and

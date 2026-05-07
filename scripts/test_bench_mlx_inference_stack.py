@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,33 @@ MODULE_SPEC = importlib.util.spec_from_file_location("bench_mlx_inference_stack"
 assert MODULE_SPEC and MODULE_SPEC.loader
 bench = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(bench)
+
+
+def write_gateddelta_model(
+    root: Path,
+    *,
+    model_family: str = "qwen3_5",
+    key_head_dim: int = 64,
+) -> Path:
+    model_dir = root / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
+    (model_dir / "model-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ax.native_model_manifest.v1",
+                "model_family": model_family,
+                "linear_attention": {
+                    "num_value_heads": 4,
+                    "num_key_heads": 4,
+                    "key_head_dim": key_head_dim,
+                    "value_head_dim": 128,
+                    "conv_kernel_dim": 4,
+                },
+            }
+        )
+    )
+    return model_dir
 
 
 class MlxInferenceStackBenchTests(unittest.TestCase):
@@ -38,6 +66,45 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(parsed["decode_tok_s"]["median"], 25.0)
         self.assertEqual(parsed["peak_memory_gb"]["max"], 5.0)
         self.assertEqual(parsed["reported_averages"]["decode_tok_s"], 25.0)
+
+    def test_mlx_lm_row_attaches_derived_ttft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = bench.write_prompt_tokens(
+                Path(tmp),
+                prompt_tokens=4,
+                generation_tokens=2,
+                vocab_size=100,
+                tokens=[1, 2, 3, 4],
+            )
+            prompt["token_ids"] = [1, 2, 3, 4]
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="\n".join(
+                    [
+                        "Trial 1:  prompt_tps=10.000, generation_tps=20.000, "
+                        "peak_memory=3.000, total_time=4.000",
+                        "Trial 2:  prompt_tps=20.000, generation_tps=30.000, "
+                        "peak_memory=5.000, total_time=6.000",
+                        "Averages: prompt_tps=15.000, generation_tps=25.000, "
+                        "peak_memory=4.000",
+                    ]
+                ),
+                stderr="",
+            )
+            with patch.object(bench.subprocess, "run", return_value=completed):
+                row = bench.run_mlx_lm_benchmark(
+                    "model",
+                    4,
+                    2,
+                    2,
+                    0.0,
+                    2048,
+                    prompt,
+                )
+
+        self.assertEqual(row["ttft_source"], "derived_from_mlx_lm_prefill_tok_s")
+        self.assertEqual(row["ttft_ms"]["median"], 300.0)
 
     def test_prompt_artifact_records_hash_and_validates_inline_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -83,6 +150,29 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(parsed["prefill_tok_s"]["mean"], 110.0)
         self.assertEqual(parsed["decode_tok_s"]["median"], 60.0)
         self.assertEqual(len(parsed["trials"]), 2)
+
+    def test_axengine_summary_includes_ttft_and_memory(self) -> None:
+        runs = [
+            {"prefill_s": 0.3, "decode_s": 0.1, "ttft_ms": 300.0, "prefill_tok_s": 10.0, "decode_tok_s": 20.0, "output_tokens": 3.0, "peak_memory_gb": 11.0},
+            {"prefill_s": 0.2, "decode_s": 0.1, "ttft_ms": 200.0, "prefill_tok_s": 15.0, "decode_tok_s": 20.0, "output_tokens": 3.0, "peak_memory_gb": 12.0},
+            {"prefill_s": 0.4, "decode_s": 0.1, "ttft_ms": 400.0, "prefill_tok_s": 8.0, "decode_tok_s": 20.0, "output_tokens": 3.0, "peak_memory_gb": 13.0},
+        ]
+        with patch.object(bench, "axengine_one_run", side_effect=[runs[0], *runs]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                3,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+                server_pid=123,
+            )
+
+        self.assertEqual(row["ttft_ms"]["median"], 300.0)
+        self.assertEqual(row["ttft_source"], "ax_engine_runner_prefill_time")
+        self.assertEqual(row["peak_memory_gb"]["max"], 13.0)
+        self.assertEqual(row["memory_source"], "server_process_rss_after_stream")
 
     def test_swift_adapter_command_gets_prompt_artifact_placeholders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,6 +242,287 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             bench.ax_decode_policy(metadata, direct_mode=True),
             "direct_no_ngram_acceleration",
         )
+
+    def test_gateddelta_prefill_profile_defaults_to_long_prompt_matrix(self) -> None:
+        self.assertEqual(
+            bench.normalize_gateddelta_prefill_profile_prompt_lengths(
+                bench.DEFAULT_PROMPT_TOKENS
+            ),
+            [512, 2048, 8192, 32768],
+        )
+        self.assertEqual(
+            bench.normalize_gateddelta_prefill_profile_prompt_lengths(
+                "512,2048,8192,32768"
+            ),
+            [512, 2048, 8192, 32768],
+        )
+        with self.assertRaisesRegex(ValueError, "requires --prompt-tokens"):
+            bench.normalize_gateddelta_prefill_profile_prompt_lengths("512,8192")
+
+    def test_gateddelta_prefill_profile_requires_linear_attention_metadata(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "linear-attention MLX manifest"):
+            bench.build_gateddelta_prefill_profile_contract(
+                {"linear_attention_enabled": False},
+                [512, 2048, 8192, 32768],
+            )
+
+        contract = bench.build_gateddelta_prefill_profile_contract(
+            {
+                "linear_attention_enabled": True,
+                "model_family": "qwen3_next",
+                "model_preflight_schema_version": "ax.gateddelta_prefill_model_preflight.v1",
+                "model_type": "qwen3_5",
+                "linear_attention": {
+                    "num_value_heads": 4,
+                    "num_key_heads": 4,
+                    "key_head_dim": 64,
+                    "value_head_dim": 128,
+                    "conv_kernel_dim": 4,
+                },
+            },
+            [512, 2048, 8192, 32768],
+        )
+
+        self.assertEqual(
+            contract["schema_version"],
+            "ax.gateddelta_prefill_profile.v1",
+        )
+        self.assertEqual(contract["model_family"], "qwen3_next")
+        self.assertEqual(contract["direct_ax_row_required"], True)
+        self.assertEqual(contract["ngram_policy_allowed"], False)
+        self.assertEqual(contract["required_prompt_tokens"], [512, 2048, 8192, 32768])
+        self.assertEqual(contract["runtime_profile_env"], "AX_MLX_LINEAR_ATTENTION_PROFILE=1")
+        self.assertEqual(
+            contract["model_preflight"]["schema_version"],
+            "ax.gateddelta_prefill_model_preflight.v1",
+        )
+        self.assertEqual(contract["model_preflight"]["status"], "passed")
+        self.assertEqual(
+            contract["model_preflight"]["linear_attention"]["key_head_dim"],
+            64,
+        )
+        self.assertIn(
+            "ax_mlx_linear_attention_profile_recurrent_wall_us",
+            contract["primary_metrics"],
+        )
+
+    def test_gateddelta_prefill_profile_model_preflight_requires_qwen_contract(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            valid_dir = write_gateddelta_model(Path(tmp), model_family="qwen3_next")
+
+            metadata = bench.validate_gateddelta_prefill_profile_model(valid_dir)
+
+        self.assertEqual(metadata["model_family"], "qwen3_next")
+        self.assertEqual(metadata["linear_attention"]["key_head_dim"], 64)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            invalid_family_dir = write_gateddelta_model(Path(tmp), model_family="gemma4")
+
+            with self.assertRaisesRegex(RuntimeError, "model_family must be"):
+                bench.validate_gateddelta_prefill_profile_model(invalid_family_dir)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            invalid_dim_dir = write_gateddelta_model(Path(tmp), key_head_dim=48)
+
+            with self.assertRaisesRegex(RuntimeError, "divisible by 32"):
+                bench.validate_gateddelta_prefill_profile_model(invalid_dim_dir)
+
+    def test_gateddelta_prefill_profile_cli_reports_model_preflight_before_server_check(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = write_gateddelta_model(Path(tmp), model_family="gemma4")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--model-dir",
+                    str(model_dir),
+                    "--gateddelta-prefill-profile",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("model_family must be", result.stderr)
+        self.assertNotIn("ax-engine-server not found", result.stderr)
+
+    def test_validate_gateddelta_prefill_profile_output_runs_checker(self) -> None:
+        generation_tokens = 128
+        results = []
+        for prompt_tokens in [512, 2048, 8192, 32768]:
+            prompt_hash = f"{prompt_tokens:064x}"[-64:]
+            results.append(
+                {
+                    "engine": "mlx_lm",
+                    "method": "mlx_lm.benchmark",
+                    "prompt_tokens": prompt_tokens,
+                    "generation_tokens": generation_tokens,
+                    "prompt_token_ids_sha256": prompt_hash,
+                    "prefill_tok_s": {"median": 2000.0},
+                    "decode_tok_s": {"median": 100.0},
+                    "baseline": {"role": "primary_reference"},
+                }
+            )
+            results.append(
+                {
+                    "engine": "ax_engine_mlx",
+                    "method": "server_sse_runner_time_us",
+                    "ax_decode_policy": "direct_no_ngram_acceleration",
+                    "ax_decode_claim_status": "direct_same_policy_baseline",
+                    "prompt_tokens": prompt_tokens,
+                    "generation_tokens": generation_tokens,
+                    "prompt_token_ids_sha256": prompt_hash,
+                    "prefill_tok_s": {"median": 1800.0},
+                    "decode_tok_s": {"median": 90.0},
+                    "ax_mlx_telemetry": {"ax_mlx_prefill_wall_us": prompt_tokens * 10},
+                    "ax_mlx_linear_attention_profile": {
+                        "ax_mlx_linear_attention_profile_enabled": 1,
+                        "ax_mlx_linear_attention_profile_layers": 28,
+                        "ax_mlx_linear_attention_profile_tokens": prompt_tokens * 28,
+                        "ax_mlx_linear_attention_profile_projection_wall_us": 100,
+                        "ax_mlx_linear_attention_profile_conv_wall_us": 80,
+                        "ax_mlx_linear_attention_profile_qk_norm_wall_us": 30,
+                        "ax_mlx_linear_attention_profile_recurrent_wall_us": 90,
+                        "ax_mlx_linear_attention_profile_output_wall_us": 20,
+                    },
+                    "baseline": {
+                        "engine": "mlx_lm",
+                        "prefill_ratio_to_mlx_lm": 0.9,
+                    },
+                }
+            )
+        artifact = {
+            "schema_version": "ax.mlx_inference_stack.v2",
+            "model_config": {"linear_attention_enabled": True},
+            "prompt_tokens": [512, 2048, 8192, 32768],
+            "generation_tokens": generation_tokens,
+            "ax_linear_attention_profile": True,
+            "gateddelta_prefill_profile": {
+                "schema_version": "ax.gateddelta_prefill_profile.v1",
+                "direct_ax_row_required": True,
+                "ngram_policy_allowed": False,
+                "kv_compression_allowed": False,
+                "prompt_tokens": [512, 2048, 8192, 32768],
+                "required_prompt_tokens": [512, 2048, 8192, 32768],
+                "runtime_profile_env": "AX_MLX_LINEAR_ATTENTION_PROFILE=1",
+                "model_preflight": {
+                    "schema_version": "ax.gateddelta_prefill_model_preflight.v1",
+                    "status": "passed",
+                    "checker": "scripts/check_gateddelta_prefill_model.py",
+                    "model_family": "qwen3_next",
+                    "model_type": "qwen3_5",
+                    "linear_attention": {
+                        "num_value_heads": 4,
+                        "num_key_heads": 4,
+                        "key_head_dim": 64,
+                        "value_head_dim": 128,
+                        "conv_kernel_dim": 4,
+                    },
+                },
+            },
+            "results": results,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gateddelta-profile.json"
+            path.write_text(json.dumps(artifact))
+
+            checked = bench.validate_gateddelta_prefill_profile_output(path)
+
+        self.assertEqual(len(checked), 4)
+
+    def test_render_gateddelta_prefill_profile_output_writes_markdown(self) -> None:
+        generation_tokens = 128
+        results = []
+        for prompt_tokens in [512, 2048, 8192, 32768]:
+            prompt_hash = f"{prompt_tokens:064x}"[-64:]
+            results.append(
+                {
+                    "engine": "mlx_lm",
+                    "method": "mlx_lm.benchmark",
+                    "prompt_tokens": prompt_tokens,
+                    "generation_tokens": generation_tokens,
+                    "prompt_token_ids_sha256": prompt_hash,
+                    "prefill_tok_s": {"median": 2000.0},
+                    "decode_tok_s": {"median": 100.0},
+                    "baseline": {"role": "primary_reference"},
+                }
+            )
+            results.append(
+                {
+                    "engine": "ax_engine_mlx",
+                    "method": "server_sse_runner_time_us",
+                    "ax_decode_policy": "direct_no_ngram_acceleration",
+                    "ax_decode_claim_status": "direct_same_policy_baseline",
+                    "prompt_tokens": prompt_tokens,
+                    "generation_tokens": generation_tokens,
+                    "prompt_token_ids_sha256": prompt_hash,
+                    "prefill_tok_s": {"median": 1800.0},
+                    "decode_tok_s": {"median": 90.0},
+                    "ax_mlx_telemetry": {"ax_mlx_prefill_wall_us": prompt_tokens * 10},
+                    "ax_mlx_linear_attention_profile": {
+                        "ax_mlx_linear_attention_profile_enabled": 1,
+                        "ax_mlx_linear_attention_profile_layers": 28,
+                        "ax_mlx_linear_attention_profile_tokens": prompt_tokens * 28,
+                        "ax_mlx_linear_attention_profile_projection_wall_us": 100,
+                        "ax_mlx_linear_attention_profile_conv_wall_us": 80,
+                        "ax_mlx_linear_attention_profile_qk_norm_wall_us": 30,
+                        "ax_mlx_linear_attention_profile_recurrent_wall_us": 900,
+                        "ax_mlx_linear_attention_profile_output_wall_us": 20,
+                    },
+                    "baseline": {
+                        "engine": "mlx_lm",
+                        "prefill_ratio_to_mlx_lm": 0.9,
+                    },
+                }
+            )
+        artifact = {
+            "schema_version": "ax.mlx_inference_stack.v2",
+            "model_config": {"linear_attention_enabled": True},
+            "prompt_tokens": [512, 2048, 8192, 32768],
+            "generation_tokens": generation_tokens,
+            "ax_linear_attention_profile": True,
+            "gateddelta_prefill_profile": {
+                "schema_version": "ax.gateddelta_prefill_profile.v1",
+                "direct_ax_row_required": True,
+                "ngram_policy_allowed": False,
+                "kv_compression_allowed": False,
+                "prompt_tokens": [512, 2048, 8192, 32768],
+                "required_prompt_tokens": [512, 2048, 8192, 32768],
+                "runtime_profile_env": "AX_MLX_LINEAR_ATTENTION_PROFILE=1",
+                "model_preflight": {
+                    "schema_version": "ax.gateddelta_prefill_model_preflight.v1",
+                    "status": "passed",
+                    "checker": "scripts/check_gateddelta_prefill_model.py",
+                    "model_family": "qwen3_next",
+                    "model_type": "qwen3_5",
+                    "linear_attention": {
+                        "num_value_heads": 4,
+                        "num_key_heads": 4,
+                        "key_head_dim": 64,
+                        "value_head_dim": 128,
+                        "conv_kernel_dim": 4,
+                    },
+                },
+            },
+            "results": results,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gateddelta-profile.json"
+            output = Path(tmp) / "gateddelta-profile.md"
+            path.write_text(json.dumps(artifact))
+
+            bench.render_gateddelta_prefill_profile_output(path, output)
+
+            report = output.read_text()
+
+        self.assertIn("GatedDelta Prefill Profile Report", report)
+        self.assertIn("prioritize recurrent scan", report)
 
     def test_ax_decode_policy_defaults_to_kv_trim(self) -> None:
         self.assertEqual(
@@ -331,6 +702,53 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_gemma4_moe_profile_topk_selections"], 40)
         self.assertEqual(summary["ax_mlx_gemma4_moe_profile_attention_wall_us"], 250)
 
+    def test_ax_mlx_linear_attention_profile_is_extracted_and_summarized(self) -> None:
+        profile = bench.extract_ax_mlx_linear_attention_profile(
+            {
+                "crossover_decisions": {
+                    "ax_mlx_linear_attention_profile_enabled": 1,
+                    "ax_mlx_linear_attention_profile_layers": 2,
+                    "ax_mlx_linear_attention_profile_tokens": 1024,
+                    "ax_mlx_linear_attention_profile_projection_wall_us": 100,
+                    "ax_mlx_linear_attention_profile_conv_wall_us": 80,
+                    "ax_mlx_linear_attention_profile_qk_norm_wall_us": 30,
+                    "ax_mlx_linear_attention_profile_recurrent_wall_us": 90,
+                    "ax_mlx_linear_attention_profile_output_wall_us": 20,
+                    "unrelated": 99,
+                }
+            }
+        )
+
+        self.assertEqual(profile["ax_mlx_linear_attention_profile_enabled"], 1)
+        self.assertEqual(profile["ax_mlx_linear_attention_profile_layers"], 2)
+        self.assertEqual(profile["ax_mlx_linear_attention_profile_tokens"], 1024)
+        self.assertEqual(
+            profile["ax_mlx_linear_attention_profile_recurrent_wall_us"],
+            90,
+        )
+        self.assertNotIn("unrelated", profile)
+
+        summary = bench.summarize_ax_mlx_linear_attention_profile(
+            [
+                {"ax_mlx_linear_attention_profile": profile},
+                {
+                    "ax_mlx_linear_attention_profile": {
+                        "ax_mlx_linear_attention_profile_enabled": 1,
+                        "ax_mlx_linear_attention_profile_layers": 3,
+                        "ax_mlx_linear_attention_profile_tokens": 2048,
+                        "ax_mlx_linear_attention_profile_recurrent_wall_us": 135,
+                    }
+                },
+            ]
+        )
+        self.assertEqual(summary["ax_mlx_linear_attention_profile_enabled"], 1)
+        self.assertEqual(summary["ax_mlx_linear_attention_profile_layers"], 5)
+        self.assertEqual(summary["ax_mlx_linear_attention_profile_tokens"], 3072)
+        self.assertEqual(
+            summary["ax_mlx_linear_attention_profile_recurrent_wall_us"],
+            225,
+        )
+
     def test_ax_mlx_kv_compression_telemetry_is_extracted_and_summarized(self) -> None:
         telemetry = bench.extract_ax_mlx_kv_compression_telemetry(
             {
@@ -457,6 +875,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             {},
         )
 
+    def test_absent_ax_mlx_linear_attention_profile_stays_silent(self) -> None:
+        self.assertEqual(
+            bench.extract_ax_mlx_linear_attention_profile(
+                {"crossover_decisions": {"ax_mlx_decode_steps": 2}}
+            ),
+            {},
+        )
+
     def test_ax_step_timing_classifies_chunked_prefill_by_scheduled_tokens(self) -> None:
         self.assertTrue(
             bench.is_ax_prefill_step({"scheduled_tokens": 1}, seen_prefill=False)
@@ -513,6 +939,19 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_GEMMA4_MOE_PROFILE"], "1")
+
+    def test_axengine_command_can_enable_linear_attention_profile(self) -> None:
+        with patch.object(bench.subprocess, "Popen") as popen:
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                direct_mode=True,
+                linear_attention_profile=True,
+            )
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["AX_MLX_LINEAR_ATTENTION_PROFILE"], "1")
 
     def test_route_with_more_decisions_keeps_step_telemetry_over_response_route(self) -> None:
         step_route = {

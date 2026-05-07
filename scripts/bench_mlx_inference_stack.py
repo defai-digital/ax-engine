@@ -71,6 +71,7 @@ DEFAULT_REPETITIONS = 5
 DEFAULT_COOLDOWN = 5.0
 AXENGINE_PORT = 8091
 MLX_LM_RANDOM_SEED = 0
+GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS = [512, 2048, 8192, 32768]
 
 AX_ENGINE_DIRECT_KEY = "ax_engine_mlx"
 AX_ENGINE_NGRAM_ACCEL_KEY = "ax_engine_mlx_ngram_accel"
@@ -119,6 +120,17 @@ AX_MLX_GEMMA4_MOE_PROFILE_KEYS = [
     "ax_mlx_gemma4_moe_profile_router_wall_us",
     "ax_mlx_gemma4_moe_profile_expert_wall_us",
     "ax_mlx_gemma4_moe_profile_post_wall_us",
+]
+
+AX_MLX_LINEAR_ATTENTION_PROFILE_KEYS = [
+    "ax_mlx_linear_attention_profile_enabled",
+    "ax_mlx_linear_attention_profile_layers",
+    "ax_mlx_linear_attention_profile_tokens",
+    "ax_mlx_linear_attention_profile_projection_wall_us",
+    "ax_mlx_linear_attention_profile_conv_wall_us",
+    "ax_mlx_linear_attention_profile_qk_norm_wall_us",
+    "ax_mlx_linear_attention_profile_recurrent_wall_us",
+    "ax_mlx_linear_attention_profile_output_wall_us",
 ]
 
 AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
@@ -256,6 +268,97 @@ def native_manifest_has_linear_attention(linear_attention: Any) -> bool:
     return any(value is not None for value in linear_attention.values())
 
 
+def parse_prompt_lengths(value: str) -> list[int]:
+    prompt_lengths = [int(item.strip()) for item in value.split(",") if item.strip()]
+    if not prompt_lengths:
+        raise ValueError("--prompt-tokens must include at least one prompt length")
+    if any(prompt_tokens <= 0 for prompt_tokens in prompt_lengths):
+        raise ValueError("--prompt-tokens values must be positive integers")
+    return prompt_lengths
+
+
+def normalize_gateddelta_prefill_profile_prompt_lengths(value: str) -> list[int]:
+    if value == DEFAULT_PROMPT_TOKENS:
+        return list(GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS)
+    prompt_lengths = parse_prompt_lengths(value)
+    if prompt_lengths != GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS:
+        expected = ",".join(str(item) for item in GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS)
+        raise ValueError(
+            "--gateddelta-prefill-profile requires --prompt-tokens "
+            f"{expected} so profile rows are comparable across runs"
+        )
+    return prompt_lengths
+
+
+def build_gateddelta_prefill_profile_contract(
+    model_metadata: dict[str, Any],
+    prompt_lengths: list[int],
+) -> dict[str, Any]:
+    if not model_metadata.get("linear_attention_enabled"):
+        raise RuntimeError(
+            "--gateddelta-prefill-profile requires a Qwen3.5/Qwen3-Next-style "
+            "linear-attention MLX manifest"
+        )
+    return {
+        "schema_version": "ax.gateddelta_prefill_profile.v1",
+        "prd": ".internal/planning/MLX-DECODE-OPTIMIZATION-PRD.md#pr-2-gateddelta-prefill-optimization",
+        "purpose": "evidence_first_gateddelta_long_prompt_prefill_profile",
+        "model_family": model_metadata.get("model_family")
+        or model_metadata.get("model_type")
+        or "unknown",
+        "linear_attention_required": True,
+        "direct_ax_row_required": True,
+        "ngram_policy_allowed": False,
+        "kv_compression_allowed": False,
+        "prompt_tokens": prompt_lengths,
+        "required_prompt_tokens": GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS,
+        "model_preflight": {
+            "schema_version": model_metadata.get(
+                "model_preflight_schema_version",
+                "ax.gateddelta_prefill_model_preflight.v1",
+            ),
+            "status": "passed",
+            "checker": "scripts/check_gateddelta_prefill_model.py",
+            "model_family": model_metadata.get("model_family")
+            or model_metadata.get("model_type")
+            or "unknown",
+            "model_type": model_metadata.get("model_type"),
+            "linear_attention": model_metadata.get("linear_attention", {}),
+        },
+        "primary_metrics": [
+            "prefill_tok_s",
+            "ax_mlx_prefill_steps",
+            "ax_mlx_prefill_wall_us",
+            "ax_mlx_linear_attention_profile_layers",
+            "ax_mlx_linear_attention_profile_tokens",
+            "ax_mlx_linear_attention_profile_recurrent_wall_us",
+            "baseline.prefill_ratio_to_mlx_lm",
+        ],
+        "runtime_profile_env": "AX_MLX_LINEAR_ATTENTION_PROFILE=1",
+        "interpretation": (
+            "This profile establishes prompt-length prefill slope evidence before "
+            "GatedDelta scan or fusion kernel changes. Runtime profile counters "
+            "are diagnostic timing-barrier counters, not headline throughput. "
+            "Decode/n-gram improvements must not be inferred from these rows."
+        ),
+    }
+
+
+def validate_gateddelta_prefill_profile_model(model_dir: Path) -> dict[str, Any]:
+    script_dir = str(Path(__file__).resolve().parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    from check_gateddelta_prefill_model import (
+        GatedDeltaPrefillModelError,
+        validate_gateddelta_prefill_model,
+    )
+
+    try:
+        return validate_gateddelta_prefill_model(model_dir)
+    except GatedDeltaPrefillModelError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
 def ax_decode_policy(
     model_metadata: dict[str, Any], *, direct_mode: bool
 ) -> str:
@@ -310,6 +413,28 @@ def kill_proc(proc: subprocess.Popen[Any]) -> None:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+def process_rss_gb(pid: int | None) -> float | None:
+    if pid is None:
+        return None
+    try:
+        output = subprocess.check_output(
+            ["ps", "-o", "rss=", "-p", str(pid)],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return None
+    if not output:
+        return None
+    try:
+        rss_kib = float(output.splitlines()[-1].strip())
+    except ValueError:
+        return None
+    if rss_kib <= 0.0:
+        return None
+    return rss_kib / (1024.0 * 1024.0)
 
 
 def model_vocab_size(model_dir: Path) -> int:
@@ -468,6 +593,35 @@ def summarize_values(values: list[float]) -> dict[str, float]:
     }
 
 
+def attach_derived_ttft_ms(
+    cell: dict[str, Any],
+    *,
+    prompt_tokens: int,
+    source: str,
+) -> None:
+    trials = cell.get("trials")
+    if isinstance(trials, list) and trials:
+        values = []
+        for trial in trials:
+            if not isinstance(trial, dict):
+                continue
+            prefill_tok_s = float(trial.get("prefill_tok_s", 0.0))
+            if prefill_tok_s <= 0.0:
+                continue
+            ttft_ms = prompt_tokens / prefill_tok_s * 1000.0
+            trial["ttft_ms"] = ttft_ms
+            values.append(ttft_ms)
+        if values:
+            cell["ttft_ms"] = summarize_values(values)
+            cell["ttft_source"] = source
+            return
+
+    prefill_tok_s = metric_value(cell, "prefill_tok_s")
+    if prefill_tok_s > 0.0:
+        cell["ttft_ms"] = {"median": prompt_tokens / prefill_tok_s * 1000.0}
+        cell["ttft_source"] = source
+
+
 def parse_mlx_lm_benchmark_output(output: str) -> dict[str, Any]:
     trials = []
     for match in MLX_TRIAL_RE.finditer(output):
@@ -567,6 +721,11 @@ def run_mlx_lm_benchmark(
             "generation_tokens": generation_tokens,
         }
     )
+    attach_derived_ttft_ms(
+        cell,
+        prompt_tokens=prompt_tokens,
+        source="derived_from_mlx_lm_prefill_tok_s",
+    )
     return cell
 
 
@@ -580,6 +739,7 @@ def start_axengine(
     kv_compression_hot_window_tokens: int | None = None,
     kv_compression_min_context_tokens: int | None = None,
     gemma4_moe_profile: bool = False,
+    linear_attention_profile: bool = False,
 ) -> subprocess.Popen[Any]:
     cmd = [
         str(binary),
@@ -610,6 +770,8 @@ def start_axengine(
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
     if gemma4_moe_profile:
         env["AX_MLX_GEMMA4_MOE_PROFILE"] = "1"
+    if linear_attention_profile:
+        env["AX_MLX_LINEAR_ATTENTION_PROFILE"] = "1"
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
 
@@ -650,6 +812,20 @@ def extract_ax_mlx_gemma4_moe_profile(
     return {
         key: int(decisions.get(key, 0))
         for key in AX_MLX_GEMMA4_MOE_PROFILE_KEYS
+    }
+
+
+def extract_ax_mlx_linear_attention_profile(
+    route: dict[str, Any] | None,
+) -> dict[str, int]:
+    if not route:
+        return {}
+    decisions = route.get("crossover_decisions") or {}
+    if "ax_mlx_linear_attention_profile_enabled" not in decisions:
+        return {}
+    return {
+        key: int(decisions.get(key, 0))
+        for key in AX_MLX_LINEAR_ATTENTION_PROFILE_KEYS
     }
 
 
@@ -728,6 +904,19 @@ def summarize_ax_mlx_gemma4_moe_profile(runs: list[dict[str, Any]]) -> dict[str,
     return totals
 
 
+def summarize_ax_mlx_linear_attention_profile(
+    runs: list[dict[str, Any]],
+) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for run in runs:
+        for key, value in (run.get("ax_mlx_linear_attention_profile") or {}).items():
+            if key == "ax_mlx_linear_attention_profile_enabled":
+                totals[key] = max(totals.get(key, 0), int(value))
+            else:
+                totals[key] = totals.get(key, 0) + int(value)
+    return totals
+
+
 def summarize_ax_mlx_kv_compression_telemetry(
     runs: list[dict[str, Any]],
 ) -> dict[str, int]:
@@ -787,6 +976,7 @@ def axengine_one_run(
     generation_tokens: int,
     *,
     capture_output_token_ids: bool = False,
+    server_pid: int | None = None,
 ) -> dict[str, Any]:
     payload = json.dumps(
         {"input_tokens": tokens, "max_output_tokens": generation_tokens}
@@ -858,10 +1048,14 @@ def axengine_one_run(
     run: dict[str, Any] = {
         "prefill_s": prefill_s,
         "decode_s": decode_s,
+        "ttft_ms": prefill_s * 1000.0,
         "prefill_tok_s": prompt_tokens / prefill_s if prefill_s > 0 else 0.0,
         "decode_tok_s": measured_decode_tokens / decode_s if decode_s > 0 else 0.0,
         "output_tokens": float(output_tokens),
     }
+    rss_gb = process_rss_gb(server_pid)
+    if rss_gb is not None:
+        run["peak_memory_gb"] = rss_gb
     if capture_output_token_ids:
         run["output_token_ids"] = output_token_ids
     telemetry = extract_ax_ngram_telemetry(final_route)
@@ -873,6 +1067,9 @@ def axengine_one_run(
     gemma4_moe_profile = extract_ax_mlx_gemma4_moe_profile(final_route)
     if gemma4_moe_profile:
         run["ax_mlx_gemma4_moe_profile"] = gemma4_moe_profile
+    linear_attention_profile = extract_ax_mlx_linear_attention_profile(final_route)
+    if linear_attention_profile:
+        run["ax_mlx_linear_attention_profile"] = linear_attention_profile
     compression_telemetry = extract_ax_mlx_kv_compression_telemetry(final_route)
     if compression_telemetry:
         run["kv_compression_telemetry"] = compression_telemetry
@@ -909,6 +1106,7 @@ def bench_axengine(
     direct_mode: bool = False,
     kv_compression: str = "disabled",
     capture_output_token_ids: bool = False,
+    server_pid: int | None = None,
 ) -> dict[str, Any]:
     engine_key = AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
     decode_policy = ax_decode_policy(
@@ -920,7 +1118,7 @@ def bench_axengine(
         f"kv_compression={kv_compression}",
         file=sys.stderr,
     )
-    axengine_one_run(port, tokens, generation_tokens)
+    axengine_one_run(port, tokens, generation_tokens, server_pid=server_pid)
     if cooldown > 0:
         time.sleep(cooldown)
 
@@ -931,6 +1129,7 @@ def bench_axengine(
             tokens,
             generation_tokens,
             capture_output_token_ids=capture_output_token_ids,
+            server_pid=server_pid,
         )
         runs.append(run)
         print(
@@ -955,13 +1154,19 @@ def bench_axengine(
         "generation_tokens": generation_tokens,
         "prefill_tok_s": summarize_runs(runs, "prefill_tok_s"),
         "decode_tok_s": summarize_runs(runs, "decode_tok_s"),
+        "ttft_ms": summarize_runs(runs, "ttft_ms"),
+        "ttft_source": "ax_engine_runner_prefill_time",
         "prefill_s": summarize_runs(runs, "prefill_s"),
         "decode_s": summarize_runs(runs, "decode_s"),
         "ngram_acceleration_telemetry": ngram_summary,
         "ax_mlx_telemetry": summarize_ax_mlx_telemetry(runs),
         "ax_mlx_gemma4_moe_profile": summarize_ax_mlx_gemma4_moe_profile(runs),
+        "ax_mlx_linear_attention_profile": summarize_ax_mlx_linear_attention_profile(runs),
         "trials": runs,
     }
+    if all("peak_memory_gb" in run for run in runs):
+        row["peak_memory_gb"] = summarize_runs(runs, "peak_memory_gb")
+        row["memory_source"] = "server_process_rss_after_stream"
     compression_summary = summarize_ax_mlx_kv_compression_telemetry(runs)
     if kv_compression != "disabled":
         row["experimental_mlx_kv_compression"] = kv_compression
@@ -1215,6 +1420,28 @@ def print_summary(doc: dict[str, Any]) -> None:
     print()
 
 
+def validate_gateddelta_prefill_profile_output(path: Path) -> list[str]:
+    script_dir = str(Path(__file__).resolve().parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    from check_gateddelta_prefill_profile_artifact import (
+        validate_gateddelta_prefill_profile_artifact,
+    )
+
+    return validate_gateddelta_prefill_profile_artifact(path)
+
+
+def render_gateddelta_prefill_profile_output(path: Path, output: Path) -> None:
+    script_dir = str(Path(__file__).resolve().parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    from render_gateddelta_prefill_profile_report import render_report
+
+    report = render_report(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report + "\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark AX MLX against MLX reference runtimes")
     parser.add_argument("--model", default=DEFAULT_MODEL_ID)
@@ -1225,6 +1452,25 @@ def main() -> None:
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN)
     parser.add_argument("--prefill-step-size", type=int, default=2048)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--prefill-scaling-output",
+        type=Path,
+        help=(
+            "After saving --output, also build and validate an "
+            "ax.mlx_prefill_scaling.v1 artifact at this path."
+        ),
+    )
+    parser.add_argument(
+        "--prefill-scaling-min-context-tokens",
+        type=int,
+        default=1024,
+        help="Minimum prompt/context length admitted into the prefill-scaling artifact.",
+    )
+    parser.add_argument(
+        "--skip-prefill-scaling-validate",
+        action="store_true",
+        help="Build --prefill-scaling-output without running the scaling artifact validator.",
+    )
     parser.add_argument("--skip-ax-engine", action="store_true")
     parser.add_argument(
         "--reuse-reference-results-from",
@@ -1270,6 +1516,23 @@ def main() -> None:
         help=(
             "Enable opt-in Gemma4 MoE decode-layer profiling for AX rows. "
             "This inserts timing barriers and is for diagnosis, not headline throughput."
+        ),
+    )
+    parser.add_argument(
+        "--gateddelta-prefill-profile",
+        action="store_true",
+        help=(
+            "Run the evidence-first Qwen/GatedDelta long-prompt prefill profile. "
+            "This requires a linear-attention MLX manifest, direct AX rows, and "
+            "the 512,2048,8192,32768 prompt-token matrix."
+        ),
+    )
+    parser.add_argument(
+        "--gateddelta-prefill-profile-report-output",
+        type=Path,
+        help=(
+            "After saving and validating --gateddelta-prefill-profile --output, "
+            "render a Markdown stage-profile report at this path."
         ),
     )
     parser.add_argument(
@@ -1321,16 +1584,41 @@ def main() -> None:
         parser.error("--ax-ngram-accel conflicts with --ax-compare-policies")
     if args.reuse_reference_results_from and args.mlx_swift_lm_command:
         parser.error("--reuse-reference-results-from conflicts with --mlx-swift-lm-command")
-
-    if not args.skip_ax_engine and not AX_ENGINE_SERVER.exists():
-        print(
-            f"ERROR: ax-engine-server not found at {AX_ENGINE_SERVER}. "
-            "Run: cargo build -p ax-engine-server --release",
-            file=sys.stderr,
+    if args.prefill_scaling_output and not args.output:
+        parser.error("--prefill-scaling-output requires --output")
+    if args.gateddelta_prefill_profile_report_output and not args.output:
+        parser.error("--gateddelta-prefill-profile-report-output requires --output")
+    if args.gateddelta_prefill_profile_report_output and not args.gateddelta_prefill_profile:
+        parser.error(
+            "--gateddelta-prefill-profile-report-output requires --gateddelta-prefill-profile"
         )
-        sys.exit(1)
+    if args.gateddelta_prefill_profile:
+        if args.skip_ax_engine:
+            parser.error("--gateddelta-prefill-profile requires AX rows")
+        if args.ax_ngram_accel or args.ax_compare_policies:
+            parser.error(
+                "--gateddelta-prefill-profile requires direct AX rows; do not combine "
+                "it with --ax-ngram-accel or --ax-compare-policies"
+            )
+        if args.ax_gemma4_moe_profile:
+            parser.error("--gateddelta-prefill-profile conflicts with --ax-gemma4-moe-profile")
+        if args.experimental_mlx_kv_compression != "disabled":
+            parser.error(
+                "--gateddelta-prefill-profile requires KV compression disabled so "
+                "prefill evidence is not mixed with compression experiments"
+            )
+        args.ax_direct = True
 
-    prompt_lengths = [int(item.strip()) for item in args.prompt_tokens.split(",") if item.strip()]
+    try:
+        if args.gateddelta_prefill_profile:
+            prompt_lengths = normalize_gateddelta_prefill_profile_prompt_lengths(
+                args.prompt_tokens
+            )
+        else:
+            prompt_lengths = parse_prompt_lengths(args.prompt_tokens)
+    except ValueError as error:
+        parser.error(str(error))
+
     if args.prompt_artifact_root:
         prompt_artifact_root = args.prompt_artifact_root
     elif args.output:
@@ -1343,8 +1631,43 @@ def main() -> None:
     print(f"  prompt_tokens: {prompt_lengths}", file=sys.stderr)
     print(f"  generation_tokens: {args.generation_tokens}", file=sys.stderr)
     print(f"  repetitions: {args.repetitions} + 1 warmup for AX", file=sys.stderr)
-    print(f"  prompt_artifact_root: {prompt_artifact_root}", file=sys.stderr)
     model_metadata = collect_model_metadata(args.model_dir)
+    gateddelta_prefill_profile_contract: dict[str, Any] | None = None
+    if args.gateddelta_prefill_profile:
+        try:
+            gateddelta_preflight = validate_gateddelta_prefill_profile_model(
+                args.model_dir
+            )
+            model_metadata.update(
+                {
+                    "model_type": gateddelta_preflight.get("model_type"),
+                    "model_family": gateddelta_preflight.get("model_family"),
+                    "model_preflight_schema_version": gateddelta_preflight.get(
+                        "schema_version"
+                    ),
+                    "linear_attention_enabled": True,
+                    "linear_attention": gateddelta_preflight.get("linear_attention"),
+                }
+            )
+            gateddelta_prefill_profile_contract = (
+                build_gateddelta_prefill_profile_contract(
+                    model_metadata,
+                    prompt_lengths,
+                )
+            )
+        except RuntimeError as error:
+            parser.error(str(error))
+    print(f"  prompt_artifact_root: {prompt_artifact_root}", file=sys.stderr)
+    if gateddelta_prefill_profile_contract:
+        print("  profile: gateddelta_prefill", file=sys.stderr)
+
+    if not args.skip_ax_engine and not AX_ENGINE_SERVER.exists():
+        print(
+            f"ERROR: ax-engine-server not found at {AX_ENGINE_SERVER}. "
+            "Run: cargo build -p ax-engine-server --release",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     prompts = build_reference_prompts(
         prompt_lengths,
@@ -1425,6 +1748,7 @@ def main() -> None:
                         args.experimental_mlx_kv_compression_min_context_tokens
                     ),
                     gemma4_moe_profile=args.ax_gemma4_moe_profile,
+                    linear_attention_profile=args.gateddelta_prefill_profile,
                 )
                 procs.append(proc)
                 if not wait_for_server(f"http://127.0.0.1:{args.axengine_port}/health"):
@@ -1447,6 +1771,7 @@ def main() -> None:
                             direct_mode=direct_mode,
                             kv_compression=args.experimental_mlx_kv_compression,
                             capture_output_token_ids=args.capture_output_token_ids,
+                            server_pid=proc.pid,
                         )
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size
@@ -1510,8 +1835,11 @@ def main() -> None:
         "prefill_step_size": args.prefill_step_size,
         "concurrency": 1,
         "ax_gemma4_moe_profile": bool(args.ax_gemma4_moe_profile),
+        "ax_linear_attention_profile": bool(args.gateddelta_prefill_profile),
         "results": results,
     }
+    if gateddelta_prefill_profile_contract:
+        doc["gateddelta_prefill_profile"] = gateddelta_prefill_profile_contract
     if args.reuse_reference_results_from:
         doc["ax_only_refresh"] = {
             "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
@@ -1542,8 +1870,43 @@ def main() -> None:
     print_summary(doc)
     print(json.dumps(doc, indent=2))
     if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(doc, indent=2) + "\n")
         print(f"\nSaved to {args.output}", file=sys.stderr)
+        if gateddelta_prefill_profile_contract:
+            checked = validate_gateddelta_prefill_profile_output(args.output)
+            print(
+                "Validated GatedDelta prefill profile artifact: "
+                f"{len(checked)} shape groups",
+                file=sys.stderr,
+            )
+            if args.gateddelta_prefill_profile_report_output:
+                render_gateddelta_prefill_profile_output(
+                    args.output,
+                    args.gateddelta_prefill_profile_report_output,
+                )
+                print(
+                    "Saved GatedDelta prefill profile report to "
+                    f"{args.gateddelta_prefill_profile_report_output}",
+                    file=sys.stderr,
+                )
+    if args.prefill_scaling_output:
+        from build_mlx_prefill_scaling_artifact import (
+            build_prefill_scaling_artifact,
+        )
+        from check_mlx_prefill_scaling_artifact import (
+            validate_prefill_scaling_artifact,
+        )
+
+        scaling_doc = build_prefill_scaling_artifact(
+            args.output,
+            min_context_tokens=args.prefill_scaling_min_context_tokens,
+        )
+        args.prefill_scaling_output.parent.mkdir(parents=True, exist_ok=True)
+        args.prefill_scaling_output.write_text(json.dumps(scaling_doc, indent=2) + "\n")
+        if not args.skip_prefill_scaling_validate:
+            validate_prefill_scaling_artifact(args.prefill_scaling_output)
+        print(f"Saved prefill scaling artifact to {args.prefill_scaling_output}", file=sys.stderr)
 
 
 if __name__ == "__main__":
