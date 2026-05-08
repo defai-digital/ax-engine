@@ -250,10 +250,11 @@ assert scenario_metrics["determinism"]["passed"] is True
 assert scenario_metrics["replay_status"] == "not_applicable"
 assert scenario_metrics["step_count"] == 2
 assert scenario_metrics["metrics"]["prefill_tok_s"] > 0.0
-assert scenario_metrics["delegated_llama_cpp"]["kv_usage_blocks"] == 0
-assert scenario_metrics["delegated_llama_cpp"]["requests_processing_events"] >= 1
-assert scenario_metrics["delegated_llama_cpp"]["requests_deferred_events"] == 0
-assert scenario_metrics["delegated_llama_cpp"]["cache_reuse_observed"] is False
+assert "delegated_llama_cpp" not in scenario_metrics
+assert scenario_metrics["metrics"]["delegated_llama_cpp"]["kv_usage_blocks"] == 0
+assert scenario_metrics["metrics"]["delegated_llama_cpp"]["requests_processing_events"] >= 1
+assert scenario_metrics["metrics"]["delegated_llama_cpp"]["requests_deferred_events"] == 0
+assert scenario_metrics["metrics"]["delegated_llama_cpp"]["cache_reuse_observed"] is False
 assert scenario_artifacts["route"]["execution_plan"] == "llama_cpp.server_completion_stream"
 assert scenario_artifacts["runtime"]["llama_cpp_preset"]["cache_prompt"] is False
 assert len(scenario_artifacts["trace"]["steps"]) == 2
@@ -270,8 +271,9 @@ assert shared_prefix_metrics["correctness"]["passed"] is True
 assert shared_prefix_metrics["determinism"]["passed"] is True
 assert shared_prefix_metrics["metrics"]["prefix_hit_rate"] > 0.0
 assert shared_prefix_metrics["metrics"]["prefill_tok_s"] > 0.0
-assert shared_prefix_metrics["delegated_llama_cpp"]["backend_reported_cached_prompt_tokens"] == 64
-assert shared_prefix_metrics["delegated_llama_cpp"]["cache_reuse_observed"] is True
+assert "delegated_llama_cpp" not in shared_prefix_metrics
+assert shared_prefix_metrics["metrics"]["delegated_llama_cpp"]["backend_reported_cached_prompt_tokens"] == 64
+assert shared_prefix_metrics["metrics"]["delegated_llama_cpp"]["cache_reuse_observed"] is True
 assert shared_prefix_metrics["step_count"] == 2
 assert shared_prefix_artifacts["route"]["execution_plan"] == "llama_cpp.server_completion_stream"
 assert shared_prefix_artifacts["route"]["prefix_cache_path"] == "delegated_prompt_cache"
@@ -315,7 +317,8 @@ assert replay_reuse_metrics["determinism"]["passed"] is True
 assert replay_reuse_metrics["replay_status"] == "not_applicable"
 assert replay_reuse_metrics["churn_status"] == "pass"
 assert replay_reuse_metrics["metrics"]["prefix_hit_rate"] > 0.0
-assert replay_reuse_metrics["delegated_llama_cpp"]["cache_reuse_observed"] is True
+assert "delegated_llama_cpp" not in replay_reuse_metrics
+assert replay_reuse_metrics["metrics"]["delegated_llama_cpp"]["cache_reuse_observed"] is True
 assert replay_reuse_metrics["step_count"] >= 2
 assert replay_reuse_artifacts["route"]["execution_plan"] == "llama_cpp.server_completion_stream"
 assert replay_reuse_artifacts["route"]["prefix_cache_path"] == "delegated_prompt_cache"
