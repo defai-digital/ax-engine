@@ -1,0 +1,247 @@
+{
+  "benchmark": {
+    "batch_size": 1,
+    "context_tokens": 8192,
+    "generation_tokens": 128,
+    "prompt_token_ids_sha256": "d4b6466474a89c9e648147fc6e15b739b97af69adab4006969bf0d4a6bc27ad7",
+    "repetitions": 3,
+    "temperature": 0.0
+  },
+  "claim_scope": "cold_warm_startup_latency",
+  "host": {
+    "chip": "Apple M5 Max",
+    "source": "operator_provided_or_default"
+  },
+  "interpretation": "process_cold measures fresh process startup through first request; model_warm and benchmark_warm are warmed server-path rows. Keep this separate from raw model throughput evidence.",
+  "model": {
+    "id": "mlx-community/Qwen3-4B-4bit",
+    "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25",
+    "model_family": "qwen3",
+    "model_type": "qwen3",
+    "quantization": {
+      "bits": 4,
+      "group_size": 64
+    }
+  },
+  "prompt_artifacts": [
+    "benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/prompts/startup/prompt-8192-gen-128-d4b6466474a8.json"
+  ],
+  "provenance": {
+    "repo_revision": "8b186d5f6558175dc95e98e532f17d15dc3715e9",
+    "runner": "scripts/run_mlx_p2_latency_artifacts.py",
+    "server_binary": "/Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server"
+  },
+  "rows": [
+    {
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "context_tokens": 8192,
+      "decode_tok_s": {
+        "max": 117.25548307874121,
+        "mean": 116.72030876651752,
+        "median": 117.06007762834439,
+        "min": 115.84536559246695,
+        "p75": 117.15778035354279
+      },
+      "engine": "ax_engine_mlx",
+      "first_request_ttft_ms": {
+        "max": 2235.982,
+        "mean": 2122.199666666667,
+        "median": 2085.141,
+        "min": 2045.4759999999999,
+        "p75": 2160.5615
+      },
+      "generation_tokens": 128,
+      "method": "server_sse_runner_time_us",
+      "model_load_ms": {
+        "max": 1012.1331659611315,
+        "mean": 674.3768613087013,
+        "median": 506.31533400155604,
+        "min": 504.6820839634165,
+        "p75": 759.2242499813437
+      },
+      "model_load_source": "server_ready_elapsed_minus_process_spawn_elapsed",
+      "peak_memory_gb": {
+        "max": 4.2981414794921875,
+        "mean": 4.297943115234375,
+        "median": 4.2978973388671875,
+        "min": 4.29779052734375,
+        "p75": 4.2980194091796875
+      },
+      "phase": "process_cold",
+      "process_start_ms": {
+        "max": 6.0676250141114,
+        "mean": 4.171305685304105,
+        "median": 4.044875036925077,
+        "min": 2.4014170048758388,
+        "p75": 5.0562500255182385
+      },
+      "prompt_token_ids_sha256": "d4b6466474a89c9e648147fc6e15b739b97af69adab4006969bf0d4a6bc27ad7",
+      "ratios_to_benchmark_warm": {
+        "decode_tok_s": 1.0047395505446057,
+        "ttft_ms": 0.8308413762106155
+      },
+      "repetitions": 3,
+      "route": {
+        "selected_backend": "mlx"
+      },
+      "server_ready_ms": {
+        "max": 1014.5345829660073,
+        "mean": 678.5481669940054,
+        "median": 510.7497089775279,
+        "min": 510.3602090384811,
+        "p75": 762.6421459717676
+      },
+      "timing_scope": "ax_engine_runner_time_us",
+      "trials": [
+        {
+          "decode_tok_s": 115.84536559246695,
+          "peak_memory_gb": 4.2981414794921875,
+          "ttft_ms": 2235.982,
+          "wall_ms": 3532.1103329770267
+        },
+        {
+          "decode_tok_s": 117.25548307874121,
+          "peak_memory_gb": 4.29779052734375,
+          "ttft_ms": 2085.141,
+          "wall_ms": 3355.7939170859754
+        },
+        {
+          "decode_tok_s": 117.06007762834439,
+          "peak_memory_gb": 4.2978973388671875,
+          "ttft_ms": 2045.4759999999999,
+          "wall_ms": 3333.2583750598133
+        }
+      ],
+      "ttft_ms": {
+        "max": 2235.982,
+        "mean": 2122.199666666667,
+        "median": 2085.141,
+        "min": 2045.4759999999999,
+        "p75": 2160.5615
+      }
+    },
+    {
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "context_tokens": 8192,
+      "decode_tok_s": {
+        "max": 118.48020680860036,
+        "mean": 118.03825794457214,
+        "median": 117.86575739886051,
+        "min": 117.76880962625557,
+        "p75": 118.17298210373043
+      },
+      "engine": "ax_engine_mlx",
+      "generation_tokens": 128,
+      "method": "server_sse_runner_time_us",
+      "model_load_ms": {
+        "max": 506.83887500781566,
+        "mean": 505.65150030888617,
+        "median": 505.44545892626047,
+        "min": 504.6701669925824,
+        "p75": 506.14216696703807
+      },
+      "model_load_source": "server_ready_elapsed_minus_process_spawn_elapsed",
+      "peak_memory_gb": {
+        "max": 4.319366455078125,
+        "mean": 4.3191274007161455,
+        "median": 4.319091796875,
+        "min": 4.3189239501953125,
+        "p75": 4.3192291259765625
+      },
+      "phase": "model_warm",
+      "prompt_token_ids_sha256": "d4b6466474a89c9e648147fc6e15b739b97af69adab4006969bf0d4a6bc27ad7",
+      "ratios_to_benchmark_warm": {
+        "decode_tok_s": 1.0116547888300385,
+        "ttft_ms": 0.849040951135486
+      },
+      "repetitions": 3,
+      "route": {
+        "selected_backend": "mlx"
+      },
+      "timing_scope": "ax_engine_runner_time_us",
+      "trials": [
+        {
+          "decode_tok_s": 117.76880962625557,
+          "peak_memory_gb": 4.319091796875,
+          "ttft_ms": 2099.189,
+          "wall_ms": 3320.870958035812
+        },
+        {
+          "decode_tok_s": 118.48020680860036,
+          "peak_memory_gb": 4.3189239501953125,
+          "ttft_ms": 2130.816,
+          "wall_ms": 3346.5732079930604
+        },
+        {
+          "decode_tok_s": 117.86575739886051,
+          "peak_memory_gb": 4.319366455078125,
+          "ttft_ms": 2210.757,
+          "wall_ms": 3432.256708969362
+        }
+      ],
+      "ttft_ms": {
+        "max": 2210.757,
+        "mean": 2146.9206666666664,
+        "median": 2130.816,
+        "min": 2099.189,
+        "p75": 2170.7865
+      }
+    },
+    {
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "context_tokens": 8192,
+      "decode_tok_s": {
+        "max": 116.9517403708199,
+        "mean": 116.19090040196096,
+        "median": 116.50788262977557,
+        "min": 115.1130782052874,
+        "p75": 116.72981150029773
+      },
+      "engine": "ax_engine_mlx",
+      "generation_tokens": 128,
+      "method": "server_sse_runner_time_us",
+      "peak_memory_gb": {
+        "max": 4.3343048095703125,
+        "mean": 4.326772054036458,
+        "median": 4.326812744140625,
+        "min": 4.3191986083984375,
+        "p75": 4.330558776855469
+      },
+      "phase": "benchmark_warm",
+      "prompt_token_ids_sha256": "d4b6466474a89c9e648147fc6e15b739b97af69adab4006969bf0d4a6bc27ad7",
+      "repetitions": 3,
+      "route": {
+        "selected_backend": "mlx"
+      },
+      "timing_scope": "ax_engine_runner_time_us",
+      "trials": [
+        {
+          "decode_tok_s": 116.9517403708199,
+          "peak_memory_gb": 4.3191986083984375,
+          "ttft_ms": 2418.43,
+          "wall_ms": 3653.571332921274
+        },
+        {
+          "decode_tok_s": 116.50788262977557,
+          "peak_memory_gb": 4.326812744140625,
+          "ttft_ms": 2509.674,
+          "wall_ms": 3754.0660419035703
+        },
+        {
+          "decode_tok_s": 115.1130782052874,
+          "peak_memory_gb": 4.3343048095703125,
+          "ttft_ms": 2540.312,
+          "wall_ms": 3795.851125032641
+        }
+      ],
+      "ttft_ms": {
+        "max": 2540.312,
+        "mean": 2489.4719999999998,
+        "median": 2509.674,
+        "min": 2418.43,
+        "p75": 2524.993
+      }
+    }
+  ],
+  "schema_version": "ax.mlx_startup_latency.v1"
+}
