@@ -228,12 +228,7 @@ fn handle_replay(args: &[String]) -> Result<(), CliError> {
 }
 
 fn handle_autotune(args: &[String]) -> Result<(), CliError> {
-    let autotune_args = parse_autotune_args(args)?;
-
-    require_existing_file(&autotune_args.manifest_path)?;
-    ensure_output_root(&autotune_args.output_root)?;
-    let manifest = load_manifest(&autotune_args.manifest_path)?;
-    validate_manifest(&manifest, ManifestClass::Scenario)?;
+    let _ = parse_autotune_args(args)?;
     Err(CliError::Contract(
         "autotune is not supported; use MLX mode or llama.cpp".to_string(),
     ))
@@ -992,6 +987,12 @@ fn generate_finish_reason_label(finish_reason: GenerateFinishReason) -> &'static
 
 fn optional_route_label(value: Option<&str>) -> &str {
     value.unwrap_or("none")
+}
+
+fn optional_u32_label(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn stop_reason_from_generate_finish_reason(
@@ -1893,9 +1894,7 @@ impl AutotuneCandidateConfig {
         format!(
             "max_batch_tokens={}; kv_total_blocks={}; prefix_cache={}",
             self.max_batch_tokens,
-            self.kv_total_blocks
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "none".to_string()),
+            optional_u32_label(self.kv_total_blocks),
             self.prefix_cache
         )
     }
@@ -1972,7 +1971,6 @@ struct AutotuneTrialMetrics {
     model_bound_ffn_decode: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct AutotuneTrialRecord {
     trial_index: usize,
@@ -1987,13 +1985,11 @@ struct AutotuneTrialRecord {
 }
 
 impl AutotuneTrialRecord {
-    #[allow(dead_code)]
     fn label(&self) -> String {
         format!("trial-{:03}", self.trial_index + 1)
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct AutotuneProbeObservation {
     shape: ScenarioShape,
@@ -2019,6 +2015,7 @@ struct AutotuneProbeBaseline {
 
 const AUTOTUNE_SCHEMA_VERSION: &str = "ax.engine_bench.autotune.v1";
 const AUTOTUNE_HISTORY_INDEX_SCHEMA_VERSION: &str = "ax.engine_bench.autotune_history_index.v1";
+const AUTOTUNE_FAILURE_SCORE: f64 = -1_000_000.0;
 
 fn resolve_autotune_search_space(
     manifest: &BenchmarkManifest,
@@ -2200,7 +2197,7 @@ fn execute_autotune_trial(
                 candidate: candidate.clone(),
                 selection,
                 probe,
-                score: -1_000_000.0,
+                score: AUTOTUNE_FAILURE_SCORE,
                 status: "contract_failure".to_string(),
                 result_dir: Some(result_dir),
                 error: Some(message),
@@ -2212,7 +2209,7 @@ fn execute_autotune_trial(
             candidate: candidate.clone(),
             selection,
             probe,
-            score: -1_000_000.0,
+            score: AUTOTUNE_FAILURE_SCORE,
             status: "runtime_error".to_string(),
             result_dir: None,
             error: Some(error.to_string()),
@@ -2284,7 +2281,7 @@ fn execute_autotune_probe_trial(
             Ok(Some(AutotuneProbeObservation {
                 shape: probe_shape,
                 status: "contract_failure".to_string(),
-                score: -1_000_000.0,
+                score: AUTOTUNE_FAILURE_SCORE,
                 skipped_full_trial: true,
                 skip_reason: Some(format!("probe contract failure: {message}")),
                 result_dir: Some(result_dir),
@@ -2295,7 +2292,7 @@ fn execute_autotune_probe_trial(
         Err(error) => Ok(Some(AutotuneProbeObservation {
             shape: probe_shape,
             status: "runtime_error".to_string(),
-            score: -1_000_000.0,
+            score: AUTOTUNE_FAILURE_SCORE,
             skipped_full_trial: true,
             skip_reason: Some(format!("probe runtime error: {error}")),
             result_dir: None,
@@ -2321,10 +2318,7 @@ fn autotune_probe_manifest(
         "autotune probe {} using max_batch_tokens={}, kv_total_blocks={}, prefix_cache={}",
         trial_index + 1,
         candidate.max_batch_tokens,
-        candidate
-            .kv_total_blocks
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "none".to_string()),
+        optional_u32_label(candidate.kv_total_blocks),
         candidate.prefix_cache
     ));
     Some(manifest)
@@ -2337,22 +2331,16 @@ fn autotune_probe_skip_reason(
     probe_score: f64,
 ) -> Option<String> {
     if !execution.correctness.passed {
-        return Some(
-            execution
-                .correctness
-                .reason
-                .clone()
-                .unwrap_or_else(|| "probe correctness gate failed".to_string()),
-        );
+        return Some(gate_failure_reason(
+            &execution.correctness,
+            "probe correctness gate failed",
+        ));
     }
     if !execution.determinism.passed {
-        return Some(
-            execution
-                .determinism
-                .reason
-                .clone()
-                .unwrap_or_else(|| "probe determinism gate failed".to_string()),
-        );
+        return Some(gate_failure_reason(
+            &execution.determinism,
+            "probe determinism gate failed",
+        ));
     }
     if !metrics.real_model_forward {
         return Some("probe did not reach real-model forward coverage".to_string());
@@ -2360,11 +2348,15 @@ fn autotune_probe_skip_reason(
     if metrics.decode_tok_s <= 0.0 {
         return Some("probe decode throughput was zero".to_string());
     }
-    if metrics.prefix_cpu_reference_dispatch_count > 0
-        && (metrics.direct_decode_batched_group_fallback_count > 0
-            || metrics.direct_decode_cpu_projection_row_count > 0
-            || metrics.direct_decode_cpu_scale_element_count > 0)
-    {
+    let has_prefix_cpu_fallback = metrics.prefix_cpu_reference_dispatch_count > 0;
+    let has_decode_cpu_fallback = metrics.direct_decode_batched_group_fallback_count > 0
+        || metrics.direct_decode_cpu_projection_row_count > 0
+        || metrics.direct_decode_cpu_scale_element_count > 0;
+    let has_hot_path_cpu_fallback = has_prefix_cpu_fallback || has_decode_cpu_fallback;
+    let has_incumbent_cpu_fallback = has_prefix_cpu_fallback
+        || metrics.direct_decode_batched_group_fallback_count > 0
+        || metrics.direct_decode_cpu_scale_element_count > 0;
+    if has_prefix_cpu_fallback && has_decode_cpu_fallback {
         return Some("probe hit CPU fallback in both prefix and decode hot paths".to_string());
     }
 
@@ -2382,14 +2374,10 @@ fn autotune_probe_skip_reason(
                 .unwrap_or_default()
         ));
     }
-    if baseline.score_floor.is_some_and(|floor| {
-        floor > 0.0
-            && probe_score < floor * 0.7
-            && (metrics.prefix_cpu_reference_dispatch_count > 0
-                || metrics.direct_decode_batched_group_fallback_count > 0
-                || metrics.direct_decode_cpu_projection_row_count > 0
-                || metrics.direct_decode_cpu_scale_element_count > 0)
-    }) {
+    if baseline
+        .score_floor
+        .is_some_and(|floor| floor > 0.0 && probe_score < floor * 0.7 && has_hot_path_cpu_fallback)
+    {
         return Some(format!(
             "probe score {:.3} stayed below adaptive floor {:.3}",
             probe_score,
@@ -2422,11 +2410,7 @@ fn autotune_probe_skip_reason(
         ));
     }
     if baseline.incumbent_score.is_some_and(|score| {
-        score > 0.0
-            && probe_score < score * 0.55
-            && (metrics.prefix_cpu_reference_dispatch_count > 0
-                || metrics.direct_decode_batched_group_fallback_count > 0
-                || metrics.direct_decode_cpu_scale_element_count > 0)
+        score > 0.0 && probe_score < score * 0.55 && has_incumbent_cpu_fallback
     }) {
         return Some(format!(
             "probe score {:.3} stayed far below incumbent {:.3}",
@@ -2517,17 +2501,11 @@ fn select_next_autotune_candidate_by_coverage(
     candidates: &[AutotuneCandidateConfig],
     trials: &[AutotuneTrialRecord],
 ) -> AutotuneCandidateSelection {
-    let tried = trials
-        .iter()
-        .map(|trial| trial.candidate.clone())
-        .collect::<Vec<_>>();
+    let tried = collect_tried_autotune_candidates(trials);
     let mut best_index = None;
     let mut best_novelty = f64::NEG_INFINITY;
     for (candidate_index, candidate) in candidates.iter().enumerate() {
-        if tried
-            .iter()
-            .any(|tried_candidate| tried_candidate == candidate)
-        {
+        if tried.contains(candidate) {
             continue;
         }
         let novelty = autotune_candidate_novelty(candidate, trials);
@@ -2558,20 +2536,14 @@ fn select_next_autotune_candidate_by_tpe(
     trials: &[AutotuneTrialRecord],
     exploration_weight: f64,
 ) -> AutotuneCandidateSelection {
-    let tried = trials
-        .iter()
-        .map(|trial| trial.candidate.clone())
-        .collect::<Vec<_>>();
+    let tried = collect_tried_autotune_candidates(trials);
     let (good_trials, bad_trials) = split_autotune_trials_by_score(trials);
 
     let mut best_index = None;
     let mut best_diagnostics = None;
     let mut best_acquisition = f64::NEG_INFINITY;
     for (candidate_index, candidate) in candidates.iter().enumerate() {
-        if tried
-            .iter()
-            .any(|tried_candidate| tried_candidate == candidate)
-        {
+        if tried.contains(candidate) {
             continue;
         }
 
@@ -2615,6 +2587,15 @@ fn select_next_autotune_candidate_by_tpe(
     }
 }
 
+fn collect_tried_autotune_candidates(
+    trials: &[AutotuneTrialRecord],
+) -> BTreeSet<AutotuneCandidateConfig> {
+    trials
+        .iter()
+        .map(|trial| trial.candidate.clone())
+        .collect::<BTreeSet<_>>()
+}
+
 fn split_autotune_trials_by_score(
     trials: &[AutotuneTrialRecord],
 ) -> (Vec<&AutotuneTrialRecord>, Vec<&AutotuneTrialRecord>) {
@@ -2644,19 +2625,19 @@ fn autotune_candidate_density(
     search_space: &AutotuneSearchSpace,
     trials: &[&AutotuneTrialRecord],
 ) -> f64 {
-    smoothed_u32_probability(
+    smoothed_probability(
         candidate.max_batch_tokens,
-        &search_space.max_batch_token_options,
+        search_space.max_batch_token_options.len(),
         trials,
         |config| config.max_batch_tokens,
-    ) * smoothed_option_u32_probability(
+    ) * smoothed_probability(
         candidate.kv_total_blocks,
-        &search_space.kv_total_block_options,
+        search_space.kv_total_block_options.len(),
         trials,
         |config| config.kv_total_blocks,
-    ) * smoothed_bool_probability(
+    ) * smoothed_probability(
         candidate.prefix_cache,
-        &search_space.prefix_cache_options,
+        search_space.prefix_cache_options.len(),
         trials,
         |config| config.prefix_cache,
     )
@@ -2666,13 +2647,21 @@ fn autotune_candidate_novelty(
     candidate: &AutotuneCandidateConfig,
     trials: &[AutotuneTrialRecord],
 ) -> f64 {
-    let max_batch_rarity = 1.0
-        / (1.0 + matching_trial_count(trials, candidate, |config| config.max_batch_tokens) as f64);
-    let kv_total_blocks_rarity = 1.0
-        / (1.0 + matching_trial_count(trials, candidate, |config| config.kv_total_blocks) as f64);
-    let prefix_cache_rarity =
-        1.0 / (1.0 + matching_trial_count(trials, candidate, |config| config.prefix_cache) as f64);
+    let max_batch_rarity = rarity_score(trials, candidate, |config| config.max_batch_tokens);
+    let kv_total_blocks_rarity = rarity_score(trials, candidate, |config| config.kv_total_blocks);
+    let prefix_cache_rarity = rarity_score(trials, candidate, |config| config.prefix_cache);
     (max_batch_rarity + kv_total_blocks_rarity + prefix_cache_rarity) / 3.0
+}
+
+fn rarity_score<T>(
+    trials: &[AutotuneTrialRecord],
+    candidate: &AutotuneCandidateConfig,
+    accessor: impl Fn(&AutotuneCandidateConfig) -> T,
+) -> f64
+where
+    T: PartialEq,
+{
+    1.0 / (1.0 + matching_trial_count(trials, candidate, accessor) as f64)
 }
 
 fn matching_trial_count<T>(
@@ -2690,43 +2679,20 @@ where
         .count()
 }
 
-fn smoothed_u32_probability(
-    value: u32,
-    options: &[u32],
+fn smoothed_probability<T>(
+    value: T,
+    option_count: usize,
     trials: &[&AutotuneTrialRecord],
-    accessor: impl Fn(&AutotuneCandidateConfig) -> u32,
-) -> f64 {
+    accessor: impl Fn(&AutotuneCandidateConfig) -> T,
+) -> f64
+where
+    T: Copy + PartialEq,
+{
     let matching = trials
         .iter()
         .filter(|trial| accessor(&trial.candidate) == value)
         .count() as f64;
-    (matching + 1.0) / (trials.len() as f64 + options.len() as f64)
-}
-
-fn smoothed_option_u32_probability(
-    value: Option<u32>,
-    options: &[Option<u32>],
-    trials: &[&AutotuneTrialRecord],
-    accessor: impl Fn(&AutotuneCandidateConfig) -> Option<u32>,
-) -> f64 {
-    let matching = trials
-        .iter()
-        .filter(|trial| accessor(&trial.candidate) == value)
-        .count() as f64;
-    (matching + 1.0) / (trials.len() as f64 + options.len() as f64)
-}
-
-fn smoothed_bool_probability(
-    value: bool,
-    options: &[bool],
-    trials: &[&AutotuneTrialRecord],
-    accessor: impl Fn(&AutotuneCandidateConfig) -> bool,
-) -> f64 {
-    let matching = trials
-        .iter()
-        .filter(|trial| accessor(&trial.candidate) == value)
-        .count() as f64;
-    (matching + 1.0) / (trials.len() as f64 + options.len() as f64)
+    (matching + 1.0) / (trials.len() as f64 + option_count as f64)
 }
 
 fn load_autotune_warm_start_history(
@@ -3439,6 +3405,115 @@ fn best_autotune_trial<'a>(
     })
 }
 
+fn best_autotune_trial_with_history<'a>(
+    trials: &'a [AutotuneTrialRecord],
+    warm_start_history: &'a AutotuneWarmStartHistory,
+) -> Option<&'a AutotuneTrialRecord> {
+    best_autotune_trial(trials.iter().chain(warm_start_history.trials.iter()))
+}
+
+fn autotune_probe_baseline_json(baseline: &AutotuneProbeBaseline) -> Value {
+    json!({
+        "observed_trial_count": baseline.observed_trial_count,
+        "incumbent_score": baseline.incumbent_score,
+        "incumbent_decode_tok_s": baseline.incumbent_decode_tok_s,
+        "score_floor": baseline.score_floor,
+        "decode_tok_s_floor": baseline.decode_tok_s_floor,
+        "fallback_free_decode_tok_s_floor": baseline.fallback_free_decode_tok_s_floor,
+        "ttft_ceiling_ms": baseline.ttft_ceiling_ms,
+    })
+}
+
+fn autotune_probe_json(probe: &AutotuneProbeObservation) -> Value {
+    json!({
+        "status": probe.status,
+        "score": probe.score,
+        "skipped_full_trial": probe.skipped_full_trial,
+        "skip_reason": probe.skip_reason,
+        "result_dir": probe.result_dir.as_ref().map(|path| path.display().to_string()),
+        "baseline": probe.baseline.as_ref().map(autotune_probe_baseline_json),
+        "shape": {
+            "input_tokens_target": probe.shape.input_tokens_target,
+            "output_tokens_target": probe.shape.output_tokens_target,
+            "concurrency": probe.shape.concurrency,
+        },
+    })
+}
+
+fn autotune_candidate_config_json(candidate: &AutotuneCandidateConfig) -> Value {
+    json!({
+        "max_batch_tokens": candidate.max_batch_tokens,
+        "kv_total_blocks": candidate.kv_total_blocks,
+        "prefix_cache": candidate.prefix_cache,
+    })
+}
+
+fn autotune_selection_json(selection: &AutotuneSelectionDiagnostics) -> Value {
+    json!({
+        "strategy": selection.strategy,
+        "predicted_mean": selection.predicted_mean,
+        "uncertainty": selection.uncertainty,
+        "acquisition": selection.acquisition,
+        "good_density": selection.good_density,
+        "bad_density": selection.bad_density,
+        "density_ratio": selection.density_ratio,
+        "novelty_bonus": selection.novelty_bonus,
+    })
+}
+
+fn autotune_trial_base_json(trial: &AutotuneTrialRecord) -> serde_json::Map<String, Value> {
+    let mut object = serde_json::Map::new();
+    object.insert("label".to_string(), json!(trial.label()));
+    object.insert("score".to_string(), json!(trial.score));
+    object.insert("status".to_string(), json!(trial.status));
+    object.insert(
+        "config".to_string(),
+        autotune_candidate_config_json(&trial.candidate),
+    );
+    object.insert(
+        "selection".to_string(),
+        autotune_selection_json(&trial.selection),
+    );
+    object.insert(
+        "result_dir".to_string(),
+        json!(
+            trial
+                .result_dir
+                .as_ref()
+                .map(|path| path.display().to_string())
+        ),
+    );
+    object.insert(
+        "probe".to_string(),
+        json!(trial.probe.as_ref().map(autotune_probe_json)),
+    );
+    object
+}
+
+fn autotune_probe_run_label(probe: Option<&AutotuneProbeObservation>) -> &'static str {
+    match probe {
+        Some(probe) if probe.skipped_full_trial => "early-stop",
+        Some(_) => "full-run",
+        None => "none",
+    }
+}
+
+fn format_optional_f64_3(value: Option<f64>, fallback: &str) -> String {
+    value
+        .map(|value| format!("{value:.3}"))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn format_optional_to_string<T: ToString>(value: Option<T>, fallback: &str) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn join_display(values: impl IntoIterator<Item = String>) -> String {
+    values.into_iter().collect::<Vec<_>>().join(", ")
+}
+
 #[allow(dead_code)]
 fn build_autotune_result_json(
     manifest_path: &Path,
@@ -3448,7 +3523,7 @@ fn build_autotune_result_json(
     warm_start_history: &AutotuneWarmStartHistory,
     trials: &[AutotuneTrialRecord],
 ) -> Value {
-    let best_trial = best_autotune_trial(trials.iter().chain(warm_start_history.trials.iter()));
+    let best_trial = best_autotune_trial_with_history(trials, warm_start_history);
     json!({
         "schema_version": AUTOTUNE_SCHEMA_VERSION,
         "manifest_path": manifest_path.display().to_string(),
@@ -3476,91 +3551,11 @@ fn build_autotune_result_json(
                 * search_space.kv_total_block_options.len()
                 * search_space.prefix_cache_options.len(),
         },
-        "best_trial": best_trial.map(|trial| json!({
-            "label": trial.label(),
-            "score": trial.score,
-            "status": trial.status,
-            "config": {
-                "max_batch_tokens": trial.candidate.max_batch_tokens,
-                "kv_total_blocks": trial.candidate.kv_total_blocks,
-                "prefix_cache": trial.candidate.prefix_cache,
-            },
-            "selection": {
-                "strategy": trial.selection.strategy,
-                "predicted_mean": trial.selection.predicted_mean,
-                "uncertainty": trial.selection.uncertainty,
-                "acquisition": trial.selection.acquisition,
-                "good_density": trial.selection.good_density,
-                "bad_density": trial.selection.bad_density,
-                "density_ratio": trial.selection.density_ratio,
-                "novelty_bonus": trial.selection.novelty_bonus,
-            },
-            "result_dir": trial.result_dir.as_ref().map(|path| path.display().to_string()),
-            "probe": trial.probe.as_ref().map(|probe| json!({
-                "status": probe.status,
-                "score": probe.score,
-                "skipped_full_trial": probe.skipped_full_trial,
-                "skip_reason": probe.skip_reason,
-                "result_dir": probe.result_dir.as_ref().map(|path| path.display().to_string()),
-                "baseline": probe.baseline.as_ref().map(|baseline| json!({
-                    "observed_trial_count": baseline.observed_trial_count,
-                    "incumbent_score": baseline.incumbent_score,
-                    "incumbent_decode_tok_s": baseline.incumbent_decode_tok_s,
-                    "score_floor": baseline.score_floor,
-                    "decode_tok_s_floor": baseline.decode_tok_s_floor,
-                    "fallback_free_decode_tok_s_floor": baseline.fallback_free_decode_tok_s_floor,
-                    "ttft_ceiling_ms": baseline.ttft_ceiling_ms,
-                })),
-                "shape": {
-                    "input_tokens_target": probe.shape.input_tokens_target,
-                    "output_tokens_target": probe.shape.output_tokens_target,
-                    "concurrency": probe.shape.concurrency,
-                },
-            })),
-        })),
-        "trials": trials.iter().map(|trial| json!({
-            "label": trial.label(),
-            "score": trial.score,
-            "status": trial.status,
-            "config": {
-                "max_batch_tokens": trial.candidate.max_batch_tokens,
-                "kv_total_blocks": trial.candidate.kv_total_blocks,
-                "prefix_cache": trial.candidate.prefix_cache,
-            },
-            "selection": {
-                "strategy": trial.selection.strategy,
-                "predicted_mean": trial.selection.predicted_mean,
-                "uncertainty": trial.selection.uncertainty,
-                "acquisition": trial.selection.acquisition,
-                "good_density": trial.selection.good_density,
-                "bad_density": trial.selection.bad_density,
-                "density_ratio": trial.selection.density_ratio,
-                "novelty_bonus": trial.selection.novelty_bonus,
-            },
-            "result_dir": trial.result_dir.as_ref().map(|path| path.display().to_string()),
-            "error": trial.error,
-            "probe": trial.probe.as_ref().map(|probe| json!({
-                "status": probe.status,
-                "score": probe.score,
-                "skipped_full_trial": probe.skipped_full_trial,
-                "skip_reason": probe.skip_reason,
-                "result_dir": probe.result_dir.as_ref().map(|path| path.display().to_string()),
-                "baseline": probe.baseline.as_ref().map(|baseline| json!({
-                    "observed_trial_count": baseline.observed_trial_count,
-                    "incumbent_score": baseline.incumbent_score,
-                    "incumbent_decode_tok_s": baseline.incumbent_decode_tok_s,
-                    "score_floor": baseline.score_floor,
-                    "decode_tok_s_floor": baseline.decode_tok_s_floor,
-                    "fallback_free_decode_tok_s_floor": baseline.fallback_free_decode_tok_s_floor,
-                    "ttft_ceiling_ms": baseline.ttft_ceiling_ms,
-                })),
-                "shape": {
-                    "input_tokens_target": probe.shape.input_tokens_target,
-                    "output_tokens_target": probe.shape.output_tokens_target,
-                    "concurrency": probe.shape.concurrency,
-                },
-            })),
-            "metrics": trial.metrics.as_ref().map(|metrics| json!({
+        "best_trial": best_trial.map(|trial| Value::Object(autotune_trial_base_json(trial))),
+        "trials": trials.iter().map(|trial| {
+            let mut object = autotune_trial_base_json(trial);
+            object.insert("error".to_string(), json!(trial.error));
+            object.insert("metrics".to_string(), json!(trial.metrics.as_ref().map(|metrics| json!({
                 "ttft_ms": metrics.ttft_ms,
                 "prefill_tok_s": metrics.prefill_tok_s,
                 "decode_tok_s": metrics.decode_tok_s,
@@ -3581,8 +3576,9 @@ fn build_autotune_result_json(
                 "mlx_metal_hot_path_cpu_fallback_free": metrics.mlx_metal_hot_path_cpu_fallback_free,
                 "real_model_forward": metrics.real_model_forward,
                 "model_bound_ffn_decode": metrics.model_bound_ffn_decode,
-            })),
-        })).collect::<Vec<_>>(),
+            }))));
+            Value::Object(object)
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -3618,37 +3614,33 @@ fn build_autotune_summary_markdown(
         ),
         format!(
             "- search_space.max_batch_tokens: `{}`",
-            search_space
-                .max_batch_token_options
-                .iter()
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+            join_display(
+                search_space
+                    .max_batch_token_options
+                    .iter()
+                    .map(|value| value.to_string()),
+            )
         ),
         format!(
             "- search_space.kv_total_blocks: `{}`",
-            search_space
-                .kv_total_block_options
-                .iter()
-                .map(|value| value
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "none".to_string()))
-                .collect::<Vec<_>>()
-                .join(", ")
+            join_display(
+                search_space
+                    .kv_total_block_options
+                    .iter()
+                    .map(|value| optional_u32_label(*value)),
+            )
         ),
         format!(
             "- search_space.prefix_cache: `{}`",
-            search_space
-                .prefix_cache_options
-                .iter()
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+            join_display(
+                search_space
+                    .prefix_cache_options
+                    .iter()
+                    .map(|value| value.to_string()),
+            )
         ),
     ];
-    if let Some(best_trial) =
-        best_autotune_trial(trials.iter().chain(warm_start_history.trials.iter()))
-    {
+    if let Some(best_trial) = best_autotune_trial_with_history(trials, warm_start_history) {
         lines.push(format!("- best_trial: `{}`", best_trial.label()));
         lines.push(format!("- best_score: `{:.3}`", best_trial.score));
         lines.push(format!("- best_config: `{}`", best_trial.candidate.label()));
@@ -3666,45 +3658,21 @@ fn build_autotune_summary_markdown(
             trial.label(),
             trial.score,
             trial.status,
-            trial
-                .probe
-                .as_ref()
-                .map(|probe| {
-                    if probe.skipped_full_trial {
-                        "early-stop".to_string()
-                    } else {
-                        "full-run".to_string()
-                    }
-                })
-                .unwrap_or_else(|| "none".to_string()),
+            autotune_probe_run_label(trial.probe.as_ref()),
             trial.selection.strategy,
-            trial
-                .selection
-                .density_ratio
-                .map(|value| format!("{value:.3}"))
-                .unwrap_or_else(|| "n/a".to_string()),
-            trial
-                .selection
-                .acquisition
-                .map(|value| format!("{value:.3}"))
-                .unwrap_or_else(|| "seed".to_string()),
+            format_optional_f64_3(trial.selection.density_ratio, "n/a"),
+            format_optional_f64_3(trial.selection.acquisition, "seed"),
             trial.candidate.max_batch_tokens,
-            trial
-                .candidate
-                .kv_total_blocks
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "none".to_string()),
+            optional_u32_label(trial.candidate.kv_total_blocks),
             trial.candidate.prefix_cache,
             metrics
                 .map(|metrics| metrics.decode_tok_s)
                 .unwrap_or_default(),
-            metrics
-                .and_then(|metrics| metrics.ttft_ms)
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            metrics
-                .map(|metrics| metrics.prefix_cpu_reference_dispatch_count.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
+            format_optional_to_string(metrics.and_then(|metrics| metrics.ttft_ms), "n/a"),
+            format_optional_to_string(
+                metrics.map(|metrics| metrics.prefix_cpu_reference_dispatch_count),
+                "n/a",
+            ),
         ));
     }
     lines.join("\n")
@@ -4533,26 +4501,27 @@ fn evaluate_correctness(
 
 fn enforce_runtime_gates(execution: &RuntimeResult) -> Result<(), CliError> {
     if !execution.correctness.passed {
-        return Err(CliError::Correctness(
-            execution
-                .correctness
-                .reason
-                .clone()
-                .unwrap_or_else(|| "correctness gate failed".to_string()),
-        ));
+        return Err(CliError::Correctness(gate_failure_reason(
+            &execution.correctness,
+            "correctness gate failed",
+        )));
     }
 
     if !execution.determinism.passed {
-        return Err(CliError::Correctness(
-            execution
-                .determinism
-                .reason
-                .clone()
-                .unwrap_or_else(|| "determinism gate failed".to_string()),
-        ));
+        return Err(CliError::Correctness(gate_failure_reason(
+            &execution.determinism,
+            "determinism gate failed",
+        )));
     }
 
     Ok(())
+}
+
+fn gate_failure_reason(status: &GateStatus, fallback: &str) -> String {
+    status
+        .reason
+        .clone()
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn write_execution_artifacts(
