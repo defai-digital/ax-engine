@@ -18,5 +18,14 @@ let package = Package(
             ],
             path: "Sources"
         ),
+        .executableTarget(
+            name: "mlx-swift-embed-bench",
+            dependencies: [
+                .product(name: "MLXEmbedders", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "BenchmarkHelpers", package: "mlx-swift-lm"),
+            ],
+            path: "EmbedSources"
+        ),
     ]
 )
