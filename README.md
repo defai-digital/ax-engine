@@ -183,8 +183,8 @@ AX Engine columns were refreshed on 2026-05-07 (v4.4.1) from
 harness; Qwen 3.5 `mlx_lm` was rerun fresh after investigation showed the
 older reused row was an outlier for the 512-token shape. The Qwen 3.5 AX rows
 were rerun after rebuilding the release server binary. Gemma 4 E4B was added
-from a full local benchmark run in
-`benchmarks/results/mlx-inference/2026-05-07-gemma-4-e4b-it-4bit-full/`.
+from a fresh full local benchmark run and checked into
+`benchmarks/results/mlx-inference/2026-05-07-v4.4.1-readme-refresh/gemma-4-e4b-it-4bit.json`.
 The direct AX column is a same-policy diagnostic baseline with n-gram
 acceleration disabled, while the n-gram column is the default AX decode policy
 and the row to use for user-facing throughput expectations.
