@@ -151,7 +151,8 @@ pub fn advance_direct_pipeline_with_turboquant_context(
     cache.seq_len += 1;
     let next_token_arr = argmax(&logits, None);
     // Submit step N+1 to the GPU before waiting for step N.
-    // KV cache is in next_token_arr's computation graph, so no extra refs needed.
+    // KV cache is in next_token_arr's computation graph (via SDPA), so no extra
+    // refs needed — they would only add one GPU command buffer per layer (≈85µs each).
     async_eval(&[&next_token_arr]);
 
     // Materialise the pending (step N) token.  Because `async_eval` was called
