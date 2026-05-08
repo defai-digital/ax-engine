@@ -1238,6 +1238,65 @@ pub fn forward_all_positions_with_turboquant_context(
     reshape(&logits_f32, &[seq, cfg.vocab_size as i32], None)
 }
 
+/// Cache-free single transformer layer for dense embedding models.
+///
+/// Equivalent to the standard dense-attention path in `layer_forward`, but
+/// skips all KV-cache writes (no `zeros` allocation, no `slice_update`).
+/// Only valid for Qwen3/Gemma dense layers — no linear attention, no MLA,
+/// no KV-source sharing, no MoE.
+fn layer_forward_dense_embed(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray, // [1, seq, hidden]
+    layer_idx: usize,
+) -> MlxArray {
+    let (head_dim, rope_theta, rope_dims, _sliding_window, _kv_source, v_norm_no_scale) =
+        layer_params(cfg, layer_idx);
+    let seq = hidden.shape()[1] as usize;
+
+    // 1. Attention norm.
+    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+
+    // 2-7. QKV projections, reshape, QK-norm, transpose, RoPE.
+    let (q_raw, k_raw, v_raw, _attn_gate) = qkv_project(cfg, w, &normed, head_dim);
+    let kv_heads = (k_raw.shape()[2] as usize)
+        .checked_div(head_dim)
+        .expect("k projection output must divide by head_dim");
+
+    let q = reshape(&q_raw, &[1, seq as i32, cfg.n_heads as i32, head_dim as i32], None);
+    let k = reshape(&k_raw, &[1, seq as i32, kv_heads as i32, head_dim as i32], None);
+    let v = reshape(&v_raw, &[1, seq as i32, kv_heads as i32, head_dim as i32], None);
+
+    let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq, cfg.rms_norm_eps);
+    let k = qk_norm_bshd(k, w.k_norm.as_ref(), kv_heads, head_dim, seq, cfg.rms_norm_eps);
+
+    let q = transpose(&q, &[0, 2, 1, 3], None);
+    let k = transpose(&k, &[0, 2, 1, 3], None);
+    let v = prepare_value_bhsd(v, v_norm_no_scale, kv_heads, head_dim, seq);
+
+    let q_rope = rope(&q, rope_dims as i32, false, Some(rope_theta), 1.0, 0, None, None);
+    let k_rope = rope(&k, rope_dims as i32, false, Some(rope_theta), 1.0, 0, None, None);
+
+    // 8. SDPA — k_rope/v used directly, no KV-cache writes.
+    let mask_opt: Option<MlxArray> = None; // resolves to Causal in full_precision_attention
+    let attn_sdpa = full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale, seq, &mask_opt);
+
+    // 9-13. Transpose back, reshape, output projection, residual.
+    let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
+    let attn_flat = reshape(&attn_out, &[1, seq as i32, (cfg.n_heads * head_dim) as i32], None);
+    let attn_proj = attention_output_projection(
+        &attn_flat,
+        None,
+        w.o_proj.as_ref().expect("dense embed layer must have o_proj"),
+    );
+    let hidden = add(hidden, &attn_proj, None);
+
+    // 14-17. Pre-FFN norm, dense SwiGLU, residual.
+    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    let ffn_out = ffn_swiglu(cfg, w, &normed2);
+    add(&hidden, &ffn_out, None)
+}
+
 /// Stateless forward pass for dense-embedding extraction.
 ///
 /// Runs the full transformer stack (embed → layers → final norm) but skips
@@ -1251,27 +1310,13 @@ pub fn forward_for_embedding(
     weights: &ModelWeights,
     token_ids: &[u32],
 ) -> MlxArray {
-    let mut cache = MlxKVCache::new(weights.layers.len());
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
-    let seq = token_ids.len();
-    let masks = build_layer_masks(cfg, weights.layers.len(), seq, seq);
-    let per_layer_inputs = compute_per_layer_inputs(cfg, weights, token_ids, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
-        hidden = layer_forward(
-            cfg,
-            layer_w,
-            &hidden,
-            &mut cache,
-            li,
-            0,
-            pli,
-            Some(&masks[li]),
-        );
+        hidden = layer_forward_dense_embed(cfg, layer_w, &hidden, li);
     }
     rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None)
 }
