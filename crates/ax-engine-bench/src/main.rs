@@ -6736,18 +6736,18 @@ fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
             "runner_time_share_pct": execution.observation.runner_time_share_pct(),
             "prefix_hit_rate": execution.observation.prefix_hit_rate(),
             "kv_block_usage": execution.observation.kv_peak_blocks as f64,
-            "evictions": execution.observation.evictions as f64
-        },
-        "delegated_llama_cpp": {
-            "kv_usage_blocks": execution.observation.kv_peak_blocks,
-            "requests_processing_events": execution.observation.llama_cpp_processing_request_events,
-            "requests_deferred_events": execution.observation.llama_cpp_deferred_request_events,
-            "backend_reported_cached_prompt_tokens": backend_reported_cached_prompt_tokens(
-                &execution.observation.route_metadata
-            ).unwrap_or(0),
-            "cache_reuse_observed": backend_reported_cached_prompt_tokens(
-                &execution.observation.route_metadata
-            ).is_some()
+            "evictions": execution.observation.evictions as f64,
+            "delegated_llama_cpp": {
+                "kv_usage_blocks": execution.observation.kv_peak_blocks,
+                "requests_processing_events": execution.observation.llama_cpp_processing_request_events,
+                "requests_deferred_events": execution.observation.llama_cpp_deferred_request_events,
+                "backend_reported_cached_prompt_tokens": backend_reported_cached_prompt_tokens(
+                    &execution.observation.route_metadata
+                ).unwrap_or(0),
+                "cache_reuse_observed": backend_reported_cached_prompt_tokens(
+                    &execution.observation.route_metadata
+                ).is_some()
+            }
         },
         "correctness": {
             "passed": execution.correctness.passed,
@@ -12455,6 +12455,64 @@ mod tests {
         assert_eq!(
             nested_value(&metrics, &["metrics", "evictions"]).and_then(Value::as_f64),
             Some(7.0)
+        );
+    }
+
+    #[test]
+    fn metrics_json_nests_delegated_llama_cpp_metrics_under_metrics() {
+        let mut route = RouteMetadata::empty();
+        route.prefix_cache_path = Some("delegated_prompt_cache".to_string());
+        route
+            .crossover_decisions
+            .push(("delegated_cached_tokens".to_string(), 64));
+        let execution = RuntimeResult {
+            tool_mode: "llama_cpp_stepwise_runtime",
+            runtime: runtime_config_from_manifest(&llama_cpp_scenario_manifest(
+                "http://127.0.0.1:8081",
+            ))
+            .expect("llama.cpp runtime should load"),
+            observation: RuntimeObservation {
+                kv_peak_blocks: 3,
+                llama_cpp_processing_request_events: 2,
+                llama_cpp_deferred_request_events: 1,
+                route_metadata: route,
+                ..RuntimeObservation::default()
+            },
+            correctness: GateStatus::pass(),
+            determinism: GateStatus::pass(),
+        };
+
+        let metrics = build_metrics_json("run-llama", &execution);
+        let delegated = nested_value(&metrics, &["metrics", "delegated_llama_cpp"])
+            .expect("delegated llama.cpp metrics should live under metrics");
+
+        assert!(
+            metrics.get("delegated_llama_cpp").is_none(),
+            "delegated metrics must not drift to the root artifact object"
+        );
+        assert_eq!(
+            delegated
+                .get("backend_reported_cached_prompt_tokens")
+                .and_then(Value::as_u64),
+            Some(64)
+        );
+        assert_eq!(
+            delegated
+                .get("requests_processing_events")
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            delegated
+                .get("requests_deferred_events")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            delegated
+                .get("cache_reuse_observed")
+                .and_then(Value::as_bool),
+            Some(true)
         );
     }
 
