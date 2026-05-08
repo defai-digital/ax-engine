@@ -1,0 +1,76 @@
+
+==========================================
+  gemma-4-e2b-it-4bit
+==========================================
+
+=== AX Engine MLX inference stack ===
+  model: .internal/models/gemma-4-e2b-it-4bit
+  model_dir: .internal/models/gemma-4-e2b-it-4bit
+  prompt_tokens: [128, 512]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-08-post-fix-readme-refresh/gemma-4-e2b-it-4bit-prompts
+  [prompt] prompt_tokens=128 sha256=4ebdfdf02961 path=benchmarks/results/mlx-inference/2026-05-08-post-fix-readme-refresh/gemma-4-e2b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json
+  [prompt] prompt_tokens=512 sha256=846109be82df path=benchmarks/results/mlx-inference/2026-05-08-post-fix-readme-refresh/gemma-4-e2b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json
+  [reference] reused 4 mlx_lm/mlx_swift_lm rows from benchmarks/results/mlx-inference/2026-05-07-v4.4.1-readme-refresh/gemma-4-e2b-it-4bit.json
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/gemma-4-e2b-it-4bit --port 8091 --disable-ngram-acceleration
+  [ax-engine/ax_engine_mlx] prompt=128 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=101.5 tok/s decode=89.0 tok/s out=128
+    rep 2: prefill=450.4 tok/s decode=106.8 tok/s out=128
+    rep 3: prefill=238.1 tok/s decode=113.2 tok/s out=128
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 2050, in <module>
+    main()
+    ~~~~^^
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 1886, in main
+    bench_axengine(
+    ~~~~~~~~~~~~~~^
+        args.axengine_port,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<8 lines>...
+        server_pid=proc.pid,
+        ^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 1247, in bench_axengine
+    run = axengine_one_run(
+        port,
+    ...<3 lines>...
+        server_pid=server_pid,
+    )
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 1102, in axengine_one_run
+    conn.request(
+    ~~~~~~~~~~~~^
+        "POST",
+        ^^^^^^^
+    ...<5 lines>...
+        },
+        ^^
+    )
+    ^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1358, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1404, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1353, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1113, in _send_output
+    self.send(msg)
+    ~~~~~~~~~^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1057, in send
+    self.connect()
+    ~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1023, in connect
+    self.sock = self._create_connection(
+                ~~~~~~~~~~~~~~~~~~~~~~~^
+        (self.host,self.port), self.timeout, self.source_address)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/socket.py", line 870, in create_connection
+    raise exceptions[0]
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/socket.py", line 855, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+ConnectionRefusedError: [Errno 61] Connection refused

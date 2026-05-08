@@ -6426,6 +6426,9 @@ fn complete_model_forward_support_requires_model_conditioned_source() {
         layer_count: 1,
         tensor_count: 9,
         tie_word_embeddings: false,
+        is_moe: false,
+        is_hybrid_attention: false,
+        hybrid_full_attention_interval: None,
     };
     let multilayer_model = NativeModelArtifactsSummary {
         model_family: "qwen3_dense".to_string(),
@@ -6435,6 +6438,9 @@ fn complete_model_forward_support_requires_model_conditioned_source() {
         layer_count: 2,
         tensor_count: 18,
         tie_word_embeddings: false,
+        is_moe: false,
+        is_hybrid_attention: false,
+        hybrid_full_attention_interval: None,
     };
 
     assert!(!complete_model_forward_support_for_source(
@@ -7191,6 +7197,9 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
             layer_count: 1,
             tensor_count: 9,
             tie_word_embeddings: false,
+            is_moe: false,
+            is_hybrid_attention: false,
+            hybrid_full_attention_interval: None,
         }),
     };
 
@@ -7424,6 +7433,9 @@ fn completed_real_model_forward_step_marks_pure_decode_batch_with_no_remaining_l
             layer_count: 1,
             tensor_count: 9,
             tie_word_embeddings: false,
+            is_moe: false,
+            is_hybrid_attention: false,
+            hybrid_full_attention_interval: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
@@ -7517,6 +7529,9 @@ fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_p
             layer_count: 1,
             tensor_count: 9,
             tie_word_embeddings: false,
+            is_moe: false,
+            is_hybrid_attention: false,
+            hybrid_full_attention_interval: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
@@ -7579,6 +7594,9 @@ fn completed_real_model_forward_step_rejects_prefill_only_completion_without_sam
             layer_count: 1,
             tensor_count: 9,
             tie_word_embeddings: false,
+            is_moe: false,
+            is_hybrid_attention: false,
+            hybrid_full_attention_interval: None,
         }),
     };
     let output = successful_runner_output_from_input(&input);
@@ -7623,6 +7641,9 @@ fn completed_real_model_forward_step_accepts_prefill_only_completion_with_output
             layer_count: 1,
             tensor_count: 9,
             tie_word_embeddings: false,
+            is_moe: false,
+            is_hybrid_attention: false,
+            hybrid_full_attention_interval: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
@@ -7672,6 +7693,9 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
             layer_count: 2,
             tensor_count: 18,
             tie_word_embeddings: false,
+            is_moe: false,
+            is_hybrid_attention: false,
+            hybrid_full_attention_interval: None,
         }),
     };
     let unresolved_output = successful_runner_output_from_input(&input);
@@ -7735,6 +7759,9 @@ fn completed_real_model_forward_step_rejects_multilayer_runtime_when_prefix_atte
             layer_count: 2,
             tensor_count: 18,
             tie_word_embeddings: false,
+            is_moe: false,
+            is_hybrid_attention: false,
+            hybrid_full_attention_interval: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
@@ -7789,6 +7816,9 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
             layer_count: 2,
             tensor_count: 18,
             tie_word_embeddings: false,
+            is_moe: false,
+            is_hybrid_attention: false,
+            hybrid_full_attention_interval: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
@@ -7843,6 +7873,9 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
             layer_count: 24,
             tensor_count: 250,
             tie_word_embeddings: true,
+            is_moe: false,
+            is_hybrid_attention: true,
+            hybrid_full_attention_interval: Some(6),
         }),
     };
     let mut output = successful_runner_output_from_input(&input);

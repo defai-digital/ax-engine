@@ -118,6 +118,40 @@ impl GenerateRouteReport {
             crossover_decisions,
         }
     }
+
+    /// Returns the raw numeric value for a route decision key, if present.
+    pub fn decision(&self, key: &str) -> Option<u32> {
+        self.crossover_decisions.get(key).copied()
+    }
+
+    /// Returns true when TurboQuant KV compression is active for this request.
+    /// This reflects the `ax_mlx_kv_compression_status` decision (non-zero = active).
+    pub fn kv_compression_active(&self) -> bool {
+        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS)
+            .is_some_and(|v| v > 0)
+    }
+
+    /// Returns the TurboQuant preset route code when KV compression is active.
+    /// Maps to `MlxTurboQuantPreset::route_code()`: K8V4=1, K4V4=2, K3V4Research=3.
+    pub fn kv_compression_preset_code(&self) -> Option<u32> {
+        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET)
+    }
+
+    /// Returns the KV cache capacity in KiB allocated for this request.
+    pub fn kv_capacity_kib(&self) -> Option<u32> {
+        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB)
+    }
+
+    /// Returns the number of linear-attention state layers for this request.
+    /// Non-zero only for hybrid linear/full-attention models (Qwen3.5, Qwen3-Next).
+    pub fn linear_state_layers(&self) -> Option<u32> {
+        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS)
+    }
+
+    /// Returns the number of KV growth events recorded for this request.
+    pub fn kv_growth_count(&self) -> Option<u32> {
+        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -221,6 +255,18 @@ impl GenerateResponse {
             self.known_prompt_token_count()?,
             self.known_output_token_count()?,
         ))
+    }
+
+    /// Authoritative prompt token count. Prefers backend-reported counts (delegated backends)
+    /// over token array length (native MLX backend). Returns None only when neither is available.
+    pub fn prompt_tokens_used(&self) -> Option<u32> {
+        self.known_prompt_token_count()
+    }
+
+    /// Authoritative output token count. Prefers backend-reported counts (delegated backends)
+    /// over token array length (native MLX backend). Returns None only when neither is available.
+    pub fn output_tokens_generated(&self) -> Option<u32> {
+        self.known_output_token_count()
     }
 
     pub fn from_snapshot(

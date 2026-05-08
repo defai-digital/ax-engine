@@ -337,6 +337,25 @@ pub struct MlxKvCompressionDecodeUsage {
     pub fused_decode_blocked_missing_storage: u64,
 }
 
+impl MlxKvCompressionUsage {
+    pub fn apply_decode_usage(&mut self, usage: MlxKvCompressionDecodeUsage) {
+        self.fused_decode_attempts = usage.fused_decode_attempts;
+        self.fused_decode_successes = usage.fused_decode_successes;
+        self.fused_decode_metal_successes = usage.fused_decode_metal_successes;
+        self.fused_decode_fallbacks = usage.fused_decode_fallbacks;
+        self.fused_decode_ready_candidates = usage.fused_decode_ready_candidates;
+        self.fused_decode_blocked_prefill_only = usage.fused_decode_blocked_prefill_only;
+        self.fused_decode_blocked_attention_kind = usage.fused_decode_blocked_attention_kind;
+        self.fused_decode_blocked_ineligible_layer = usage.fused_decode_blocked_ineligible_layer;
+        self.fused_decode_blocked_unsupported_preset =
+            usage.fused_decode_blocked_unsupported_preset;
+        self.fused_decode_blocked_unsupported_head_dim =
+            usage.fused_decode_blocked_unsupported_head_dim;
+        self.fused_decode_blocked_gqa = usage.fused_decode_blocked_gqa;
+        self.fused_decode_blocked_missing_storage = usage.fused_decode_blocked_missing_storage;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MlxKvCompressionDecodeOutcome {
     Fallback,
@@ -458,6 +477,43 @@ impl Clone for MlxKVCache {
 }
 
 impl MlxKVCache {
+    fn bump_counter(counter: &mut u64) {
+        *counter = counter.saturating_add(1);
+    }
+
+    fn turboquant_candidate_counter(
+        usage: &mut MlxKvCompressionDecodeUsage,
+        candidate: MlxKvCompressionDecodeCandidate,
+    ) -> Option<&mut u64> {
+        match candidate {
+            MlxKvCompressionDecodeCandidate::Disabled => None,
+            MlxKvCompressionDecodeCandidate::Ready => {
+                Some(&mut usage.fused_decode_ready_candidates)
+            }
+            MlxKvCompressionDecodeCandidate::PrefillOnly => {
+                Some(&mut usage.fused_decode_blocked_prefill_only)
+            }
+            MlxKvCompressionDecodeCandidate::AttentionKind => {
+                Some(&mut usage.fused_decode_blocked_attention_kind)
+            }
+            MlxKvCompressionDecodeCandidate::IneligibleLayer => {
+                Some(&mut usage.fused_decode_blocked_ineligible_layer)
+            }
+            MlxKvCompressionDecodeCandidate::UnsupportedPreset => {
+                Some(&mut usage.fused_decode_blocked_unsupported_preset)
+            }
+            MlxKvCompressionDecodeCandidate::UnsupportedHeadDim => {
+                Some(&mut usage.fused_decode_blocked_unsupported_head_dim)
+            }
+            MlxKvCompressionDecodeCandidate::GroupedQueryAttention => {
+                Some(&mut usage.fused_decode_blocked_gqa)
+            }
+            MlxKvCompressionDecodeCandidate::MissingRuntimeStorage => {
+                Some(&mut usage.fused_decode_blocked_missing_storage)
+            }
+        }
+    }
+
     pub fn new(num_layers: usize) -> Self {
         Self {
             layers: (0..num_layers).map(|_| None).collect(),
@@ -481,33 +537,17 @@ impl MlxKVCache {
         &mut self,
         outcome: MlxKvCompressionDecodeOutcome,
     ) {
-        self.turboquant_decode_usage.fused_decode_attempts = self
-            .turboquant_decode_usage
-            .fused_decode_attempts
-            .saturating_add(1);
+        Self::bump_counter(&mut self.turboquant_decode_usage.fused_decode_attempts);
         match outcome {
             MlxKvCompressionDecodeOutcome::Fallback => {
-                self.turboquant_decode_usage.fused_decode_fallbacks = self
-                    .turboquant_decode_usage
-                    .fused_decode_fallbacks
-                    .saturating_add(1);
+                Self::bump_counter(&mut self.turboquant_decode_usage.fused_decode_fallbacks);
             }
-            MlxKvCompressionDecodeOutcome::CpuOracle => {
-                self.turboquant_decode_usage.fused_decode_successes = self
-                    .turboquant_decode_usage
-                    .fused_decode_successes
-                    .saturating_add(1);
+            MlxKvCompressionDecodeOutcome::CpuOracle | MlxKvCompressionDecodeOutcome::Metal => {
+                Self::bump_counter(&mut self.turboquant_decode_usage.fused_decode_successes);
             }
-            MlxKvCompressionDecodeOutcome::Metal => {
-                self.turboquant_decode_usage.fused_decode_successes = self
-                    .turboquant_decode_usage
-                    .fused_decode_successes
-                    .saturating_add(1);
-                self.turboquant_decode_usage.fused_decode_metal_successes = self
-                    .turboquant_decode_usage
-                    .fused_decode_metal_successes
-                    .saturating_add(1);
-            }
+        }
+        if matches!(outcome, MlxKvCompressionDecodeOutcome::Metal) {
+            Self::bump_counter(&mut self.turboquant_decode_usage.fused_decode_metal_successes);
         }
     }
 
@@ -515,62 +555,10 @@ impl MlxKVCache {
         &mut self,
         candidate: MlxKvCompressionDecodeCandidate,
     ) {
-        match candidate {
-            MlxKvCompressionDecodeCandidate::Disabled => {}
-            MlxKvCompressionDecodeCandidate::Ready => {
-                self.turboquant_decode_usage.fused_decode_ready_candidates = self
-                    .turboquant_decode_usage
-                    .fused_decode_ready_candidates
-                    .saturating_add(1);
-            }
-            MlxKvCompressionDecodeCandidate::PrefillOnly => {
-                self.turboquant_decode_usage
-                    .fused_decode_blocked_prefill_only = self
-                    .turboquant_decode_usage
-                    .fused_decode_blocked_prefill_only
-                    .saturating_add(1);
-            }
-            MlxKvCompressionDecodeCandidate::AttentionKind => {
-                self.turboquant_decode_usage
-                    .fused_decode_blocked_attention_kind = self
-                    .turboquant_decode_usage
-                    .fused_decode_blocked_attention_kind
-                    .saturating_add(1);
-            }
-            MlxKvCompressionDecodeCandidate::IneligibleLayer => {
-                self.turboquant_decode_usage
-                    .fused_decode_blocked_ineligible_layer = self
-                    .turboquant_decode_usage
-                    .fused_decode_blocked_ineligible_layer
-                    .saturating_add(1);
-            }
-            MlxKvCompressionDecodeCandidate::UnsupportedPreset => {
-                self.turboquant_decode_usage
-                    .fused_decode_blocked_unsupported_preset = self
-                    .turboquant_decode_usage
-                    .fused_decode_blocked_unsupported_preset
-                    .saturating_add(1);
-            }
-            MlxKvCompressionDecodeCandidate::UnsupportedHeadDim => {
-                self.turboquant_decode_usage
-                    .fused_decode_blocked_unsupported_head_dim = self
-                    .turboquant_decode_usage
-                    .fused_decode_blocked_unsupported_head_dim
-                    .saturating_add(1);
-            }
-            MlxKvCompressionDecodeCandidate::GroupedQueryAttention => {
-                self.turboquant_decode_usage.fused_decode_blocked_gqa = self
-                    .turboquant_decode_usage
-                    .fused_decode_blocked_gqa
-                    .saturating_add(1);
-            }
-            MlxKvCompressionDecodeCandidate::MissingRuntimeStorage => {
-                self.turboquant_decode_usage
-                    .fused_decode_blocked_missing_storage = self
-                    .turboquant_decode_usage
-                    .fused_decode_blocked_missing_storage
-                    .saturating_add(1);
-            }
+        if let Some(counter) =
+            Self::turboquant_candidate_counter(&mut self.turboquant_decode_usage, candidate)
+        {
+            Self::bump_counter(counter);
         }
     }
 

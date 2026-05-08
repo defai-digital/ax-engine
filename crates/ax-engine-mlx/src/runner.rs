@@ -933,6 +933,36 @@ impl KvCacheTelemetry {
             .saturating_add(wall_us as u64);
     }
 
+    fn merge_fused_decode_blocked_counters(
+        &mut self,
+        compression: &crate::kv_cache::MlxKvCompressionUsage,
+    ) {
+        self.compression_fused_decode_ready_candidates = self
+            .compression_fused_decode_ready_candidates
+            .saturating_add(compression.fused_decode_ready_candidates);
+        self.compression_fused_decode_blocked_prefill_only = self
+            .compression_fused_decode_blocked_prefill_only
+            .saturating_add(compression.fused_decode_blocked_prefill_only);
+        self.compression_fused_decode_blocked_attention_kind = self
+            .compression_fused_decode_blocked_attention_kind
+            .saturating_add(compression.fused_decode_blocked_attention_kind);
+        self.compression_fused_decode_blocked_ineligible_layer = self
+            .compression_fused_decode_blocked_ineligible_layer
+            .saturating_add(compression.fused_decode_blocked_ineligible_layer);
+        self.compression_fused_decode_blocked_unsupported_preset = self
+            .compression_fused_decode_blocked_unsupported_preset
+            .saturating_add(compression.fused_decode_blocked_unsupported_preset);
+        self.compression_fused_decode_blocked_unsupported_head_dim = self
+            .compression_fused_decode_blocked_unsupported_head_dim
+            .saturating_add(compression.fused_decode_blocked_unsupported_head_dim);
+        self.compression_fused_decode_blocked_gqa = self
+            .compression_fused_decode_blocked_gqa
+            .saturating_add(compression.fused_decode_blocked_gqa);
+        self.compression_fused_decode_blocked_missing_storage = self
+            .compression_fused_decode_blocked_missing_storage
+            .saturating_add(compression.fused_decode_blocked_missing_storage);
+    }
+
     fn merge_from(&mut self, usage: MlxKVCacheUsage) {
         self.request_snapshots = self.request_snapshots.saturating_add(1);
         self.logical_tokens = self
@@ -1028,30 +1058,7 @@ impl KvCacheTelemetry {
             if fused_decode_candidate {
                 self.compression_fused_decode_candidates =
                     self.compression_fused_decode_candidates.saturating_add(1);
-                self.compression_fused_decode_ready_candidates = self
-                    .compression_fused_decode_ready_candidates
-                    .saturating_add(compression.fused_decode_ready_candidates);
-                self.compression_fused_decode_blocked_prefill_only = self
-                    .compression_fused_decode_blocked_prefill_only
-                    .saturating_add(compression.fused_decode_blocked_prefill_only);
-                self.compression_fused_decode_blocked_attention_kind = self
-                    .compression_fused_decode_blocked_attention_kind
-                    .saturating_add(compression.fused_decode_blocked_attention_kind);
-                self.compression_fused_decode_blocked_ineligible_layer = self
-                    .compression_fused_decode_blocked_ineligible_layer
-                    .saturating_add(compression.fused_decode_blocked_ineligible_layer);
-                self.compression_fused_decode_blocked_unsupported_preset = self
-                    .compression_fused_decode_blocked_unsupported_preset
-                    .saturating_add(compression.fused_decode_blocked_unsupported_preset);
-                self.compression_fused_decode_blocked_unsupported_head_dim = self
-                    .compression_fused_decode_blocked_unsupported_head_dim
-                    .saturating_add(compression.fused_decode_blocked_unsupported_head_dim);
-                self.compression_fused_decode_blocked_gqa = self
-                    .compression_fused_decode_blocked_gqa
-                    .saturating_add(compression.fused_decode_blocked_gqa);
-                self.compression_fused_decode_blocked_missing_storage = self
-                    .compression_fused_decode_blocked_missing_storage
-                    .saturating_add(compression.fused_decode_blocked_missing_storage);
+                self.merge_fused_decode_blocked_counters(&compression);
                 if compression.fused_decode_attempts > 0 {
                     self.compression_fused_decode_attempts = self
                         .compression_fused_decode_attempts
@@ -1639,35 +1646,16 @@ impl ExecutionRunner for MlxRunner {
                 let summed = sum_axis(&hidden, 1, false, None);
                 // summed: [1, hidden_size] bfloat16
                 let scale = 1.0_f32 / seq as f32;
-                let scale_arr = MlxArray::from_raw_data(
-                    &scale as *const f32 as *const u8,
-                    std::mem::size_of::<f32>(),
-                    &[],
-                    MlxDtype::Float32,
-                );
+                let scale_arr = mlx_scalar_f32(scale);
                 multiply(&summed, &scale_arr, None)
             }
             EmbeddingPooling::Last => {
-                let last_idx = (seq - 1) as u32;
-                let idx_arr = MlxArray::from_raw_data(
-                    &last_idx as *const u32 as *const u8,
-                    std::mem::size_of::<u32>(),
-                    &[1_i32],
-                    MlxDtype::Uint32,
-                );
                 // take on axis 1: [1, seq, hidden] → [1, 1, hidden]
-                take(&hidden, &idx_arr, 1, None)
+                take_hidden_token(&hidden, (seq - 1) as u32)
             }
             EmbeddingPooling::Cls => {
-                let first_idx: u32 = 0;
-                let idx_arr = MlxArray::from_raw_data(
-                    &first_idx as *const u32 as *const u8,
-                    std::mem::size_of::<u32>(),
-                    &[1_i32],
-                    MlxDtype::Uint32,
-                );
                 // take on axis 1: [1, seq, hidden] → [1, 1, hidden]
-                take(&hidden, &idx_arr, 1, None)
+                take_hidden_token(&hidden, 0)
             }
         };
         // Convert to float32 before normalization for numerical precision.
@@ -1692,22 +1680,30 @@ fn l2_normalize_last_dim(x: &MlxArray) -> MlxArray {
     let last_axis = ndim - 1;
     let x_sq = multiply(x, x, None);
     let sum_sq = sum_axis(&x_sq, last_axis, true, None);
-    let half = MlxArray::from_raw_data(
-        &0.5_f32 as *const f32 as *const u8,
-        std::mem::size_of::<f32>(),
-        &[],
-        MlxDtype::Float32,
-    );
+    let half = mlx_scalar_f32(0.5);
     let norm = power(&sum_sq, &half, None);
-    let eps_val = 1e-12_f32;
-    let eps = MlxArray::from_raw_data(
-        &eps_val as *const f32 as *const u8,
-        std::mem::size_of::<f32>(),
-        &[],
-        MlxDtype::Float32,
-    );
+    let eps = mlx_scalar_f32(1e-12);
     let norm_stable = add(&norm, &eps, None);
     divide(x, &norm_stable, None)
+}
+
+fn mlx_scalar_f32(value: f32) -> MlxArray {
+    MlxArray::from_raw_data(
+        &value as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[],
+        MlxDtype::Float32,
+    )
+}
+
+fn take_hidden_token(hidden: &MlxArray, token_index: u32) -> MlxArray {
+    let idx_arr = MlxArray::from_raw_data(
+        &token_index as *const u32 as *const u8,
+        std::mem::size_of::<u32>(),
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+    take(hidden, &idx_arr, 1, None)
 }
 
 impl MlxRunner {
@@ -1880,36 +1876,9 @@ impl MlxRunner {
                 kv_compression_layer_eligible,
             );
         let turboquant_decode_usage = state.cache.take_turboquant_decode_usage();
-        kv_usage.kv_compression.fused_decode_attempts =
-            turboquant_decode_usage.fused_decode_attempts;
-        kv_usage.kv_compression.fused_decode_successes =
-            turboquant_decode_usage.fused_decode_successes;
-        kv_usage.kv_compression.fused_decode_metal_successes =
-            turboquant_decode_usage.fused_decode_metal_successes;
-        kv_usage.kv_compression.fused_decode_fallbacks =
-            turboquant_decode_usage.fused_decode_fallbacks;
-        kv_usage.kv_compression.fused_decode_ready_candidates =
-            turboquant_decode_usage.fused_decode_ready_candidates;
-        kv_usage.kv_compression.fused_decode_blocked_prefill_only =
-            turboquant_decode_usage.fused_decode_blocked_prefill_only;
-        kv_usage.kv_compression.fused_decode_blocked_attention_kind =
-            turboquant_decode_usage.fused_decode_blocked_attention_kind;
         kv_usage
             .kv_compression
-            .fused_decode_blocked_ineligible_layer =
-            turboquant_decode_usage.fused_decode_blocked_ineligible_layer;
-        kv_usage
-            .kv_compression
-            .fused_decode_blocked_unsupported_preset =
-            turboquant_decode_usage.fused_decode_blocked_unsupported_preset;
-        kv_usage
-            .kv_compression
-            .fused_decode_blocked_unsupported_head_dim =
-            turboquant_decode_usage.fused_decode_blocked_unsupported_head_dim;
-        kv_usage.kv_compression.fused_decode_blocked_gqa =
-            turboquant_decode_usage.fused_decode_blocked_gqa;
-        kv_usage.kv_compression.fused_decode_blocked_missing_storage =
-            turboquant_decode_usage.fused_decode_blocked_missing_storage;
+            .apply_decode_usage(turboquant_decode_usage);
         if stop_reason.is_none() {
             let mut states = self.states.lock().unwrap();
             states.insert(item.request_id, state);
