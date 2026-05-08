@@ -96,7 +96,6 @@ const NGRAM_BETA_MAX_TOTAL: f32 = 100.0;
 
 const NGRAM_ACCEPT_THRESHOLD: f32 = 0.5;
 const NGRAM_DRAFT_LEN_LOW_CONFIDENCE: usize = 2;
-const NGRAM_DRAFT_LEN_EXTEND_THRESHOLD: f32 = 0.80;
 const NGRAM_DRAFT_LEN_SHRINK_THRESHOLD: f32 = 0.60;
 const NGRAM_RETRY_INTERVAL: u32 = 8;
 /// Steps to suppress n-gram acceleration after a complete miss (0 draft tokens accepted)
@@ -2697,12 +2696,12 @@ fn adaptive_ngram_draft_len(has_linear_attention: bool, posterior_mean: f32) -> 
         } else {
             DEFAULT_DRAFT_LEN
         }
-    } else if posterior_mean >= NGRAM_DRAFT_LEN_EXTEND_THRESHOLD {
-        MAX_DRAFT_LEN
-    } else if posterior_mean < NGRAM_DRAFT_LEN_SHRINK_THRESHOLD {
-        NGRAM_DRAFT_LEN_LOW_CONFIDENCE
     } else {
-        DEFAULT_DRAFT_LEN
+        // Dense models: always allow MAX_DRAFT_LEN and let the ngram confidence
+        // gate in predict_with_policy prune the chain naturally. Pre-capping at
+        // DEFAULT_DRAFT_LEN for mid-range posterior hurts throughput because it
+        // discards valid chain extensions that the confidence gate would keep.
+        MAX_DRAFT_LEN
     }
 }
 
@@ -4800,12 +4799,10 @@ mod tests {
 
     #[test]
     fn ngram_adaptive_draft_len_shrinks_and_extends_from_acceptance() {
+        // Dense models always use MAX_DRAFT_LEN — confidence gate prunes naturally.
         assert_eq!(adaptive_ngram_draft_len(false, 0.95), MAX_DRAFT_LEN);
-        assert_eq!(adaptive_ngram_draft_len(false, 0.70), DEFAULT_DRAFT_LEN);
-        assert_eq!(
-            adaptive_ngram_draft_len(false, 0.40),
-            NGRAM_DRAFT_LEN_LOW_CONFIDENCE
-        );
+        assert_eq!(adaptive_ngram_draft_len(false, 0.70), MAX_DRAFT_LEN);
+        assert_eq!(adaptive_ngram_draft_len(false, 0.40), MAX_DRAFT_LEN);
         assert_eq!(
             adaptive_ngram_draft_len(true, 0.95),
             DEFAULT_DRAFT_LEN,
