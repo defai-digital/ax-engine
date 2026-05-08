@@ -187,6 +187,15 @@ uses `MAX_DRAFT_LEN=6` as the cap and lets the confidence gate prune chains
 naturally, rather than pre-capping at `DEFAULT_DRAFT_LEN=4` for mid-range
 posterior values. Most `mlx_lm` and `mlx_swift_lm` columns remain matched
 reference rows reused by the harness.
+
+Versus the v4.4.1 README artifact baseline, this run shows uniform improvements
+across all 14 models on both paths. Direct decode is up +1–11% on most rows
+(Gemma E4B +8–11%, Qwen 3.5 +10%); GLM and Gemma 26B p128 are within ±3%
+noise. N-gram decode is up +1–5% on most rows, with larger gains on Gemma E4B
+(+7–10%), Qwen 3.5 (+9–11%), and Qwen Coder Next p128 (+73%, from 137 to 237
+tok/s — the draft-length fix restores full chain speculation during the warm-up
+window). No row regresses beyond noise.
+
 The direct AX column is a same-policy diagnostic baseline with n-gram
 acceleration disabled, while the n-gram column is the default AX decode policy
 and the row to use for user-facing throughput expectations.
