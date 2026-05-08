@@ -221,6 +221,15 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
         Err("embedding not supported by this runner")
     }
 
+    fn embed_batch(
+        &self,
+        _batch: &[Vec<u32>],
+        _pooling: EmbeddingPooling,
+        _normalize: bool,
+    ) -> Result<Vec<Vec<f32>>, &'static str> {
+        Err("batch embedding not supported by this runner")
+    }
+
     fn release_request_state(&self, _request_id: RequestId) {}
 
     fn metal_dispatch_trace(&self) -> Option<MetalDispatchTrace> {

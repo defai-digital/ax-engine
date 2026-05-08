@@ -422,6 +422,41 @@ impl Session {
         })
     }
 
+    #[pyo3(signature = (batch_token_ids, *, pooling="last", normalize=true))]
+    fn embed_batch(
+        &self,
+        py: Python<'_>,
+        batch_token_ids: Vec<Vec<u32>>,
+        pooling: &str,
+        normalize: bool,
+    ) -> PyResult<Vec<Vec<f32>>> {
+        let pooling_mode = match pooling {
+            "last" => EmbeddingPooling::Last,
+            "mean" => EmbeddingPooling::Mean,
+            "cls" => EmbeddingPooling::Cls,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown pooling '{other}': expected 'last', 'mean', or 'cls'"
+                )));
+            }
+        };
+        let inner = Arc::clone(&self.inner);
+        py.allow_threads(move || {
+            let slot = inner
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("session mutex poisoned"))?;
+            match &*slot {
+                SessionSlot::Ready(session) => session
+                    .embed_batch(&batch_token_ids, pooling_mode, normalize)
+                    .map_err(to_py_runtime_error),
+                SessionSlot::Streaming => {
+                    Err(PyRuntimeError::new_err("session has an active stream"))
+                }
+                SessionSlot::Closed => Err(PyRuntimeError::new_err("session is closed")),
+            }
+        })
+    }
+
     #[pyo3(signature = (_exc_type=None, _exc=None, _traceback=None))]
     fn __exit__(
         &mut self,

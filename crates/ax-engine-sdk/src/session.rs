@@ -688,19 +688,6 @@ enum GenerateStreamPhase {
     Done,
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, value: u32) {
-    if let Some((_, existing_value)) = decisions
-        .iter_mut()
-        .find(|(existing_key, _)| existing_key == key)
-    {
-        *existing_value = value;
-    } else {
-        decisions.push((key.to_string(), value));
-    }
-}
-
 impl EngineSession {
     fn uses_mlx_runtime(&self) -> bool {
         self.config.resolved_backend.selected_backend.is_mlx()
@@ -1183,6 +1170,20 @@ impl EngineSession {
         }
         self.core
             .embed(token_ids, pooling, normalize)
+            .map_err(|message| EngineSessionError::EmbeddingFailed { message })
+    }
+
+    pub fn embed_batch(
+        &self,
+        batch: &[Vec<u32>],
+        pooling: EmbeddingPooling,
+        normalize: bool,
+    ) -> Result<Vec<Vec<f32>>, EngineSessionError> {
+        if !self.uses_mlx_runtime() {
+            return Err(EngineSessionError::EmbeddingNotSupported);
+        }
+        self.core
+            .embed_batch(batch, pooling, normalize)
             .map_err(|message| EngineSessionError::EmbeddingFailed { message })
     }
 
@@ -2990,23 +2991,6 @@ mod tests {
         root_dir
     }
 
-    #[allow(dead_code)]
-    fn write_runtime_blocked_native_model_fixture() -> std::path::PathBuf {
-        let root_dir = write_valid_native_model_fixture();
-        let manifest_path = root_dir.join(AX_NATIVE_MODEL_MANIFEST_FILE);
-        let manifest_bytes =
-            fs::read(&manifest_path).expect("native model manifest should be readable");
-        let mut manifest_json: Value = serde_json::from_slice(&manifest_bytes)
-            .expect("native model manifest should parse as JSON");
-        manifest_json["runtime_status"] = serde_json::json!({
-            "ready": false,
-            "blockers": ["qwen35_quantized_gguf_native_runtime_not_implemented"],
-            "notes": ["source_quantized_tensor_count=250"]
-        });
-        write_json_file(&manifest_path, &manifest_json);
-        root_dir
-    }
-
     fn native_model_tensor(
         name: &str,
         role: NativeTensorRole,
@@ -3046,36 +3030,6 @@ sys.stdout.write(f"session::{prompt}")
 "#;
 
         fs::write(&path, script).expect("fake script should be written");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = fs::metadata(&path)
-                .expect("script metadata should exist")
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&path, permissions).expect("script should be executable");
-        }
-        path
-    }
-
-    #[allow(dead_code)]
-    fn fake_failing_mlx_script() -> std::path::PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be valid")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("ax-engine-session-mlx-fail-{unique}.py"));
-        let script = r#"#!/usr/bin/env python3
-from __future__ import annotations
-
-import sys
-
-sys.stderr.write("mlx primary failed\n")
-sys.exit(17)
-"#;
-
-        fs::write(&path, script).expect("fake mlx failure script should be written");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
