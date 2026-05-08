@@ -78,7 +78,25 @@
       "Bash(gh run *)",
       "Bash(gh secret *)",
       "Bash(gh workflow *)",
-      "Bash(shasum -a 256)"
+      "Bash(shasum -a 256)",
+      "Bash(brew tap-info *)",
+      "Bash(brew untap *)",
+      "Bash(xargs cat *)",
+      "Bash(cargo clippy *)",
+      "Bash(nm /opt/homebrew/lib/libmlxc.dylib)",
+      "Bash(otool -tv /opt/homebrew/lib/libmlxc.dylib)",
+      "Bash(wait)",
+      "Bash(git -C /Users/akiralam/code/ax-engine-v4 log --oneline --since=\"2026-05-05\" --until=\"2026-05-07\")",
+      "Bash(./target/debug/ax-engine-server --version)",
+      "Bash(read f *)",
+      "Bash(sed -n '3460,3480p' /Users/akiralam/code/ax-engine-v4/crates/ax-engine-sdk/src/session.rs)",
+      "Bash(sed -n '3550,3570p' /Users/akiralam/code/ax-engine-v4/crates/ax-engine-sdk/src/session.rs)",
+      "Bash(sed -n '3590,3610p' /Users/akiralam/code/ax-engine-v4/crates/ax-engine-sdk/src/session.rs)",
+      "Bash(awk -F: '{print $1}')",
+      "Bash(xargs -I{} sed -n '{},{p}' /Users/akiralam/code/ax-engine-v4/crates/ax-engine-sdk/src/session.rs)",
+      "Bash(gh repo *)",
+      "Bash(git clone *)",
+      "Bash(ruby *)"
     ]
   }
 }
