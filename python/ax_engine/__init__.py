@@ -513,6 +513,34 @@ class Session:
             metadata=metadata,
         )
 
+    def embed(
+        self,
+        token_ids: list[int],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ) -> list[float]:
+        """Compute a dense embedding for the given token IDs.
+
+        Calls directly into the MLX runner without HTTP overhead — equivalent
+        call depth to mlx-lm and mlx-swift-lm for benchmarking purposes.
+
+        Parameters
+        ----------
+        token_ids:
+            Pre-tokenized input. For Qwen3-Embedding, append EOS before calling.
+        pooling:
+            Pooling strategy: ``"last"`` (default), ``"mean"``, or ``"cls"``.
+        normalize:
+            L2-normalize the output vector (default ``True``).
+
+        Returns
+        -------
+        list[float]
+            Embedding vector.
+        """
+        return self._inner.embed(token_ids, pooling=pooling, normalize=normalize)
+
     def __enter__(self) -> Session:
         return self
 
