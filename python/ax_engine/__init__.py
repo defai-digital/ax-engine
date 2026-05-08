@@ -541,6 +541,36 @@ class Session:
         """
         return self._inner.embed(token_ids, pooling=pooling, normalize=normalize)
 
+    def embed_batch(
+        self,
+        batch_token_ids: list[list[int]],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ) -> list[list[float]]:
+        """Compute dense embeddings for a batch of token ID sequences.
+
+        Runs a single batched forward pass for all sequences, which is more
+        efficient than calling :meth:`embed` once per sequence.  Sequences are
+        right-padded to the longest length before the forward pass.
+
+        Parameters
+        ----------
+        batch_token_ids:
+            List of pre-tokenized sequences.  For Qwen3-Embedding, append EOS
+            to each sequence before calling.
+        pooling:
+            Pooling strategy: ``"last"`` (default), ``"mean"``, or ``"cls"``.
+        normalize:
+            L2-normalize each output vector (default ``True``).
+
+        Returns
+        -------
+        list[list[float]]
+            One embedding vector per input sequence, in the same order.
+        """
+        return self._inner.embed_batch(batch_token_ids, pooling=pooling, normalize=normalize)
+
     def __enter__(self) -> Session:
         return self
 

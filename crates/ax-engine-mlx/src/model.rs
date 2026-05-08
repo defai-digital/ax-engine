@@ -1247,11 +1247,12 @@ pub fn forward_all_positions_with_turboquant_context(
 fn layer_forward_dense_embed(
     cfg: &ModelConfig,
     w: &LayerWeights,
-    hidden: &MlxArray, // [1, seq, hidden]
+    hidden: &MlxArray, // [batch, seq, hidden]
     layer_idx: usize,
 ) -> MlxArray {
     let (head_dim, rope_theta, rope_dims, _sliding_window, _kv_source, v_norm_no_scale) =
         layer_params(cfg, layer_idx);
+    let batch = hidden.shape()[0] as usize;
     let seq = hidden.shape()[1] as usize;
 
     // 1. Attention norm.
@@ -1263,19 +1264,63 @@ fn layer_forward_dense_embed(
         .checked_div(head_dim)
         .expect("k projection output must divide by head_dim");
 
-    let q = reshape(&q_raw, &[1, seq as i32, cfg.n_heads as i32, head_dim as i32], None);
-    let k = reshape(&k_raw, &[1, seq as i32, kv_heads as i32, head_dim as i32], None);
-    let v = reshape(&v_raw, &[1, seq as i32, kv_heads as i32, head_dim as i32], None);
+    let q = reshape(
+        &q_raw,
+        &[batch as i32, seq as i32, cfg.n_heads as i32, head_dim as i32],
+        None,
+    );
+    let k = reshape(
+        &k_raw,
+        &[batch as i32, seq as i32, kv_heads as i32, head_dim as i32],
+        None,
+    );
+    let v = reshape(
+        &v_raw,
+        &[batch as i32, seq as i32, kv_heads as i32, head_dim as i32],
+        None,
+    );
 
-    let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq, cfg.rms_norm_eps);
-    let k = qk_norm_bshd(k, w.k_norm.as_ref(), kv_heads, head_dim, seq, cfg.rms_norm_eps);
+    let q = qk_norm_bshd(
+        q,
+        w.q_norm.as_ref(),
+        cfg.n_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+    let k = qk_norm_bshd(
+        k,
+        w.k_norm.as_ref(),
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
 
     let q = transpose(&q, &[0, 2, 1, 3], None);
     let k = transpose(&k, &[0, 2, 1, 3], None);
     let v = prepare_value_bhsd(v, v_norm_no_scale, kv_heads, head_dim, seq);
 
-    let q_rope = rope(&q, rope_dims as i32, false, Some(rope_theta), 1.0, 0, None, None);
-    let k_rope = rope(&k, rope_dims as i32, false, Some(rope_theta), 1.0, 0, None, None);
+    let q_rope = rope(
+        &q,
+        rope_dims as i32,
+        false,
+        Some(rope_theta),
+        1.0,
+        0,
+        None,
+        None,
+    );
+    let k_rope = rope(
+        &k,
+        rope_dims as i32,
+        false,
+        Some(rope_theta),
+        1.0,
+        0,
+        None,
+        None,
+    );
 
     // 8. SDPA — k_rope/v used directly, no KV-cache writes.
     let mask_opt: Option<MlxArray> = None; // resolves to Causal in full_precision_attention
@@ -1283,11 +1328,17 @@ fn layer_forward_dense_embed(
 
     // 9-13. Transpose back, reshape, output projection, residual.
     let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
-    let attn_flat = reshape(&attn_out, &[1, seq as i32, (cfg.n_heads * head_dim) as i32], None);
+    let attn_flat = reshape(
+        &attn_out,
+        &[batch as i32, seq as i32, (cfg.n_heads * head_dim) as i32],
+        None,
+    );
     let attn_proj = attention_output_projection(
         &attn_flat,
         None,
-        w.o_proj.as_ref().expect("dense embed layer must have o_proj"),
+        w.o_proj
+            .as_ref()
+            .expect("dense embed layer must have o_proj"),
     );
     let hidden = add(hidden, &attn_proj, None);
 
@@ -1319,6 +1370,58 @@ pub fn forward_for_embedding(
         hidden = layer_forward_dense_embed(cfg, layer_w, &hidden, li);
     }
     rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None)
+}
+
+/// Embed a flat token-id array and reshape to [batch, max_seq, hidden_size].
+fn embed_tokens_batched(
+    ids_flat: &MlxArray,  // [batch * max_seq] u32
+    embedding: &QuantizedWeight,
+    hidden_size: usize,
+    batch: usize,
+    max_seq: usize,
+) -> MlxArray {
+    // Reuse single-sequence path; it produces [1, batch*max_seq, hidden].
+    let flat_hidden = embed_tokens_arr(ids_flat, embedding, hidden_size);
+    reshape(&flat_hidden, &[batch as i32, max_seq as i32, hidden_size as i32], None)
+}
+
+/// Batch stateless forward pass for dense-embedding extraction.
+///
+/// Pads `batch_token_ids` to the longest sequence length, runs a single
+/// transformer forward pass for all sequences, and returns the normalized
+/// hidden states as `[batch, max_seq, hidden_size]` bfloat16 along with the
+/// actual (un-padded) length of each sequence.
+pub fn forward_for_embedding_batch(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    batch_token_ids: &[Vec<u32>],
+) -> (MlxArray, Vec<usize>) {
+    let actual_lens: Vec<usize> = batch_token_ids.iter().map(Vec::len).collect();
+    let max_len = *actual_lens.iter().max().expect("non-empty batch");
+    let batch = batch_token_ids.len();
+
+    let mut flat_ids = vec![0u32; batch * max_len];
+    for (i, ids) in batch_token_ids.iter().enumerate() {
+        flat_ids[i * max_len..i * max_len + ids.len()].copy_from_slice(ids);
+    }
+    // mlx_array_new_data copies the buffer immediately; flat_ids can be dropped.
+    let ids_flat = MlxArray::from_raw_data(
+        flat_ids.as_ptr() as *const u8,
+        flat_ids.len() * std::mem::size_of::<u32>(),
+        &[(batch * max_len) as i32],
+        MlxDtype::Uint32,
+    );
+
+    let mut hidden = embed_tokens_batched(&ids_flat, &weights.token_embedding, cfg.hidden_size, batch, max_len);
+    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if let Some(scale) = cfg.hidden_states_scale {
+        hidden = scale_hidden(&hidden, scale);
+    }
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        hidden = layer_forward_dense_embed(cfg, layer_w, &hidden, li);
+    }
+    let out = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    (out, actual_lens)
 }
 
 /// Single-token forward pass accepting a lazy token `MlxArray`.
@@ -1491,22 +1594,24 @@ fn qk_norm_bshd(
     eps: f32,
 ) -> MlxArray {
     let Some(n) = norm else { return x };
-    let flat = reshape(&x, &[(n_heads * seq) as i32, head_dim as i32], None);
+    let batch = x.shape()[0] as usize;
+    let flat = reshape(&x, &[(batch * n_heads * seq) as i32, head_dim as i32], None);
     let normed = rms_norm(&flat, Some(n), eps, None);
     reshape(
         &normed,
-        &[1, seq as i32, n_heads as i32, head_dim as i32],
+        &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
         None,
     )
 }
 
-/// Apply no-scale per-head RMS norm in BSHD [1, seq, n_heads, head_dim] space.
+/// Apply no-scale per-head RMS norm in BSHD [batch, seq, n_heads, head_dim] space.
 fn rms_norm_no_scale_bshd(x: MlxArray, n_heads: usize, head_dim: usize, seq: usize) -> MlxArray {
-    let flat = reshape(&x, &[(n_heads * seq) as i32, head_dim as i32], None);
+    let batch = x.shape()[0] as usize;
+    let flat = reshape(&x, &[(batch * n_heads * seq) as i32, head_dim as i32], None);
     let normed = rms_norm(&flat, None, 1e-6, None);
     reshape(
         &normed,
-        &[1, seq as i32, n_heads as i32, head_dim as i32],
+        &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
         None,
     )
 }
