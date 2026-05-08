@@ -1,0 +1,452 @@
+{
+  "benchmark": {
+    "batch_size": 1,
+    "context_tokens": 8192,
+    "generation_tokens": 1,
+    "repetitions": 3,
+    "temperature": 0.0
+  },
+  "claim_scope": "concurrent_long_context_prefill",
+  "host": {
+    "chip": "Apple M5 Max",
+    "source": "operator_provided_or_default"
+  },
+  "interpretation": "This is AX server-path concurrent request evidence. Keep it separate from batch=1 runner throughput and from continuous-batching claims.",
+  "model": {
+    "id": "mlx-community/Qwen3-4B-4bit",
+    "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25",
+    "model_family": "qwen3",
+    "model_type": "qwen3",
+    "quantization": {
+      "bits": 4,
+      "group_size": 64
+    }
+  },
+  "prompt_artifacts": [
+    "benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/prompts/concurrent/prompt-8192-gen-1-d4b6466474a8.json",
+    "benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/prompts/concurrent/prompt-8192-gen-1-d4b6466474a8.json",
+    "benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/prompts/concurrent/prompt-8192-gen-1-cfdbcbf4e4d9.json",
+    "benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/prompts/concurrent/prompt-8192-gen-1-d4b6466474a8.json",
+    "benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/prompts/concurrent/prompt-8192-gen-1-cfdbcbf4e4d9.json",
+    "benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/prompts/concurrent/prompt-8192-gen-1-c634dd32d055.json",
+    "benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/prompts/concurrent/prompt-8192-gen-1-d4ab11e849e9.json"
+  ],
+  "provenance": {
+    "repo_revision": "8b186d5f6558175dc95e98e532f17d15dc3715e9",
+    "runner": "scripts/run_mlx_p2_latency_artifacts.py",
+    "server_binary": "/Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server"
+  },
+  "rows": [
+    {
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "concurrent_requests": 1,
+      "context_tokens": 8192,
+      "engine": "ax_engine_mlx",
+      "failure_count": {
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "p75": 0.0
+      },
+      "generation_tokens": 1,
+      "method": "server_sse_runner_time_us_concurrent",
+      "peak_memory_gb": {
+        "max": 4.323272705078125,
+        "mean": 4.318094889322917,
+        "median": 4.3182373046875,
+        "min": 4.312774658203125,
+        "p75": 4.3207550048828125
+      },
+      "prefill_overlap": {
+        "classification": "serialized",
+        "overlap_efficiency": {
+          "max": 0.0,
+          "mean": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "p75": 0.0
+        }
+      },
+      "prompt_token_ids_sha256": [
+        "d4b6466474a89c9e648147fc6e15b739b97af69adab4006969bf0d4a6bc27ad7"
+      ],
+      "queue_delay_ms": {
+        "max": 172.0502919469177,
+        "mean": 158.3807916534964,
+        "median": 164.59783294840145,
+        "min": 138.49425006517004,
+        "p75": 168.32406244765957
+      },
+      "repetitions": 3,
+      "request_ttft_ms": {
+        "max": 2462.213,
+        "mean": 2242.956,
+        "median": 2208.889,
+        "min": 2057.766,
+        "p75": 2335.5510000000004
+      },
+      "route": {
+        "selected_backend": "mlx"
+      },
+      "timing_scope": "end_to_end_server_path_plus_runner_ttft",
+      "total_wall_ms": {
+        "max": 2612.631333991885,
+        "mean": 2405.846111321201,
+        "median": 2374.476166907698,
+        "min": 2230.4308330640197,
+        "p75": 2493.5537504497916
+      },
+      "trials": [
+        {
+          "failure_count": 0,
+          "observations": [
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 4.312774658203125,
+              "ttft_ms": 2462.213,
+              "wall_ms": 2600.7072500651702
+            }
+          ],
+          "peak_memory_gb": 4.312774658203125,
+          "queue_delay_ms": 138.49425006517004,
+          "request_ttft_ms": 2462.213,
+          "total_wall_ms": 2612.631333991885
+        },
+        {
+          "failure_count": 0,
+          "observations": [
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 4.3182373046875,
+              "ttft_ms": 2208.889,
+              "wall_ms": 2373.4868329484016
+            }
+          ],
+          "peak_memory_gb": 4.3182373046875,
+          "queue_delay_ms": 164.59783294840145,
+          "request_ttft_ms": 2208.889,
+          "total_wall_ms": 2374.476166907698
+        },
+        {
+          "failure_count": 0,
+          "observations": [
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 4.323272705078125,
+              "ttft_ms": 2057.766,
+              "wall_ms": 2229.8162919469178
+            }
+          ],
+          "peak_memory_gb": 4.323272705078125,
+          "queue_delay_ms": 172.0502919469177,
+          "request_ttft_ms": 2057.766,
+          "total_wall_ms": 2230.4308330640197
+        }
+      ]
+    },
+    {
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "concurrent_requests": 2,
+      "context_tokens": 8192,
+      "engine": "ax_engine_mlx",
+      "failure_count": {
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "p75": 0.0
+      },
+      "generation_tokens": 1,
+      "method": "server_sse_runner_time_us_concurrent",
+      "peak_memory_gb": {
+        "max": 4.6118927001953125,
+        "mean": 4.5567474365234375,
+        "median": 4.535369873046875,
+        "min": 4.522979736328125,
+        "p75": 4.573631286621094
+      },
+      "prefill_overlap": {
+        "classification": "partial_overlap",
+        "overlap_efficiency": {
+          "max": 0.24462491973814732,
+          "mean": 0.23159497568119022,
+          "median": 0.22994720875117144,
+          "min": 0.22021279855425185,
+          "p75": 0.23728606424465937
+        }
+      },
+      "prompt_token_ids_sha256": [
+        "d4b6466474a89c9e648147fc6e15b739b97af69adab4006969bf0d4a6bc27ad7",
+        "cfdbcbf4e4d9ac073d68922a90da405fed9e02b8d22baa17e18fb275695937d2"
+      ],
+      "queue_delay_ms": {
+        "max": 299.2248749394937,
+        "mean": 275.02875697383524,
+        "median": 270.49385453192144,
+        "min": 255.36754145009058,
+        "p75": 284.8593647357076
+      },
+      "ratios_to_single_request": {
+        "peak_memory_gb": 1.0667596089365756,
+        "request_ttft_ms": 1.76557808020231,
+        "total_wall_ms": 1.7700527912488286
+      },
+      "repetitions": 3,
+      "request_ttft_ms": {
+        "max": 3942.346,
+        "mean": 3876.8345000000004,
+        "median": 3899.9660000000003,
+        "min": 3788.1915,
+        "p75": 3921.156
+      },
+      "route": {
+        "selected_backend": "mlx"
+      },
+      "timing_scope": "end_to_end_server_path_plus_runner_ttft",
+      "total_wall_ms": {
+        "max": 4226.062292000279,
+        "mean": 4199.035583684842,
+        "median": 4202.94816698879,
+        "min": 4168.0962920654565,
+        "p75": 4214.505229494534
+      },
+      "trials": [
+        {
+          "failure_count": 0,
+          "observations": [
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 6.45062255859375,
+              "ttft_ms": 3841.487,
+              "wall_ms": 3972.38483291585
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 4.522979736328125,
+              "ttft_ms": 3734.896,
+              "wall_ms": 4202.447916963138
+            }
+          ],
+          "peak_memory_gb": 4.522979736328125,
+          "queue_delay_ms": 299.2248749394937,
+          "request_ttft_ms": 3788.1915,
+          "total_wall_ms": 4202.94816698879
+        },
+        {
+          "failure_count": 0,
+          "observations": [
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 6.463043212890625,
+              "ttft_ms": 3928.473,
+              "wall_ms": 4200.4591670120135
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 5.010833740234375,
+              "ttft_ms": 3956.219,
+              "wall_ms": 4225.220542051829
+            }
+          ],
+          "peak_memory_gb": 4.535369873046875,
+          "queue_delay_ms": 270.49385453192144,
+          "request_ttft_ms": 3942.346,
+          "total_wall_ms": 4226.062292000279
+        },
+        {
+          "failure_count": 0,
+          "observations": [
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 6.5047760009765625,
+              "ttft_ms": 3887.107,
+              "wall_ms": 4144.5072499336675
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 5.1453399658203125,
+              "ttft_ms": 3912.8250000000003,
+              "wall_ms": 4166.159832966514
+            }
+          ],
+          "peak_memory_gb": 4.6118927001953125,
+          "queue_delay_ms": 255.36754145009058,
+          "request_ttft_ms": 3899.9660000000003,
+          "total_wall_ms": 4168.0962920654565
+        }
+      ]
+    },
+    {
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "concurrent_requests": 4,
+      "context_tokens": 8192,
+      "engine": "ax_engine_mlx",
+      "failure_count": {
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "p75": 0.0
+      },
+      "generation_tokens": 1,
+      "method": "server_sse_runner_time_us_concurrent",
+      "peak_memory_gb": {
+        "max": 8.276092529296875,
+        "mean": 7.682708740234375,
+        "median": 7.4041290283203125,
+        "min": 7.3679046630859375,
+        "p75": 7.840110778808594
+      },
+      "prefill_overlap": {
+        "classification": "serialized",
+        "overlap_efficiency": {
+          "max": 0.11028644782639678,
+          "mean": 0.07193922772299499,
+          "median": 0.10553123534258821,
+          "min": 0.0,
+          "p75": 0.10790884158449249
+        }
+      },
+      "prompt_token_ids_sha256": [
+        "d4b6466474a89c9e648147fc6e15b739b97af69adab4006969bf0d4a6bc27ad7",
+        "cfdbcbf4e4d9ac073d68922a90da405fed9e02b8d22baa17e18fb275695937d2",
+        "c634dd32d0558f20c5be867d1aa17cd8952eafd6659aa3e4ae7bf7783932fcdf",
+        "d4ab11e849e9a4ed1370e54cfafad5ea0b0e5b25fc43f819f1568dc91b146eb0"
+      ],
+      "queue_delay_ms": {
+        "max": 401.5581250825162,
+        "mean": 396.9221596986678,
+        "median": 401.45158353038096,
+        "min": 387.75677048310627,
+        "p75": 401.5048543064486
+      },
+      "ratios_to_single_request": {
+        "peak_memory_gb": 1.9143119330815657,
+        "request_ttft_ms": 3.7660138196170108,
+        "total_wall_ms": 3.683406293972235
+      },
+      "repetitions": 3,
+      "request_ttft_ms": {
+        "max": 9401.975,
+        "mean": 8673.142333333333,
+        "median": 8318.7065,
+        "min": 8298.745499999999,
+        "p75": 8860.34075
+      },
+      "route": {
+        "selected_backend": "mlx"
+      },
+      "timing_scope": "end_to_end_server_path_plus_runner_ttft",
+      "total_wall_ms": {
+        "max": 9828.92549992539,
+        "mean": 9095.790999980332,
+        "median": 8746.160458074883,
+        "min": 8712.287041940726,
+        "p75": 9287.542979000136
+      },
+      "trials": [
+        {
+          "failure_count": 0,
+          "observations": [
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 10.770980834960938,
+              "ttft_ms": 8295.059,
+              "wall_ms": 8678.359457990155
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 10.770980834960938,
+              "ttft_ms": 8286.951000000001,
+              "wall_ms": 8679.164082976058
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 9.455429077148438,
+              "ttft_ms": 8302.431999999999,
+              "wall_ms": 8698.788166977465
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 7.8201751708984375,
+              "ttft_ms": 8357.544,
+              "wall_ms": 8711.939750006422
+            }
+          ],
+          "peak_memory_gb": 7.3679046630859375,
+          "queue_delay_ms": 387.75677048310627,
+          "request_ttft_ms": 8298.745499999999,
+          "total_wall_ms": 8712.287041940726
+        },
+        {
+          "failure_count": 0,
+          "observations": [
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 10.854034423828125,
+              "ttft_ms": 8316.821,
+              "wall_ms": 8701.526749995537
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 9.701385498046875,
+              "ttft_ms": 8322.398,
+              "wall_ms": 8718.430916080251
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 9.063568115234375,
+              "ttft_ms": 8320.591999999999,
+              "wall_ms": 8727.675334084779
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 8.32171630859375,
+              "ttft_ms": 8301.299,
+              "wall_ms": 8742.970832972787
+            }
+          ],
+          "peak_memory_gb": 8.276092529296875,
+          "queue_delay_ms": 401.5581250825162,
+          "request_ttft_ms": 8318.7065,
+          "total_wall_ms": 8746.160458074883
+        },
+        {
+          "failure_count": 0,
+          "observations": [
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 10.860733032226562,
+              "ttft_ms": 9362.783,
+              "wall_ms": 9765.432291082107
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 9.763656616210938,
+              "ttft_ms": 9390.781,
+              "wall_ms": 9792.37458400894
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 8.923431396484375,
+              "ttft_ms": 9413.169,
+              "wall_ms": 9814.478583051823
+            },
+            {
+              "decode_tok_s": 0.0,
+              "peak_memory_gb": 7.9143829345703125,
+              "ttft_ms": 9425.912,
+              "wall_ms": 9825.758833088912
+            }
+          ],
+          "peak_memory_gb": 7.4041290283203125,
+          "queue_delay_ms": 401.45158353038096,
+          "request_ttft_ms": 9401.975,
+          "total_wall_ms": 9828.92549992539
+        }
+      ]
+    }
+  ],
+  "schema_version": "ax.mlx_concurrent_prefill.v1"
+}

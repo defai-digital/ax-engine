@@ -1,0 +1,13 @@
+model,prompt,policy,v442_decode,current_decode,decode_delta_pct,v442_claim,current_claim,v442_accepted,current_accepted,current_request_disabled_steps
+qwen3-coder-next-4bit,128,direct,103.05413506745583,93.96889851432952,-8.815984479593574,direct_same_policy_baseline,direct_same_policy_baseline,0,0,0
+qwen3-coder-next-4bit,512,direct,103.00573993402766,93.02700346836899,-9.687553792681625,direct_same_policy_baseline,direct_same_policy_baseline,0,0,0
+qwen3-coder-next-4bit,128,ngram,137.23305739043238,222.6105734763884,62.21352034958625,ngram_acceleration_effective_throughput,ngram_acceleration_effective_throughput,138,294,0
+qwen3-coder-next-4bit,512,ngram,258.55996351657836,237.78363187349163,-8.035401676468211,ngram_acceleration_effective_throughput,ngram_acceleration_effective_throughput,300,300,0
+qwen3_5-9b-mlx-4bit,128,direct,93.46502825661229,94.54230358650324,1.1525972334093249,direct_same_policy_baseline,direct_same_policy_baseline,0,0,0
+qwen3_5-9b-mlx-4bit,512,direct,94.244761809351,94.24336307812182,-0.00148414745003711,direct_same_policy_baseline,direct_same_policy_baseline,0,0,0
+qwen3_5-9b-mlx-4bit,128,ngram,193.66191813742984,198.1894535120888,2.337855278003609,ngram_acceleration_effective_throughput,ngram_acceleration_effective_throughput,276,276,0
+qwen3_5-9b-mlx-4bit,512,ngram,91.10205510454857,92.69606129326333,1.749692898678834,ngram_no_draft_direct_fallback,ngram_no_draft_direct_fallback,0,0,333
+qwen3_6-35b-a3b-5bit,128,direct,132.73605592055068,123.155694981163,-7.217602536813372,direct_same_policy_baseline,direct_same_policy_baseline,0,0,0
+qwen3_6-35b-a3b-5bit,512,direct,131.81370468125473,122.17529750165947,-7.312143454963483,direct_same_policy_baseline,direct_same_policy_baseline,0,0,0
+qwen3_6-35b-a3b-5bit,128,ngram,278.66460410975435,263.7251278132411,-5.361095767523172,ngram_acceleration_effective_throughput,ngram_acceleration_effective_throughput,300,300,0
+qwen3_6-35b-a3b-5bit,512,ngram,275.1430960747696,260.894931242887,-5.1784562415517215,ngram_acceleration_effective_throughput,ngram_acceleration_effective_throughput,300,300,0

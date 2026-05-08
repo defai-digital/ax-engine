@@ -1,0 +1,121 @@
+{
+  "artifact_count": 14,
+  "artifacts": [
+    {
+      "artifact": "gemma-4-26b-a4b-it-4bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/gemma-4-26b-a4b-it-4bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "gemma-4-31b-it-4bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/gemma-4-31b-it-4bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "gemma-4-e2b-it-4bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/gemma-4-e2b-it-4bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "gemma-4-e2b-it-5bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/gemma-4-e2b-it-5bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "gemma-4-e2b-it-6bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/gemma-4-e2b-it-6bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "gemma-4-e2b-it-8bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/gemma-4-e2b-it-8bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "gemma-4-e4b-it-4bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/gemma-4-e4b-it-4bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "glm-4.7-flash-4bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/GLM-4.7-Flash-4bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "qwen3-coder-next-4bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/Qwen3-Coder-Next-4bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "qwen3_5-9b-mlx-4bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/Qwen3.5-9B-MLX-4bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "qwen3_6-35b-a3b-5bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-5bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "qwen3_6-35b-a3b-6bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-6bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "qwen3_6-35b-a3b-8bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-8bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    },
+    {
+      "artifact": "qwen3_6-35b-a3b-ud-mlx-4bit.json",
+      "ax_rows_refreshed": 4,
+      "errors": [],
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-UD-MLX-4bit",
+      "reference_rows_reused": 4,
+      "result_rows": 8
+    }
+  ],
+  "errors": [],
+  "expected_artifact_count": 14,
+  "output_root": "benchmarks/results/mlx-inference/2026-05-08-full-ax-mlx-dirty",
+  "reference_root": "benchmarks/results/mlx-inference/2026-05-08-post-af0fcb2-readme-ax"
+}

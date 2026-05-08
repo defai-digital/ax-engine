@@ -1,0 +1,633 @@
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.4.1",
+    "platform": "darwin"
+  },
+  "build": {
+    "commit": "603b66f45171904801d4cd401bdbbfd7006a1ce3",
+    "build_profile": "release",
+    "server_binary": "/Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server"
+  },
+  "model": ".internal/models/gemma-4-e2b-it-8bit",
+  "model_dir": ".internal/models/gemma-4-e2b-it-8bit",
+  "model_config": {
+    "model_type": "gemma4",
+    "quantization": {
+      "group_size": 64,
+      "bits": 8,
+      "mode": "affine"
+    },
+    "model_family": "gemma4",
+    "linear_attention_enabled": false,
+    "linear_attention": {}
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "secondary_reference": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
+    "secondary_reference_present": true,
+    "secondary_reference_required": false,
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the default direct same-policy comparison; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback.",
+    "secondary_reference_policy": "mlx-swift-lm rows are admitted only through an explicit BenchmarkHelpers/MLXLMCommon generation adapter that reads the prompt token JSON emitted by this harness and reports prefill/decode metrics for the same random-token prompt/decode shape.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-07-ax-only-post-603b66f/gemma-4-e2b-it-8bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+          "token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+          "token_count": 128
+        },
+        {
+          "prompt_tokens": 512,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-07-ax-only-post-603b66f/gemma-4-e2b-it-8bit-prompts/prompt-512-gen-128-846109be82df.json",
+          "token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+          "token_count": 512
+        }
+      ]
+    },
+    "strictness": "same_prompt_tokens_for_ax_and_swift_adapter; mlx_lm_prompt_algorithm_reproduced",
+    "reused_reference_artifact_schema_version": "ax.mlx_inference_stack.v2",
+    "reused_reference_artifact_build": {
+      "commit": "29fd025ebcd599649846d464eb6d1b2cdc704e40",
+      "build_profile": "release",
+      "server_binary": "/Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server"
+    }
+  },
+  "prompt_tokens": [
+    128,
+    512
+  ],
+  "generation_tokens": 128,
+  "repetitions": 1,
+  "cooldown": 0.0,
+  "prefill_step_size": 2048,
+  "concurrency": 1,
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "results": [
+    {
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      },
+      "batch_size": 1,
+      "decode_tok_s": {
+        "max": 139.686,
+        "mean": 139.09533333333334,
+        "median": 139.403,
+        "min": 138.197
+      },
+      "engine": "mlx_lm",
+      "generation_tokens": 128,
+      "method": "mlx_lm.benchmark",
+      "peak_memory_gb": {
+        "max": 5.156,
+        "mean": 5.155333333333334,
+        "median": 5.155,
+        "min": 5.155
+      },
+      "prefill_step_size": 2048,
+      "prefill_tok_s": {
+        "max": 2097.222,
+        "mean": 1941.352,
+        "median": 1911.684,
+        "min": 1815.15
+      },
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-04/gemma-4-e2b-it-8bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+      "prompt_token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+      "prompt_tokens": 128,
+      "random_seed": 0,
+      "reported_averages": {
+        "decode_tok_s": 139.095,
+        "peak_memory_gb": 5.155,
+        "prefill_tok_s": 1941.352
+      },
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "total_time_s": {
+        "max": 1.136,
+        "mean": 1.127,
+        "median": 1.125,
+        "min": 1.12
+      },
+      "trials": [
+        {
+          "decode_tok_s": 138.197,
+          "peak_memory_gb": 5.155,
+          "prefill_tok_s": 1815.15,
+          "total_time_s": 1.136,
+          "trial": 1
+        },
+        {
+          "decode_tok_s": 139.403,
+          "peak_memory_gb": 5.155,
+          "prefill_tok_s": 1911.684,
+          "total_time_s": 1.125,
+          "trial": 2
+        },
+        {
+          "decode_tok_s": 139.686,
+          "peak_memory_gb": 5.156,
+          "prefill_tok_s": 2097.222,
+          "total_time_s": 1.12,
+          "trial": 3
+        }
+      ]
+    },
+    {
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      },
+      "batch_size": 1,
+      "decode_tok_s": {
+        "max": 135.144,
+        "mean": 134.65066666666667,
+        "median": 134.545,
+        "min": 134.263
+      },
+      "engine": "mlx_lm",
+      "generation_tokens": 128,
+      "method": "mlx_lm.benchmark",
+      "peak_memory_gb": {
+        "max": 5.593,
+        "mean": 5.587,
+        "median": 5.593,
+        "min": 5.575
+      },
+      "prefill_step_size": 2048,
+      "prefill_tok_s": {
+        "max": 6999.815,
+        "mean": 6697.558333333333,
+        "median": 6582.803,
+        "min": 6510.057
+      },
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-04/gemma-4-e2b-it-8bit-prompts/prompt-512-gen-128-846109be82df.json",
+      "prompt_token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+      "prompt_tokens": 512,
+      "random_seed": 0,
+      "reported_averages": {
+        "decode_tok_s": 134.651,
+        "peak_memory_gb": 5.587,
+        "prefill_tok_s": 6697.558
+      },
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "total_time_s": {
+        "max": 1.173,
+        "mean": 1.1656666666666666,
+        "median": 1.169,
+        "min": 1.155
+      },
+      "trials": [
+        {
+          "decode_tok_s": 135.144,
+          "peak_memory_gb": 5.575,
+          "prefill_tok_s": 6999.815,
+          "total_time_s": 1.155,
+          "trial": 1
+        },
+        {
+          "decode_tok_s": 134.263,
+          "peak_memory_gb": 5.593,
+          "prefill_tok_s": 6510.057,
+          "total_time_s": 1.169,
+          "trial": 2
+        },
+        {
+          "decode_tok_s": 134.545,
+          "peak_memory_gb": 5.593,
+          "prefill_tok_s": 6582.803,
+          "total_time_s": 1.173,
+          "trial": 3
+        }
+      ]
+    },
+    {
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "prefill_tok_s": 1911.684,
+        "decode_tok_s": 139.403,
+        "prefill_ratio_to_mlx_lm": 1.6121691429594407,
+        "decode_ratio_to_mlx_lm": 0.96767038359966
+      },
+      "batch_size": 1,
+      "decode_tok_s": {
+        "max": 135.49618531955954,
+        "mean": 133.18011555073198,
+        "median": 134.8961544849434,
+        "min": 129.14800684769295
+      },
+      "engine": "mlx_swift_lm",
+      "generation_tokens": 128,
+      "method": "mlx_swift_lm_benchmark_adapter",
+      "peak_memory_gb": {
+        "max": 4.619345163926482,
+        "mean": 4.619343892360727,
+        "median": 4.619344210252166,
+        "min": 4.619342302903533
+      },
+      "prefill_step_size": 2048,
+      "prefill_tok_s": {
+        "max": 3424.205527243968,
+        "mean": 3165.3267120055716,
+        "median": 3081.9579558892756,
+        "min": 2989.816652883472
+      },
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-04/gemma-4-e2b-it-8bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+      "prompt_token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+      "prompt_tokens": 128,
+      "random_seed": 0,
+      "secondary_reference_role": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
+      "timing_scope": "external_adapter_reported",
+      "trials": [
+        {
+          "decode_tok_s": 129.14800684769295,
+          "peak_memory_gb": 4.619342302903533,
+          "prefill_tok_s": 3081.9579558892756
+        },
+        {
+          "decode_tok_s": 134.8961544849434,
+          "peak_memory_gb": 4.619345163926482,
+          "prefill_tok_s": 3424.205527243968
+        },
+        {
+          "decode_tok_s": 135.49618531955954,
+          "peak_memory_gb": 4.619344210252166,
+          "prefill_tok_s": 2989.816652883472
+        }
+      ]
+    },
+    {
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 512,
+        "generation_tokens": 128,
+        "prefill_tok_s": 6582.803,
+        "decode_tok_s": 134.545,
+        "prefill_ratio_to_mlx_lm": 1.0266276260738358,
+        "decode_ratio_to_mlx_lm": 0.9718678556314151
+      },
+      "batch_size": 1,
+      "decode_tok_s": {
+        "max": 131.6286097007622,
+        "mean": 130.92177789987895,
+        "median": 130.75996063592873,
+        "min": 130.37676336294592
+      },
+      "engine": "mlx_swift_lm",
+      "generation_tokens": 128,
+      "method": "mlx_swift_lm_benchmark_adapter",
+      "peak_memory_gb": {
+        "max": 4.623775219544768,
+        "mean": 4.6237733121961355,
+        "median": 4.6237733121961355,
+        "min": 4.623771404847503
+      },
+      "prefill_step_size": 2048,
+      "prefill_tok_s": {
+        "max": 6886.812168985538,
+        "mean": 6711.046009492442,
+        "median": 6758.087416801724,
+        "min": 6488.2384426900635
+      },
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-04/gemma-4-e2b-it-8bit-prompts/prompt-512-gen-128-846109be82df.json",
+      "prompt_token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+      "prompt_tokens": 512,
+      "random_seed": 0,
+      "secondary_reference_role": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
+      "timing_scope": "external_adapter_reported",
+      "trials": [
+        {
+          "decode_tok_s": 131.6286097007622,
+          "peak_memory_gb": 4.623771404847503,
+          "prefill_tok_s": 6488.2384426900635
+        },
+        {
+          "decode_tok_s": 130.75996063592873,
+          "peak_memory_gb": 4.6237733121961355,
+          "prefill_tok_s": 6758.087416801724
+        },
+        {
+          "decode_tok_s": 130.37676336294592,
+          "peak_memory_gb": 4.623775219544768,
+          "prefill_tok_s": 6886.812168985538
+        }
+      ]
+    },
+    {
+      "engine": "ax_engine_mlx",
+      "method": "server_sse_runner_time_us",
+      "timing_scope": "ax_engine_runner_time_us",
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "ax_decode_claim_status": "direct_same_policy_baseline",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "prefill_tok_s": {
+        "mean": 2945.5081001472754,
+        "median": 2945.5081001472754,
+        "min": 2945.5081001472754,
+        "max": 2945.5081001472754
+      },
+      "decode_tok_s": {
+        "mean": 125.75639500974859,
+        "median": 125.75639500974859,
+        "min": 125.75639500974859,
+        "max": 125.75639500974859
+      },
+      "ttft_ms": {
+        "mean": 43.456,
+        "median": 43.456,
+        "min": 43.456,
+        "max": 43.456
+      },
+      "ttft_source": "ax_engine_runner_prefill_time",
+      "prefill_s": {
+        "mean": 0.043456,
+        "median": 0.043456,
+        "min": 0.043456,
+        "max": 0.043456
+      },
+      "decode_s": {
+        "mean": 1.009889,
+        "median": 1.009889,
+        "min": 1.009889,
+        "max": 1.009889
+      },
+      "ngram_acceleration_telemetry": {
+        "ax_ngram_draft_attempts": 0,
+        "ax_ngram_draft_tokens": 0,
+        "ax_ngram_accepted_tokens": 0,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_ngram_full_accepts": 0,
+        "ax_ngram_partial_rejects": 0,
+        "ax_ngram_complete_misses": 0,
+        "ax_ngram_no_draft_steps": 0,
+        "ax_ngram_cooldown_steps": 0,
+        "ax_ngram_cooldown_events": 0,
+        "ax_ngram_cooldown_steps_scheduled": 0,
+        "ax_ngram_request_disable_events": 0,
+        "ax_ngram_request_disabled_steps": 0
+      },
+      "ax_mlx_telemetry": {
+        "ax_mlx_prefill_steps": 1,
+        "ax_mlx_prefill_wall_us": 43445,
+        "ax_mlx_decode_steps": 127,
+        "ax_mlx_decode_wall_us": 1007791,
+        "ax_mlx_direct_bootstrap_steps": 1,
+        "ax_mlx_direct_bootstrap_wall_us": 6806,
+        "ax_mlx_direct_pipeline_steps": 127,
+        "ax_mlx_direct_pipeline_wall_us": 1007719,
+        "ax_mlx_single_decode_steps": 0,
+        "ax_mlx_single_decode_wall_us": 0,
+        "ax_mlx_ngram_decode_steps": 0,
+        "ax_mlx_ngram_decode_wall_us": 0,
+        "ax_mlx_bonus_tokens": 0
+      },
+      "ax_mlx_gemma4_moe_profile": {},
+      "ax_mlx_linear_attention_profile": {},
+      "trials": [
+        {
+          "prefill_s": 0.043456,
+          "decode_s": 1.009889,
+          "ttft_ms": 43.456,
+          "prefill_tok_s": 2945.5081001472754,
+          "decode_tok_s": 125.75639500974859,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 9.4063720703125,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 43445,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1007791,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 6806,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1007719,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0
+          }
+        }
+      ],
+      "peak_memory_gb": {
+        "mean": 9.4063720703125,
+        "median": 9.4063720703125,
+        "min": 9.4063720703125,
+        "max": 9.4063720703125
+      },
+      "memory_source": "server_process_rss_after_stream",
+      "prefill_step_size": 2048,
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-07-ax-only-post-603b66f/gemma-4-e2b-it-8bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+      "prompt_token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "prefill_tok_s": 1911.684,
+        "decode_tok_s": 139.403,
+        "prefill_ratio_to_mlx_lm": 1.5407923590652406,
+        "decode_ratio_to_mlx_lm": 0.9021068055188812
+      }
+    },
+    {
+      "engine": "ax_engine_mlx",
+      "method": "server_sse_runner_time_us",
+      "timing_scope": "ax_engine_runner_time_us",
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "ax_decode_claim_status": "direct_same_policy_baseline",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "prefill_tok_s": {
+        "mean": 6971.677559912853,
+        "median": 6971.677559912853,
+        "min": 6971.677559912853,
+        "max": 6971.677559912853
+      },
+      "decode_tok_s": {
+        "mean": 120.73884567959333,
+        "median": 120.73884567959333,
+        "min": 120.73884567959333,
+        "max": 120.73884567959333
+      },
+      "ttft_ms": {
+        "mean": 73.44000000000001,
+        "median": 73.44000000000001,
+        "min": 73.44000000000001,
+        "max": 73.44000000000001
+      },
+      "ttft_source": "ax_engine_runner_prefill_time",
+      "prefill_s": {
+        "mean": 0.07344,
+        "median": 0.07344,
+        "min": 0.07344,
+        "max": 0.07344
+      },
+      "decode_s": {
+        "mean": 1.051857,
+        "median": 1.051857,
+        "min": 1.051857,
+        "max": 1.051857
+      },
+      "ngram_acceleration_telemetry": {
+        "ax_ngram_draft_attempts": 0,
+        "ax_ngram_draft_tokens": 0,
+        "ax_ngram_accepted_tokens": 0,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_ngram_full_accepts": 0,
+        "ax_ngram_partial_rejects": 0,
+        "ax_ngram_complete_misses": 0,
+        "ax_ngram_no_draft_steps": 0,
+        "ax_ngram_cooldown_steps": 0,
+        "ax_ngram_cooldown_events": 0,
+        "ax_ngram_cooldown_steps_scheduled": 0,
+        "ax_ngram_request_disable_events": 0,
+        "ax_ngram_request_disabled_steps": 0
+      },
+      "ax_mlx_telemetry": {
+        "ax_mlx_prefill_steps": 1,
+        "ax_mlx_prefill_wall_us": 73428,
+        "ax_mlx_decode_steps": 127,
+        "ax_mlx_decode_wall_us": 1049814,
+        "ax_mlx_direct_bootstrap_steps": 1,
+        "ax_mlx_direct_bootstrap_wall_us": 6855,
+        "ax_mlx_direct_pipeline_steps": 127,
+        "ax_mlx_direct_pipeline_wall_us": 1049736,
+        "ax_mlx_single_decode_steps": 0,
+        "ax_mlx_single_decode_wall_us": 0,
+        "ax_mlx_ngram_decode_steps": 0,
+        "ax_mlx_ngram_decode_wall_us": 0,
+        "ax_mlx_bonus_tokens": 0
+      },
+      "ax_mlx_gemma4_moe_profile": {},
+      "ax_mlx_linear_attention_profile": {},
+      "trials": [
+        {
+          "prefill_s": 0.07344,
+          "decode_s": 1.051857,
+          "ttft_ms": 73.44000000000001,
+          "prefill_tok_s": 6971.677559912853,
+          "decode_tok_s": 120.73884567959333,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 9.44635009765625,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 73428,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1049814,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 6855,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1049736,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0
+          }
+        }
+      ],
+      "peak_memory_gb": {
+        "mean": 9.44635009765625,
+        "median": 9.44635009765625,
+        "min": 9.44635009765625,
+        "max": 9.44635009765625
+      },
+      "memory_source": "server_process_rss_after_stream",
+      "prefill_step_size": 2048,
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-07-ax-only-post-603b66f/gemma-4-e2b-it-8bit-prompts/prompt-512-gen-128-846109be82df.json",
+      "prompt_token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 512,
+        "generation_tokens": 128,
+        "prefill_tok_s": 6582.803,
+        "decode_tok_s": 134.545,
+        "prefill_ratio_to_mlx_lm": 1.0590743122516129,
+        "decode_ratio_to_mlx_lm": 0.8973863441940862
+      }
+    }
+  ],
+  "ax_only_refresh": {
+    "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
+    "reference_results_source": "benchmarks/results/mlx-inference/2026-05-06-ax-readme-refresh/gemma-4-e2b-it-8bit.json",
+    "reference_rows_reused": 4,
+    "ax_rows_refreshed": 2
+  }
+}
