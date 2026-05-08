@@ -109,8 +109,9 @@ const LINEAR_NGRAM_RETRY_INTERVAL: u32 = 16;
 const LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL: u32 = 4;
 /// If a linear-attention request cannot produce any n-gram draft after one full
 /// retry window, stop probing for the rest of the request and use the direct
-/// pipeline.  Qwen3.5 short prompts can start finding drafts after 16 generated
-/// tokens, so the threshold intentionally gives them that full window first.
+/// pipeline. Qwen-family linear-attention rows can start finding drafts only
+/// after generated output has added enough continuation evidence, so this
+/// intentionally gives them one full retry window before falling back.
 const LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD: u32 = LINEAR_NGRAM_RETRY_INTERVAL + 1;
 /// Maximum number of prompt tail tokens fed into the n-gram table.
 /// Long prompts (especially random-token benchmarks) would otherwise fill the
@@ -586,6 +587,20 @@ fn direct_pipeline_clear_cache_due(emitted_tokens: u32, cadence: u32) -> bool {
     cadence != 0
         && emitted_tokens != 0
         && (emitted_tokens == 1 || emitted_tokens.saturating_sub(1).is_multiple_of(cadence))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirectPipelineAction {
+    ContinuePending,
+    Bootstrap,
+}
+
+fn direct_pipeline_action(has_pending_direct: bool) -> DirectPipelineAction {
+    if has_pending_direct {
+        DirectPipelineAction::ContinuePending
+    } else {
+        DirectPipelineAction::Bootstrap
+    }
 }
 
 fn kib_ceil(bytes: u64) -> u32 {
@@ -1348,7 +1363,8 @@ struct RequestState {
     /// to materialise this token while simultaneously submitting the next step
     /// to the GPU — eliminating the GPU idle gap between steps.
     ///
-    /// Only set when `disable_ngram_acceleration = true` and `temperature == 0.0`.
+    /// Set for explicit direct mode and for request-local linear-attention
+    /// n-gram fallback when greedy decoding can continue on the direct pipeline.
     pending_direct: Option<MlxArray>,
     /// Direct-pipeline tokens emitted since the current generation started.
     direct_pipeline_emitted_tokens: u32,
@@ -2160,7 +2176,12 @@ impl MlxRunner {
     /// pipeline may keep the cache one lazy token ahead, so callers must continue
     /// using this path until the request finishes.
     fn run_direct_pipeline_decode(&self, state: &mut RequestState, last_token: u32) -> u32 {
-        let tok = self.run_direct_pipeline_bootstrap(state, last_token);
+        let tok = match direct_pipeline_action(state.pending_direct.is_some()) {
+            DirectPipelineAction::ContinuePending => self.run_direct_pipeline_continue(state),
+            DirectPipelineAction::Bootstrap => {
+                self.run_direct_pipeline_bootstrap(state, last_token)
+            }
+        };
         state.ngram.feed(&[tok]);
         tok
     }
@@ -4115,6 +4136,20 @@ mod tests {
         assert!(!direct_pipeline_clear_cache_due(1, 0));
         assert!(direct_pipeline_clear_cache_due(1, 1));
         assert!(direct_pipeline_clear_cache_due(2, 1));
+    }
+
+    #[test]
+    fn request_fallback_direct_pipeline_reuses_pending_step() {
+        assert_eq!(
+            direct_pipeline_action(false),
+            DirectPipelineAction::Bootstrap,
+            "first fallback direct step must bootstrap the pipeline"
+        );
+        assert_eq!(
+            direct_pipeline_action(true),
+            DirectPipelineAction::ContinuePending,
+            "later fallback direct steps must continue the pending lazy token"
+        );
     }
 
     #[test]
