@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ax_engine_sdk::{
-    CapabilityReport, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
-    GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
+    CapabilityReport, EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError,
+    EngineStepReport, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
     GenerateStreamEvent as SdkGenerateStreamEvent, GenerateStreamState, HostReport,
     LlamaCppBackendError, MetalDispatchKernelStepReport, MetalDispatchNumericStepReport,
     MetalDispatchStepReport, MetalDispatchValidationStepReport, MetalToolchainReport,
@@ -366,6 +366,60 @@ impl Session {
 
     fn __enter__(slf: Py<Self>) -> Py<Self> {
         slf
+    }
+
+    /// Compute a dense embedding for the given token IDs.
+    ///
+    /// Calls directly into the MLX runner without any HTTP overhead, making
+    /// this equivalent in call depth to mlx-lm and mlx-swift-lm for benchmarking.
+    ///
+    /// Parameters
+    /// ----------
+    /// token_ids : list[int]
+    ///     Pre-tokenized input (caller is responsible for appending EOS for
+    ///     models like Qwen3-Embedding that require it).
+    /// pooling : str
+    ///     Pooling strategy: "last" (default), "mean", or "cls".
+    /// normalize : bool
+    ///     L2-normalize the output vector (default True).
+    ///
+    /// Returns
+    /// -------
+    /// list[float]
+    ///     Embedding vector as a Python list.
+    #[pyo3(signature = (token_ids, *, pooling="last", normalize=true))]
+    fn embed(
+        &self,
+        py: Python<'_>,
+        token_ids: Vec<u32>,
+        pooling: &str,
+        normalize: bool,
+    ) -> PyResult<Vec<f32>> {
+        let pooling_mode = match pooling {
+            "last" => EmbeddingPooling::Last,
+            "mean" => EmbeddingPooling::Mean,
+            "cls" => EmbeddingPooling::Cls,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown pooling '{other}': expected 'last', 'mean', or 'cls'"
+                )));
+            }
+        };
+        let inner = Arc::clone(&self.inner);
+        py.allow_threads(move || {
+            let slot = inner
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("session mutex poisoned"))?;
+            match &*slot {
+                SessionSlot::Ready(session) => session
+                    .embed(&token_ids, pooling_mode, normalize)
+                    .map_err(to_py_runtime_error),
+                SessionSlot::Streaming => {
+                    Err(PyRuntimeError::new_err("session has an active stream"))
+                }
+                SessionSlot::Closed => Err(PyRuntimeError::new_err("session is closed")),
+            }
+        })
     }
 
     #[pyo3(signature = (_exc_type=None, _exc=None, _traceback=None))]
