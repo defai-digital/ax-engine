@@ -295,6 +295,27 @@ pub fn as_strided(
     }
 }
 
+/// Split `a` into `num_splits` equal parts along `axis`.
+///
+/// Returns `num_splits` views of the original data (no copy when the split is
+/// uniform).  `a.shape()[axis]` must be divisible by `num_splits`.
+pub fn split(a: &MlxArray, num_splits: i32, axis: i32, s: Option<&MlxStream>) -> Vec<MlxArray> {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut out_vec = ffi::mlx_vector_array_new();
+        ffi::mlx_split(&mut out_vec, a.inner, num_splits, axis, stream);
+        let n = ffi::mlx_vector_array_size(out_vec);
+        let mut result = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut arr = MlxArray::empty();
+            ffi::mlx_vector_array_get(&mut arr.inner, out_vec, i);
+            result.push(arr);
+        }
+        ffi::mlx_vector_array_free(out_vec);
+        result
+    }
+}
+
 /// Slice the last dimension of `a` from index `start` to `end` (exclusive).
 pub fn slice_last_dim(a: &MlxArray, start: i32, end: i32, s: Option<&MlxStream>) -> MlxArray {
     let ndim = a.ndim();
