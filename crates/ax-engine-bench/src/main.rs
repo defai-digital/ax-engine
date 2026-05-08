@@ -6717,7 +6717,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
-    json!({
+    let mut metrics_json = json!({
         "schema_version": "ax.engine_bench.metrics.v1",
         "run_id": run_id,
         "status": execution.status_label(),
@@ -6736,18 +6736,7 @@ fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
             "runner_time_share_pct": execution.observation.runner_time_share_pct(),
             "prefix_hit_rate": execution.observation.prefix_hit_rate(),
             "kv_block_usage": execution.observation.kv_peak_blocks as f64,
-            "evictions": execution.observation.evictions as f64,
-            "delegated_llama_cpp": {
-                "kv_usage_blocks": execution.observation.kv_peak_blocks,
-                "requests_processing_events": execution.observation.llama_cpp_processing_request_events,
-                "requests_deferred_events": execution.observation.llama_cpp_deferred_request_events,
-                "backend_reported_cached_prompt_tokens": backend_reported_cached_prompt_tokens(
-                    &execution.observation.route_metadata
-                ).unwrap_or(0),
-                "cache_reuse_observed": backend_reported_cached_prompt_tokens(
-                    &execution.observation.route_metadata
-                ).is_some()
-            }
+            "evictions": execution.observation.evictions as f64
         },
         "correctness": {
             "passed": execution.correctness.passed,
@@ -6763,7 +6752,30 @@ fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
         "memory_blocked_request_events": execution.observation.memory_blocked_request_events,
         "replay_status": execution.observation.replay_status(),
         "churn_status": execution.observation.churn_status()
-    })
+    });
+
+    if execution.runtime.llama_cpp_preset.is_some() {
+        metrics_json
+            .get_mut("metrics")
+            .and_then(Value::as_object_mut)
+            .expect("metrics artifact should contain an object metrics field")
+            .insert(
+                "delegated_llama_cpp".to_string(),
+                json!({
+                    "kv_usage_blocks": execution.observation.kv_peak_blocks,
+                    "requests_processing_events": execution.observation.llama_cpp_processing_request_events,
+                    "requests_deferred_events": execution.observation.llama_cpp_deferred_request_events,
+                    "backend_reported_cached_prompt_tokens": backend_reported_cached_prompt_tokens(
+                        &execution.observation.route_metadata
+                    ).unwrap_or(0),
+                    "cache_reuse_observed": backend_reported_cached_prompt_tokens(
+                        &execution.observation.route_metadata
+                    ).is_some()
+                }),
+            );
+    }
+
+    metrics_json
 }
 
 fn build_routes_json(run_id: &str, execution: &RuntimeResult) -> Value {
@@ -12455,6 +12467,10 @@ mod tests {
         assert_eq!(
             nested_value(&metrics, &["metrics", "evictions"]).and_then(Value::as_f64),
             Some(7.0)
+        );
+        assert!(
+            nested_value(&metrics, &["metrics", "delegated_llama_cpp"]).is_none(),
+            "MLX metrics must not publish delegated llama.cpp counters"
         );
     }
 
