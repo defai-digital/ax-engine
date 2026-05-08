@@ -538,6 +538,7 @@ impl NativeModelArtifacts {
     }
 
     pub fn summary(&self) -> NativeModelArtifactsSummary {
+        let is_hybrid_attention = self.manifest.linear_attention.is_enabled();
         NativeModelArtifactsSummary {
             model_family: self.manifest.model_family.clone(),
             tensor_format: self.manifest.tensor_format,
@@ -546,6 +547,15 @@ impl NativeModelArtifacts {
             layer_count: self.manifest.layer_count,
             tensor_count: self.manifest.tensors.len() as u32,
             tie_word_embeddings: self.manifest.tie_word_embeddings,
+            is_moe: self.manifest.moe.is_enabled(),
+            is_hybrid_attention,
+            hybrid_full_attention_interval: is_hybrid_attention
+                .then(|| {
+                    self.manifest
+                        .linear_attention
+                        .resolved_full_attention_interval(&self.manifest.model_family)
+                })
+                .flatten(),
         }
     }
 
@@ -600,6 +610,17 @@ pub struct NativeModelArtifactsSummary {
     pub layer_count: u32,
     pub tensor_count: u32,
     pub tie_word_embeddings: bool,
+    /// True when the model uses a mixture-of-experts FFN (e.g. Gemma 4, Qwen3-MoE).
+    #[serde(default)]
+    pub is_moe: bool,
+    /// True when the model interleaves linear-attention layers with standard attention
+    /// (e.g. Qwen3.5, Qwen3-Next).
+    #[serde(default)]
+    pub is_hybrid_attention: bool,
+    /// For hybrid-attention models: how many layers apart the full-attention layers occur.
+    /// None for pure-attention or pure-linear-attention models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hybrid_full_attention_interval: Option<u32>,
 }
 
 #[derive(Debug, Error)]
@@ -3340,6 +3361,9 @@ mod tests {
                 layer_count: 2,
                 tensor_count: 15,
                 tie_word_embeddings: false,
+                is_moe: false,
+                is_hybrid_attention: false,
+                hybrid_full_attention_interval: None,
             }
         );
 

@@ -178,6 +178,35 @@ impl EngineSessionConfig {
         self
     }
 
+    /// Sets the KV compression policy. Use `MlxKvCompressionConfig::turboquant_shadow()` for
+    /// accounting-only TurboQuant, or `MlxKvCompressionConfig::turboquant_fused_experimental()`
+    /// for the experimental fused-decode path.
+    pub fn with_kv_compression(mut self, config: MlxKvCompressionConfig) -> Self {
+        self.mlx_kv_compression = config;
+        self
+    }
+
+    /// Enables TurboQuant shadow mode: KV compression accounting runs alongside full-precision
+    /// inference. Output tokens and logits are not affected. Safe for production monitoring.
+    pub fn with_turboquant_shadow(mut self) -> Self {
+        self.mlx_kv_compression = MlxKvCompressionConfig::turboquant_shadow();
+        self
+    }
+
+    /// Enables TurboQuant fused-decode mode: compressed KV paths are used when all quality
+    /// gates pass; falls back to full precision otherwise. **Experimental — not production-ready.**
+    pub fn with_turboquant_fused_experimental(mut self) -> Self {
+        self.mlx_kv_compression = MlxKvCompressionConfig::turboquant_fused_experimental();
+        self
+    }
+
+    /// Disables n-gram speculation, forcing the direct single-token decode path.
+    /// Useful for benchmarking baseline throughput or diagnosing speculation overhead.
+    pub fn without_ngram_acceleration(mut self) -> Self {
+        self.mlx_disable_ngram_acceleration = true;
+        self
+    }
+
     pub fn from_preview_request(
         request: PreviewSessionConfigRequest,
     ) -> Result<Self, PreviewSessionConfigError> {
@@ -423,9 +452,11 @@ impl StatelessGenerateContext {
         request: GenerateRequest,
     ) -> Result<GenerateStreamState, EngineSessionError> {
         if self.config.resolved_backend.selected_backend.is_mlx() {
-            return Err(EngineSessionError::StatelessStreamRequiresLlamaCpp {
-                selected_backend: self.config.resolved_backend.selected_backend,
-            });
+            return Err(
+                EngineSessionError::NativeBackendStatelessStreamNotSupported {
+                    selected_backend: self.config.resolved_backend.selected_backend,
+                },
+            );
         }
 
         EngineSession::validate_generate_request(request_id, &request)?;
@@ -481,11 +512,11 @@ impl StatelessGenerateContext {
                 self.config.resolved_backend.selected_backend,
             ),
             GenerateStreamState::MlxLm(state) => next_mlx_lm_stream_event(state.as_mut()),
-            GenerateStreamState::Native(_) => {
-                Err(EngineSessionError::StatelessStreamRequiresLlamaCpp {
+            GenerateStreamState::Native(_) => Err(
+                EngineSessionError::NativeBackendStatelessStreamNotSupported {
                     selected_backend: self.config.resolved_backend.selected_backend,
-                })
-            }
+                },
+            ),
         }
     }
 }
@@ -673,6 +704,13 @@ fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, value: u
 impl EngineSession {
     fn uses_mlx_runtime(&self) -> bool {
         self.config.resolved_backend.selected_backend.is_mlx()
+    }
+
+    fn llama_lifecycle_unsupported_error(&self, operation: &'static str) -> EngineSessionError {
+        EngineSessionError::LlamaCppDoesNotSupportLifecycle {
+            selected_backend: self.config.resolved_backend.selected_backend,
+            operation,
+        }
     }
 
     fn validate_generate_request(
@@ -938,10 +976,7 @@ impl EngineSession {
 
     pub fn step(&mut self) -> Result<EngineStepOutcome, EngineSessionError> {
         if !self.uses_mlx_runtime() {
-            return Err(EngineSessionError::LlamaCppDoesNotSupportLifecycle {
-                selected_backend: self.config.resolved_backend.selected_backend,
-                operation: "step",
-            });
+            return Err(self.llama_lifecycle_unsupported_error("step"));
         }
         self.core
             .step(self.config.max_batch_tokens, self.config.deterministic)
@@ -1034,10 +1069,7 @@ impl EngineSession {
         request_id: u64,
     ) -> Result<GenerateStream<'_>, EngineSessionError> {
         if !self.uses_mlx_runtime() {
-            return Err(EngineSessionError::LlamaCppDoesNotSupportLifecycle {
-                selected_backend: self.config.resolved_backend.selected_backend,
-                operation: "stream_request",
-            });
+            return Err(self.llama_lifecycle_unsupported_error("stream_request"));
         }
         Ok(GenerateStream::new(self, self.stream_state(request_id)?))
     }
@@ -1108,10 +1140,7 @@ impl EngineSession {
         request_id: u64,
     ) -> Result<GenerateResponse, EngineSessionError> {
         if !self.uses_mlx_runtime() {
-            return Err(EngineSessionError::LlamaCppDoesNotSupportLifecycle {
-                selected_backend: self.config.resolved_backend.selected_backend,
-                operation: "run_to_completion",
-            });
+            return Err(self.llama_lifecycle_unsupported_error("run_to_completion"));
         }
         self.stream_request(request_id)?.into_response()
     }
@@ -2053,8 +2082,11 @@ pub enum EngineSessionError {
     MlxLmDoesNotSupportStreaming,
     #[error("mlx-lm delegated backend does not support {operation} in the preview SDK lifecycle")]
     MlxLmDoesNotSupportLifecycle { operation: &'static str },
-    #[error("stateless streaming requires a llama.cpp backend, got {selected_backend:?}")]
-    StatelessStreamRequiresLlamaCpp { selected_backend: SelectedBackend },
+    #[error(
+        "stateless streaming is not supported for the native MLX backend ({selected_backend:?}); \
+         use EngineSession streaming methods instead"
+    )]
+    NativeBackendStatelessStreamNotSupported { selected_backend: SelectedBackend },
     #[error(
         "llama.cpp stream for request {request_id} on backend {selected_backend:?} ended before a terminal stop marker"
     )]
@@ -2521,6 +2553,9 @@ mod tests {
                     layer_count: 36,
                     tensor_count: 512,
                     tie_word_embeddings: false,
+                    is_moe: false,
+                    is_hybrid_attention: false,
+                    hybrid_full_attention_interval: None,
                 }),
             },
             workload: MetalDispatchWorkload {
@@ -3163,6 +3198,9 @@ sys.exit(17)
                 layer_count: 1,
                 tensor_count: 9,
                 tie_word_embeddings: false,
+                is_moe: false,
+                is_hybrid_attention: false,
+                hybrid_full_attention_interval: None,
                 bindings_prepared: true,
                 buffers_bound: true,
                 buffer_count: 9,

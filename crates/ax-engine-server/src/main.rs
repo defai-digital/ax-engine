@@ -342,6 +342,38 @@ enum OpenAiStreamKind {
     ChatCompletion,
 }
 
+impl OpenAiStreamKind {
+    fn response_id(self, request_id: u64) -> String {
+        match self {
+            OpenAiStreamKind::Completion => format!("cmpl-{request_id}"),
+            OpenAiStreamKind::ChatCompletion => format!("chatcmpl-{request_id}"),
+        }
+    }
+
+    fn stream_chunk_object(self) -> &'static str {
+        match self {
+            OpenAiStreamKind::Completion => "text_completion.chunk",
+            OpenAiStreamKind::ChatCompletion => "chat.completion.chunk",
+        }
+    }
+
+    fn build_non_stream_response(
+        self,
+        response: &GenerateResponse,
+        request_id: u64,
+    ) -> axum::response::Response {
+        let id = self.response_id(request_id);
+        match self {
+            OpenAiStreamKind::Completion => {
+                Json(openai_completion_response(response, id)).into_response()
+            }
+            OpenAiStreamKind::ChatCompletion => {
+                Json(openai_chat_completion_response(response, id)).into_response()
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tracing_enabled = init_tracing();
@@ -499,13 +531,8 @@ async fn generate(
 ) -> Result<Json<ax_engine_sdk::GenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
     validate_model(&state, request.model.as_deref())?;
 
-    let request_id = allocate_request_id(&state);
-    let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
     let request = build_generate_request(&state, request);
-    let response = run_blocking_session_task(move || {
-        stateless_generate_context.generate_with_request_id(request_id, request)
-    })
-    .await?;
+    let (_, response) = run_stateless_generate_request(&state, request).await?;
 
     Ok(Json(response))
 }
@@ -524,20 +551,8 @@ async fn openai_embeddings(
         ));
     }
 
-    let pooling = match request.pooling.as_deref().unwrap_or("last") {
-        "last" => EmbeddingPooling::Last,
-        "mean" => EmbeddingPooling::Mean,
-        "cls" => EmbeddingPooling::Cls,
-        other => {
-            return Err(error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                format!(
-                    "unknown pooling strategy {other:?}; expected \"last\", \"mean\", or \"cls\""
-                ),
-            ));
-        }
-    };
+    let pooling = parse_embedding_pooling(request.pooling.as_deref())
+        .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))?;
     let normalize = request.normalize.unwrap_or(true);
 
     let token_count = request.input.len();
@@ -565,60 +580,50 @@ async fn openai_embeddings(
     }))
 }
 
+fn parse_embedding_pooling(pooling: Option<&str>) -> Result<EmbeddingPooling, String> {
+    match pooling.unwrap_or("last") {
+        "last" => Ok(EmbeddingPooling::Last),
+        "mean" => Ok(EmbeddingPooling::Mean),
+        "cls" => Ok(EmbeddingPooling::Cls),
+        other => Err(format!(
+            "unknown pooling strategy {other:?}; expected \"last\", \"mean\", or \"cls\""
+        )),
+    }
+}
+
 async fn openai_completions(
     State(state): State<AppState>,
     Json(request): Json<OpenAiCompletionHttpRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_text_backend(&state)?;
-    validate_model(&state, request.model.as_deref())?;
+    validate_openai_request(&state, request.model.as_deref())?;
     let request = build_openai_completion_request(&state, request)?;
 
-    if request.stream {
-        return stream_openai_request(
-            state,
-            request.generate_request,
-            OpenAiStreamKind::Completion,
-        )
-        .await;
-    }
-
-    let request_id = allocate_request_id(&state);
-    let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
-    let response = run_blocking_session_task(move || {
-        stateless_generate_context.generate_with_request_id(request_id, request.generate_request)
-    })
-    .await?;
-    let payload = openai_completion_response(&response, openai_completion_id(request_id));
-
-    Ok(Json(payload).into_response())
+    run_openai_text_generation(state, request, OpenAiStreamKind::Completion).await
 }
 
 async fn openai_chat_completions(
     State(state): State<AppState>,
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_text_backend(&state)?;
-    validate_model(&state, request.model.as_deref())?;
+    validate_openai_request(&state, request.model.as_deref())?;
     let request = build_openai_chat_request(&state, request)?;
 
+    run_openai_text_generation(state, request, OpenAiStreamKind::ChatCompletion).await
+}
+
+async fn run_openai_text_generation(
+    state: AppState,
+    request: OpenAiBuiltRequest,
+    kind: OpenAiStreamKind,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     if request.stream {
-        return stream_openai_request(
-            state,
-            request.generate_request,
-            OpenAiStreamKind::ChatCompletion,
-        )
-        .await;
+        return stream_openai_request(state, request.generate_request, kind).await;
     }
 
-    let request_id = allocate_request_id(&state);
-    let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
-    let response = run_blocking_session_task(move || {
-        stateless_generate_context.generate_with_request_id(request_id, request.generate_request)
-    })
-    .await?;
-    let payload = openai_chat_completion_response(&response, openai_chat_completion_id(request_id));
+    let (request_id, response) =
+        run_stateless_generate_request(&state, request.generate_request).await?;
 
-    Ok(Json(payload).into_response())
+    Ok(kind.build_non_stream_response(&response, request_id))
 }
 
 async fn generate_stream(
@@ -631,27 +636,73 @@ async fn generate_stream(
     validate_model(&state, request.model.as_deref())?;
 
     let request = build_generate_request(&state, request);
-    let request_id = allocate_request_id(&state);
+    let (stream_state, stream_context) = build_stream_state(&state, request).await?;
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    spawn_stream_task(
+        tx,
+        stream_state,
+        move |stream_state, tx| match stream_context {
+            StreamStateSource::Stateless(context) => {
+                drive_stateless_generate_stream_state(context, stream_state, tx);
+            }
+            StreamStateSource::Stateful(mut session) => {
+                drive_generate_stream_state(&mut session, stream_state, tx);
+            }
+        },
+    );
+
+    Ok(build_keep_alive_stream(rx))
+}
+
+async fn stream_openai_request(
+    state: AppState,
+    request: GenerateRequest,
+    stream_kind: OpenAiStreamKind,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let (stream_state, stream_context) = build_stream_state(&state, request).await?;
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    spawn_stream_task(
+        tx,
+        stream_state,
+        move |stream_state, tx| match stream_context {
+            StreamStateSource::Stateless(context) => {
+                drive_stateless_openai_stream_state(context, stream_state, tx, stream_kind);
+            }
+            StreamStateSource::Stateful(mut session) => {
+                drive_openai_stream_state(&mut session, stream_state, tx, stream_kind);
+            }
+        },
+    );
+
+    Ok(build_keep_alive_stream(rx).into_response())
+}
+
+enum StreamStateSource {
+    Stateless(Arc<StatelessGenerateContext>),
+    Stateful(Box<EngineSession>),
+}
+
+async fn build_stream_state(
+    state: &AppState,
+    request: GenerateRequest,
+) -> Result<(GenerateStreamState, StreamStateSource), (StatusCode, Json<ErrorResponse>)> {
+    let request_id = allocate_request_id(state);
     if state
         .stateless_generate_context
         .supports_stateless_streaming()
     {
         let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
-        let drive_context = Arc::clone(&stateless_generate_context);
+        let stream_context = Arc::clone(&stateless_generate_context);
         let stream_state = run_blocking_session_task(move || {
-            stateless_generate_context.stream_state_with_request_id(request_id, request)
+            stream_context.stream_state_with_request_id(request_id, request)
         })
         .await?;
 
-        let (tx, rx) = mpsc::unbounded_channel();
-        tokio::task::spawn_blocking(move || {
-            drive_stateless_generate_stream_state(drive_context, stream_state, tx);
-        });
-
-        return Ok(Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(
-            KeepAlive::new()
-                .interval(Duration::from_secs(5))
-                .text("keep-alive"),
+        return Ok((
+            stream_state,
+            StreamStateSource::Stateless(stateless_generate_context),
         ));
     }
 
@@ -663,72 +714,7 @@ async fn generate_stream(
     })
     .await?;
 
-    let (tx, rx) = mpsc::unbounded_channel();
-
-    tokio::task::spawn_blocking(move || {
-        let mut session = session;
-        drive_generate_stream_state(&mut session, stream_state, tx);
-    });
-
-    Ok(Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(5))
-            .text("keep-alive"),
-    ))
-}
-
-async fn stream_openai_request(
-    state: AppState,
-    request: GenerateRequest,
-    stream_kind: OpenAiStreamKind,
-) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let request_id = allocate_request_id(&state);
-    if state
-        .stateless_generate_context
-        .supports_stateless_streaming()
-    {
-        let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
-        let drive_context = Arc::clone(&stateless_generate_context);
-        let stream_state = run_blocking_session_task(move || {
-            stateless_generate_context.stream_state_with_request_id(request_id, request)
-        })
-        .await?;
-
-        let (tx, rx) = mpsc::unbounded_channel();
-        tokio::task::spawn_blocking(move || {
-            drive_stateless_openai_stream_state(drive_context, stream_state, tx, stream_kind);
-        });
-
-        return Ok(Sse::new(UnboundedReceiverStream::new(rx))
-            .keep_alive(
-                KeepAlive::new()
-                    .interval(Duration::from_secs(5))
-                    .text("keep-alive"),
-            )
-            .into_response());
-    }
-
-    let session_config = state.session_config.as_ref().clone();
-    let (session, stream_state) = run_blocking_session_task(move || {
-        let mut session = EngineSession::new(session_config)?;
-        let stream_state = session.stream_generate_state_with_request_id(request_id, request)?;
-        Ok((session, stream_state))
-    })
-    .await?;
-
-    let (tx, rx) = mpsc::unbounded_channel();
-    tokio::task::spawn_blocking(move || {
-        let mut session = session;
-        drive_openai_stream_state(&mut session, stream_state, tx, stream_kind);
-    });
-
-    Ok(Sse::new(UnboundedReceiverStream::new(rx))
-        .keep_alive(
-            KeepAlive::new()
-                .interval(Duration::from_secs(5))
-                .text("keep-alive"),
-        )
-        .into_response())
+    Ok((stream_state, StreamStateSource::Stateful(Box::new(session))))
 }
 
 async fn submit_request(
@@ -759,100 +745,133 @@ fn allocate_request_id(state: &AppState) -> u64 {
     state.next_request_id.fetch_add(1, Ordering::AcqRel)
 }
 
+async fn run_stateless_generate_request(
+    state: &AppState,
+    request: GenerateRequest,
+) -> Result<(u64, GenerateResponse), (StatusCode, Json<ErrorResponse>)> {
+    let request_id = allocate_request_id(state);
+    let context = Arc::clone(&state.stateless_generate_context);
+    let response =
+        run_blocking_session_task(move || context.generate_with_request_id(request_id, request))
+            .await?;
+
+    Ok((request_id, response))
+}
+
+fn spawn_stream_task<F>(
+    tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
+    stream_state: GenerateStreamState,
+    driver: F,
+) where
+    F: FnOnce(&mut GenerateStreamState, mpsc::UnboundedSender<Result<Event, Infallible>>)
+        + Send
+        + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let mut stream_state = stream_state;
+        driver(&mut stream_state, tx);
+    });
+}
+
+fn validate_openai_request(
+    state: &AppState,
+    model: Option<&str>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    validate_openai_text_backend(state)?;
+    validate_model(state, model)
+}
+
 fn drive_generate_stream_state(
     session: &mut EngineSession,
-    mut state: GenerateStreamState,
+    state: &mut GenerateStreamState,
     tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
 ) {
-    loop {
-        match session.next_stream_event(&mut state) {
-            Ok(Some(event)) => {
-                if !send_sdk_stream_event(&tx, event) {
-                    return;
-                }
-            }
-            Ok(None) => return,
-            Err(error) => {
-                let (_, Json(error)) = map_session_error(error);
-                send_stream_error(&tx, error);
-                return;
-            }
-        }
-    }
+    drive_stream_events(
+        state,
+        &tx,
+        |state| session.next_stream_event(state),
+        |event| send_sdk_stream_event(&tx, event),
+        || {},
+    );
 }
 
 fn drive_stateless_generate_stream_state(
     context: Arc<StatelessGenerateContext>,
-    mut state: GenerateStreamState,
+    state: &mut GenerateStreamState,
     tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
 ) {
-    loop {
-        match context.next_stream_event(&mut state) {
-            Ok(Some(event)) => {
-                if !send_sdk_stream_event(&tx, event) {
-                    return;
-                }
-            }
-            Ok(None) => return,
-            Err(error) => {
-                let (_, Json(error)) = map_session_error(error);
-                send_stream_error(&tx, error);
-                return;
-            }
-        }
-    }
+    drive_stream_events(
+        state,
+        &tx,
+        |state| context.next_stream_event(state),
+        |event| send_sdk_stream_event(&tx, event),
+        || {},
+    );
 }
 
 fn drive_openai_stream_state(
     session: &mut EngineSession,
-    mut state: GenerateStreamState,
+    state: &mut GenerateStreamState,
     tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
     stream_kind: OpenAiStreamKind,
 ) {
     let mut chat_role_emitted = false;
 
-    loop {
-        match session.next_stream_event(&mut state) {
-            Ok(Some(event)) => {
-                if !send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted) {
-                    return;
-                }
-            }
-            Ok(None) => {
-                let _ = tx.send(Ok(Event::default().data("[DONE]")));
-                return;
-            }
-            Err(error) => {
-                let (_, Json(error)) = map_session_error(error);
-                send_openai_stream_error(&tx, error);
-                return;
-            }
-        }
-    }
+    drive_stream_events(
+        state,
+        &tx,
+        |state| session.next_stream_event(state),
+        |event| send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted),
+        || {
+            let _ = tx.send(Ok(Event::default().data("[DONE]")));
+        },
+    );
 }
 
 fn drive_stateless_openai_stream_state(
     context: Arc<StatelessGenerateContext>,
-    mut state: GenerateStreamState,
+    state: &mut GenerateStreamState,
     tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
     stream_kind: OpenAiStreamKind,
 ) {
     let mut chat_role_emitted = false;
 
+    drive_stream_events(
+        state,
+        &tx,
+        |state| context.next_stream_event(state),
+        |event| send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted),
+        || {
+            let _ = tx.send(Ok(Event::default().data("[DONE]")));
+        },
+    );
+}
+
+fn drive_stream_events<N, E, D>(
+    state: &mut GenerateStreamState,
+    tx: &mpsc::UnboundedSender<Result<Event, Infallible>>,
+    mut next_event: N,
+    mut emit_event: E,
+    mut on_done: D,
+) where
+    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+    E: FnMut(GenerateStreamEvent) -> bool,
+    D: FnMut(),
+{
     loop {
-        match context.next_stream_event(&mut state) {
+        match next_event(state) {
             Ok(Some(event)) => {
-                if !send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted) {
+                if !emit_event(event) {
                     return;
                 }
             }
             Ok(None) => {
-                let _ = tx.send(Ok(Event::default().data("[DONE]")));
+                on_done();
                 return;
             }
             Err(error) => {
                 let (_, Json(error)) = map_session_error(error);
-                send_openai_stream_error(&tx, error);
+                send_stream_error(tx, error);
                 return;
             }
         }
@@ -889,8 +908,8 @@ fn send_openai_stream_event(
                     return true;
                 }
                 let chunk = OpenAiCompletionChunk {
-                    id: openai_completion_id(payload.request.request_id),
-                    object: "text_completion.chunk",
+                    id: stream_kind.response_id(payload.request.request_id),
+                    object: stream_kind.stream_chunk_object(),
                     created: unix_timestamp_secs(),
                     model: payload.request.model_id,
                     choices: vec![OpenAiCompletionChunkChoice {
@@ -909,8 +928,8 @@ fn send_openai_stream_event(
                     return true;
                 }
                 let chunk = OpenAiChatCompletionChunk {
-                    id: openai_chat_completion_id(payload.request.request_id),
-                    object: "chat.completion.chunk",
+                    id: stream_kind.response_id(payload.request.request_id),
+                    object: stream_kind.stream_chunk_object(),
                     created: unix_timestamp_secs(),
                     model: payload.request.model_id,
                     choices: vec![OpenAiChatCompletionChunkChoice {
@@ -933,8 +952,8 @@ fn send_openai_stream_event(
         GenerateStreamEvent::Response(payload) => match stream_kind {
             OpenAiStreamKind::Completion => {
                 let chunk = OpenAiCompletionChunk {
-                    id: openai_completion_id(payload.response.request_id),
-                    object: "text_completion.chunk",
+                    id: stream_kind.response_id(payload.response.request_id),
+                    object: stream_kind.stream_chunk_object(),
                     created: unix_timestamp_secs(),
                     model: payload.response.model_id,
                     choices: vec![OpenAiCompletionChunkChoice {
@@ -947,8 +966,8 @@ fn send_openai_stream_event(
             }
             OpenAiStreamKind::ChatCompletion => {
                 let chunk = OpenAiChatCompletionChunk {
-                    id: openai_chat_completion_id(payload.response.request_id),
-                    object: "chat.completion.chunk",
+                    id: stream_kind.response_id(payload.response.request_id),
+                    object: stream_kind.stream_chunk_object(),
                     created: unix_timestamp_secs(),
                     model: payload.response.model_id,
                     choices: vec![OpenAiChatCompletionChunkChoice {
@@ -987,6 +1006,16 @@ fn send_stream_event<T: Serialize>(
     }
 }
 
+fn build_keep_alive_stream(
+    rx: mpsc::UnboundedReceiver<Result<Event, Infallible>>,
+) -> Sse<UnboundedReceiverStream<Result<Event, Infallible>>> {
+    Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(5))
+            .text("keep-alive"),
+    )
+}
+
 fn send_stream_error(tx: &mpsc::UnboundedSender<Result<Event, Infallible>>, error: ErrorResponse) {
     let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
         "{\"error\":{\"code\":\"engine_error\",\"message\":\"failed to serialize stream error\"}}"
@@ -1003,7 +1032,7 @@ fn send_openai_stream_chunk<T: Serialize>(
     match serde_json::to_string(payload) {
         Ok(data) => tx.send(Ok(Event::default().data(data))).is_ok(),
         Err(error) => {
-            send_openai_stream_error(
+            send_stream_error(
                 tx,
                 ErrorResponse {
                     error: ErrorBody {
@@ -1015,18 +1044,6 @@ fn send_openai_stream_chunk<T: Serialize>(
             false
         }
     }
-}
-
-fn send_openai_stream_error(
-    tx: &mpsc::UnboundedSender<Result<Event, Infallible>>,
-    error: ErrorResponse,
-) {
-    let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
-        "{\"error\":{\"code\":\"engine_error\",\"message\":\"failed to serialize stream error\"}}"
-            .to_string()
-    });
-    let _ = tx.send(Ok(Event::default().event("error").data(payload)));
-    let _ = tx.send(Ok(Event::default().data("[DONE]")));
 }
 
 async fn request_snapshot(
@@ -1114,15 +1131,15 @@ struct OpenAiBuiltRequest {
 }
 
 fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> GenerateRequest {
-    GenerateRequest {
-        model_id: state.model_id.to_string(),
-        input_tokens: request.input_tokens,
-        input_text: request.input_text,
-        max_output_tokens: request.max_output_tokens.unwrap_or(256),
-        sampling: request.sampling.unwrap_or_default(),
-        stop_sequences: Vec::new(),
-        metadata: request.metadata,
-    }
+    build_generate_request_internal(
+        state,
+        request.input_tokens,
+        request.input_text,
+        request.max_output_tokens.unwrap_or(256),
+        request.sampling.unwrap_or_default(),
+        Vec::new(),
+        request.metadata,
+    )
 }
 
 fn build_openai_completion_request(
@@ -1137,27 +1154,23 @@ fn build_openai_completion_request(
     };
 
     Ok(OpenAiBuiltRequest {
-        generate_request: GenerateRequest {
-            model_id: state.model_id.to_string(),
+        generate_request: build_openai_generate_request(
+            state,
             input_tokens,
             input_text,
             max_output_tokens,
-            sampling: GenerateSampling {
-                temperature: request.temperature.unwrap_or(0.0),
-                top_p: request.top_p.unwrap_or(1.0),
-                top_k: request.top_k.unwrap_or(0),
-                min_p: request.min_p,
-                repetition_penalty: request.repetition_penalty.unwrap_or(1.0),
-                repetition_context_size: request.repetition_context_size,
-                seed: request.seed.unwrap_or(0),
-                deterministic: None,
-            },
-            stop_sequences: request
-                .stop
-                .map(OpenAiStopInput::into_vec)
-                .unwrap_or_default(),
-            metadata: request.metadata,
-        },
+            build_openai_sampling(
+                request.temperature,
+                request.top_p,
+                request.top_k,
+                request.min_p,
+                request.repetition_penalty,
+                request.repetition_context_size,
+                request.seed,
+            ),
+            request.stop,
+            request.metadata,
+        ),
         stream: request.stream,
     })
 }
@@ -1170,29 +1183,86 @@ fn build_openai_chat_request(
     let input_text = render_openai_chat_prompt(&request.messages)?;
 
     Ok(OpenAiBuiltRequest {
-        generate_request: GenerateRequest {
-            model_id: state.model_id.to_string(),
-            input_tokens: Vec::new(),
-            input_text: Some(input_text),
+        generate_request: build_openai_generate_request(
+            state,
+            Vec::new(),
+            Some(input_text),
             max_output_tokens,
-            sampling: GenerateSampling {
-                temperature: request.temperature.unwrap_or(0.0),
-                top_p: request.top_p.unwrap_or(1.0),
-                top_k: request.top_k.unwrap_or(0),
-                min_p: request.min_p,
-                repetition_penalty: request.repetition_penalty.unwrap_or(1.0),
-                repetition_context_size: request.repetition_context_size,
-                seed: request.seed.unwrap_or(0),
-                deterministic: None,
-            },
-            stop_sequences: request
-                .stop
-                .map(OpenAiStopInput::into_vec)
-                .unwrap_or_default(),
-            metadata: request.metadata,
-        },
+            build_openai_sampling(
+                request.temperature,
+                request.top_p,
+                request.top_k,
+                request.min_p,
+                request.repetition_penalty,
+                request.repetition_context_size,
+                request.seed,
+            ),
+            request.stop,
+            request.metadata,
+        ),
         stream: request.stream,
     })
+}
+
+fn build_openai_generate_request(
+    state: &AppState,
+    input_tokens: Vec<u32>,
+    input_text: Option<String>,
+    max_output_tokens: u32,
+    sampling: GenerateSampling,
+    stop: Option<OpenAiStopInput>,
+    metadata: Option<String>,
+) -> GenerateRequest {
+    build_generate_request_internal(
+        state,
+        input_tokens,
+        input_text,
+        max_output_tokens,
+        sampling,
+        stop.map(OpenAiStopInput::into_vec).unwrap_or_default(),
+        metadata,
+    )
+}
+
+fn build_generate_request_internal(
+    state: &AppState,
+    input_tokens: Vec<u32>,
+    input_text: Option<String>,
+    max_output_tokens: u32,
+    sampling: GenerateSampling,
+    stop_sequences: Vec<String>,
+    metadata: Option<String>,
+) -> GenerateRequest {
+    GenerateRequest {
+        model_id: state.model_id.to_string(),
+        input_tokens,
+        input_text,
+        max_output_tokens,
+        sampling,
+        stop_sequences,
+        metadata,
+    }
+}
+
+fn build_openai_sampling(
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    top_k: Option<u32>,
+    min_p: Option<f32>,
+    repetition_penalty: Option<f32>,
+    repetition_context_size: Option<u32>,
+    seed: Option<u64>,
+) -> GenerateSampling {
+    GenerateSampling {
+        temperature: temperature.unwrap_or(0.0),
+        top_p: top_p.unwrap_or(1.0),
+        top_k: top_k.unwrap_or(0),
+        min_p,
+        repetition_penalty: repetition_penalty.unwrap_or(1.0),
+        repetition_context_size,
+        seed: seed.unwrap_or(0),
+        deterministic: None,
+    }
 }
 
 fn require_openai_max_tokens(
@@ -1348,14 +1418,6 @@ fn validate_openai_text_backend(state: &AppState) -> Result<(), (StatusCode, Jso
     Ok(())
 }
 
-fn openai_completion_id(request_id: u64) -> String {
-    format!("cmpl-{request_id}")
-}
-
-fn openai_chat_completion_id(request_id: u64) -> String {
-    format!("chatcmpl-{request_id}")
-}
-
 fn unix_timestamp_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1394,7 +1456,7 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportStreaming
-        | EngineSessionError::StatelessStreamRequiresLlamaCpp { .. }
+        | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
         | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::MissingRequestSnapshot { .. } => error_response(
@@ -1485,15 +1547,6 @@ fn request_not_found_response(request_id: u64) -> (StatusCode, Json<ErrorRespons
     )
 }
 
-#[allow(dead_code)]
-fn missing_request_after_submit(request_id: u64) -> (StatusCode, Json<ErrorResponse>) {
-    error_response(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "engine_error",
-        format!("request {request_id} is missing immediately after submission"),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1507,9 +1560,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower::ServiceExt;
 
+    const TEST_MODEL_ID: &str = "qwen3_dense";
+
     fn sample_http_request(input_tokens: &[u32], max_output_tokens: u32) -> Value {
         json!({
-            "model": "qwen3_dense",
+            "model": TEST_MODEL_ID,
             "input_tokens": input_tokens,
             "max_output_tokens": max_output_tokens
         })
@@ -1517,7 +1572,7 @@ mod tests {
 
     fn sample_sdk_request(input_tokens: &[u32], max_output_tokens: u32) -> GenerateRequest {
         GenerateRequest {
-            model_id: "qwen3_dense".to_string(),
+            model_id: TEST_MODEL_ID.to_string(),
             input_tokens: input_tokens.to_vec(),
             input_text: None,
             max_output_tokens,
@@ -1529,33 +1584,64 @@ mod tests {
 
     fn sample_text_http_request(input_text: &str, max_output_tokens: u32) -> Value {
         json!({
-            "model": "qwen3_dense",
+            "model": TEST_MODEL_ID,
             "input_text": input_text,
             "max_output_tokens": max_output_tokens
         })
     }
 
-    fn sample_openai_completion_request(prompt: &str, max_tokens: u32, stream: bool) -> Value {
-        json!({
-            "model": "qwen3_dense",
-            "prompt": prompt,
-            "max_tokens": max_tokens,
-            "stream": stream
-        })
+    fn sample_openai_request_base(
+        max_tokens: Option<u32>,
+        stream: bool,
+    ) -> serde_json::Map<String, Value> {
+        let mut request = serde_json::Map::new();
+        request.insert("model".to_string(), json!(TEST_MODEL_ID));
+        if let Some(max_tokens) = max_tokens {
+            request.insert("max_tokens".to_string(), json!(max_tokens));
+        }
+        request.insert("stream".to_string(), json!(stream));
+        request
     }
 
-    fn sample_openai_chat_request(message: &str, max_tokens: u32, stream: bool) -> Value {
-        json!({
-            "model": "qwen3_dense",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": message
-                }
-            ],
-            "max_tokens": max_tokens,
-            "stream": stream
-        })
+    fn sample_openai_completion_request(
+        prompt: &str,
+        max_tokens: Option<u32>,
+        stream: bool,
+    ) -> Value {
+        let mut request = sample_openai_request_base(max_tokens, stream);
+        request.insert("prompt".to_string(), json!(prompt));
+        Value::Object(request)
+    }
+
+    fn sample_openai_chat_request(message: &str, max_tokens: Option<u32>, stream: bool) -> Value {
+        sample_openai_chat_request_with_role(message, "user", max_tokens, stream)
+    }
+
+    fn sample_openai_chat_request_with_role(
+        message: &str,
+        role: &str,
+        max_tokens: Option<u32>,
+        stream: bool,
+    ) -> Value {
+        let mut request = sample_openai_request_base(max_tokens, stream);
+        request.insert(
+            "messages".to_string(),
+            json!([{
+                "role": role,
+                "content": message,
+            }]),
+        );
+        Value::Object(request)
+    }
+
+    fn sample_openai_embedding_request(input: &[u32], pooling: Option<&str>) -> Value {
+        let mut request = serde_json::Map::new();
+        request.insert("model".to_string(), json!(TEST_MODEL_ID));
+        request.insert("input".to_string(), json!(input));
+        if let Some(pooling) = pooling {
+            request.insert("pooling".to_string(), json!(pooling));
+        }
+        Value::Object(request)
     }
 
     fn sdk_session_for_state(state: &AppState) -> EngineSession {
@@ -1646,6 +1732,10 @@ mod tests {
         payloads
     }
 
+    fn json_request_body<T: serde::Serialize>(value: &T) -> Vec<u8> {
+        serde_json::to_vec(value).expect("request body should serialize")
+    }
+
     fn normalize_measurement_fields(value: &mut Value) {
         match value {
             Value::Object(map) => {
@@ -1668,7 +1758,7 @@ mod tests {
         ServerArgs {
             host: "127.0.0.1".to_string(),
             port: 8080,
-            model_id: "qwen3_dense".to_string(),
+            model_id: TEST_MODEL_ID.to_string(),
             preset: None,
             list_presets: false,
             deterministic: true,
@@ -1724,42 +1814,39 @@ sys.stdout.write(f"server::{prompt}")
         path
     }
 
+    fn test_app_state<F>(customize: F) -> AppState
+    where
+        F: FnOnce(&mut ServerArgs),
+    {
+        let mut args = base_server_args();
+        customize(&mut args);
+
+        let session_config = args.session_config().expect("session config should build");
+        let session = EngineSession::new(session_config.clone()).expect("session should build");
+        build_app_state(args.model_id.clone(), session).expect("app state should build")
+    }
+
     fn llama_cpp_state() -> AppState {
         let script_path = fake_llama_cpp_script();
         let model_path = std::env::temp_dir().join("ax-engine-server-llama-cpp-model.gguf");
         fs::write(&model_path, "fake gguf").expect("fake model should be written");
-        let args = ServerArgs {
-            llama_cli_path: script_path.display().to_string(),
-            llama_model_path: Some(model_path),
-            ..base_server_args()
-        };
-
-        let session_config = args.session_config().expect("session config should build");
-        let session = EngineSession::new(session_config.clone()).expect("session should build");
-        build_app_state(args.model_id.clone(), session).expect("app state should build")
+        test_app_state(|args| {
+            args.llama_cli_path = script_path.display().to_string();
+            args.llama_model_path = Some(model_path);
+        })
     }
 
     fn llama_cpp_server_state(server_url: String) -> AppState {
-        let args = ServerArgs {
-            llama_server_url: Some(server_url),
-            ..base_server_args()
-        };
-
-        let session_config = args.session_config().expect("session config should build");
-        let session = EngineSession::new(session_config.clone()).expect("session should build");
-        build_app_state(args.model_id.clone(), session).expect("app state should build")
+        test_app_state(|args| {
+            args.llama_server_url = Some(server_url);
+        })
     }
 
     fn mlx_lm_delegated_state(server_url: String) -> AppState {
-        let args = ServerArgs {
-            support_tier: args::PreviewSupportTier::MlxLmDelegated,
-            mlx_lm_server_url: Some(server_url),
-            ..base_server_args()
-        };
-
-        let session_config = args.session_config().expect("session config should build");
-        let session = EngineSession::new(session_config.clone()).expect("session should build");
-        build_app_state(args.model_id.clone(), session).expect("app state should build")
+        test_app_state(|args| {
+            args.support_tier = args::PreviewSupportTier::MlxLmDelegated;
+            args.mlx_lm_server_url = Some(server_url);
+        })
     }
 
     fn spawn_llama_cpp_completion_server(
@@ -1770,25 +1857,10 @@ sys.stdout.write(f"server::{prompt}")
         let address = listener.local_addr().expect("listener should have address");
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("request should arrive");
-            let request = read_http_request(&mut stream);
-            let header_end = request
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .map(|index| index + 4)
-                .expect("request should include header terminator");
-            let body =
-                String::from_utf8(request[header_end..].to_vec()).expect("body should be utf8");
-            let payload: Value = serde_json::from_str(&body).expect("request body should be json");
+            let payload = read_http_request_payload(&mut stream);
             assert_request(payload);
 
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                response_body.len(),
-                response_body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("response should write");
+            write_http_response(&mut stream, "application/json", &response_body, None);
         });
 
         (format!("http://{address}"), handle)
@@ -1804,16 +1876,7 @@ sys.stdout.write(f"server::{prompt}")
         let handle = thread::spawn(move || {
             for _ in 0..expected_requests {
                 let (mut stream, _) = listener.accept().expect("request should arrive");
-                let request = read_http_request(&mut stream);
-                let header_end = request
-                    .windows(4)
-                    .position(|window| window == b"\r\n\r\n")
-                    .map(|index| index + 4)
-                    .expect("request should include header terminator");
-                let body =
-                    String::from_utf8(request[header_end..].to_vec()).expect("body should be utf8");
-                let payload: Value =
-                    serde_json::from_str(&body).expect("request body should be json");
+                let payload = read_http_request_payload(&mut stream);
                 assert_request(payload);
 
                 let mut body = String::new();
@@ -1826,14 +1889,12 @@ sys.stdout.write(f"server::{prompt}")
                 }
                 body.push_str("data: [DONE]\n\n");
 
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-                    body.len(),
-                    body
+                write_http_response(
+                    &mut stream,
+                    "text/event-stream",
+                    &body,
+                    Some("Cache-Control: no-cache"),
                 );
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("response should write");
             }
         });
 
@@ -1873,6 +1934,44 @@ sys.stdout.write(f"server::{prompt}")
                 }
             }
         }
+    }
+
+    fn read_http_request_payload(stream: &mut std::net::TcpStream) -> Value {
+        parse_http_request_payload(&read_http_request(stream))
+    }
+
+    fn parse_http_request_payload(request: &[u8]) -> Value {
+        let header_end = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+            .expect("request should include header terminator");
+        let headers =
+            String::from_utf8(request[..header_end].to_vec()).expect("headers should be utf8");
+        let _ = parse_content_length(&headers);
+        let body = String::from_utf8(request[header_end..].to_vec()).expect("body should be utf8");
+        serde_json::from_str(&body).expect("request body should be json")
+    }
+
+    fn write_http_response(
+        stream: &mut std::net::TcpStream,
+        content_type: &str,
+        body: &str,
+        extra_header: Option<&str>,
+    ) {
+        let mut headers = format!(
+            "Content-Type: {}\r\nContent-Length: {}\r\nConnection: close",
+            content_type,
+            body.len()
+        );
+        if let Some(extra_header) = extra_header {
+            headers.push_str(&format!("\r\n{extra_header}"));
+        }
+
+        let response = format!("HTTP/1.1 200 OK\r\n{headers}\r\n\r\n{body}");
+        stream
+            .write_all(response.as_bytes())
+            .expect("response should write");
     }
 
     fn parse_content_length(headers: &str) -> usize {
@@ -1956,7 +2055,7 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
+                .body(Body::from(json_request_body(&request_body)))
                 .unwrap(),
         )
         .await;
@@ -2006,10 +2105,9 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/completions")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_openai_completion_request("hello openai", 2, false))
-                        .unwrap(),
-                ))
+                .body(Body::from(json_request_body(
+                    &sample_openai_completion_request("hello openai", Some(2), false),
+                )))
                 .unwrap(),
         )
         .await;
@@ -2061,10 +2159,9 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/completions")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_openai_completion_request("hello mlx-lm", 2, false))
-                        .unwrap(),
-                ))
+                .body(Body::from(json_request_body(
+                    &sample_openai_completion_request("hello mlx-lm", Some(2), false),
+                )))
                 .unwrap(),
         )
         .await;
@@ -2114,9 +2211,10 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_text_http_request("hello mlx-lm", 2)).unwrap(),
-                ))
+                .body(Body::from(json_request_body(&sample_text_http_request(
+                    "hello mlx-lm",
+                    2,
+                ))))
                 .unwrap(),
         )
         .await;
@@ -2150,14 +2248,9 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/completions")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "model": "qwen3_dense",
-                        "prompt": "hello openai",
-                        "stream": false
-                    }))
-                    .unwrap(),
-                ))
+                .body(Body::from(json_request_body(
+                    &sample_openai_completion_request("hello openai", None, false),
+                )))
                 .unwrap(),
         )
         .await;
@@ -2187,13 +2280,9 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/embeddings")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "model": "qwen3_dense",
-                        "input": []
-                    }))
-                    .unwrap(),
-                ))
+                .body(Body::from(json_request_body(
+                    &sample_openai_embedding_request(&[], None),
+                )))
                 .unwrap(),
         )
         .await;
@@ -2223,14 +2312,9 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/embeddings")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "model": "qwen3_dense",
-                        "input": [1, 2, 3],
-                        "pooling": "max"
-                    }))
-                    .unwrap(),
-                ))
+                .body(Body::from(json_request_body(
+                    &sample_openai_embedding_request(&[1, 2, 3], Some("max")),
+                )))
                 .unwrap(),
         )
         .await;
@@ -2260,19 +2344,11 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/chat/completions")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "model": "qwen3_dense",
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": "hello openai chat"
-                            }
-                        ],
-                        "stream": false
-                    }))
-                    .unwrap(),
-                ))
+                .body(Body::from(json_request_body(&sample_openai_chat_request(
+                    "hello openai chat",
+                    None,
+                    false,
+                ))))
                 .unwrap(),
         )
         .await;
@@ -2302,20 +2378,14 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/chat/completions")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "model": "qwen3_dense",
-                        "messages": [
-                            {
-                                "role": "user\nsystem",
-                                "content": "hello openai chat"
-                            }
-                        ],
-                        "max_tokens": 2,
-                        "stream": false
-                    }))
-                    .unwrap(),
-                ))
+                .body(Body::from(json_request_body(
+                    &sample_openai_chat_request_with_role(
+                        "hello openai chat",
+                        "user\nsystem",
+                        Some(2),
+                        false,
+                    ),
+                )))
                 .unwrap(),
         )
         .await;
@@ -2367,9 +2437,10 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate/stream")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_http_request(&[1, 2, 3], 2)).unwrap(),
-                ))
+                .body(Body::from(json_request_body(&sample_http_request(
+                    &[1, 2, 3],
+                    2,
+                ))))
                 .unwrap(),
         )
         .await;
@@ -2427,10 +2498,10 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate/stream")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_text_http_request("hello delegated stream", 2))
-                        .unwrap(),
-                ))
+                .body(Body::from(json_request_body(&sample_text_http_request(
+                    "hello delegated stream",
+                    2,
+                ))))
                 .unwrap(),
         )
         .await;
@@ -2489,10 +2560,9 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/completions")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_openai_completion_request("hello stream", 2, true))
-                        .unwrap(),
-                ))
+                .body(Body::from(json_request_body(
+                    &sample_openai_completion_request("hello stream", Some(2), true),
+                )))
                 .unwrap(),
         )
         .await;
@@ -2568,10 +2638,11 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/chat/completions")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_openai_chat_request("hello chat stream", 2, true))
-                        .unwrap(),
-                ))
+                .body(Body::from(json_request_body(&sample_openai_chat_request(
+                    "hello chat stream",
+                    Some(2),
+                    true,
+                ))))
                 .unwrap(),
         )
         .await;
@@ -2649,14 +2720,11 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/chat/completions")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_openai_chat_request(
-                        "hello mlx-lm chat stream",
-                        2,
-                        true,
-                    ))
-                    .unwrap(),
-                ))
+                .body(Body::from(json_request_body(&sample_openai_chat_request(
+                    "hello mlx-lm chat stream",
+                    Some(2),
+                    true,
+                ))))
                 .unwrap(),
         )
         .await;
@@ -2696,9 +2764,10 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate/stream")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_text_http_request("hello from stream", 2)).unwrap(),
-                ))
+                .body(Body::from(json_request_body(&sample_text_http_request(
+                    "hello from stream",
+                    2,
+                ))))
                 .unwrap(),
         )
         .await;
@@ -2744,7 +2813,7 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/requests")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
+                .body(Body::from(json_request_body(&request_body)))
                 .unwrap(),
         )
         .await;
@@ -2895,9 +2964,10 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/requests")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_http_request(&[1, 2, 3], 2)).unwrap(),
-                ))
+                .body(Body::from(json_request_body(&sample_http_request(
+                    &[1, 2, 3],
+                    2,
+                ))))
                 .unwrap(),
         )
         .await;
@@ -2907,9 +2977,10 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/requests")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_http_request(&[7, 8, 9], 2)).unwrap(),
-                ))
+                .body(Body::from(json_request_body(&sample_http_request(
+                    &[7, 8, 9],
+                    2,
+                ))))
                 .unwrap(),
         )
         .await;
@@ -3002,14 +3073,10 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/requests")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "model": "qwen3_dense",
-                        "input_tokens": [7, 8, 9],
-                        "max_output_tokens": 2
-                    }))
-                    .unwrap(),
-                ))
+                .body(Body::from(json_request_body(&sample_http_request(
+                    &[7, 8, 9],
+                    2,
+                ))))
                 .unwrap(),
         )
         .await;

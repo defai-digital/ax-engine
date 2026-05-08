@@ -289,6 +289,17 @@ pub struct NativeModelReport {
     pub layer_count: u32,
     pub tensor_count: u32,
     pub tie_word_embeddings: bool,
+    /// True when the model uses a mixture-of-experts FFN (e.g. Gemma 4, Qwen3-MoE).
+    #[serde(default)]
+    pub is_moe: bool,
+    /// True when the model interleaves linear-attention and standard-attention layers
+    /// (e.g. Qwen3.5, Qwen3-Next).
+    #[serde(default)]
+    pub is_hybrid_attention: bool,
+    /// For hybrid-attention models: stride between full-attention layers.
+    /// None for pure-attention or pure-linear-attention models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hybrid_full_attention_interval: Option<u32>,
     #[serde(default)]
     pub bindings_prepared: bool,
     #[serde(default)]
@@ -325,6 +336,9 @@ impl NativeModelReport {
             layer_count: summary.layer_count,
             tensor_count: summary.tensor_count,
             tie_word_embeddings: summary.tie_word_embeddings,
+            is_moe: summary.is_moe,
+            is_hybrid_attention: summary.is_hybrid_attention,
+            hybrid_full_attention_interval: summary.hybrid_full_attention_interval,
             bindings_prepared: binding.bindings_prepared,
             buffers_bound: binding.buffers_bound,
             buffer_count: binding.buffer_count,

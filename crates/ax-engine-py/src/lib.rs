@@ -1097,7 +1097,7 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportLifecycle { .. }
         | EngineSessionError::MlxLmDoesNotSupportStreaming
-        | EngineSessionError::StatelessStreamRequiresLlamaCpp { .. }
+        | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
         | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::MissingRequestSnapshot { .. } => {
