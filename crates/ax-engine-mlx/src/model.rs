@@ -994,6 +994,8 @@ pub fn layer_forward_with_turboquant_context(
                 .expect("validated Gemma4 MoE layer must include ffn_norm_2");
             let h2_normed = rms_norm(&hidden, Some(h2_norm), cfg.rms_norm_eps, None);
             let router_started = profile_gemma4_moe_decode.then(Instant::now);
+            // Gemma4 intentionally routes from raw hidden through its own combined-scale
+            // RMSNorm, while experts consume the separately normalized h2 input.
             let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
             if let Some(started) = router_started {
                 profile_eval_elapsed(
