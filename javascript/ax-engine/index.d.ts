@@ -184,7 +184,7 @@ export interface HostInfo {
   os: string;
   arch: string;
   detected_soc?: string;
-  supported_native_runtime: boolean;
+  supported_mlx_runtime: boolean;
   unsupported_host_override_active: boolean;
 }
 
@@ -200,12 +200,12 @@ export interface MetalToolchainInfo {
   metal_ar: ToolStatusInfo;
 }
 
-export interface NativeRuntimeInfo {
+export interface MlxRuntimeInfo {
   runner: string;
   artifacts_source?: string;
 }
 
-export interface NativeModelInfo {
+export interface MlxModelInfo {
   artifacts_source?: string;
   model_family: string;
   tensor_format: string;
@@ -226,8 +226,8 @@ export interface RuntimeInfo {
   fallback_reason?: string;
   host: HostInfo;
   metal_toolchain: MetalToolchainInfo;
-  native_runtime?: NativeRuntimeInfo;
-  native_model?: NativeModelInfo;
+  mlx_runtime?: MlxRuntimeInfo;
+  mlx_model?: MlxModelInfo;
 }
 
 export interface ServerInfoResponse {
