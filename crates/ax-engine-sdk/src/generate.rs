@@ -194,6 +194,10 @@ pub struct GenerateSampling {
     pub repetition_context_size: Option<u32>,
     #[serde(default)]
     pub seed: u64,
+    /// Per-request deterministic override. `None` inherits the session default.
+    /// This flag is independent from `seed`: a seed stabilizes the RNG stream
+    /// for sampling-capable backends, while deterministic controls whether AX
+    /// asks the native engine to use deterministic execution behavior.
     #[serde(default)]
     pub deterministic: Option<bool>,
 }
@@ -214,14 +218,19 @@ impl Default for GenerateSampling {
 }
 
 impl GenerateSampling {
+    pub fn effective_deterministic(&self, default_deterministic: bool) -> bool {
+        self.deterministic.unwrap_or(default_deterministic)
+    }
+
     pub fn into_core(self, default_deterministic: bool) -> SamplingParams {
+        let deterministic = self.effective_deterministic(default_deterministic);
         SamplingParams {
             temperature: self.temperature,
             top_p: self.top_p,
             top_k: self.top_k,
             repetition_penalty: self.repetition_penalty,
             seed: self.seed,
-            deterministic: self.deterministic.unwrap_or(default_deterministic),
+            deterministic,
         }
     }
 }
@@ -422,6 +431,53 @@ mod tests {
     use crate::backend::{CapabilityReport, ResolutionPolicy, SelectedBackend, SupportTier};
     use crate::request::{SessionRequestReport, SessionRequestState};
     use ax_engine_core::StopReason;
+
+    #[test]
+    fn sampling_effective_deterministic_inherits_session_default() {
+        let sampling = GenerateSampling::default();
+
+        assert!(sampling.effective_deterministic(true));
+        assert!(!sampling.effective_deterministic(false));
+    }
+
+    #[test]
+    fn sampling_effective_deterministic_respects_request_override() {
+        let mut sampling = GenerateSampling {
+            deterministic: Some(false),
+            ..GenerateSampling::default()
+        };
+        assert!(!sampling.effective_deterministic(true));
+
+        sampling.deterministic = Some(true);
+        assert!(sampling.effective_deterministic(false));
+    }
+
+    #[test]
+    fn sampling_seed_does_not_force_deterministic_override() {
+        let sampling = GenerateSampling {
+            seed: 42,
+            deterministic: None,
+            ..GenerateSampling::default()
+        };
+        let core = sampling.clone().into_core(false);
+
+        assert_eq!(core.seed, 42);
+        assert!(!sampling.effective_deterministic(false));
+        assert!(!core.deterministic);
+    }
+
+    #[test]
+    fn sampling_into_core_uses_effective_deterministic_override() {
+        let sampling = GenerateSampling {
+            seed: 42,
+            deterministic: Some(true),
+            ..GenerateSampling::default()
+        };
+        let core = sampling.into_core(false);
+
+        assert_eq!(core.seed, 42);
+        assert!(core.deterministic);
+    }
 
     #[test]
     fn route_report_preserves_crossover_decisions() {
