@@ -466,7 +466,7 @@ class Session:
         metadata: str | None = None,
     ) -> GenerateResult:
         return self.generate_text(
-            _render_chat_prompt(messages),
+            _render_chat_prompt(messages, self.model_id),
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -491,7 +491,7 @@ class Session:
         metadata: str | None = None,
     ) -> int:
         return self.submit_text(
-            _render_chat_prompt(messages),
+            _render_chat_prompt(messages, self.model_id),
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -516,7 +516,7 @@ class Session:
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]:
         return self.stream_text(
-            _render_chat_prompt(messages),
+            _render_chat_prompt(messages, self.model_id),
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -883,18 +883,45 @@ def _stream_event_from_dict(value: dict[str, Any]) -> GenerateStreamEvent:
     )
 
 
-def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]]) -> str:
+def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]], model_id: str) -> str:
     if not messages:
         raise ValueError("chat requires at least one message")
 
-    lines: list[str] = []
+    template = _chat_prompt_template(model_id)
+    prompt_parts: list[str] = []
+    if template == "llama3":
+        prompt_parts.append("<|begin_of_text|>")
+
     for message in messages:
         normalized = _normalize_chat_message(message)
         role = _normalize_chat_role(normalized.role)
-        content = normalized.content.replace("\\", "\\\\").replace("\n", "\\n")
-        lines.append(f"{role}: {content}")
-    lines.append("assistant:")
-    return "\n".join(lines)
+        content = normalized.content
+        if template == "qwen_chatml":
+            prompt_parts.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
+        elif template == "llama3":
+            prompt_parts.append(
+                f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
+            )
+        else:
+            safe_content = content.replace("\\", "\\\\").replace("\n", "\\n")
+            prompt_parts.append(f"{role}: {safe_content}\n")
+
+    if template == "qwen_chatml":
+        prompt_parts.append("<|im_start|>assistant\n")
+    elif template == "llama3":
+        prompt_parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+    else:
+        prompt_parts.append("assistant:")
+    return "".join(prompt_parts)
+
+
+def _chat_prompt_template(model_id: str) -> str:
+    normalized = model_id.lower()
+    if "qwen" in normalized:
+        return "qwen_chatml"
+    if "llama-3" in normalized or "llama3" in normalized or "llama_3" in normalized:
+        return "llama3"
+    return "plain_role_prefix"
 
 
 def _normalize_chat_role(role: str) -> str:

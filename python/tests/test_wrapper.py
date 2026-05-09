@@ -771,9 +771,32 @@ class WrapperContractTests(unittest.TestCase):
                 [
                     {"role": "system", "content": "You are AX"},
                     {"role": "user", "content": [{"type": "text", "text": "Say hi"}]},
-                ]
+                ],
+                "qwen3_dense",
             ),
-            "system: You are AX\nuser: Say hi\nassistant:",
+            "<|im_start|>system\nYou are AX<|im_end|>\n"
+            "<|im_start|>user\nSay hi<|im_end|>\n"
+            "<|im_start|>assistant\n",
+        )
+        self.assertEqual(
+            openai_server.render_chat_prompt(
+                [
+                    {"role": "system", "content": "You are AX"},
+                    {"role": "user", "content": "Say hi"},
+                ],
+                "Meta-Llama-3.1-8B-Instruct",
+            ),
+            "<|begin_of_text|>"
+            "<|start_header_id|>system<|end_header_id|>\n\nYou are AX<|eot_id|>"
+            "<|start_header_id|>user<|end_header_id|>\n\nSay hi<|eot_id|>"
+            "<|start_header_id|>assistant<|end_header_id|>\n\n",
+        )
+        self.assertEqual(
+            openai_server.render_chat_prompt(
+                [{"role": "user", "content": "Line 1\nLine 2"}],
+                "unknown-local-model",
+            ),
+            "user: Line 1\\nLine 2\nassistant:",
         )
 
     def test_openai_mlx_shim_builds_mlx_session_with_artifacts_dir(self) -> None:
@@ -822,11 +845,57 @@ class WrapperContractTests(unittest.TestCase):
         native = FakeNativeSession.instances[-1]
         self.assertEqual(
             native.generate_calls[0][1]["input_text"],
-            "system: You are AX\nuser: Say hello\nassistant:",
+            "<|im_start|>system\nYou are AX<|im_end|>\n"
+            "<|im_start|>user\nSay hello<|im_end|>\n"
+            "<|im_start|>assistant\n",
         )
         self.assertEqual(
             result.prompt_text,
-            "system: You are AX\nuser: Say hello\nassistant:",
+            "<|im_start|>system\nYou are AX<|im_end|>\n"
+            "<|im_start|>user\nSay hello<|im_end|>\n"
+            "<|im_start|>assistant\n",
+        )
+
+    def test_chat_convenience_uses_llama3_template_for_llama3_models(self) -> None:
+        with self.ax_engine.Session(
+            model_id="Meta-Llama-3.1-8B-Instruct",
+            support_tier="llama_cpp",
+            llama_cli_path="/tmp/llama-cli",
+            llama_model_path="/tmp/model.gguf",
+        ) as session:
+            session.chat(
+                [
+                    {"role": "system", "content": "Be concise."},
+                    {"role": "user", "content": "Hello"},
+                ],
+                max_output_tokens=2,
+            )
+
+        native = FakeNativeSession.instances[-1]
+        self.assertEqual(
+            native.generate_calls[0][1]["input_text"],
+            "<|begin_of_text|>"
+            "<|start_header_id|>system<|end_header_id|>\n\nBe concise.<|eot_id|>"
+            "<|start_header_id|>user<|end_header_id|>\n\nHello<|eot_id|>"
+            "<|start_header_id|>assistant<|end_header_id|>\n\n",
+        )
+
+    def test_chat_convenience_keeps_plain_fallback_for_unknown_models(self) -> None:
+        with self.ax_engine.Session(
+            model_id="unknown-local-model",
+            support_tier="llama_cpp",
+            llama_cli_path="/tmp/llama-cli",
+            llama_model_path="/tmp/model.gguf",
+        ) as session:
+            session.chat(
+                [{"role": "user", "content": "Line 1\nLine 2"}],
+                max_output_tokens=2,
+            )
+
+        native = FakeNativeSession.instances[-1]
+        self.assertEqual(
+            native.generate_calls[0][1]["input_text"],
+            "user: Line 1\\nLine 2\nassistant:",
         )
 
     def test_chat_convenience_rejects_injected_role(self) -> None:
@@ -857,7 +926,7 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(request_id, 11)
         self.assertEqual(
             native.submit_calls[0][1]["input_text"],
-            "user: queue this\nassistant:",
+            "<|im_start|>user\nqueue this<|im_end|>\n<|im_start|>assistant\n",
         )
 
     def test_stepwise_controls_convert_native_payloads(self) -> None:
@@ -1026,11 +1095,11 @@ class WrapperContractTests(unittest.TestCase):
         native = FakeNativeSession.instances[-1]
         self.assertEqual(
             native.generate_calls[0][1]["input_text"],
-            "user: hello chat helper\nassistant:",
+            "<|im_start|>user\nhello chat helper<|im_end|>\n<|im_start|>assistant\n",
         )
         self.assertEqual(
             events[-1].response.prompt_text,
-            "user: hello chat helper\nassistant:",
+            "<|im_start|>user\nhello chat helper<|im_end|>\n<|im_start|>assistant\n",
         )
 
     def test_chat_convenience_rejects_empty_messages(self) -> None:

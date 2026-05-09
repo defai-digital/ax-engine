@@ -242,9 +242,10 @@ with ax_engine.Session(
 ```
 
 The wrapper now also exposes a thin text-first chat convenience layer.
-It intentionally keeps the prompt rendering simple and explicit by flattening
-messages into `role: content` lines plus a trailing `assistant:` line, rather
-than claiming model-aware chat-template fidelity:
+It uses the same small built-in chat-template registry as the server:
+Qwen model ids render as Qwen ChatML, Llama 3 model ids render as the Llama 3
+instruct template, and unknown model ids keep an explicit `role: content`
+fallback.
 
 ```python
 import ax_engine
