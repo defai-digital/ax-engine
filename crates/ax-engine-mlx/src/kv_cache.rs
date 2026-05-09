@@ -965,38 +965,24 @@ impl MlxKVCache {
         compression: MlxKvCompressionConfig,
         compression_eligible_layers: Option<&[bool]>,
     ) -> TurboQuantShadowStorageUsage {
-        if !compression.is_enabled() || self.seq_len < compression.min_context_tokens {
+        let Some(cold_tokens) = self.turboquant_shadow_sync_cold_tokens(compression) else {
             self.clear_turboquant_shadow_storage();
             return TurboQuantShadowStorageUsage::default();
-        }
-
-        let cold_tokens = self.seq_len.saturating_sub(compression.hot_window_tokens);
-        if cold_tokens == 0 {
-            self.clear_turboquant_shadow_storage();
-            return TurboQuantShadowStorageUsage::default();
-        }
+        };
 
         for layer_idx in 0..self.layers.len() {
-            if layer_windows.get(layer_idx).copied().flatten().is_some() {
-                self.turboquant_shadow_layers[layer_idx] = None;
-                continue;
-            }
-            if let Some(eligible_layers) = compression_eligible_layers
-                && !eligible_layers.get(layer_idx).copied().unwrap_or(false)
-            {
-                self.turboquant_shadow_layers[layer_idx] = None;
-                continue;
-            }
-
-            let Some(lkv) = self.layers[layer_idx].as_ref() else {
+            let Some(layout) = self.turboquant_shadow_layer_sync_layout(
+                layer_idx,
+                layer_windows,
+                compression,
+                compression_eligible_layers,
+            ) else {
                 self.turboquant_shadow_layers[layer_idx] = None;
                 continue;
             };
-
-            let Some(layout) = turboquant_shadow_layout_for_layer(lkv, compression) else {
-                self.turboquant_shadow_layers[layer_idx] = None;
-                continue;
-            };
+            let lkv = self.layers[layer_idx]
+                .as_ref()
+                .expect("TurboQuant sync layout requires layer KV storage");
 
             let reset_storage = self.turboquant_shadow_layers[layer_idx]
                 .as_ref()
@@ -1050,38 +1036,17 @@ impl MlxKVCache {
             return false;
         }
 
-        if self.seq_len < compression.min_context_tokens {
+        let Some(cold_tokens) = self.turboquant_shadow_sync_cold_tokens(compression) else {
             return self.turboquant_shadow_layers.iter().any(Option::is_some);
-        }
-
-        let cold_tokens = self.seq_len.saturating_sub(compression.hot_window_tokens);
-        if cold_tokens == 0 {
-            return self.turboquant_shadow_layers.iter().any(Option::is_some);
-        }
+        };
 
         for layer_idx in 0..self.layers.len() {
-            if layer_windows.get(layer_idx).copied().flatten().is_some() {
-                if self.turboquant_shadow_layers[layer_idx].is_some() {
-                    return true;
-                }
-                continue;
-            }
-            if let Some(eligible_layers) = compression_eligible_layers
-                && !eligible_layers.get(layer_idx).copied().unwrap_or(false)
-            {
-                if self.turboquant_shadow_layers[layer_idx].is_some() {
-                    return true;
-                }
-                continue;
-            }
-
-            let Some(lkv) = self.layers[layer_idx].as_ref() else {
-                if self.turboquant_shadow_layers[layer_idx].is_some() {
-                    return true;
-                }
-                continue;
-            };
-            let Some(layout) = turboquant_shadow_layout_for_layer(lkv, compression) else {
+            let Some(layout) = self.turboquant_shadow_layer_sync_layout(
+                layer_idx,
+                layer_windows,
+                compression,
+                compression_eligible_layers,
+            ) else {
                 if self.turboquant_shadow_layers[layer_idx].is_some() {
                     return true;
                 }
@@ -1100,6 +1065,36 @@ impl MlxKVCache {
         }
 
         false
+    }
+
+    fn turboquant_shadow_sync_cold_tokens(
+        &self,
+        compression: MlxKvCompressionConfig,
+    ) -> Option<usize> {
+        if !compression.is_enabled() || self.seq_len < compression.min_context_tokens {
+            return None;
+        }
+        let cold_tokens = self.seq_len.saturating_sub(compression.hot_window_tokens);
+        (cold_tokens != 0).then_some(cold_tokens)
+    }
+
+    fn turboquant_shadow_layer_sync_layout(
+        &self,
+        layer_idx: usize,
+        layer_windows: &[Option<usize>],
+        compression: MlxKvCompressionConfig,
+        compression_eligible_layers: Option<&[bool]>,
+    ) -> Option<TurboQuantBlockLayout> {
+        if layer_windows.get(layer_idx).copied().flatten().is_some() {
+            return None;
+        }
+        if let Some(eligible_layers) = compression_eligible_layers
+            && !eligible_layers.get(layer_idx).copied().unwrap_or(false)
+        {
+            return None;
+        }
+        let lkv = self.layers.get(layer_idx).and_then(Option::as_ref)?;
+        turboquant_shadow_layout_for_layer(lkv, compression)
     }
 
     pub fn turboquant_shadow_storage_usage(&self) -> TurboQuantShadowStorageUsage {
@@ -2039,6 +2034,52 @@ mod tests {
         cache.seq_len = 2;
         assert!(cache.turboquant_shadow_storage_sync_due(&[None], compression, Some(&[true])));
         cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
+        assert_eq!(
+            cache.turboquant_shadow_storage_usage(),
+            TurboQuantShadowStorageUsage::default()
+        );
+    }
+
+    #[test]
+    fn turboquant_shadow_sync_due_matches_layer_selection_changes() {
+        let mut cache = MlxKVCache::new(2);
+        let k0 = zeros(&[1, 2, 600, 4], MlxDtype::Float32, None);
+        let v0 = zeros(&[1, 2, 600, 4], MlxDtype::Float32, None);
+        let k1 = zeros(&[1, 2, 600, 4], MlxDtype::Float32, None);
+        let v1 = zeros(&[1, 2, 600, 4], MlxDtype::Float32, None);
+        let compression = MlxKvCompressionConfig {
+            hot_window_tokens: 2,
+            min_context_tokens: 4,
+            ..MlxKvCompressionConfig::turboquant_shadow()
+        };
+
+        cache.append(0, k0, v0);
+        cache.append(1, k1, v1);
+        cache.seq_len = 600;
+        cache.sync_turboquant_shadow_storage(&[None, None], compression, Some(&[true, true]));
+        assert_eq!(cache.turboquant_shadow_storage_usage().layers, 2);
+
+        assert!(
+            cache.turboquant_shadow_storage_sync_due(
+                &[None, None],
+                compression,
+                Some(&[false, true])
+            ),
+            "eligibility changes should request stale storage cleanup"
+        );
+        cache.sync_turboquant_shadow_storage(&[None, None], compression, Some(&[false, true]));
+        assert!(cache.turboquant_shadow_layers[0].is_none());
+        assert!(cache.turboquant_shadow_layers[1].is_some());
+
+        assert!(
+            cache.turboquant_shadow_storage_sync_due(
+                &[None, Some(512)],
+                compression,
+                Some(&[false, true])
+            ),
+            "window changes should request stale storage cleanup"
+        );
+        cache.sync_turboquant_shadow_storage(&[None, Some(512)], compression, Some(&[false, true]));
         assert_eq!(
             cache.turboquant_shadow_storage_usage(),
             TurboQuantShadowStorageUsage::default()
