@@ -70,7 +70,8 @@ if [[ "$BENCH_STATUS" -ne 2 ]]; then
     exit 1
 fi
 
-cargo run --quiet -p ax-engine-server -- \
+cargo build --quiet -p ax-engine-server
+"$ROOT_DIR/target/debug/ax-engine-server" \
   --host 127.0.0.1 \
   --port "$SERVER_PORT" \
   --llama-server-url http://127.0.0.1:9 \

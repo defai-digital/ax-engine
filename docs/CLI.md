@@ -89,9 +89,17 @@ ax-engine-manager --doctor-json /path/to/doctor.json --artifact-root benchmarks/
 `--check` prints a non-interactive summary for doctor, server, benchmark, and
 artifact readiness without entering terminal raw mode.
 
+`--phase2-check` verifies the local job-runner foundation without launching real
+downloads, benchmarks, or servers. It builds the job plan from doctor workflow
+JSON, writes and reads a manager profile under `--profile-dir`, runs a fake
+short-lived job, cancels a fake owned server process, and checks that benchmark
+results cannot be presented without an artifact path.
+
 Run `bash scripts/check-cli-tui-phase1.sh` before extending the TUI. The check
 covers contract parsers, tab rendering snapshots, server polling against a local
 test HTTP server, non-interactive `--check`, and unsupported/missing-state UI.
+Run `bash scripts/check-cli-tui-phase2.sh` before adding interactive job
+controls.
 
 ## MLX Inference Stack
 

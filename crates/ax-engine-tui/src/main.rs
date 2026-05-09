@@ -1,7 +1,12 @@
 use ax_engine_tui::action::{Action, reduce};
 use ax_engine_tui::app::{AppState, LoadState};
 use ax_engine_tui::contracts::{read_benchmark_artifact_json, read_doctor_json, scan_artifacts};
+use ax_engine_tui::jobs::plan::{
+    CommandInvocation, EvidenceClass, JobDisplaySummary, JobKind, JobPlan, JobSpec,
+};
+use ax_engine_tui::jobs::runner::{RunningJob, run_to_completion};
 use ax_engine_tui::jobs::{DoctorCommand, fetch_server_snapshot, run_doctor};
+use ax_engine_tui::profiles::{ManagerProfile, default_profile_root, read_profile, write_profile};
 use ax_engine_tui::ui;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
@@ -27,16 +32,22 @@ enum ManagerError {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct Options {
     check: bool,
+    phase2_check: bool,
     doctor_json: Option<PathBuf>,
     model_dir: Option<PathBuf>,
     server_url: Option<String>,
     benchmark_json: Option<PathBuf>,
     artifact_root: Option<PathBuf>,
+    profile_dir: Option<PathBuf>,
 }
 
 fn main() -> Result<(), ManagerError> {
     let options = parse_args(env::args().skip(1))?;
     let state = build_state(&options);
+    if options.phase2_check {
+        run_phase2_check(&options, &state)?;
+        return Ok(());
+    }
     if options.check {
         print_check_summary(&state);
         return Ok(());
@@ -50,6 +61,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, ManagerErro
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--check" => options.check = true,
+            "--phase2-check" => options.phase2_check = true,
             "--doctor-json" => options.doctor_json = Some(next_path(&mut args, "--doctor-json")?),
             "--model-dir" => options.model_dir = Some(next_path(&mut args, "--model-dir")?),
             "--server-url" => options.server_url = Some(next_value(&mut args, "--server-url")?),
@@ -59,6 +71,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, ManagerErro
             "--artifact-root" => {
                 options.artifact_root = Some(next_path(&mut args, "--artifact-root")?)
             }
+            "--profile-dir" => options.profile_dir = Some(next_path(&mut args, "--profile-dir")?),
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
@@ -91,9 +104,10 @@ fn next_value(
 fn print_help() {
     println!(
         "AX Engine Manager\n\n\
-         Usage: ax-engine-manager [--check] [--doctor-json <path>] [--model-dir <path>] \\\n           [--server-url <url>] [--benchmark-json <path>] [--artifact-root <path>]\n\n\
+         Usage: ax-engine-manager [--check] [--phase2-check] [--doctor-json <path>] [--model-dir <path>] \\\n           [--server-url <url>] [--benchmark-json <path>] [--artifact-root <path>] [--profile-dir <path>]\n\n\
          Phase 1 is read-only. It may run doctor, read JSON contracts, poll server metadata,\n\
-         and render local artifacts, but it does not start downloads, benchmarks, or servers."
+         and render local artifacts, but it does not start downloads, benchmarks, or servers.\n\
+         Phase 2 adds guarded local job planning, fake-process cancellation checks, and profiles."
     );
 }
 
@@ -196,6 +210,91 @@ fn write_check_summary(mut writer: impl io::Write, state: &AppState) -> io::Resu
     Ok(())
 }
 
+fn run_phase2_check(options: &Options, state: &AppState) -> Result<(), ManagerError> {
+    let LoadState::Ready(doctor) = &state.doctor else {
+        return Err(ManagerError::Message(
+            "phase2 check requires a readable doctor contract".to_string(),
+        ));
+    };
+    let plan = JobPlan::from_doctor(doctor).map_err(|error| {
+        ManagerError::Message(format!("failed to build phase2 job plan: {error}"))
+    })?;
+
+    let profile_root = options
+        .profile_dir
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(default_profile_root)
+        .map_err(|error| ManagerError::Message(error.to_string()))?;
+    let mut profile = ManagerProfile::new("phase2-check");
+    profile.model_dir = doctor.model_artifacts.path.clone();
+    profile.server_url = state.server.base_url.clone();
+    profile.artifact_root = state.artifacts_root.clone();
+    let profile_path = write_profile(&profile_root, &profile)
+        .map_err(|error| ManagerError::Message(error.to_string()))?;
+    read_profile(&profile_path).map_err(|error| ManagerError::Message(error.to_string()))?;
+
+    let completed = run_to_completion(fake_job("phase2-fake-smoke", "printf 'smoke-ok\\n'"))
+        .map_err(|error| ManagerError::Message(error.to_string()))?;
+    let mut fake_server = RunningJob::start(fake_sleep_job("phase2-fake-server", "30"))
+        .map_err(|error| ManagerError::Message(error.to_string()))?;
+    let startup_observed = fake_server
+        .wait_for_startup(Duration::from_millis(50))
+        .map_err(|error| ManagerError::Message(error.to_string()))?;
+    let canceled = fake_server
+        .cancel()
+        .map_err(|error| ManagerError::Message(error.to_string()))?;
+
+    let benchmark_guard = plan
+        .by_kind(JobKind::BenchmarkScenario)
+        .and_then(|job| JobDisplaySummary::from_completed_job(job, "succeeded").err())
+        .is_some();
+
+    println!("ax-engine-manager phase2-check");
+    println!("jobs={}", plan.jobs.len());
+    for job in &plan.jobs {
+        println!(
+            "job={} kind={} evidence={} owns_process={}",
+            job.id,
+            job.kind.as_str(),
+            job.evidence_class.as_str(),
+            job.owns_process
+        );
+    }
+    println!("profile=ready path={}", profile_path.display());
+    println!(
+        "fake_job={} log_tail={}",
+        completed.status.as_str(),
+        completed.log_tail.len()
+    );
+    println!(
+        "fake_server={} startup_observed={startup_observed}",
+        canceled.status.as_str()
+    );
+    println!("benchmark_display_guard={benchmark_guard}");
+    Ok(())
+}
+
+fn fake_job(id: &str, script: &str) -> JobSpec {
+    JobSpec::new(
+        id,
+        id,
+        JobKind::ServerSmoke,
+        EvidenceClass::RouteContract,
+        CommandInvocation::new("sh", vec!["-c".to_string(), script.to_string()], None),
+    )
+}
+
+fn fake_sleep_job(id: &str, seconds: &str) -> JobSpec {
+    JobSpec::new(
+        id,
+        id,
+        JobKind::ServerLaunch,
+        EvidenceClass::RouteContract,
+        CommandInvocation::new("sleep", vec![seconds.to_string()], None),
+    )
+}
+
 fn run_terminal(mut state: AppState) -> Result<(), ManagerError> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -244,12 +343,15 @@ mod tests {
         let options = parse_args(
             [
                 "--check",
+                "--phase2-check",
                 "--doctor-json",
                 "doctor.json",
                 "--server-url",
                 "http://127.0.0.1:8080",
                 "--artifact-root",
                 "benchmarks/results",
+                "--profile-dir",
+                "profiles",
             ]
             .into_iter()
             .map(str::to_string),
@@ -257,12 +359,14 @@ mod tests {
         .expect("args should parse");
 
         assert!(options.check);
+        assert!(options.phase2_check);
         assert_eq!(options.doctor_json, Some(PathBuf::from("doctor.json")));
         assert_eq!(options.server_url.as_deref(), Some("http://127.0.0.1:8080"));
         assert_eq!(
             options.artifact_root,
             Some(PathBuf::from("benchmarks/results"))
         );
+        assert_eq!(options.profile_dir, Some(PathBuf::from("profiles")));
     }
 
     #[test]

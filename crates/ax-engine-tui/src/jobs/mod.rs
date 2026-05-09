@@ -9,6 +9,9 @@ use std::process::Command;
 use std::time::Duration;
 use thiserror::Error;
 
+pub mod plan;
+pub mod runner;
+
 #[derive(Debug, Error)]
 pub enum JobError {
     #[error("{0}")]
