@@ -27,7 +27,11 @@ class FakeNativeSession:
         llama_cli_path: str = "llama-cli",
         llama_model_path: str | None = None,
         llama_server_url: str | None = None,
+        mlx_lm_server_url: str | None = None,
         mlx_model_artifacts_dir: str | None = None,
+        delegated_http_connect_timeout_secs: int = 30,
+        delegated_http_read_timeout_secs: int = 300,
+        delegated_http_write_timeout_secs: int = 300,
     ) -> None:
         self.model_id = model_id
         self.mlx = mlx
@@ -35,7 +39,11 @@ class FakeNativeSession:
         self.llama_cli_path = llama_cli_path
         self.llama_model_path = llama_model_path
         self.llama_server_url = llama_server_url
+        self.mlx_lm_server_url = mlx_lm_server_url
         self.mlx_model_artifacts_dir = mlx_model_artifacts_dir
+        self.delegated_http_connect_timeout_secs = delegated_http_connect_timeout_secs
+        self.delegated_http_read_timeout_secs = delegated_http_read_timeout_secs
+        self.delegated_http_write_timeout_secs = delegated_http_write_timeout_secs
         self.closed = False
         self.cancelled: list[int] = []
         self.generate_calls: list[tuple[list[int], dict[str, object]]] = []
@@ -628,6 +636,10 @@ def import_wrapper_module(session_cls: type[FakeNativeSession] = FakeNativeSessi
 
     native_module = types.ModuleType("ax_engine._ax_engine")
     native_module.Session = session_cls
+    native_module.EngineError = RuntimeError
+    native_module.EngineBackendError = RuntimeError
+    native_module.EngineInferenceError = RuntimeError
+    native_module.EngineStateError = RuntimeError
     sys.modules["ax_engine._ax_engine"] = native_module
     return importlib.import_module("ax_engine")
 
@@ -702,6 +714,30 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(native.generate_calls[0][0], [1, 2, 3])
         self.assertEqual(result.output_tokens, [4, 5])
         self.assertEqual(result.runtime.selected_backend, "llama_cpp")
+
+    def test_session_forwards_delegated_server_options(self) -> None:
+        with self.ax_engine.Session(
+            model_id="qwen3_dense",
+            support_tier="mlx_lm_delegated",
+            mlx_lm_server_url="http://127.0.0.1:8090",
+            delegated_http_connect_timeout_secs=2,
+            delegated_http_read_timeout_secs=11,
+            delegated_http_write_timeout_secs=13,
+        ):
+            pass
+
+        native = FakeNativeSession.instances[-1]
+        self.assertEqual(native.support_tier, "mlx_lm_delegated")
+        self.assertEqual(native.mlx_lm_server_url, "http://127.0.0.1:8090")
+        self.assertEqual(native.delegated_http_connect_timeout_secs, 2)
+        self.assertEqual(native.delegated_http_read_timeout_secs, 11)
+        self.assertEqual(native.delegated_http_write_timeout_secs, 13)
+
+    def test_custom_engine_exceptions_are_reexported(self) -> None:
+        self.assertIs(self.ax_engine.EngineError, RuntimeError)
+        self.assertIs(self.ax_engine.EngineBackendError, RuntimeError)
+        self.assertIs(self.ax_engine.EngineInferenceError, RuntimeError)
+        self.assertIs(self.ax_engine.EngineStateError, RuntimeError)
 
     def test_session_forwards_explicit_mlx_artifact_dirs(self) -> None:
         with self.ax_engine.Session(

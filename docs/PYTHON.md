@@ -217,6 +217,12 @@ read/write timeouts. Set `delegated_http_connect_timeout_secs`,
 when calling a remote or slow-starting upstream server; zero values are rejected
 at session construction.
 
+Validation failures continue to raise `ValueError`. Runtime failures are exposed
+through `ax_engine.EngineError`, with narrower subclasses for
+`EngineBackendError` (delegated process/HTTP/protocol failures),
+`EngineInferenceError` (engine/runtime inference failures), and
+`EngineStateError` (closed or concurrently streaming sessions).
+
 If llama.cpp is backed by `llama_server_url`, the same SDK-owned contract
 also supports iterator-style `stream_generate(...)`:
 

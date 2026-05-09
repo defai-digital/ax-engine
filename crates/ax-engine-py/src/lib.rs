@@ -16,6 +16,31 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString};
 
+pyo3::create_exception!(
+    ax_engine._ax_engine,
+    EngineError,
+    PyRuntimeError,
+    "Base class for AX Engine runtime errors."
+);
+pyo3::create_exception!(
+    ax_engine._ax_engine,
+    EngineBackendError,
+    EngineError,
+    "Raised when a delegated backend process, transport, or response fails."
+);
+pyo3::create_exception!(
+    ax_engine._ax_engine,
+    EngineInferenceError,
+    EngineError,
+    "Raised when AX Engine cannot complete inference after input validation succeeds."
+);
+pyo3::create_exception!(
+    ax_engine._ax_engine,
+    EngineStateError,
+    EngineError,
+    "Raised when a Python session is closed, poisoned, or already streaming."
+);
+
 #[pyclass(module = "ax_engine._ax_engine", unsendable)]
 struct Session {
     model_id: String,
@@ -51,6 +76,10 @@ fn delegated_http_timeouts_from_secs(
         read_secs,
         write_secs,
     ))
+}
+
+fn py_engine_state_error(message: &'static str) -> PyErr {
+    EngineStateError::new_err(message)
 }
 
 #[pymethods]
@@ -147,7 +176,7 @@ impl Session {
 
     fn close(&mut self) -> PyResult<()> {
         let mut slot = self.inner.lock().map_err(|_| {
-            PyRuntimeError::new_err("session mutex poisoned; session state is unrecoverable")
+            py_engine_state_error("session mutex poisoned; session state is unrecoverable")
         })?;
         *slot = SessionSlot::Closed;
         Ok(())
@@ -199,15 +228,15 @@ impl Session {
         let response = py.allow_threads(move || {
             let mut slot = inner
                 .lock()
-                .map_err(|_| PyRuntimeError::new_err("session mutex poisoned"))?;
+                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
             match &mut *slot {
                 SessionSlot::Ready(session) => {
                     session.generate(request).map_err(to_py_runtime_error)
                 }
                 SessionSlot::Streaming => {
-                    Err(PyRuntimeError::new_err("session has an active stream"))
+                    Err(py_engine_state_error("session has an active stream"))
                 }
-                SessionSlot::Closed => Err(PyRuntimeError::new_err("session is closed")),
+                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
             }
         })?;
 
@@ -256,15 +285,15 @@ impl Session {
             py.allow_threads(move || {
                 let mut slot = inner
                     .lock()
-                    .map_err(|_| PyRuntimeError::new_err("session mutex poisoned"))?;
+                    .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
                 match &mut *slot {
                     SessionSlot::Ready(session) => session
                         .submit_generate(request)
                         .map_err(to_py_runtime_error),
                     SessionSlot::Streaming => {
-                        Err(PyRuntimeError::new_err("session has an active stream"))
+                        Err(py_engine_state_error("session has an active stream"))
                     }
-                    SessionSlot::Closed => Err(PyRuntimeError::new_err("session is closed")),
+                    SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
                 }
             })
         })
@@ -275,13 +304,13 @@ impl Session {
         let report = py.allow_threads(move || {
             let mut slot = inner
                 .lock()
-                .map_err(|_| PyRuntimeError::new_err("session mutex poisoned"))?;
+                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
             match &mut *slot {
                 SessionSlot::Ready(session) => session.step_report().map_err(to_py_runtime_error),
                 SessionSlot::Streaming => {
-                    Err(PyRuntimeError::new_err("session has an active stream"))
+                    Err(py_engine_state_error("session has an active stream"))
                 }
-                SessionSlot::Closed => Err(PyRuntimeError::new_err("session is closed")),
+                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
             }
         })?;
 
@@ -302,15 +331,15 @@ impl Session {
             py.allow_threads(move || {
                 let mut slot = inner
                     .lock()
-                    .map_err(|_| PyRuntimeError::new_err("session mutex poisoned"))?;
+                    .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
                 match &mut *slot {
                     SessionSlot::Ready(session) => session
                         .cancel_request(request_id)
                         .map_err(to_py_runtime_error),
                     SessionSlot::Streaming => {
-                        Err(PyRuntimeError::new_err("session has an active stream"))
+                        Err(py_engine_state_error("session has an active stream"))
                     }
-                    SessionSlot::Closed => Err(PyRuntimeError::new_err("session is closed")),
+                    SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
                 }
             })
         })
@@ -339,16 +368,16 @@ impl Session {
         let mut slot = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("session mutex poisoned"))?;
+            .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
         let mut session = match std::mem::replace(&mut *slot, SessionSlot::Streaming) {
             SessionSlot::Ready(session) => *session,
             SessionSlot::Streaming => {
-                return Err(PyRuntimeError::new_err(
+                return Err(py_engine_state_error(
                     "session already has an active stream",
                 ));
             }
             SessionSlot::Closed => {
-                return Err(PyRuntimeError::new_err("session is closed"));
+                return Err(py_engine_state_error("session is closed"));
             }
         };
         drop(slot);
@@ -436,15 +465,15 @@ impl Session {
         py.allow_threads(move || {
             let slot = inner
                 .lock()
-                .map_err(|_| PyRuntimeError::new_err("session mutex poisoned"))?;
+                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
             match &*slot {
                 SessionSlot::Ready(session) => session
                     .embed(&token_ids, pooling_mode, normalize)
                     .map_err(to_py_runtime_error),
                 SessionSlot::Streaming => {
-                    Err(PyRuntimeError::new_err("session has an active stream"))
+                    Err(py_engine_state_error("session has an active stream"))
                 }
-                SessionSlot::Closed => Err(PyRuntimeError::new_err("session is closed")),
+                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
             }
         })
     }
@@ -471,15 +500,15 @@ impl Session {
         py.allow_threads(move || {
             let slot = inner
                 .lock()
-                .map_err(|_| PyRuntimeError::new_err("session mutex poisoned"))?;
+                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
             match &*slot {
                 SessionSlot::Ready(session) => session
                     .embed_batch(&batch_token_ids, pooling_mode, normalize)
                     .map_err(to_py_runtime_error),
                 SessionSlot::Streaming => {
-                    Err(PyRuntimeError::new_err("session has an active stream"))
+                    Err(py_engine_state_error("session has an active stream"))
                 }
-                SessionSlot::Closed => Err(PyRuntimeError::new_err("session is closed")),
+                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
             }
         })
     }
@@ -500,11 +529,11 @@ impl Session {
         let inner = self
             .inner
             .lock()
-            .map_err(|_| PyRuntimeError::new_err("session mutex poisoned"))?;
+            .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
         match &*inner {
             SessionSlot::Ready(session) => f(session.as_ref()),
-            SessionSlot::Streaming => Err(PyRuntimeError::new_err("session has an active stream")),
-            SessionSlot::Closed => Err(PyRuntimeError::new_err("session is closed")),
+            SessionSlot::Streaming => Err(py_engine_state_error("session has an active stream")),
+            SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
         }
     }
 }
@@ -1233,9 +1262,6 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MissingLlamaCppConfig { .. }
         | EngineSessionError::MissingMlxLmConfig
         | EngineSessionError::MissingDelegatedRuntime { .. }
-        | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
-        | EngineSessionError::MlxRuntimeArtifactsRequired
-        | EngineSessionError::MlxRuntimeUnavailable
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandTimedOut { .. })
@@ -1252,19 +1278,34 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::SseRead { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::InvalidStreamChunk { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. }) => {
+            EngineBackendError::new_err(error.to_string())
+        }
+        EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
+        | EngineSessionError::MlxRuntimeArtifactsRequired
+        | EngineSessionError::MlxRuntimeUnavailable
         | EngineSessionError::UnsupportedHostHardware { .. }
         | EngineSessionError::RequestReportInvariantViolation { .. }
         | EngineSessionError::StreamEndedWithoutResponse { .. }
         | EngineSessionError::EmbeddingNotSupported
         | EngineSessionError::EmbeddingFailed { .. }
         | EngineSessionError::Core(_)
-        | EngineSessionError::MetalRuntime(_) => PyRuntimeError::new_err(error.to_string()),
+        | EngineSessionError::MetalRuntime(_) => EngineInferenceError::new_err(error.to_string()),
     }
 }
 
 #[pymodule]
 fn _ax_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("EngineError", m.py().get_type::<EngineError>())?;
+    m.add(
+        "EngineBackendError",
+        m.py().get_type::<EngineBackendError>(),
+    )?;
+    m.add(
+        "EngineInferenceError",
+        m.py().get_type::<EngineInferenceError>(),
+    )?;
+    m.add("EngineStateError", m.py().get_type::<EngineStateError>())?;
     m.add_class::<Session>()?;
     m.add_class::<GenerateStreamIterator>()?;
     Ok(())
@@ -1453,6 +1494,38 @@ mod tests {
         };
 
         assert!(error.to_string().contains("greater than zero"));
+    }
+
+    #[test]
+    fn python_engine_errors_use_custom_exception_hierarchy() {
+        init_python();
+
+        Python::with_gil(|py| {
+            let backend_error = to_py_runtime_error(EngineSessionError::LlamaCpp(
+                LlamaCppBackendError::HttpStatus {
+                    endpoint: "http://127.0.0.1:8081/completion".to_string(),
+                    status: 502,
+                    body: "bad gateway".to_string(),
+                },
+            ));
+            assert!(backend_error.is_instance_of::<EngineBackendError>(py));
+            assert!(backend_error.is_instance_of::<EngineError>(py));
+            assert!(backend_error.is_instance_of::<PyRuntimeError>(py));
+
+            let inference_error = to_py_runtime_error(EngineSessionError::EmbeddingNotSupported);
+            assert!(inference_error.is_instance_of::<EngineInferenceError>(py));
+            assert!(inference_error.is_instance_of::<EngineError>(py));
+            assert!(inference_error.is_instance_of::<PyRuntimeError>(py));
+
+            let state_error = py_engine_state_error("session is closed");
+            assert!(state_error.is_instance_of::<EngineStateError>(py));
+            assert!(state_error.is_instance_of::<EngineError>(py));
+            assert!(state_error.is_instance_of::<PyRuntimeError>(py));
+
+            let validation_error = to_py_runtime_error(EngineSessionError::EmptyInputTokens);
+            assert!(validation_error.is_instance_of::<PyValueError>(py));
+            assert!(!validation_error.is_instance_of::<EngineError>(py));
+        });
     }
 
     fn sdk_llama_cpp_server_session(server_url: String) -> EngineSession {
