@@ -213,9 +213,17 @@ mod tests {
 
             let (mut stream, _) = listener.accept().expect("retry connection should arrive");
             server_attempts.fetch_add(1, Ordering::SeqCst);
-            let mut request = [0_u8; 1024];
-            let bytes_read = stream.read(&mut request).expect("request should read");
-            let request = String::from_utf8_lossy(&request[..bytes_read]);
+            let mut buf = Vec::new();
+            let mut tmp = [0_u8; 256];
+            loop {
+                let n = stream.read(&mut tmp).expect("request should read");
+                buf.extend_from_slice(&tmp[..n]);
+                let s = String::from_utf8_lossy(&buf);
+                if s.contains(r#"{"prompt":"hello"}"#) || n == 0 {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&buf);
             assert!(request.starts_with("POST /v1/completions HTTP/1.1"));
             assert!(request.contains("Content-Type: application/json"));
             assert!(request.contains(r#"{"prompt":"hello"}"#));
