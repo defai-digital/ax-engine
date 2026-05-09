@@ -473,8 +473,8 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
                 value: descriptor.n_query_heads as i32,
             },
         ],
-        (descriptor.n_query_heads as i32, 1, 1),
-        (1, 1, 1),
+        (descriptor.n_query_heads as i32 * 32, 1, 1),
+        (32, 1, 1),
         None,
     );
     let mut stats_outputs = stats_outputs.into_iter();
@@ -762,23 +762,28 @@ const TURBOQUANT_FUSED_COLD_DECODE_SCORE_KERNEL_SOURCE: &str = r#"
 "#;
 
 const TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL_SOURCE: &str = r#"
-    const int head = thread_position_in_grid.x;
+    const int lane = (int)thread_position_in_threadgroup.x;
+    const int head = (int)thread_position_in_grid.x / 32;
     if (head >= HEADS) {
       return;
     }
 
     float max_score = -3.4028234663852886e+38f;
-    for (int token = 0; token < COLD_TOKENS; ++token) {
+    for (int token = lane; token < COLD_TOKENS; token += 32) {
       max_score = max(max_score, scores[head * COLD_TOKENS + token]);
     }
+    max_score = simd_max(max_score);
 
     float denom = 0.0f;
-    for (int token = 0; token < COLD_TOKENS; ++token) {
+    for (int token = lane; token < COLD_TOKENS; token += 32) {
       denom += exp(scores[head * COLD_TOKENS + token] - max_score);
     }
+    denom = simd_sum(denom);
 
-    max_scores[head] = max_score;
-    exp_sums[head] = denom;
+    if (lane == 0) {
+      max_scores[head] = max_score;
+      exp_sums[head] = denom;
+    }
 "#;
 
 const TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL_SOURCE: &str = r#"

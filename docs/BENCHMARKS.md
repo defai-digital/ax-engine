@@ -389,7 +389,6 @@ For fused-kernel-only evidence, use the `ax-engine-mlx` microbenchmark:
 cargo run -p ax-engine-mlx --release --bin turboquant-microbench -- \
   --cold-tokens 512,2048,8192 \
   --hot-tokens 128 \
-  --variants dim_parallel,two_stage_scores \
   --repetitions 5 \
   --output benchmarks/results/turboquant/<date>/microbench.json
 ```
@@ -400,7 +399,10 @@ oracle. This is kernel evidence only; it does not mean the server generation
 path is using fused compressed decode. When `--hot-tokens` is positive, the
 artifact also records `hot_tail_merge` quality for the shared log-sum-exp merge
 contract between compressed cold partition stats and full-precision hot-tail
-stats.
+stats. The default variant set focuses on the runtime candidate,
+`two_stage_scores`; pass `--variants dim_parallel,two_stage_scores` only when
+you explicitly need the diagnostic speedup comparison against the older
+dim-parallel kernel.
 
 Validate saved fused-kernel evidence without rerunning Metal:
 
