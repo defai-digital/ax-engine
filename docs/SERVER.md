@@ -176,6 +176,13 @@ primary target:
 - `--llama-model-path` plus `--llama-cli-path` for the local CLI fallback
   adapter
 
+Server-backed delegated HTTP calls use explicit timeouts. The defaults are
+30 seconds to connect and 300 seconds for read/write I/O; tune them with
+`--delegated-http-connect-timeout-secs`,
+`--delegated-http-read-timeout-secs`, and
+`--delegated-http-write-timeout-secs` when the upstream backend is remote,
+slow-starting, or behind a proxy. Timeout values must be greater than zero.
+
 Local GGUF paths are treated as `llama.cpp` targets. Use `--mlx` when you want
 repo-owned MLX inference.
 

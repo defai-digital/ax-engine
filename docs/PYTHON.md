@@ -181,6 +181,9 @@ import ax_engine
 with ax_engine.Session(
     model_id="qwen3_dense",
     llama_server_url="http://127.0.0.1:8081",
+    delegated_http_connect_timeout_secs=30,
+    delegated_http_read_timeout_secs=300,
+    delegated_http_write_timeout_secs=300,
 ) as session:
     result = session.generate_text("Hello from AX text helper", max_output_tokens=32)
 
@@ -207,6 +210,12 @@ print(result.output_text)
 Use `mlx=True` for repo-owned MLX inference, `support_tier="mlx_lm_delegated"`
 for explicit upstream MLX text compatibility, or configure a llama.cpp target
 for non-MLX inference.
+
+Delegated HTTP backends default to a 30 second connect timeout and 300 second
+read/write timeouts. Set `delegated_http_connect_timeout_secs`,
+`delegated_http_read_timeout_secs`, and `delegated_http_write_timeout_secs`
+when calling a remote or slow-starting upstream server; zero values are rejected
+at session construction.
 
 If llama.cpp is backed by `llama_server_url`, the same SDK-owned contract
 also supports iterator-style `stream_generate(...)`:

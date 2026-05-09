@@ -5,8 +5,9 @@ use ax_engine_core::{NativeModelArtifactsSummary, NativeModelBindingSummary, Nat
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::llama_cpp::LlamaCppConfig;
-use crate::mlx_lm::MlxLmConfig;
+use crate::delegated_http::DelegatedHttpTimeouts;
+use crate::llama_cpp::{LlamaCppConfig, LlamaCppServerCompletionConfig};
+use crate::mlx_lm::{MlxLmConfig, MlxLmServerCompletionConfig};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -479,6 +480,7 @@ pub struct PreviewBackendRequest {
     pub llama_model_path: Option<PathBuf>,
     pub llama_server_url: Option<String>,
     pub mlx_lm_server_url: Option<String>,
+    pub delegated_http_timeouts: DelegatedHttpTimeouts,
 }
 
 impl Default for PreviewBackendRequest {
@@ -490,6 +492,7 @@ impl Default for PreviewBackendRequest {
             llama_model_path: None,
             llama_server_url: None,
             mlx_lm_server_url: None,
+            delegated_http_timeouts: DelegatedHttpTimeouts::default(),
         }
     }
 }
@@ -523,6 +526,11 @@ impl PreviewBackendRequest {
             support_tier: SupportTier::MlxPreview,
             ..Self::default()
         }
+    }
+
+    pub fn with_delegated_http_timeouts(mut self, timeouts: DelegatedHttpTimeouts) -> Self {
+        self.delegated_http_timeouts = timeouts;
+        self
     }
 }
 
@@ -572,6 +580,7 @@ pub fn resolve_preview_backend(
                 request.llama_cli_path,
                 request.llama_model_path,
                 request.llama_server_url,
+                request.delegated_http_timeouts,
             )?;
 
             Ok(PreviewBackendResolution {
@@ -619,13 +628,17 @@ fn resolve_explicit_preview_backend(
                 "mlx-lm delegated backend explicitly requested by preview session config",
             ),
             llama_backend: None,
-            mlx_lm_backend: Some(resolve_mlx_lm_target(request.mlx_lm_server_url)?),
+            mlx_lm_backend: Some(resolve_mlx_lm_target(
+                request.mlx_lm_server_url,
+                request.delegated_http_timeouts,
+            )?),
         }),
         SupportTier::LlamaCpp => {
             let llama_backend = resolve_llama_cpp_target(
                 request.llama_cli_path,
                 request.llama_model_path,
                 request.llama_server_url,
+                request.delegated_http_timeouts,
             )?;
 
             Ok(PreviewBackendResolution {
@@ -648,23 +661,29 @@ fn resolve_explicit_preview_backend(
 
 fn resolve_mlx_lm_target(
     mlx_lm_server_url: Option<String>,
+    timeouts: DelegatedHttpTimeouts,
 ) -> Result<MlxLmConfig, PreviewBackendResolutionError> {
     let server_url =
         mlx_lm_server_url.ok_or(PreviewBackendResolutionError::MissingMlxLmServerUrl)?;
-    Ok(MlxLmConfig::server_completion(server_url))
+    Ok(MlxLmConfig::ServerCompletion(
+        MlxLmServerCompletionConfig::new(server_url).with_timeouts(timeouts),
+    ))
 }
 
 fn resolve_llama_cpp_target(
     llama_cli_path: PathBuf,
     llama_model_path: Option<PathBuf>,
     llama_server_url: Option<String>,
+    timeouts: DelegatedHttpTimeouts,
 ) -> Result<LlamaCppConfig, PreviewBackendResolutionError> {
     if llama_server_url.is_some() && llama_model_path.is_some() {
         return Err(PreviewBackendResolutionError::LlamaCppTargetConflict);
     }
 
     if let Some(server_url) = llama_server_url {
-        return Ok(LlamaCppConfig::server_completion(server_url));
+        return Ok(LlamaCppConfig::ServerCompletion(
+            LlamaCppServerCompletionConfig::new(server_url).with_timeouts(timeouts),
+        ));
     }
 
     let model_path =
@@ -910,6 +929,39 @@ mod tests {
         assert_eq!(
             resolution.llama_backend,
             Some(LlamaCppConfig::server_completion("http://127.0.0.1:8080"))
+        );
+    }
+
+    #[test]
+    fn preview_resolution_applies_delegated_http_timeouts_to_server_backends() {
+        let timeouts = DelegatedHttpTimeouts::from_secs(2, 11, 13);
+        let resolution = resolve_preview_backend(PreviewBackendRequest {
+            support_tier: SupportTier::LlamaCpp,
+            llama_server_url: Some("http://127.0.0.1:8080".to_string()),
+            delegated_http_timeouts: timeouts,
+            ..PreviewBackendRequest::default()
+        })
+        .expect("llama.cpp resolution should succeed");
+        assert_eq!(
+            resolution.llama_backend,
+            Some(LlamaCppConfig::ServerCompletion(
+                LlamaCppServerCompletionConfig::new("http://127.0.0.1:8080")
+                    .with_timeouts(timeouts)
+            ))
+        );
+
+        let resolution = resolve_preview_backend(PreviewBackendRequest {
+            support_tier: SupportTier::MlxLmDelegated,
+            mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),
+            delegated_http_timeouts: timeouts,
+            ..PreviewBackendRequest::default()
+        })
+        .expect("mlx-lm resolution should succeed");
+        assert_eq!(
+            resolution.mlx_lm_backend,
+            Some(MlxLmConfig::ServerCompletion(
+                MlxLmServerCompletionConfig::new("http://127.0.0.1:8090").with_timeouts(timeouts)
+            ))
         );
     }
 
