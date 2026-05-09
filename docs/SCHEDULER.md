@@ -133,6 +133,13 @@ batch's `RouteMetadata.crossover_decisions`:
 
 These values appear in runner output and benchmark replay records.
 
+Runner-owned prefix-cache counters may also be appended after execution. The
+scheduler should treat them as telemetry, not planning input. In particular,
+`ax_mlx_prefix_cache_hits`, `ax_mlx_prefix_cache_misses`,
+`ax_mlx_prefix_cache_warmup_tokens`, and `ax_mlx_prefix_cache_blocked_*`
+describe the physical MLX snapshot path after the scheduler's logical prefix
+reuse decision has already been made.
+
 ---
 
 ## Three-Phase Scheduling Per Step
