@@ -903,7 +903,7 @@ fn load_glm_mla_attention_weights(
         "glm_kv_a_proj",
     )?;
     Ok(GlmMlaAttentionWeights {
-        qa_kva_fused: concat_quantized_weight_rows(&q_a_proj, &kv_a_proj),
+        qa_kva_fused: concat_quantized_weight_rows(&q_a_proj, &kv_a_proj)?,
         q_a_norm: take_weight(
             specs,
             name_map,
@@ -948,35 +948,51 @@ fn load_glm_mla_attention_weights(
 ///
 /// Used to fuse parallel projections that read the same input (e.g. q_a_proj
 /// and kv_a_proj in GLM MLA), replacing two matmul kernel launches with one.
-fn concat_quantized_weight_rows(a: &QuantizedWeight, b: &QuantizedWeight) -> QuantizedWeight {
-    let weight = concatenate(&[&a.weight, &b.weight], 0, None);
+fn concat_quantized_weight_rows(
+    a: &QuantizedWeight,
+    b: &QuantizedWeight,
+) -> Result<QuantizedWeight, WeightLoadError> {
     let (scales, biases) = match (&a.scales, &b.scales) {
         (Some(sa), Some(sb)) => {
-            assert_eq!(
-                a.group_size, b.group_size,
-                "cannot fuse weights with different group sizes"
-            );
-            assert_eq!(
-                a.bits, b.bits,
-                "cannot fuse weights with different bit widths"
-            );
+            if a.group_size != b.group_size {
+                return Err(WeightLoadError::InvalidLayer(format!(
+                    "cannot fuse quantized GLM MLA qa/kv projections with different group sizes: {} vs {}",
+                    a.group_size, b.group_size
+                )));
+            }
+            if a.bits != b.bits {
+                return Err(WeightLoadError::InvalidLayer(format!(
+                    "cannot fuse quantized GLM MLA qa/kv projections with different bit widths: {} vs {}",
+                    a.bits, b.bits
+                )));
+            }
             let biases = match (a.biases.as_ref(), b.biases.as_ref()) {
                 (Some(ba), Some(bb)) => Some(concatenate(&[ba, bb], 0, None)),
                 (None, None) => None,
-                _ => panic!("cannot fuse weights where only one has biases"),
+                _ => {
+                    return Err(WeightLoadError::InvalidLayer(
+                        "cannot fuse GLM MLA qa/kv projections where only one has quantization biases"
+                            .to_string(),
+                    ));
+                }
             };
             (Some(concatenate(&[sa, sb], 0, None)), biases)
         }
         (None, None) => (None, None),
-        _ => panic!("cannot fuse one quantized and one non-quantized weight"),
+        _ => {
+            return Err(WeightLoadError::InvalidLayer(
+                "cannot fuse GLM MLA qa/kv projections where only one has quantization scales"
+                    .to_string(),
+            ));
+        }
     };
-    QuantizedWeight {
-        weight,
+    Ok(QuantizedWeight {
+        weight: concatenate(&[&a.weight, &b.weight], 0, None),
         scales,
         biases,
         group_size: a.group_size,
         bits: a.bits,
-    }
+    })
 }
 
 /// Load a weight tensor together with its `.scales` and `.biases` siblings
@@ -1227,6 +1243,77 @@ mod tests {
         assert!(weights.embed_q.scales.is_none());
         assert!(weights.unembed_out.scales.is_none());
         assert!(name_map.is_empty());
+    }
+
+    fn glm_quantized_weight(group_size: i32, bits: i32, with_biases: bool) -> QuantizedWeight {
+        QuantizedWeight {
+            weight: zeros(&[2, 2], MlxDtype::Uint32, None),
+            scales: Some(zeros(&[2, 1], MlxDtype::Bfloat16, None)),
+            biases: with_biases.then(|| zeros(&[2, 1], MlxDtype::Bfloat16, None)),
+            group_size,
+            bits,
+        }
+    }
+
+    fn invalid_layer_message(result: Result<QuantizedWeight, WeightLoadError>) -> String {
+        match result {
+            Err(WeightLoadError::InvalidLayer(message)) => message,
+            Err(error) => panic!("expected invalid layer error, got {error}"),
+            Ok(_) => panic!("expected fused GLM MLA weights to be rejected"),
+        }
+    }
+
+    #[test]
+    fn concat_quantized_weight_rows_accepts_matching_quantized_metadata() {
+        let a = glm_quantized_weight(64, 4, true);
+        let b = glm_quantized_weight(64, 4, true);
+
+        let fused = concat_quantized_weight_rows(&a, &b).expect("matching quantization can fuse");
+
+        assert_eq!(fused.group_size, 64);
+        assert_eq!(fused.bits, 4);
+        assert!(fused.scales.is_some());
+        assert!(fused.biases.is_some());
+    }
+
+    #[test]
+    fn concat_quantized_weight_rows_rejects_mismatched_group_size() {
+        let a = glm_quantized_weight(64, 4, true);
+        let b = glm_quantized_weight(32, 4, true);
+
+        let message = invalid_layer_message(concat_quantized_weight_rows(&a, &b));
+
+        assert!(message.contains("different group sizes"));
+    }
+
+    #[test]
+    fn concat_quantized_weight_rows_rejects_mismatched_bits() {
+        let a = glm_quantized_weight(64, 4, true);
+        let b = glm_quantized_weight(64, 8, true);
+
+        let message = invalid_layer_message(concat_quantized_weight_rows(&a, &b));
+
+        assert!(message.contains("different bit widths"));
+    }
+
+    #[test]
+    fn concat_quantized_weight_rows_rejects_mismatched_bias_presence() {
+        let a = glm_quantized_weight(64, 4, true);
+        let b = glm_quantized_weight(64, 4, false);
+
+        let message = invalid_layer_message(concat_quantized_weight_rows(&a, &b));
+
+        assert!(message.contains("only one has quantization biases"));
+    }
+
+    #[test]
+    fn concat_quantized_weight_rows_rejects_mixed_dense_and_quantized_weights() {
+        let a = QuantizedWeight::new(zeros(&[2, 2], MlxDtype::Float32, None), None, None);
+        let b = glm_quantized_weight(64, 4, false);
+
+        let message = invalid_layer_message(concat_quantized_weight_rows(&a, &b));
+
+        assert!(message.contains("only one has quantization scales"));
     }
 
     #[test]
