@@ -1,0 +1,58 @@
+{
+  "benchmark": {
+    "completed_at_unix_s": 1778285716,
+    "cwd": "/Users/akiralam/code/ax-engine-v4",
+    "manifest_path": "benchmarks/manifests/scenario/chat_gemma4_e2b_short.json",
+    "output_root": "benchmarks/results/mlx-inference/2026-05-08-decode-mask-fix",
+    "started_at_unix_s": 1778285716
+  },
+  "command": "scenario",
+  "failure": {
+    "class": "contract",
+    "code": "contract_validation_failed",
+    "message": "failed to create benchmark SDK session from manifest runtime: MLX mode requires validated Metal runtime artifacts; deterministic fallback is internal-only and must be explicitly enabled",
+    "recommended_action": "Review the manifest/runtime contract and rerun with a supported workload shape or runtime configuration."
+  },
+  "manifest": {
+    "class": "scenario",
+    "id": "chat_gemma4_e2b_short",
+    "scenario": "chat"
+  },
+  "run_id": "1778285716-chat_gemma4_e2b_short-contract-failure",
+  "runtime": {
+    "block_size_tokens": 16,
+    "deterministic": true,
+    "flags": {
+      "prefix_cache": false
+    },
+    "host": {
+      "arch": "aarch64",
+      "detected_soc": "Apple M5 Max",
+      "os": "macos",
+      "supported_mlx_runtime": true,
+      "unsupported_host_override_active": false
+    },
+    "max_batch_tokens": 2048,
+    "metal_toolchain": {
+      "fully_available": true,
+      "metal": {
+        "available": true,
+        "version": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.5.188.0.f4nJJ1/Metal.xctoolchain/usr/metal/current/bin"
+      },
+      "metal_ar": {
+        "available": true,
+        "version": "Apple LLVM version 32023.883\n  Optimized build.\n  Default target: x86_64-apple-darwin25.4.0\n  Host CPU: apple-m1"
+      },
+      "metallib": {
+        "available": true,
+        "version": "AIR-LLD 32023.883 (metalfe-32023.883) (compatible with legacy metallib linker)"
+      }
+    },
+    "resolution_policy": "mlx_only",
+    "selected_backend": "mlx",
+    "support_tier": "mlx_preview"
+  },
+  "schema_version": "ax.engine_bench.contract_failure.v1",
+  "status": "contract_failure",
+  "tool_mode": "mlx_runtime"
+}
