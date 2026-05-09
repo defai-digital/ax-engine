@@ -74,7 +74,7 @@ use crate::ngram_accel::{
     NgramDraftOutcome, NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
     ngram_accel_decode_step, single_decode_with_turboquant_context,
 };
-use crate::sampling::Xorshift64;
+use crate::sampling::{MlxSamplingParams, Xorshift64};
 use crate::turboquant::{
     TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION, TurboQuantProductionRequirements,
     turboquant_support_report,
@@ -1547,7 +1547,14 @@ impl MlxRunner {
         {
             let mut dummy_cache = MlxKVCache::new(cfg.layer_count);
             let mut dummy_rng = Xorshift64::new(0);
-            decode_step(&cfg, &weights, 0, &mut dummy_cache, 0.0, &mut dummy_rng);
+            decode_step(
+                &cfg,
+                &weights,
+                0,
+                &mut dummy_cache,
+                MlxSamplingParams::greedy(),
+                &mut dummy_rng,
+            );
             dummy_cache.reset();
             let dummy_tokens: Vec<u32> = vec![0u32; 8];
             chunked_prefill(
@@ -1556,7 +1563,7 @@ impl MlxRunner {
                 &dummy_tokens,
                 &mut dummy_cache,
                 prefill_chunk,
-                0.0,
+                MlxSamplingParams::greedy(),
                 &mut dummy_rng,
             );
         }
@@ -1886,8 +1893,12 @@ impl MlxRunner {
         let generated_len = ctx.map(|c| c.generated_len).unwrap_or(0);
         let prefill_completes_prompt = prefill_item_completes_prompt(item, ctx);
         let is_prefill = matches!(item.mode, ExecutionMode::Prefill);
-        let temperature = ctx.map(|c| c.temperature).unwrap_or(0.0);
-        let is_greedy = temperature == 0.0;
+        let sampling = ctx
+            .map(|c| MlxSamplingParams::new(c.temperature, c.top_p, c.top_k))
+            .unwrap_or_default();
+        let is_greedy = ctx
+            .map(|c| c.deterministic_argmax_sampling)
+            .unwrap_or(sampling == MlxSamplingParams::greedy());
 
         // Extract per-request state from the map and release the lock before GPU
         // work.  This ensures a long prefill for one request does not block state
@@ -1909,7 +1920,7 @@ impl MlxRunner {
             ctx,
             model_id,
             block_size_tokens,
-            temperature,
+            sampling,
         );
 
         let kv_compression_layer_eligible = if self.kv_compression.is_enabled() {
@@ -1932,7 +1943,7 @@ impl MlxRunner {
                     token_ids,
                     &mut state.cache,
                     self.prefill_chunk,
-                    temperature,
+                    sampling,
                     &mut state.rng,
                 );
                 extend_prompt_prefix_tokens(&mut state, item, token_ids);
@@ -1985,10 +1996,10 @@ impl MlxRunner {
                         );
                         tok
                     } else {
-                        self.decode_one(&mut state, token_ids, temperature, is_greedy)
+                        self.decode_one(&mut state, token_ids, sampling, is_greedy)
                     }
                 } else {
-                    self.decode_one(&mut state, token_ids, temperature, is_greedy)
+                    self.decode_one(&mut state, token_ids, sampling, is_greedy)
                 };
                 state
                     .decode_telemetry
@@ -2111,7 +2122,7 @@ impl MlxRunner {
         ctx: Option<&RunnerRequestContext>,
         model_id: &str,
         block_size_tokens: u32,
-        temperature: f32,
+        sampling: MlxSamplingParams,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         let reused_tokens = &item.reused_prefix_token_slice;
@@ -2127,7 +2138,7 @@ impl MlxRunner {
                 state,
                 item.request_id,
                 reused_tokens,
-                temperature,
+                sampling,
                 capture_prefill_output,
             );
             telemetry.warmup_tokens = telemetry
@@ -2160,7 +2171,7 @@ impl MlxRunner {
             state,
             item.request_id,
             reused_tokens,
-            temperature,
+            sampling,
             capture_prefill_output,
         );
         telemetry.warmup_tokens = telemetry
@@ -2174,7 +2185,7 @@ impl MlxRunner {
         state: &mut RequestState,
         request_id: RequestId,
         tokens: &[u32],
-        temperature: f32,
+        sampling: MlxSamplingParams,
         capture_prefill_output: bool,
     ) {
         let mut warmup_rng = if capture_prefill_output {
@@ -2189,9 +2200,9 @@ impl MlxRunner {
             &mut state.cache,
             self.prefill_chunk,
             if capture_prefill_output {
-                temperature
+                sampling
             } else {
-                0.0
+                MlxSamplingParams::greedy()
             },
             &mut warmup_rng,
         );
@@ -2259,13 +2270,13 @@ impl MlxRunner {
     ///
     /// Pops from the bonus queue when pre-verified tokens are available.
     /// Uses the double-buffer direct pipeline when `disable_ngram_acceleration = true` and
-    /// `temperature == 0.0` (bootstrapped during prefill).
+    /// greedy argmax sampling (bootstrapped during prefill).
     /// Otherwise runs an n-gram accelerated or single-token decode pass.
     fn decode_one(
         &self,
         state: &mut RequestState,
         input_tokens: &[u32],
-        temperature: f32,
+        sampling: MlxSamplingParams,
         is_greedy: bool,
     ) -> u32 {
         // Serve pre-verified bonus tokens without re-running the model.
@@ -2289,7 +2300,7 @@ impl MlxRunner {
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
 
-        let result = self.run_model_decode(state, last_token, temperature, is_greedy);
+        let result = self.run_model_decode(state, last_token, sampling, is_greedy);
         apply_decode_result(state, &result, &self.terminal_token_ids)
     }
 
@@ -2353,7 +2364,7 @@ impl MlxRunner {
         &self,
         state: &mut RequestState,
         last_token: u32,
-        temperature: f32,
+        sampling: MlxSamplingParams,
         is_greedy: bool,
     ) -> Vec<u32> {
         state.ngram_acceleration.record_request_disabled_step();
@@ -2363,7 +2374,7 @@ impl MlxRunner {
         if is_greedy {
             vec![self.run_direct_pipeline_decode(state, last_token)]
         } else {
-            self.run_single_decode(state, last_token, temperature)
+            self.run_single_decode(state, last_token, sampling)
         }
     }
 
@@ -2371,7 +2382,7 @@ impl MlxRunner {
         &self,
         state: &mut RequestState,
         last_token: u32,
-        temperature: f32,
+        sampling: MlxSamplingParams,
         has_linear_attention: bool,
         is_greedy: bool,
         rejection: Option<NgramDraftRejection>,
@@ -2386,12 +2397,9 @@ impl MlxRunner {
                 state.ngram_acceleration_disabled_for_request = true;
                 state.ngram_request_disable_reason = NgramRequestDisableReason::LinearNoDraft;
                 state.ngram_acceleration.record_request_disable_event();
-                return Some(self.run_request_disabled_decode(
-                    state,
-                    last_token,
-                    temperature,
-                    is_greedy,
-                ));
+                return Some(
+                    self.run_request_disabled_decode(state, last_token, sampling, is_greedy),
+                );
             }
         }
         None
@@ -2401,27 +2409,22 @@ impl MlxRunner {
         &self,
         state: &mut RequestState,
         last_token: u32,
-        temperature: f32,
+        sampling: MlxSamplingParams,
         is_greedy: bool,
     ) -> Option<Vec<u32>> {
         if self.disable_ngram_acceleration {
-            return Some(self.run_single_decode(state, last_token, temperature));
+            return Some(self.run_single_decode(state, last_token, sampling));
         }
 
         if state.ngram_acceleration_disabled_for_request {
-            return Some(self.run_request_disabled_decode(
-                state,
-                last_token,
-                temperature,
-                is_greedy,
-            ));
+            return Some(self.run_request_disabled_decode(state, last_token, sampling, is_greedy));
         }
 
         // N-gram acceleration disabled: count down and use single decode.
         if state.ngram_disabled_steps > 0 {
             state.ngram_disabled_steps -= 1;
             state.ngram_acceleration.record_cooldown_step();
-            return Some(self.run_single_decode(state, last_token, temperature));
+            return Some(self.run_single_decode(state, last_token, sampling));
         }
 
         None
@@ -2472,7 +2475,7 @@ impl MlxRunner {
         &self,
         state: &mut RequestState,
         last_token: u32,
-        temperature: f32,
+        sampling: MlxSamplingParams,
     ) -> Vec<u32> {
         let branch_started = Instant::now();
         let turboquant_context = self.turboquant_model_decode_context();
@@ -2482,7 +2485,7 @@ impl MlxRunner {
             &mut state.cache,
             &mut state.ngram,
             last_token,
-            temperature,
+            sampling,
             &mut state.rng,
             turboquant_context.as_ref(),
         );
@@ -2535,7 +2538,7 @@ impl MlxRunner {
         // Bootstrap the double-buffer direct pipeline: submit the second token's
         // forward pass to the GPU asynchronously so the first decode step can
         // materialise it while the GPU is already computing the third token.
-        // Only for direct same-policy runs with temperature = 0.
+        // Only for direct same-policy greedy runs.
         if self.disable_ngram_acceleration && is_greedy {
             let bootstrap_started = Instant::now();
             let turboquant_context = self.turboquant_model_decode_context();
@@ -2559,11 +2562,11 @@ impl MlxRunner {
         &self,
         state: &mut RequestState,
         last_token: u32,
-        temperature: f32,
+        sampling: MlxSamplingParams,
         is_greedy: bool,
     ) -> Vec<u32> {
         let has_linear_attention = self.cfg.linear_attention.is_some();
-        if let Some(result) = self.run_non_ngram_decode(state, last_token, temperature, is_greedy) {
+        if let Some(result) = self.run_non_ngram_decode(state, last_token, sampling, is_greedy) {
             return result;
         }
 
@@ -2583,14 +2586,14 @@ impl MlxRunner {
             if let Some(result) = self.run_no_draft_decode(
                 state,
                 last_token,
-                temperature,
+                sampling,
                 has_linear_attention,
                 is_greedy,
                 rejection,
             ) {
                 return result;
             }
-            return self.run_single_decode(state, last_token, temperature);
+            return self.run_single_decode(state, last_token, sampling);
         }
 
         state.linear_ngram_no_draft_streak = 0;
@@ -2604,7 +2607,7 @@ impl MlxRunner {
             &mut state.ngram,
             last_token,
             &draft,
-            temperature,
+            sampling,
             &mut state.rng,
         );
         state
@@ -3464,6 +3467,8 @@ mod tests {
             max_output_tokens: 24,
             deterministic_argmax_sampling: true,
             temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
         };
         assert!(!prefill_item_completes_prompt(&item, Some(&first_context)));
 

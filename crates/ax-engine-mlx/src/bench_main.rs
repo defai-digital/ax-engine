@@ -15,7 +15,7 @@ use ax_engine_mlx::{
     kv_cache::MlxKVCache,
     model::ModelConfig,
     ngram_accel::{DEFAULT_DRAFT_LEN, NgramTable, ngram_accel_decode_step},
-    sampling::Xorshift64,
+    sampling::{MlxSamplingParams, Xorshift64},
     weights::load_weights,
 };
 use mlx_sys::clear_cache;
@@ -44,7 +44,14 @@ fn main() {
     {
         let mut cache = MlxKVCache::new(cfg.layer_count);
         let mut rng = Xorshift64::new(0);
-        decode_step(&cfg, &weights, 0, &mut cache, 0.0, &mut rng);
+        decode_step(
+            &cfg,
+            &weights,
+            0,
+            &mut cache,
+            MlxSamplingParams::greedy(),
+            &mut rng,
+        );
         clear_cache();
     }
     println!("Warm-up done.\n");
@@ -66,7 +73,7 @@ fn main() {
             &prompt,
             &mut cache,
             DEFAULT_PREFILL_CHUNK,
-            0.0,
+            MlxSamplingParams::greedy(),
             &mut rng,
         );
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -95,13 +102,20 @@ fn main() {
             &short_prompt,
             &mut cache,
             DEFAULT_PREFILL_CHUNK,
-            0.0,
+            MlxSamplingParams::greedy(),
             &mut rng,
         );
         let mut step_times = Vec::with_capacity(DECODE_STEPS);
         for _ in 0..DECODE_STEPS {
             let t0 = Instant::now();
-            tok = decode_step(&cfg, &weights, tok, &mut cache, 0.0, &mut rng);
+            tok = decode_step(
+                &cfg,
+                &weights,
+                tok,
+                &mut cache,
+                MlxSamplingParams::greedy(),
+                &mut rng,
+            );
             step_times.push(t0.elapsed().as_secs_f64() * 1000.0);
         }
         let _ = tok;
@@ -143,7 +157,7 @@ fn main() {
             &ngram_prompt,
             &mut cache,
             DEFAULT_PREFILL_CHUNK,
-            0.0,
+            MlxSamplingParams::greedy(),
             &mut rng,
         );
 
@@ -157,7 +171,14 @@ fn main() {
         while tokens_generated < DECODE_STEPS {
             let draft = ngram.predict(DEFAULT_DRAFT_LEN);
             let emitted = ngram_accel_decode_step(
-                &cfg, &weights, &mut cache, &mut ngram, tok, &draft, 0.0, &mut rng,
+                &cfg,
+                &weights,
+                &mut cache,
+                &mut ngram,
+                tok,
+                &draft,
+                MlxSamplingParams::greedy(),
+                &mut rng,
             );
             // emitted[0]       — output token for this step
             // emitted[1..n-1]  — bonus tokens (accepted drafts already in KV)
