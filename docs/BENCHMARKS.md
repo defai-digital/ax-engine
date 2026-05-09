@@ -107,7 +107,9 @@ MLX physical snapshot path, separate from scheduler/replay logical prefix
 contracts. The same block also includes `physical_snapshot_coverage`, with
 values such as `none_observed`, `hit_only`, `miss_warmup_only`, `blocked_only`,
 and `hit_and_miss_warmup`, so readers do not have to infer coverage from raw
-counters.
+counters. The provenance checker recalculates this classification from the raw
+counters and rejects artifacts whose flags, coverage label, or blocked-reason
+totals are inconsistent.
 
 The README performance provenance checker treats `prefix_reuse` as a public
 claim only when the artifact includes physical snapshot hit evidence. Artifacts

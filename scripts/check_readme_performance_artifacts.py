@@ -326,9 +326,13 @@ def validate_prefix_reuse_evidence_shape(
             raise ArtifactCheckError(
                 f"{artifact_path} prefix reuse evidence lacks {counter}"
             )
-        if not isinstance(evidence[counter], int):
+        if not isinstance(evidence[counter], int) or isinstance(evidence[counter], bool):
             raise ArtifactCheckError(
                 f"{artifact_path} prefix reuse evidence {counter} must be an integer"
+            )
+        if evidence[counter] < 0:
+            raise ArtifactCheckError(
+                f"{artifact_path} prefix reuse evidence {counter} must be non-negative"
             )
     for flag in (
         "physical_snapshot_hit_observed",
@@ -344,6 +348,48 @@ def validate_prefix_reuse_evidence_shape(
         raise ArtifactCheckError(
             f"{artifact_path} prefix reuse evidence has invalid physical_snapshot_coverage"
         )
+    expected = expected_prefix_reuse_classification(evidence)
+    for key, expected_value in expected.items():
+        if evidence.get(key) != expected_value:
+            raise ArtifactCheckError(
+                f"{artifact_path} prefix reuse evidence {key} is inconsistent with counters"
+            )
+
+
+def expected_prefix_reuse_classification(evidence: dict[str, Any]) -> dict[str, Any]:
+    hit_observed = evidence["hit_count"] > 0
+    miss_warmup_observed = (
+        evidence["miss_count"] > 0 and evidence["warmup_token_count"] > 0
+    )
+    blocked_reason_count = (
+        evidence["blocked_policy_disabled_count"]
+        + evidence["blocked_unsupported_layout_count"]
+        + evidence["blocked_trim_failure_count"]
+    )
+    blocked_count = evidence["blocked_count"]
+    blocked_observed = blocked_count > 0
+
+    if hit_observed and miss_warmup_observed:
+        coverage = "hit_and_miss_warmup"
+    elif miss_warmup_observed:
+        coverage = "miss_warmup_only"
+    elif hit_observed:
+        coverage = "hit_only"
+    elif blocked_observed:
+        coverage = "blocked_only"
+    else:
+        coverage = "none_observed"
+
+    return {
+        "physical_snapshot_hit_observed": hit_observed,
+        "physical_snapshot_miss_warmup_observed": miss_warmup_observed,
+        "physical_snapshot_blocked_observed": blocked_observed,
+        "physical_snapshot_coverage": coverage,
+        "blocked_reason_count": blocked_reason_count,
+        "blocked_reason_accounting_gap_count": max(
+            0, blocked_count - blocked_reason_count
+        ),
+    }
 
 
 def validate_phase0_artifact_gate(

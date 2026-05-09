@@ -336,6 +336,68 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=7,
                 )
 
+    def test_phase0_claim_gate_rejects_inconsistent_prefix_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["prefix_reuse_evidence"]["physical_snapshot_coverage"] = "hit_only"
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "physical_snapshot_coverage is inconsistent",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
+    def test_phase0_claim_gate_rejects_inconsistent_blocked_reason_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            evidence = artifact["prefix_reuse_evidence"]
+            evidence["blocked_count"] = 3
+            evidence["blocked_policy_disabled_count"] = 1
+            evidence["blocked_unsupported_layout_count"] = 1
+            evidence["physical_snapshot_blocked_observed"] = True
+            evidence["physical_snapshot_coverage"] = "blocked_only"
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "blocked_reason_count is inconsistent",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
+    def test_phase0_claim_gate_rejects_negative_prefix_counter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["prefix_reuse_evidence"]["hit_count"] = -1
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "hit_count must be non-negative",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
     def test_public_claim_requires_matching_artifact_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
