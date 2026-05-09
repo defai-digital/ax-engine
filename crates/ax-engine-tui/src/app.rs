@@ -13,6 +13,178 @@ pub enum AppTab {
     Artifacts,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelFamily {
+    Qwen,
+    Gemma,
+    Glm,
+}
+
+impl ModelFamily {
+    pub const ALL: [Self; 3] = [Self::Qwen, Self::Gemma, Self::Glm];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Qwen => "Qwen",
+            Self::Gemma => "Gemma",
+            Self::Glm => "GLM",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModelCatalogEntry {
+    pub family: ModelFamily,
+    pub label: &'static str,
+    pub repo_id: &'static str,
+    pub note: &'static str,
+}
+
+pub const MODEL_CATALOG: &[ModelCatalogEntry] = &[
+    ModelCatalogEntry {
+        family: ModelFamily::Qwen,
+        label: "Qwen3-4B-4bit",
+        repo_id: "mlx-community/Qwen3-4B-4bit",
+        note: "quickstart dense model",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Qwen,
+        label: "Qwen3.5-9B-MLX-4bit",
+        repo_id: "mlx-community/Qwen3.5-9B-MLX-4bit",
+        note: "linear attention + MoE preview",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Qwen,
+        label: "Qwen3.6-35B-A3B-UD-MLX-4bit",
+        repo_id: "mlx-community/Qwen3.6-35B-A3B-UD-MLX-4bit",
+        note: "large MoE, 4-bit",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Qwen,
+        label: "Qwen3.6-35B-A3B-5bit",
+        repo_id: "mlx-community/Qwen3.6-35B-A3B-5bit",
+        note: "large MoE, 5-bit",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Qwen,
+        label: "Qwen3.6-35B-A3B-6bit",
+        repo_id: "mlx-community/Qwen3.6-35B-A3B-6bit",
+        note: "large MoE, 6-bit",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Qwen,
+        label: "Qwen3.6-35B-A3B-8bit",
+        repo_id: "mlx-community/Qwen3.6-35B-A3B-8bit",
+        note: "large MoE, 8-bit",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Qwen,
+        label: "Qwen3-Coder-Next-4bit",
+        repo_id: "mlx-community/Qwen3-Coder-Next-4bit",
+        note: "coder next preview",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Gemma,
+        label: "gemma-4-e2b-it-4bit",
+        repo_id: "mlx-community/gemma-4-e2b-it-4bit",
+        note: "small Gemma 4 dense",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Gemma,
+        label: "gemma-4-e2b-it-5bit",
+        repo_id: "mlx-community/gemma-4-e2b-it-5bit",
+        note: "small Gemma 4 dense",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Gemma,
+        label: "gemma-4-e2b-it-6bit",
+        repo_id: "mlx-community/gemma-4-e2b-it-6bit",
+        note: "small Gemma 4 dense",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Gemma,
+        label: "gemma-4-e2b-it-8bit",
+        repo_id: "mlx-community/gemma-4-e2b-it-8bit",
+        note: "small Gemma 4 dense",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Gemma,
+        label: "gemma-4-e4b-it-4bit",
+        repo_id: "mlx-community/gemma-4-e4b-it-4bit",
+        note: "Gemma 4 E4B",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Gemma,
+        label: "gemma-4-26b-a4b-it-4bit",
+        repo_id: "mlx-community/gemma-4-26b-a4b-it-4bit",
+        note: "large Gemma 4 MoE",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Gemma,
+        label: "gemma-4-31b-it-4bit",
+        repo_id: "mlx-community/gemma-4-31b-it-4bit",
+        note: "large Gemma 4 dense",
+    },
+    ModelCatalogEntry {
+        family: ModelFamily::Glm,
+        label: "GLM-4.7-Flash-4bit",
+        repo_id: "mlx-community/GLM-4.7-Flash-4bit",
+        note: "GLM runtime-ready preview",
+    },
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelSelectorTarget {
+    Family(ModelFamily),
+    Size(usize),
+    Download,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ModelDownloadStatus {
+    Idle,
+    Running(String),
+    Succeeded { repo_id: String, model_dir: String },
+    Failed { repo_id: String, message: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelDownloadState {
+    pub family: ModelFamily,
+    pub size_index: usize,
+    pub selected_target: Option<ModelSelectorTarget>,
+    pub status: ModelDownloadStatus,
+}
+
+impl Default for ModelDownloadState {
+    fn default() -> Self {
+        Self {
+            family: ModelFamily::Qwen,
+            size_index: 0,
+            selected_target: None,
+            status: ModelDownloadStatus::Idle,
+        }
+    }
+}
+
+impl ModelDownloadState {
+    pub fn entries(&self) -> Vec<ModelCatalogEntry> {
+        MODEL_CATALOG
+            .iter()
+            .copied()
+            .filter(|entry| entry.family == self.family)
+            .collect()
+    }
+
+    pub fn selected_entry(&self) -> ModelCatalogEntry {
+        let entries = self.entries();
+        entries
+            .get(self.size_index)
+            .copied()
+            .unwrap_or_else(|| entries[0])
+    }
+}
+
 impl AppTab {
     pub const ALL: [Self; 6] = [
         Self::Readiness,
@@ -212,6 +384,7 @@ pub struct AppState {
     pub selected_tab: AppTab,
     pub should_quit: bool,
     pub doctor: LoadState<DoctorReport>,
+    pub model_download: ModelDownloadState,
     pub server: ServerState,
     pub server_control: ServerControlState,
     pub benchmark_summary: LoadState<BenchmarkArtifactSummary>,
@@ -226,6 +399,7 @@ impl AppState {
             selected_tab: AppTab::Readiness,
             should_quit: false,
             doctor: LoadState::not_loaded("doctor has not run"),
+            model_download: ModelDownloadState::default(),
             server: ServerState {
                 base_url: None,
                 health: LoadState::not_loaded("server URL not configured"),
@@ -253,6 +427,59 @@ impl AppState {
 
     pub fn select_tab(&mut self, tab: AppTab) {
         self.selected_tab = tab;
+    }
+
+    pub fn select_model_family(&mut self, family: ModelFamily) {
+        self.model_download.family = family;
+        self.model_download.size_index = 0;
+        self.model_download.selected_target = Some(ModelSelectorTarget::Family(family));
+        let entry = self.model_download.selected_entry();
+        self.status_message = format!(
+            "Selected model family {}: {}",
+            family.label(),
+            entry.repo_id
+        );
+    }
+
+    pub fn select_model_size(&mut self, size_index: usize) {
+        let max_index = self.model_download.entries().len().saturating_sub(1);
+        self.model_download.size_index = size_index.min(max_index);
+        self.model_download.selected_target =
+            Some(ModelSelectorTarget::Size(self.model_download.size_index));
+        let entry = self.model_download.selected_entry();
+        self.status_message = format!("Selected model size {}: {}", entry.label, entry.repo_id);
+    }
+
+    pub fn select_model_download(&mut self) {
+        self.model_download.selected_target = Some(ModelSelectorTarget::Download);
+        let entry = self.model_download.selected_entry();
+        self.status_message = format!("Ready to download {}", entry.repo_id);
+    }
+
+    pub fn mark_model_download_running(&mut self) {
+        let repo_id = self.model_download.selected_entry().repo_id.to_string();
+        self.model_download.status = ModelDownloadStatus::Running(repo_id.clone());
+        self.model_download.selected_target = Some(ModelSelectorTarget::Download);
+        self.status_message = format!("Downloading {repo_id}...");
+    }
+
+    pub fn mark_model_download_succeeded(&mut self, model_dir: String) {
+        let repo_id = self.model_download.selected_entry().repo_id.to_string();
+        self.model_download.status = ModelDownloadStatus::Succeeded {
+            repo_id: repo_id.clone(),
+            model_dir: model_dir.clone(),
+        };
+        self.status_message = format!("Downloaded {repo_id} to {model_dir}");
+    }
+
+    pub fn mark_model_download_failed(&mut self, message: impl Into<String>) {
+        let repo_id = self.model_download.selected_entry().repo_id.to_string();
+        let message = message.into();
+        self.model_download.status = ModelDownloadStatus::Failed {
+            repo_id: repo_id.clone(),
+            message: message.clone(),
+        };
+        self.status_message = format!("Download failed for {repo_id}: {message}");
     }
 
     pub fn select_server_control(&mut self, selection: ServerControlSelection) {

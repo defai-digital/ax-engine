@@ -1,10 +1,14 @@
 use ax_engine_tui::action::{Action, reduce};
-use ax_engine_tui::app::{AppState, AppTab, LoadState, ServerControlState};
-use ax_engine_tui::contracts::{read_benchmark_artifact_json, read_doctor_json, scan_artifacts};
+use ax_engine_tui::app::{
+    AppState, AppTab, LoadState, ModelFamily, ModelSelectorTarget, ServerControlState,
+};
+use ax_engine_tui::contracts::{
+    WorkflowCommand, read_benchmark_artifact_json, read_doctor_json, scan_artifacts,
+};
 use ax_engine_tui::jobs::plan::{
     CommandInvocation, EvidenceClass, JobDisplaySummary, JobKind, JobPlan, JobSpec,
 };
-use ax_engine_tui::jobs::runner::{RunningJob, run_to_completion};
+use ax_engine_tui::jobs::runner::{JobOutput, JobStatus, RunningJob, run_to_completion};
 use ax_engine_tui::jobs::{DoctorCommand, fetch_server_snapshot, run_doctor};
 use ax_engine_tui::profiles::{ManagerProfile, default_profile_root, read_profile, write_profile};
 use ax_engine_tui::support::write_support_bundle;
@@ -21,7 +25,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use std::env;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -119,10 +123,11 @@ fn print_help() {
     println!(
         "AX Engine Manager\n\n\
          Usage: ax-engine-manager [--check] [--phase2-check] [--doctor-json <path>] [--model-dir <path>] \\\n           [--server-url <url>] [--benchmark-json <path>] [--artifact-root <path>] [--profile-dir <path>] \\\n           [--support-bundle <dir>]\n\n\
-         Phase 1 is read-only. It may run doctor, read JSON contracts, poll server metadata,\n\
-         and render local artifacts, but it does not start downloads, benchmarks, or servers.\n\
+         Check mode is read-only. It may run doctor, read JSON contracts, poll server metadata,\n\
+         and render local artifacts without starting downloads, benchmarks, or servers.\n\
          Phase 2 adds guarded local job planning, fake-process cancellation checks, and profiles.\n\
-         Phase 3 support bundles write redacted diagnostics without model weights or secrets."
+         Phase 3 support bundles write redacted diagnostics without model weights or secrets.\n\
+         The Models tab can run the guarded download helper for the selected repo id."
     );
 }
 
@@ -344,31 +349,223 @@ fn run_loop<B: ratatui::backend::Backend>(
         }
         let size = terminal.size()?;
         let area = Rect::new(0, 0, size.width, size.height);
-        if let Some(action) = action_for_event(event::read()?, area, state.selected_tab) {
-            reduce(state, action);
+        if let Some(action) = action_for_event(event::read()?, area, state) {
+            handle_action(terminal, state, action)?;
         }
     }
 }
 
-fn action_for_event(event: Event, area: Rect, selected_tab: AppTab) -> Option<Action> {
+fn handle_action<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    state: &mut AppState,
+    action: Action,
+) -> Result<(), ManagerError> {
+    if action == Action::DownloadSelectedModel {
+        run_selected_model_download(terminal, state)?;
+    } else {
+        reduce(state, action);
+    }
+    Ok(())
+}
+
+fn action_for_event(event: Event, area: Rect, state: &AppState) -> Option<Action> {
     match event {
         Event::Key(key) => match key.code {
             KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
             KeyCode::Tab | KeyCode::Right => Some(Action::NextTab),
             KeyCode::BackTab | KeyCode::Left => Some(Action::PreviousTab),
+            KeyCode::Char('f') if state.selected_tab == AppTab::Models => Some(
+                Action::SelectModelFamily(next_model_family(state.model_download.family)),
+            ),
+            KeyCode::Char('s') if state.selected_tab == AppTab::Models => {
+                Some(Action::SelectModelSize(next_model_size(state)))
+            }
+            KeyCode::Char('d') | KeyCode::Enter if state.selected_tab == AppTab::Models => {
+                Some(Action::DownloadSelectedModel)
+            }
             _ => None,
         },
         Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
             if let Some(tab) = ui::tab_at_position(area, mouse.column, mouse.row) {
                 return Some(Action::SelectTab(tab));
             }
-            if selected_tab == AppTab::Server {
+            if state.selected_tab == AppTab::Models {
+                return ui::model_selector_at_position(area, state, mouse.column, mouse.row).map(
+                    |target| match target {
+                        ModelSelectorTarget::Family(family) => Action::SelectModelFamily(family),
+                        ModelSelectorTarget::Size(index) => Action::SelectModelSize(index),
+                        ModelSelectorTarget::Download => Action::DownloadSelectedModel,
+                    },
+                );
+            }
+            if state.selected_tab == AppTab::Server {
                 return ui::server_control_at_position(area, mouse.column, mouse.row)
                     .map(Action::SelectServerControl);
             }
             None
         }
         _ => None,
+    }
+}
+
+fn next_model_family(current: ModelFamily) -> ModelFamily {
+    let index = ModelFamily::ALL
+        .iter()
+        .position(|family| *family == current)
+        .unwrap_or(0);
+    ModelFamily::ALL[(index + 1) % ModelFamily::ALL.len()]
+}
+
+fn next_model_size(state: &AppState) -> usize {
+    let count = state.model_download.entries().len().max(1);
+    (state.model_download.size_index + 1) % count
+}
+
+fn run_selected_model_download<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    state: &mut AppState,
+) -> Result<(), ManagerError> {
+    state.mark_model_download_running();
+    terminal.draw(|frame| ui::render(frame, state))?;
+
+    let repo_id = state.model_download.selected_entry().repo_id.to_string();
+    let expected_dest = default_model_destination(&repo_id);
+    let spec = model_download_job_spec(state, &repo_id)?;
+    match run_to_completion(spec) {
+        Ok(output) if output.status == JobStatus::Succeeded => {
+            let model_dir = model_dir_from_download_output(&output).unwrap_or(expected_dest);
+            state.mark_model_download_succeeded(model_dir.clone());
+            refresh_doctor_after_download(state, Path::new(&model_dir));
+        }
+        Ok(output) => {
+            state.mark_model_download_failed(download_failure_message(&output));
+        }
+        Err(error) => {
+            state.mark_model_download_failed(error.to_string());
+        }
+    }
+    Ok(())
+}
+
+fn model_download_job_spec(state: &AppState, repo_id: &str) -> Result<JobSpec, ManagerError> {
+    if let LoadState::Ready(doctor) = &state.doctor
+        && let Some(command) = doctor.workflow.download_model.as_ref()
+    {
+        return Ok(JobSpec::new(
+            "download-model",
+            "Download selected model",
+            JobKind::DownloadModel,
+            EvidenceClass::Readiness,
+            download_invocation_from_workflow(command, repo_id)?,
+        ));
+    }
+
+    let cwd = env::current_dir()?;
+    let root = source_checkout_root(&cwd).ok_or_else(|| {
+        ManagerError::Message(
+            "download requires a source checkout or doctor workflow with download_model"
+                .to_string(),
+        )
+    })?;
+    Ok(JobSpec::new(
+        "download-model",
+        "Download selected model",
+        JobKind::DownloadModel,
+        EvidenceClass::Readiness,
+        CommandInvocation::new(
+            "python3",
+            vec![
+                "scripts/download_model.py".to_string(),
+                repo_id.to_string(),
+                "--json".to_string(),
+            ],
+            Some(root),
+        ),
+    ))
+}
+
+fn download_invocation_from_workflow(
+    command: &WorkflowCommand,
+    repo_id: &str,
+) -> Result<CommandInvocation, ManagerError> {
+    let Some((program, args)) = command.argv.split_first() else {
+        return Err(ManagerError::Message(
+            "download_model workflow command is empty".to_string(),
+        ));
+    };
+    Ok(CommandInvocation::new(
+        program.clone(),
+        args.iter()
+            .map(|arg| {
+                if arg == "<repo-id>" {
+                    repo_id.to_string()
+                } else {
+                    arg.clone()
+                }
+            })
+            .collect(),
+        command.cwd.as_ref().map(PathBuf::from),
+    ))
+}
+
+fn source_checkout_root(cwd: &Path) -> Option<PathBuf> {
+    cwd.ancestors()
+        .find(|path| {
+            path.join("Cargo.toml").is_file() && path.join("scripts/download_model.py").is_file()
+        })
+        .map(Path::to_path_buf)
+}
+
+fn default_model_destination(repo_id: &str) -> String {
+    let slug = repo_id.replace('/', "--");
+    match env::var("HOME") {
+        Ok(home) => format!("{home}/.cache/ax-engine/models/{slug}"),
+        Err(_) => format!("~/.cache/ax-engine/models/{slug}"),
+    }
+}
+
+fn model_dir_from_download_output(output: &JobOutput) -> Option<String> {
+    let json = output
+        .log_tail
+        .iter()
+        .filter_map(|line| line.strip_prefix("stdout: "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    serde_json::from_str::<serde_json::Value>(&json)
+        .ok()
+        .and_then(|value| value.get("dest")?.as_str().map(str::to_string))
+}
+
+fn download_failure_message(output: &JobOutput) -> String {
+    let tail = output
+        .log_tail
+        .iter()
+        .rev()
+        .take(4)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if tail.is_empty() {
+        format!("job exited with {:?}", output.exit_code)
+    } else {
+        tail
+    }
+}
+
+fn refresh_doctor_after_download(state: &mut AppState, model_dir: &Path) {
+    match env::current_dir() {
+        Ok(cwd) => {
+            let command = DoctorCommand::from_cwd(&cwd, Some(model_dir));
+            state.doctor = run_doctor(&command)
+                .map(LoadState::Ready)
+                .unwrap_or_else(|error| LoadState::unavailable(error.to_string()));
+        }
+        Err(error) => {
+            state.doctor = LoadState::unavailable(format!("failed to refresh doctor: {error}"));
+        }
     }
 }
 
@@ -429,6 +626,7 @@ mod tests {
     #[test]
     fn left_mouse_click_selects_header_tab() {
         let area = Rect::new(0, 0, 80, 24);
+        let state = AppState::empty();
         let event = Event::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 30,
@@ -437,7 +635,7 @@ mod tests {
         });
 
         assert_eq!(
-            action_for_event(event, area, ax_engine_tui::AppTab::Readiness),
+            action_for_event(event, area, &state),
             Some(Action::SelectTab(ax_engine_tui::AppTab::Benchmarks))
         );
     }
@@ -445,6 +643,7 @@ mod tests {
     #[test]
     fn mouse_click_outside_header_has_no_action() {
         let area = Rect::new(0, 0, 80, 24);
+        let state = AppState::empty();
         let event = Event::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 30,
@@ -452,15 +651,124 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::empty(),
         });
 
+        assert_eq!(action_for_event(event, area, &state), None);
+    }
+
+    #[test]
+    fn model_keyboard_shortcuts_select_and_download() {
+        let area = Rect::new(0, 0, 100, 32);
+        let mut state = AppState::empty();
+        state.selected_tab = ax_engine_tui::AppTab::Models;
+
+        let family = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('f'),
+            crossterm::event::KeyModifiers::empty(),
+        ));
         assert_eq!(
-            action_for_event(event, area, ax_engine_tui::AppTab::Readiness),
-            None
+            action_for_event(family, area, &state),
+            Some(Action::SelectModelFamily(ModelFamily::Gemma))
+        );
+
+        let size = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('s'),
+            crossterm::event::KeyModifiers::empty(),
+        ));
+        assert_eq!(
+            action_for_event(size, area, &state),
+            Some(Action::SelectModelSize(1))
+        );
+
+        let download = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('d'),
+            crossterm::event::KeyModifiers::empty(),
+        ));
+        assert_eq!(
+            action_for_event(download, area, &state),
+            Some(Action::DownloadSelectedModel)
+        );
+    }
+
+    #[test]
+    fn left_mouse_click_selects_model_size_and_download() {
+        let area = Rect::new(0, 0, 100, 32);
+        let mut state = AppState::empty();
+        state.selected_tab = ax_engine_tui::AppTab::Models;
+
+        let size = Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row: 9,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+        assert_eq!(
+            action_for_event(size, area, &state),
+            Some(Action::SelectModelSize(1))
+        );
+
+        let download = Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row: 18,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+        assert_eq!(
+            action_for_event(download, area, &state),
+            Some(Action::DownloadSelectedModel)
+        );
+    }
+
+    #[test]
+    fn download_workflow_replaces_repo_placeholder() {
+        let command = WorkflowCommand {
+            argv: vec![
+                "python3".to_string(),
+                "scripts/download_model.py".to_string(),
+                "<repo-id>".to_string(),
+                "--json".to_string(),
+            ],
+            cwd: Some("/repo".to_string()),
+        };
+
+        let invocation = download_invocation_from_workflow(&command, "mlx-community/Qwen3-4B-4bit")
+            .expect("download invocation should build");
+
+        assert_eq!(invocation.program, "python3");
+        assert_eq!(
+            invocation.args,
+            vec![
+                "scripts/download_model.py",
+                "mlx-community/Qwen3-4B-4bit",
+                "--json"
+            ]
+        );
+        assert_eq!(invocation.cwd, Some(PathBuf::from("/repo")));
+    }
+
+    #[test]
+    fn parses_model_dir_from_download_json_log_tail() {
+        let output = JobOutput {
+            job_id: "download-model".to_string(),
+            status: JobStatus::Succeeded,
+            exit_code: Some(0),
+            log_tail: vec![
+                "stdout: {".to_string(),
+                "stdout:   \"dest\": \"/models/qwen\",".to_string(),
+                "stdout:   \"status\": \"ready\"".to_string(),
+                "stdout: }".to_string(),
+            ],
+        };
+
+        assert_eq!(
+            model_dir_from_download_output(&output).as_deref(),
+            Some("/models/qwen")
         );
     }
 
     #[test]
     fn left_mouse_click_selects_server_button_when_server_tab_is_active() {
         let area = Rect::new(0, 0, 100, 32);
+        let mut state = AppState::empty();
+        state.selected_tab = ax_engine_tui::AppTab::Server;
         let event = Event::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 11,
@@ -469,7 +777,7 @@ mod tests {
         });
 
         assert_eq!(
-            action_for_event(event, area, ax_engine_tui::AppTab::Server),
+            action_for_event(event, area, &state),
             Some(Action::SelectServerControl(
                 ax_engine_tui::app::ServerControlSelection::Button(
                     ax_engine_tui::app::ServerControlButton::Start

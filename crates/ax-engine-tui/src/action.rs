@@ -1,10 +1,14 @@
-use crate::app::{AppState, AppTab, ServerControlSelection};
+use crate::app::{AppState, AppTab, ModelFamily, ServerControlSelection};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
     NextTab,
     PreviousTab,
     SelectTab(AppTab),
+    SelectModelFamily(ModelFamily),
+    SelectModelSize(usize),
+    SelectModelDownload,
+    DownloadSelectedModel,
     SelectServerControl(ServerControlSelection),
     Quit,
 }
@@ -14,6 +18,10 @@ pub fn reduce(state: &mut AppState, action: Action) {
         Action::NextTab => state.next_tab(),
         Action::PreviousTab => state.previous_tab(),
         Action::SelectTab(tab) => state.select_tab(tab),
+        Action::SelectModelFamily(family) => state.select_model_family(family),
+        Action::SelectModelSize(index) => state.select_model_size(index),
+        Action::SelectModelDownload => state.select_model_download(),
+        Action::DownloadSelectedModel => state.select_model_download(),
         Action::SelectServerControl(selection) => state.select_server_control(selection),
         Action::Quit => state.should_quit = true,
     }
@@ -34,6 +42,19 @@ mod tests {
 
         reduce(&mut state, Action::SelectTab(AppTab::Benchmarks));
         assert_eq!(state.selected_tab, AppTab::Benchmarks);
+
+        reduce(&mut state, Action::SelectModelFamily(ModelFamily::Gemma));
+        assert_eq!(state.model_download.family, ModelFamily::Gemma);
+        assert_eq!(state.model_download.size_index, 0);
+
+        reduce(&mut state, Action::SelectModelSize(2));
+        assert_eq!(state.model_download.size_index, 2);
+
+        reduce(&mut state, Action::SelectModelDownload);
+        assert_eq!(
+            state.model_download.selected_target,
+            Some(crate::app::ModelSelectorTarget::Download)
+        );
 
         reduce(
             &mut state,
