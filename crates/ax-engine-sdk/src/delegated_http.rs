@@ -1,6 +1,10 @@
 use std::time::Duration;
 
+/// Default connect timeout for delegated local/remote HTTP backends.
 pub const DEFAULT_DELEGATED_HTTP_CONNECT_TIMEOUT_SECS: u64 = 30;
+/// Default read/write timeout for delegated HTTP I/O. Reads intentionally share
+/// the longer I/O timeout because streaming completions can stay open for the
+/// full generation window.
 pub const DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

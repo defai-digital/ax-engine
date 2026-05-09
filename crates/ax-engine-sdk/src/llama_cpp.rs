@@ -663,7 +663,16 @@ fn extract_cli_response(raw: String) -> String {
             .unwrap_or(body.len());
         return body[..end].trim_end().to_string();
     }
+    if looks_like_llama_cli_wrapped_output(&raw) {
+        tracing::warn!(
+            "llama-cli output did not contain expected assistant marker; returning trimmed stdout"
+        );
+    }
     trim_single_trailing_newline(raw)
+}
+
+fn looks_like_llama_cli_wrapped_output(raw: &str) -> bool {
+    raw.contains("[ Prompt:") || raw.contains("llama-cli") || raw.contains("Exiting...")
 }
 
 fn run_command_with_timeout(
@@ -807,6 +816,18 @@ mod tests {
     fn extract_cli_response_no_marker_falls_back_to_trim() {
         let raw = "direct output\n".to_string();
         assert_eq!(extract_cli_response(raw), "direct output");
+    }
+
+    #[test]
+    fn extract_cli_response_no_marker_keeps_wrapped_output_for_diagnostics() {
+        let raw = "llama-cli v1.0\nhello\n[ Prompt: 1 t/s ]\nExiting...\n".to_string();
+        assert_eq!(
+            extract_cli_response(raw),
+            "llama-cli v1.0\nhello\n[ Prompt: 1 t/s ]\nExiting..."
+        );
+        assert!(looks_like_llama_cli_wrapped_output(
+            "llama-cli v1.0\nhello\n[ Prompt: 1 t/s ]\nExiting..."
+        ));
     }
 
     #[test]
