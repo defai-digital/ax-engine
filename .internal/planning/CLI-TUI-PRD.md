@@ -308,6 +308,8 @@ Exit criteria:
 - the support bundle contains no model weights or secrets.
 - `bash scripts/check-cli-tui-phase3.sh` passes before publishing Homebrew
   artifacts.
+- the local Homebrew release script has an explicit signed/notarized path for
+  Developer ID releases and an explicit unsigned path for local dry runs.
 
 ## 12. Suggested Implementation Architecture
 

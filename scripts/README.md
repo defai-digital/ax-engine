@@ -51,6 +51,10 @@ throughput baselines.
   `ax-engine-server`, `ax-engine-bench`, and `ax-engine-manager`, runs manager
   help/check smoke tests, and checks support bundles do not copy model weights or
   secret-like content.
+- `brew-release.sh`: local Homebrew release publisher. It packages
+  `ax-engine-server`, `ax-engine-bench`, and `ax-engine-manager`; with
+  `--sign-identity`, it codesigns and notarizes all packaged binaries before
+  upload. Without `--sign-identity`, binaries are intentionally left unsigned.
 - `download_model.py`: general-purpose MLX model download helper. It downloads a
   Hugging Face snapshot to `~/.cache/ax-engine/models/<repo-slug>` by default,
   validates local model files, and generates the AX model manifest when
