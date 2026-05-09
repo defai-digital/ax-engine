@@ -1,0 +1,103 @@
+{
+  "schema_version": "ax.embedding_bench.v1",
+  "timestamp": "2026-05-08T16:37:48.912074",
+  "model_dir": "/Users/akiralam/code/ax-engine-v4/.internal/models/qwen3-embedding-0.6b-8bit",
+  "model_label": "qwen3-embedding-0.6b-8bit",
+  "sentences": [
+    "The quick brown fox jumps over the lazy dog",
+    "AX Engine achieves 318 tokens per second on Apple M4",
+    "Apple Silicon on-chip memory bandwidth enables low-latency inference",
+    "What is the capital of France?",
+    "Hello world",
+    "Machine learning models require significant computational resources",
+    "Natural language processing enables computers to understand human text",
+    "The transformer architecture revolutionized deep learning",
+    "Embeddings capture semantic relationships between words and phrases",
+    "On-device inference preserves user privacy and reduces latency"
+  ],
+  "token_counts": [
+    10,
+    15,
+    13,
+    8,
+    3,
+    8,
+    10,
+    8,
+    10,
+    10
+  ],
+  "trials": 3,
+  "cooldown_s": 1.0,
+  "results": {
+    "mlx_lm": {
+      "engine": "mlx_lm",
+      "mean_ms_per_sentence": 6.052534701302648,
+      "median_ms_per_sentence": 6.384075002279133,
+      "stddev_ms_per_sentence": 0.4863643093320287,
+      "mean_tokens_per_sec": 1580.4091497926104,
+      "median_tokens_per_sec": 1488.077755447496,
+      "trials": [
+        {
+          "ms_per_sentence": 6.408670800738037,
+          "tokens_per_sec": 1482.3666709336917
+        },
+        {
+          "ms_per_sentence": 5.3648583008907735,
+          "tokens_per_sec": 1770.7830229966435
+        },
+        {
+          "ms_per_sentence": 6.384075002279133,
+          "tokens_per_sec": 1488.077755447496
+        }
+      ]
+    },
+    "mlx_swift": {
+      "engine": "mlx_swift",
+      "mean_ms_per_sentence": 5.819968382517497,
+      "median_ms_per_sentence": 5.975401401519775,
+      "stddev_ms_per_sentence": 0.4349015081472384,
+      "mean_tokens_per_sec": 1641.8418199703221,
+      "median_tokens_per_sec": 1589.8513525106084,
+      "trials": [
+        {
+          "ms_per_sentence": 6.25760555267334,
+          "peak_memory_gb": 0.5896330773830414,
+          "tokens_per_sec": 1518.1525776966657
+        },
+        {
+          "ms_per_sentence": 5.226898193359375,
+          "peak_memory_gb": 0.5898544006049633,
+          "tokens_per_sec": 1817.521529703693
+        },
+        {
+          "ms_per_sentence": 5.975401401519775,
+          "peak_memory_gb": 0.5898544006049633,
+          "tokens_per_sec": 1589.8513525106084
+        }
+      ]
+    },
+    "ax_engine_http": {
+      "engine": "ax_engine_http",
+      "mean_ms_per_sentence": 7.394961128011346,
+      "median_ms_per_sentence": 7.478987495414913,
+      "stddev_ms_per_sentence": 0.2368277503233157,
+      "mean_tokens_per_sec": 1285.998792796434,
+      "median_tokens_per_sec": 1270.2254156493902,
+      "trials": [
+        {
+          "ms_per_sentence": 7.633724994957447,
+          "tokens_per_sec": 1244.477631336647
+        },
+        {
+          "ms_per_sentence": 7.478987495414913,
+          "tokens_per_sec": 1270.2254156493902
+        },
+        {
+          "ms_per_sentence": 7.072170893661678,
+          "tokens_per_sec": 1343.2933314032648
+        }
+      ]
+    }
+  }
+}

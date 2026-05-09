@@ -283,6 +283,14 @@ evidence for long-context serving claims, not as proof of continuous batching.
 | GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 502.9 | 1,045.0 (+107.8%) | 863.2 (+71.6%) |
 |    |    | 512 | 1,584.7 | 2,588.8 (+63.4%) | 2,385.9 (+50.6%) |
 
+### How to read this performance section
+
+- Decode/Prefill tables above are the **headline product-facing rows**.
+- Embedding tables below are **endpoint/runtime-specific evidence** for `/v1/embeddings`.
+- Vectorization A/B rows below are **diagnostic engineering checks**, not separate
+  headline benchmarks. The A/B tables show only AX columns; reference runtime numbers
+  come from the full baseline artifact cited in each section.
+
 ### Embedding throughput (tok/s) — runtime apples-to-apples
 
 The embedding runtime comparison below is measured on the same tokenized inputs
@@ -334,7 +342,7 @@ throughput:
 | micro-batching disabled (`MAX_BATCH=1`) | 332.2 | 1661.1 |
 | micro-batching enabled (`MAX_BATCH=32`) | 542.9 | 2714.7 |
 
-### Standard LLM vectorization A/B (QK RMSNorm path)
+### Diagnostic appendix — standard LLM vectorization A/B (QK RMSNorm path)
 
 To verify whether the same vectorization idea helps standard LLM decode/prefill
 as much as embeddings, AX now keeps an explicit A/B switch for Q/K RMSNorm:
@@ -344,15 +352,17 @@ as much as embeddings, AX now keeps an explicit A/B switch for Q/K RMSNorm:
 
 Source artifacts (2026-05-09 run, `Qwen3.5-9B-MLX-4bit`, prompt=128, generation=128, repetitions=3):
 
-- full baseline (mlx_lm + mlx_swift_lm + ax direct 4D): `benchmarks/results/mlx-inference/2026-05-09-qwen35-9b-qknorm4d-full-r3.json`
-- AX-only refresh (same reused mlx_lm/mlx_swift_lm rows, flat path): `benchmarks/results/mlx-inference/2026-05-09-qwen35-9b-qknorm-flat-full-r3.json`
+- `benchmarks/results/mlx-inference/2026-05-09-qwen35-9b-qknorm4d-full-r3.json` — full run (mlx_lm + mlx_swift_lm + AX direct 4D)
+- `benchmarks/results/mlx-inference/2026-05-09-qwen35-9b-qknorm-flat-full-r3.json` — AX flat variant only (reference rows reused from above)
 
-Median throughput:
+Reference from full baseline: mlx_lm prefill=1186.4 / decode=97.2 · mlx_swift_lm prefill=2465.2 / decode=99.0
 
-| Variant | mlx_lm prefill | mlx_lm decode | mlx_swift_lm prefill | mlx_swift_lm decode | ax_engine prefill | ax_engine decode |
-|---|---:|---:|---:|---:|---:|---:|
-| direct 4D RMSNorm | 1186.4 | 97.2 | 2465.2 | 99.0 | 2019.2 | 100.2 |
-| flat RMSNorm (`AX_MLX_QK_NORM_FLAT=1`) | 1186.4 | 97.2 | 2465.2 | 99.0 | 2004.7 | 99.6 |
+AX median throughput (A/B):
+
+| Variant | ax prefill | ax decode |
+|---|---:|---:|
+| direct 4D RMSNorm | 2019.2 | 100.2 |
+| flat RMSNorm (`AX_MLX_QK_NORM_FLAT=1`) | 2004.7 | 99.6 |
 
 AX delta (direct 4D vs flat) on this shape:
 
@@ -363,10 +373,10 @@ Conclusion: for this standard LLM row, vectorization on the Q/K RMSNorm path is
 safe and slightly better, but the gain is small; it is not the primary lever
 behind large throughput jumps (unlike some embedding-path optimizations).
 
-Gemma 4 E2B 4-bit check (2026-05-09, prompt=128/512, generation=128, repetitions=3):
+Gemma 4 E2B 4-bit diagnostic check (2026-05-09, prompt=128/512, generation=128, repetitions=3):
 
-- full baseline (mlx_lm + mlx_swift_lm + ax direct 4D): `benchmarks/results/mlx-inference/2026-05-09-gemma4-e2b-4bit-qknorm4d-r3.json`
-- AX-only refresh (same reused mlx_lm/mlx_swift_lm rows, flat path): `benchmarks/results/mlx-inference/2026-05-09-gemma4-e2b-4bit-qknorm-flat-r3.json`
+- `benchmarks/results/mlx-inference/2026-05-09-gemma4-e2b-4bit-qknorm4d-r3.json` — full run (mlx_lm + mlx_swift_lm + AX direct 4D)
+- `benchmarks/results/mlx-inference/2026-05-09-gemma4-e2b-4bit-qknorm-flat-r3.json` — AX flat variant only (reference rows reused from above)
 
 AX median A/B:
 

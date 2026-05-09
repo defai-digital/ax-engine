@@ -1,0 +1,129 @@
+{
+  "schema_version": "ax.embedding_bench.v1",
+  "timestamp": "2026-05-08T19:38:45.510224",
+  "model_dir": "/Users/akiralam/code/ax-engine-v4/.internal/models/qwen3-embedding-4b-4bit",
+  "model_label": "qwen3-embedding-4b-4bit",
+  "sentences": [
+    "The quick brown fox jumps over the lazy dog",
+    "AX Engine achieves 318 tokens per second on Apple M4",
+    "Apple Silicon on-chip memory bandwidth enables low-latency inference",
+    "What is the capital of France?",
+    "Hello world",
+    "Machine learning models require significant computational resources",
+    "Natural language processing enables computers to understand human text",
+    "The transformer architecture revolutionized deep learning",
+    "Embeddings capture semantic relationships between words and phrases",
+    "On-device inference preserves user privacy and reduces latency"
+  ],
+  "token_counts": [
+    10,
+    15,
+    13,
+    8,
+    3,
+    8,
+    10,
+    8,
+    10,
+    10
+  ],
+  "trials": 5,
+  "cooldown_s": 1.0,
+  "results": {
+    "mlx_lm": {
+      "engine": "mlx_lm",
+      "mean_ms_per_sentence": 17.88802829803899,
+      "median_ms_per_sentence": 18.001316592562944,
+      "stddev_ms_per_sentence": 0.4989533270622649,
+      "mean_tokens_per_sec": 531.4937483712426,
+      "median_tokens_per_sec": 527.7391768069245,
+      "trials": [
+        {
+          "ms_per_sentence": 18.001316592562944,
+          "tokens_per_sec": 527.7391768069245
+        },
+        {
+          "ms_per_sentence": 18.644216598477215,
+          "tokens_per_sec": 509.5413877982903
+        },
+        {
+          "ms_per_sentence": 17.225716705434024,
+          "tokens_per_sec": 551.5010006523055
+        },
+        {
+          "ms_per_sentence": 18.100674997549504,
+          "tokens_per_sec": 524.8423056756792
+        },
+        {
+          "ms_per_sentence": 17.46821659617126,
+          "tokens_per_sec": 543.8448709230134
+        }
+      ]
+    },
+    "ax_engine_py": {
+      "engine": "ax_engine_py",
+      "mean_ms_per_sentence": 20.939052461180836,
+      "median_ms_per_sentence": 20.9731791052036,
+      "stddev_ms_per_sentence": 0.25257553573920577,
+      "mean_tokens_per_sec": 453.7635864065727,
+      "median_tokens_per_sec": 452.9594656273631,
+      "trials": [
+        {
+          "ms_per_sentence": 21.080304100178182,
+          "tokens_per_sec": 450.6576354332432
+        },
+        {
+          "ms_per_sentence": 21.31843330571428,
+          "tokens_per_sec": 445.62374090846447
+        },
+        {
+          "ms_per_sentence": 20.666504197288305,
+          "tokens_per_sec": 459.6810331012109
+        },
+        {
+          "ms_per_sentence": 20.9731791052036,
+          "tokens_per_sec": 452.9594656273631
+        },
+        {
+          "ms_per_sentence": 20.656841597519815,
+          "tokens_per_sec": 459.8960569625817
+        }
+      ]
+    },
+    "mlx_swift": {
+      "engine": "mlx_swift",
+      "mean_ms_per_sentence": 19.251837730407715,
+      "median_ms_per_sentence": 19.23699378967285,
+      "stddev_ms_per_sentence": 0.11794710327113243,
+      "mean_tokens_per_sec": 493.47782830838617,
+      "median_tokens_per_sec": 493.8401552689569,
+      "trials": [
+        {
+          "ms_per_sentence": 19.13520097732544,
+          "peak_memory_gb": 2.1097655817866325,
+          "tokens_per_sec": 496.4672182569274
+        },
+        {
+          "ms_per_sentence": 19.457101821899414,
+          "peak_memory_gb": 2.1107574105262756,
+          "tokens_per_sec": 488.25359948044945
+        },
+        {
+          "ms_per_sentence": 19.288694858551025,
+          "peak_memory_gb": 2.1106963753700256,
+          "tokens_per_sec": 492.5164750474799
+        },
+        {
+          "ms_per_sentence": 19.23699378967285,
+          "peak_memory_gb": 2.109384063631296,
+          "tokens_per_sec": 493.8401552689569
+        },
+        {
+          "ms_per_sentence": 19.141197204589844,
+          "peak_memory_gb": 2.1106658540666103,
+          "tokens_per_sec": 496.31169348811716
+        }
+      ]
+    }
+  }
+}
