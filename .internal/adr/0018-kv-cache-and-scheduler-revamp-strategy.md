@@ -152,7 +152,10 @@ cache miss, but artifacts must show the cost and frequency.
 The first metadata slice is implemented: MLX route metadata now separates
 physical snapshot hits, eligible misses, warmup tokens, policy-disabled blocks,
 unsupported-layout blocks, and trim-failure blocks while preserving the existing
-aggregate blocked counter.
+aggregate blocked counter. The MLX inference-stack benchmark summary also
+propagates those reason-specific counters into `prefix_reuse_evidence`, so
+artifact readers can distinguish eligible misses from unsupported or disabled
+physical snapshot paths.
 
 Only after evidence shows material warmup cost should AX consider an engine-runner
 coordination API for preflight physical-prefix availability.

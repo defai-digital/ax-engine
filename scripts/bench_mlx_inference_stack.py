@@ -131,6 +131,9 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_prefix_cache_hits",
     "ax_mlx_prefix_cache_misses",
     "ax_mlx_prefix_cache_blocked",
+    "ax_mlx_prefix_cache_blocked_policy_disabled",
+    "ax_mlx_prefix_cache_blocked_unsupported_layout",
+    "ax_mlx_prefix_cache_blocked_trim_failure",
     "ax_mlx_prefix_cache_stores",
     "ax_mlx_prefix_cache_evictions",
     "ax_mlx_prefix_cache_reused_tokens",
@@ -977,6 +980,9 @@ def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, 
         "hit_count": 0,
         "miss_count": 0,
         "blocked_count": 0,
+        "blocked_policy_disabled_count": 0,
+        "blocked_unsupported_layout_count": 0,
+        "blocked_trim_failure_count": 0,
         "stored_prefix_count": 0,
         "eviction_count": 0,
         "reused_token_count": 0,
@@ -991,6 +997,15 @@ def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, 
         evidence["hit_count"] += int(telemetry.get("ax_mlx_prefix_cache_hits", 0))
         evidence["miss_count"] += int(telemetry.get("ax_mlx_prefix_cache_misses", 0))
         evidence["blocked_count"] += int(telemetry.get("ax_mlx_prefix_cache_blocked", 0))
+        evidence["blocked_policy_disabled_count"] += int(
+            telemetry.get("ax_mlx_prefix_cache_blocked_policy_disabled", 0)
+        )
+        evidence["blocked_unsupported_layout_count"] += int(
+            telemetry.get("ax_mlx_prefix_cache_blocked_unsupported_layout", 0)
+        )
+        evidence["blocked_trim_failure_count"] += int(
+            telemetry.get("ax_mlx_prefix_cache_blocked_trim_failure", 0)
+        )
         evidence["stored_prefix_count"] += int(telemetry.get("ax_mlx_prefix_cache_stores", 0))
         evidence["eviction_count"] += int(telemetry.get("ax_mlx_prefix_cache_evictions", 0))
         evidence["reused_token_count"] += int(

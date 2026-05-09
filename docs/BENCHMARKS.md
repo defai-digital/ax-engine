@@ -98,6 +98,14 @@ The default AX row is the direct same-policy comparison against the primary MLX
 baseline. AX n-gram acceleration rows are effective-throughput evidence and
 must not be treated as the same decode policy as the primary MLX baseline.
 
+The top-level `prefix_reuse_evidence` block summarizes only AX Engine rows. It
+separates physical prefix snapshot hits, eligible misses, warmup tokens, stored
+prefixes, evictions, cache size, and blocked reasons
+(`blocked_policy_disabled_count`, `blocked_unsupported_layout_count`, and
+`blocked_trim_failure_count`). Treat these fields as runtime evidence for the
+MLX physical snapshot path, separate from scheduler/replay logical prefix
+contracts.
+
 Long-context prefill and TTFT claims require a separate scaling artifact. For a
 fresh run, use the repo-owned wrapper:
 

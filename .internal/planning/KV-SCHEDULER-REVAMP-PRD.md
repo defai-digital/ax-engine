@@ -202,6 +202,9 @@ surface through better defaults, route metadata, and benchmark artifacts.
 - Blocked physical snapshot paths now include reason-specific counters for
   disabled policy, unsupported layout, and trim failure while preserving the
   aggregate blocked counter.
+- MLX inference-stack `prefix_reuse_evidence` now summarizes physical prefix
+  hits, misses, warmup tokens, cache footprint, and blocked reason breakdowns
+  for AX rows.
 
 #### Open
 

@@ -659,6 +659,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_direct_pipeline_steps": 2,
                     "ax_mlx_direct_pipeline_wall_us": 70,
                     "ax_mlx_prefix_cache_hits": 1,
+                    "ax_mlx_prefix_cache_blocked_policy_disabled": 2,
                     "ax_mlx_prefix_cache_reused_tokens": 16,
                     "unrelated": 99,
                 }
@@ -672,8 +673,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_steps"], 2)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_wall_us"], 70)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_hits"], 1)
+        self.assertEqual(telemetry["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_reused_tokens"], 16)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_evictions"], 0)
+        self.assertEqual(telemetry["ax_mlx_prefix_cache_blocked_unsupported_layout"], 0)
+        self.assertEqual(telemetry["ax_mlx_prefix_cache_blocked_trim_failure"], 0)
         self.assertEqual(telemetry["ax_mlx_single_decode_steps"], 0)
         self.assertEqual(telemetry["ax_mlx_bonus_tokens"], 0)
         self.assertNotIn("unrelated", telemetry)
@@ -694,6 +698,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_decode_steps"], 5)
         self.assertEqual(summary["ax_mlx_decode_wall_us"], 200)
         self.assertEqual(summary["ax_mlx_prefix_cache_hits"], 1)
+        self.assertEqual(summary["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(summary["ax_mlx_prefix_cache_reused_tokens"], 16)
 
     def test_scheduler_telemetry_is_extracted_and_summarized(self) -> None:
@@ -741,6 +746,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_mlx_prefix_cache_hits": 1,
                         "ax_mlx_prefix_cache_misses": 2,
                         "ax_mlx_prefix_cache_blocked": 3,
+                        "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+                        "ax_mlx_prefix_cache_blocked_unsupported_layout": 2,
+                        "ax_mlx_prefix_cache_blocked_trim_failure": 0,
                         "ax_mlx_prefix_cache_stores": 4,
                         "ax_mlx_prefix_cache_evictions": 5,
                         "ax_mlx_prefix_cache_reused_tokens": 16,
@@ -753,6 +761,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "engine": "ax_engine_mlx_ngram_accel",
                     "ax_mlx_telemetry": {
                         "ax_mlx_prefix_cache_hits": 1,
+                        "ax_mlx_prefix_cache_blocked": 1,
+                        "ax_mlx_prefix_cache_blocked_trim_failure": 1,
                         "ax_mlx_prefix_cache_entries": 2,
                         "ax_mlx_prefix_cache_bytes_kib": 64,
                     },
@@ -762,7 +772,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(evidence["hit_count"], 2)
         self.assertEqual(evidence["miss_count"], 2)
-        self.assertEqual(evidence["blocked_count"], 3)
+        self.assertEqual(evidence["blocked_count"], 4)
+        self.assertEqual(evidence["blocked_policy_disabled_count"], 1)
+        self.assertEqual(evidence["blocked_unsupported_layout_count"], 2)
+        self.assertEqual(evidence["blocked_trim_failure_count"], 1)
         self.assertEqual(evidence["stored_prefix_count"], 4)
         self.assertEqual(evidence["eviction_count"], 5)
         self.assertEqual(evidence["reused_token_count"], 16)
