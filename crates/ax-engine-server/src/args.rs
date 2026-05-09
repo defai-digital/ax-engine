@@ -428,13 +428,20 @@ fn resolve_hf_cache_model_artifacts(
         1 => Ok(candidates.remove(0)),
         0 => {
             let mut message = format!(
-                "no valid AX model artifacts found in Hugging Face cache for preset {}; expected config.json, {MODEL_MANIFEST_FILE}, safetensors, and model_type in {:?}",
+                "no valid AX model artifacts found in Hugging Face cache for preset {}; \
+                 expected config.json, {MODEL_MANIFEST_FILE}, safetensors, and model_type in {:?}",
                 preset.label, preset.model_types
             );
             if !rejected.is_empty() {
                 message.push_str("; rejected candidates: ");
                 message.push_str(&rejected.join("; "));
             }
+            message.push_str(
+                "\nhint: if you downloaded a snapshot but haven't generated the manifest yet, run:\
+                 \n  cargo run -p ax-engine-core --bin generate-manifest -- <snapshot-dir>\
+                 \nor use the download script:\
+                 \n  python scripts/download_model.py <org/repo-id>",
+            );
             Err(message)
         }
         _ => Err(format!(
@@ -488,7 +495,11 @@ fn validate_preset_model_artifacts(path: &Path, preset: &PresetDefinition) -> Re
     }
     if !path.join(MODEL_MANIFEST_FILE).is_file() {
         return Err(format!(
-            "missing {MODEL_MANIFEST_FILE}; run `cargo run -p ax-engine-core --bin generate-manifest -- <model-dir>` before using this snapshot as AX MLX artifacts"
+            "missing {MODEL_MANIFEST_FILE}; generate it with:\
+             \n  cargo run -p ax-engine-core --bin generate-manifest -- {}\
+             \nor use the download script which handles this step:\
+             \n  python scripts/download_model.py <org/repo-id>",
+            path.display()
         ));
     }
     if !dir_contains_safetensors(path) {

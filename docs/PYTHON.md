@@ -36,12 +36,45 @@ The current preview package provides:
 - delegated `mlx-lm` text compatibility through `mlx_lm_server_url`
 - llama.cpp wiring through `llama_cli_path`,
   `llama_model_path`, or `llama_server_url`
+- `download_model(repo_id, dest=None, *, force=False)` — download an mlx-community
+  model and auto-generate its `model-manifest.json`
 
 The current preview package does not yet provide:
 
 - text tokenization or decoding helpers
 - automatic model-aware chat templating
 - transport-level streaming APIs
+
+## Getting a Model
+
+`download_model()` is the fastest path from nothing to a running session.
+It downloads weights from Hugging Face Hub and auto-generates the required
+`model-manifest.json` via `ax-engine-bench generate-manifest` (if installed)
+or `cargo run` (dev build):
+
+```python
+from ax_engine import download_model
+
+path = download_model("mlx-community/Qwen3-4B-4bit")
+# path is ready to pass directly to Session(mlx_model_artifacts_dir=...)
+```
+
+The source-tree script uses the same default destination and can emit a
+machine-readable summary for automation:
+
+```text
+python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json
+```
+
+For raw HuggingFace checkpoints (not from mlx-community), convert with
+`mlx_lm.convert` first — ax-engine detects unsanitized hybrid-model weights at
+load time and raises a hard error:
+
+```bash
+pip install mlx-lm
+mlx_lm.convert --hf-path <org/model> --mlx-path /path/to/dest -q --q-bits 4
+ax-engine-bench generate-manifest /path/to/dest
+```
 
 ## Install
 
@@ -58,8 +91,24 @@ pretending native or delegated support exists.
 This builds the Rust extension and installs the `ax_engine` package into the
 active Python environment.
 
-If you want the repo-owned MLX runtime to use explicit validated local model
-artifacts, pass that path directly into `Session(...)`:
+To get a model and start a session in one flow:
+
+```python
+import ax_engine
+
+path = ax_engine.download_model("mlx-community/Qwen3-4B-4bit")
+
+with ax_engine.Session(
+    model_id="qwen3_dense",
+    mlx=True,
+    mlx_model_artifacts_dir=str(path),
+) as session:
+    runtime = session.runtime()
+
+print(runtime.mlx_model)
+```
+
+If you already have model artifacts on disk, pass the path directly:
 
 ```python
 import ax_engine
@@ -67,12 +116,15 @@ import ax_engine
 with ax_engine.Session(
     model_id="qwen3_dense",
     mlx=True,
-    mlx_model_artifacts_dir="/absolute/path/to/mlx-model-artifacts",
+    mlx_model_artifacts_dir="/path/to/mlx-model-artifacts",
 ) as session:
     runtime = session.runtime()
 
 print(runtime.mlx_model)
 ```
+
+`Session(mlx=True)` without a path raises `ValueError` with a download hint
+rather than propagating a cryptic Rust error.
 
 If you want a repo-owned smoke check that bootstraps a temporary virtualenv,
 installs `maturin`, builds the extension, runs the checked-in examples, and
@@ -88,13 +140,15 @@ bash scripts/check-python-preview.sh
 ```python
 import ax_engine
 
+path = ax_engine.download_model("mlx-community/Qwen3-4B-4bit")
+
 with ax_engine.Session(
     model_id="qwen3_dense",
     mlx=True,
-    mlx_model_artifacts_dir="/absolute/path/to/mlx-model-artifacts",
+    mlx_model_artifacts_dir=str(path),
 ) as session:
     runtime = session.runtime()
-    result = session.generate(input_text="Hello from default MLX path", max_output_tokens=2)
+    result = session.generate(input_text="Hello from AX MLX", max_output_tokens=2)
 
 print(runtime)
 print(result.output_text)
@@ -105,10 +159,11 @@ MLX preview sessions currently accept pre-tokenized `input_tokens`:
 ```python
 import ax_engine
 
+# ax_engine.download_model("mlx-community/Qwen3-4B-4bit") if not yet on disk
 with ax_engine.Session(
     model_id="qwen3_dense",
     mlx=True,
-    mlx_model_artifacts_dir="/absolute/path/to/mlx-model-artifacts",
+    mlx_model_artifacts_dir="/path/to/mlx-model-artifacts",
 ) as session:
     result = session.generate([1, 2, 3], max_output_tokens=32)
 
@@ -116,7 +171,7 @@ print(result.runtime.selected_backend)
 print(result.output_tokens)
 ```
 
-If you want the repo-owned MLX runtime:
+If you want the repo-owned MLX runtime with text input:
 
 ```python
 import ax_engine
@@ -124,7 +179,7 @@ import ax_engine
 with ax_engine.Session(
     model_id="qwen3_dense",
     mlx=True,
-    mlx_model_artifacts_dir="/absolute/path/to/mlx-model-artifacts",
+    mlx_model_artifacts_dir="/path/to/mlx-model-artifacts",
 ) as session:
     result = session.generate(input_text="Hello from MLX", max_output_tokens=32)
 
@@ -200,7 +255,7 @@ import ax_engine
 with ax_engine.Session(
     model_id="qwen3_dense",
     mlx=True,
-    mlx_model_artifacts_dir="/absolute/path/to/mlx-model-artifacts",
+    mlx_model_artifacts_dir="/path/to/mlx-model-artifacts",
 ) as session:
     result = session.generate(input_text="Hello from MLX", max_output_tokens=32)
 
@@ -285,7 +340,7 @@ import ax_engine
 with ax_engine.Session(
     model_id="qwen3_dense",
     mlx=True,
-    mlx_model_artifacts_dir="/absolute/path/to/mlx-model-artifacts",
+    mlx_model_artifacts_dir="/path/to/mlx-model-artifacts",
 ) as session:
     request_id = session.submit([1, 2, 3], max_output_tokens=2)
     while True:
@@ -318,7 +373,7 @@ import ax_engine
 with ax_engine.Session(
     model_id="qwen3_dense",
     mlx=True,
-    mlx_model_artifacts_dir="/absolute/path/to/mlx-model-artifacts",
+    mlx_model_artifacts_dir="/path/to/mlx-model-artifacts",
 ) as session:
     for event in session.stream_generate([1, 2, 3], max_output_tokens=2):
         print(event.event, event.delta_tokens, event.response)

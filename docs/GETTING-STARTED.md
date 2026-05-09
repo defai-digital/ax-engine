@@ -116,6 +116,61 @@ For the current crate layering and dependency-boundary guidance, see
 Runtime surfaces fail closed when a backend is unavailable instead of silently
 pretending support exists.
 
+## Getting a Model
+
+ax-engine requires pre-sanitized MLX weights. The safest source is
+[mlx-community](https://huggingface.co/mlx-community) on Hugging Face — those
+checkpoints are already converted and ready to use. Raw HuggingFace checkpoints
+need `mlx_lm.convert` first.
+
+### Path A — mlx-community model (recommended)
+
+`download_model()` downloads weights and auto-generates the manifest in one call:
+
+```python
+from ax_engine import download_model
+path = download_model("mlx-community/Qwen3-4B-4bit")
+# Session is ready once this returns
+```
+
+Or via the script (generates manifest automatically too):
+
+```text
+python scripts/download_model.py mlx-community/Qwen3-4B-4bit
+python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json  # machine-readable summary
+```
+
+If you already have `mlx_lm` installed, you can also trigger a download through
+it — the model lands in the standard HF cache that ax-engine already scans:
+
+```text
+python -m mlx_lm.generate --model mlx-community/Qwen3-4B-4bit --prompt "x" --max-tokens 1
+ax-engine-bench generate-manifest ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
+ax-engine-server --mlx --resolve-model-artifacts hf-cache --preset qwen3_dense --port 8080
+```
+
+### Path B — raw HuggingFace checkpoint
+
+Raw checkpoints need sanitization before ax-engine can load them. Use `mlx_lm.convert`:
+
+```text
+pip install mlx-lm
+mlx_lm.convert --hf-path <org/model> --mlx-path /path/to/dest -q --q-bits 4
+ax-engine-bench generate-manifest /path/to/dest
+ax-engine-server --mlx --mlx-model-artifacts-dir /path/to/dest --port 8080
+```
+
+### Manifest generation
+
+Both paths above require a `model-manifest.json` that ax-engine generates from the
+model directory. `download_model()` and `scripts/download_model.py` run this step
+automatically when `ax-engine-bench` or `cargo` is available. To run it manually:
+
+```text
+ax-engine-bench generate-manifest /path/to/model     # installed
+cargo run -p ax-engine-core --bin generate-manifest -- /path/to/model  # from source
+```
+
 ## First Commands
 
 If you installed with Homebrew, use `ax-engine-bench` directly. If you are
