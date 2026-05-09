@@ -437,6 +437,89 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=7,
                 )
 
+    def test_public_continuous_batching_claim_requires_positive_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["public_claims"] = ["continuous_batching"]
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "positive overlap evidence",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
+    def test_public_continuous_batching_claim_accepts_positive_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["public_claims"] = ["continuous_batching"]
+            artifact["concurrent_prefill_overlap_classification"] = {
+                "classification": "partial_overlap",
+                "continuous_batching_claim": True,
+                "concurrency": 2,
+            }
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=root / "README.md",
+                expected_metric_count=7,
+            )
+
+        self.assertEqual(len(checked), 7)
+
+    def test_phase0_claim_gate_rejects_invalid_overlap_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["concurrent_prefill_overlap_classification"]["classification"] = "unknown"
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "overlap classification is invalid",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
+    def test_phase0_claim_gate_rejects_inconsistent_overlap_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["concurrent_prefill_overlap_classification"] = {
+                "classification": "serialized",
+                "continuous_batching_claim": True,
+                "concurrency": 4,
+            }
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "overlap claim is inconsistent",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

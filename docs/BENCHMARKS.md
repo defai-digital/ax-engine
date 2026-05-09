@@ -118,6 +118,12 @@ be useful diagnostics, but they do not prove a physical prefix-cache reuse
 claim. Unknown `public_claims` entries are rejected; new public claim names must
 first add an explicit evidence mapping and checker coverage.
 
+The same checker treats `continuous_batching` as a positive public claim only
+when `concurrent_prefill_overlap_classification` has a recognized classification
+and `continuous_batching_claim=true`. `single_request_no_overlap` and
+`serialized` artifacts are useful boundary evidence, but they are not positive
+continuous-batching evidence.
+
 Long-context prefill and TTFT claims require a separate scaling artifact. For a
 fresh run, use the repo-owned wrapper:
 
@@ -243,7 +249,9 @@ The latest checked-in real-model P2 example is:
 This report records the 8k cold/model-warm/benchmark-warm split and
 concurrency 1/2/4 behavior. The 4-request row is classified as serialized, so
 it should be used as a boundary on concurrent-prefill claims rather than a
-positive continuous-batching claim.
+positive continuous-batching claim. README/public claim validation enforces the
+same boundary by rejecting `continuous_batching` claims without positive overlap
+classification evidence.
 
 Use `--ax-compare-policies` when n-gram acceleration is part of the question:
 
