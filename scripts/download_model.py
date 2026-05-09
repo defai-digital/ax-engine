@@ -76,8 +76,11 @@ def download(repo_id: str, dest: Path, force: bool = False, *, quiet: bool = Fal
 def _try_generate_manifest(dest: Path, *, quiet: bool = False) -> bool:
     """Try ax-engine-bench (installed) then cargo (dev). Returns True on success."""
     if shutil.which("ax-engine-bench"):
+        command = ["ax-engine-bench", "generate-manifest", str(dest)]
+        if quiet:
+            command.append("--json")
         result = subprocess.run(
-            ["ax-engine-bench", "generate-manifest", str(dest)],
+            command,
             capture_output=True,
             text=True,
         )

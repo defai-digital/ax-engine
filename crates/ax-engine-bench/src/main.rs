@@ -35,6 +35,7 @@ const NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE: &str =
     "source_quantization_dequantized_for_dense_native_export";
 const NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER: &str =
     "source_quantization_dequantized_dense_native_artifact";
+const GENERATE_MANIFEST_SCHEMA_VERSION: &str = "ax.generate_manifest.v1";
 
 fn main() -> ExitCode {
     init_tracing();
@@ -431,15 +432,8 @@ fn handle_doctor(args: &[String]) -> Result<(), CliError> {
 }
 
 fn handle_generate_manifest(args: &[String]) -> Result<(), CliError> {
-    let model_dir = args.first().ok_or_else(|| {
-        CliError::Usage(
-            "Usage: ax-engine-bench generate-manifest <model-dir>\n\n\
-             Generates model-manifest.json for an MLX model snapshot. Required before \
-             ax-engine can load the model."
-                .to_string(),
-        )
-    })?;
-    let model_dir = std::path::PathBuf::from(model_dir);
+    let args = parse_generate_manifest_args(args)?;
+    let model_dir = args.model_dir;
     if !model_dir.is_dir() {
         return Err(CliError::Runtime(format!(
             "model directory not found: {}",
@@ -447,16 +441,97 @@ fn handle_generate_manifest(args: &[String]) -> Result<(), CliError> {
         )));
     }
     let manifest_path = model_dir.join(ax_engine_core::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    if manifest_path.exists() {
+    let status = if manifest_path.exists() {
+        GenerateManifestStatus::AlreadyExists
+    } else {
+        let manifest = ax_engine_core::convert::convert_hf_model_dir(&model_dir)
+            .map_err(|e| CliError::Runtime(format!("error converting model: {e}")))?;
+        ax_engine_core::convert::write_manifest(&model_dir, &manifest)
+            .map_err(|e| CliError::Runtime(format!("error writing manifest: {e}")))?;
+        GenerateManifestStatus::Written
+    };
+    let summary = GenerateManifestSummary {
+        schema_version: GENERATE_MANIFEST_SCHEMA_VERSION,
+        model_dir: model_dir.display().to_string(),
+        manifest_path: manifest_path.display().to_string(),
+        status,
+        manifest_present: manifest_path.exists(),
+    };
+
+    if args.json {
+        let json = serde_json::to_string_pretty(&summary).map_err(|error| {
+            CliError::Runtime(format!(
+                "failed to serialize generate-manifest summary: {error}"
+            ))
+        })?;
+        println!("{json}");
+    } else if status == GenerateManifestStatus::AlreadyExists {
         println!("manifest already exists: {}", manifest_path.display());
-        return Ok(());
+    } else {
+        println!("wrote {}", manifest_path.display());
     }
-    let manifest = ax_engine_core::convert::convert_hf_model_dir(&model_dir)
-        .map_err(|e| CliError::Runtime(format!("error converting model: {e}")))?;
-    ax_engine_core::convert::write_manifest(&model_dir, &manifest)
-        .map_err(|e| CliError::Runtime(format!("error writing manifest: {e}")))?;
-    println!("wrote {}", manifest_path.display());
     Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct GenerateManifestArgs {
+    model_dir: PathBuf,
+    json: bool,
+}
+
+fn parse_generate_manifest_args(args: &[String]) -> Result<GenerateManifestArgs, CliError> {
+    let mut model_dir = None;
+    let mut json = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            value if value.starts_with('-') => {
+                return Err(CliError::Usage(format!(
+                    "unknown generate-manifest option: {value}\n\n{}",
+                    generate_manifest_usage()
+                )));
+            }
+            value => {
+                if model_dir.is_some() {
+                    return Err(CliError::Usage(format!(
+                        "unexpected generate-manifest argument: {value}\n\n{}",
+                        generate_manifest_usage()
+                    )));
+                }
+                model_dir = Some(PathBuf::from(value));
+            }
+        }
+    }
+
+    let Some(model_dir) = model_dir else {
+        return Err(CliError::Usage(generate_manifest_usage()));
+    };
+
+    Ok(GenerateManifestArgs { model_dir, json })
+}
+
+fn generate_manifest_usage() -> String {
+    "Usage: ax-engine-bench generate-manifest <model-dir> [--json]\n\n\
+     Generates model-manifest.json for an MLX model snapshot. Required before \
+     ax-engine can load the model."
+        .to_string()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum GenerateManifestStatus {
+    AlreadyExists,
+    Written,
+}
+
+#[derive(Debug, Serialize)]
+struct GenerateManifestSummary {
+    schema_version: &'static str,
+    model_dir: String,
+    manifest_path: String,
+    status: GenerateManifestStatus,
+    manifest_present: bool,
 }
 
 fn handle_metal_build(args: &[String]) -> Result<(), CliError> {
@@ -10431,7 +10506,7 @@ Usage:
   ax-engine-bench baseline --source <path> --name <name> --output-root <path>
   ax-engine-bench matrix --manifest <path> --output-root <path>
   ax-engine-bench doctor [--json] [--mlx-model-artifacts-dir <path>]
-  ax-engine-bench generate-manifest <model-dir>
+  ax-engine-bench generate-manifest <model-dir> [--json]
   ax-engine-bench metal-build [--manifest <path>] [--output-dir <path>]
 "#;
 
@@ -12593,6 +12668,61 @@ mod tests {
             "ax-engine-bench-{label}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn generate_manifest_args_accept_json_flag_after_model_dir() {
+        let args = parse_generate_manifest_args(&["/tmp/model".to_string(), "--json".to_string()])
+            .expect("generate-manifest args should parse");
+
+        assert_eq!(args.model_dir, PathBuf::from("/tmp/model"));
+        assert!(args.json);
+    }
+
+    #[test]
+    fn generate_manifest_args_accept_json_flag_before_model_dir() {
+        let args = parse_generate_manifest_args(&["--json".to_string(), "/tmp/model".to_string()])
+            .expect("generate-manifest args should parse");
+
+        assert_eq!(args.model_dir, PathBuf::from("/tmp/model"));
+        assert!(args.json);
+    }
+
+    #[test]
+    fn generate_manifest_args_reject_missing_model_dir() {
+        let error = parse_generate_manifest_args(&["--json".to_string()])
+            .expect_err("missing model directory should fail");
+
+        assert!(
+            matches!(error, CliError::Usage(message) if message.contains("generate-manifest <model-dir> [--json]"))
+        );
+    }
+
+    #[test]
+    fn generate_manifest_summary_uses_stable_json_contract() {
+        let summary = GenerateManifestSummary {
+            schema_version: GENERATE_MANIFEST_SCHEMA_VERSION,
+            model_dir: "/tmp/model".to_string(),
+            manifest_path: "/tmp/model/model-manifest.json".to_string(),
+            status: GenerateManifestStatus::AlreadyExists,
+            manifest_present: true,
+        };
+
+        let value =
+            serde_json::to_value(summary).expect("generate-manifest summary should serialize");
+
+        assert_eq!(
+            value.get("schema_version").and_then(Value::as_str),
+            Some("ax.generate_manifest.v1")
+        );
+        assert_eq!(
+            value.get("status").and_then(Value::as_str),
+            Some("already_exists")
+        );
+        assert_eq!(
+            value.get("manifest_present").and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     fn write_doctor_model_manifest(model_dir: &Path) {

@@ -39,6 +39,9 @@ throughput baselines.
   validates local model files, and generates the AX model manifest when
   `ax-engine-bench` or Cargo is available. Use `--json` for automation and TUI
   workflow integration.
+- `ax-engine-bench generate-manifest <model-dir> --json`: stable
+  `ax.generate_manifest.v1` summary for TUI and automation callers that need to
+  distinguish newly written manifests from already-ready model directories.
 - `bench_mlx_inference_stack.py`: MLX model-inference comparison against
   `mlx_lm.benchmark`. It can pass through
   `--experimental-mlx-kv-compression turboquant-shadow` or

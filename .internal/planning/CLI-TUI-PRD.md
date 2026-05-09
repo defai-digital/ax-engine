@@ -52,7 +52,7 @@ The TUI must treat these as source-of-truth surfaces:
 | Surface | Current responsibility | TUI role |
 |---|---|---|
 | `ax-engine-bench doctor --json` | local readiness report | display readiness and remediation |
-| `ax-engine-bench generate-manifest <model-dir>` | AX model manifest generation | invoke and show result |
+| `ax-engine-bench generate-manifest <model-dir> --json` | AX model manifest generation, `ax.generate_manifest.v1` summary | invoke and show result |
 | `scripts/download_model.py` | source-tree model download helper | invoke in source workflow |
 | `ax_engine.download_model()` | Python SDK download helper | document and optionally invoke via Python path |
 | `ax-engine-server` | local HTTP/SSE adapter | start, stop, poll, and show runtime state |
@@ -186,7 +186,7 @@ commands, versions, model path, route metadata, and artifact paths.
 - List configured recent model directories.
 - Validate `config.json`, safetensors, and `model-manifest.json`.
 - Run `scripts/download_model.py` in source checkout mode.
-- Run `ax-engine-bench generate-manifest <model-dir>`.
+- Run `ax-engine-bench generate-manifest <model-dir> --json`.
 - Show the exact artifact path to pass into server profiles.
 
 #### Server
@@ -224,7 +224,8 @@ W0 is a prerequisite for a dependable TUI:
 - add or confirm stable JSON output for download helpers;
 - align or explicitly label default download destinations between
   `scripts/download_model.py` and `ax_engine.download_model()`;
-- ensure `generate-manifest` emits a parseable success path;
+- use `ax-engine-bench generate-manifest <model-dir> --json` as the parseable
+  success path;
 - preserve `doctor --json` as the readiness source of truth;
 - document how the TUI distinguishes Homebrew install mode from source checkout
   mode;
