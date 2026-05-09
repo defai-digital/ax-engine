@@ -85,6 +85,7 @@ PUBLIC_CLAIM_EVIDENCE = {
     "prefix_reuse": "prefix_reuse_evidence",
     "long_context_prefill_improvement": "long_context_prefill_evidence",
 }
+KNOWN_PUBLIC_CLAIMS = frozenset(PUBLIC_CLAIM_EVIDENCE)
 
 PREFIX_REUSE_EVIDENCE_COUNTERS = {
     "hit_count",
@@ -288,11 +289,17 @@ def public_claim_names(artifact: dict[str, Any]) -> set[str]:
         raise ArtifactCheckError("public_claims must be a list when present")
     for claim in claims:
         if isinstance(claim, str):
-            names.add(claim)
+            name = claim
         elif isinstance(claim, dict) and isinstance(claim.get("name"), str):
-            names.add(str(claim["name"]))
+            name = str(claim["name"])
         else:
             raise ArtifactCheckError(f"invalid public claim entry: {claim!r}")
+        if name not in KNOWN_PUBLIC_CLAIMS:
+            known = ", ".join(sorted(KNOWN_PUBLIC_CLAIMS))
+            raise ArtifactCheckError(
+                f"unknown public claim {name!r}; known claims: {known}"
+            )
+        names.add(name)
     return names
 
 

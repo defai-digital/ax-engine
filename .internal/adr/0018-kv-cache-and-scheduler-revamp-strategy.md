@@ -162,7 +162,9 @@ claim validation now requires physical snapshot hit evidence before an artifact
 may claim `prefix_reuse`; miss-warmup-only and blocked-only artifacts remain
 diagnostic evidence. The same validation recalculates coverage from the raw
 counters and rejects inconsistent flags, labels, blocked-reason totals, and
-negative counters.
+negative counters. Unknown `public_claims` are rejected so new public
+performance claims must add an explicit evidence mapping before artifacts can
+advertise them.
 
 Only after evidence shows material warmup cost should AX consider an engine-runner
 coordination API for preflight physical-prefix availability.

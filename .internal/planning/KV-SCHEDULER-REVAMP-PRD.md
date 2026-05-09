@@ -215,6 +215,9 @@ surface through better defaults, route metadata, and benchmark artifacts.
 - README/public performance claim validation now recalculates prefix snapshot
   coverage from raw counters and rejects inconsistent flags, coverage labels,
   blocked-reason totals, and negative counters.
+- README/public performance claim validation now rejects unknown
+  `public_claims`; new claim names must add an explicit evidence mapping and
+  checker coverage first.
 
 #### Open
 

@@ -115,7 +115,8 @@ The README performance provenance checker treats `prefix_reuse` as a public
 claim only when the artifact includes physical snapshot hit evidence. Artifacts
 classified as `none_observed`, `blocked_only`, or `miss_warmup_only` can still
 be useful diagnostics, but they do not prove a physical prefix-cache reuse
-claim.
+claim. Unknown `public_claims` entries are rejected; new public claim names must
+first add an explicit evidence mapping and checker coverage.
 
 Long-context prefill and TTFT claims require a separate scaling artifact. For a
 fresh run, use the repo-owned wrapper:
