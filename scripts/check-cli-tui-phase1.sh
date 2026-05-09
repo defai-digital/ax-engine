@@ -97,5 +97,27 @@ grep -q "ax-engine-manager check" "$TMP_DIR/check.out"
 grep -q "doctor=ready status=ready" "$TMP_DIR/check.out"
 grep -q "workflow=source_checkout" "$TMP_DIR/check.out"
 grep -q "model_artifacts=ready" "$TMP_DIR/check.out"
+grep -q "benchmark=ready status=contract_failure" "$TMP_DIR/check.out"
+grep -q "artifacts=ready count=1" "$TMP_DIR/check.out"
+
+cargo run --quiet -p ax-engine-tui --bin ax-engine-manager -- \
+  --check \
+  --doctor-json "$TMP_DIR/doctor.json" \
+  >"$TMP_DIR/missing-optional.out"
+
+grep -q "server=not_loaded reason=server URL not configured" "$TMP_DIR/missing-optional.out"
+grep -q "benchmark=not_loaded reason=benchmark artifact summary not configured" "$TMP_DIR/missing-optional.out"
+grep -q "artifacts=not_loaded reason=artifact root not configured" "$TMP_DIR/missing-optional.out"
+
+cargo run --quiet -p ax-engine-tui --bin ax-engine-manager -- \
+  --check \
+  --doctor-json "$TMP_DIR/doctor.json" \
+  --server-url http://example.com:8080 \
+  >"$TMP_DIR/invalid-server.out"
+
+grep -q "server=unavailable reason=server URL must be local" "$TMP_DIR/invalid-server.out"
+
+cargo run --quiet -p ax-engine-tui --bin ax-engine-manager -- --help >"$TMP_DIR/help.out"
+grep -q "Phase 1 is read-only" "$TMP_DIR/help.out"
 
 echo "CLI TUI Phase 1 read-only cockpit verified."

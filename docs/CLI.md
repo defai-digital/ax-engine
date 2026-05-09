@@ -86,6 +86,9 @@ ax-engine-manager --server-url http://127.0.0.1:8080
 ax-engine-manager --doctor-json /path/to/doctor.json --artifact-root benchmarks/results
 ```
 
+`--check` prints a non-interactive summary for doctor, server, benchmark, and
+artifact readiness without entering terminal raw mode.
+
 Run `bash scripts/check-cli-tui-phase1.sh` before extending the TUI. The check
 covers contract parsers, tab rendering snapshots, server polling against a local
 test HTTP server, non-interactive `--check`, and unsupported/missing-state UI.

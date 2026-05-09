@@ -40,7 +40,8 @@ throughput baselines.
   contracts without requiring real model weights.
 - `check-cli-tui-phase1.sh`: non-interactive Phase 1 gate for
   `ax-engine-manager`. It runs the TUI crate tests plus `--check` with fixed
-  doctor, benchmark, and artifact fixtures.
+  doctor, benchmark, and artifact fixtures, and verifies missing optional inputs
+  plus non-local server URLs produce clear diagnostic states.
 - `download_model.py`: general-purpose MLX model download helper. It downloads a
   Hugging Face snapshot to `~/.cache/ax-engine/models/<repo-slug>` by default,
   validates local model files, and generates the AX model manifest when
