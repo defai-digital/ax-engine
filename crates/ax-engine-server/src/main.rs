@@ -1893,12 +1893,16 @@ mod tests {
 
     const TEST_MODEL_ID: &str = "qwen3_dense";
 
+    fn sample_http_request_base(input_name: &str, input: Value, max_output_tokens: u32) -> Value {
+        let mut request = serde_json::Map::new();
+        request.insert("model".to_string(), json!(TEST_MODEL_ID));
+        request.insert(input_name.to_string(), input);
+        request.insert("max_output_tokens".to_string(), json!(max_output_tokens));
+        Value::Object(request)
+    }
+
     fn sample_http_request(input_tokens: &[u32], max_output_tokens: u32) -> Value {
-        json!({
-            "model": TEST_MODEL_ID,
-            "input_tokens": input_tokens,
-            "max_output_tokens": max_output_tokens
-        })
+        sample_http_request_base("input_tokens", json!(input_tokens), max_output_tokens)
     }
 
     fn sample_sdk_request(input_tokens: &[u32], max_output_tokens: u32) -> GenerateRequest {
@@ -1911,14 +1915,6 @@ mod tests {
             stop_sequences: Vec::new(),
             metadata: None,
         }
-    }
-
-    fn sample_text_http_request(input_text: &str, max_output_tokens: u32) -> Value {
-        json!({
-            "model": TEST_MODEL_ID,
-            "input_text": input_text,
-            "max_output_tokens": max_output_tokens
-        })
     }
 
     fn sample_openai_request_base(
@@ -2383,7 +2379,7 @@ sys.stdout.write(f"server::{prompt}")
         );
         let state = llama_cpp_server_state(llama_server_url);
         let app = build_router(state.clone());
-        let request_body = sample_text_http_request("hello from server", 2);
+        let request_body = sample_http_request_base("input_text", json!("hello from server"), 2);
         let (status, json) = json_response(
             &app,
             Request::builder()
@@ -2546,8 +2542,9 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate")
                 .header("content-type", "application/json")
-                .body(Body::from(json_request_body(&sample_text_http_request(
-                    "hello mlx-lm",
+                .body(Body::from(json_request_body(&sample_http_request_base(
+                    "input_text",
+                    json!("hello mlx-lm"),
                     2,
                 ))))
                 .unwrap(),
@@ -2920,8 +2917,9 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate/stream")
                 .header("content-type", "application/json")
-                .body(Body::from(json_request_body(&sample_text_http_request(
-                    "hello delegated stream",
+                .body(Body::from(json_request_body(&sample_http_request_base(
+                    "input_text",
+                    json!("hello delegated stream"),
                     2,
                 ))))
                 .unwrap(),
@@ -3192,8 +3190,9 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate/stream")
                 .header("content-type", "application/json")
-                .body(Body::from(json_request_body(&sample_text_http_request(
-                    "hello from stream",
+                .body(Body::from(json_request_body(&sample_http_request_base(
+                    "input_text",
+                    json!("hello from stream"),
                     2,
                 ))))
                 .unwrap(),
