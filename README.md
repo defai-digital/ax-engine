@@ -28,15 +28,15 @@ M3, M4, M5 chip variants are supported across all three lines. M1 is not support
 
 ## 30-Second Setup
 
-Install the released command-line tools and verify the local runtime contract:
+Install the released command-line tools and open the local TUI cockpit:
 
 ```bash
 brew install defai-digital/ax-engine/ax-engine
-ax-engine-bench doctor
 ax-engine-manager --check
+ax-engine-manager
 ```
 
-Get a model, start the server, and open the manager:
+Then connect it to a model and server:
 
 ```bash
 # Download an mlx-community model and generate its manifest in one step
@@ -46,7 +46,7 @@ MODEL_DIR="$HOME/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit"
 # Start the server
 ax-engine-server --mlx --mlx-model-artifacts-dir "$MODEL_DIR" --port 8080
 
-# In another terminal, open the local cockpit
+# In another terminal, open the TUI cockpit with live server metadata
 ax-engine-manager --model-dir "$MODEL_DIR" --server-url http://127.0.0.1:8080
 ```
 

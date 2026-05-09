@@ -102,6 +102,10 @@ impl AppState {
         self.selected_tab = AppTab::ALL[(index + AppTab::ALL.len() - 1) % AppTab::ALL.len()];
     }
 
+    pub fn select_tab(&mut self, tab: AppTab) {
+        self.selected_tab = tab;
+    }
+
     fn tab_index(&self) -> usize {
         AppTab::ALL
             .iter()

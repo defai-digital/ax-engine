@@ -1,20 +1,13 @@
 use crate::app::{AppState, AppTab, LoadState};
 use crate::contracts::{ArtifactEntry, DoctorReport, ModelCard, WorkflowCommand};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Wrap};
 
 pub fn render(frame: &mut Frame<'_>, state: &AppState) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(2),
-        ])
-        .split(frame.area());
+    let chunks = app_chunks(frame.area());
 
     let titles = AppTab::ALL
         .iter()
@@ -54,6 +47,38 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
             .wrap(Wrap { trim: true }),
         chunks[2],
     );
+}
+
+pub fn tab_at_position(area: Rect, column: u16, row: u16) -> Option<AppTab> {
+    let header = app_chunks(area)[0];
+    if row != header.y.saturating_add(1) {
+        return None;
+    }
+    if column <= header.x || column >= header.x.saturating_add(header.width).saturating_sub(1) {
+        return None;
+    }
+
+    let mut start = header.x.saturating_add(1);
+    for tab in AppTab::ALL {
+        let width = tab.title().chars().count() as u16;
+        let end = start.saturating_add(width);
+        if column >= start && column < end {
+            return Some(tab);
+        }
+        start = end.saturating_add(1);
+    }
+    None
+}
+
+fn app_chunks(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(2),
+        ])
+        .split(area)
 }
 
 fn render_readiness(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout::Rect) {
@@ -535,5 +560,19 @@ mod tests {
 
         assert!(benchmarks.contains("Benchmark summary not loaded"));
         assert!(artifacts.contains("artifact root not configured"));
+    }
+
+    #[test]
+    fn tab_hit_testing_maps_clicks_to_header_tabs() {
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+
+        assert_eq!(tab_at_position(area, 1, 1), Some(AppTab::Readiness));
+        assert_eq!(tab_at_position(area, 11, 1), Some(AppTab::Models));
+        assert_eq!(tab_at_position(area, 18, 1), Some(AppTab::Server));
+        assert_eq!(tab_at_position(area, 25, 1), Some(AppTab::Jobs));
+        assert_eq!(tab_at_position(area, 30, 1), Some(AppTab::Benchmarks));
+        assert_eq!(tab_at_position(area, 41, 1), Some(AppTab::Artifacts));
+        assert_eq!(tab_at_position(area, 0, 1), None);
+        assert_eq!(tab_at_position(area, 1, 2), None);
     }
 }

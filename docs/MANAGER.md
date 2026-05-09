@@ -135,7 +135,13 @@ Inside the interactive TUI:
 |---|---|
 | `Tab` / Right arrow | Next tab |
 | `Shift-Tab` / Left arrow | Previous tab |
+| Left mouse click on a tab | Select that tab |
 | `q` / `Esc` | Exit |
+
+Mouse support is intentionally scoped today: tab selection is clickable, while
+download pickers, server controls, and URL rows should still be treated as
+keyboard-first until those controls have explicit ownership and confirmation
+contracts.
 
 Tabs:
 
