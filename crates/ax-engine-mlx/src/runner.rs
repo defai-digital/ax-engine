@@ -5,9 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxStream, add, astype, broadcast_to, clear_cache, divide, enable_compile,
-    max_recommended_working_set_size, multiply, power, reshape, set_wired_limit, sum_axis, take,
-    take_along_axis,
+    MlxArray, MlxDtype, MlxStream, add, astype, clear_cache, divide, enable_compile,
+    max_recommended_working_set_size, multiply, power, set_wired_limit, sum_axis,
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
@@ -1639,28 +1638,30 @@ impl ExecutionRunner for MlxRunner {
         if token_ids.is_empty() {
             return Err("token_ids must not be empty");
         }
-        let hidden = crate::model::forward_for_embedding(&self.cfg, &self.weights, token_ids);
-        // hidden: [1, seq, hidden_size] bfloat16
+        // For Last/Cls: tell the forward pass which position to extract before
+        // the final norm, so we norm [1, 1, H] instead of [1, seq, H].
+        let target_position = match pooling {
+            EmbeddingPooling::Last => Some(token_ids.len() - 1),
+            EmbeddingPooling::Cls => Some(0),
+            EmbeddingPooling::Mean => None,
+        };
+        let hidden = crate::model::forward_for_embedding(
+            &self.cfg,
+            &self.weights,
+            token_ids,
+            target_position,
+        );
+        // Last/Cls: hidden is [1, 1, H] (already at the target position).
+        // Mean:     hidden is [1, seq, H]; pool across the sequence here.
         let seq = token_ids.len() as i32;
         let pooled = match pooling {
             EmbeddingPooling::Mean => {
                 let summed = sum_axis(&hidden, 1, false, None);
-                // summed: [1, hidden_size] bfloat16
-                let scale = 1.0_f32 / seq as f32;
-                let scale_arr = mlx_scalar_f32(scale);
+                let scale_arr = mlx_scalar_f32(1.0_f32 / seq as f32);
                 multiply(&summed, &scale_arr, None)
             }
-            EmbeddingPooling::Last => {
-                // take on axis 1: [1, seq, hidden] → [1, 1, hidden]
-                take_hidden_token(&hidden, (seq - 1) as u32)
-            }
-            EmbeddingPooling::Cls => {
-                // take on axis 1: [1, seq, hidden] → [1, 1, hidden]
-                take_hidden_token(&hidden, 0)
-            }
+            EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
-        // Convert to float32 before normalization for numerical precision.
-        // pooled: [1, hidden_size] (Mean) or [1, 1, hidden_size] (Last/Cls)
         let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
         let result = if normalize {
             l2_normalize_last_dim(&pooled_f32)
@@ -1685,15 +1686,28 @@ impl ExecutionRunner for MlxRunner {
                 return Err("token_ids must not be empty");
             }
         }
-        let (hidden, actual_lens) =
-            crate::model::forward_for_embedding_batch(&self.cfg, &self.weights, batch);
-        // hidden: [B, max_seq, hidden_size] bfloat16
+        // For Last/Cls: compute per-sequence extraction positions before the
+        // forward pass so the model can extract them before the final norm,
+        // avoiding norming the full [B, max_seq, H] padded tensor.
+        let target_positions: Option<Vec<usize>> = match pooling {
+            EmbeddingPooling::Last => Some(batch.iter().map(|ids| ids.len() - 1).collect()),
+            EmbeddingPooling::Cls => Some(vec![0; batch.len()]),
+            EmbeddingPooling::Mean => None,
+        };
+        let (hidden, actual_lens) = crate::model::forward_for_embedding_batch(
+            &self.cfg,
+            &self.weights,
+            batch,
+            target_positions.as_deref(),
+        );
+        // Last/Cls: hidden is [B, H] (already extracted).
+        // Mean:     hidden is [B, max_seq, H]; pool across sequence here.
         let batch_size = batch.len() as i32;
-        let hidden_size = hidden.shape()[2] as usize;
+        let hidden_size = hidden.shape()[hidden.shape().len() - 1] as usize;
 
         let pooled = match pooling {
             EmbeddingPooling::Mean => {
-                let sums = sum_axis(&hidden, 1, false, None); // [B, hidden] bf16
+                let sums = sum_axis(&hidden, 1, false, None); // [B, H] bf16
                 let scales: Vec<f32> = actual_lens.iter().map(|&l| 1.0 / l as f32).collect();
                 let scale_arr = MlxArray::from_raw_data(
                     scales.as_ptr() as *const u8,
@@ -1704,31 +1718,7 @@ impl ExecutionRunner for MlxRunner {
                 let scale_bf16 = astype(&scale_arr, MlxDtype::Bfloat16, None);
                 multiply(&sums, &scale_bf16, None)
             }
-            EmbeddingPooling::Last => {
-                // Gather hidden[b, actual_lens[b]-1, :] per sequence using take_along_axis.
-                let last_indices: Vec<u32> = actual_lens.iter().map(|&l| (l - 1) as u32).collect();
-                let idx_b11 = MlxArray::from_raw_data(
-                    last_indices.as_ptr() as *const u8,
-                    last_indices.len() * std::mem::size_of::<u32>(),
-                    &[batch_size, 1_i32, 1_i32],
-                    MlxDtype::Uint32,
-                );
-                let idx_broadcast =
-                    broadcast_to(&idx_b11, &[batch_size, 1_i32, hidden_size as i32], None);
-                let gathered = take_along_axis(&hidden, &idx_broadcast, 1, None); // [B,1,hidden]
-                reshape(&gathered, &[batch_size, hidden_size as i32], None)
-            }
-            EmbeddingPooling::Cls => {
-                let zero = 0u32;
-                let idx = MlxArray::from_raw_data(
-                    &zero as *const u32 as *const u8,
-                    std::mem::size_of::<u32>(),
-                    &[1_i32],
-                    MlxDtype::Uint32,
-                );
-                let sliced = take(&hidden, &idx, 1, None); // [B, 1, hidden]
-                reshape(&sliced, &[batch_size, hidden_size as i32], None)
-            }
+            EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
 
         let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
@@ -1770,16 +1760,6 @@ fn mlx_scalar_f32(value: f32) -> MlxArray {
         &[],
         MlxDtype::Float32,
     )
-}
-
-fn take_hidden_token(hidden: &MlxArray, token_index: u32) -> MlxArray {
-    let idx_arr = MlxArray::from_raw_data(
-        &token_index as *const u32 as *const u8,
-        std::mem::size_of::<u32>(),
-        &[1_i32],
-        MlxDtype::Uint32,
-    );
-    take(hidden, &idx_arr, 1, None)
 }
 
 impl MlxRunner {

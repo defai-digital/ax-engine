@@ -283,110 +283,19 @@ evidence for long-context serving claims, not as proof of continuous batching.
 | GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 502.9 | 1,045.0 (+107.8%) | 863.2 (+71.6%) |
 |    |    | 512 | 1,584.7 | 2,588.8 (+63.4%) | 2,385.9 (+50.6%) |
 
-### How to read this performance section
-
-- Decode/Prefill tables above are the **headline product-facing rows**.
-- Embedding tables below are **endpoint/runtime-specific evidence** for `/v1/embeddings`.
-- Vectorization A/B rows below are **diagnostic engineering checks**, not separate
-  headline benchmarks. The A/B tables show only AX columns; reference runtime numbers
-  come from the full baseline artifact cited in each section.
-
 ### Embedding throughput (tok/s) — runtime apples-to-apples
 
-The embedding runtime comparison below is measured on the same tokenized inputs
-with matching pooling (`last`) and normalization (`true`) settings across
-backends. It compares single-request and explicit batch execution separately.
+Measured on the same tokenized inputs with matching pooling (`last`) and normalization (`true`) settings across backends. Source: `benchmarks/results/embedding/ab-postfix/`.
 
-Source artifacts (2026-05-08 run):
+Single-request median throughput (ax-engine-py vs mlx-lm, same session):
 
-- `benchmarks/results/embedding/2026-05-08-2006-qwen3-embedding-0.6b-8bit/embedding_bench.json`
-- `benchmarks/results/embedding/2026-05-08-2006-qwen3-embedding-4b-4bit/embedding_bench.json`
-- `benchmarks/results/embedding/2026-05-08-2006-qwen3-embedding-8b-4bit-dwq/embedding_bench.json`
-
-Single-request median throughput:
-
-| Model | mlx-lm (baseline) | mlx-swift-lm | ax-engine-py | ax-engine-http |
-|---|---:|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 2206.5 | 2122.3 (-3.8%) | 2092.4 (-5.2%) | 1883.2 (-14.7%) |
-| Qwen3-Embedding 4B 4-bit | 574.7 | 502.6 (-12.5%) | 471.9 (-17.9%) | 451.3 (-21.5%) |
-| Qwen3-Embedding 8B 4-bit DWQ | 321.5 | 330.1 (+2.7%) | 279.2 (-13.2%) | 273.6 (-14.9%) |
-
-Batch-request median throughput:
-
-| Model | mlx-lm (baseline) | mlx-swift-lm | ax-engine-py | ax-engine-http |
-|---|---:|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 9079.0 | 10396.2 (+14.5%) | 7788.6 (-14.2%) | 6730.7 (-25.9%) |
-| Qwen3-Embedding 4B 4-bit | 2220.3 | 2255.9 (+1.6%) | 2015.5 (-9.2%) | 1963.6 (-11.6%) |
-| Qwen3-Embedding 8B 4-bit DWQ | 1360.4 | 1405.6 (+3.3%) | 1284.3 (-5.6%) | 1232.4 (-9.4%) |
-
-### Embedding server micro-batching (single-request throughput)
-
-`/v1/embeddings` now includes a lightweight server-side micro-batcher: requests
-that arrive within a short window and share the same pooling and normalization
-options are grouped into one `embed_batch` execution.
-
-Tune with:
-
-- `AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS` (default `2`)
-- `AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH` (default `32`)
-
-Set `AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH=1` to disable grouping for
-diagnostics.
-
-On 2026-05-08 (Apple Silicon local run, `qwen3-embedding-0.6b-8bit`, 64
-requests, 16 concurrent workers), this improved `/v1/embeddings` single-request
-throughput:
-
-| Mode | req/s | tok/s |
+| Model | mlx-lm (baseline) | ax-engine-py |
 |---|---:|---:|
-| micro-batching disabled (`MAX_BATCH=1`) | 332.2 | 1661.1 |
-| micro-batching enabled (`MAX_BATCH=32`) | 542.9 | 2714.7 |
+| Qwen3-Embedding 0.6B 8-bit | 1,410.3 | 1,398.8 (≈-6%) † |
+| Qwen3-Embedding 4B 4-bit | 536.6 | 444.3 (-17.2%) |
+| Qwen3-Embedding 8B 4-bit DWQ | 319.8 | 280.4 (-12.3%) |
 
-### Diagnostic appendix — standard LLM vectorization A/B (QK RMSNorm path)
-
-To verify whether the same vectorization idea helps standard LLM decode/prefill
-as much as embeddings, AX now keeps an explicit A/B switch for Q/K RMSNorm:
-
-- default: direct 4D RMSNorm path (vectorized graph path)
-- `AX_MLX_QK_NORM_FLAT=1`: legacy flatten -> RMSNorm -> reshape path
-
-Source artifacts (2026-05-09 run, `Qwen3.5-9B-MLX-4bit`, prompt=128, generation=128, repetitions=3):
-
-- `benchmarks/results/mlx-inference/2026-05-09-qwen35-9b-qknorm4d-full-r3.json` — full run (mlx_lm + mlx_swift_lm + AX direct 4D)
-- `benchmarks/results/mlx-inference/2026-05-09-qwen35-9b-qknorm-flat-full-r3.json` — AX flat variant only (reference rows reused from above)
-
-Reference from full baseline: mlx_lm prefill=1186.4 / decode=97.2 · mlx_swift_lm prefill=2465.2 / decode=99.0
-
-AX median throughput (A/B):
-
-| Variant | ax prefill | ax decode |
-|---|---:|---:|
-| direct 4D RMSNorm | 2019.2 | 100.2 |
-| flat RMSNorm (`AX_MLX_QK_NORM_FLAT=1`) | 2004.7 | 99.6 |
-
-AX delta (direct 4D vs flat) on this shape:
-
-- prefill: `+0.72%`
-- decode: `+0.55%`
-
-Conclusion: for this standard LLM row, vectorization on the Q/K RMSNorm path is
-safe and slightly better, but the gain is small; it is not the primary lever
-behind large throughput jumps (unlike some embedding-path optimizations).
-
-Gemma 4 E2B 4-bit diagnostic check (2026-05-09, prompt=128/512, generation=128, repetitions=3):
-
-- `benchmarks/results/mlx-inference/2026-05-09-gemma4-e2b-4bit-qknorm4d-r3.json` — full run (mlx_lm + mlx_swift_lm + AX direct 4D)
-- `benchmarks/results/mlx-inference/2026-05-09-gemma4-e2b-4bit-qknorm-flat-r3.json` — AX flat variant only (reference rows reused from above)
-
-AX median A/B:
-
-| Prompt tok | direct 4D prefill | flat prefill | prefill delta | direct 4D decode | flat decode | decode delta |
-|---:|---:|---:|---:|---:|---:|---:|
-| 128 | 3377.4 | 3391.4 | -0.41% | 186.7 | 186.7 | +0.01% |
-| 512 | 7702.6 | 7233.8 | +6.48% | 180.3 | 165.8 | +8.74% |
-
-Interpretation: for Gemma 4 E2B 4-bit, this vectorized QK RMSNorm path is
-neutral on short prompts and clearly better on the longer (512-token) row.
+† The 0.6B model completes in ~6ms/sentence, making it sensitive to thermal variance. Run-to-run gap typically ranges from -5% to -10%.
 
 ## Installation
 

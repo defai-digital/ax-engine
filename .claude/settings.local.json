@@ -96,7 +96,15 @@
       "Bash(xargs -I{} sed -n '{},{p}' /Users/akiralam/code/ax-engine-v4/crates/ax-engine-sdk/src/session.rs)",
       "Bash(gh repo *)",
       "Bash(git clone *)",
-      "Bash(ruby *)"
+      "Bash(ruby *)",
+      "Bash(git show *)",
+      "Bash(cp /tmp/model_fixed.rs crates/ax-engine-mlx/src/model.rs)",
+      "Bash(cp /tmp/runner_fixed.rs crates/ax-engine-mlx/src/runner.rs)",
+      "Bash(maturin develop *)",
+      "Bash(python scripts/bench_embedding_models.py --model-dir .internal/models/qwen3-embedding-0.6b-8bit --model-label qwen3-embedding-0.6b-8bit --trials 5 --cooldown 2 --skip-swift --skip-ax-http --output-dir benchmarks/results/embedding/ab-postfix)",
+      "Bash(python scripts/bench_embedding_models.py --model-dir .internal/models/qwen3-embedding-4b-4bit --model-label qwen3-embedding-4b-4bit --trials 5 --cooldown 2 --skip-swift --skip-ax-http --output-dir benchmarks/results/embedding/ab-postfix)",
+      "Bash(python scripts/bench_embedding_models.py --model-dir .internal/models/qwen3-embedding-8b-4bit-dwq --model-label qwen3-embedding-8b-4bit-dwq --trials 5 --cooldown 2 --skip-swift --skip-ax-http --output-dir benchmarks/results/embedding/ab-postfix)",
+      "Bash(git restore *)"
     ]
   }
 }
