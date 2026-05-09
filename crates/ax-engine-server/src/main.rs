@@ -2285,9 +2285,6 @@ sys.stdout.write(f"server::{prompt}")
             .position(|window| window == b"\r\n\r\n")
             .map(|index| index + 4)
             .expect("request should include header terminator");
-        let headers =
-            String::from_utf8(request[..header_end].to_vec()).expect("headers should be utf8");
-        let _ = parse_content_length(&headers);
         let body = String::from_utf8(request[header_end..].to_vec()).expect("body should be utf8");
         serde_json::from_str(&body).expect("request body should be json")
     }
