@@ -873,6 +873,7 @@ fn parse_rope_params(
             .and_then(|rp| rp.get("sliding_attention"))
             .and_then(|sa| sa.get("rope_theta"))
             .and_then(|v| v.as_f64())
+            .or_else(|| arch_f64(config, model_type, "rope_theta"))
             .and_then(f64_to_u32);
         let partial_rotary = rp
             .and_then(|rp| rp.get("full_attention"))
@@ -929,7 +930,11 @@ fn parse_layer_types(
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
+                .map(|v| {
+                    v.as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| v.to_string())
+                })
                 .collect()
         })
     {
@@ -1464,11 +1469,95 @@ fn validate_converted_model_contract(
     model_type: &str,
     manifest: &NativeModelManifest,
 ) -> Result<(), ConvertError> {
+    if model_type == "gemma4" {
+        return validate_gemma4_contract(manifest);
+    }
     if is_glm4_moe_lite(model_type) {
         return validate_glm4_moe_lite_contract(config, manifest);
     }
 
     Ok(())
+}
+
+fn validate_gemma4_contract(manifest: &NativeModelManifest) -> Result<(), ConvertError> {
+    if manifest.layer_types.len() != manifest.layer_count as usize {
+        return invalid_model_contract(
+            "gemma4",
+            format!(
+                "layer_types must contain one entry per layer, got {} for layer_count {}",
+                manifest.layer_types.len(),
+                manifest.layer_count
+            ),
+        );
+    }
+    for (idx, layer_type) in manifest.layer_types.iter().enumerate() {
+        if layer_type != "sliding_attention" && layer_type != "full_attention" {
+            return invalid_model_contract(
+                "gemma4",
+                format!(
+                    "layer_types[{idx}] must be sliding_attention or full_attention, got {layer_type:?}"
+                ),
+            );
+        }
+    }
+
+    if manifest.hidden_size_per_layer_input > 0 {
+        require_gemma4_global_role(manifest, NativeTensorRole::PerLayerEmbedding)?;
+        require_gemma4_global_role(manifest, NativeTensorRole::PerLayerModelProjection)?;
+        require_gemma4_global_role(manifest, NativeTensorRole::PerLayerProjectionNorm)?;
+        for layer_index in 0..manifest.layer_count {
+            require_gemma4_layer_role(manifest, layer_index, NativeTensorRole::PerLayerInputGate)?;
+            require_gemma4_layer_role(
+                manifest,
+                layer_index,
+                NativeTensorRole::PerLayerInputProjection,
+            )?;
+            require_gemma4_layer_role(
+                manifest,
+                layer_index,
+                NativeTensorRole::PerLayerInputPostNorm,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn require_gemma4_global_role(
+    manifest: &NativeModelManifest,
+    role: NativeTensorRole,
+) -> Result<(), ConvertError> {
+    if manifest
+        .tensors
+        .iter()
+        .any(|tensor| tensor.layer_index.is_none() && tensor.role == role)
+    {
+        return Ok(());
+    }
+
+    invalid_model_contract(
+        "gemma4",
+        format!("manifest is missing required per-layer input tensor role {role:?}"),
+    )
+}
+
+fn require_gemma4_layer_role(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+    role: NativeTensorRole,
+) -> Result<(), ConvertError> {
+    if manifest
+        .tensors
+        .iter()
+        .any(|tensor| tensor.layer_index == Some(layer_index) && tensor.role == role)
+    {
+        return Ok(());
+    }
+
+    invalid_model_contract(
+        "gemma4",
+        format!("layer {layer_index} is missing required per-layer input tensor role {role:?}"),
+    )
 }
 
 fn validate_glm4_moe_lite_contract(
@@ -1782,6 +1871,110 @@ mod tests {
         let layer_types = parse_layer_types(&config, "gemma4", 1);
 
         assert_eq!(layer_types, vec!["full_attention".to_string()]);
+    }
+
+    #[test]
+    fn parses_gemma4_sliding_rope_theta_from_flat_fallback() {
+        let config = serde_json::json!({
+            "model_type": "gemma4",
+            "text_config": {
+                "rope_theta": 1000000
+            }
+        });
+
+        let (full_theta, sliding_theta, partial_rotary) = parse_rope_params(&config, "gemma4");
+
+        assert_eq!(full_theta, Some(1000000));
+        assert_eq!(sliding_theta, Some(1000000));
+        assert_eq!(partial_rotary, None);
+    }
+
+    #[test]
+    fn rejects_gemma4_layer_types_length_mismatch_at_conversion() {
+        let dir = unique_test_dir("gemma4_bad_layer_types");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "gemma4",
+                "vocab_size": 262144,
+                "text_config": {
+                    "hidden_size": 3072,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "num_hidden_layers": 2,
+                    "vocab_size": 262144,
+                    "layer_types": ["sliding_attention"]
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.embed_tokens.weight", "BF16", &[262144, 3072]),
+                ("model.norm.weight", "BF16", &[3072]),
+                ("lm_head.weight", "BF16", &[262144, 3072]),
+            ],
+        );
+
+        let error = convert_hf_model_dir(&dir).expect_err("bad layer_types should fail closed");
+        let ConvertError::InvalidModelContract {
+            model_type,
+            message,
+        } = error
+        else {
+            panic!("expected invalid model contract");
+        };
+        assert_eq!(model_type, "gemma4");
+        assert!(message.contains("layer_types"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rejects_gemma4_per_layer_input_missing_weights_at_conversion() {
+        let dir = unique_test_dir("gemma4_missing_per_layer_input");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "gemma4",
+                "vocab_size": 262144,
+                "text_config": {
+                    "hidden_size": 3072,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "num_hidden_layers": 2,
+                    "vocab_size": 262144,
+                    "hidden_size_per_layer_input": 64,
+                    "layer_types": ["sliding_attention", "sliding_attention"]
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.embed_tokens.weight", "BF16", &[262144, 3072]),
+                ("model.norm.weight", "BF16", &[3072]),
+                ("lm_head.weight", "BF16", &[262144, 3072]),
+            ],
+        );
+
+        let error =
+            convert_hf_model_dir(&dir).expect_err("missing per-layer inputs should fail closed");
+        let ConvertError::InvalidModelContract {
+            model_type,
+            message,
+        } = error
+        else {
+            panic!("expected invalid model contract");
+        };
+        assert_eq!(model_type, "gemma4");
+        assert!(message.contains("per-layer input"));
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -1355,6 +1355,7 @@ fn validate_native_model_tensor_shapes(
         let lm_head = required_global_tensor_spec(manifest, NativeTensorRole::LmHead, "lm_head")?;
         expect_matrix_shape(lm_head, vocab_size, hidden_size, "lm_head")?;
     }
+    validate_per_layer_input_tensor_shapes(manifest, hidden_size, vocab_size)?;
 
     for layer_index in 0..manifest.layer_count {
         let attention_norm = required_layer_tensor_spec(
@@ -2044,6 +2045,100 @@ fn validate_glm_mla_attention_tensor_shapes(
         head_count * value_head_dim,
         "attention_o",
     )
+}
+
+fn validate_per_layer_input_tensor_shapes(
+    manifest: &NativeModelManifest,
+    hidden_size: u64,
+    vocab_size: u64,
+) -> Result<(), NativeModelError> {
+    let per_layer_dim = u64::from(manifest.hidden_size_per_layer_input);
+    if per_layer_dim == 0 {
+        return Ok(());
+    }
+    let stacked_dim = u64::from(manifest.layer_count)
+        .checked_mul(per_layer_dim)
+        .ok_or_else(|| NativeModelError::InvalidManifest {
+            message: "per-layer input stacked dimension overflowed".to_string(),
+        })?;
+    let per_layer_vocab_size = match manifest.vocab_size_per_layer_input {
+        Some(0) => {
+            return Err(NativeModelError::InvalidManifest {
+                message: "vocab_size_per_layer_input must be > 0 when configured".to_string(),
+            });
+        }
+        Some(value) => u64::from(value),
+        None => vocab_size,
+    };
+
+    let per_layer_embed = required_global_tensor_spec(
+        manifest,
+        NativeTensorRole::PerLayerEmbedding,
+        "per_layer_embed",
+    )?;
+    expect_matrix_shape(
+        per_layer_embed,
+        per_layer_vocab_size,
+        stacked_dim,
+        "per_layer_embed",
+    )?;
+    let per_layer_model_proj = required_global_tensor_spec(
+        manifest,
+        NativeTensorRole::PerLayerModelProjection,
+        "per_layer_model_proj",
+    )?;
+    expect_matrix_shape(
+        per_layer_model_proj,
+        stacked_dim,
+        hidden_size,
+        "per_layer_model_proj",
+    )?;
+    let per_layer_proj_norm = required_global_tensor_spec(
+        manifest,
+        NativeTensorRole::PerLayerProjectionNorm,
+        "per_layer_proj_norm",
+    )?;
+    expect_vector_shape(per_layer_proj_norm, per_layer_dim, "per_layer_proj_norm")?;
+
+    for layer_index in 0..manifest.layer_count {
+        let per_layer_gate = required_layer_tensor_spec(
+            manifest,
+            layer_index,
+            NativeTensorRole::PerLayerInputGate,
+            "per_layer_input_gate",
+        )?;
+        expect_matrix_shape(
+            per_layer_gate,
+            per_layer_dim,
+            hidden_size,
+            "per_layer_input_gate",
+        )?;
+        let per_layer_projection = required_layer_tensor_spec(
+            manifest,
+            layer_index,
+            NativeTensorRole::PerLayerInputProjection,
+            "per_layer_projection",
+        )?;
+        expect_matrix_shape(
+            per_layer_projection,
+            hidden_size,
+            per_layer_dim,
+            "per_layer_projection",
+        )?;
+        let per_layer_post_norm = required_layer_tensor_spec(
+            manifest,
+            layer_index,
+            NativeTensorRole::PerLayerInputPostNorm,
+            "post_per_layer_input_norm",
+        )?;
+        expect_vector_shape(
+            per_layer_post_norm,
+            hidden_size,
+            "post_per_layer_input_norm",
+        )?;
+    }
+
+    Ok(())
 }
 
 fn validate_manifest_layer_index_list(
@@ -4191,6 +4286,23 @@ mod tests {
             panic!("expected invalid manifest error");
         };
         assert!(message.contains("layer_types"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_missing_per_layer_input_weights() {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.hidden_size_per_layer_input = 64;
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("per-layer input contract should fail closed");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("per_layer_embed"));
 
         let _ = fs::remove_dir_all(dir);
     }
