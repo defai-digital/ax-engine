@@ -552,7 +552,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
             },
         ],
         (
-            descriptor.value_group_count as i32,
+            descriptor.head_dim as i32,
             descriptor.n_query_heads as i32,
             1,
         ),
@@ -788,8 +788,8 @@ const TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL_SOURCE: &str = r#"
 
 const TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL_SOURCE: &str = r#"
     const int lane = (int)thread_position_in_threadgroup.x;
-    const int group = (int)thread_position_in_grid.x;
-    const int dim = group * VALUE_GROUP_SIZE + lane;
+    const int dim = (int)thread_position_in_grid.x;
+    const int group = dim / VALUE_GROUP_SIZE;
     const int head = thread_position_in_grid.y;
     if (head >= HEADS) {
       return;
@@ -806,8 +806,10 @@ const TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL_SOURCE: &str = r#"
         + kv_head * SLOT_BYTES;
       const float weight = exp(scores[head * COLD_TOKENS + token] - max_score);
       const int value_payload = slot + VALUE_PAYLOAD_OFFSET;
-      const float value_min = tq_read_f32(compressed, slot + VALUE_MINS_OFFSET + group * 4);
-      const float value_scale = tq_read_f32(compressed, slot + VALUE_SCALES_OFFSET + group * 4);
+      float value_min = lane == 0 ? tq_read_f32(compressed, slot + VALUE_MINS_OFFSET + group * 4) : 0.0f;
+      float value_scale = lane == 0 ? tq_read_f32(compressed, slot + VALUE_SCALES_OFFSET + group * 4) : 0.0f;
+      value_min = simd_broadcast_first(value_min);
+      value_scale = simd_broadcast_first(value_scale);
       if (dim < HEAD_DIM) {
         const float value = value_min + value_scale * (float)tq_unpack_v4(compressed, value_payload, dim);
         weighted += weight * value;
