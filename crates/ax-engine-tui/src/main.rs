@@ -9,13 +9,16 @@ use ax_engine_tui::jobs::{DoctorCommand, fetch_server_snapshot, run_doctor};
 use ax_engine_tui::profiles::{ManagerProfile, default_profile_root, read_profile, write_profile};
 use ax_engine_tui::support::write_support_bundle;
 use ax_engine_tui::ui;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use std::env;
 use std::io;
 use std::path::PathBuf;
@@ -310,12 +313,16 @@ fn fake_sleep_job(id: &str, seconds: &str) -> JobSpec {
 fn run_terminal(mut state: AppState) -> Result<(), ManagerError> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let result = run_loop(&mut terminal, &mut state);
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     result
 }
@@ -332,17 +339,26 @@ fn run_loop<B: ratatui::backend::Backend>(
         if !event::poll(Duration::from_millis(250))? {
             continue;
         }
-        if let Event::Key(key) = event::read()? {
-            let action = match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
-                KeyCode::Tab | KeyCode::Right => Some(Action::NextTab),
-                KeyCode::BackTab | KeyCode::Left => Some(Action::PreviousTab),
-                _ => None,
-            };
-            if let Some(action) = action {
-                reduce(state, action);
-            }
+        let size = terminal.size()?;
+        let area = Rect::new(0, 0, size.width, size.height);
+        if let Some(action) = action_for_event(event::read()?, area) {
+            reduce(state, action);
         }
+    }
+}
+
+fn action_for_event(event: Event, area: Rect) -> Option<Action> {
+    match event {
+        Event::Key(key) => match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
+            KeyCode::Tab | KeyCode::Right => Some(Action::NextTab),
+            KeyCode::BackTab | KeyCode::Left => Some(Action::PreviousTab),
+            _ => None,
+        },
+        Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+            ui::tab_at_position(area, mouse.column, mouse.row).map(Action::SelectTab)
+        }
+        _ => None,
     }
 }
 
@@ -398,5 +414,34 @@ mod tests {
         assert!(summary.contains("server=not_loaded"));
         assert!(summary.contains("benchmark=unavailable reason=missing benchmark artifact"));
         assert!(summary.contains("artifacts=ready count=0"));
+    }
+
+    #[test]
+    fn left_mouse_click_selects_header_tab() {
+        let area = Rect::new(0, 0, 80, 24);
+        let event = Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 30,
+            row: 1,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+
+        assert_eq!(
+            action_for_event(event, area),
+            Some(Action::SelectTab(ax_engine_tui::AppTab::Benchmarks))
+        );
+    }
+
+    #[test]
+    fn mouse_click_outside_header_has_no_action() {
+        let area = Rect::new(0, 0, 80, 24);
+        let event = Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 30,
+            row: 4,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+
+        assert_eq!(action_for_event(event, area), None);
     }
 }
