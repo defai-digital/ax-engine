@@ -8,12 +8,17 @@ The manager is deliberately conservative:
 
 - it can run doctor and show model-artifact readiness;
 - it can poll a local server's health, runtime metadata, and model list;
+- it can show the default local host/port, server action buttons, and full
+  local HTTP endpoint URLs;
 - it can show benchmark artifact summaries and scan a results directory;
 - it can project guarded job plans from the doctor workflow;
 - it can export a redacted support bundle;
 - it does not copy model weights, environment variables, API keys, or raw logs;
-- it does not yet perform interactive downloads, benchmark launches, or server
-  start/stop from inside the TUI.
+- server start/stop buttons are currently selectable preview controls; owned
+  process launch, confirmation, and shutdown are intentionally a follow-up
+  lifecycle slice;
+- it does not yet perform interactive downloads or benchmark launches from
+  inside the TUI.
 
 ## Install
 
@@ -91,8 +96,27 @@ The manager polls:
 - `/v1/runtime`
 - `/v1/models`
 
-Use `--server-url` to point at a different local port. The manager currently
-does not edit the server port or restart the server from inside the TUI.
+Use `--server-url` to point at a different local port. Without `--server-url`,
+the Server tab still shows the default local target:
+
+```text
+http://127.0.0.1:8080
+```
+
+The Server tab lists clickable preview controls for `Start`, `Stop`, and
+`Restart`, plus the full local URLs for:
+
+- `/health`
+- `/v1/runtime`
+- `/v1/models`
+- `/v1/generate`
+- `/v1/generate/stream`
+- `/v1/chat/completions`
+- `/v1/completions`
+
+Selecting a server action updates the status line, but does not yet spawn or
+kill a process. This keeps the current TUI safe while the next phase defines the
+owned-process lifecycle, confirmation rules, and log capture contract.
 
 ## Use Existing JSON Contracts
 
@@ -136,12 +160,14 @@ Inside the interactive TUI:
 | `Tab` / Right arrow | Next tab |
 | `Shift-Tab` / Left arrow | Previous tab |
 | Left mouse click on a tab | Select that tab |
+| Left mouse click on a Server action | Select Start, Stop, or Restart preview |
+| Left mouse click on a Server URL row | Select that endpoint URL |
 | `q` / `Esc` | Exit |
 
-Mouse support is intentionally scoped today: tab selection is clickable, while
-download pickers, server controls, and URL rows should still be treated as
-keyboard-first until those controls have explicit ownership and confirmation
-contracts.
+Mouse support is intentionally scoped today: tab selection, Server preview
+actions, and Server URL rows are clickable. Download pickers, benchmark launch,
+and real server process start/stop still need explicit ownership and
+confirmation contracts before they become mutating controls.
 
 Tabs:
 
@@ -149,7 +175,7 @@ Tabs:
 |---|---|
 | Readiness | Doctor status, workflow mode, model-artifact readiness, runtime issues |
 | Models | Selected model artifact status, quantization, manifest and safetensors presence |
-| Server | Health, runtime metadata, and model-list status from `--server-url` |
+| Server | Default host/port, Start/Stop/Restart preview selection, local endpoint URLs, and metadata from `--server-url` |
 | Jobs | Guarded job-plan projection from doctor workflow; currently non-mutating |
 | Benchmarks | One benchmark artifact summary from `--benchmark-json` |
 | Artifacts | Result-directory scan from `--artifact-root` |

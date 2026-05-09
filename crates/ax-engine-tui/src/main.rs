@@ -1,5 +1,5 @@
 use ax_engine_tui::action::{Action, reduce};
-use ax_engine_tui::app::{AppState, LoadState};
+use ax_engine_tui::app::{AppState, AppTab, LoadState, ServerControlState};
 use ax_engine_tui::contracts::{read_benchmark_artifact_json, read_doctor_json, scan_artifacts};
 use ax_engine_tui::jobs::plan::{
     CommandInvocation, EvidenceClass, JobDisplaySummary, JobKind, JobPlan, JobSpec,
@@ -146,7 +146,10 @@ fn build_state(options: &Options) -> AppState {
     };
 
     if let Some(server_url) = options.server_url.as_ref() {
-        state.server.base_url = Some(server_url.clone());
+        state.server.base_url = Some(server_url.trim_end_matches('/').to_string());
+        if let Some(control) = ServerControlState::from_base_url(server_url) {
+            state.server_control = control;
+        }
         match fetch_server_snapshot(server_url) {
             Ok(snapshot) => {
                 state.server.health = LoadState::Ready(snapshot.health);
@@ -341,13 +344,13 @@ fn run_loop<B: ratatui::backend::Backend>(
         }
         let size = terminal.size()?;
         let area = Rect::new(0, 0, size.width, size.height);
-        if let Some(action) = action_for_event(event::read()?, area) {
+        if let Some(action) = action_for_event(event::read()?, area, state.selected_tab) {
             reduce(state, action);
         }
     }
 }
 
-fn action_for_event(event: Event, area: Rect) -> Option<Action> {
+fn action_for_event(event: Event, area: Rect, selected_tab: AppTab) -> Option<Action> {
     match event {
         Event::Key(key) => match key.code {
             KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
@@ -356,7 +359,14 @@ fn action_for_event(event: Event, area: Rect) -> Option<Action> {
             _ => None,
         },
         Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-            ui::tab_at_position(area, mouse.column, mouse.row).map(Action::SelectTab)
+            if let Some(tab) = ui::tab_at_position(area, mouse.column, mouse.row) {
+                return Some(Action::SelectTab(tab));
+            }
+            if selected_tab == AppTab::Server {
+                return ui::server_control_at_position(area, mouse.column, mouse.row)
+                    .map(Action::SelectServerControl);
+            }
+            None
         }
         _ => None,
     }
@@ -427,7 +437,7 @@ mod tests {
         });
 
         assert_eq!(
-            action_for_event(event, area),
+            action_for_event(event, area, ax_engine_tui::AppTab::Readiness),
             Some(Action::SelectTab(ax_engine_tui::AppTab::Benchmarks))
         );
     }
@@ -442,6 +452,29 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::empty(),
         });
 
-        assert_eq!(action_for_event(event, area), None);
+        assert_eq!(
+            action_for_event(event, area, ax_engine_tui::AppTab::Readiness),
+            None
+        );
+    }
+
+    #[test]
+    fn left_mouse_click_selects_server_button_when_server_tab_is_active() {
+        let area = Rect::new(0, 0, 100, 32);
+        let event = Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 11,
+            row: 7,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+
+        assert_eq!(
+            action_for_event(event, area, ax_engine_tui::AppTab::Server),
+            Some(Action::SelectServerControl(
+                ax_engine_tui::app::ServerControlSelection::Button(
+                    ax_engine_tui::app::ServerControlButton::Start
+                )
+            ))
+        );
     }
 }

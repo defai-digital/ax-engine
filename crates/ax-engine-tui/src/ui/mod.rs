@@ -1,4 +1,6 @@
-use crate::app::{AppState, AppTab, LoadState};
+use crate::app::{
+    AppState, AppTab, LoadState, ServerControlButton, ServerControlSelection, ServerUrlKind,
+};
 use crate::contracts::{ArtifactEntry, DoctorReport, ModelCard, WorkflowCommand};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -64,6 +66,48 @@ pub fn tab_at_position(area: Rect, column: u16, row: u16) -> Option<AppTab> {
         let end = start.saturating_add(width);
         if column >= start && column < end {
             return Some(tab);
+        }
+        start = end.saturating_add(1);
+    }
+    None
+}
+
+pub fn server_control_at_position(
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<ServerControlSelection> {
+    let body = app_chunks(area)[1];
+    if column <= body.x || column >= body.x.saturating_add(body.width).saturating_sub(1) {
+        return None;
+    }
+
+    let content_x = body.x.saturating_add(1);
+    let content_y = body.y.saturating_add(1);
+    if row == content_y.saturating_add(SERVER_BUTTON_LINE) {
+        return server_button_at_column(content_x, column).map(ServerControlSelection::Button);
+    }
+
+    let first_url_row = content_y.saturating_add(SERVER_FIRST_URL_LINE);
+    let url_count = ServerUrlKind::ALL.len() as u16;
+    if row >= first_url_row && row < first_url_row.saturating_add(url_count) {
+        let index = usize::from(row.saturating_sub(first_url_row));
+        return Some(ServerControlSelection::Url(ServerUrlKind::ALL[index]));
+    }
+
+    None
+}
+
+const SERVER_BUTTON_LINE: u16 = 3;
+const SERVER_FIRST_URL_LINE: u16 = 13;
+const SERVER_BUTTON_PREFIX: &str = "buttons: ";
+
+fn server_button_at_column(content_x: u16, column: u16) -> Option<ServerControlButton> {
+    let mut start = content_x.saturating_add(SERVER_BUTTON_PREFIX.chars().count() as u16);
+    for button in ServerControlButton::ALL {
+        let end = start.saturating_add(button.label().chars().count() as u16 + 2);
+        if column >= start && column < end {
+            return Some(button);
         }
         start = end.saturating_add(1);
     }
@@ -152,11 +196,23 @@ fn render_models(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout:
 }
 
 fn render_server(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout::Rect) {
-    let mut lines = Vec::new();
-    lines.push(Line::from(format!(
-        "base_url: {}",
-        state.server.base_url.as_deref().unwrap_or("not configured")
-    )));
+    frame.render_widget(panel("Server", server_lines(state)), area);
+}
+
+fn server_lines(state: &AppState) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("control_status: ", key_style()),
+            Span::raw(server_control_status(state)),
+        ]),
+        Line::from(format!("host: {}", state.server_control.host)),
+        Line::from(format!("port: {}", state.server_control.port)),
+        server_button_line(state),
+        Line::from(format!("selection: {}", server_selection_label(state))),
+        Line::from(""),
+        Line::from(format!("base_url: {}", state.server_base_url())),
+    ];
+
     match &state.server.health {
         LoadState::Ready(health) => {
             lines.push(Line::from(format!("health: {}", health.status)));
@@ -164,6 +220,7 @@ fn render_server(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout:
         }
         LoadState::Unavailable(message) | LoadState::NotLoaded(message) => {
             lines.push(Line::from(format!("health: unavailable ({message})")));
+            lines.push(Line::from("service: unknown"));
         }
     }
     match &state.server.runtime {
@@ -177,10 +234,72 @@ fn render_server(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout:
             lines.push(Line::from(format!("selected_backend: {backend}")));
         }
         LoadState::Unavailable(message) | LoadState::NotLoaded(message) => {
-            lines.push(Line::from(format!("runtime: unavailable ({message})")));
+            lines.push(Line::from(format!("model_id: unavailable ({message})")));
+            lines.push(Line::from("selected_backend: unknown"));
         }
     }
-    frame.render_widget(panel("Server", lines), area);
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("urls:"));
+    lines.extend(state.server_endpoints().into_iter().map(|endpoint| {
+        let selected =
+            state.server_control.selected == Some(ServerControlSelection::Url(endpoint.kind));
+        let marker = if selected { "*" } else { " " };
+        let line = format!("  {marker} {}: {}", endpoint.kind.label(), endpoint.url);
+        if selected {
+            Line::styled(
+                line,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Line::from(line)
+        }
+    }));
+    lines
+}
+
+fn server_control_status(state: &AppState) -> &'static str {
+    match &state.server.health {
+        LoadState::Ready(_) => "connected",
+        LoadState::Unavailable(_) if state.server.base_url.is_some() => "configured, unavailable",
+        LoadState::NotLoaded(_) if state.server.base_url.is_some() => "configured",
+        _ => "local preview",
+    }
+}
+
+fn server_button_line(state: &AppState) -> Line<'static> {
+    let mut spans = vec![Span::raw(SERVER_BUTTON_PREFIX)];
+    for (index, button) in ServerControlButton::ALL.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(" "));
+        }
+        let selected =
+            state.server_control.selected == Some(ServerControlSelection::Button(button));
+        let label = format!("[{}]", button.label());
+        if selected {
+            spans.push(Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::raw(label));
+        }
+    }
+    Line::from(spans)
+}
+
+fn server_selection_label(state: &AppState) -> String {
+    match state.server_control.selected {
+        Some(ServerControlSelection::Button(button)) => {
+            format!("{} (preview)", button.command_name())
+        }
+        Some(ServerControlSelection::Url(kind)) => format!("{} URL", kind.label()),
+        None => "none".to_string(),
+    }
 }
 
 fn render_jobs(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout::Rect) {
@@ -537,6 +656,12 @@ mod tests {
         let snapshot = render_snapshot(&sample_state(AppTab::Server));
 
         assert!(snapshot.contains("Server"));
+        assert!(snapshot.contains("host: 127.0.0.1"));
+        assert!(snapshot.contains("port: 8080"));
+        assert!(snapshot.contains("[Start]"));
+        assert!(snapshot.contains("[Stop]"));
+        assert!(snapshot.contains("http://127.0.0.1:8080/health"));
+        assert!(snapshot.contains("http://127.0.0.1:8080/v1/chat/completions"));
         assert!(snapshot.contains("server URL not configured"));
     }
 
@@ -574,5 +699,32 @@ mod tests {
         assert_eq!(tab_at_position(area, 41, 1), Some(AppTab::Artifacts));
         assert_eq!(tab_at_position(area, 0, 1), None);
         assert_eq!(tab_at_position(area, 1, 2), None);
+    }
+
+    #[test]
+    fn server_hit_testing_maps_clicks_to_buttons_and_urls() {
+        let area = ratatui::layout::Rect::new(0, 0, 100, 32);
+
+        assert_eq!(
+            server_control_at_position(area, 11, 7),
+            Some(ServerControlSelection::Button(ServerControlButton::Start))
+        );
+        assert_eq!(
+            server_control_at_position(area, 19, 7),
+            Some(ServerControlSelection::Button(ServerControlButton::Stop))
+        );
+        assert_eq!(
+            server_control_at_position(area, 26, 7),
+            Some(ServerControlSelection::Button(ServerControlButton::Restart))
+        );
+        assert_eq!(
+            server_control_at_position(area, 4, 17),
+            Some(ServerControlSelection::Url(ServerUrlKind::Health))
+        );
+        assert_eq!(
+            server_control_at_position(area, 4, 23),
+            Some(ServerControlSelection::Url(ServerUrlKind::Completions))
+        );
+        assert_eq!(server_control_at_position(area, 4, 16), None);
     }
 }
