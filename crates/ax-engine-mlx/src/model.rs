@@ -1957,7 +1957,6 @@ fn qkv_project(
     }
 }
 
-#[allow(dead_code)] // Staged GLM contract; fields are read when MLA forward wiring lands.
 struct GlmMlaProjectedInputs {
     /// `[1, n_heads, seq, qk_nope_head_dim]`.
     q_nope: MlxArray,
@@ -1969,7 +1968,6 @@ struct GlmMlaProjectedInputs {
     k_pe: MlxArray,
 }
 
-#[allow(dead_code)] // Staged GLM contract; fields are read when MLA forward wiring lands.
 struct GlmMlaCachedInputs {
     /// `[1, n_heads, new_seq, qk_nope_head_dim]`.
     q_nope: MlxArray,
@@ -1982,7 +1980,6 @@ struct GlmMlaCachedInputs {
 }
 
 /// GLM4MoELite MLA input projection up to the latent-cache boundary.
-#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
 fn glm_mla_project_inputs(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -2065,7 +2062,6 @@ fn glm_mla_project_inputs(
 }
 
 /// GLM4MoELite MLA projection plus latent cache update/fetch.
-#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
 fn glm_mla_project_and_cache_inputs(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -2086,7 +2082,7 @@ fn glm_mla_project_and_cache_inputs(
 }
 
 /// GLM4MoELite RoPE score bias: `(q_pe * scale) @ k_pe.T`.
-#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
+#[allow(dead_code)] // Reference for the split positional-score path replaced by packed SDPA.
 fn glm_mla_positional_scores(cfg: &ModelConfig, q_pe: &MlxArray, k_pe: &MlxArray) -> MlxArray {
     let mla_cfg = cfg
         .glm_mla_attention
@@ -2106,7 +2102,6 @@ fn glm_mla_positional_scores(cfg: &ModelConfig, q_pe: &MlxArray, k_pe: &MlxArray
 /// scale * Q @ K.T = scale * (embed_q(q_nope) @ kv_latent.T + q_pe @ k_pe.T), which is
 /// identical to the old separate pe_scores additive mask approach — but avoids the
 /// expensive embed_q_prefill(kv_latent) quantized matmul during prefill.
-#[allow(dead_code)] // Staged GLM contract; manifest validation remains fail-closed.
 fn glm_mla_attention_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -2160,7 +2155,7 @@ fn glm_mla_attention_forward(
     )
 }
 
-#[allow(dead_code)] // Staged GLM contract; consumed by GLM MLA attention wiring.
+#[allow(dead_code)] // Reference for the split positional-score causal mask replaced by packed SDPA.
 fn glm_mla_causal_positional_scores(
     seq: usize,
     key_len: usize,
@@ -2181,7 +2176,7 @@ fn glm_mla_causal_positional_scores(
 /// Prefill path: `kv_latent [B,1,seq,kv_lora_rank] @ embed_q [n_heads,kv_lora_rank,qk_nope_head_dim]`
 /// → `[B,n_heads,seq,qk_nope_head_dim]`.  Uses quantized_matmul (transpose=false) so the 4-bit
 /// packed weight is never materialized as float — equivalent to mlx-lm QuantizedMultiLinear(transpose=False).
-#[allow(dead_code)] // Kept as a parity reference for the packed-MLA SDPA implementation.
+#[allow(dead_code)] // Reference for the old split prefill path; packed SDPA uses decode embedding.
 fn glm_mla_embed_q_prefill(cfg: &ModelConfig, w: &LayerWeights, kv_latent: &MlxArray) -> MlxArray {
     let mla_cfg = cfg
         .glm_mla_attention
