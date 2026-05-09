@@ -22,6 +22,13 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_VERSION = "ax.turboquant_promotion_readiness.v1"
 CHECKER_PATH = Path(__file__).with_name("check_turboquant_quality_artifact.py")
+ATTENTION_TENSOR_ROLES = {
+    "attention_o",
+    "attention_q",
+    "attention_k",
+    "attention_v",
+    "attention_qkv_packed",
+}
 CHECKER_SPEC = importlib.util.spec_from_file_location(
     "check_turboquant_quality_artifact",
     CHECKER_PATH,
@@ -47,9 +54,17 @@ def _relative(path: Path) -> str:
 
 def _full_attention_layers(manifest: dict[str, Any]) -> int | None:
     layer_types = manifest.get("layer_types")
-    if not isinstance(layer_types, list):
-        return None
-    return sum(1 for item in layer_types if item == "full_attention")
+    if isinstance(layer_types, list):
+        return sum(1 for item in layer_types if item == "full_attention")
+    layer_count = manifest.get("layer_count")
+    tensors = manifest.get("tensors")
+    has_attention_tensors = isinstance(tensors, list) and any(
+        isinstance(tensor, dict) and tensor.get("role") in ATTENTION_TENSOR_ROLES
+        for tensor in tensors
+    )
+    if isinstance(layer_count, int) and layer_count > 0 and has_attention_tensors:
+        return layer_count
+    return None
 
 
 def inspect_manifest(path: Path) -> dict[str, Any]:
@@ -75,7 +90,9 @@ def inspect_manifest(path: Path) -> dict[str, Any]:
         blockers.append(
             f"grouped-query mapping is invalid: attention_head_count={n_heads}, kv_head_count={n_kv_heads}"
         )
-    if full_layers == 0:
+    if full_layers is None:
+        blockers.append("full_attention layer coverage could not be determined")
+    elif full_layers == 0:
         blockers.append("no full_attention layers are available for first production preset")
     if has_linear_attention:
         blockers.append("linear-attention state remains outside TurboQuant promotion scope")
