@@ -418,6 +418,25 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=7,
                 )
 
+    def test_unknown_public_claim_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["public_claims"] = [{"name": "speculative_superpower"}]
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "unknown public claim",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
