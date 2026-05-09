@@ -223,6 +223,23 @@ calls `warm_reused_prefix_without_cache`: a full re-prefill of just the
 shared prefix tokens. The request still skips sampling for those tokens
 (KvManager has already allocated them), but no GPU state shortcut is taken.
 
+MLX runner route metadata keeps that distinction visible:
+
+| Key | Meaning |
+|---|---|
+| `ax_mlx_prefix_cache_hits` | Physical prefix snapshot restored |
+| `ax_mlx_prefix_cache_misses` | Cache was eligible but no snapshot was present |
+| `ax_mlx_prefix_cache_blocked` | Aggregate count for blocked snapshot restore/store |
+| `ax_mlx_prefix_cache_blocked_policy_disabled` | Prefix cache policy disabled by size/count limits |
+| `ax_mlx_prefix_cache_blocked_unsupported_layout` | Model cache layout cannot be snapshot-restored safely |
+| `ax_mlx_prefix_cache_blocked_trim_failure` | Snapshot trim failed while storing a prefix |
+| `ax_mlx_prefix_cache_warmup_tokens` | Reused prefix tokens re-prefilled by the runner |
+| `ax_mlx_prefix_cache_reused_tokens` | Tokens restored from a physical snapshot |
+| `ax_mlx_prefix_cache_stores` | Prefix snapshots stored after request progress |
+| `ax_mlx_prefix_cache_evictions` | Prefix snapshots evicted by the runner LRU policy |
+| `ax_mlx_prefix_cache_entries` | Current runner prefix snapshot entries |
+| `ax_mlx_prefix_cache_bytes_kib` | Current runner prefix snapshot footprint |
+
 ---
 
 ## Model-Specific Cache Variants
@@ -347,3 +364,7 @@ per-request block-table allocation details.
 - Retained-prefix hash matches must be token-payload validated before reuse.
 - The MLX runner `prefix_cache` and `KvManager.cached_blocks` are independent.
   A hit in one does not guarantee a hit in the other.
+- Treat `ax_mlx_prefix_cache_misses` differently from
+  `ax_mlx_prefix_cache_blocked_*`: misses are eligible physical-cache lookups
+  without a snapshot, while blocked counters mean the runner could not safely
+  use the snapshot cache path.

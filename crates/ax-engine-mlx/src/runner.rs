@@ -135,6 +135,12 @@ const DEFAULT_PREFIX_CACHE_MAX_ENTRIES: usize = 64;
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_HITS: &str = "ax_mlx_prefix_cache_hits";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_MISSES: &str = "ax_mlx_prefix_cache_misses";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED: &str = "ax_mlx_prefix_cache_blocked";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_POLICY_DISABLED: &str =
+    "ax_mlx_prefix_cache_blocked_policy_disabled";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_UNSUPPORTED_LAYOUT: &str =
+    "ax_mlx_prefix_cache_blocked_unsupported_layout";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_TRIM_FAILURE: &str =
+    "ax_mlx_prefix_cache_blocked_trim_failure";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES: &str = "ax_mlx_prefix_cache_stores";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS: &str = "ax_mlx_prefix_cache_evictions";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_REUSED_TOKENS: &str = "ax_mlx_prefix_cache_reused_tokens";
@@ -262,6 +268,10 @@ impl MlxPrefixCache {
         }
     }
 
+    fn enabled(&self) -> bool {
+        self.policy.enabled()
+    }
+
     fn allocate_touch_tick(&mut self) -> u64 {
         let tick = self.next_touch_tick;
         self.next_touch_tick = self.next_touch_tick.wrapping_add(1);
@@ -309,6 +319,9 @@ struct MlxPrefixCacheTelemetry {
     hits: u32,
     misses: u32,
     blocked: u32,
+    blocked_policy_disabled: u32,
+    blocked_unsupported_layout: u32,
+    blocked_trim_failure: u32,
     stores: u32,
     evictions: u32,
     reused_tokens: u32,
@@ -327,6 +340,15 @@ impl MlxPrefixCacheTelemetry {
         self.hits = self.hits.saturating_add(other.hits);
         self.misses = self.misses.saturating_add(other.misses);
         self.blocked = self.blocked.saturating_add(other.blocked);
+        self.blocked_policy_disabled = self
+            .blocked_policy_disabled
+            .saturating_add(other.blocked_policy_disabled);
+        self.blocked_unsupported_layout = self
+            .blocked_unsupported_layout
+            .saturating_add(other.blocked_unsupported_layout);
+        self.blocked_trim_failure = self
+            .blocked_trim_failure
+            .saturating_add(other.blocked_trim_failure);
         self.stores = self.stores.saturating_add(other.stores);
         self.evictions = self.evictions.saturating_add(other.evictions);
         self.reused_tokens = self.reused_tokens.saturating_add(other.reused_tokens);
@@ -344,6 +366,18 @@ impl MlxPrefixCacheTelemetry {
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_HITS, self.hits),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_MISSES, self.misses),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED, self.blocked),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_POLICY_DISABLED,
+                self.blocked_policy_disabled,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_UNSUPPORTED_LAYOUT,
+                self.blocked_unsupported_layout,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED_TRIM_FAILURE,
+                self.blocked_trim_failure,
+            ),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_STORES, self.stores),
             (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_EVICTIONS, self.evictions),
             (
@@ -364,6 +398,21 @@ impl MlxPrefixCacheTelemetry {
         for (key, value) in entries {
             upsert_route_decision(decisions, key, value);
         }
+    }
+
+    fn record_blocked_policy_disabled(&mut self) {
+        self.blocked = self.blocked.saturating_add(1);
+        self.blocked_policy_disabled = self.blocked_policy_disabled.saturating_add(1);
+    }
+
+    fn record_blocked_unsupported_layout(&mut self) {
+        self.blocked = self.blocked.saturating_add(1);
+        self.blocked_unsupported_layout = self.blocked_unsupported_layout.saturating_add(1);
+    }
+
+    fn record_blocked_trim_failure(&mut self) {
+        self.blocked = self.blocked.saturating_add(1);
+        self.blocked_trim_failure = self.blocked_trim_failure.saturating_add(1);
     }
 }
 
@@ -2133,7 +2182,22 @@ impl MlxRunner {
             item.mode == ExecutionMode::Decode && ctx.is_some_and(|ctx| ctx.generated_len == 0);
 
         if !self.prefix_cache_supported() {
-            telemetry.blocked = telemetry.blocked.saturating_add(1);
+            telemetry.record_blocked_unsupported_layout();
+            self.warm_reused_prefix_without_cache(
+                state,
+                item.request_id,
+                reused_tokens,
+                sampling,
+                capture_prefill_output,
+            );
+            telemetry.warmup_tokens = telemetry
+                .warmup_tokens
+                .saturating_add(saturating_u32(reused_tokens.len()));
+            return telemetry;
+        }
+
+        if !self.prefix_cache.lock().unwrap().enabled() {
+            telemetry.record_blocked_policy_disabled();
             self.warm_reused_prefix_without_cache(
                 state,
                 item.request_id,
@@ -2225,7 +2289,11 @@ impl MlxRunner {
             return telemetry;
         }
         if !self.prefix_cache_supported() {
-            telemetry.blocked = telemetry.blocked.saturating_add(1);
+            telemetry.record_blocked_unsupported_layout();
+            return telemetry;
+        }
+        if !self.prefix_cache.lock().unwrap().enabled() {
+            telemetry.record_blocked_policy_disabled();
             return telemetry;
         }
 
@@ -2242,7 +2310,7 @@ impl MlxRunner {
             let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
             let mut snapshot_cache = state.cache.clone();
             if !snapshot_cache.trim_to(prefix_len) {
-                telemetry.blocked = telemetry.blocked.saturating_add(1);
+                telemetry.record_blocked_trim_failure();
                 continue;
             }
             let usage = snapshot_cache.usage_snapshot_with_layer_windows(&self.kv_layer_windows);
@@ -3333,11 +3401,54 @@ mod tests {
     }
 
     #[test]
+    fn prefix_cache_disabled_policy_does_not_store_snapshots() {
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 0,
+            max_entries: 4,
+        });
+        let key = test_prefix_key(1);
+
+        let outcome = cache.insert(key.clone(), test_prefix_snapshot(4, 128));
+
+        assert!(!cache.enabled());
+        assert!(!outcome.stored);
+        assert_eq!(outcome.evictions, 0);
+        assert!(cache.get(&key).is_none());
+        assert_eq!(
+            cache.stats(),
+            MlxPrefixCacheStats {
+                entries: 0,
+                bytes: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn prefix_cache_telemetry_merges_blocked_reason_counters() {
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        telemetry.record_blocked_policy_disabled();
+        telemetry.record_blocked_unsupported_layout();
+
+        let mut other = MlxPrefixCacheTelemetry::default();
+        other.record_blocked_trim_failure();
+        other.record_blocked_unsupported_layout();
+        telemetry.merge_from(other);
+
+        assert_eq!(telemetry.blocked, 4);
+        assert_eq!(telemetry.blocked_policy_disabled, 1);
+        assert_eq!(telemetry.blocked_unsupported_layout, 2);
+        assert_eq!(telemetry.blocked_trim_failure, 1);
+    }
+
+    #[test]
     fn prefix_cache_telemetry_writes_route_counters() {
         let telemetry = MlxPrefixCacheTelemetry {
             hits: 1,
             misses: 2,
             blocked: 3,
+            blocked_policy_disabled: 1,
+            blocked_unsupported_layout: 1,
+            blocked_trim_failure: 1,
             stores: 4,
             evictions: 5,
             reused_tokens: 16,
@@ -3351,6 +3462,10 @@ mod tests {
 
         assert!(decisions.contains(&("ax_mlx_prefix_cache_hits".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_misses".into(), 2)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked".into(), 3)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_policy_disabled".into(), 1)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_unsupported_layout".into(), 1)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_trim_failure".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_evictions".into(), 5)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_bytes_kib".into(), 4)));
     }
