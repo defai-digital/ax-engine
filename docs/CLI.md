@@ -58,6 +58,12 @@ safetensors presence, `model_type`, quantization metadata, and readiness
 blockers. TUI code should display those fields directly instead of parsing
 performance-advice text.
 
+Run `bash scripts/check-cli-tui-phase0.sh` to verify the full Phase 0 contract
+set before adding Ratatui code. The check covers download JSON,
+manifest-generation JSON, doctor workflow discovery, model-artifact readiness,
+benchmark artifact summaries, and server `/health`, `/v1/runtime`, and
+`/v1/models` metadata.
+
 Successful scenario and replay runs emit `manifest.json`, `environment.json`,
 `metrics.json`, `routes.json`, `trace.json`, and `summary.md`. Contract failures
 emit `contract_failure.json` plus `summary.md` instead of synthetic metrics.
