@@ -981,11 +981,11 @@ pub fn layer_forward_with_turboquant_context(
                     &[&h1],
                 );
             }
-            let h2_normed = if let Some(n2) = &w.ffn_norm2 {
-                rms_norm(&hidden, Some(n2), cfg.rms_norm_eps, None)
-            } else {
-                normed2
-            };
+            let h2_norm = w
+                .ffn_norm2
+                .as_ref()
+                .expect("validated Gemma4 MoE layer must include ffn_norm_2");
+            let h2_normed = rms_norm(&hidden, Some(h2_norm), cfg.rms_norm_eps, None);
             let router_started = profile_gemma4_moe_decode.then(Instant::now);
             let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
             if let Some(started) = router_started {
@@ -1311,7 +1311,14 @@ fn layer_forward_dense_embed(
 
     let q = transpose(&q, &[0, 2, 1, 3], None);
     let k = transpose(&k, &[0, 2, 1, 3], None);
-    let v = prepare_value_bhsd(v, v_norm_no_scale, kv_heads, head_dim, seq, cfg.rms_norm_eps);
+    let v = prepare_value_bhsd(
+        v,
+        v_norm_no_scale,
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
 
     let q_rope = rope(
         &q,
