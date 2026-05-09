@@ -221,11 +221,13 @@ surface through better defaults, route metadata, and benchmark artifacts.
 - README/public performance claim validation now rejects `continuous_batching`
   claims unless overlap classification evidence is positive and internally
   consistent.
+- `ax.mlx_prefix_warmup.v1` artifact validation now defines the contract for
+  physical prefix snapshot miss/warmup correctness evidence.
 
 #### Open
 
-- Add replay/artifact coverage that exercises a physical snapshot miss with
-  warmup and proves the request remains correct.
+- Produce a real checked-in replay/artifact that exercises a physical snapshot
+  miss with warmup and passes `check_mlx_prefix_warmup_artifact.py`.
 
 #### Exit Criteria
 
