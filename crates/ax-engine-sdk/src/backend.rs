@@ -301,6 +301,12 @@ pub struct NativeModelReport {
     /// None for pure-attention or pure-linear-attention models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hybrid_full_attention_interval: Option<u32>,
+    /// For MLA models: latent KV dimension (`kv_lora_rank` in the manifest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mla_kv_latent_dim: Option<u32>,
+    /// For MoE models: active experts selected per token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moe_active_experts: Option<u32>,
     #[serde(default)]
     pub bindings_prepared: bool,
     #[serde(default)]
@@ -340,6 +346,8 @@ impl NativeModelReport {
             is_moe: summary.is_moe,
             is_hybrid_attention: summary.is_hybrid_attention,
             hybrid_full_attention_interval: summary.hybrid_full_attention_interval,
+            mla_kv_latent_dim: summary.mla_kv_latent_dim,
+            moe_active_experts: summary.moe_active_experts,
             bindings_prepared: binding.bindings_prepared,
             buffers_bound: binding.buffers_bound,
             buffer_count: binding.buffer_count,

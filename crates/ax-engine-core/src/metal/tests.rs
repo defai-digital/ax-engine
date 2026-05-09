@@ -6437,6 +6437,8 @@ fn complete_model_forward_support_requires_model_conditioned_source() {
         is_moe: false,
         is_hybrid_attention: false,
         hybrid_full_attention_interval: None,
+        mla_kv_latent_dim: None,
+        moe_active_experts: None,
     };
     let multilayer_model = NativeModelArtifactsSummary {
         model_family: "qwen3_dense".to_string(),
@@ -6449,6 +6451,8 @@ fn complete_model_forward_support_requires_model_conditioned_source() {
         is_moe: false,
         is_hybrid_attention: false,
         hybrid_full_attention_interval: None,
+        mla_kv_latent_dim: None,
+        moe_active_experts: None,
     };
 
     assert!(!complete_model_forward_support_for_source(
@@ -7210,6 +7214,8 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
             is_moe: false,
             is_hybrid_attention: false,
             hybrid_full_attention_interval: None,
+            mla_kv_latent_dim: Some(512),
+            moe_active_experts: Some(4),
         }),
     };
 
@@ -7410,6 +7416,14 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
         "metal_dispatch_native_rms_norm_unsupported_binding_count".to_string(),
         8,
     )));
+    assert!(route_metadata.crossover_decisions.contains(&(
+        crate::scheduler::ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM.to_string(),
+        512,
+    )));
+    assert!(route_metadata.crossover_decisions.contains(&(
+        crate::scheduler::ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS.to_string(),
+        4,
+    )));
 }
 
 #[test]
@@ -7446,6 +7460,8 @@ fn completed_real_model_forward_step_marks_pure_decode_batch_with_no_remaining_l
             is_moe: false,
             is_hybrid_attention: false,
             hybrid_full_attention_interval: None,
+            mla_kv_latent_dim: None,
+            moe_active_experts: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
@@ -7542,6 +7558,8 @@ fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_p
             is_moe: false,
             is_hybrid_attention: false,
             hybrid_full_attention_interval: None,
+            mla_kv_latent_dim: None,
+            moe_active_experts: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
@@ -7607,6 +7625,8 @@ fn completed_real_model_forward_step_rejects_prefill_only_completion_without_sam
             is_moe: false,
             is_hybrid_attention: false,
             hybrid_full_attention_interval: None,
+            mla_kv_latent_dim: None,
+            moe_active_experts: None,
         }),
     };
     let output = successful_runner_output_from_input(&input);
@@ -7654,6 +7674,8 @@ fn completed_real_model_forward_step_accepts_prefill_only_completion_with_output
             is_moe: false,
             is_hybrid_attention: false,
             hybrid_full_attention_interval: None,
+            mla_kv_latent_dim: None,
+            moe_active_experts: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
@@ -7706,6 +7728,8 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
             is_moe: false,
             is_hybrid_attention: false,
             hybrid_full_attention_interval: None,
+            mla_kv_latent_dim: None,
+            moe_active_experts: None,
         }),
     };
     let unresolved_output = successful_runner_output_from_input(&input);
@@ -7772,6 +7796,8 @@ fn completed_real_model_forward_step_rejects_multilayer_runtime_when_prefix_atte
             is_moe: false,
             is_hybrid_attention: false,
             hybrid_full_attention_interval: None,
+            mla_kv_latent_dim: None,
+            moe_active_experts: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
@@ -7829,6 +7855,8 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
             is_moe: false,
             is_hybrid_attention: false,
             hybrid_full_attention_interval: None,
+            mla_kv_latent_dim: None,
+            moe_active_experts: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
@@ -7886,6 +7914,8 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
             is_moe: false,
             is_hybrid_attention: true,
             hybrid_full_attention_interval: Some(6),
+            mla_kv_latent_dim: None,
+            moe_active_experts: None,
         }),
     };
     let mut output = successful_runner_output_from_input(&input);
