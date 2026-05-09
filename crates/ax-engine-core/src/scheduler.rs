@@ -304,6 +304,8 @@ impl TokenBudgetTelemetry {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scheduler;
 
+const MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP: u32 = 1;
+
 impl Scheduler {
     pub fn new() -> Self {
         Self
@@ -350,6 +352,10 @@ impl Scheduler {
         let mut route_seed_anchor: Option<BatchRouteSeed> = None;
         let mut batch_mixes_prefill_decode = false;
         let mut token_budget = TokenBudgetTelemetry::default();
+        let mut pressure_prefill_budget = input
+            .memory_pressure
+            .as_ref()
+            .map(|_| MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP);
 
         for snapshot in runnable {
             if snapshot.model_id != batch_model_id {
@@ -380,7 +386,19 @@ impl Scheduler {
                 continue;
             }
 
-            let Some(item) = self.build_execution_item(&snapshot, remaining_budget) else {
+            let candidate_budget = match (mode, pressure_prefill_budget) {
+                (ExecutionMode::Prefill, Some(0)) => {
+                    token_budget.record_skipped(mode, requested_tokens);
+                    deferred_requests.push(snapshot.request_id);
+                    continue;
+                }
+                (ExecutionMode::Prefill, Some(prefill_budget)) => {
+                    remaining_budget.min(prefill_budget)
+                }
+                _ => remaining_budget,
+            };
+
+            let Some(item) = self.build_execution_item(&snapshot, candidate_budget) else {
                 deferred_requests.push(snapshot.request_id);
                 continue;
             };
@@ -388,7 +406,7 @@ impl Scheduler {
             let candidate_route = BatchRouteSeed {
                 mode,
                 execution_plan_ref: snapshot.execution_plan_ref.clone(),
-                route_metadata: route_seed(&snapshot, Some(mode)),
+                route_metadata: route_seed(&snapshot),
             };
             let can_join = route_seed_anchor
                 .as_ref()
@@ -407,6 +425,12 @@ impl Scheduler {
             }
 
             remaining_budget -= item.scheduled_token_count;
+            if let (ExecutionMode::Prefill, Some(prefill_budget)) =
+                (item.mode, pressure_prefill_budget)
+            {
+                pressure_prefill_budget =
+                    Some(prefill_budget.saturating_sub(item.scheduled_token_count));
+            }
             token_budget.record_scheduled(item.mode, item.scheduled_token_count);
             if requested_tokens > item.scheduled_token_count {
                 token_budget
@@ -572,12 +596,11 @@ fn route_metadata_for_batch(
     route_metadata
 }
 
-fn route_seed(snapshot: &RequestSnapshot, batch_mode: Option<ExecutionMode>) -> RouteMetadata {
+fn route_seed(snapshot: &RequestSnapshot) -> RouteMetadata {
     if snapshot.route_metadata_hint != RouteMetadata::empty() {
         return snapshot.route_metadata_hint.clone();
     }
 
-    let _ = batch_mode;
     RouteMetadata {
         execution_plan: snapshot.execution_plan_ref.clone(),
         attention_route: None,
@@ -920,6 +943,49 @@ mod tests {
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS),
             Some(&4)
+        );
+    }
+
+    #[test]
+    fn memory_pressure_caps_prefill_tokens_without_starving_decode() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(15),
+            request_snapshots: vec![
+                make_snapshot(1, 1, "qwen3", &[10, 11, 12, 13], 0, &[], 16),
+                make_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 4, &[99], 16),
+            ],
+            memory_pressure: Some("kv_low_free_blocks:1/8".into()),
+            global_token_budget: 8,
+        });
+
+        assert_eq!(
+            schedule_plan.selected_requests,
+            vec![RequestId(2), RequestId(1)]
+        );
+        let execution_batch = schedule_plan.execution_batch.unwrap();
+        assert_eq!(execution_batch.total_scheduled_tokens, 2);
+        assert_eq!(execution_batch.items[0].mode, ExecutionMode::Decode);
+        assert_eq!(execution_batch.items[0].scheduled_token_count, 1);
+        assert_eq!(execution_batch.items[1].mode, ExecutionMode::Prefill);
+        assert_eq!(execution_batch.items[1].scheduled_token_count, 1);
+
+        let decisions = execution_batch
+            .route_metadata
+            .crossover_decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS),
+            Some(&3)
         );
     }
 

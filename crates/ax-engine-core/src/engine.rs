@@ -600,6 +600,11 @@ impl EngineCore {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
+        let item_by_request = execution_batch
+            .items
+            .iter()
+            .map(|item| (item.request_id, item))
+            .collect::<BTreeMap<_, _>>();
 
         for request_id in sample_request_ids {
             let update = update_by_request.get(&request_id).ok_or(
@@ -627,14 +632,12 @@ impl EngineCore {
             let logits = logits_output_by_request
                 .get(&request_id)
                 .map(|values| (*values).clone());
-            let item = execution_batch
-                .items
-                .iter()
-                .find(|item| item.request_id == request_id)
-                .ok_or(EngineCoreError::RunnerContractViolation {
+            let item = item_by_request.get(&request_id).copied().ok_or(
+                EngineCoreError::RunnerContractViolation {
                     step_id: runner_output.step_id,
                     message: "runner logits handle missing from execution batch",
-                })?;
+                },
+            )?;
             let decode_request = item.mode == ExecutionMode::Decode;
             if logits.is_none() && !logits_handles.contains(&request_id) {
                 if !decode_request {
@@ -702,6 +705,11 @@ impl EngineCore {
             .iter()
             .map(|item| item.request_id)
             .collect::<BTreeSet<_>>();
+        let item_by_request = execution_batch
+            .items
+            .iter()
+            .map(|item| (item.request_id, item))
+            .collect::<BTreeMap<_, _>>();
         let decode_request_ids = execution_batch
             .items
             .iter()
@@ -723,10 +731,9 @@ impl EngineCore {
                 });
             }
 
-            let item = execution_batch
-                .items
-                .iter()
-                .find(|item| item.request_id == update.request_id)
+            let item = item_by_request
+                .get(&update.request_id)
+                .copied()
                 .expect("validated request_id should exist in execution batch");
 
             if item.mode == ExecutionMode::Prefill
@@ -756,6 +763,11 @@ impl EngineCore {
                 message: "runner omitted update for one or more scheduled requests",
             });
         }
+        let update_by_request = runner_output
+            .request_updates
+            .iter()
+            .map(|update| (update.request_id, update))
+            .collect::<BTreeMap<_, _>>();
 
         let mut seen_logits = BTreeSet::new();
         for request_id in &runner_output.logits_handles {
@@ -829,10 +841,9 @@ impl EngineCore {
         }
 
         for request_id in decode_request_ids {
-            let update = runner_output
-                .request_updates
-                .iter()
-                .find(|update| update.request_id == request_id)
+            let update = update_by_request
+                .get(&request_id)
+                .copied()
                 .expect("validated request_id should exist in runner output");
             let failed = update.error.is_some()
                 || matches!(update.stop_reason, Some(crate::sampling::StopReason::Error));
