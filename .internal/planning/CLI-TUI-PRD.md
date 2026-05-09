@@ -227,8 +227,8 @@ W0 is a prerequisite for a dependable TUI:
 - use `ax-engine-bench generate-manifest <model-dir> --json` as the parseable
   success path;
 - preserve `doctor --json` as the readiness source of truth;
-- document how the TUI distinguishes Homebrew install mode from source checkout
-  mode;
+- use `ax-engine-bench doctor --json` workflow discovery to distinguish
+  installed-tools mode from source-checkout mode;
 - use benchmark launcher `--json` output (`ax.benchmark_artifact.v1`) for
   discoverable artifact paths.
 
@@ -242,7 +242,8 @@ Scope:
 - add `--json` to `scripts/download_model.py` if absent;
 - use `ax.download_model.v1`, `ax.generate_manifest.v1`, and
   `ax.benchmark_artifact.v1` run-summary schemas for TUI subprocess jobs;
-- document TUI-supported commands and their structured fields.
+- document TUI-supported commands and their structured fields, including
+  workflow-discovery command argv.
 
 Exit criteria:
 

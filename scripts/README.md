@@ -45,6 +45,9 @@ throughput baselines.
 - `ax-engine-bench scenario|replay|matrix|compare|matrix-compare|baseline
   ... --json`: stable `ax.benchmark_artifact.v1` summary for callers that need
   the produced `result_dir` without parsing shell text.
+- `ax-engine-bench doctor --json`: readiness report plus workflow discovery for
+  source-checkout versus installed-tools mode. TUI callers should use its
+  command `argv` fields instead of reconstructing Cargo/Homebrew command lines.
 - `bench_mlx_inference_stack.py`: MLX model-inference comparison against
   `mlx_lm.benchmark`. It can pass through
   `--experimental-mlx-kv-compression turboquant-shadow` or
