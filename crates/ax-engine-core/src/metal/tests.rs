@@ -840,6 +840,8 @@ fn prefix_attention_group_predicate_partitions_disabled_batch_shape_before_retry
             max_output_tokens: 32,
             deterministic_argmax_sampling: true,
             temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
         }],
     };
     let mut only_singletons_allowed = |candidate_range: std::ops::Range<usize>| {
@@ -6822,6 +6824,8 @@ fn copied_prefix_blocks_persist_into_layer_cache_for_future_native_decode() {
             max_output_tokens: 32,
             deterministic_argmax_sampling: true,
             temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
         }],
     };
     let decode_workload = MetalDispatchWorkload::from_runner_input(&decode_input)
@@ -9404,6 +9408,8 @@ fn sample_runner_input() -> RunnerInput {
                 max_output_tokens: 32,
                 deterministic_argmax_sampling: false,
                 temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
             },
             crate::runner::RunnerRequestContext {
                 request_id: RequestId(9),
@@ -9413,6 +9419,8 @@ fn sample_runner_input() -> RunnerInput {
                 max_output_tokens: 32,
                 deterministic_argmax_sampling: false,
                 temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
             },
         ],
     }
@@ -9490,6 +9498,8 @@ fn sample_decode_only_runner_input() -> RunnerInput {
                 max_output_tokens: 32,
                 deterministic_argmax_sampling: false,
                 temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
             },
             crate::runner::RunnerRequestContext {
                 request_id: RequestId(11),
@@ -9499,6 +9509,8 @@ fn sample_decode_only_runner_input() -> RunnerInput {
                 max_output_tokens: 32,
                 deterministic_argmax_sampling: false,
                 temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
             },
         ],
     }
@@ -9561,6 +9573,8 @@ fn sample_prefill_only_runner_input() -> RunnerInput {
             max_output_tokens: 32,
             deterministic_argmax_sampling: false,
             temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
         }],
     }
 }
@@ -9611,6 +9625,8 @@ fn sample_decode_continuation_runner_input() -> RunnerInput {
             max_output_tokens: 32,
             deterministic_argmax_sampling: false,
             temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
         }],
     }
 }
@@ -10755,6 +10771,8 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
                 max_output_tokens: 32,
                 deterministic_argmax_sampling: true,
                 temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
             }],
         };
 
@@ -10850,6 +10868,8 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
                 max_output_tokens: 32,
                 deterministic_argmax_sampling: true,
                 temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
             }],
         };
         let decode_workload = MetalDispatchWorkload::from_runner_input(&decode_input)
@@ -11146,6 +11166,8 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                 max_output_tokens: 32,
                 deterministic_argmax_sampling: true,
                 temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
             }],
         };
 
@@ -11240,6 +11262,8 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                     max_output_tokens: 32,
                     deterministic_argmax_sampling: true,
                     temperature: 0.0,
+                    top_p: 1.0,
+                    top_k: 0,
                 }],
             };
 

@@ -559,6 +559,8 @@ impl EngineCore {
                             &record.sampling_params,
                         ),
                     temperature: record.sampling_params.temperature,
+                    top_p: record.sampling_params.top_p,
+                    top_k: record.sampling_params.top_k,
                 });
             }
         }
@@ -1481,6 +1483,31 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct AssertSamplingContextRunner {
+        temperature: f32,
+        top_p: f32,
+        top_k: u32,
+        deterministic_argmax_sampling: bool,
+    }
+
+    impl ExecutionRunner for AssertSamplingContextRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            let context = input
+                .request_contexts
+                .first()
+                .expect("runner should receive request context");
+            assert_eq!(context.temperature, self.temperature);
+            assert_eq!(context.top_p, self.top_p);
+            assert_eq!(context.top_k, self.top_k);
+            assert_eq!(
+                context.deterministic_argmax_sampling,
+                self.deterministic_argmax_sampling
+            );
+            DeterministicRunner.run(input)
+        }
+    }
+
     #[test]
     fn submit_rejects_empty_input_tokens() {
         let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
@@ -1565,6 +1592,31 @@ mod tests {
 
         assert!(outcome.metrics.runner_time_us >= 1_000);
         assert!(outcome.metrics.cpu_time_us >= outcome.metrics.runner_time_us);
+    }
+
+    #[test]
+    fn step_forwards_sampling_filters_to_runner_context() {
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            AssertSamplingContextRunner {
+                temperature: 0.8,
+                top_p: 0.7,
+                top_k: 32,
+                deterministic_argmax_sampling: false,
+            },
+            DeterministicSampler,
+        );
+        let mut submission = make_submission(9, 1, 1);
+        submission.sampling_params = SamplingParams {
+            temperature: 0.8,
+            top_p: 0.7,
+            top_k: 32,
+            ..SamplingParams::default()
+        };
+
+        engine.submit(submission).unwrap();
+
+        engine.step(3, true).unwrap();
     }
 
     #[test]

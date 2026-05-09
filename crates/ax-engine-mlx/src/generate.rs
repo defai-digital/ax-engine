@@ -6,7 +6,7 @@ use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward,
     forward_lazy_single_with_turboquant_context, forward_with_turboquant_context,
 };
-use crate::sampling::{Xorshift64, sample_categorical};
+use crate::sampling::{MlxSamplingParams, Xorshift64, sample_categorical};
 use crate::weights::ModelWeights;
 
 /// Default chunk size for chunked prefill, matching SwiftLM's default and the
@@ -22,7 +22,7 @@ pub fn chunked_prefill(
     prompt_tokens: &[u32],
     cache: &mut MlxKVCache,
     chunk_size: usize,
-    temperature: f32,
+    sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> u32 {
     let chunk_size = chunk_size.max(1);
@@ -37,10 +37,10 @@ pub fn chunked_prefill(
         offset = end;
 
         if offset == total {
-            let tok = if temperature > 0.0 {
+            let tok = if sampling.temperature > 0.0 {
                 eval_with_kv_refs(&logits, cache);
                 let logits_data = logits.data_f32();
-                sample_categorical(logits_data, temperature, rng)
+                sample_categorical(logits_data, sampling, rng)
             } else {
                 // GPU argmax over [vocab] logits -> token ID.
                 let token_arr = argmax(&logits, None);
@@ -177,10 +177,10 @@ pub fn decode_step(
     weights: &ModelWeights,
     last_token: u32,
     cache: &mut MlxKVCache,
-    temperature: f32,
+    sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> u32 {
-    decode_step_with_turboquant_context(cfg, weights, last_token, cache, temperature, rng, None)
+    decode_step_with_turboquant_context(cfg, weights, last_token, cache, sampling, rng, None)
 }
 
 pub fn decode_step_with_turboquant_context(
@@ -188,7 +188,7 @@ pub fn decode_step_with_turboquant_context(
     weights: &ModelWeights,
     last_token: u32,
     cache: &mut MlxKVCache,
-    temperature: f32,
+    sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> u32 {
@@ -203,10 +203,10 @@ pub fn decode_step_with_turboquant_context(
     );
     cache.seq_len += 1;
 
-    if temperature > 0.0 {
+    if sampling.temperature > 0.0 {
         eval_with_kv_refs(&logits, cache);
         let logits_data = logits.data_f32();
-        sample_categorical(logits_data, temperature, rng)
+        sample_categorical(logits_data, sampling, rng)
     } else {
         // Deterministic argmax path: GPU argmax, no CPU data movement.
         let token_arr = argmax(&logits, None);

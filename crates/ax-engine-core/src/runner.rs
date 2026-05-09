@@ -35,6 +35,10 @@ pub struct RunnerRequestContext {
     /// probabilistic sampling must use this when > 0.0; runners that don't
     /// must return an error rather than silently falling back to greedy.
     pub temperature: f32,
+    /// Nucleus sampling threshold. 1.0 disables top-p filtering.
+    pub top_p: f32,
+    /// Top-k sampling candidate count. 0 disables top-k filtering.
+    pub top_k: u32,
 }
 
 impl RunnerInput {
@@ -381,6 +385,8 @@ mod tests {
                     max_output_tokens: 4,
                     deterministic_argmax_sampling: true,
                     temperature: 0.0,
+                    top_p: 1.0,
+                    top_k: 0,
                 },
                 RunnerRequestContext {
                     request_id: RequestId(2),
@@ -390,6 +396,8 @@ mod tests {
                     max_output_tokens: 4,
                     deterministic_argmax_sampling: true,
                     temperature: 0.0,
+                    top_p: 1.0,
+                    top_k: 0,
                 },
             ],
         });
@@ -514,6 +522,8 @@ mod tests {
                 max_output_tokens: 2,
                 deterministic_argmax_sampling: true,
                 temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
             }],
         });
 

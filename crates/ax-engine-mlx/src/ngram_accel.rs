@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use mlx_sys::{MlxArray, argmax, eval};
 
-use crate::sampling::{Xorshift64, sample_categorical};
+use crate::sampling::{MlxSamplingParams, Xorshift64, sample_categorical};
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
@@ -785,23 +785,16 @@ pub fn ngram_accel_decode_step(
     ngram: &mut NgramTable,
     last_token: u32,
     draft: &[u32],
-    temperature: f32,
+    sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> Vec<u32> {
     if draft.is_empty() {
-        return single_decode(cfg, weights, cache, ngram, last_token, temperature, rng);
+        return single_decode(cfg, weights, cache, ngram, last_token, sampling, rng);
     }
 
     if cfg.linear_attention.is_some() {
         return ngram_accel_decode_step_linear_safe(
-            cfg,
-            weights,
-            cache,
-            ngram,
-            last_token,
-            draft,
-            temperature,
-            rng,
+            cfg, weights, cache, ngram, last_token, draft, sampling, rng,
         );
     }
 
@@ -813,7 +806,7 @@ pub fn ngram_accel_decode_step(
         last_token,
         draft,
         token_offset,
-        temperature,
+        sampling,
         rng,
     );
 
@@ -848,7 +841,7 @@ fn ngram_accel_decode_step_linear_safe(
     ngram: &mut NgramTable,
     last_token: u32,
     draft: &[u32],
-    temperature: f32,
+    sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> Vec<u32> {
     let token_offset = cache.seq_len;
@@ -860,7 +853,7 @@ fn ngram_accel_decode_step_linear_safe(
         last_token,
         draft,
         token_offset,
-        temperature,
+        sampling,
         rng,
     );
 
@@ -919,7 +912,7 @@ fn verify_draft(
     last_token: u32,
     draft: &[u32],
     token_offset: usize,
-    temperature: f32,
+    sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> DraftVerification {
     // Verification sequence: [last_token, D1, D2, ... D_n].
@@ -951,7 +944,7 @@ fn verify_draft(
     // sample the correction / bonus token from the full distribution.
     // Draft acceptance always uses argmax comparison (n-gram drafts are
     // deterministic, so there is no draft distribution to resample from).
-    let cpu_logits: Vec<f32> = if temperature > 0.0 {
+    let cpu_logits: Vec<f32> = if sampling.temperature > 0.0 {
         logits_all.data_f32().to_vec()
     } else {
         Vec::new()
@@ -972,7 +965,7 @@ fn verify_draft(
             accept_count += 1;
         } else {
             // Correction token: sample at position i with temperature.
-            let tok = sample_pos(&cpu_logits, predicted[i], i, vocab, temperature, rng);
+            let tok = sample_pos(&cpu_logits, predicted[i], i, vocab, sampling, rng);
             result.push(tok);
             break;
         }
@@ -981,7 +974,7 @@ fn verify_draft(
     // Bonus: if ALL draft tokens were accepted, sample the next token for free.
     if accept_count == draft.len() {
         let pos = draft.len();
-        let tok = sample_pos(&cpu_logits, predicted[pos], pos, vocab, temperature, rng);
+        let tok = sample_pos(&cpu_logits, predicted[pos], pos, vocab, sampling, rng);
         result.push(tok);
     }
 
@@ -1020,10 +1013,10 @@ fn sample_pos(
     argmax_tok: u32,
     pos: usize,
     vocab: usize,
-    temperature: f32,
+    sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> u32 {
-    if temperature <= 0.0 || cpu_logits.is_empty() {
+    if sampling.temperature <= 0.0 || cpu_logits.is_empty() {
         return argmax_tok;
     }
     let start = pos * vocab;
@@ -1031,7 +1024,7 @@ fn sample_pos(
     if end > cpu_logits.len() {
         return argmax_tok;
     }
-    sample_categorical(&cpu_logits[start..end], temperature, rng)
+    sample_categorical(&cpu_logits[start..end], sampling, rng)
 }
 
 /// Single-token decode fallback (used when n-gram table has no prediction).
@@ -1043,18 +1036,11 @@ pub fn single_decode(
     cache: &mut MlxKVCache,
     ngram: &mut NgramTable,
     last_token: u32,
-    temperature: f32,
+    sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> Vec<u32> {
     single_decode_with_turboquant_context(
-        cfg,
-        weights,
-        cache,
-        ngram,
-        last_token,
-        temperature,
-        rng,
-        None,
+        cfg, weights, cache, ngram, last_token, sampling, rng, None,
     )
 }
 
@@ -1065,7 +1051,7 @@ pub fn single_decode_with_turboquant_context(
     cache: &mut MlxKVCache,
     ngram: &mut NgramTable,
     last_token: u32,
-    temperature: f32,
+    sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> Vec<u32> {
@@ -1081,12 +1067,12 @@ pub fn single_decode_with_turboquant_context(
     cache.seq_len += 1;
 
     let kv_refs = cache.collect_eval_refs();
-    let tok = if temperature > 0.0 {
+    let tok = if sampling.temperature > 0.0 {
         let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
         targets.push(&logits);
         targets.extend(kv_refs);
         eval(&targets);
-        sample_categorical(logits.data_f32(), temperature, rng)
+        sample_categorical(logits.data_f32(), sampling, rng)
     } else {
         let token_arr = argmax(&logits, None);
         let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
