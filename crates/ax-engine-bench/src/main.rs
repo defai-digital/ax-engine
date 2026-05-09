@@ -548,11 +548,12 @@ fn path_string(path: &Path) -> String {
 
 fn handle_doctor(args: &[String]) -> Result<(), CliError> {
     let doctor_args = parse_doctor_args(args)?;
-    let report = build_doctor_report_for_model(
+    let mut report = build_doctor_report_for_model(
         current_host_report(),
         current_metal_toolchain_report(),
         doctor_args.mlx_model_artifacts_dir.as_deref(),
     );
+    report.workflow = detect_doctor_workflow_report()?;
 
     if doctor_args.json {
         let json = serde_json::to_string_pretty(&report).map_err(|error| {
@@ -1373,11 +1374,65 @@ struct DoctorReport {
     status: DoctorStatus,
     mlx_runtime_ready: bool,
     bringup_allowed: bool,
+    workflow: DoctorWorkflowReport,
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
     issues: Vec<String>,
     notes: Vec<String>,
     performance_advice: Vec<DoctorAdvice>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DoctorWorkflowMode {
+    Unknown,
+    SourceCheckout,
+    InstalledTools,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct DoctorWorkflowReport {
+    mode: DoctorWorkflowMode,
+    cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_root: Option<String>,
+    doctor: DoctorWorkflowCommand,
+    server: DoctorWorkflowCommand,
+    generate_manifest: DoctorWorkflowCommand,
+    benchmark: DoctorWorkflowCommand,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    download_model: Option<DoctorWorkflowCommand>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct DoctorWorkflowCommand {
+    argv: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
+}
+
+impl DoctorWorkflowCommand {
+    fn new(argv: &[&str], cwd: Option<&Path>) -> Self {
+        Self {
+            argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
+            cwd: cwd.map(path_string),
+        }
+    }
+}
+
+impl DoctorWorkflowReport {
+    fn unknown() -> Self {
+        Self {
+            mode: DoctorWorkflowMode::Unknown,
+            cwd: String::new(),
+            source_root: None,
+            doctor: DoctorWorkflowCommand::new(&[], None),
+            server: DoctorWorkflowCommand::new(&[], None),
+            generate_manifest: DoctorWorkflowCommand::new(&[], None),
+            benchmark: DoctorWorkflowCommand::new(&[], None),
+            download_model: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1452,6 +1507,122 @@ fn metal_build_tool_status(tool: &ToolStatusReport) -> MetalBuildToolStatus {
     }
 }
 
+fn detect_doctor_workflow_report() -> Result<DoctorWorkflowReport, CliError> {
+    let cwd = env::current_dir().map_err(|error| {
+        CliError::Runtime(format!(
+            "failed to resolve current working directory for workflow discovery: {error}"
+        ))
+    })?;
+    Ok(doctor_workflow_report_for_cwd(&cwd))
+}
+
+fn doctor_workflow_report_for_cwd(cwd: &Path) -> DoctorWorkflowReport {
+    if let Some(source_root) = find_source_checkout_root(cwd) {
+        return DoctorWorkflowReport {
+            mode: DoctorWorkflowMode::SourceCheckout,
+            cwd: path_string(cwd),
+            source_root: Some(path_string(&source_root)),
+            doctor: DoctorWorkflowCommand::new(
+                &[
+                    "cargo",
+                    "run",
+                    "-p",
+                    "ax-engine-bench",
+                    "--",
+                    "doctor",
+                    "--json",
+                ],
+                Some(&source_root),
+            ),
+            server: DoctorWorkflowCommand::new(
+                &["cargo", "run", "-p", "ax-engine-server", "--"],
+                Some(&source_root),
+            ),
+            generate_manifest: DoctorWorkflowCommand::new(
+                &[
+                    "cargo",
+                    "run",
+                    "-p",
+                    "ax-engine-bench",
+                    "--",
+                    "generate-manifest",
+                    "<model-dir>",
+                    "--json",
+                ],
+                Some(&source_root),
+            ),
+            benchmark: DoctorWorkflowCommand::new(
+                &[
+                    "cargo",
+                    "run",
+                    "-p",
+                    "ax-engine-bench",
+                    "--",
+                    "scenario",
+                    "--manifest",
+                    "<manifest>",
+                    "--output-root",
+                    "<output-root>",
+                    "--json",
+                ],
+                Some(&source_root),
+            ),
+            download_model: Some(DoctorWorkflowCommand::new(
+                &[
+                    "python3",
+                    "scripts/download_model.py",
+                    "<repo-id>",
+                    "--json",
+                ],
+                Some(&source_root),
+            )),
+        };
+    }
+
+    DoctorWorkflowReport {
+        mode: DoctorWorkflowMode::InstalledTools,
+        cwd: path_string(cwd),
+        source_root: None,
+        doctor: DoctorWorkflowCommand::new(&["ax-engine-bench", "doctor", "--json"], None),
+        server: DoctorWorkflowCommand::new(&["ax-engine-server"], None),
+        generate_manifest: DoctorWorkflowCommand::new(
+            &[
+                "ax-engine-bench",
+                "generate-manifest",
+                "<model-dir>",
+                "--json",
+            ],
+            None,
+        ),
+        benchmark: DoctorWorkflowCommand::new(
+            &[
+                "ax-engine-bench",
+                "scenario",
+                "--manifest",
+                "<manifest>",
+                "--output-root",
+                "<output-root>",
+                "--json",
+            ],
+            None,
+        ),
+        download_model: None,
+    }
+}
+
+fn find_source_checkout_root(cwd: &Path) -> Option<PathBuf> {
+    cwd.ancestors()
+        .find(|candidate| is_source_checkout_root(candidate))
+        .map(Path::to_path_buf)
+}
+
+fn is_source_checkout_root(path: &Path) -> bool {
+    path.join("Cargo.toml").is_file()
+        && path.join("scripts/download_model.py").is_file()
+        && path.join("crates/ax-engine-server/Cargo.toml").is_file()
+        && path.join("crates/ax-engine-bench/Cargo.toml").is_file()
+}
+
 fn metal_build_status_label(status: MetalBuildStatus) -> &'static str {
     match status {
         MetalBuildStatus::Unknown => "unknown",
@@ -1515,6 +1686,7 @@ fn build_doctor_report_with_mlx_model_artifacts(
         status,
         mlx_runtime_ready,
         bringup_allowed,
+        workflow: DoctorWorkflowReport::unknown(),
         host: host.clone(),
         metal_toolchain: metal_toolchain.clone(),
         issues: doctor_issues(&host, &metal_toolchain),
@@ -1793,6 +1965,34 @@ fn render_doctor_report(report: &DoctorReport) -> String {
         format!("status={}", report.status.as_str()),
         format!("mlx_runtime_ready={}", report.mlx_runtime_ready),
         format!("bringup_allowed={}", report.bringup_allowed),
+        format!(
+            "workflow.mode={}",
+            workflow_mode_label(report.workflow.mode)
+        ),
+        format!("workflow.cwd={}", report.workflow.cwd),
+        format!(
+            "workflow.source_root={}",
+            report.workflow.source_root.as_deref().unwrap_or("none")
+        ),
+        format!("workflow.doctor={}", command_text(&report.workflow.doctor)),
+        format!("workflow.server={}", command_text(&report.workflow.server)),
+        format!(
+            "workflow.generate_manifest={}",
+            command_text(&report.workflow.generate_manifest)
+        ),
+        format!(
+            "workflow.benchmark={}",
+            command_text(&report.workflow.benchmark)
+        ),
+        format!(
+            "workflow.download_model={}",
+            report
+                .workflow
+                .download_model
+                .as_ref()
+                .map(command_text)
+                .unwrap_or_else(|| "none".to_string())
+        ),
         format!("host.os={}", report.host.os),
         format!("host.arch={}", report.host.arch),
         format!(
@@ -1852,6 +2052,21 @@ fn render_doctor_report(report: &DoctorReport) -> String {
     }));
 
     lines.join("\n")
+}
+
+fn workflow_mode_label(mode: DoctorWorkflowMode) -> &'static str {
+    match mode {
+        DoctorWorkflowMode::Unknown => "unknown",
+        DoctorWorkflowMode::SourceCheckout => "source_checkout",
+        DoctorWorkflowMode::InstalledTools => "installed_tools",
+    }
+}
+
+fn command_text(command: &DoctorWorkflowCommand) -> String {
+    if command.argv.is_empty() {
+        return "none".to_string();
+    }
+    command.argv.join(" ")
 }
 
 fn required_string_flag(args: &[String], name: &str) -> Result<String, CliError> {
@@ -14630,6 +14845,76 @@ mod tests {
     }
 
     #[test]
+    fn doctor_workflow_detects_source_checkout_commands() {
+        let root = unique_test_dir("doctor-source-workflow");
+        let nested = root.join("crates/ax-engine-bench");
+        fs::create_dir_all(root.join("scripts")).expect("scripts dir should create");
+        fs::create_dir_all(&nested).expect("nested crate dir should create");
+        fs::create_dir_all(root.join("crates/ax-engine-server"))
+            .expect("server crate dir should create");
+        fs::write(root.join("Cargo.toml"), "[workspace]\n").expect("workspace toml should write");
+        fs::write(root.join("scripts/download_model.py"), "")
+            .expect("download script should write");
+        fs::write(
+            nested.join("Cargo.toml"),
+            "[package]\nname = \"ax-engine-bench\"\n",
+        )
+        .expect("bench toml should write");
+        fs::write(
+            root.join("crates/ax-engine-server/Cargo.toml"),
+            "[package]\nname = \"ax-engine-server\"\n",
+        )
+        .expect("server toml should write");
+
+        let report = doctor_workflow_report_for_cwd(&nested);
+
+        assert_eq!(report.mode, DoctorWorkflowMode::SourceCheckout);
+        assert_eq!(report.source_root, Some(path_string(&root)));
+        assert_eq!(
+            report.doctor.argv,
+            vec![
+                "cargo",
+                "run",
+                "-p",
+                "ax-engine-bench",
+                "--",
+                "doctor",
+                "--json"
+            ]
+        );
+        assert_eq!(
+            report.download_model.as_ref().map(|command| &command.argv),
+            Some(&vec![
+                "python3".to_string(),
+                "scripts/download_model.py".to_string(),
+                "<repo-id>".to_string(),
+                "--json".to_string()
+            ])
+        );
+
+        fs::remove_dir_all(root).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn doctor_workflow_uses_installed_tools_outside_source_checkout() {
+        let root = unique_test_dir("doctor-installed-workflow");
+        fs::create_dir_all(&root).expect("test dir should create");
+
+        let report = doctor_workflow_report_for_cwd(&root);
+
+        assert_eq!(report.mode, DoctorWorkflowMode::InstalledTools);
+        assert!(report.source_root.is_none());
+        assert_eq!(
+            report.doctor.argv,
+            vec!["ax-engine-bench", "doctor", "--json"]
+        );
+        assert_eq!(report.server.argv, vec!["ax-engine-server"]);
+        assert!(report.download_model.is_none());
+
+        fs::remove_dir_all(root).expect("test dir should clean up");
+    }
+
+    #[test]
     fn render_doctor_report_includes_status_and_issue_sections() {
         let host = doctor_host_fixture(false, true, Some("Apple M3 Max"));
         let toolchain = doctor_metal_toolchain_fixture(true, false, true);
@@ -14639,6 +14924,7 @@ mod tests {
 
         assert!(text.contains("AX Engine v4 doctor"));
         assert!(text.contains("status=not_ready"));
+        assert!(text.contains("workflow.mode=unknown"));
         assert!(text.contains("host.detected_soc=Apple M3 Max"));
         assert!(text.contains("issues:"));
         assert!(text.contains("notes:"));

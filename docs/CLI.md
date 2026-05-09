@@ -46,6 +46,12 @@ Add `--json` to `scenario`, `replay`, `matrix`, `compare`,
 with the written `result_dir`. This is the stable automation path for CI and
 TUI callers; the legacy text output remains available for shell use.
 
+`ax-engine-bench doctor --json` also reports workflow discovery. When run from a
+source checkout it points callers at `cargo run ...`, `scripts/download_model.py`,
+and the checkout root; outside a checkout it points callers at installed
+`ax-engine-bench` and `ax-engine-server` binaries. TUI code should use this
+contract instead of guessing Homebrew versus source mode from paths.
+
 Successful scenario and replay runs emit `manifest.json`, `environment.json`,
 `metrics.json`, `routes.json`, `trace.json`, and `summary.md`. Contract failures
 emit `contract_failure.json` plus `summary.md` instead of synthetic metrics.
