@@ -34,6 +34,11 @@ throughput baselines.
   selection, temporary paths, free-port allocation, and PID cleanup.
 - `check-scripts.sh`: fast script hygiene gate. It syntax-checks shell scripts,
   compiles Python scripts, and runs the MLX inference-stack contract tests.
+- `download_model.py`: general-purpose MLX model download helper. It downloads a
+  Hugging Face snapshot to `~/.cache/ax-engine/models/<repo-slug>` by default,
+  validates local model files, and generates the AX model manifest when
+  `ax-engine-bench` or Cargo is available. Use `--json` for automation and TUI
+  workflow integration.
 - `bench_mlx_inference_stack.py`: MLX model-inference comparison against
   `mlx_lm.benchmark`. It can pass through
   `--experimental-mlx-kv-compression turboquant-shadow` or

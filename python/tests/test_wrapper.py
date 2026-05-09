@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
+FAKE_MLX_MODEL_DIR = "/tmp/ax-engine-test-mlx-model"
 
 
 class FakeNativeSession:
@@ -657,7 +658,11 @@ class WrapperContractTests(unittest.TestCase):
             sys.path.remove(str(SOURCE_ROOT))
 
     def test_generate_converts_mlx_payload_to_dataclass(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_dense", mlx=True) as session:
+        with self.ax_engine.Session(
+            model_id="qwen3_dense",
+            mlx=True,
+            mlx_model_artifacts_dir=FAKE_MLX_MODEL_DIR,
+        ) as session:
             result = session.generate([1, 2, 3], max_output_tokens=2)
 
         self.assertEqual(result.request_id, 1)
@@ -676,6 +681,7 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(result.route.execution_plan, "phase1.qwen3_dense.paged_decode")
 
         native = FakeNativeSession.instances[-1]
+        self.assertEqual(native.mlx_model_artifacts_dir, FAKE_MLX_MODEL_DIR)
         self.assertEqual(native.generate_calls[0][0], [1, 2, 3])
         self.assertEqual(native.generate_calls[0][1]["max_output_tokens"], 2)
         self.assertTrue(native.closed)
@@ -750,6 +756,10 @@ class WrapperContractTests(unittest.TestCase):
         native = FakeNativeSession.instances[-1]
         self.assertEqual(native.mlx_model_artifacts_dir, "/tmp/mlx-model")
         self.assertEqual(runtime.selected_backend, "mlx")
+
+    def test_mlx_session_requires_model_artifact_dir_or_env(self) -> None:
+        with self.assertRaisesRegex(ValueError, "mlx=True requires mlx_model_artifacts_dir"):
+            self.ax_engine.Session(model_id="qwen3_dense", mlx=True)
 
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
@@ -930,7 +940,11 @@ class WrapperContractTests(unittest.TestCase):
         )
 
     def test_stepwise_controls_convert_native_payloads(self) -> None:
-        session = self.ax_engine.Session(model_id="qwen3_dense", mlx=True)
+        session = self.ax_engine.Session(
+            model_id="qwen3_dense",
+            mlx=True,
+            mlx_model_artifacts_dir=FAKE_MLX_MODEL_DIR,
+        )
 
         request_id = session.submit([1, 2, 3], max_output_tokens=2)
         initial = session.snapshot(request_id)
@@ -971,7 +985,11 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(native.cancelled, [11])
 
     def test_stream_generate_emits_request_step_and_response_events(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_dense", mlx=True) as session:
+        with self.ax_engine.Session(
+            model_id="qwen3_dense",
+            mlx=True,
+            mlx_model_artifacts_dir=FAKE_MLX_MODEL_DIR,
+        ) as session:
             events = list(session.stream_generate([1, 2, 3], max_output_tokens=2))
 
         self.assertEqual(
@@ -1024,7 +1042,11 @@ class WrapperContractTests(unittest.TestCase):
     def test_stream_generate_raises_when_request_never_terminates(self) -> None:
         self.ax_engine = import_wrapper_module(HungNativeSession)
 
-        with self.ax_engine.Session(model_id="qwen3_dense", mlx=True) as session:
+        with self.ax_engine.Session(
+            model_id="qwen3_dense",
+            mlx=True,
+            mlx_model_artifacts_dir=FAKE_MLX_MODEL_DIR,
+        ) as session:
             with self.assertRaisesRegex(
                 RuntimeError,
                 r"request 11 did not terminate within 258 steps",

@@ -107,6 +107,7 @@ fn run() -> Result<(), CliError> {
         "baseline" => handle_baseline(&remaining),
         "matrix" => handle_matrix(&remaining),
         "doctor" => handle_doctor(&remaining),
+        "generate-manifest" => handle_generate_manifest(&remaining),
         "metal-build" => handle_metal_build(&remaining),
         "help" | "--help" | "-h" => {
             println!("{}", usage());
@@ -426,6 +427,35 @@ fn handle_doctor(args: &[String]) -> Result<(), CliError> {
         println!("{}", render_doctor_report(&report));
     }
 
+    Ok(())
+}
+
+fn handle_generate_manifest(args: &[String]) -> Result<(), CliError> {
+    let model_dir = args.first().ok_or_else(|| {
+        CliError::Usage(
+            "Usage: ax-engine-bench generate-manifest <model-dir>\n\n\
+             Generates model-manifest.json for an MLX model snapshot. Required before \
+             ax-engine can load the model."
+                .to_string(),
+        )
+    })?;
+    let model_dir = std::path::PathBuf::from(model_dir);
+    if !model_dir.is_dir() {
+        return Err(CliError::Runtime(format!(
+            "model directory not found: {}",
+            model_dir.display()
+        )));
+    }
+    let manifest_path = model_dir.join(ax_engine_core::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    if manifest_path.exists() {
+        println!("manifest already exists: {}", manifest_path.display());
+        return Ok(());
+    }
+    let manifest = ax_engine_core::convert::convert_hf_model_dir(&model_dir)
+        .map_err(|e| CliError::Runtime(format!("error converting model: {e}")))?;
+    ax_engine_core::convert::write_manifest(&model_dir, &manifest)
+        .map_err(|e| CliError::Runtime(format!("error writing manifest: {e}")))?;
+    println!("wrote {}", manifest_path.display());
     Ok(())
 }
 
@@ -10401,6 +10431,7 @@ Usage:
   ax-engine-bench baseline --source <path> --name <name> --output-root <path>
   ax-engine-bench matrix --manifest <path> --output-root <path>
   ax-engine-bench doctor [--json] [--mlx-model-artifacts-dir <path>]
+  ax-engine-bench generate-manifest <model-dir>
   ax-engine-bench metal-build [--manifest <path>] [--output-dir <path>]
 "#;
 
@@ -14020,6 +14051,8 @@ mod tests {
                 is_moe: false,
                 is_hybrid_attention: false,
                 hybrid_full_attention_interval: None,
+                mla_kv_latent_dim: None,
+                moe_active_experts: None,
                 bindings_prepared: true,
                 buffers_bound: true,
                 buffer_count: 12,

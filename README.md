@@ -19,16 +19,30 @@ Install the released command-line tools and verify the local runtime contract:
 
 ```bash
 brew install defai-digital/ax-engine/ax-engine
+ax-engine-bench doctor
 ```
+
+Get a model and start the server:
 
 ```bash
-ax-engine-bench doctor
-ax-engine-server --help
+# Download an mlx-community model and generate its manifest in one step
+python scripts/download_model.py mlx-community/Qwen3-4B-4bit
+
+# Start the server
+ax-engine-server --mlx --mlx-model-artifacts-dir ~/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit --port 8080
 ```
 
-This verifies the released AX Engine tools. Running inference requires choosing
-a runtime path below: repo-owned MLX, delegated `mlx-lm`, or delegated
-`llama.cpp`.
+Or from Python (after `maturin develop` or `pip install ax-engine`):
+
+```python
+from ax_engine import download_model, Session
+path = download_model("mlx-community/Qwen3-4B-4bit")
+with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
+    print(s.generate([1, 2, 3], max_output_tokens=8).output_tokens)
+```
+
+`download_model()` downloads weights and auto-runs `ax-engine-bench generate-manifest`.
+See [Getting a Model](#getting-a-model) for all paths including raw HF checkpoints.
 
 ## Why AX Engine
 
@@ -167,8 +181,11 @@ files are present.
   AX prefill exceeds mlx-swift-lm by 2× on that architecture because the sparse
   MoE forward path dominates the runtime, not the GatedDelta layers.
 - **Raw HuggingFace weights**: ax-engine loads MLX community (pre-sanitized)
-  weights only. Raw HF checkpoints for hybrid models need norm-weight `+1.0` and
-  conv1d `moveaxis(2,1)` transformations that ax-engine does not apply on load.
+  weights only. For hybrid architectures (Qwen3.5, Qwen3-Next), loading an
+  unsanitized checkpoint now raises a hard error — norm weight mean is sampled at
+  load time and a clear remediation message is shown. Convert first with
+  `mlx_lm.convert`, or download a pre-sanitized model from mlx-community. See
+  [Getting a Model](#getting-a-model).
 - **N-gram acceleration rows**: effective-throughput measurements, not raw
   model-kernel speedups. The n-gram hit rate is prompt- and output-pattern
   dependent. Coding-shaped workloads with repeated local structure are the
@@ -406,20 +423,25 @@ The commands below use source-build paths. If you installed with Homebrew, use
 `./target/release/...`.
 
 ```bash
+# Download a model and generate its manifest
+python scripts/download_model.py mlx-community/Qwen3-4B-4bit
+# prints the local path when ready, e.g. ~/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit
+
 # HTTP inference server (repo-owned MLX runtime)
 ./target/release/ax-engine-server \
   --mlx \
-  --mlx-model-artifacts-dir /path/to/local/mlx-model \
+  --mlx-model-artifacts-dir ~/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit \
   --port 8080
+```
 
+```python
 # Python bindings (after maturin develop)
-python3 - <<'EOF'
 import ax_engine
-with ax_engine.Session(model_id='gemma4', mlx=True,
-        mlx_model_artifacts_dir='/path/to/local/mlx-model') as s:
+
+path = ax_engine.download_model("mlx-community/Qwen3-4B-4bit")
+with ax_engine.Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
     result = s.generate([1, 2, 3], max_output_tokens=32)
     print(result.output_tokens)
-EOF
 ```
 
 For an unsupported MLX text model that upstream `mlx-lm` can serve, keep AX
@@ -462,6 +484,60 @@ python3 scripts/bench_mlx_inference_stack.py \
 # Smoke checks
 bash scripts/check-server-preview.sh
 bash scripts/check-python-preview.sh
+```
+
+## Getting a Model
+
+ax-engine requires pre-sanitized MLX weights. The recommended source is
+[mlx-community](https://huggingface.co/mlx-community) — models there are already
+converted and validated. Loading an unsanitized raw HF checkpoint into a hybrid
+architecture (Qwen3.5, Qwen3-Next) raises a hard error at load time.
+
+### mlx-community model (recommended)
+
+`download_model()` and `scripts/download_model.py` download weights and auto-generate
+the required `model-manifest.json` in one step:
+
+```bash
+# Script (works with Homebrew install or source build)
+python scripts/download_model.py mlx-community/Qwen3-4B-4bit
+
+# For automation and future TUI integration, emit a parseable summary
+python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json
+
+# Python SDK
+from ax_engine import download_model
+path = download_model("mlx-community/Qwen3-4B-4bit")
+```
+
+If you already have `mlx_lm` installed, its download also lands in the standard HF
+cache that ax-engine can auto-discover:
+
+```bash
+python -m mlx_lm.generate --model mlx-community/Qwen3-4B-4bit --prompt "x" --max-tokens 1
+ax-engine-bench generate-manifest ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
+ax-engine-server --mlx --resolve-model-artifacts hf-cache --preset qwen3_dense --port 8080
+```
+
+### Raw HuggingFace checkpoint
+
+Raw checkpoints need sanitization before ax-engine can load them. Use `mlx_lm.convert`:
+
+```bash
+pip install mlx-lm
+mlx_lm.convert --hf-path <org/model> --mlx-path /path/to/dest -q --q-bits 4
+ax-engine-bench generate-manifest /path/to/dest
+ax-engine-server --mlx --mlx-model-artifacts-dir /path/to/dest --port 8080
+```
+
+### Manifest generation
+
+Both paths above require `model-manifest.json`. The download helpers generate it
+automatically. To run it directly:
+
+```bash
+ax-engine-bench generate-manifest /path/to/model      # Homebrew or built binary
+cargo run -p ax-engine-core --bin generate-manifest -- /path/to/model  # source
 ```
 
 ## Workspace

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterator
 
 from ._ax_engine import (
@@ -248,6 +250,19 @@ class Session:
         delegated_http_read_timeout_secs: int = 300,
         delegated_http_write_timeout_secs: int = 300,
     ) -> None:
+        if mlx and mlx_model_artifacts_dir is None:
+            if not os.environ.get("AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR"):
+                raise ValueError(
+                    "mlx=True requires mlx_model_artifacts_dir or the "
+                    "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR environment variable.\n\n"
+                    "To download a model:\n"
+                    "  from ax_engine import download_model\n"
+                    "  path = download_model('mlx-community/Qwen3-4B-4bit')\n"
+                    "  # then run: cargo run -p ax-engine-core --bin generate-manifest -- <path>\n"
+                    "  session = Session(mlx=True, mlx_model_artifacts_dir=str(path))\n\n"
+                    "Or use the download script:\n"
+                    "  python scripts/download_model.py mlx-community/Qwen3-4B-4bit"
+                )
         self._inner = _Session(
             model_id,
             deterministic=deterministic,
@@ -945,6 +960,126 @@ def _normalize_chat_message(message: ChatMessage | dict[str, str]) -> ChatMessag
     raise TypeError("chat messages must be ChatMessage instances or dicts with role/content")
 
 
+_MODEL_MANIFEST_FILE = "model-manifest.json"
+_IGNORE_PATTERNS = ["*.bin", "*.pt", "*.gguf", "*.msgpack", "flax_model*"]
+
+
+def download_model(
+    repo_id: str,
+    dest: str | Path | None = None,
+    *,
+    force: bool = False,
+) -> Path:
+    """Download an MLX model from Hugging Face Hub and generate its ax-engine manifest.
+
+    Downloads the model, then automatically tries to generate ``model-manifest.json``
+    via ``ax-engine-bench generate-manifest`` (installed) or ``cargo run`` (dev).
+    Prints a manual command if neither is available.
+
+    Args:
+        repo_id: HuggingFace repo id, e.g. ``"mlx-community/Qwen3-4B-4bit"``.
+        dest: Destination directory. Defaults to ``~/.cache/ax-engine/models/<repo-slug>``.
+        force: Re-download even if already present.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise ImportError(
+            "huggingface_hub is required for download_model(). Install it with:\n"
+            "  pip install huggingface_hub"
+        ) from exc
+
+    if dest is None:
+        slug = repo_id.replace("/", "--")
+        dest = Path.home() / ".cache" / "ax-engine" / "models" / slug
+    dest = Path(dest)
+
+    if dest.exists() and not force:
+        safetensors = list(dest.glob("*.safetensors"))
+        if safetensors and (dest / _MODEL_MANIFEST_FILE).exists():
+            return dest
+        if safetensors:
+            if not _try_generate_manifest(dest):
+                _print_manifest_reminder(dest)
+            return dest
+
+    dest.mkdir(parents=True, exist_ok=True)
+    snapshot_download(
+        repo_id=repo_id,
+        local_dir=str(dest),
+        ignore_patterns=_IGNORE_PATTERNS,
+    )
+
+    if not (dest / _MODEL_MANIFEST_FILE).exists():
+        if not _try_generate_manifest(dest):
+            _print_manifest_reminder(dest)
+
+    return dest
+
+
+def _try_generate_manifest(dest: Path) -> bool:
+    """Try to run generate-manifest via installed bench binary or cargo. Returns True on success."""
+    import shutil
+    import subprocess
+
+    # Prefer the installed ax-engine-bench binary (works for Homebrew users).
+    if shutil.which("ax-engine-bench"):
+        result = subprocess.run(
+            ["ax-engine-bench", "generate-manifest", str(dest)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
+            return True
+        # Non-zero but bench exists — show its error rather than silently falling back.
+        print(f"ax-engine-bench generate-manifest failed:\n{result.stderr.strip()}")
+        return False
+
+    # Dev environment fallback: cargo run (slow on first call but works).
+    if shutil.which("cargo"):
+        # Walk up from dest to find the workspace root (contains Cargo.toml with [workspace]).
+        candidate = Path(__file__).resolve()
+        repo_root = None
+        for parent in candidate.parents:
+            if (parent / "Cargo.toml").exists():
+                try:
+                    if "[workspace]" in (parent / "Cargo.toml").read_text():
+                        repo_root = parent
+                        break
+                except OSError:
+                    pass
+        if repo_root:
+            result = subprocess.run(
+                [
+                    "cargo", "run", "-q",
+                    "-p", "ax-engine-core",
+                    "--bin", "generate-manifest",
+                    "--", str(dest),
+                ],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
+                return True
+
+    return False
+
+
+def _print_manifest_reminder(dest: Path) -> None:
+    print(
+        f"\nDownloaded to: {dest}\n"
+        "Generate the ax-engine manifest manually:\n"
+        f"  ax-engine-bench generate-manifest {dest}\n"
+        "or (from source):\n"
+        f"  cargo run -p ax-engine-core --bin generate-manifest -- {dest}\n"
+        "\nThen create a Session:\n"
+        f"  Session(mlx=True, mlx_model_artifacts_dir='{dest}')"
+    )
+
+
 __all__ = [
     "CapabilityReport",
     "ChatMessage",
@@ -965,4 +1100,5 @@ __all__ = [
     "RuntimeInfo",
     "Session",
     "StepReport",
+    "download_model",
 ]
