@@ -218,6 +218,9 @@ surface through better defaults, route metadata, and benchmark artifacts.
 - README/public performance claim validation now rejects unknown
   `public_claims`; new claim names must add an explicit evidence mapping and
   checker coverage first.
+- README/public performance claim validation now rejects `continuous_batching`
+  claims unless overlap classification evidence is positive and internally
+  consistent.
 
 #### Open
 

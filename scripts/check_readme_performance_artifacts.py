@@ -111,6 +111,16 @@ PREFIX_REUSE_COVERAGE_VALUES = {
     "blocked_only",
     "hit_and_miss_warmup",
 }
+OVERLAP_CLASSIFICATION_VALUES = {
+    "single_request_no_overlap",
+    "serialized",
+    "partial_overlap",
+    "overlapped",
+}
+POSITIVE_CONTINUOUS_BATCHING_CLASSIFICATIONS = {
+    "partial_overlap",
+    "overlapped",
+}
 
 
 class ArtifactCheckError(RuntimeError):
@@ -314,7 +324,16 @@ def validate_public_claim_evidence(
             raise ArtifactCheckError(
                 f"{artifact_path} claims {claim} without {evidence_key}"
             )
-        if claim == "prefix_reuse":
+        if claim == "continuous_batching":
+            validate_concurrent_prefill_overlap_classification(
+                artifact_path=artifact_path,
+                evidence=evidence,
+            )
+            if not evidence.get("continuous_batching_claim"):
+                raise ArtifactCheckError(
+                    f"{artifact_path} claims continuous_batching without positive overlap evidence"
+                )
+        elif claim == "prefix_reuse":
             validate_prefix_reuse_evidence_shape(
                 artifact_path=artifact_path,
                 evidence=evidence,
@@ -323,6 +342,35 @@ def validate_public_claim_evidence(
                 raise ArtifactCheckError(
                     f"{artifact_path} claims prefix_reuse without physical snapshot hit evidence"
                 )
+
+
+def validate_concurrent_prefill_overlap_classification(
+    *, artifact_path: Path, evidence: dict[str, Any]
+) -> None:
+    classification = evidence.get("classification")
+    if classification not in OVERLAP_CLASSIFICATION_VALUES:
+        raise ArtifactCheckError(
+            f"{artifact_path} concurrent prefill overlap classification is invalid"
+        )
+    claim = evidence.get("continuous_batching_claim")
+    if not isinstance(claim, bool):
+        raise ArtifactCheckError(
+            f"{artifact_path} concurrent prefill overlap continuous_batching_claim must be a boolean"
+        )
+    concurrency = evidence.get("concurrency")
+    if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency <= 0:
+        raise ArtifactCheckError(
+            f"{artifact_path} concurrent prefill overlap concurrency must be a positive integer"
+        )
+    expected_claim = classification in POSITIVE_CONTINUOUS_BATCHING_CLASSIFICATIONS
+    if claim != expected_claim:
+        raise ArtifactCheckError(
+            f"{artifact_path} concurrent prefill overlap claim is inconsistent with classification"
+        )
+    if classification == "single_request_no_overlap" and concurrency != 1:
+        raise ArtifactCheckError(
+            f"{artifact_path} single_request_no_overlap must use concurrency=1"
+        )
 
 
 def validate_prefix_reuse_evidence_shape(
@@ -405,10 +453,14 @@ def validate_phase0_artifact_gate(
     if not phase0_claim_gate_enabled(artifact):
         return
     overlap = artifact.get("concurrent_prefill_overlap_classification")
-    if not isinstance(overlap, dict) or not overlap.get("classification"):
+    if not isinstance(overlap, dict):
         raise ArtifactCheckError(
             f"{artifact_path} lacks concurrent prefill overlap classification"
         )
+    validate_concurrent_prefill_overlap_classification(
+        artifact_path=artifact_path,
+        evidence=overlap,
+    )
     prefix_reuse = artifact.get("prefix_reuse_evidence")
     if not isinstance(prefix_reuse, dict):
         raise ArtifactCheckError(f"{artifact_path} lacks prefix reuse evidence")

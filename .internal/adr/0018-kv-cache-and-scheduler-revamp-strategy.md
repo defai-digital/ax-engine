@@ -164,7 +164,9 @@ diagnostic evidence. The same validation recalculates coverage from the raw
 counters and rejects inconsistent flags, labels, blocked-reason totals, and
 negative counters. Unknown `public_claims` are rejected so new public
 performance claims must add an explicit evidence mapping before artifacts can
-advertise them.
+advertise them. `continuous_batching` is also fail-closed: serialized and
+single-request artifacts remain boundary evidence, while positive public claims
+must carry internally consistent positive overlap classification evidence.
 
 Only after evidence shows material warmup cost should AX consider an engine-runner
 coordination API for preflight physical-prefix availability.
