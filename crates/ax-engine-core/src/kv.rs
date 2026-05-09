@@ -65,9 +65,10 @@ struct CachedBlockKey {
     block_hash: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct CachedBlockEntry {
     block_id: BlockId,
+    block_tokens: Vec<u32>,
     parent_block_hash: Option<u64>,
     last_touch_tick: u64,
 }
@@ -590,12 +591,22 @@ impl KvManager {
             cached_token_count.div_euclid(self.config.block_size_tokens) as usize;
         let block_keys = self.full_block_keys(prompt_tokens, cached_block_count)?;
 
-        for ((cache_key, parent_block_hash), block_id) in
-            block_keys.into_iter().zip(table.block_ids.iter().copied())
+        let block_size_tokens = self.config.block_size_tokens as usize;
+        for (block_index, ((cache_key, parent_block_hash), block_id)) in block_keys
+            .into_iter()
+            .zip(table.block_ids.iter().copied())
+            .enumerate()
         {
+            let start = block_index * block_size_tokens;
+            let end = start + block_size_tokens;
+            let block_tokens = &prompt_tokens[start..end];
             let touch_tick = self.allocate_touch_tick();
             if let Some(entry) = self.cached_blocks.get_mut(&cache_key) {
-                entry.last_touch_tick = touch_tick;
+                if entry.block_tokens.as_slice() == block_tokens {
+                    entry.last_touch_tick = touch_tick;
+                } else {
+                    break;
+                }
                 continue;
             }
 
@@ -608,6 +619,7 @@ impl KvManager {
                 cache_key,
                 CachedBlockEntry {
                     block_id,
+                    block_tokens: block_tokens.to_vec(),
                     parent_block_hash,
                     last_touch_tick: touch_tick,
                 },
@@ -742,10 +754,20 @@ impl KvManager {
         let mut matched_blocks = Vec::new();
         let mut cached_block_keys = Vec::new();
 
-        for cache_key in self.full_block_key_sequence(prompt_tokens, full_block_count)? {
+        let block_size_tokens = self.config.block_size_tokens as usize;
+        for (block_index, cache_key) in self
+            .full_block_key_sequence(prompt_tokens, full_block_count)?
+            .into_iter()
+            .enumerate()
+        {
             let Some(entry) = self.cached_blocks.get(&cache_key) else {
                 break;
             };
+            let start = block_index * block_size_tokens;
+            let end = start + block_size_tokens;
+            if entry.block_tokens.as_slice() != &prompt_tokens[start..end] {
+                break;
+            }
             matched_blocks.push(entry.block_id);
             cached_block_keys.push(cache_key);
         }
@@ -1137,6 +1159,71 @@ mod tests {
         assert_eq!(second_free.released_blocks, vec![BlockId(1)]);
         assert_eq!(manager.used_block_count(), 1);
         assert_eq!(manager.available_block_count(), 3);
+    }
+
+    #[test]
+    fn cached_prefix_lookup_rejects_hash_collision_token_mismatch() {
+        let mut manager = make_manager(4, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4])
+            .unwrap();
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4])
+            .unwrap();
+        manager.allocate(RequestId(1), 4).unwrap();
+        manager.free(RequestId(1)).unwrap();
+
+        let cache_key = manager.full_block_key_sequence(&[1, 2, 3, 4], 1).unwrap()[0];
+        manager
+            .cached_blocks
+            .get_mut(&cache_key)
+            .expect("cached block")
+            .block_tokens = vec![9, 9, 9, 9];
+
+        let lookup = manager.lookup_prefix(RequestId(2), &[1, 2, 3, 4]).unwrap();
+
+        assert!(!lookup.hit);
+        assert_eq!(lookup.matched_blocks, Vec::<BlockId>::new());
+    }
+
+    #[test]
+    fn cache_promotion_stops_after_hash_collision_token_mismatch() {
+        let mut manager = make_manager(6, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+        manager.free(RequestId(1)).unwrap();
+
+        let keys = manager
+            .full_block_key_sequence(&[1, 2, 3, 4, 5, 6, 7, 8], 2)
+            .unwrap();
+        manager
+            .cached_blocks
+            .get_mut(&keys[0])
+            .expect("cached root block")
+            .block_tokens = vec![9, 9, 9, 9];
+        let child_touch_tick = manager
+            .cached_blocks
+            .get(&keys[1])
+            .expect("cached child block")
+            .last_touch_tick;
+
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager.allocate(RequestId(2), 8).unwrap();
+        manager.free(RequestId(2)).unwrap();
+
+        assert_eq!(
+            manager
+                .cached_blocks
+                .get(&keys[1])
+                .expect("cached child block")
+                .last_touch_tick,
+            child_touch_tick,
+            "descendant cache entries must not be refreshed after a parent hash collision"
+        );
     }
 
     #[test]
