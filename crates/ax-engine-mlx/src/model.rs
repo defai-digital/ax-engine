@@ -817,7 +817,14 @@ pub fn layer_forward_with_turboquant_context(
 
             let q = transpose(&q, &[0, 2, 1, 3], None);
             let k = transpose(&k, &[0, 2, 1, 3], None);
-            let v = prepare_value_bhsd(v, v_norm_no_scale, kv_heads, head_dim, seq);
+            let v = prepare_value_bhsd(
+                v,
+                v_norm_no_scale,
+                kv_heads,
+                head_dim,
+                seq,
+                cfg.rms_norm_eps,
+            );
 
             let q_rope = rope(
                 &q,
@@ -1304,7 +1311,7 @@ fn layer_forward_dense_embed(
 
     let q = transpose(&q, &[0, 2, 1, 3], None);
     let k = transpose(&k, &[0, 2, 1, 3], None);
-    let v = prepare_value_bhsd(v, v_norm_no_scale, kv_heads, head_dim, seq);
+    let v = prepare_value_bhsd(v, v_norm_no_scale, kv_heads, head_dim, seq, cfg.rms_norm_eps);
 
     let q_rope = rope(
         &q,
@@ -1667,18 +1674,24 @@ fn qk_norm_bshd(
 }
 
 /// Apply no-scale per-head RMS norm in BSHD [batch, seq, n_heads, head_dim] space.
-fn rms_norm_no_scale_bshd(x: MlxArray, n_heads: usize, head_dim: usize, seq: usize) -> MlxArray {
+fn rms_norm_no_scale_bshd(
+    x: MlxArray,
+    n_heads: usize,
+    head_dim: usize,
+    seq: usize,
+    eps: f32,
+) -> MlxArray {
     if use_flat_qk_norm_path() {
         let batch = x.shape()[0] as usize;
         let flat = reshape(&x, &[(batch * n_heads * seq) as i32, head_dim as i32], None);
-        let normed = rms_norm(&flat, None, 1e-6, None);
+        let normed = rms_norm(&flat, None, eps, None);
         return reshape(
             &normed,
             &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
             None,
         );
     }
-    rms_norm(&x, None, 1e-6, None)
+    rms_norm(&x, None, eps, None)
 }
 
 fn use_flat_qk_norm_path() -> bool {
@@ -1693,9 +1706,10 @@ fn prepare_value_bhsd(
     n_heads: usize,
     head_dim: usize,
     seq: usize,
+    eps: f32,
 ) -> MlxArray {
     let v = if v_norm_no_scale {
-        rms_norm_no_scale_bshd(v, n_heads, head_dim, seq)
+        rms_norm_no_scale_bshd(v, n_heads, head_dim, seq, eps)
     } else {
         v
     };
@@ -2660,17 +2674,20 @@ fn moe_router_gemma4(
     hidden: &MlxArray,
 ) -> (MlxArray, MlxArray) {
     let router_proj = w.router_proj.as_ref().unwrap();
-    let router_scale = w.router_scale.as_ref().unwrap();
-
-    let root_factor = 1.0_f32 / (cfg.hidden_size as f32).sqrt();
-    let scale_arr = MlxArray::from_raw_data(
-        &root_factor as *const f32 as *const u8,
-        std::mem::size_of::<f32>(),
-        &[1_i32],
-        MlxDtype::Float32,
-    );
-    let scale_arr = astype(&scale_arr, MlxDtype::Bfloat16, None);
-    let combined_scale = multiply(router_scale, &scale_arr, None);
+    let combined_scale = if let Some(precomputed) = &w.router_combined_scale {
+        precomputed.clone()
+    } else {
+        let router_scale = w.router_scale.as_ref().unwrap();
+        let root_factor = 1.0_f32 / (cfg.hidden_size as f32).sqrt();
+        let scale_arr = MlxArray::from_raw_data(
+            &root_factor as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1_i32],
+            MlxDtype::Float32,
+        );
+        let scale_arr = astype(&scale_arr, MlxDtype::Bfloat16, None);
+        multiply(router_scale, &scale_arr, None)
+    };
     let normed = rms_norm(hidden, Some(&combined_scale), cfg.rms_norm_eps, None);
 
     let expert_scores = qw(&normed, router_proj);
@@ -3570,6 +3587,7 @@ mod tests {
             router_proj: None,
             router_correction_bias: None,
             router_scale: None,
+            router_combined_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
             per_layer_gate: None,
@@ -3713,6 +3731,7 @@ mod tests {
             router_proj: None,
             router_correction_bias: None,
             router_scale: None,
+            router_combined_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
             per_layer_gate: None,
@@ -3810,6 +3829,7 @@ mod tests {
             router_proj: None,
             router_correction_bias: None,
             router_scale: None,
+            router_combined_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
             per_layer_gate: None,
@@ -4350,6 +4370,7 @@ mod tests {
             router_proj: None,
             router_correction_bias: None,
             router_scale: None,
+            router_combined_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
             per_layer_gate: None,
@@ -4441,6 +4462,7 @@ mod tests {
             router_proj: None,
             router_correction_bias: None,
             router_scale: None,
+            router_combined_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
             per_layer_gate: None,
@@ -4508,6 +4530,7 @@ mod tests {
             router_proj: None,
             router_correction_bias: None,
             router_scale: None,
+            router_combined_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
             per_layer_gate: None,
@@ -4575,6 +4598,7 @@ mod tests {
             router_proj: None,
             router_correction_bias: None,
             router_scale: None,
+            router_combined_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
             per_layer_gate: None,
@@ -4642,6 +4666,7 @@ mod tests {
             router_proj: None,
             router_correction_bias: None,
             router_scale: None,
+            router_combined_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
             per_layer_gate: None,
@@ -4752,6 +4777,7 @@ mod tests {
             router_proj: None,
             router_correction_bias: None,
             router_scale: None,
+            router_combined_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
             per_layer_gate: None,
@@ -4790,7 +4816,7 @@ mod tests {
     #[test]
     fn value_norm_keeps_cache_shape_bhsd() {
         let v = zeros(&[1, 3, 2, 4], MlxDtype::Float32, None);
-        let prepared = prepare_value_bhsd(v, true, 2, 4, 3);
+        let prepared = prepare_value_bhsd(v, true, 2, 4, 3, 1e-6);
 
         assert_eq!(prepared.shape(), vec![1, 2, 3, 4]);
     }

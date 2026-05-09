@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OUTDIR="benchmarks/results/mlx-inference/2026-05-09-q-slice-fix"
+BASELINE_DIR="benchmarks/results/mlx-inference/2026-05-08-ngram-fix"
+SCRIPT="scripts/bench_mlx_inference_stack.py"
+
+run_model() {
+    local slug="$1"
+    local model_dir="$2"
+    echo ""
+    echo "=========================================="
+    echo "  $slug"
+    echo "=========================================="
+    python3 "$SCRIPT" \
+        --model-dir "$model_dir" \
+        --prompt-tokens 128,512 \
+        --reuse-reference-results-from "$BASELINE_DIR/${slug}.json" \
+        --ax-compare-policies \
+        --output "$OUTDIR/${slug}.json" \
+        2>&1 | tee -a "$OUTDIR/run.log"
+}
+
+run_model gemma-4-e2b-it-4bit          .internal/models/gemma-4-e2b-it-4bit
+run_model gemma-4-e2b-it-5bit          .internal/models/gemma-4-e2b-it-5bit
+run_model gemma-4-e2b-it-6bit          .internal/models/gemma-4-e2b-it-6bit
+run_model gemma-4-e2b-it-8bit          .internal/models/gemma-4-e2b-it-8bit
+run_model gemma-4-e4b-it-4bit          .internal/models/gemma-4-e4b-it-4bit
+run_model gemma-4-26b-a4b-it-4bit      .internal/models/gemma-4-26b-a4b-it-4bit
+run_model gemma-4-31b-it-4bit          .internal/models/gemma-4-31b-it-4bit
+run_model qwen3_5-9b-mlx-4bit          .internal/models/Qwen3.5-9B-MLX-4bit
+run_model qwen3_6-35b-a3b-ud-mlx-4bit  .internal/models/Qwen3.6-35B-A3B-UD-MLX-4bit
+run_model qwen3_6-35b-a3b-5bit         .internal/models/Qwen3.6-35B-A3B-5bit
+run_model qwen3_6-35b-a3b-6bit         .internal/models/Qwen3.6-35B-A3B-6bit
+run_model qwen3_6-35b-a3b-8bit         .internal/models/Qwen3.6-35B-A3B-8bit
+run_model qwen3-coder-next-4bit        .internal/models/Qwen3-Coder-Next-4bit
+run_model glm-4.7-flash-4bit           .internal/models/GLM-4.7-Flash-4bit
+
+echo ""
+echo "All models done."
