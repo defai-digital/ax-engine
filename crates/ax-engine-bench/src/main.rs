@@ -1375,6 +1375,7 @@ struct DoctorReport {
     mlx_runtime_ready: bool,
     bringup_allowed: bool,
     workflow: DoctorWorkflowReport,
+    model_artifacts: DoctorModelArtifactsReport,
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
     issues: Vec<String>,
@@ -1431,6 +1432,60 @@ impl DoctorWorkflowReport {
             generate_manifest: DoctorWorkflowCommand::new(&[], None),
             benchmark: DoctorWorkflowCommand::new(&[], None),
             download_model: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DoctorModelArtifactsStatus {
+    NotSelected,
+    Ready,
+    NotReady,
+}
+
+impl DoctorModelArtifactsStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotSelected => "not_selected",
+            Self::Ready => "ready",
+            Self::NotReady => "not_ready",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct DoctorModelArtifactsReport {
+    selected: bool,
+    status: DoctorModelArtifactsStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    exists: bool,
+    is_dir: bool,
+    config_present: bool,
+    manifest_present: bool,
+    safetensors_present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quantization: Option<DoctorQuantizationHint>,
+    issues: Vec<String>,
+}
+
+impl DoctorModelArtifactsReport {
+    fn not_selected() -> Self {
+        Self {
+            selected: false,
+            status: DoctorModelArtifactsStatus::NotSelected,
+            path: None,
+            exists: false,
+            is_dir: false,
+            config_present: false,
+            manifest_present: false,
+            safetensors_present: false,
+            model_type: None,
+            quantization: None,
+            issues: Vec::new(),
         }
     }
 }
@@ -1687,6 +1742,7 @@ fn build_doctor_report_with_mlx_model_artifacts(
         mlx_runtime_ready,
         bringup_allowed,
         workflow: DoctorWorkflowReport::unknown(),
+        model_artifacts: doctor_model_artifacts_report(mlx_model_artifacts_dir),
         host: host.clone(),
         metal_toolchain: metal_toolchain.clone(),
         issues: doctor_issues(&host, &metal_toolchain),
@@ -1740,6 +1796,87 @@ fn doctor_notes(host: &HostReport) -> Vec<String> {
     notes
 }
 
+fn doctor_model_artifacts_report(
+    mlx_model_artifacts_dir: Option<&Path>,
+) -> DoctorModelArtifactsReport {
+    let Some(path) = mlx_model_artifacts_dir else {
+        return DoctorModelArtifactsReport::not_selected();
+    };
+
+    let exists = path.exists();
+    let is_dir = path.is_dir();
+    let config_path = path.join("config.json");
+    let manifest_path = path.join("model-manifest.json");
+    let config_present = config_path.is_file();
+    let manifest_present = manifest_path.is_file();
+    let mut issues = Vec::new();
+    let mut model_type = None;
+    let mut quantization = None;
+    let mut safetensors_present = false;
+
+    if !exists {
+        issues.push(format!(
+            "model artifacts path does not exist: {}",
+            path.display()
+        ));
+    } else if !is_dir {
+        issues.push(format!(
+            "model artifacts path is not a directory: {}",
+            path.display()
+        ));
+    } else {
+        if !config_present {
+            issues.push("missing config.json".to_string());
+        }
+        if !manifest_present {
+            issues.push("missing model-manifest.json".to_string());
+        }
+
+        match dir_contains_safetensors(path) {
+            Ok(present) => {
+                safetensors_present = present;
+                if !present {
+                    issues.push("missing safetensors file".to_string());
+                }
+            }
+            Err(message) => issues.push(message),
+        }
+
+        if config_present {
+            match load_json_value(&config_path) {
+                Ok(config) => {
+                    model_type = doctor_config_string(&config, "model_type").map(str::to_string);
+                    quantization = doctor_config_quantization(&config);
+                    if model_type.is_none() {
+                        issues.push("missing model_type in config.json".to_string());
+                    }
+                }
+                Err(error) => issues.push(format!("config.json is not readable JSON: {error}")),
+            }
+        }
+    }
+
+    let status = if issues.is_empty() {
+        DoctorModelArtifactsStatus::Ready
+    } else {
+        DoctorModelArtifactsStatus::NotReady
+    };
+
+    DoctorModelArtifactsReport {
+        selected: true,
+        status,
+        path: Some(path_string(path)),
+        exists,
+        is_dir,
+        config_present,
+        manifest_present,
+        safetensors_present,
+        model_type,
+        quantization,
+        issues,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DoctorModelArtifactsHint {
     model_type: Option<String>,
@@ -1747,7 +1884,7 @@ struct DoctorModelArtifactsHint {
     path_label: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct DoctorQuantizationHint {
     mode: String,
     group_size: u32,
@@ -1851,6 +1988,22 @@ fn inspect_doctor_model_artifacts(path: &Path) -> Result<DoctorModelArtifactsHin
             .unwrap_or("")
             .to_ascii_lowercase(),
     })
+}
+
+fn dir_contains_safetensors(path: &Path) -> Result<bool, String> {
+    let entries = fs::read_dir(path).map_err(|error| {
+        format!(
+            "failed to read model artifacts directory {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(entries.flatten().any(|entry| {
+        entry
+            .path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+            == Some("safetensors")
+    }))
 }
 
 fn doctor_model_performance_advice(hint: &DoctorModelArtifactsHint) -> Vec<DoctorAdvice> {
@@ -1993,6 +2146,34 @@ fn render_doctor_report(report: &DoctorReport) -> String {
                 .map(command_text)
                 .unwrap_or_else(|| "none".to_string())
         ),
+        format!(
+            "model_artifacts.status={}",
+            report.model_artifacts.status.as_str()
+        ),
+        format!(
+            "model_artifacts.path={}",
+            report.model_artifacts.path.as_deref().unwrap_or("none")
+        ),
+        format!(
+            "model_artifacts.config_present={}",
+            report.model_artifacts.config_present
+        ),
+        format!(
+            "model_artifacts.manifest_present={}",
+            report.model_artifacts.manifest_present
+        ),
+        format!(
+            "model_artifacts.safetensors_present={}",
+            report.model_artifacts.safetensors_present
+        ),
+        format!(
+            "model_artifacts.model_type={}",
+            report
+                .model_artifacts
+                .model_type
+                .as_deref()
+                .unwrap_or("unknown")
+        ),
         format!("host.os={}", report.host.os),
         format!("host.arch={}", report.host.arch),
         format!(
@@ -2036,6 +2217,19 @@ fn render_doctor_report(report: &DoctorReport) -> String {
         lines.push("  - none".to_string());
     } else {
         lines.extend(report.issues.iter().map(|issue| format!("  - {issue}")));
+    }
+
+    lines.push("model_artifacts.issues:".to_string());
+    if report.model_artifacts.issues.is_empty() {
+        lines.push("  - none".to_string());
+    } else {
+        lines.extend(
+            report
+                .model_artifacts
+                .issues
+                .iter()
+                .map(|issue| format!("  - {issue}")),
+        );
     }
 
     lines.push("notes:".to_string());
@@ -13134,6 +13328,11 @@ mod tests {
             .expect("model manifest should write");
     }
 
+    fn write_doctor_safetensors(model_dir: &Path) {
+        fs::write(model_dir.join("model.safetensors"), b"placeholder")
+            .expect("safetensors marker should write");
+    }
+
     #[cfg(target_os = "macos")]
     #[allow(dead_code)]
     fn compiled_repo_metal_build_dir() -> Option<PathBuf> {
@@ -14842,6 +15041,103 @@ mod tests {
         assert!(report.mlx_runtime_ready);
         assert!(report.bringup_allowed);
         assert!(report.issues.is_empty());
+    }
+
+    #[test]
+    fn doctor_report_marks_model_artifacts_not_selected_by_default() {
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+        let report = build_doctor_report(host, toolchain);
+
+        assert_eq!(
+            report.model_artifacts.status,
+            DoctorModelArtifactsStatus::NotSelected
+        );
+        assert!(!report.model_artifacts.selected);
+        assert!(report.model_artifacts.path.is_none());
+    }
+
+    #[test]
+    fn doctor_report_surfaces_ready_model_artifacts() {
+        let root = unique_test_dir("doctor-ready-model-artifacts");
+        let model_dir = root.join("ready-mlx-snapshot");
+        fs::create_dir_all(&model_dir).expect("model dir should create");
+        fs::write(
+            model_dir.join("config.json"),
+            r#"{
+                "model_type": "qwen3",
+                "quantization": {
+                    "mode": "affine",
+                    "group_size": 64,
+                    "bits": 4
+                }
+            }"#,
+        )
+        .expect("config should write");
+        write_doctor_model_manifest(&model_dir);
+        write_doctor_safetensors(&model_dir);
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+        let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+        assert_eq!(
+            report.model_artifacts.status,
+            DoctorModelArtifactsStatus::Ready
+        );
+        assert!(report.model_artifacts.config_present);
+        assert!(report.model_artifacts.manifest_present);
+        assert!(report.model_artifacts.safetensors_present);
+        assert_eq!(report.model_artifacts.model_type.as_deref(), Some("qwen3"));
+        assert_eq!(
+            report
+                .model_artifacts
+                .quantization
+                .as_ref()
+                .map(|quantization| quantization.bits),
+            Some(4)
+        );
+        assert!(report.model_artifacts.issues.is_empty());
+
+        fs::remove_dir_all(root).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn doctor_report_surfaces_model_artifact_blockers() {
+        let root = unique_test_dir("doctor-model-artifact-blockers");
+        let model_dir = root.join("plain-mlx-snapshot");
+        fs::create_dir_all(&model_dir).expect("model dir should create");
+        fs::write(model_dir.join("config.json"), r#"{"model_type":"qwen3"}"#)
+            .expect("config should write");
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+        let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+        assert_eq!(
+            report.model_artifacts.status,
+            DoctorModelArtifactsStatus::NotReady
+        );
+        assert!(report.model_artifacts.config_present);
+        assert!(!report.model_artifacts.manifest_present);
+        assert!(!report.model_artifacts.safetensors_present);
+        assert!(
+            report
+                .model_artifacts
+                .issues
+                .iter()
+                .any(|issue| issue.contains("model-manifest.json"))
+        );
+        assert!(
+            report
+                .model_artifacts
+                .issues
+                .iter()
+                .any(|issue| issue.contains("safetensors"))
+        );
+
+        fs::remove_dir_all(root).expect("test dir should clean up");
     }
 
     #[test]

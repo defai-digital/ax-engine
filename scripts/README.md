@@ -48,6 +48,9 @@ throughput baselines.
 - `ax-engine-bench doctor --json`: readiness report plus workflow discovery for
   source-checkout versus installed-tools mode. TUI callers should use its
   command `argv` fields instead of reconstructing Cargo/Homebrew command lines.
+  With `--mlx-model-artifacts-dir`, the same JSON includes structured
+  `model_artifacts` readiness for config, manifest, safetensors, model type, and
+  quantization metadata.
 - `bench_mlx_inference_stack.py`: MLX model-inference comparison against
   `mlx_lm.benchmark`. It can pass through
   `--experimental-mlx-kv-compression turboquant-shadow` or
