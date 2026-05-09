@@ -179,6 +179,8 @@ def create_app(
                 max_output_tokens=int(payload["max_tokens"]),
                 temperature=float(payload.get("temperature", 0.0)),
                 top_p=float(payload.get("top_p", 1.0)),
+                top_k=int(payload.get("top_k", 0)),
+                repetition_penalty=float(payload.get("repetition_penalty", 1.0)),
                 seed=int(payload.get("seed", 0)),
                 metadata=payload.get("metadata"),
             )
@@ -226,6 +228,8 @@ def create_app(
                 max_output_tokens=int(payload["max_tokens"]),
                 temperature=float(payload.get("temperature", 0.0)),
                 top_p=float(payload.get("top_p", 1.0)),
+                top_k=int(payload.get("top_k", 0)),
+                repetition_penalty=float(payload.get("repetition_penalty", 1.0)),
                 seed=int(payload.get("seed", 0)),
                 metadata=payload.get("metadata"),
             )
@@ -304,6 +308,8 @@ def stream_completion_chunks(
             max_output_tokens=max_tokens,
             temperature=float(payload.get("temperature", 0.0)),
             top_p=float(payload.get("top_p", 1.0)),
+            top_k=int(payload.get("top_k", 0)),
+            repetition_penalty=float(payload.get("repetition_penalty", 1.0)),
             seed=int(payload.get("seed", 0)),
             metadata=payload.get("metadata"),
         ):
