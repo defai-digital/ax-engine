@@ -1,0 +1,129 @@
+{
+  "schema_version": "ax.embedding_bench.v1",
+  "timestamp": "2026-05-08T19:39:12.331571",
+  "model_dir": "/Users/akiralam/code/ax-engine-v4/.internal/models/qwen3-embedding-8b-4bit-dwq",
+  "model_label": "qwen3-embedding-8b-4bit-dwq",
+  "sentences": [
+    "The quick brown fox jumps over the lazy dog",
+    "AX Engine achieves 318 tokens per second on Apple M4",
+    "Apple Silicon on-chip memory bandwidth enables low-latency inference",
+    "What is the capital of France?",
+    "Hello world",
+    "Machine learning models require significant computational resources",
+    "Natural language processing enables computers to understand human text",
+    "The transformer architecture revolutionized deep learning",
+    "Embeddings capture semantic relationships between words and phrases",
+    "On-device inference preserves user privacy and reduces latency"
+  ],
+  "token_counts": [
+    10,
+    15,
+    13,
+    8,
+    3,
+    8,
+    10,
+    8,
+    10,
+    10
+  ],
+  "trials": 5,
+  "cooldown_s": 1.0,
+  "results": {
+    "mlx_lm": {
+      "engine": "mlx_lm",
+      "mean_ms_per_sentence": 29.553034163545817,
+      "median_ms_per_sentence": 29.576916701626033,
+      "stddev_ms_per_sentence": 0.24801077270317412,
+      "mean_tokens_per_sec": 321.47873461217137,
+      "median_tokens_per_sec": 321.19642814146766,
+      "trials": [
+        {
+          "ms_per_sentence": 29.86644160700962,
+          "tokens_per_sec": 318.0827540489578
+        },
+        {
+          "ms_per_sentence": 29.576916701626033,
+          "tokens_per_sec": 321.19642814146766
+        },
+        {
+          "ms_per_sentence": 29.7160042100586,
+          "tokens_per_sec": 319.69304933616667
+        },
+        {
+          "ms_per_sentence": 29.133991699200124,
+          "tokens_per_sec": 326.07958765433517
+        },
+        {
+          "ms_per_sentence": 29.47181659983471,
+          "tokens_per_sec": 322.3418538799295
+        }
+      ]
+    },
+    "ax_engine_py": {
+      "engine": "ax_engine_py",
+      "mean_ms_per_sentence": 34.12932163570076,
+      "median_ms_per_sentence": 34.35636659851298,
+      "stddev_ms_per_sentence": 0.5996715556789455,
+      "mean_tokens_per_sec": 278.43918701263004,
+      "median_tokens_per_sec": 276.5135240002702,
+      "trials": [
+        {
+          "ms_per_sentence": 34.35636659851298,
+          "tokens_per_sec": 276.5135240002702
+        },
+        {
+          "ms_per_sentence": 34.50800828868523,
+          "tokens_per_sec": 275.2984153859421
+        },
+        {
+          "ms_per_sentence": 33.37525409879163,
+          "tokens_per_sec": 284.64202764957986
+        },
+        {
+          "ms_per_sentence": 34.918841696344316,
+          "tokens_per_sec": 272.0594251840422
+        },
+        {
+          "ms_per_sentence": 33.48813749616966,
+          "tokens_per_sec": 283.68254284331584
+        }
+      ]
+    },
+    "mlx_swift": {
+      "engine": "mlx_swift",
+      "mean_ms_per_sentence": 29.57076072692871,
+      "median_ms_per_sentence": 29.597997665405273,
+      "stddev_ms_per_sentence": 0.24101512444521905,
+      "mean_tokens_per_sec": 321.28474320384896,
+      "median_tokens_per_sec": 320.96765826506527,
+      "trials": [
+        {
+          "ms_per_sentence": 29.788601398468018,
+          "peak_memory_gb": 3.9659710451960564,
+          "tokens_per_sec": 318.91393197428096
+        },
+        {
+          "ms_per_sentence": 29.597997665405273,
+          "peak_memory_gb": 3.9659710451960564,
+          "tokens_per_sec": 320.96765826506527
+        },
+        {
+          "ms_per_sentence": 29.161298274993896,
+          "peak_memory_gb": 3.9659710451960564,
+          "tokens_per_sec": 325.7742474431032
+        },
+        {
+          "ms_per_sentence": 29.478204250335693,
+          "peak_memory_gb": 3.9659710451960564,
+          "tokens_per_sec": 322.27200542216934
+        },
+        {
+          "ms_per_sentence": 29.827702045440674,
+          "peak_memory_gb": 3.9658184573054314,
+          "tokens_per_sec": 318.4958729146259
+        }
+      ]
+    }
+  }
+}

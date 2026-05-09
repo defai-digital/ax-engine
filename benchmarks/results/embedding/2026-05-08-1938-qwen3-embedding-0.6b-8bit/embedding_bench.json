@@ -1,0 +1,129 @@
+{
+  "schema_version": "ax.embedding_bench.v1",
+  "timestamp": "2026-05-08T19:38:18.563441",
+  "model_dir": "/Users/akiralam/code/ax-engine-v4/.internal/models/qwen3-embedding-0.6b-8bit",
+  "model_label": "qwen3-embedding-0.6b-8bit",
+  "sentences": [
+    "The quick brown fox jumps over the lazy dog",
+    "AX Engine achieves 318 tokens per second on Apple M4",
+    "Apple Silicon on-chip memory bandwidth enables low-latency inference",
+    "What is the capital of France?",
+    "Hello world",
+    "Machine learning models require significant computational resources",
+    "Natural language processing enables computers to understand human text",
+    "The transformer architecture revolutionized deep learning",
+    "Embeddings capture semantic relationships between words and phrases",
+    "On-device inference preserves user privacy and reduces latency"
+  ],
+  "token_counts": [
+    10,
+    15,
+    13,
+    8,
+    3,
+    8,
+    10,
+    8,
+    10,
+    10
+  ],
+  "trials": 5,
+  "cooldown_s": 1.0,
+  "results": {
+    "mlx_lm": {
+      "engine": "mlx_lm",
+      "mean_ms_per_sentence": 5.4289975157007575,
+      "median_ms_per_sentence": 5.276066693477333,
+      "stddev_ms_per_sentence": 0.2872167801794776,
+      "mean_tokens_per_sec": 1754.472732970208,
+      "median_tokens_per_sec": 1800.5837590613874,
+      "trials": [
+        {
+          "ms_per_sentence": 5.210124992299825,
+          "tokens_per_sec": 1823.3727624654475
+        },
+        {
+          "ms_per_sentence": 5.981520900968462,
+          "tokens_per_sec": 1588.2248273113723
+        },
+        {
+          "ms_per_sentence": 5.276066693477333,
+          "tokens_per_sec": 1800.5837590613874
+        },
+        {
+          "ms_per_sentence": 5.2397374995052814,
+          "tokens_per_sec": 1813.0679258067714
+        },
+        {
+          "ms_per_sentence": 5.437537492252886,
+          "tokens_per_sec": 1747.114390206062
+        }
+      ]
+    },
+    "ax_engine_py": {
+      "engine": "ax_engine_py",
+      "mean_ms_per_sentence": 5.944676660001278,
+      "median_ms_per_sentence": 5.976491700857878,
+      "stddev_ms_per_sentence": 0.11780991340892519,
+      "mean_tokens_per_sec": 1598.7103062190538,
+      "median_tokens_per_sec": 1589.5613138116382,
+      "trials": [
+        {
+          "ms_per_sentence": 5.990945897065103,
+          "tokens_per_sec": 1585.7262214058624
+        },
+        {
+          "ms_per_sentence": 5.721641599666327,
+          "tokens_per_sec": 1660.3626484668348
+        },
+        {
+          "ms_per_sentence": 5.976491700857878,
+          "tokens_per_sec": 1589.5613138116382
+        },
+        {
+          "ms_per_sentence": 6.07189160073176,
+          "tokens_per_sec": 1564.5865612711364
+        },
+        {
+          "ms_per_sentence": 5.962412501685321,
+          "tokens_per_sec": 1593.314786139797
+        }
+      ]
+    },
+    "mlx_swift": {
+      "engine": "mlx_swift",
+      "mean_ms_per_sentence": 5.805342197418213,
+      "median_ms_per_sentence": 5.974304676055908,
+      "stddev_ms_per_sentence": 0.2703231572362309,
+      "mean_tokens_per_sec": 1640.0752788565228,
+      "median_tokens_per_sec": 1590.1432074722495,
+      "trials": [
+        {
+          "ms_per_sentence": 6.064403057098389,
+          "peak_memory_gb": 0.5898544006049633,
+          "tokens_per_sec": 1566.518569190457
+        },
+        {
+          "ms_per_sentence": 6.015801429748535,
+          "peak_memory_gb": 0.5898544006049633,
+          "tokens_per_sec": 1579.174464273683
+        },
+        {
+          "ms_per_sentence": 5.5899977684021,
+          "peak_memory_gb": 0.5898544006049633,
+          "tokens_per_sec": 1699.4640058175862
+        },
+        {
+          "ms_per_sentence": 5.382204055786133,
+          "peak_memory_gb": 0.5898544006049633,
+          "tokens_per_sec": 1765.0761475286383
+        },
+        {
+          "ms_per_sentence": 5.974304676055908,
+          "peak_memory_gb": 0.5898544006049633,
+          "tokens_per_sec": 1590.1432074722495
+        }
+      ]
+    }
+  }
+}
