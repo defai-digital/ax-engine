@@ -1365,6 +1365,7 @@ pub fn forward_for_embedding(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
+    target_position: Option<usize>,
 ) -> MlxArray {
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
@@ -1374,7 +1375,22 @@ pub fn forward_for_embedding(
     for (li, layer_w) in weights.layers.iter().enumerate() {
         hidden = layer_forward_dense_embed(cfg, layer_w, &hidden, li);
     }
-    rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None)
+    // For Last/Cls pooling the caller knows which position it needs. Extract it
+    // before the final norm so we norm [1, 1, H] instead of [1, seq, H].
+    let to_norm = match target_position {
+        Some(pos) => {
+            let pos_u32 = pos as u32;
+            let idx = MlxArray::from_raw_data(
+                &pos_u32 as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+                &[1_i32],
+                MlxDtype::Uint32,
+            );
+            take(&hidden, &idx, 1, None)
+        }
+        None => hidden,
+    };
+    rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None)
 }
 
 /// Embed a flat token-id array and reshape to [batch, max_seq, hidden_size].
@@ -1397,13 +1413,20 @@ fn embed_tokens_batched(
 /// Batch stateless forward pass for dense-embedding extraction.
 ///
 /// Pads `batch_token_ids` to the longest sequence length, runs a single
-/// transformer forward pass for all sequences, and returns the normalized
-/// hidden states as `[batch, max_seq, hidden_size]` bfloat16 along with the
-/// actual (un-padded) length of each sequence.
+/// transformer forward pass for all sequences, and returns normalized hidden
+/// states along with the actual (un-padded) length of each sequence.
+///
+/// When `target_positions` is `Some`, each sequence's hidden state is extracted
+/// at its specified position *before* the final norm, so the norm runs on
+/// `[B, hidden_size]` instead of `[B, max_seq, hidden_size]`. Pass it for
+/// Last/Cls pooling; pass `None` for Mean pooling (which needs all positions).
+/// The returned array shape is `[B, hidden_size]` when positions are given, or
+/// `[B, max_seq, hidden_size]` otherwise.
 pub fn forward_for_embedding_batch(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     batch_token_ids: &[Vec<u32>],
+    target_positions: Option<&[usize]>,
 ) -> (MlxArray, Vec<usize>) {
     let actual_lens: Vec<usize> = batch_token_ids.iter().map(Vec::len).collect();
     let max_len = *actual_lens.iter().max().expect("non-empty batch");
@@ -1435,7 +1458,28 @@ pub fn forward_for_embedding_batch(
     for (li, layer_w) in weights.layers.iter().enumerate() {
         hidden = layer_forward_dense_embed(cfg, layer_w, &hidden, li);
     }
-    let out = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    // Extract per-sequence positions before the final norm when the caller only
+    // needs one token per sequence (Last/Cls pooling). This avoids norming the
+    // full padded [B, max_seq, H] tensor.
+    let to_norm = match target_positions {
+        Some(positions) => {
+            let batch_size = batch as i32;
+            let hidden_size = hidden.shape()[2] as usize;
+            let pos_u32: Vec<u32> = positions.iter().map(|&p| p as u32).collect();
+            let idx_b11 = MlxArray::from_raw_data(
+                pos_u32.as_ptr() as *const u8,
+                pos_u32.len() * std::mem::size_of::<u32>(),
+                &[batch_size, 1_i32, 1_i32],
+                MlxDtype::Uint32,
+            );
+            let idx_broadcast =
+                broadcast_to(&idx_b11, &[batch_size, 1_i32, hidden_size as i32], None);
+            let gathered = take_along_axis(&hidden, &idx_broadcast, 1, None); // [B, 1, H]
+            reshape(&gathered, &[batch_size, hidden_size as i32], None) // [B, H]
+        }
+        None => hidden,
+    };
+    let out = rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     (out, actual_lens)
 }
 
@@ -1886,8 +1930,8 @@ fn qkv_project(
             );
             (q, Some(gate))
         } else {
-            let q = mlx_slice_last_dim(&q_full, slices.q.0, slices.q.1);
-            (q, None)
+            // q_proj output is exactly [B, L, n_heads * head_dim] — no slice needed.
+            (q_full, None)
         };
         let k = qw(x, w.k_proj.as_ref().unwrap());
         let v = w
