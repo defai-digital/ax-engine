@@ -1,10 +1,11 @@
-use crate::app::{AppState, AppTab};
+use crate::app::{AppState, AppTab, ServerControlSelection};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
     NextTab,
     PreviousTab,
     SelectTab(AppTab),
+    SelectServerControl(ServerControlSelection),
     Quit,
 }
 
@@ -13,6 +14,7 @@ pub fn reduce(state: &mut AppState, action: Action) {
         Action::NextTab => state.next_tab(),
         Action::PreviousTab => state.previous_tab(),
         Action::SelectTab(tab) => state.select_tab(tab),
+        Action::SelectServerControl(selection) => state.select_server_control(selection),
         Action::Quit => state.should_quit = true,
     }
 }
@@ -32,6 +34,20 @@ mod tests {
 
         reduce(&mut state, Action::SelectTab(AppTab::Benchmarks));
         assert_eq!(state.selected_tab, AppTab::Benchmarks);
+
+        reduce(
+            &mut state,
+            Action::SelectServerControl(ServerControlSelection::Button(
+                crate::app::ServerControlButton::Start,
+            )),
+        );
+        assert_eq!(
+            state.server_control.selected,
+            Some(ServerControlSelection::Button(
+                crate::app::ServerControlButton::Start
+            ))
+        );
+        assert!(state.status_message.contains("server start"));
 
         reduce(&mut state, Action::Quit);
         assert!(state.should_quit);

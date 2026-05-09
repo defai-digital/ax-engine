@@ -50,6 +50,9 @@ ax-engine-server --mlx --mlx-model-artifacts-dir "$MODEL_DIR" --port 8080
 ax-engine-manager --model-dir "$MODEL_DIR" --server-url http://127.0.0.1:8080
 ```
 
+The TUI Server tab also shows the default `127.0.0.1:8080` target, full local
+endpoint URLs, and clickable preview controls for Start, Stop, and Restart.
+
 Or from Python (after `maturin develop` or `pip install ax-engine`):
 
 ```python
