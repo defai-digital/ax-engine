@@ -103,6 +103,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
 
     let attention_logit_softcap =
         arch_f64(&config, &model_type, "attn_logit_softcapping").and_then(f64_to_u32);
+    let rms_norm_eps = parse_rms_norm_eps(&config, &model_type);
     let linear_attention = linear_attention_config(&config, &model_type);
     let mla_attention = mla_attention_config(&config, &model_type);
     let glm_router = glm_router_config(&config, &model_type);
@@ -146,6 +147,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         attn_output_gate: arch_bool(&config, &model_type, "attn_output_gate")
             .unwrap_or(defaults_attn_output_gate(&model_type)),
         partial_rotary_factor,
+        rms_norm_eps,
         attention_value_from_key_layers,
         attention_v_norm_no_scale_layers: if model_type == "gemma4" {
             (0..arch.layer_count)
@@ -760,6 +762,13 @@ fn arch_f64(config: &serde_json::Value, model_type: &str, field: &str) -> Option
             None
         }
     })
+}
+
+fn parse_rms_norm_eps(config: &serde_json::Value, model_type: &str) -> Option<f32> {
+    ["rms_norm_eps", "rms_norm_epsilon", "layer_norm_epsilon"]
+        .into_iter()
+        .find_map(|field| arch_f64(config, model_type, field))
+        .map(|value| value as f32)
 }
 
 fn linear_attention_config(

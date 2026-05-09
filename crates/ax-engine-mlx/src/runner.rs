@@ -3567,6 +3567,7 @@ mod tests {
             attention_logit_softcap: None,
             attn_output_gate: false,
             partial_rotary_factor: None,
+            rms_norm_eps: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             global_head_dim: None,

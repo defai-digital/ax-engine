@@ -419,6 +419,10 @@ pub struct NativeModelManifest {
     pub attn_output_gate: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial_rotary_factor: Option<f32>,
+    /// Epsilon used by RMSNorm operations. When absent, runtimes may apply
+    /// architecture-specific compatibility defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rms_norm_eps: Option<f32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attention_value_from_key_layers: Vec<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -728,6 +732,13 @@ fn validate_native_model_manifest(
                 message: format!(
                     "partial_rotary_factor {factor} yields rotary_dim {rotary_dim} which must be even and > 0"
                 ),
+            });
+        }
+    }
+    if let Some(eps) = manifest.rms_norm_eps {
+        if !eps.is_finite() || eps <= 0.0 {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!("rms_norm_eps must be finite and > 0, got {eps}"),
             });
         }
     }
@@ -3032,6 +3043,7 @@ mod tests {
             attention_logit_softcap: None,
             attn_output_gate: false,
             partial_rotary_factor: None,
+            rms_norm_eps: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             global_head_dim: None,
@@ -3505,6 +3517,37 @@ mod tests {
         };
 
         assert!(message.contains("linear_attention.full_attention_interval"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_invalid_rms_norm_eps() {
+        for eps in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let (dir, mut manifest) =
+                write_fixture(packed_layer_manifest(), &["model.safetensors"]);
+            manifest.rms_norm_eps = Some(eps);
+
+            let error = NativeModelArtifacts::from_manifest_and_root(dir.clone(), manifest)
+                .expect_err("invalid rms_norm_eps should fail closed");
+            let NativeModelError::InvalidManifest { message } = error else {
+                panic!("expected invalid manifest error");
+            };
+            assert!(message.contains("rms_norm_eps must be finite and > 0"));
+
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_positive_rms_norm_eps() {
+        let mut manifest = packed_layer_manifest();
+        manifest.rms_norm_eps = Some(1e-5);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let artifacts =
+            NativeModelArtifacts::from_dir(&dir).expect("positive rms_norm_eps should validate");
+
+        assert_eq!(artifacts.manifest().rms_norm_eps, Some(1e-5));
         let _ = fs::remove_dir_all(dir);
     }
 

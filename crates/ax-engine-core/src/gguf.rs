@@ -579,6 +579,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
     let partial_rotary_factor = get_arch_uint("rope.dimension_count")
         .filter(|&dim| attention_head_dim > 0 && dim < attention_head_dim as u64)
         .map(|dim| dim as f32 / attention_head_dim as f32);
+    let rms_norm_eps = get_arch_float("attention.layer_norm_rms_epsilon").map(|v| v as f32);
 
     // --- Tensor mapping ---
     // Use a relative path: just the file name so resolve_tensor_path() works.
@@ -805,6 +806,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         attention_logit_softcap: None,
         attn_output_gate: false,
         partial_rotary_factor,
+        rms_norm_eps,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         global_head_dim: None,

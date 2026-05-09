@@ -574,13 +574,9 @@ impl ModelConfig {
             linear_attention: LinearAttentionConfig::from_manifest(m),
             glm_mla_attention: GlmMlaAttentionConfig::from_manifest(m),
             glm_router: GlmRouterConfig::from_manifest(m),
-            rms_norm_eps: if m.model_family.starts_with("qwen")
-                || m.model_family.starts_with("gemma")
-            {
-                1e-6
-            } else {
-                1e-5
-            },
+            rms_norm_eps: m
+                .rms_norm_eps
+                .unwrap_or_else(|| default_rms_norm_eps(&m.model_family)),
         }
     }
 
@@ -594,6 +590,14 @@ impl ModelConfig {
         self.glm_router
             .as_ref()
             .is_some_and(|router| router.is_moe_layer(layer_idx))
+    }
+}
+
+fn default_rms_norm_eps(model_family: &str) -> f32 {
+    if model_family.starts_with("qwen") || model_family.starts_with("gemma") {
+        1e-6
+    } else {
+        1e-5
     }
 }
 
@@ -3399,6 +3403,7 @@ mod tests {
             attention_logit_softcap: None,
             attn_output_gate: false,
             partial_rotary_factor: Some(0.25),
+            rms_norm_eps: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: vec![0],
             global_head_dim: Some(512),
@@ -3442,6 +3447,7 @@ mod tests {
             attention_logit_softcap: None,
             attn_output_gate: true,
             partial_rotary_factor: Some(0.25),
+            rms_norm_eps: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             global_head_dim: None,
@@ -3495,6 +3501,7 @@ mod tests {
             attention_logit_softcap: None,
             attn_output_gate: false,
             partial_rotary_factor: None,
+            rms_norm_eps: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             global_head_dim: None,
@@ -3863,6 +3870,7 @@ mod tests {
         let cfg = ModelConfig::from_manifest(&gemma4_interleaved_manifest());
 
         assert_eq!(cfg.query_scale, 1.0);
+        assert_eq!(cfg.rms_norm_eps, 1e-6);
         assert_eq!(cfg.layer_configs[0].head_dim, 256);
         assert_eq!(cfg.layer_configs[0].rope_theta, 10_000.0);
         assert_eq!(cfg.layer_configs[0].rope_dims, 256);
@@ -3881,6 +3889,7 @@ mod tests {
             .as_ref()
             .expect("linear attention config");
 
+        assert_eq!(cfg.rms_norm_eps, 1e-6);
         assert!(cfg.glm_mla_attention.is_none());
         assert!(cfg.glm_router.is_none());
         assert_eq!(linear.full_attention_interval, 4);
@@ -3891,6 +3900,16 @@ mod tests {
         assert!(cfg.is_linear_attention_layer(1));
         assert!(cfg.is_linear_attention_layer(2));
         assert!(!cfg.is_linear_attention_layer(3));
+    }
+
+    #[test]
+    fn model_config_uses_manifest_rms_norm_eps_when_present() {
+        let mut manifest = qwen35_linear_manifest();
+        manifest.rms_norm_eps = Some(5e-6);
+
+        let cfg = ModelConfig::from_manifest(&manifest);
+
+        assert_eq!(cfg.rms_norm_eps, 5e-6);
     }
 
     #[test]
@@ -3913,6 +3932,7 @@ mod tests {
         assert!((mla.query_scale - (1.0 / 256_f32.sqrt())).abs() < f32::EPSILON);
         assert_ne!(mla.query_scale, 1.0 / 576_f32.sqrt());
         assert_eq!(cfg.query_scale, mla.query_scale);
+        assert_eq!(cfg.rms_norm_eps, 1e-5);
     }
 
     #[test]
