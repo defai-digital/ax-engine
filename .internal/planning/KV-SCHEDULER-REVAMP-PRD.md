@@ -209,6 +209,9 @@ surface through better defaults, route metadata, and benchmark artifacts.
   `physical_snapshot_coverage` classification so zero-prefix, hit-only,
   miss-warmup, blocked-only, and hit-plus-miss-warmup artifacts are not
   conflated.
+- README/public performance claim validation now rejects `prefix_reuse` claims
+  unless the artifact has physical snapshot hit evidence; miss-warmup-only and
+  blocked-only artifacts remain diagnostics, not proof of physical reuse.
 
 #### Open
 

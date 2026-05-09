@@ -157,7 +157,10 @@ propagates those reason-specific counters into `prefix_reuse_evidence`, so
 artifact readers can distinguish eligible misses from unsupported or disabled
 physical snapshot paths. That summary now carries an explicit
 `physical_snapshot_coverage` label to prevent hit-only or zero-prefix artifacts
-from being read as complete physical prefix-cache evidence.
+from being read as complete physical prefix-cache evidence. Public performance
+claim validation now requires physical snapshot hit evidence before an artifact
+may claim `prefix_reuse`; miss-warmup-only and blocked-only artifacts remain
+diagnostic evidence.
 
 Only after evidence shows material warmup cost should AX consider an engine-runner
 coordination API for preflight physical-prefix availability.

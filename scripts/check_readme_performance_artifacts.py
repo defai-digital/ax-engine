@@ -86,6 +86,31 @@ PUBLIC_CLAIM_EVIDENCE = {
     "long_context_prefill_improvement": "long_context_prefill_evidence",
 }
 
+PREFIX_REUSE_EVIDENCE_COUNTERS = {
+    "hit_count",
+    "miss_count",
+    "blocked_count",
+    "stored_prefix_count",
+    "eviction_count",
+    "reused_token_count",
+    "warmup_token_count",
+    "cache_entry_count",
+    "cache_bytes_kib",
+    "blocked_policy_disabled_count",
+    "blocked_unsupported_layout_count",
+    "blocked_trim_failure_count",
+    "blocked_reason_count",
+    "blocked_reason_accounting_gap_count",
+}
+
+PREFIX_REUSE_COVERAGE_VALUES = {
+    "none_observed",
+    "hit_only",
+    "miss_warmup_only",
+    "blocked_only",
+    "hit_and_miss_warmup",
+}
+
 
 class ArtifactCheckError(RuntimeError):
     pass
@@ -283,11 +308,42 @@ def validate_public_claim_evidence(
                 f"{artifact_path} claims {claim} without {evidence_key}"
             )
         if claim == "prefix_reuse":
-            for counter in ("hit_count", "miss_count"):
-                if counter not in evidence:
-                    raise ArtifactCheckError(
-                        f"{artifact_path} prefix_reuse evidence lacks {counter}"
-                    )
+            validate_prefix_reuse_evidence_shape(
+                artifact_path=artifact_path,
+                evidence=evidence,
+            )
+            if not evidence.get("physical_snapshot_hit_observed"):
+                raise ArtifactCheckError(
+                    f"{artifact_path} claims prefix_reuse without physical snapshot hit evidence"
+                )
+
+
+def validate_prefix_reuse_evidence_shape(
+    *, artifact_path: Path, evidence: dict[str, Any]
+) -> None:
+    for counter in sorted(PREFIX_REUSE_EVIDENCE_COUNTERS):
+        if counter not in evidence:
+            raise ArtifactCheckError(
+                f"{artifact_path} prefix reuse evidence lacks {counter}"
+            )
+        if not isinstance(evidence[counter], int):
+            raise ArtifactCheckError(
+                f"{artifact_path} prefix reuse evidence {counter} must be an integer"
+            )
+    for flag in (
+        "physical_snapshot_hit_observed",
+        "physical_snapshot_miss_warmup_observed",
+        "physical_snapshot_blocked_observed",
+    ):
+        if not isinstance(evidence.get(flag), bool):
+            raise ArtifactCheckError(
+                f"{artifact_path} prefix reuse evidence {flag} must be a boolean"
+            )
+    coverage = evidence.get("physical_snapshot_coverage")
+    if coverage not in PREFIX_REUSE_COVERAGE_VALUES:
+        raise ArtifactCheckError(
+            f"{artifact_path} prefix reuse evidence has invalid physical_snapshot_coverage"
+        )
 
 
 def validate_phase0_artifact_gate(
@@ -303,9 +359,10 @@ def validate_phase0_artifact_gate(
     prefix_reuse = artifact.get("prefix_reuse_evidence")
     if not isinstance(prefix_reuse, dict):
         raise ArtifactCheckError(f"{artifact_path} lacks prefix reuse evidence")
-    for counter in ("hit_count", "miss_count"):
-        if counter not in prefix_reuse:
-            raise ArtifactCheckError(f"{artifact_path} prefix reuse evidence lacks {counter}")
+    validate_prefix_reuse_evidence_shape(
+        artifact_path=artifact_path,
+        evidence=prefix_reuse,
+    )
     validate_public_claim_evidence(artifact_path=artifact_path, artifact=artifact)
 
 

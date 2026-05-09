@@ -109,6 +109,12 @@ values such as `none_observed`, `hit_only`, `miss_warmup_only`, `blocked_only`,
 and `hit_and_miss_warmup`, so readers do not have to infer coverage from raw
 counters.
 
+The README performance provenance checker treats `prefix_reuse` as a public
+claim only when the artifact includes physical snapshot hit evidence. Artifacts
+classified as `none_observed`, `blocked_only`, or `miss_warmup_only` can still
+be useful diagnostics, but they do not prove a physical prefix-cache reuse
+claim.
+
 Long-context prefill and TTFT claims require a separate scaling artifact. For a
 fresh run, use the repo-owned wrapper:
 
