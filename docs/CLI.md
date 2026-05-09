@@ -7,6 +7,7 @@ AX Engine currently exposes three command surfaces:
 - `scripts/bench_mlx_inference_stack.py` for repo-owned MLX runtime
   model-inference comparison against MLX-family references.
 - `ax-engine-server` for the preview local HTTP adapter.
+- `ax-engine-manager` for the read-only Ratatui cockpit over those contracts.
 
 ## `ax-engine-bench`
 
@@ -71,6 +72,23 @@ emit `contract_failure.json` plus `summary.md` instead of synthetic metrics.
 `baseline`, `compare`, `matrix`, `matrix-compare`, and `autotune` build on
 those artifacts. They should only compare or tune results inside the same
 manifest/runtime family.
+
+## `ax-engine-manager`
+
+`ax-engine-manager` is the Phase 1 read-only TUI shell. It does not start
+downloads, benchmarks, or servers. It may run doctor, read existing JSON
+contracts, poll server metadata, and browse local artifact directories.
+
+```text
+ax-engine-manager --check
+ax-engine-manager --model-dir /path/to/model
+ax-engine-manager --server-url http://127.0.0.1:8080
+ax-engine-manager --doctor-json /path/to/doctor.json --artifact-root benchmarks/results
+```
+
+Run `bash scripts/check-cli-tui-phase1.sh` before extending the TUI. The check
+covers contract parsers, tab rendering snapshots, server polling against a local
+test HTTP server, non-interactive `--check`, and unsupported/missing-state UI.
 
 ## MLX Inference Stack
 

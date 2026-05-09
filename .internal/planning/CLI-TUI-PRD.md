@@ -270,6 +270,7 @@ Exit criteria:
 - `cargo test -p ax-engine-tui` passes;
 - terminal render snapshot tests cover major tabs;
 - unsupported or missing tools produce clear UI states.
+- `bash scripts/check-cli-tui-phase1.sh` passes before Phase 2 job-runner work.
 
 ### Phase 2: Local Job Runner
 

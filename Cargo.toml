@@ -6,6 +6,7 @@ members = [
     "crates/ax-engine-py",
     "crates/ax-engine-sdk",
     "crates/ax-engine-server",
+    "crates/ax-engine-tui",
     "crates/mlx-sys",
 ]
 resolver = "2"
