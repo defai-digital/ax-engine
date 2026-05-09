@@ -1,5 +1,6 @@
 #![allow(clippy::collapsible_if)]
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::env;
 use std::sync::Arc;
@@ -21,7 +22,8 @@ use axum::{Json, Router};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::time::{Instant, sleep_until};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -31,6 +33,8 @@ mod args;
 use args::{ServerArgs, render_presets};
 
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
+const DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS: u64 = 2;
+const DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH: usize = 32;
 
 #[derive(Clone)]
 struct AppState {
@@ -39,7 +43,39 @@ struct AppState {
     stateless_generate_context: Arc<StatelessGenerateContext>,
     runtime_report: RuntimeReport,
     request_session: Arc<Mutex<EngineSession>>,
+    embedding_batcher: Arc<EmbeddingMicroBatcher>,
     next_request_id: Arc<AtomicU64>,
+}
+
+#[derive(Clone)]
+struct EmbeddingMicroBatcher {
+    sender: mpsc::UnboundedSender<EmbeddingBatchItem>,
+}
+
+struct EmbeddingBatchItem {
+    input: Vec<u32>,
+    pooling: EmbeddingPooling,
+    normalize: bool,
+    response_tx: oneshot::Sender<Result<Vec<f32>, EngineSessionError>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct EmbeddingBatchKey {
+    pooling_code: u8,
+    normalize: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EmbeddingBatchRequestOptions {
+    pooling: EmbeddingPooling,
+    normalize: bool,
+}
+
+#[derive(Clone)]
+struct EmbeddingBatchRunItem {
+    input: Vec<u32>,
+    pooling: EmbeddingPooling,
+    normalize: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -445,13 +481,16 @@ fn build_app_state(
     let stateless_generate_context =
         StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
     let runtime_report = session.runtime_report();
+    let request_session = Arc::new(Mutex::new(session));
+    let embedding_batcher = EmbeddingMicroBatcher::spawn(request_session.clone());
 
     Ok(AppState {
         model_id: Arc::new(model_id),
         session_config: Arc::new(session_config),
         stateless_generate_context,
         runtime_report,
-        request_session: Arc::new(Mutex::new(session)),
+        request_session,
+        embedding_batcher,
         next_request_id: Arc::new(AtomicU64::new(1)),
     })
 }
@@ -557,13 +596,11 @@ async fn openai_embeddings(
 
     let token_count = request.input.len();
     let model_id = state.model_id.as_ref().clone();
-    let request_session = state.request_session.clone();
-    let embedding = run_blocking_session_task(move || {
-        request_session
-            .blocking_lock()
-            .embed(&request.input, pooling, normalize)
-    })
-    .await?;
+    let embedding = state
+        .embedding_batcher
+        .embed(request.input, pooling, normalize)
+        .await
+        .map_err(map_session_error)?;
 
     Ok(Json(OpenAiEmbeddingResponse {
         object: "list",
@@ -589,6 +626,226 @@ fn parse_embedding_pooling(pooling: Option<&str>) -> Result<EmbeddingPooling, St
             "unknown pooling strategy {other:?}; expected \"last\", \"mean\", or \"cls\""
         )),
     }
+}
+
+impl EmbeddingMicroBatcher {
+    fn spawn(request_session: Arc<Mutex<EngineSession>>) -> Arc<Self> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let batch_window = embedding_microbatch_window();
+        let max_batch = embedding_microbatch_max_batch();
+        tokio::spawn(run_embedding_microbatch_worker(
+            receiver,
+            request_session,
+            batch_window,
+            max_batch,
+        ));
+        Arc::new(Self { sender })
+    }
+
+    async fn embed(
+        &self,
+        input: Vec<u32>,
+        pooling: EmbeddingPooling,
+        normalize: bool,
+    ) -> Result<Vec<f32>, EngineSessionError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.sender
+            .send(EmbeddingBatchItem {
+                input,
+                pooling,
+                normalize,
+                response_tx,
+            })
+            .map_err(|_| EngineSessionError::EmbeddingFailed {
+                message: "embedding microbatch queue is unavailable",
+            })?;
+
+        response_rx
+            .await
+            .map_err(|_| EngineSessionError::EmbeddingFailed {
+                message: "embedding microbatch response channel closed",
+            })?
+    }
+}
+
+async fn run_embedding_microbatch_worker(
+    mut receiver: mpsc::UnboundedReceiver<EmbeddingBatchItem>,
+    request_session: Arc<Mutex<EngineSession>>,
+    batch_window: Duration,
+    max_batch: usize,
+) {
+    while let Some(first) = receiver.recv().await {
+        let batch =
+            collect_embedding_microbatch(&mut receiver, first, batch_window, max_batch).await;
+        let run_items: Vec<EmbeddingBatchRunItem> = batch
+            .iter()
+            .map(|item| EmbeddingBatchRunItem {
+                input: item.input.clone(),
+                pooling: item.pooling,
+                normalize: item.normalize,
+            })
+            .collect();
+        let responses = run_embedding_batch(request_session.clone(), run_items).await;
+        for (item, response) in batch.into_iter().zip(responses) {
+            let _ = item.response_tx.send(response);
+        }
+    }
+}
+
+async fn collect_embedding_microbatch(
+    receiver: &mut mpsc::UnboundedReceiver<EmbeddingBatchItem>,
+    first: EmbeddingBatchItem,
+    batch_window: Duration,
+    max_batch: usize,
+) -> Vec<EmbeddingBatchItem> {
+    let target = max_batch.max(1);
+    let mut batch = Vec::with_capacity(target);
+    batch.push(first);
+    if target == 1 {
+        return batch;
+    }
+
+    if batch_window.is_zero() {
+        while batch.len() < target {
+            match receiver.try_recv() {
+                Ok(item) => batch.push(item),
+                Err(_) => break,
+            }
+        }
+        return batch;
+    }
+
+    let deadline = Instant::now() + batch_window;
+    while batch.len() < target {
+        tokio::select! {
+            maybe = receiver.recv() => {
+                match maybe {
+                    Some(item) => batch.push(item),
+                    None => break,
+                }
+            }
+            _ = sleep_until(deadline) => break,
+        }
+    }
+
+    batch
+}
+
+async fn run_embedding_batch(
+    request_session: Arc<Mutex<EngineSession>>,
+    items: Vec<EmbeddingBatchRunItem>,
+) -> Vec<Result<Vec<f32>, EngineSessionError>> {
+    let groups = collect_embedding_batch_groups(
+        &items
+            .iter()
+            .map(|item| EmbeddingBatchRequestOptions {
+                pooling: item.pooling,
+                normalize: item.normalize,
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    let item_count = items.len();
+    match tokio::task::spawn_blocking(move || {
+        let session = request_session.blocking_lock();
+        let mut outputs: Vec<Option<Result<Vec<f32>, EngineSessionError>>> =
+            (0..item_count).map(|_| None).collect();
+
+        for (key, indices) in groups {
+            let pooling = pooling_from_code(key.pooling_code);
+            let batch_inputs: Vec<Vec<u32>> = indices
+                .iter()
+                .map(|index| items[*index].input.clone())
+                .collect();
+
+            match session.embed_batch(&batch_inputs, pooling, key.normalize) {
+                Ok(vectors) if vectors.len() == indices.len() => {
+                    for (index, vector) in indices.iter().copied().zip(vectors) {
+                        outputs[index] = Some(Ok(vector));
+                    }
+                }
+                Ok(_) | Err(_) => {
+                    // Fallback preserves per-request error behavior even if grouped execution fails.
+                    for index in indices {
+                        outputs[index] = Some(session.embed(
+                            &items[index].input,
+                            items[index].pooling,
+                            items[index].normalize,
+                        ));
+                    }
+                }
+            }
+        }
+
+        outputs
+            .into_iter()
+            .map(|value| {
+                value.unwrap_or(Err(EngineSessionError::EmbeddingFailed {
+                    message: "embedding microbatch output missing",
+                }))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    {
+        Ok(outputs) => outputs,
+        Err(_) => (0..item_count)
+            .map(|_| {
+                Err(EngineSessionError::EmbeddingFailed {
+                    message: "embedding microbatch worker failed",
+                })
+            })
+            .collect(),
+    }
+}
+
+fn collect_embedding_batch_groups(
+    options: &[EmbeddingBatchRequestOptions],
+) -> Vec<(EmbeddingBatchKey, Vec<usize>)> {
+    let mut grouped: BTreeMap<EmbeddingBatchKey, Vec<usize>> = BTreeMap::new();
+    for (index, option) in options.iter().enumerate() {
+        grouped
+            .entry(EmbeddingBatchKey {
+                pooling_code: pooling_code(option.pooling),
+                normalize: option.normalize,
+            })
+            .or_default()
+            .push(index);
+    }
+    grouped.into_iter().collect()
+}
+
+fn pooling_code(pooling: EmbeddingPooling) -> u8 {
+    match pooling {
+        EmbeddingPooling::Mean => 0,
+        EmbeddingPooling::Last => 1,
+        EmbeddingPooling::Cls => 2,
+    }
+}
+
+fn pooling_from_code(code: u8) -> EmbeddingPooling {
+    match code {
+        0 => EmbeddingPooling::Mean,
+        1 => EmbeddingPooling::Last,
+        _ => EmbeddingPooling::Cls,
+    }
+}
+
+fn embedding_microbatch_window() -> Duration {
+    let millis = env::var("AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS)
+        .min(100);
+    Duration::from_millis(millis)
+}
+
+fn embedding_microbatch_max_batch() -> usize {
+    env::var("AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH)
+        .clamp(1, 512)
 }
 
 async fn openai_completions(
@@ -2332,6 +2589,60 @@ sys.stdout.write(f"server::{prompt}")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .contains("unknown pooling strategy")
+        );
+    }
+
+    #[test]
+    fn embedding_microbatch_groups_requests_by_options() {
+        let groups = collect_embedding_batch_groups(&[
+            EmbeddingBatchRequestOptions {
+                pooling: EmbeddingPooling::Last,
+                normalize: true,
+            },
+            EmbeddingBatchRequestOptions {
+                pooling: EmbeddingPooling::Last,
+                normalize: true,
+            },
+            EmbeddingBatchRequestOptions {
+                pooling: EmbeddingPooling::Mean,
+                normalize: true,
+            },
+            EmbeddingBatchRequestOptions {
+                pooling: EmbeddingPooling::Last,
+                normalize: false,
+            },
+        ]);
+
+        assert_eq!(groups.len(), 3);
+        assert_eq!(
+            groups[0],
+            (
+                EmbeddingBatchKey {
+                    pooling_code: pooling_code(EmbeddingPooling::Mean),
+                    normalize: true
+                },
+                vec![2]
+            )
+        );
+        assert_eq!(
+            groups[1],
+            (
+                EmbeddingBatchKey {
+                    pooling_code: pooling_code(EmbeddingPooling::Last),
+                    normalize: false
+                },
+                vec![3]
+            )
+        );
+        assert_eq!(
+            groups[2],
+            (
+                EmbeddingBatchKey {
+                    pooling_code: pooling_code(EmbeddingPooling::Last),
+                    normalize: true
+                },
+                vec![0, 1]
+            )
         );
     }
 
