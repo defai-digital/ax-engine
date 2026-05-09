@@ -134,6 +134,23 @@ fn validate_glm_mla_append_inputs(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KvHeadSliceShape {
+    n_kv_heads: i32,
+    head_dim: i32,
+    capacity: usize,
+}
+
+impl KvHeadSliceShape {
+    fn from_layer(lkv: &LayerKV) -> Self {
+        Self {
+            n_kv_heads: lkv.n_kv_heads,
+            head_dim: lkv.head_dim,
+            capacity: lkv.capacity,
+        }
+    }
+}
+
 #[cfg(test)]
 fn kv_heads_for_token(lkv: &LayerKV, token_index: usize) -> Vec<FullPrecisionKvTokenVectors> {
     (0..lkv.n_kv_heads as usize)
@@ -149,12 +166,12 @@ fn kv_heads_for_token(lkv: &LayerKV, token_index: usize) -> Vec<FullPrecisionKvT
 fn kv_heads_for_token_from_f32_slices(
     k_values: &[f32],
     v_values: &[f32],
-    lkv: &LayerKV,
+    shape: KvHeadSliceShape,
     token_index: usize,
 ) -> Vec<FullPrecisionKvTokenVectors> {
-    (0..lkv.n_kv_heads as usize)
+    (0..shape.n_kv_heads as usize)
         .map(|head_index| {
-            kv_head_for_token_from_f32_slices(k_values, v_values, lkv, token_index, head_index)
+            kv_head_for_token_from_f32_slices(k_values, v_values, shape, token_index, head_index)
         })
         .collect()
 }
@@ -162,13 +179,13 @@ fn kv_heads_for_token_from_f32_slices(
 fn kv_head_for_token_from_f32_slices(
     k_values: &[f32],
     v_values: &[f32],
-    lkv: &LayerKV,
+    shape: KvHeadSliceShape,
     token_index: usize,
     head_index: usize,
 ) -> FullPrecisionKvTokenVectors {
     (
-        kv_vector_for_token_head_from_f32_slice(k_values, lkv, token_index, head_index),
-        kv_vector_for_token_head_from_f32_slice(v_values, lkv, token_index, head_index),
+        kv_vector_for_token_head_from_f32_slice(k_values, shape, token_index, head_index),
+        kv_vector_for_token_head_from_f32_slice(v_values, shape, token_index, head_index),
     )
 }
 
@@ -192,12 +209,12 @@ fn kv_vector_for_token_head(
 
 fn kv_vector_for_token_head_from_f32_slice(
     values: &[f32],
-    lkv: &LayerKV,
+    shape: KvHeadSliceShape,
     token_index: usize,
     head_index: usize,
 ) -> Vec<f32> {
-    let capacity = lkv.capacity;
-    let head_dim = lkv.head_dim as usize;
+    let capacity = shape.capacity;
+    let head_dim = shape.head_dim as usize;
     let base_element = head_index
         .saturating_mul(capacity)
         .saturating_add(token_index)
@@ -461,6 +478,14 @@ struct TurboQuantShadowLayerStorage {
     layout: TurboQuantBlockLayout,
     buffer: TurboQuantCompressedBlockBuffer,
     compressed_tokens: usize,
+}
+
+struct TurboQuantShadowSyncSource {
+    layer_idx: usize,
+    shape: KvHeadSliceShape,
+    compressed_tokens: usize,
+    k: MlxArray,
+    v: MlxArray,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -970,6 +995,7 @@ impl MlxKVCache {
             return TurboQuantShadowStorageUsage::default();
         };
 
+        let mut sync_sources = Vec::new();
         for layer_idx in 0..self.layers.len() {
             let Some(layout) = self.turboquant_shadow_layer_sync_layout(
                 layer_idx,
@@ -980,9 +1006,6 @@ impl MlxKVCache {
                 self.turboquant_shadow_layers[layer_idx] = None;
                 continue;
             };
-            let lkv = self.layers[layer_idx]
-                .as_ref()
-                .expect("TurboQuant sync layout requires layer KV storage");
 
             let reset_storage = self.turboquant_shadow_layers[layer_idx]
                 .as_ref()
@@ -996,25 +1019,59 @@ impl MlxKVCache {
                 });
             }
 
-            let storage = self.turboquant_shadow_layers[layer_idx]
-                .as_mut()
-                .expect("storage was just initialized");
-            if storage.compressed_tokens >= cold_tokens {
+            let compressed_tokens = self.turboquant_shadow_layers[layer_idx]
+                .as_ref()
+                .expect("storage was just initialized")
+                .compressed_tokens;
+            if compressed_tokens >= cold_tokens {
                 continue;
             }
 
-            let k_f32 =
-                (lkv.dtype != MlxDtype::Float32).then(|| astype(&lkv.k, MlxDtype::Float32, None));
-            let v_f32 =
-                (lkv.dtype != MlxDtype::Float32).then(|| astype(&lkv.v, MlxDtype::Float32, None));
-            let k_source = k_f32.as_ref().unwrap_or(&lkv.k);
-            let v_source = v_f32.as_ref().unwrap_or(&lkv.v);
-            eval(&[k_source, v_source]);
-            let k_values = k_source.data_f32();
-            let v_values = v_source.data_f32();
-            for token_index in storage.compressed_tokens..cold_tokens {
-                let heads =
-                    kv_heads_for_token_from_f32_slices(k_values, v_values, lkv, token_index);
+            let lkv = self.layers[layer_idx]
+                .as_ref()
+                .expect("TurboQuant sync layout requires layer KV storage");
+            let k = if lkv.dtype == MlxDtype::Float32 {
+                lkv.k.clone()
+            } else {
+                astype(&lkv.k, MlxDtype::Float32, None)
+            };
+            let v = if lkv.dtype == MlxDtype::Float32 {
+                lkv.v.clone()
+            } else {
+                astype(&lkv.v, MlxDtype::Float32, None)
+            };
+            sync_sources.push(TurboQuantShadowSyncSource {
+                layer_idx,
+                shape: KvHeadSliceShape::from_layer(lkv),
+                compressed_tokens,
+                k,
+                v,
+            });
+        }
+
+        if sync_sources.is_empty() {
+            return self.turboquant_shadow_storage_usage();
+        }
+
+        let eval_targets = sync_sources
+            .iter()
+            .flat_map(|source| [&source.k, &source.v])
+            .collect::<Vec<_>>();
+        eval(&eval_targets);
+
+        for source in sync_sources {
+            let storage = self.turboquant_shadow_layers[source.layer_idx]
+                .as_mut()
+                .expect("storage was just initialized");
+            let k_values = source.k.data_f32();
+            let v_values = source.v.data_f32();
+            for token_index in source.compressed_tokens..cold_tokens {
+                let heads = kv_heads_for_token_from_f32_slices(
+                    k_values,
+                    v_values,
+                    source.shape,
+                    token_index,
+                );
                 storage
                     .buffer
                     .write_token(token_index, &heads)
@@ -1302,6 +1359,7 @@ impl MlxKVCache {
         eval(&[k_source, v_source]);
         let k_values = k_source.data_f32();
         let v_values = v_source.data_f32();
+        let shape = KvHeadSliceShape::from_layer(lkv);
 
         let mut outputs = Vec::with_capacity(queries.len());
         for (query_head_index, query) in queries.iter().enumerate() {
@@ -1313,7 +1371,7 @@ impl MlxKVCache {
                     kv_head_for_token_from_f32_slices(
                         k_values,
                         v_values,
-                        lkv,
+                        shape,
                         token_index,
                         kv_head_index,
                     )
