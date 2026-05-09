@@ -392,6 +392,17 @@ curl http://127.0.0.1:8080/v1/embeddings \
   }'
 ```
 
+Embedding requests use a lightweight micro-batching worker by default. Multiple
+single-request `/v1/embeddings` calls that arrive within a short window are
+grouped and run through one `embed_batch` call when pooling and normalization
+options match. Tune it with:
+
+- `AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS` (default `2`)
+- `AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH` (default `32`)
+
+Set `AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH=1` to disable grouping for
+diagnostics.
+
 Submit a request into the shared preview session:
 
 ```text
