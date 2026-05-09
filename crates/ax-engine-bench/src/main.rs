@@ -36,6 +36,7 @@ const NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE: &str =
 const NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER: &str =
     "source_quantization_dequantized_dense_native_artifact";
 const GENERATE_MANIFEST_SCHEMA_VERSION: &str = "ax.generate_manifest.v1";
+const BENCHMARK_ARTIFACT_SCHEMA_VERSION: &str = "ax.benchmark_artifact.v1";
 
 fn main() -> ExitCode {
     init_tracing();
@@ -124,6 +125,7 @@ fn run() -> Result<(), CliError> {
 fn handle_scenario(args: &[String]) -> Result<(), CliError> {
     let manifest = required_flag(args, "--manifest")?;
     let output_root = required_flag(args, "--output-root")?;
+    let json = has_flag(args, "--json");
 
     require_existing_file(&manifest)?;
     ensure_output_root(&output_root)?;
@@ -142,12 +144,14 @@ fn handle_scenario(args: &[String]) -> Result<(), CliError> {
                 started_at_unix_s,
                 &message,
             )?;
-            println!(
-                "ax-engine-bench scenario\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus=contract_failure",
-                manifest.display(),
-                output_root.display(),
-                artifact_dir.display(),
+            let summary = BenchmarkArtifactSummary::manifest_run(
+                "scenario",
+                &manifest,
+                &output_root,
+                &artifact_dir,
+                "contract_failure",
             );
+            print_benchmark_artifact_summary(&summary, json)?;
             return Err(CliError::Contract(format!(
                 "{message}\nartifact_dir={}",
                 artifact_dir.display()
@@ -164,13 +168,14 @@ fn handle_scenario(args: &[String]) -> Result<(), CliError> {
         &execution,
     )?;
 
-    println!(
-        "ax-engine-bench scenario\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus={}",
-        manifest.display(),
-        output_root.display(),
-        artifact_dir.display(),
+    let summary = BenchmarkArtifactSummary::manifest_run(
+        "scenario",
+        &manifest,
+        &output_root,
+        &artifact_dir,
         execution.status_label(),
     );
+    print_benchmark_artifact_summary(&summary, json)?;
 
     enforce_runtime_gates(&execution)
 }
@@ -178,6 +183,7 @@ fn handle_scenario(args: &[String]) -> Result<(), CliError> {
 fn handle_replay(args: &[String]) -> Result<(), CliError> {
     let manifest = required_flag(args, "--manifest")?;
     let output_root = required_flag(args, "--output-root")?;
+    let json = has_flag(args, "--json");
 
     require_existing_file(&manifest)?;
     ensure_output_root(&output_root)?;
@@ -196,12 +202,14 @@ fn handle_replay(args: &[String]) -> Result<(), CliError> {
                 started_at_unix_s,
                 &message,
             )?;
-            println!(
-                "ax-engine-bench replay\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus=contract_failure",
-                manifest.display(),
-                output_root.display(),
-                artifact_dir.display(),
+            let summary = BenchmarkArtifactSummary::manifest_run(
+                "replay",
+                &manifest,
+                &output_root,
+                &artifact_dir,
+                "contract_failure",
             );
+            print_benchmark_artifact_summary(&summary, json)?;
             return Err(CliError::Contract(format!(
                 "{message}\nartifact_dir={}",
                 artifact_dir.display()
@@ -218,13 +226,14 @@ fn handle_replay(args: &[String]) -> Result<(), CliError> {
         &execution,
     )?;
 
-    println!(
-        "ax-engine-bench replay\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus={}",
-        manifest.display(),
-        output_root.display(),
-        artifact_dir.display(),
+    let summary = BenchmarkArtifactSummary::manifest_run(
+        "replay",
+        &manifest,
+        &output_root,
+        &artifact_dir,
         execution.status_label(),
     );
+    print_benchmark_artifact_summary(&summary, json)?;
 
     enforce_runtime_gates(&execution)
 }
@@ -333,6 +342,7 @@ fn handle_compare(args: &[String]) -> Result<(), CliError> {
     let baseline = required_flag(args, "--baseline")?;
     let candidate = required_flag(args, "--candidate")?;
     let output_root = required_flag(args, "--output-root")?;
+    let json = has_flag(args, "--json");
 
     require_existing_path(&baseline)?;
     require_existing_path(&candidate)?;
@@ -341,13 +351,14 @@ fn handle_compare(args: &[String]) -> Result<(), CliError> {
     ensure_output_root(&output_root)?;
     let comparison_dir = write_compare_artifacts(&baseline, &candidate, &output_root)?;
 
-    println!(
-        "ax-engine-bench compare\nbaseline={}\ncandidate={}\noutput_root={}\nresult_dir={}",
-        baseline.display(),
-        candidate.display(),
-        output_root.display(),
-        comparison_dir.display()
+    let summary = BenchmarkArtifactSummary::comparison(
+        "compare",
+        &baseline,
+        &candidate,
+        &output_root,
+        &comparison_dir,
     );
+    print_benchmark_artifact_summary(&summary, json)?;
     Ok(())
 }
 
@@ -355,19 +366,15 @@ fn handle_baseline(args: &[String]) -> Result<(), CliError> {
     let source = required_flag(args, "--source")?;
     let name = required_string_flag(args, "--name")?;
     let output_root = required_flag(args, "--output-root")?;
+    let json = has_flag(args, "--json");
 
     require_existing_dir(&source)?;
     reject_contract_failure_artifact_dir(&source, "source")?;
     ensure_output_root(&output_root)?;
     let baseline_dir = write_trusted_baseline_artifacts(&source, &name, &output_root)?;
 
-    println!(
-        "ax-engine-bench baseline\nsource={}\nname={}\noutput_root={}\nresult_dir={}",
-        source.display(),
-        name,
-        output_root.display(),
-        baseline_dir.display()
-    );
+    let summary = BenchmarkArtifactSummary::baseline(&source, &name, &output_root, &baseline_dir);
+    print_benchmark_artifact_summary(&summary, json)?;
     Ok(())
 }
 
@@ -375,25 +382,28 @@ fn handle_matrix_compare(args: &[String]) -> Result<(), CliError> {
     let baseline = required_flag(args, "--baseline")?;
     let candidate = required_flag(args, "--candidate")?;
     let output_root = required_flag(args, "--output-root")?;
+    let json = has_flag(args, "--json");
 
     require_existing_dir(&baseline)?;
     require_existing_dir(&candidate)?;
     ensure_output_root(&output_root)?;
     let comparison_dir = write_matrix_compare_artifacts(&baseline, &candidate, &output_root)?;
 
-    println!(
-        "ax-engine-bench matrix-compare\nbaseline={}\ncandidate={}\noutput_root={}\nresult_dir={}",
-        baseline.display(),
-        candidate.display(),
-        output_root.display(),
-        comparison_dir.display()
+    let summary = BenchmarkArtifactSummary::comparison(
+        "matrix-compare",
+        &baseline,
+        &candidate,
+        &output_root,
+        &comparison_dir,
     );
+    print_benchmark_artifact_summary(&summary, json)?;
     Ok(())
 }
 
 fn handle_matrix(args: &[String]) -> Result<(), CliError> {
     let manifest = required_flag(args, "--manifest")?;
     let output_root = required_flag(args, "--output-root")?;
+    let json = has_flag(args, "--json");
 
     require_existing_file(&manifest)?;
     ensure_output_root(&output_root)?;
@@ -401,14 +411,139 @@ fn handle_matrix(args: &[String]) -> Result<(), CliError> {
     validate_matrix_manifest(&matrix_manifest)?;
     let execution = execute_matrix_manifest(&manifest, &matrix_manifest, &output_root)?;
 
-    println!(
-        "ax-engine-bench matrix\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus={}",
-        manifest.display(),
-        output_root.display(),
-        execution.result_dir.display(),
-        execution.overall_status
+    let summary = BenchmarkArtifactSummary::manifest_run(
+        "matrix",
+        &manifest,
+        &output_root,
+        &execution.result_dir,
+        &execution.overall_status.to_string(),
     );
+    print_benchmark_artifact_summary(&summary, json)?;
     enforce_matrix_gates(&execution)
+}
+
+#[derive(Debug, Serialize)]
+struct BenchmarkArtifactSummary {
+    schema_version: &'static str,
+    command: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manifest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    candidate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    output_root: String,
+    result_dir: String,
+    status: String,
+}
+
+impl BenchmarkArtifactSummary {
+    fn manifest_run(
+        command: &'static str,
+        manifest: &Path,
+        output_root: &Path,
+        result_dir: &Path,
+        status: &str,
+    ) -> Self {
+        Self {
+            schema_version: BENCHMARK_ARTIFACT_SCHEMA_VERSION,
+            command,
+            manifest: Some(path_string(manifest)),
+            baseline: None,
+            candidate: None,
+            source: None,
+            name: None,
+            output_root: path_string(output_root),
+            result_dir: path_string(result_dir),
+            status: status.to_string(),
+        }
+    }
+
+    fn comparison(
+        command: &'static str,
+        baseline: &Path,
+        candidate: &Path,
+        output_root: &Path,
+        result_dir: &Path,
+    ) -> Self {
+        Self {
+            schema_version: BENCHMARK_ARTIFACT_SCHEMA_VERSION,
+            command,
+            manifest: None,
+            baseline: Some(path_string(baseline)),
+            candidate: Some(path_string(candidate)),
+            source: None,
+            name: None,
+            output_root: path_string(output_root),
+            result_dir: path_string(result_dir),
+            status: "written".to_string(),
+        }
+    }
+
+    fn baseline(source: &Path, name: &str, output_root: &Path, result_dir: &Path) -> Self {
+        Self {
+            schema_version: BENCHMARK_ARTIFACT_SCHEMA_VERSION,
+            command: "baseline",
+            manifest: None,
+            baseline: None,
+            candidate: None,
+            source: Some(path_string(source)),
+            name: Some(name.to_string()),
+            output_root: path_string(output_root),
+            result_dir: path_string(result_dir),
+            status: "written".to_string(),
+        }
+    }
+}
+
+fn print_benchmark_artifact_summary(
+    summary: &BenchmarkArtifactSummary,
+    json: bool,
+) -> Result<(), CliError> {
+    if json {
+        let json = serde_json::to_string_pretty(summary).map_err(|error| {
+            CliError::Runtime(format!(
+                "failed to serialize benchmark artifact summary: {error}"
+            ))
+        })?;
+        println!("{json}");
+    } else {
+        println!("{}", render_benchmark_artifact_summary(summary));
+    }
+    Ok(())
+}
+
+fn render_benchmark_artifact_summary(summary: &BenchmarkArtifactSummary) -> String {
+    let mut lines = vec![format!("ax-engine-bench {}", summary.command)];
+    if let Some(manifest) = summary.manifest.as_deref() {
+        lines.push(format!("manifest={manifest}"));
+    }
+    if let Some(baseline) = summary.baseline.as_deref() {
+        lines.push(format!("baseline={baseline}"));
+    }
+    if let Some(candidate) = summary.candidate.as_deref() {
+        lines.push(format!("candidate={candidate}"));
+    }
+    if let Some(source) = summary.source.as_deref() {
+        lines.push(format!("source={source}"));
+    }
+    if let Some(name) = summary.name.as_deref() {
+        lines.push(format!("name={name}"));
+    }
+    lines.push(format!("output_root={}", summary.output_root));
+    lines.push(format!("result_dir={}", summary.result_dir));
+    if summary.status != "written" {
+        lines.push(format!("status={}", summary.status));
+    }
+    lines.join("\n")
+}
+
+fn path_string(path: &Path) -> String {
+    path.display().to_string()
 }
 
 fn handle_doctor(args: &[String]) -> Result<(), CliError> {
@@ -1207,6 +1342,10 @@ fn parse_metal_build_args(args: &[String]) -> Result<MetalBuildArgs, CliError> {
 
 fn required_flag(args: &[String], name: &str) -> Result<PathBuf, CliError> {
     Ok(PathBuf::from(required_string_flag(args, name)?))
+}
+
+fn has_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|arg| arg == name)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -10498,13 +10637,13 @@ fn usage() -> String {
 Usage:
   ax-engine-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
   ax-engine-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
-  ax-engine-bench scenario --manifest <path> --output-root <path>
-  ax-engine-bench replay --manifest <path> --output-root <path>
+  ax-engine-bench scenario --manifest <path> --output-root <path> [--json]
+  ax-engine-bench replay --manifest <path> --output-root <path> [--json]
   ax-engine-bench autotune --manifest <path> --output-root <path> [--iterations <n>] [--exploration-weight <value>] [--max-batch-token-options <list>] [--kv-total-block-options <list>] [--prefix-cache-options <list>] [--disable-history]
-  ax-engine-bench compare --baseline <path> --candidate <path> --output-root <path>
-  ax-engine-bench matrix-compare --baseline <path> --candidate <path> --output-root <path>
-  ax-engine-bench baseline --source <path> --name <name> --output-root <path>
-  ax-engine-bench matrix --manifest <path> --output-root <path>
+  ax-engine-bench compare --baseline <path> --candidate <path> --output-root <path> [--json]
+  ax-engine-bench matrix-compare --baseline <path> --candidate <path> --output-root <path> [--json]
+  ax-engine-bench baseline --source <path> --name <name> --output-root <path> [--json]
+  ax-engine-bench matrix --manifest <path> --output-root <path> [--json]
   ax-engine-bench doctor [--json] [--mlx-model-artifacts-dir <path>]
   ax-engine-bench generate-manifest <model-dir> [--json]
   ax-engine-bench metal-build [--manifest <path>] [--output-dir <path>]
@@ -12722,6 +12861,56 @@ mod tests {
         assert_eq!(
             value.get("manifest_present").and_then(Value::as_bool),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn benchmark_artifact_summary_uses_stable_json_contract() {
+        let summary = BenchmarkArtifactSummary::manifest_run(
+            "scenario",
+            Path::new("/tmp/manifest.json"),
+            Path::new("/tmp/results"),
+            Path::new("/tmp/results/scenario-1"),
+            "pass",
+        );
+
+        let value =
+            serde_json::to_value(summary).expect("benchmark artifact summary should serialize");
+
+        assert_eq!(
+            value.get("schema_version").and_then(Value::as_str),
+            Some("ax.benchmark_artifact.v1")
+        );
+        assert_eq!(
+            value.get("command").and_then(Value::as_str),
+            Some("scenario")
+        );
+        assert_eq!(
+            value.get("result_dir").and_then(Value::as_str),
+            Some("/tmp/results/scenario-1")
+        );
+        assert_eq!(value.get("status").and_then(Value::as_str), Some("pass"));
+    }
+
+    #[test]
+    fn benchmark_artifact_text_keeps_legacy_result_dir_shape() {
+        let summary = BenchmarkArtifactSummary::comparison(
+            "compare",
+            Path::new("/tmp/baseline"),
+            Path::new("/tmp/candidate"),
+            Path::new("/tmp/results"),
+            Path::new("/tmp/results/compare-1"),
+        );
+
+        let text = render_benchmark_artifact_summary(&summary);
+
+        assert!(text.contains("ax-engine-bench compare"));
+        assert!(text.contains("baseline=/tmp/baseline"));
+        assert!(text.contains("candidate=/tmp/candidate"));
+        assert!(text.contains("result_dir=/tmp/results/compare-1"));
+        assert!(
+            !text.contains("status=written"),
+            "legacy successful compare text did not include status"
         );
     }
 

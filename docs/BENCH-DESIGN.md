@@ -274,7 +274,8 @@ runs are compared. Any divergence exits with code 3.
 ## Fail-Closed Principles
 
 - Contract failures write artifacts before returning exit code 2. A CI system
-  can always retrieve the artifact dir from the printed `result_dir=` line.
+  can retrieve the artifact dir from the printed `result_dir=` line, or use
+  `--json` for the stable `ax.benchmark_artifact.v1` summary.
 - `compare` refuses to compare a contract-failure artifact dir against a
   successful one (`reject_contract_failure_artifact_dir`).
 - `baseline` refuses to overwrite an existing trusted baseline.

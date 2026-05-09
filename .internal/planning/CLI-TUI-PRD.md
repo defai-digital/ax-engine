@@ -229,7 +229,8 @@ W0 is a prerequisite for a dependable TUI:
 - preserve `doctor --json` as the readiness source of truth;
 - document how the TUI distinguishes Homebrew install mode from source checkout
   mode;
-- ensure benchmark launchers print or write a discoverable artifact path.
+- use benchmark launcher `--json` output (`ax.benchmark_artifact.v1`) for
+  discoverable artifact paths.
 
 ## 11. Implementation Phases
 
@@ -239,7 +240,8 @@ Scope:
 
 - align download destination behavior or add explicit `--dest` defaults in docs;
 - add `--json` to `scripts/download_model.py` if absent;
-- add a small run-summary schema for TUI subprocess jobs;
+- use `ax.download_model.v1`, `ax.generate_manifest.v1`, and
+  `ax.benchmark_artifact.v1` run-summary schemas for TUI subprocess jobs;
 - document TUI-supported commands and their structured fields.
 
 Exit criteria:
