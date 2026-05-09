@@ -81,6 +81,8 @@ class PrefixWarmupBuilderTests(unittest.TestCase):
                 "schema_version": "ax.engine_bench.metrics.v1",
                 "correctness": {"passed": True, "reason": "ok"},
                 "determinism": {"passed": True, "reason": "ok"},
+                "replay_status": "pass",
+                "churn_status": "pass",
             },
         )
         write_json(
@@ -158,6 +160,30 @@ class PrefixWarmupBuilderTests(unittest.TestCase):
         write_json(metrics_path, metrics)
 
         with self.assertRaisesRegex(builder.PrefixWarmupBuildError, "correctness"):
+            builder.build_prefix_warmup_artifact(
+                result_dir=self.result_dir,
+                manifest_root=self.manifest_root,
+            )
+
+    def test_failed_replay_status_fails(self) -> None:
+        metrics_path = self.result_dir / "metrics.json"
+        metrics = json.loads(metrics_path.read_text())
+        metrics["replay_status"] = "fail"
+        write_json(metrics_path, metrics)
+
+        with self.assertRaisesRegex(builder.PrefixWarmupBuildError, "replay_status"):
+            builder.build_prefix_warmup_artifact(
+                result_dir=self.result_dir,
+                manifest_root=self.manifest_root,
+            )
+
+    def test_failed_churn_status_fails(self) -> None:
+        metrics_path = self.result_dir / "metrics.json"
+        metrics = json.loads(metrics_path.read_text())
+        metrics["churn_status"] = "fail"
+        write_json(metrics_path, metrics)
+
+        with self.assertRaisesRegex(builder.PrefixWarmupBuildError, "churn_status"):
             builder.build_prefix_warmup_artifact(
                 result_dir=self.result_dir,
                 manifest_root=self.manifest_root,

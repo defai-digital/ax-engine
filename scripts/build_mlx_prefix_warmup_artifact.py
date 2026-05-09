@@ -158,6 +158,12 @@ def validate_source_gates(metrics: dict[str, Any]) -> None:
         raise PrefixWarmupBuildError("metrics.correctness.passed must be true")
     if determinism.get("passed") is not True:
         raise PrefixWarmupBuildError("metrics.determinism.passed must be true")
+    if metrics.get("replay_status") not in {"pass", "not_applicable"}:
+        raise PrefixWarmupBuildError(
+            "metrics.replay_status must be pass or not_applicable"
+        )
+    if metrics.get("churn_status") != "pass":
+        raise PrefixWarmupBuildError("metrics.churn_status must be pass")
 
 
 def validate_manifest_contract(manifest: dict[str, Any]) -> None:

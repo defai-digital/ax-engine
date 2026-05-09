@@ -134,11 +134,12 @@ python3 scripts/check_mlx_prefix_warmup_artifact.py \
 Saved artifacts use schema `ax.mlx_prefix_warmup.v1`. The builder reads
 `ax-engine-bench` `manifest.json`, `metrics.json`, `routes.json`, and
 `trace.json`, requires a replay manifest with MLX, prefix cache, deterministic
-mode, and `require_prefix_reuse` enabled, then validates the output with the
-checker. The checker requires an MLX route, logical prefix reuse, an eligible
-physical snapshot miss, warmup tokens, zero physical snapshot hits, zero blocked
-snapshot paths, and passed deterministic correctness evidence. This is
-correctness and attribution evidence, not a throughput claim.
+mode, `require_prefix_reuse` enabled, passing replay/churn status, and passing
+correctness/determinism gates, then validates the output with the checker. The
+checker requires an MLX route, logical prefix reuse, an eligible physical
+snapshot miss, warmup tokens, zero physical snapshot hits, zero blocked snapshot
+paths, and passed deterministic correctness evidence. This is correctness and
+attribution evidence, not a throughput claim.
 
 The same checker treats `continuous_batching` as a positive public claim only
 when `concurrent_prefill_overlap_classification` has a recognized classification
