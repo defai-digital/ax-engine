@@ -150,22 +150,50 @@ fn build_state(options: &Options) -> AppState {
 }
 
 fn print_check_summary(state: &AppState) {
-    println!("ax-engine-manager check");
+    let mut stdout = io::stdout();
+    write_check_summary(&mut stdout, state).expect("stdout should be writable");
+}
+
+fn write_check_summary(mut writer: impl io::Write, state: &AppState) -> io::Result<()> {
+    writeln!(writer, "ax-engine-manager check")?;
     match &state.doctor {
         LoadState::Ready(report) => {
-            println!("doctor=ready status={}", report.status);
-            println!("workflow={}", report.workflow.mode);
-            println!("model_artifacts={}", report.model_artifacts.status);
+            writeln!(writer, "doctor=ready status={}", report.status)?;
+            writeln!(writer, "workflow={}", report.workflow.mode)?;
+            writeln!(writer, "model_artifacts={}", report.model_artifacts.status)?;
         }
-        LoadState::Unavailable(message) | LoadState::NotLoaded(message) => {
-            println!("doctor=unavailable reason={message}");
+        LoadState::Unavailable(message) => {
+            writeln!(writer, "doctor=unavailable reason={message}")?;
         }
+        LoadState::NotLoaded(message) => writeln!(writer, "doctor=not_loaded reason={message}")?,
     }
     match &state.server.health {
-        LoadState::Ready(health) => println!("server=ready status={}", health.status),
-        LoadState::Unavailable(message) => println!("server=unavailable reason={message}"),
-        LoadState::NotLoaded(message) => println!("server=not_loaded reason={message}"),
+        LoadState::Ready(health) => writeln!(writer, "server=ready status={}", health.status)?,
+        LoadState::Unavailable(message) => writeln!(writer, "server=unavailable reason={message}")?,
+        LoadState::NotLoaded(message) => writeln!(writer, "server=not_loaded reason={message}")?,
     }
+    match &state.benchmark_summary {
+        LoadState::Ready(summary) => {
+            writeln!(writer, "benchmark=ready status={}", summary.status)?;
+            writeln!(writer, "benchmark_result_dir={}", summary.result_dir)?;
+        }
+        LoadState::Unavailable(message) => {
+            writeln!(writer, "benchmark=unavailable reason={message}")?;
+        }
+        LoadState::NotLoaded(message) => {
+            writeln!(writer, "benchmark=not_loaded reason={message}")?;
+        }
+    }
+    match &state.artifacts {
+        LoadState::Ready(entries) => writeln!(writer, "artifacts=ready count={}", entries.len())?,
+        LoadState::Unavailable(message) => {
+            writeln!(writer, "artifacts=unavailable reason={message}")?;
+        }
+        LoadState::NotLoaded(message) => {
+            writeln!(writer, "artifacts=not_loaded reason={message}")?;
+        }
+    }
+    Ok(())
 }
 
 fn run_terminal(mut state: AppState) -> Result<(), ManagerError> {
@@ -235,5 +263,21 @@ mod tests {
             options.artifact_root,
             Some(PathBuf::from("benchmarks/results"))
         );
+    }
+
+    #[test]
+    fn check_summary_reports_all_phase1_surfaces() {
+        let mut state = AppState::empty();
+        state.benchmark_summary = LoadState::unavailable("missing benchmark artifact");
+        state.artifacts = LoadState::Ready(Vec::new());
+
+        let mut summary = Vec::new();
+        write_check_summary(&mut summary, &state).expect("summary should write");
+        let summary = String::from_utf8(summary).expect("summary should be utf8");
+
+        assert!(summary.contains("doctor=not_loaded"));
+        assert!(summary.contains("server=not_loaded"));
+        assert!(summary.contains("benchmark=unavailable reason=missing benchmark artifact"));
+        assert!(summary.contains("artifacts=ready count=0"));
     }
 }
