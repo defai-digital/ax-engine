@@ -582,6 +582,73 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             self.assertTrue(report["quality_artifacts"][0]["passes_quality_gate"])
             self.assertFalse(report["quality_artifacts"][0]["passes_performance_gate"])
 
+    def test_readiness_derives_dense_full_attention_layers_from_tensor_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models_root = root / "models"
+            model_dir = models_root / "qwen"
+            model_dir.mkdir(parents=True)
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "qwen3_dense",
+                        "attention_head_dim": 128,
+                        "attention_head_count": 16,
+                        "kv_head_count": 8,
+                        "layer_count": 2,
+                        "tensors": [
+                            {"role": "attention_q", "layer_index": 0},
+                            {"role": "attention_o", "layer_index": 0},
+                        ],
+                    }
+                )
+            )
+
+            report = readiness.build_report(
+                models_root=models_root,
+                results_root=root / "empty-results",
+                artifacts=[],
+                require_artifact_files=True,
+                root=root,
+            )
+
+            self.assertTrue(report["models"][0]["eligible_for_current_fused_gate"])
+            self.assertEqual(report["models"][0]["full_attention_layers"], 2)
+
+    def test_readiness_blocks_manifest_without_layer_coverage_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models_root = root / "models"
+            model_dir = models_root / "unknown"
+            model_dir.mkdir(parents=True)
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "qwen3_dense",
+                        "attention_head_dim": 128,
+                        "attention_head_count": 16,
+                        "kv_head_count": 8,
+                        "layer_count": 2,
+                        "tensors": [],
+                    }
+                )
+            )
+
+            report = readiness.build_report(
+                models_root=models_root,
+                results_root=root / "empty-results",
+                artifacts=[],
+                require_artifact_files=True,
+                root=root,
+            )
+
+            self.assertFalse(report["models"][0]["eligible_for_current_fused_gate"])
+            self.assertEqual(report["models"][0]["full_attention_layers"], None)
+            self.assertIn(
+                "full_attention layer coverage could not be determined",
+                report["models"][0]["blockers"],
+            )
+
     def test_builder_rejects_shadow_decode_path_as_promotion_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
