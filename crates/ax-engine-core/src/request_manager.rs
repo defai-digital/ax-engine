@@ -434,6 +434,15 @@ impl RequestManager {
             }
         }
 
+        for (request_id, record) in &self.records {
+            if record.state == RequestState::Runnable && !seen.contains(request_id) {
+                return Err(RequestManagerError::ProgressInvariantViolation {
+                    request_id: *request_id,
+                    message: "runnable request missing from schedule plan",
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -910,6 +919,33 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, RequestManagerError::UnknownRequest(RequestId(99)));
+    }
+
+    #[test]
+    fn schedule_plan_rejects_missing_runnable_request() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.submit(make_submission(2, 2, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+
+        let error = manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(1),
+                selected_requests: vec![RequestId(1)],
+                deferred_requests: vec![],
+                memory_blocked_requests: vec![],
+                execution_batch: None,
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RequestManagerError::ProgressInvariantViolation {
+                request_id: RequestId(2),
+                message: "runnable request missing from schedule plan",
+            }
+        );
     }
 
     #[test]
