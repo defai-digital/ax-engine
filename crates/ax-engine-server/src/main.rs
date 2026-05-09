@@ -929,10 +929,14 @@ async fn generate_stream(
         stream_state,
         move |stream_state, tx| match stream_context {
             StreamStateSource::Stateless(context) => {
-                drive_stateless_generate_stream_state(context, stream_state, tx);
+                drive_generate_stream_state(stream_state, tx, |state| {
+                    context.next_stream_event(state)
+                });
             }
             StreamStateSource::Stateful(mut session) => {
-                drive_generate_stream_state(&mut session, stream_state, tx);
+                drive_generate_stream_state(stream_state, tx, |state| {
+                    session.next_stream_event(state)
+                });
             }
         },
     );
@@ -953,10 +957,14 @@ async fn stream_openai_request(
         stream_state,
         move |stream_state, tx| match stream_context {
             StreamStateSource::Stateless(context) => {
-                drive_stateless_openai_stream_state(context, stream_state, tx, stream_kind);
+                drive_openai_stream_state(stream_state, tx, stream_kind, |state| {
+                    context.next_stream_event(state)
+                });
             }
             StreamStateSource::Stateful(mut session) => {
-                drive_openai_stream_state(&mut session, stream_state, tx, stream_kind);
+                drive_openai_stream_state(stream_state, tx, stream_kind, |state| {
+                    session.next_stream_event(state)
+                });
             }
         },
     );
@@ -1061,46 +1069,36 @@ fn validate_openai_request(
     validate_model(state, model)
 }
 
-fn drive_generate_stream_state(
-    session: &mut EngineSession,
+fn drive_generate_stream_state<N>(
     state: &mut GenerateStreamState,
     tx: StreamEventSender,
-) {
-    drive_stream_events(
+    next_event: N,
+) where
+    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+{
+    drive_generate_or_openai_stream_events(
         state,
         &tx,
-        |state| session.next_stream_event(state),
+        next_event,
         |event| send_sdk_stream_event(&tx, event),
         || {},
     );
 }
 
-fn drive_stateless_generate_stream_state(
-    context: Arc<StatelessGenerateContext>,
-    state: &mut GenerateStreamState,
-    tx: StreamEventSender,
-) {
-    drive_stream_events(
-        state,
-        &tx,
-        |state| context.next_stream_event(state),
-        |event| send_sdk_stream_event(&tx, event),
-        || {},
-    );
-}
-
-fn drive_openai_stream_state(
-    session: &mut EngineSession,
+fn drive_openai_stream_state<N>(
     state: &mut GenerateStreamState,
     tx: StreamEventSender,
     stream_kind: OpenAiStreamKind,
-) {
+    next_event: N,
+) where
+    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+{
     let mut chat_role_emitted = false;
 
-    drive_stream_events(
+    drive_generate_or_openai_stream_events(
         state,
         &tx,
-        |state| session.next_stream_event(state),
+        next_event,
         |event| send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted),
         || {
             let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
@@ -1108,23 +1106,18 @@ fn drive_openai_stream_state(
     );
 }
 
-fn drive_stateless_openai_stream_state(
-    context: Arc<StatelessGenerateContext>,
+fn drive_generate_or_openai_stream_events<N, E, D>(
     state: &mut GenerateStreamState,
-    tx: StreamEventSender,
-    stream_kind: OpenAiStreamKind,
-) {
-    let mut chat_role_emitted = false;
-
-    drive_stream_events(
-        state,
-        &tx,
-        |state| context.next_stream_event(state),
-        |event| send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted),
-        || {
-            let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
-        },
-    );
+    tx: &StreamEventSender,
+    mut next_event: N,
+    mut emit_event: E,
+    mut on_done: D,
+) where
+    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+    E: FnMut(GenerateStreamEvent) -> bool,
+    D: FnMut(),
+{
+    drive_stream_events(state, tx, &mut next_event, &mut emit_event, &mut on_done);
 }
 
 fn drive_stream_events<N, E, D>(
@@ -1401,6 +1394,13 @@ struct OpenAiBuiltRequest {
     stream: bool,
 }
 
+struct OpenAiBuiltPayload {
+    sampling: GenerateSampling,
+    stop_sequences: Vec<String>,
+    stream: bool,
+    metadata: Option<String>,
+}
+
 fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> GenerateRequest {
     build_generate_request_internal(
         state,
@@ -1424,26 +1424,31 @@ fn build_openai_completion_request(
         OpenAiPromptInput::Tokens(tokens) => (tokens, None),
     };
 
-    Ok(OpenAiBuiltRequest {
-        generate_request: build_openai_generate_request(
-            state,
-            input_tokens,
-            input_text,
-            max_output_tokens,
-            build_openai_sampling(
-                request.temperature,
-                request.top_p,
-                request.top_k,
-                request.min_p,
-                request.repetition_penalty,
-                request.repetition_context_size,
-                request.seed,
-            ),
-            request.stop,
-            request.metadata,
+    let payload = OpenAiBuiltPayload {
+        sampling: build_openai_sampling(
+            request.temperature,
+            request.top_p,
+            request.top_k,
+            request.min_p,
+            request.repetition_penalty,
+            request.repetition_context_size,
+            request.seed,
         ),
+        stop_sequences: request
+            .stop
+            .map(OpenAiStopInput::into_vec)
+            .unwrap_or_default(),
         stream: request.stream,
-    })
+        metadata: request.metadata,
+    };
+
+    Ok(build_openai_generate_request(
+        state,
+        input_tokens,
+        input_text,
+        max_output_tokens,
+        payload,
+    ))
 }
 
 fn build_openai_chat_request(
@@ -1453,26 +1458,31 @@ fn build_openai_chat_request(
     let max_output_tokens = require_openai_max_tokens(request.max_tokens)?;
     let input_text = render_openai_chat_prompt(state.model_id.as_ref(), &request.messages)?;
 
-    Ok(OpenAiBuiltRequest {
-        generate_request: build_openai_generate_request(
-            state,
-            Vec::new(),
-            Some(input_text),
-            max_output_tokens,
-            build_openai_sampling(
-                request.temperature,
-                request.top_p,
-                request.top_k,
-                request.min_p,
-                request.repetition_penalty,
-                request.repetition_context_size,
-                request.seed,
-            ),
-            request.stop,
-            request.metadata,
+    let payload = OpenAiBuiltPayload {
+        sampling: build_openai_sampling(
+            request.temperature,
+            request.top_p,
+            request.top_k,
+            request.min_p,
+            request.repetition_penalty,
+            request.repetition_context_size,
+            request.seed,
         ),
+        stop_sequences: request
+            .stop
+            .map(OpenAiStopInput::into_vec)
+            .unwrap_or_default(),
         stream: request.stream,
-    })
+        metadata: request.metadata,
+    };
+
+    Ok(build_openai_generate_request(
+        state,
+        Vec::new(),
+        Some(input_text),
+        max_output_tokens,
+        payload,
+    ))
 }
 
 fn build_openai_generate_request(
@@ -1480,19 +1490,20 @@ fn build_openai_generate_request(
     input_tokens: Vec<u32>,
     input_text: Option<String>,
     max_output_tokens: u32,
-    sampling: GenerateSampling,
-    stop: Option<OpenAiStopInput>,
-    metadata: Option<String>,
-) -> GenerateRequest {
-    build_generate_request_internal(
-        state,
-        input_tokens,
-        input_text,
-        max_output_tokens,
-        sampling,
-        stop.map(OpenAiStopInput::into_vec).unwrap_or_default(),
-        metadata,
-    )
+    payload: OpenAiBuiltPayload,
+) -> OpenAiBuiltRequest {
+    OpenAiBuiltRequest {
+        generate_request: build_generate_request_internal(
+            state,
+            input_tokens,
+            input_text,
+            max_output_tokens,
+            payload.sampling,
+            payload.stop_sequences,
+            payload.metadata,
+        ),
+        stream: payload.stream,
+    }
 }
 
 fn build_generate_request_internal(
@@ -1990,70 +2001,60 @@ mod tests {
     }
 
     fn parse_sse_events(body: &str) -> Vec<(String, Value)> {
+        parse_sse_frames(body)
+            .into_iter()
+            .filter_map(|(name, data)| {
+                name.map(|event_name| {
+                    let payload = serde_json::from_str(&data).expect("sse payload should be json");
+                    (event_name, payload)
+                })
+            })
+            .collect()
+    }
+
+    fn parse_openai_sse_payloads(body: &str) -> Vec<Value> {
         let mut events = Vec::new();
+        for (_, data) in parse_sse_frames(body) {
+            if data == "[DONE]" {
+                break;
+            }
+            events.push(serde_json::from_str(&data).expect("openai sse payload should parse"));
+        }
+        events
+    }
+
+    fn parse_sse_frames(body: &str) -> Vec<(Option<String>, String)> {
+        let mut frames = Vec::new();
         let mut current_name: Option<String> = None;
         let mut current_data = String::new();
 
         for line in body.lines() {
             if line.is_empty() {
-                if let Some(name) = current_name.take() {
-                    let payload =
-                        serde_json::from_str(&current_data).expect("sse payload should be json");
-                    events.push((name, payload));
-                    current_data.clear();
+                if !current_data.is_empty() {
+                    frames.push((current_name.take(), current_data));
+                    current_data = String::new();
+                } else {
+                    current_name = None;
                 }
                 continue;
             }
-
             if let Some(value) = line.strip_prefix("event: ") {
                 current_name = Some(value.to_string());
-            } else if let Some(value) = line.strip_prefix("data: ") {
-                if !current_data.is_empty() {
-                    current_data.push('\n');
-                }
-                current_data.push_str(value);
-            }
-        }
-
-        if let Some(name) = current_name {
-            let payload = serde_json::from_str(&current_data).expect("sse payload should be json");
-            events.push((name, payload));
-        }
-
-        events
-    }
-
-    fn parse_openai_sse_payloads(body: &str) -> Vec<Value> {
-        let mut payloads = Vec::new();
-        let mut current_data = String::new();
-
-        for line in body.lines() {
-            if let Some(value) = line.strip_prefix("data: ") {
-                if value == "[DONE]" {
-                    break;
-                }
-                if !current_data.is_empty() {
-                    current_data.push('\n');
-                }
-                current_data.push_str(value);
                 continue;
             }
-
-            if line.is_empty() && !current_data.is_empty() {
-                payloads.push(
-                    serde_json::from_str(&current_data).expect("openai sse payload should parse"),
-                );
-                current_data.clear();
+            if let Some(value) = line.strip_prefix("data: ") {
+                if !current_data.is_empty() {
+                    current_data.push('\n');
+                }
+                current_data.push_str(value);
             }
         }
 
         if !current_data.is_empty() {
-            payloads.push(
-                serde_json::from_str(&current_data).expect("openai sse payload should parse"),
-            );
+            frames.push((current_name, current_data));
         }
 
-        payloads
+        frames
     }
 
     fn json_request_body<T: serde::Serialize>(value: &T) -> Vec<u8> {
@@ -2181,25 +2182,38 @@ sys.stdout.write(f"server::{prompt}")
 
     fn spawn_llama_cpp_completion_server(
         response_body: String,
-        assert_request: impl FnOnce(Value) + Send + 'static,
+        assert_request: impl FnMut(Value) + Send + 'static,
     ) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let address = listener.local_addr().expect("listener should have address");
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("request should arrive");
-            let payload = read_http_request_payload(&mut stream);
-            assert_request(payload);
-
-            write_http_response(&mut stream, "application/json", &response_body, None);
-        });
-
-        (format!("http://{address}"), handle)
+        spawn_llama_cpp_completion_mock_server(
+            1,
+            assert_request,
+            "application/json",
+            response_body,
+            None,
+        )
     }
 
     fn spawn_llama_cpp_completion_stream_server(
         expected_requests: usize,
         chunks: Vec<Value>,
-        assert_request: impl Fn(Value) + Send + Sync + 'static,
+        assert_request: impl FnMut(Value) + Send + 'static,
+    ) -> (String, thread::JoinHandle<()>) {
+        let response_body = build_sse_event_stream_body(&chunks);
+        spawn_llama_cpp_completion_mock_server(
+            expected_requests,
+            assert_request,
+            "text/event-stream",
+            response_body,
+            Some("Cache-Control: no-cache"),
+        )
+    }
+
+    fn spawn_llama_cpp_completion_mock_server(
+        expected_requests: usize,
+        mut assert_request: impl FnMut(Value) + Send + 'static,
+        content_type: &'static str,
+        response_body: String,
+        extra_header: Option<&'static str>,
     ) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let address = listener.local_addr().expect("listener should have address");
@@ -2208,27 +2222,22 @@ sys.stdout.write(f"server::{prompt}")
                 let (mut stream, _) = listener.accept().expect("request should arrive");
                 let payload = read_http_request_payload(&mut stream);
                 assert_request(payload);
-
-                let mut body = String::new();
-                for chunk in &chunks {
-                    body.push_str("data: ");
-                    body.push_str(
-                        &serde_json::to_string(chunk).expect("chunk payload should serialize"),
-                    );
-                    body.push_str("\n\n");
-                }
-                body.push_str("data: [DONE]\n\n");
-
-                write_http_response(
-                    &mut stream,
-                    "text/event-stream",
-                    &body,
-                    Some("Cache-Control: no-cache"),
-                );
+                write_http_response(&mut stream, content_type, &response_body, extra_header);
             }
         });
 
         (format!("http://{address}"), handle)
+    }
+
+    fn build_sse_event_stream_body(chunks: &[Value]) -> String {
+        let mut body = String::new();
+        for chunk in chunks {
+            body.push_str("data: ");
+            body.push_str(&serde_json::to_string(chunk).expect("chunk payload should serialize"));
+            body.push_str("\n\n");
+        }
+        body.push_str("data: [DONE]\n\n");
+        body
     }
 
     fn read_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
