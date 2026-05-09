@@ -18,7 +18,7 @@ It is intentionally thin:
 The current preview package provides:
 
 - `Session(...)`
-- fail-closed host validation for pre-M4 Macs
+- fail-closed host validation for pre-M2-Max Macs
 - `Session.runtime()`
 - `Session.generate(...)`
 - `Session.generate_text(...)`
@@ -38,6 +38,8 @@ The current preview package provides:
   `llama_model_path`, or `llama_server_url`
 - `download_model(repo_id, dest=None, *, force=False)` — download an mlx-community
   model and auto-generate its `model-manifest.json`
+- LangChain integration via `ax_engine.langchain` — `AXEngineChatModel` and
+  `AXEngineLLM` backed by the OpenAI-compatible server endpoints
 
 The current preview package does not yet provide:
 
@@ -84,9 +86,10 @@ From the repository root:
 maturin develop
 ```
 
-The preview package requires a local Apple M4-or-newer host.
-Constructing `Session(...)` on an M3-or-older Mac now fails closed instead of
-pretending native or delegated support exists.
+The preview package requires a local Apple M2 Max-or-newer host running
+macOS 14 (Sonoma) or later with 32 GB RAM minimum.
+Constructing `Session(...)` on an M1 Mac or unsupported configuration now
+fails closed instead of pretending native or delegated support exists.
 
 This builds the Rust extension and installs the `ax_engine` package into the
 active Python environment.
@@ -415,6 +418,65 @@ That delegated stepwise path is still intentionally narrow, but one session can
 now hold multiple active llama.cpp requests at once and `step()` aggregates
 progress across all currently active delegated requests through the same
 SDK-owned lifecycle shape.
+
+## LangChain Integration
+
+`ax_engine.langchain` provides two LangChain-compatible model classes that
+target a running `ax-engine-server` instance through its OpenAI-compatible
+endpoints. The module has no extra dependencies beyond `langchain-core` and the
+Python standard library — no separate HTTP library is required.
+
+```python
+pip install langchain-core
+```
+
+### `AXEngineChatModel`
+
+Backed by `/v1/chat/completions`. Supports blocking `invoke()` and streaming
+`stream()`:
+
+```python
+from langchain_core.messages import HumanMessage, SystemMessage
+from ax_engine.langchain import AXEngineChatModel
+
+chat = AXEngineChatModel(
+    base_url="http://127.0.0.1:8080",
+    max_tokens=256,
+    temperature=0.7,
+)
+
+response = chat.invoke([
+    SystemMessage(content="You are AX Engine."),
+    HumanMessage(content="Say hello in one sentence."),
+])
+print(response.content)
+
+for chunk in chat.stream([HumanMessage(content="Count from 1 to 5.")]):
+    print(chunk.content, end="", flush=True)
+```
+
+### `AXEngineLLM`
+
+Backed by `/v1/completions`. Same interface as `AXEngineChatModel` but accepts
+a raw string prompt:
+
+```python
+from ax_engine.langchain import AXEngineLLM
+
+llm = AXEngineLLM(base_url="http://127.0.0.1:8080", max_tokens=128)
+print(llm.invoke("Once upon a time"))
+```
+
+Both classes accept `base_url`, `model`, `max_tokens`, `temperature`, `top_p`,
+`top_k`, `min_p`, `repetition_penalty`, `stop`, `seed`, and `timeout`
+constructor arguments. They can be dropped into any LangChain chain or
+expression that accepts a standard chat model or LLM.
+
+After `maturin develop`, you can run the checked-in example:
+
+```text
+python examples/python/langchain_chat.py
+```
 
 ## Design Rule
 

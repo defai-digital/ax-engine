@@ -8,6 +8,7 @@ export interface GenerateSampling {
   temperature?: number;
   top_p?: number;
   top_k?: number;
+  repetition_penalty?: number;
   seed?: number;
 }
 
@@ -26,6 +27,10 @@ export interface OpenAiCompletionRequest {
   max_tokens?: number;
   temperature?: number;
   top_p?: number;
+  top_k?: number;
+  min_p?: number;
+  repetition_penalty?: number;
+  stop?: string | string[];
   seed?: number;
   stream?: boolean;
   metadata?: string;
@@ -47,9 +52,87 @@ export interface OpenAiChatCompletionRequest {
   max_tokens?: number;
   temperature?: number;
   top_p?: number;
+  top_k?: number;
+  min_p?: number;
+  repetition_penalty?: number;
+  stop?: string | string[];
   seed?: number;
   stream?: boolean;
   metadata?: string;
+}
+
+export interface OpenAiUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+export interface OpenAiCompletionChoice {
+  index: number;
+  text: string;
+  finish_reason: "stop" | "length" | null;
+}
+
+export interface OpenAiCompletionResponse {
+  id: string;
+  object: "text_completion";
+  created: number;
+  model: string;
+  choices: OpenAiCompletionChoice[];
+  usage?: OpenAiUsage;
+}
+
+export interface OpenAiCompletionChunkChoice {
+  index: number;
+  text: string;
+  finish_reason: "stop" | "length" | null;
+}
+
+export interface OpenAiCompletionChunk {
+  id: string;
+  object: "text_completion.chunk";
+  created: number;
+  model: string;
+  choices: OpenAiCompletionChunkChoice[];
+}
+
+export interface OpenAiChatMessageResponse {
+  role: "assistant";
+  content: string;
+}
+
+export interface OpenAiChatCompletionChoice {
+  index: number;
+  message: OpenAiChatMessageResponse;
+  finish_reason: "stop" | "length" | null;
+}
+
+export interface OpenAiChatCompletionResponse {
+  id: string;
+  object: "chat.completion";
+  created: number;
+  model: string;
+  choices: OpenAiChatCompletionChoice[];
+  usage?: OpenAiUsage;
+}
+
+export interface OpenAiChatDelta {
+  role?: string;
+  content?: string;
+}
+
+export interface OpenAiChatCompletionChunkChoice {
+  index: number;
+  delta: OpenAiChatDelta;
+  finish_reason: "stop" | "length" | null;
+}
+
+export interface OpenAiChatCompletionChunk {
+  id: string;
+  object: "chat.completion.chunk";
+  created: number;
+  model: string;
+  choices: OpenAiChatCompletionChunkChoice[];
 }
 
 export interface OpenAiEmbeddingRequest {
@@ -331,16 +414,18 @@ export class AxEngineClient {
   requestSnapshot(requestId: number | string): Promise<RequestReport>;
   cancel(requestId: number | string): Promise<RequestReport>;
   step(): Promise<StepReport>;
-  completion(request: OpenAiCompletionRequest): Promise<any>;
-  chatCompletion(request: OpenAiChatCompletionRequest): Promise<any>;
+  completion(request: OpenAiCompletionRequest): Promise<OpenAiCompletionResponse>;
+  chatCompletion(request: OpenAiChatCompletionRequest): Promise<OpenAiChatCompletionResponse>;
   embeddings(request: OpenAiEmbeddingRequest): Promise<OpenAiEmbeddingResponse>;
   streamGenerate(
     request: PreviewGenerateRequest,
   ): AsyncGenerator<PreviewGenerateStreamEvent, void, void>;
-  streamCompletion(request: OpenAiCompletionRequest): AsyncGenerator<StreamEvent, void, void>;
+  streamCompletion(
+    request: OpenAiCompletionRequest,
+  ): AsyncGenerator<StreamEvent<OpenAiCompletionChunk>, void, void>;
   streamChatCompletion(
     request: OpenAiChatCompletionRequest,
-  ): AsyncGenerator<StreamEvent, void, void>;
+  ): AsyncGenerator<StreamEvent<OpenAiChatCompletionChunk>, void, void>;
 }
 
 export default AxEngineClient;

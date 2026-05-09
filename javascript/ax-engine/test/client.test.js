@@ -199,6 +199,70 @@ test("embeddings posts token array to OpenAI-shaped endpoint", async () => {
   });
 });
 
+test("completion returns OpenAI-shaped response", async () => {
+  await withServer((req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/v1/completions");
+    res.setHeader("content-type", "application/json");
+    res.end(
+      JSON.stringify({
+        id: "cmpl-1",
+        object: "text_completion",
+        created: 1234567890,
+        model: "qwen3_dense",
+        choices: [{ index: 0, text: "Hello world", finish_reason: "stop" }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+      }),
+    );
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    const response = await client.completion({ prompt: "Hello", max_tokens: 32 });
+    assert.equal(response.object, "text_completion");
+    assert.equal(response.choices[0].text, "Hello world");
+    assert.equal(response.usage.total_tokens, 5);
+  });
+});
+
+test("chatCompletion returns OpenAI-shaped response", async () => {
+  await withServer((req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/v1/chat/completions");
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const payload = JSON.parse(body);
+      assert.deepEqual(payload.messages[0], { role: "user", content: "Hello!" });
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          id: "chatcmpl-1",
+          object: "chat.completion",
+          created: 1234567890,
+          model: "qwen3_dense",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "Hi there!" },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+        }),
+      );
+    });
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    const response = await client.chatCompletion({
+      messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 32,
+    });
+    assert.equal(response.object, "chat.completion");
+    assert.equal(response.choices[0].message.content, "Hi there!");
+    assert.equal(response.usage.completion_tokens, 3);
+  });
+});
+
 test("non-2xx responses raise AxEngineHttpError with payload", async () => {
   await withServer((_req, res) => {
     res.writeHead(400, {

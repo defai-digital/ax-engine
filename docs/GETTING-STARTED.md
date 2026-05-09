@@ -72,6 +72,37 @@ The GitHub release archive is the Homebrew formula payload, not a standalone
 installer with bundled dynamic libraries. Prefer Homebrew for released binaries
 so `mlx-c` is installed, upgraded, and linked by the package manager.
 
+#### Gatekeeper warning on first launch
+
+AX Engine release binaries are **ad-hoc signed**, not notarized by Apple.
+macOS Gatekeeper will block them on first launch with a dialog that says
+_"cannot be opened because Apple cannot verify it"_. This is expected — it does
+**not** mean the binaries are malicious, and it **does not** require an Apple
+Developer account to resolve.
+
+**Option A — System Settings (one-time, per binary):**
+
+1. Try to run the binary once (e.g. `ax-engine-server --help`). The dialog appears.
+2. Open **System Settings → Privacy & Security**.
+3. Scroll down to the Security section. You will see an _"ax-engine-server was
+   blocked"_ entry with an **Allow Anyway** button.
+4. Click **Allow Anyway**, then run the command again and click **Open** in the
+   confirmation dialog.
+5. Repeat for `ax-engine-bench` if needed.
+
+**Option B — Terminal (clears the quarantine flag):**
+
+```text
+sudo xattr -dr com.apple.quarantine "$(which ax-engine-server)"
+sudo xattr -dr com.apple.quarantine "$(which ax-engine-bench)"
+```
+
+Run this once after `brew install`. No Apple Developer account is required.
+
+**Note on dependencies:** `mlx-c` and `mlx` install from pre-built Homebrew
+bottles. They do not trigger an Xcode install prompt or require an Apple
+Developer account at install time.
+
 ### Source
 
 Use source builds for development, Python bindings, local examples, or changes
@@ -107,11 +138,17 @@ For the current crate layering and dependency-boundary guidance, see
 
 ## Requirements
 
-- macOS on Apple Silicon M4 or newer for repo-owned MLX runtime claims
+- macOS 14 (Sonoma) or later
+- Apple Silicon M2 Max or newer with 32 GB RAM minimum
 - Rust 1.85+ for source builds
 - `mlx-c` for source-built MLX runtime binaries
 - a running `mlx_lm.server` for `mlx_lm_delegated`
 - a llama.cpp server or CLI target for `llama_cpp`
+
+Validated machines include Mac Studio (M2 Max / M2 Ultra and later), MacBook
+Pro with M2 Max or newer, Mac Mini M4 Pro, and Mac Studio / Mac Pro with M4
+Ultra or M5 Ultra. Macs with less than 32 GB RAM are outside the tested
+performance envelope.
 
 Runtime surfaces fail closed when a backend is unavailable instead of silently
 pretending support exists.
@@ -183,7 +220,7 @@ To inspect the workload-contract CLI:
 ax-engine-bench help
 ```
 
-To inspect whether the local machine is inside the supported M4-or-newer AX
+To inspect whether the local machine is inside the supported M2 Max-or-newer AX
 runtime contract:
 
 ```text

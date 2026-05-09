@@ -6,7 +6,7 @@ Current scope:
 
 - local single-process preview server
 - built entirely on `ax-engine-sdk`
-- fail-closed host validation for pre-M4 Macs
+- fail-closed host validation (requires M2 Max or newer, macOS 14+, 32 GB RAM)
 - explicit runtime metadata reporting, including `selected_backend`,
   `support_tier`, and `resolution_policy`
 - preview generation API for bring-up and integration testing

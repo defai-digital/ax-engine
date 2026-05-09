@@ -9,7 +9,7 @@ surface.
 Current preview scope:
 
 - SDK-backed `Session`
-- fail-closed host validation for pre-M4 Macs
+- fail-closed host validation (requires M2 Max or newer, macOS 14+, 32 GB RAM)
 - runtime metadata reporting
 - `mlx=True` selects the repo-owned MLX runtime
 - `support_tier="mlx_lm_delegated"` selects explicit upstream `mlx-lm` text

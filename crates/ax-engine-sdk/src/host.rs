@@ -87,7 +87,7 @@ fn classify_host(os: &str, arch: &str, soc: Option<&str>) -> HostSupport {
         };
     };
 
-    if generation >= 4 {
+    if generation >= 2 {
         HostSupport::Supported {
             detected_host: soc.to_string(),
         }
@@ -233,21 +233,23 @@ mod tests {
     }
 
     #[test]
-    fn classifies_supported_m4_or_newer_host() {
+    fn classifies_supported_m2_or_newer_host() {
+        assert_eq!(
+            classify_host("macos", "aarch64", Some("Apple M2 Max")),
+            HostSupport::Supported {
+                detected_host: "Apple M2 Max".to_string(),
+            }
+        );
+        assert_eq!(
+            classify_host("macos", "aarch64", Some("Apple M3 Max")),
+            HostSupport::Supported {
+                detected_host: "Apple M3 Max".to_string(),
+            }
+        );
         assert_eq!(
             classify_host("macos", "aarch64", Some("Apple M4 Max")),
             HostSupport::Supported {
                 detected_host: "Apple M4 Max".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn classifies_m3_host_as_unsupported() {
-        assert_eq!(
-            classify_host("macos", "aarch64", Some("Apple M3 Max")),
-            HostSupport::Unsupported {
-                detected_host: "Apple M3 Max".to_string(),
             }
         );
     }

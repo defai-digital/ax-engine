@@ -11,7 +11,20 @@ backend for supported model families, while AX Engine also exposes explicit
 compatibility routes for upstream `mlx-lm` and `llama.cpp` so users can stay on
 one AX surface while model coverage grows.
 
-> Requires macOS on Apple Silicon M4 or newer and Rust 1.85+.
+> Requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB RAM minimum**.
+> Rust 1.85+ for source builds.
+
+### Supported Hardware
+
+AX Engine targets high-memory Apple Silicon Macs running **macOS 14 (Sonoma) or later**.
+
+| Machine | Minimum spec | Suggested spec |
+|---|---|---|
+| Mac Mini | M4 Pro, 32 GB | M4 Pro, 64 GB |
+| MacBook Pro 14″ / 16″ | M2 Pro / M2 Max, 32 GB | M3 Max, 96 GB |
+| Mac Studio | M2 Max / M2 Ultra, 32 GB | M4 Max, 96 GB |
+
+M3, M4, M5 chip variants are supported across all three lines. M1 is not supported. M2 base chip (max 24 GB) is below the 32 GB minimum.
 
 ## 30-Second Setup
 
@@ -543,6 +556,147 @@ ax-engine-bench generate-manifest /path/to/model      # Homebrew or built binary
 cargo run -p ax-engine-core --bin generate-manifest -- /path/to/model  # source
 ```
 
+## SDKs
+
+ax-engine-server exposes OpenAI-compatible HTTP endpoints, and several SDKs
+wrap those endpoints or the in-process Rust session directly.
+
+| Language | Package / path | LangChain |
+|----------|---------------|-----------|
+| **Python** | `python/ax_engine` | `ax_engine.langchain` — `AXEngineChatModel`, `AXEngineLLM` |
+| **TypeScript / JS** | `javascript/ax-engine` (`@ax-engine/sdk`) | `@ax-engine/sdk/langchain` — `ChatAXEngine`, `AXEngineLLM` |
+| **Go** | `sdk/go/axengine` | Use [langchaingo](https://github.com/tmc/langchaingo) OpenAI provider — see `examples/go/langchain/` |
+| **Ruby** | `sdk/ruby` (`ax-engine-sdk`) | `ax_engine/langchain` — `ChatModel`, `LLM` (requires langchain-rb) |
+| **Mojo** | `sdk/mojo/ax_engine.mojo` | Via Python — use `ax_engine.langchain` from Mojo's Python interop |
+
+### TypeScript / JavaScript
+
+```bash
+npm install @ax-engine/sdk
+```
+
+```typescript
+import AxEngineClient from "@ax-engine/sdk";
+
+const client = new AxEngineClient({ baseUrl: "http://127.0.0.1:8080" });
+const resp = await client.chatCompletion({
+  messages: [{ role: "user", content: "Hello!" }],
+  max_tokens: 128,
+});
+console.log(resp.choices[0].message.content);
+
+// Streaming
+for await (const event of client.streamChatCompletion({ messages: [...], stream: true })) {
+  process.stdout.write(event.data.choices[0]?.delta?.content ?? "");
+}
+```
+
+LangChain integration (requires `@langchain/core`):
+
+```typescript
+import { ChatAXEngine } from "@ax-engine/sdk/langchain";
+import { HumanMessage } from "@langchain/core/messages";
+
+const chat = new ChatAXEngine({ maxTokens: 128 });
+const response = await chat.invoke([new HumanMessage("Hello!")]);
+```
+
+### Go
+
+The Go SDK lives at `sdk/go/axengine` (module `github.com/ax-engine/ax-engine-go`).
+
+```go
+client := axengine.NewClient(nil)
+
+resp, err := client.ChatCompletion(ctx, axengine.OpenAiChatCompletionRequest{
+    Messages:  []axengine.OpenAiChatMessage{{Role: "user", Content: "Hello!"}},
+    MaxTokens: axengine.Ptr(128),
+})
+
+// Streaming
+ch, errCh := client.StreamChatCompletion(ctx, req)
+for chunk := range ch {
+    fmt.Print(*chunk.Choices[0].Delta.Content)
+}
+```
+
+See `examples/go/` for runnable examples. For LangChain, point
+[langchaingo](https://github.com/tmc/langchaingo)'s OpenAI provider at
+`http://127.0.0.1:8080/v1` — see `examples/go/langchain/` and `docs/GO.md`.
+
+### Ruby
+
+The Ruby SDK lives at `sdk/ruby/` (`ax-engine-sdk` gem). Zero dependencies —
+stdlib `net/http` only. Streaming uses a block interface.
+
+```ruby
+require "ax_engine"
+
+client = AxEngine::Client.new
+
+# Blocking chat
+resp = client.chat_completion(
+  messages: [{ role: "user", content: "Hello!" }],
+  max_tokens: 128
+)
+puts resp.dig("choices", 0, "message", "content")
+
+# Streaming
+client.stream_chat_completion(
+  messages: [{ role: "user", content: "Count from 1 to 5." }],
+  max_tokens: 64
+) do |event|
+  print event.dig("data", "choices", 0, "delta", "content").to_s
+end
+```
+
+LangChain via [langchain-rb](https://github.com/patterns-ai-core/langchain):
+
+```ruby
+require "ax_engine/langchain"
+
+chat = AxEngine::Langchain::ChatModel.new(max_tokens: 256)
+puts chat.chat(messages: [{ role: "user", content: "Hello!" }]).chat_completion
+```
+
+See `examples/ruby/` and `docs/RUBY.md` for full details.
+
+### Python — LangChain
+
+```python
+from ax_engine.langchain import AXEngineChatModel
+from langchain_core.messages import HumanMessage
+
+chat = AXEngineChatModel(base_url="http://127.0.0.1:8080", max_tokens=256)
+response = chat.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+
+# Streaming
+for chunk in chat.stream([HumanMessage(content="Count from 1 to 5.")]):
+    print(chunk.content, end="", flush=True)
+```
+
+Requires `pip install langchain-core`. See `docs/PYTHON.md` for full details.
+
+### Mojo
+
+The Mojo SDK (`sdk/mojo/ax_engine.mojo`) wraps the Python `ax_engine` package
+via Mojo's `PythonObject` interop. Requires the Python extension to be built
+first (`maturin develop`).
+
+```mojo
+from sdk.mojo.ax_engine import Session
+
+var session = Session(
+    "qwen3_dense",
+    mlx=True,
+    mlx_model_artifacts_dir="/path/to/artifacts",
+)
+var result = session.generate("Hello from Mojo!", max_output_tokens=64)
+print(result.output_text)
+session.close()
+```
+
 ## Workspace
 
 ```
@@ -553,6 +707,10 @@ crates/ax-engine-sdk     Session API, backend resolution (MLX, mlx-lm delegated,
 crates/ax-engine-server  Axum HTTP/SSE adapter (OpenAI-compatible routes)
 crates/ax-engine-bench   Manifest-driven workload-contract CLI
 crates/ax-engine-py      PyO3 extension (ABI3, Python 3.10+)
+javascript/ax-engine     TypeScript/JS HTTP SDK + LangChain adapter
+sdk/go/axengine          Go HTTP SDK
+sdk/ruby/                Ruby HTTP SDK (ax-engine-sdk gem)
+sdk/mojo/                Mojo SDK (Python-interop)
 ```
 
 Unsupported MLX text models can use the explicit delegated `mlx_lm_delegated`
@@ -578,6 +736,11 @@ only after the project has a stable baseline across macOS, MLX, and PyO3 paths.
 Public documentation is in `docs/`. Canonical benchmark manifests are in
 `benchmarks/manifests/`. Key design documents:
 [SDK / API](docs/SDK.md) ·
+[Python](docs/PYTHON.md) ·
+[JavaScript / TypeScript](docs/JAVASCRIPT.md) ·
+[Go](docs/GO.md) ·
+[Ruby](docs/RUBY.md) ·
+[Mojo](docs/MOJO.md) ·
 [Scheduler](docs/SCHEDULER.md) ·
 [KV Cache](docs/KV-CACHE.md) ·
 [Benchmarking](docs/BENCH-DESIGN.md)

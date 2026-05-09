@@ -21,8 +21,11 @@ Start here:
 - `SERVER.md`: local HTTP server routes and backend behavior
 - `CLI.md`: `ax-engine-bench` and server command surfaces
 - `BENCHMARKS.md`: how to interpret performance and workload-contract evidence
-- `PYTHON.md`: Python binding scope and examples
-- `JAVASCRIPT.md`: preview HTTP client usage
+- `PYTHON.md`: Python binding scope, examples, and LangChain integration
+- `JAVASCRIPT.md`: TypeScript/JS SDK usage and LangChain integration
+- `GO.md`: Go SDK usage and examples
+- `RUBY.md`: Ruby SDK usage and examples
+- `MOJO.md`: Mojo SDK usage and examples
 - `ARCHITECTURE.md`: crate boundaries and dependency rules
 
 Start with `PERFORMANCE.md` for the current public result-table context, then

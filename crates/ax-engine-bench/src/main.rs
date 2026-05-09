@@ -1737,7 +1737,7 @@ fn build_doctor_report_with_mlx_model_artifacts(
 
     DoctorReport {
         schema_version: "ax.engine_bench.doctor.v1".to_string(),
-        mlx_target: "apple_m4_or_newer_macos_aarch64".to_string(),
+        mlx_target: "apple_m2_or_newer_macos_aarch64".to_string(),
         status,
         mlx_runtime_ready,
         bringup_allowed,
@@ -1763,7 +1763,7 @@ fn doctor_issues(host: &HostReport, metal_toolchain: &MetalToolchainReport) -> V
                 .unwrap_or_else(|| "unknown Apple Silicon".to_string())
         };
         issues.push(format!(
-            "AX Engine MLX Metal runtime requires macOS/aarch64 on Apple M4 or newer; detected {detected_host}"
+            "AX Engine MLX Metal runtime requires macOS/aarch64 on Apple M2 Max or newer with 32 GB RAM minimum; detected {detected_host}"
         ));
     }
 

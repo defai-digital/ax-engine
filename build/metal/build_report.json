@@ -2,7 +2,7 @@
   "schema_version": "ax.metal.build_report.v1",
   "manifest_path": "/Users/akiralam/code/ax-engine-v4/metal/phase1-kernels.json",
   "source_file": "/Users/akiralam/code/ax-engine-v4/metal/kernels/phase1_dense_path.metal",
-  "native_target": "apple_m4_or_newer_macos_aarch64",
+  "native_target": "apple_m2_or_newer_macos_aarch64",
   "metal_language_standard": "metal3.1",
   "library_name": "ax_phase1_dense_path",
   "default_block_size_tokens": 16,

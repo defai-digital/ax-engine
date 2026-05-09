@@ -16,7 +16,7 @@ AX Engine welcomes contributions from the community.
 
 - Rust stable toolchain with Rust 1.85 or newer
 - Python 3.10+ (for Python bindings, optional)
-- macOS with Apple M4-or-newer Silicon (for full runtime testing)
+- macOS 14 (Sonoma) or later with Apple M2 Max-or-newer Silicon and 32 GB RAM minimum (for full runtime testing)
 
 ## Running Tests
 
