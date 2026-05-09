@@ -9,6 +9,9 @@ AX Engine currently exposes three command surfaces:
 - `ax-engine-server` for the preview local HTTP adapter.
 - `ax-engine-manager` for the read-only Ratatui cockpit over those contracts.
 
+For a step-by-step manager workflow, including server metadata, benchmark
+artifacts, support bundles, and release checks, see [`MANAGER.md`](MANAGER.md).
+
 ## `ax-engine-bench`
 
 `ax-engine-bench` is the repo-owned workload-contract CLI. It is not the
@@ -106,6 +109,8 @@ test HTTP server, non-interactive `--check`, and unsupported/missing-state UI.
 Run `bash scripts/check-cli-tui-phase2.sh` before adding interactive job
 controls.
 Run `bash scripts/check-cli-tui-phase3.sh` before publishing Homebrew artifacts.
+
+See [`MANAGER.md`](MANAGER.md) for user-facing usage examples and troubleshooting.
 
 ## MLX Inference Stack
 

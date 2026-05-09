@@ -20,6 +20,8 @@ Start here:
   compatibility boundaries
 - `SERVER.md`: local HTTP server routes and backend behavior
 - `CLI.md`: `ax-engine-bench` and server command surfaces
+- `MANAGER.md`: `ax-engine-manager` TUI quick start, support bundles, and
+  release gate
 - `BENCHMARKS.md`: how to interpret performance and workload-contract evidence
 - `PYTHON.md`: Python binding scope, examples, and LangChain integration
 - `JAVASCRIPT.md`: TypeScript/JS SDK usage and LangChain integration

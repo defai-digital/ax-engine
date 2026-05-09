@@ -252,6 +252,58 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=7,
                 )
 
+    def test_reused_reference_rows_may_have_source_repetition_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["repetitions"] = 5
+            artifact["ax_only_refresh"] = {
+                "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
+                "reference_results_source": "benchmarks/results/mlx-inference/reference/gemma-4-e2b-it-4bit.json",
+                "reference_rows_reused": 2,
+                "ax_rows_refreshed": 2,
+            }
+            for row in artifact["results"]:
+                if row["engine"] in {"ax_engine_mlx", "ax_engine_mlx_ngram_accel"}:
+                    row["trials"] = [{}, {}, {}, {}, {}]
+                else:
+                    row["trials"] = [{}, {}, {}]
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=root / "README.md",
+                expected_metric_count=7,
+            )
+
+        self.assertEqual(len(checked), 7)
+
+    def test_non_reference_rows_must_match_artifact_repetition_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["repetitions"] = 5
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx":
+                    row["trials"] = [{}, {}, {}]
+                else:
+                    row["trials"] = [{}, {}, {}, {}, {}]
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "ax_engine_mlx prompt=4 lacks repetition trials",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
     def test_phase0_artifact_requires_ax_runtime_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
