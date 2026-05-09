@@ -1905,6 +1905,10 @@ mod tests {
         sample_http_request_base("input_tokens", json!(input_tokens), max_output_tokens)
     }
 
+    fn sample_text_http_request(input_text: &str, max_output_tokens: u32) -> Value {
+        sample_http_request_base("input_text", json!(input_text), max_output_tokens)
+    }
+
     fn sample_sdk_request(input_tokens: &[u32], max_output_tokens: u32) -> GenerateRequest {
         GenerateRequest {
             model_id: TEST_MODEL_ID.to_string(),
@@ -2387,7 +2391,7 @@ sys.stdout.write(f"server::{prompt}")
         );
         let state = llama_cpp_server_state(llama_server_url);
         let app = build_router(state.clone());
-        let request_body = sample_http_request_base("input_text", json!("hello from server"), 2);
+        let request_body = sample_text_http_request("hello from server", 2);
         let (status, json) = json_response(
             &app,
             Request::builder()
@@ -2550,9 +2554,8 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate")
                 .header("content-type", "application/json")
-                .body(Body::from(json_request_body(&sample_http_request_base(
-                    "input_text",
-                    json!("hello mlx-lm"),
+                .body(Body::from(json_request_body(&sample_text_http_request(
+                    "hello mlx-lm",
                     2,
                 ))))
                 .unwrap(),
@@ -2925,9 +2928,8 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate/stream")
                 .header("content-type", "application/json")
-                .body(Body::from(json_request_body(&sample_http_request_base(
-                    "input_text",
-                    json!("hello delegated stream"),
+                .body(Body::from(json_request_body(&sample_text_http_request(
+                    "hello delegated stream",
                     2,
                 ))))
                 .unwrap(),
@@ -3198,9 +3200,8 @@ sys.stdout.write(f"server::{prompt}")
                 .method("POST")
                 .uri("/v1/generate/stream")
                 .header("content-type", "application/json")
-                .body(Body::from(json_request_body(&sample_http_request_base(
-                    "input_text",
-                    json!("hello from stream"),
+                .body(Body::from(json_request_body(&sample_text_http_request(
+                    "hello from stream",
                     2,
                 ))))
                 .unwrap(),
