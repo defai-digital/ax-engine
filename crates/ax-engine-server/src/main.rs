@@ -2069,6 +2069,23 @@ mod tests {
         frames
     }
 
+    fn assert_invalid_request_response(json: &Value, message_fragment: &str) {
+        assert_eq!(
+            json.get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str),
+            Some("invalid_request")
+        );
+        assert!(
+            json.get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains(message_fragment),
+            "error message should include expected fragment"
+        );
+    }
+
     fn json_request_body<T: serde::Serialize>(value: &T) -> Vec<u8> {
         serde_json::to_vec(value).expect("request body should serialize")
     }
@@ -2599,19 +2616,7 @@ sys.stdout.write(f"server::{prompt}")
         .await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            json.get("error")
-                .and_then(|error| error.get("code"))
-                .and_then(Value::as_str),
-            Some("invalid_request")
-        );
-        assert!(
-            json.get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .contains("require max_tokens")
-        );
+        assert_invalid_request_response(&json, "require max_tokens");
     }
 
     #[tokio::test]
@@ -2631,19 +2636,7 @@ sys.stdout.write(f"server::{prompt}")
         .await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            json.get("error")
-                .and_then(|error| error.get("code"))
-                .and_then(Value::as_str),
-            Some("invalid_request")
-        );
-        assert!(
-            json.get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .contains("input must not be empty")
-        );
+        assert_invalid_request_response(&json, "input must not be empty");
     }
 
     #[tokio::test]
@@ -2663,19 +2656,7 @@ sys.stdout.write(f"server::{prompt}")
         .await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            json.get("error")
-                .and_then(|error| error.get("code"))
-                .and_then(Value::as_str),
-            Some("invalid_request")
-        );
-        assert!(
-            json.get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .contains("unknown pooling strategy")
-        );
+        assert_invalid_request_response(&json, "unknown pooling strategy");
     }
 
     #[test]
@@ -2757,12 +2738,7 @@ sys.stdout.write(f"server::{prompt}")
                 .and_then(Value::as_str),
             Some("invalid_request_error")
         );
-        assert_eq!(
-            json.get("error")
-                .and_then(|error| error.get("code"))
-                .and_then(Value::as_str),
-            Some("invalid_request")
-        );
+        assert_invalid_request_response(&json, "require max_tokens");
         assert_eq!(
             json.get("error").and_then(|error| error.get("param")),
             Some(&Value::Null)
@@ -2821,19 +2797,7 @@ sys.stdout.write(f"server::{prompt}")
         .await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            json.get("error")
-                .and_then(|error| error.get("code"))
-                .and_then(Value::as_str),
-            Some("invalid_request")
-        );
-        assert!(
-            json.get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .contains("unsupported chat role")
-        );
+        assert_invalid_request_response(&json, "unsupported chat role");
     }
 
     #[tokio::test]
