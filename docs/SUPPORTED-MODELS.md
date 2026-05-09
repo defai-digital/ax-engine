@@ -118,7 +118,7 @@ The current runtime direction is:
 
 | Family | Model | Evidence |
 |---|---|---|
-| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-26b-a4b-it, gemma-4-31b-it | MLX stack benchmark + workload-contract scenario; E2B affine 4/5/6/8-bit, 26B A4B MoE, and 31B dense have MLX stack benchmark + server smoke; E4B model manifest and scenario manifest are present, MLX stack benchmark run pending |
+| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-26b-a4b-it, gemma-4-31b-it | MLX stack benchmark + workload-contract scenario; E2B affine 4/5/6/8-bit, E4B 4-bit, 26B A4B MoE, and 31B dense have public MLX stack benchmark rows |
 | Qwen 3.5 | Qwen3.5-9B | MLX stack benchmark + workload-contract scenario |
 | Qwen 3.6 | Qwen3.6-35B-A3B 4/5/6/8-bit MLX | MLX stack benchmark, server smoke, Qwen3.5-MoE manifest regression test |
 | Qwen 3 Coder Next | Qwen3-Coder-Next-4bit | MLX stack benchmark, server smoke, Qwen3Next MoE/linear-attention regression tests |
@@ -140,16 +140,16 @@ reference, or unknown architecture with explicit blockers.
 
 | Model | Config model_type | Current AX status | Latest local evidence |
 |---|---|---|---|
-| `mlx-community/GLM-4.7-Flash-4bit` | `glm4_moe_lite` | Repo-owned MLX runtime ready | `mlx_lm.benchmark`, `mlx_swift_lm`, refreshed `ax_engine_mlx` direct, and `ax_engine_mlx_ngram_accel` benchmarks passed on 2026-05-06; support probe reports `repo_owned_runtime_ready`; latest median AX direct decode is 94.8 tok/s at 128 prompt tokens and 94.1 tok/s at 512 prompt tokens; n-gram effective decode is 260.7 tok/s at 128 prompt tokens and 253.5 tok/s at 512 prompt tokens |
+| `mlx-community/GLM-4.7-Flash-4bit` | `glm4_moe_lite` | Repo-owned MLX runtime ready | `mlx_lm.benchmark`, `mlx_swift_lm`, refreshed `ax_engine_mlx` direct, and `ax_engine_mlx_ngram_accel` benchmark rows passed in `benchmarks/results/mlx-inference/2026-05-09-q-slice-fix/`; support probe reports `repo_owned_runtime_ready`; latest median AX direct decode is 99.2 tok/s at 128 prompt tokens and 102.9 tok/s at 512 prompt tokens; n-gram effective decode is 276.4 tok/s at 128 prompt tokens and 267.7 tok/s at 512 prompt tokens; long-context scaling evidence is still tracked separately |
 | `mlx-community/DeepSeek-V4-Flash-2bit-DQ` | `deepseek_v4` | Fail closed: partial reference only, not repo-owned AX support | Downloaded on 2026-05-06; `mlx_lm.benchmark` failed with `Model type deepseek_v4 not supported`; support probe finds the available SwiftLM port drops compressor/indexer and `tid2eid` hash-routing weights that are present in the checkpoint |
 
 ## Current Limitations And Problems
 
-Gemma 4 E4B has model and scenario manifests but no MLX stack benchmark run
-yet; its public benchmark rows are pending. All other repo-owned MLX preview
-models above have completed benchmark rows.
-Gemma 4 26B A4B MoE and Gemma 4 E2B 5/6/8-bit rows include both `mlx_lm` and
-admitted `mlx_swift_lm` reference rows.
+Public model-inference rows cover the MLX inference-stack prompt shapes used in
+the root README. Long-context serving, continuous batching, and certification
+claims still require their separate promotion artifacts.
+Gemma 4 26B A4B MoE, Gemma 4 E4B, and Gemma 4 E2B 5/6/8-bit rows include both
+`mlx_lm` and admitted `mlx_swift_lm` reference rows.
 N-gram acceleration rows remain effective-throughput measurements from AX's
 n-gram policy and must not be described as raw model-kernel speedups.
 
