@@ -213,7 +213,7 @@ fi
 # ── upload to GitHub release ──────────────────────────────────────────────────
 
 if [[ "$SKIP_UPLOAD" = false ]]; then
-    echo "▶ uploading to GitHub release $TAG…"
+    echo "▶ uploading to GitHub release ${TAG}…"
     gh release upload "$TAG" "$ARCHIVE_PATH" \
         --repo "$MAIN_REPO" \
         --clobber
@@ -248,7 +248,7 @@ if [[ ! -f "$FORMULA_PATH" ]]; then
     exit 1
 fi
 
-echo "▶ updating formula to $VERSION…"
+echo "▶ updating formula to ${VERSION}…"
 
 # Update version, url, and sha256 in place.
 # The formula uses an on_macos / if Hardware::CPU.arm? block; the url and
