@@ -1,4 +1,6 @@
 use serde::Serialize;
+use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// Default connect timeout for delegated local/remote HTTP backends.
@@ -10,7 +12,7 @@ pub const DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS: u64 = 300;
 const DELEGATED_HTTP_TRANSPORT_MAX_ATTEMPTS: usize = 2;
 const DELEGATED_HTTP_TRANSPORT_RETRY_BACKOFF: Duration = Duration::from_millis(25);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DelegatedHttpTimeouts {
     pub connect: Duration,
     pub read: Duration,
@@ -34,13 +36,28 @@ impl DelegatedHttpTimeouts {
         DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS
     }
 
-    pub(crate) fn build_agent(self) -> ureq::Agent {
+    pub(crate) fn agent(self) -> ureq::Agent {
+        let mut agents = delegated_http_agents()
+            .lock()
+            .expect("delegated HTTP agent cache should not be poisoned");
+        agents
+            .entry(self)
+            .or_insert_with(|| self.build_agent())
+            .clone()
+    }
+
+    fn build_agent(self) -> ureq::Agent {
         ureq::AgentBuilder::new()
             .timeout_connect(self.connect)
             .timeout_read(self.read)
             .timeout_write(self.write)
             .build()
     }
+}
+
+fn delegated_http_agents() -> &'static Mutex<BTreeMap<DelegatedHttpTimeouts, ureq::Agent>> {
+    static AGENTS: OnceLock<Mutex<BTreeMap<DelegatedHttpTimeouts, ureq::Agent>>> = OnceLock::new();
+    AGENTS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 #[derive(Debug)]
@@ -60,7 +77,7 @@ where
     T: Serialize + ?Sized,
 {
     let body = serde_json::to_vec(payload).map_err(DelegatedHttpPostError::Serialize)?;
-    let agent = timeouts.build_agent();
+    let agent = timeouts.agent();
 
     for attempt in 1..=DELEGATED_HTTP_TRANSPORT_MAX_ATTEMPTS {
         let mut request = agent.post(endpoint).set("Content-Type", "application/json");
@@ -131,6 +148,27 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use std::thread;
+
+    #[test]
+    fn delegated_http_timeouts_reuses_cached_agent_for_same_timeouts() {
+        let timeouts = DelegatedHttpTimeouts::from_secs(97, 98, 99);
+
+        let _ = timeouts.agent();
+        assert!(
+            delegated_http_agents()
+                .lock()
+                .expect("agent cache should lock")
+                .contains_key(&timeouts)
+        );
+
+        let _ = timeouts.agent();
+        assert!(
+            delegated_http_agents()
+                .lock()
+                .expect("agent cache should lock")
+                .contains_key(&timeouts)
+        );
+    }
 
     #[test]
     fn send_json_post_with_retry_retries_one_transport_failure() {
