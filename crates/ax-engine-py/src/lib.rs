@@ -4,13 +4,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ax_engine_sdk::{
-    CapabilityReport, EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError,
-    EngineStepReport, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
-    GenerateStreamEvent as SdkGenerateStreamEvent, GenerateStreamState, HostReport,
-    LlamaCppBackendError, MetalDispatchKernelStepReport, MetalDispatchNumericStepReport,
-    MetalDispatchStepReport, MetalDispatchValidationStepReport, MetalToolchainReport,
-    MlxLmBackendError, PreviewBackendRequest, PreviewSessionConfigRequest, RuntimeReport,
-    SessionRequestReport, ToolStatusReport, preview_support_tier_from_label,
+    CapabilityReport, DelegatedHttpTimeouts, EmbeddingPooling, EngineSession, EngineSessionConfig,
+    EngineSessionError, EngineStepReport, GenerateRequest, GenerateResponse, GenerateRouteReport,
+    GenerateSampling, GenerateStreamEvent as SdkGenerateStreamEvent, GenerateStreamState,
+    HostReport, LlamaCppBackendError, MetalDispatchKernelStepReport,
+    MetalDispatchNumericStepReport, MetalDispatchStepReport, MetalDispatchValidationStepReport,
+    MetalToolchainReport, MlxLmBackendError, PreviewBackendRequest, PreviewSessionConfigRequest,
+    RuntimeReport, SessionRequestReport, ToolStatusReport, preview_support_tier_from_label,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -36,11 +36,28 @@ struct GenerateStreamIterator {
     state: Option<GenerateStreamState>,
 }
 
+fn delegated_http_timeouts_from_secs(
+    connect_secs: u64,
+    read_secs: u64,
+    write_secs: u64,
+) -> PyResult<DelegatedHttpTimeouts> {
+    if connect_secs == 0 || read_secs == 0 || write_secs == 0 {
+        return Err(PyValueError::new_err(
+            "delegated HTTP timeout values must be greater than zero",
+        ));
+    }
+    Ok(DelegatedHttpTimeouts::from_secs(
+        connect_secs,
+        read_secs,
+        write_secs,
+    ))
+}
+
 #[pymethods]
 impl Session {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (model_id="qwen3_dense".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, mlx=false, support_tier="llama_cpp", llama_cli_path="llama-cli".to_string(), llama_model_path=None, llama_server_url=None, mlx_lm_server_url=None, mlx_model_artifacts_dir=None))]
+    #[pyo3(signature = (model_id="qwen3_dense".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, mlx=false, support_tier="llama_cpp", llama_cli_path="llama-cli".to_string(), llama_model_path=None, llama_server_url=None, mlx_lm_server_url=None, mlx_model_artifacts_dir=None, delegated_http_connect_timeout_secs=30, delegated_http_read_timeout_secs=300, delegated_http_write_timeout_secs=300))]
     fn new(
         model_id: String,
         deterministic: bool,
@@ -55,9 +72,17 @@ impl Session {
         llama_server_url: Option<String>,
         mlx_lm_server_url: Option<String>,
         mlx_model_artifacts_dir: Option<String>,
+        delegated_http_connect_timeout_secs: u64,
+        delegated_http_read_timeout_secs: u64,
+        delegated_http_write_timeout_secs: u64,
     ) -> PyResult<Self> {
         let support_tier = preview_support_tier_from_label(support_tier)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let delegated_http_timeouts = delegated_http_timeouts_from_secs(
+            delegated_http_connect_timeout_secs,
+            delegated_http_read_timeout_secs,
+            delegated_http_write_timeout_secs,
+        )?;
         let effective_mlx_model_artifacts_dir = if mlx {
             mlx_model_artifacts_dir
                 .clone()
@@ -74,6 +99,7 @@ impl Session {
                 llama_model_path.as_ref().map(PathBuf::from),
                 llama_server_url.clone(),
             )
+            .with_delegated_http_timeouts(delegated_http_timeouts)
         } else {
             PreviewBackendRequest {
                 support_tier,
@@ -81,6 +107,7 @@ impl Session {
                 llama_model_path: llama_model_path.map(PathBuf::from),
                 llama_server_url,
                 mlx_lm_server_url,
+                delegated_http_timeouts,
                 ..PreviewBackendRequest::default()
             }
         };
@@ -1279,6 +1306,9 @@ mod tests {
             None,
             None,
             None,
+            DelegatedHttpTimeouts::default_connect_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
         )
         .expect("llama.cpp session should build")
     }
@@ -1298,6 +1328,9 @@ mod tests {
             Some(server_url),
             None,
             None,
+            DelegatedHttpTimeouts::default_connect_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
         )
         .expect("llama.cpp session should build")
     }
@@ -1319,6 +1352,9 @@ mod tests {
             None,
             None,
             None,
+            DelegatedHttpTimeouts::default_connect_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
         )
         .expect("default llama.cpp session should build");
 
@@ -1346,6 +1382,9 @@ mod tests {
             None,
             None,
             None,
+            DelegatedHttpTimeouts::default_connect_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
         )
         .expect("GGUF session should build");
 
@@ -1373,6 +1412,9 @@ mod tests {
             None,
             Some("http://127.0.0.1:8090".to_string()),
             None,
+            DelegatedHttpTimeouts::default_connect_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
         )
         .expect("mlx-lm delegated session should build");
 
@@ -1382,6 +1424,35 @@ mod tests {
             assert_eq!(dict_string(runtime, "selected_backend"), "mlx_lm_delegated");
             assert_eq!(dict_string(runtime, "support_tier"), "mlx_lm_delegated");
         });
+    }
+
+    #[test]
+    fn python_session_rejects_zero_delegated_http_timeout() {
+        init_python();
+
+        let error = match Session::new(
+            "qwen3_dense".to_string(),
+            true,
+            2048,
+            0,
+            16,
+            1024,
+            false,
+            "llama_cpp",
+            "llama-cli".to_string(),
+            None,
+            Some("http://127.0.0.1:8081".to_string()),
+            None,
+            None,
+            0,
+            DelegatedHttpTimeouts::default_io_secs(),
+            DelegatedHttpTimeouts::default_io_secs(),
+        ) {
+            Ok(_) => panic!("zero delegated timeout should fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("greater than zero"));
     }
 
     fn sdk_llama_cpp_server_session(server_url: String) -> EngineSession {

@@ -1,18 +1,13 @@
 use std::io::{BufRead, BufReader, Read};
-use std::sync::OnceLock;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
+use crate::delegated_http::DelegatedHttpTimeouts;
 use crate::generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateStatus,
 };
-
-const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(300);
-static MLX_LM_HTTP_AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MlxLmConfig {
@@ -28,13 +23,20 @@ impl MlxLmConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MlxLmServerCompletionConfig {
     pub base_url: String,
+    pub timeouts: DelegatedHttpTimeouts,
 }
 
 impl MlxLmServerCompletionConfig {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: normalize_base_url(base_url.into()),
+            timeouts: DelegatedHttpTimeouts::default(),
         }
+    }
+
+    pub fn with_timeouts(mut self, timeouts: DelegatedHttpTimeouts) -> Self {
+        self.timeouts = timeouts;
+        self
     }
 
     pub fn completions_url(&self) -> String {
@@ -224,7 +226,7 @@ fn start_mlx_lm_server_completion_stream(
         stop: request.stop_sequences.clone(),
     };
 
-    let response = send_json_post_request(&endpoint, &payload)?;
+    let response = send_json_post_request(&endpoint, &payload, config.timeouts)?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(MlxLmStreamHandle::new(endpoint, reader))
 }
@@ -279,7 +281,7 @@ fn run_mlx_lm_server_completion_generate(
         stop: request.stop_sequences.clone(),
     };
 
-    let response = send_json_post_request(&endpoint, &payload)?;
+    let response = send_json_post_request(&endpoint, &payload, config.timeouts)?;
     let response: MlxLmCompletionResponse = parse_json_response(&endpoint, response)?;
     let choice = response.choices.into_iter().next().ok_or_else(|| {
         MlxLmBackendError::MissingCompletionChoice {
@@ -313,19 +315,10 @@ fn run_mlx_lm_server_completion_generate(
     })
 }
 
-fn mlx_lm_http_agent() -> &'static ureq::Agent {
-    MLX_LM_HTTP_AGENT.get_or_init(|| {
-        ureq::AgentBuilder::new()
-            .timeout_connect(HTTP_CONNECT_TIMEOUT)
-            .timeout_read(HTTP_IO_TIMEOUT)
-            .timeout_write(HTTP_IO_TIMEOUT)
-            .build()
-    })
-}
-
 fn send_json_post_request<T>(
     endpoint: &str,
     payload: &T,
+    timeouts: DelegatedHttpTimeouts,
 ) -> Result<ureq::Response, MlxLmBackendError>
 where
     T: Serialize + ?Sized,
@@ -336,7 +329,8 @@ where
             source,
         })?;
 
-    match mlx_lm_http_agent()
+    match timeouts
+        .build_agent()
         .post(endpoint)
         .set("Content-Type", "application/json")
         .send_bytes(&body)

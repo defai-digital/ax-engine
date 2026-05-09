@@ -11,6 +11,7 @@ pub use ax_engine_core::{
 };
 
 pub mod backend;
+mod delegated_http;
 pub mod generate;
 mod host;
 pub mod llama_cpp;
@@ -25,6 +26,10 @@ pub use backend::{
     PreviewBackendResolution, PreviewBackendResolutionError, ResolutionPolicy, ResolvedBackend,
     RuntimeReport, SelectedBackend, SupportTier, ToolStatusReport, current_host_report,
     current_metal_toolchain_report, preview_support_tier_from_label, resolve_preview_backend,
+};
+pub use delegated_http::{
+    DEFAULT_DELEGATED_HTTP_CONNECT_TIMEOUT_SECS, DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS,
+    DelegatedHttpTimeouts,
 };
 pub use generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,

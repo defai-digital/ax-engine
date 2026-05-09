@@ -2096,6 +2096,12 @@ mod tests {
             llama_model_path: None,
             llama_server_url: None,
             mlx_lm_server_url: None,
+            delegated_http_connect_timeout_secs:
+                ax_engine_sdk::DelegatedHttpTimeouts::default_connect_secs(),
+            delegated_http_read_timeout_secs: ax_engine_sdk::DelegatedHttpTimeouts::default_io_secs(
+            ),
+            delegated_http_write_timeout_secs:
+                ax_engine_sdk::DelegatedHttpTimeouts::default_io_secs(),
             mlx_model_artifacts_dir: None,
             resolve_model_artifacts: args::ModelArtifactResolution::ExplicitOnly,
             hf_cache_root: None,

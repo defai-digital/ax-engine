@@ -1,7 +1,6 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,15 +8,13 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
+use crate::delegated_http::DelegatedHttpTimeouts;
 use crate::generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
     GenerateStatus,
 };
 
-const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(300);
 const LLAMA_CPP_CLI_TIMEOUT: Duration = Duration::from_secs(300);
-static LLAMA_CPP_HTTP_AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LlamaCppConfig {
@@ -59,13 +56,20 @@ impl LlamaCppCliConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LlamaCppServerCompletionConfig {
     pub base_url: String,
+    pub timeouts: DelegatedHttpTimeouts,
 }
 
 impl LlamaCppServerCompletionConfig {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: normalize_base_url(base_url.into()),
+            timeouts: DelegatedHttpTimeouts::default(),
         }
+    }
+
+    pub fn with_timeouts(mut self, timeouts: DelegatedHttpTimeouts) -> Self {
+        self.timeouts = timeouts;
+        self
     }
 
     pub fn completion_url(&self) -> String {
@@ -437,7 +441,7 @@ fn run_llama_cpp_server_completion_generate(
         stop: request.stop_sequences.clone(),
     };
 
-    let response = send_json_post_request(&endpoint, &payload, None)?;
+    let response = send_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let response: LlamaCppCompletionResponse = parse_json_response(&endpoint, response)?;
 
     let output_tokens = response.tokens;
@@ -492,7 +496,12 @@ fn start_llama_cpp_server_completion_stream(
         stop: request.stop_sequences.clone(),
     };
 
-    let response = send_json_post_request(&endpoint, &payload, Some("text/event-stream"))?;
+    let response = send_json_post_request(
+        &endpoint,
+        &payload,
+        Some("text/event-stream"),
+        config.timeouts,
+    )?;
 
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(LlamaCppStreamHandle::new(
@@ -543,20 +552,11 @@ fn finish_reason_from_stop_type(
     }
 }
 
-fn llama_cpp_http_agent() -> &'static ureq::Agent {
-    LLAMA_CPP_HTTP_AGENT.get_or_init(|| {
-        ureq::AgentBuilder::new()
-            .timeout_connect(HTTP_CONNECT_TIMEOUT)
-            .timeout_read(HTTP_IO_TIMEOUT)
-            .timeout_write(HTTP_IO_TIMEOUT)
-            .build()
-    })
-}
-
 fn send_json_post_request<T>(
     endpoint: &str,
     payload: &T,
     accept: Option<&str>,
+    timeouts: DelegatedHttpTimeouts,
 ) -> Result<ureq::Response, LlamaCppBackendError>
 where
     T: Serialize + ?Sized,
@@ -567,9 +567,8 @@ where
             source,
         }
     })?;
-    let mut request = llama_cpp_http_agent()
-        .post(endpoint)
-        .set("Content-Type", "application/json");
+    let agent = timeouts.build_agent();
+    let mut request = agent.post(endpoint).set("Content-Type", "application/json");
     if let Some(accept) = accept {
         request = request.set("Accept", accept);
     }

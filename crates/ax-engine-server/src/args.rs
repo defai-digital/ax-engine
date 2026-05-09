@@ -1,6 +1,6 @@
 use ax_engine_sdk::{
-    EngineSessionConfig, MlxKvCompressionConfig, MlxKvCompressionMode, MlxTurboQuantPreset,
-    PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier,
+    DelegatedHttpTimeouts, EngineSessionConfig, MlxKvCompressionConfig, MlxKvCompressionMode,
+    MlxTurboQuantPreset, PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier,
 };
 use clap::{Parser, ValueEnum};
 use serde_json::Value;
@@ -202,6 +202,19 @@ pub struct ServerArgs {
     pub llama_server_url: Option<String>,
     #[arg(long = "mlx-lm-server-url")]
     pub mlx_lm_server_url: Option<String>,
+
+    /// Connect timeout, in seconds, for delegated llama.cpp / mlx_lm HTTP backends.
+    #[arg(long = "delegated-http-connect-timeout-secs", default_value_t = DelegatedHttpTimeouts::default_connect_secs())]
+    pub delegated_http_connect_timeout_secs: u64,
+
+    /// Read timeout, in seconds, for delegated llama.cpp / mlx_lm HTTP responses.
+    #[arg(long = "delegated-http-read-timeout-secs", default_value_t = DelegatedHttpTimeouts::default_io_secs())]
+    pub delegated_http_read_timeout_secs: u64,
+
+    /// Write timeout, in seconds, for delegated llama.cpp / mlx_lm HTTP requests.
+    #[arg(long = "delegated-http-write-timeout-secs", default_value_t = DelegatedHttpTimeouts::default_io_secs())]
+    pub delegated_http_write_timeout_secs: u64,
+
     #[arg(long = "mlx-model-artifacts-dir")]
     pub mlx_model_artifacts_dir: Option<PathBuf>,
 
@@ -253,6 +266,7 @@ impl ServerArgs {
         let effective_max_batch_tokens = preset
             .map(|definition| definition.max_batch_tokens)
             .unwrap_or(self.max_batch_tokens);
+        let delegated_http_timeouts = self.delegated_http_timeouts()?;
         let mlx_model_artifacts_dir =
             self.resolve_mlx_model_artifacts_dir(preset.as_ref(), effective_mlx)?;
 
@@ -264,6 +278,7 @@ impl ServerArgs {
                 self.llama_model_path.clone(),
                 self.llama_server_url.clone(),
             )
+            .with_delegated_http_timeouts(delegated_http_timeouts)
         } else {
             PreviewBackendRequest {
                 support_tier: effective_support_tier.as_sdk_support_tier(),
@@ -271,6 +286,7 @@ impl ServerArgs {
                 llama_model_path: self.llama_model_path.clone(),
                 llama_server_url: self.llama_server_url.clone(),
                 mlx_lm_server_url: self.mlx_lm_server_url.clone(),
+                delegated_http_timeouts,
                 ..PreviewBackendRequest::default()
             }
         };
@@ -291,6 +307,20 @@ impl ServerArgs {
             ),
         })
         .map_err(|error| error.to_string())
+    }
+
+    fn delegated_http_timeouts(&self) -> Result<DelegatedHttpTimeouts, String> {
+        if self.delegated_http_connect_timeout_secs == 0
+            || self.delegated_http_read_timeout_secs == 0
+            || self.delegated_http_write_timeout_secs == 0
+        {
+            return Err("delegated HTTP timeout values must be greater than zero".to_string());
+        }
+        Ok(DelegatedHttpTimeouts::from_secs(
+            self.delegated_http_connect_timeout_secs,
+            self.delegated_http_read_timeout_secs,
+            self.delegated_http_write_timeout_secs,
+        ))
     }
 
     fn resolve_mlx_model_artifacts_dir(
@@ -563,6 +593,9 @@ mod tests {
             llama_model_path: None,
             llama_server_url: None,
             mlx_lm_server_url: None,
+            delegated_http_connect_timeout_secs: DelegatedHttpTimeouts::default_connect_secs(),
+            delegated_http_read_timeout_secs: DelegatedHttpTimeouts::default_io_secs(),
+            delegated_http_write_timeout_secs: DelegatedHttpTimeouts::default_io_secs(),
             mlx_model_artifacts_dir: None,
             resolve_model_artifacts: ModelArtifactResolution::ExplicitOnly,
             hf_cache_root: None,
@@ -692,6 +725,59 @@ mod tests {
             actual.llama_backend,
             Some(LlamaCppConfig::server_completion("http://127.0.0.1:8088"))
         );
+    }
+
+    #[test]
+    fn session_config_applies_delegated_http_timeouts_to_server_backends() {
+        let timeouts = DelegatedHttpTimeouts::from_secs(2, 11, 13);
+        let args = ServerArgs {
+            llama_server_url: Some("http://127.0.0.1:8088".to_string()),
+            delegated_http_connect_timeout_secs: 2,
+            delegated_http_read_timeout_secs: 11,
+            delegated_http_write_timeout_secs: 13,
+            ..base_args()
+        };
+
+        let actual = args.session_config().expect("session config should build");
+        assert_eq!(
+            actual.llama_backend,
+            Some(LlamaCppConfig::ServerCompletion(
+                ax_engine_sdk::LlamaCppServerCompletionConfig::new("http://127.0.0.1:8088")
+                    .with_timeouts(timeouts)
+            ))
+        );
+
+        let args = ServerArgs {
+            support_tier: PreviewSupportTier::MlxLmDelegated,
+            mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),
+            delegated_http_connect_timeout_secs: 2,
+            delegated_http_read_timeout_secs: 11,
+            delegated_http_write_timeout_secs: 13,
+            ..base_args()
+        };
+
+        let actual = args.session_config().expect("session config should build");
+        assert_eq!(
+            actual.mlx_lm_backend,
+            Some(ax_engine_sdk::MlxLmConfig::ServerCompletion(
+                ax_engine_sdk::MlxLmServerCompletionConfig::new("http://127.0.0.1:8090")
+                    .with_timeouts(timeouts)
+            ))
+        );
+    }
+
+    #[test]
+    fn session_config_rejects_zero_delegated_http_timeout() {
+        let args = ServerArgs {
+            llama_server_url: Some("http://127.0.0.1:8088".to_string()),
+            delegated_http_read_timeout_secs: 0,
+            ..base_args()
+        };
+
+        let error = args
+            .session_config()
+            .expect_err("zero delegated timeout should fail closed");
+        assert!(error.contains("greater than zero"));
     }
 
     #[test]
