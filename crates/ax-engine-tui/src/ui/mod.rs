@@ -1,5 +1,6 @@
 use crate::app::{
-    AppState, AppTab, LoadState, ServerControlButton, ServerControlSelection, ServerUrlKind,
+    AppState, AppTab, LoadState, ModelDownloadStatus, ModelFamily, ModelSelectorTarget,
+    ServerControlButton, ServerControlSelection, ServerUrlKind,
 };
 use crate::contracts::{ArtifactEntry, DoctorReport, ModelCard, WorkflowCommand};
 use ratatui::Frame;
@@ -98,6 +99,57 @@ pub fn server_control_at_position(
     None
 }
 
+pub fn model_selector_at_position(
+    area: Rect,
+    state: &AppState,
+    column: u16,
+    row: u16,
+) -> Option<ModelSelectorTarget> {
+    let body = app_chunks(area)[1];
+    if column <= body.x || column >= body.x.saturating_add(body.width).saturating_sub(1) {
+        return None;
+    }
+
+    let content_y = body.y.saturating_add(1);
+    if row == content_y.saturating_add(MODEL_FAMILY_LINE) {
+        return model_family_at_column(body.x.saturating_add(1), column)
+            .map(ModelSelectorTarget::Family);
+    }
+
+    let first_size_row = content_y.saturating_add(MODEL_FIRST_SIZE_LINE);
+    let size_count = state.model_download.entries().len() as u16;
+    if row >= first_size_row && row < first_size_row.saturating_add(size_count) {
+        let index = usize::from(row.saturating_sub(first_size_row));
+        return Some(ModelSelectorTarget::Size(index));
+    }
+
+    let download_row = first_size_row.saturating_add(size_count).saturating_add(3);
+    if row == download_row
+        && column >= body.x.saturating_add(3)
+        && column < body.x.saturating_add(13)
+    {
+        return Some(ModelSelectorTarget::Download);
+    }
+
+    None
+}
+
+const MODEL_FAMILY_LINE: u16 = 1;
+const MODEL_FIRST_SIZE_LINE: u16 = 4;
+const MODEL_FAMILY_PREFIX: &str = "family: ";
+
+fn model_family_at_column(content_x: u16, column: u16) -> Option<ModelFamily> {
+    let mut start = content_x.saturating_add(MODEL_FAMILY_PREFIX.chars().count() as u16);
+    for family in ModelFamily::ALL {
+        let end = start.saturating_add(family.label().chars().count() as u16 + 2);
+        if column >= start && column < end {
+            return Some(family);
+        }
+        start = end.saturating_add(1);
+    }
+    None
+}
+
 const SERVER_BUTTON_LINE: u16 = 3;
 const SERVER_FIRST_URL_LINE: u16 = 13;
 const SERVER_BUTTON_PREFIX: &str = "buttons: ";
@@ -135,7 +187,9 @@ fn render_readiness(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layo
 }
 
 fn render_models(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout::Rect) {
-    let mut lines = Vec::new();
+    let mut lines = model_selector_lines(state);
+    lines.push(Line::from(""));
+    lines.push(Line::from("current_model:"));
     match &state.doctor {
         LoadState::Ready(report) => {
             lines.push(Line::from(vec![
@@ -193,6 +247,92 @@ fn render_models(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout:
     }
 
     frame.render_widget(panel("Models", lines), area);
+}
+
+fn model_selector_lines(state: &AppState) -> Vec<Line<'static>> {
+    let entry = state.model_download.selected_entry();
+    let entries = state.model_download.entries();
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("download_selector: ", key_style()),
+            Span::raw("choose family and size, then press d or click Download"),
+        ]),
+        model_family_line(state),
+        Line::from(format!("selected_size: {}", entry.label)),
+        Line::from("size_options:"),
+    ];
+
+    lines.extend(entries.iter().enumerate().map(|(index, entry)| {
+        let selected = index == state.model_download.size_index;
+        let marker = if selected { "*" } else { " " };
+        let line = format!("  {marker} {} - {}", entry.label, entry.note);
+        if selected {
+            Line::styled(
+                line,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Line::from(line)
+        }
+    }));
+    lines.push(Line::from(""));
+    lines.push(Line::from(format!("repo_id: {}", entry.repo_id)));
+    lines.push(Line::from(format!(
+        "command: python scripts/download_model.py {} --json",
+        entry.repo_id
+    )));
+    lines.push(model_download_button_line(state));
+    lines.push(Line::from(format!(
+        "download_status: {}",
+        model_download_status_label(&state.model_download.status)
+    )));
+    lines
+}
+
+fn model_family_line(state: &AppState) -> Line<'static> {
+    let mut spans = vec![Span::raw(MODEL_FAMILY_PREFIX)];
+    for (index, family) in ModelFamily::ALL.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(" "));
+        }
+        let label = format!("[{}]", family.label());
+        if state.model_download.family == family {
+            spans.push(Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::raw(label));
+        }
+    }
+    Line::from(spans)
+}
+
+fn model_download_button_line(state: &AppState) -> Line<'static> {
+    let selected = state.model_download.selected_target == Some(ModelSelectorTarget::Download);
+    if selected {
+        Line::styled(
+            "[Download]",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Line::from("[Download]")
+    }
+}
+
+fn model_download_status_label(status: &ModelDownloadStatus) -> String {
+    match status {
+        ModelDownloadStatus::Idle => "idle".to_string(),
+        ModelDownloadStatus::Running(repo_id) => format!("running {repo_id}"),
+        ModelDownloadStatus::Succeeded { model_dir, .. } => format!("ready {model_dir}"),
+        ModelDownloadStatus::Failed { message, .. } => format!("failed {message}"),
+    }
 }
 
 fn render_server(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout::Rect) {

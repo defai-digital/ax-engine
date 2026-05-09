@@ -78,9 +78,11 @@ manifest/runtime family.
 
 ## `ax-engine-manager`
 
-`ax-engine-manager` is the Phase 1 read-only TUI shell. It does not start
-downloads, benchmarks, or servers. It may run doctor, read existing JSON
-contracts, poll server metadata, and browse local artifact directories.
+`ax-engine-manager` is the local TUI shell. Its `--check` mode is read-only:
+it may run doctor, read existing JSON contracts, poll server metadata, and
+browse local artifact directories without starting downloads, benchmarks, or
+servers. The interactive Models tab can run the guarded download helper for the
+selected model family and size.
 
 ```text
 ax-engine-manager --check

@@ -52,6 +52,8 @@ ax-engine-manager --model-dir "$MODEL_DIR" --server-url http://127.0.0.1:8080
 
 The TUI Server tab also shows the default `127.0.0.1:8080` target, full local
 endpoint URLs, and clickable preview controls for Start, Stop, and Restart.
+The Models tab lets you pick a model family and size, then press `d` or click
+`[Download]` to run the existing download helper for the resolved repo id.
 
 Or from Python (after `maturin develop` or `pip install ax-engine`):
 

@@ -7,6 +7,8 @@ and benchmark artifacts.
 The manager is deliberately conservative:
 
 - it can run doctor and show model-artifact readiness;
+- it can select a model family and size, then run the existing guarded download
+  helper for the resolved `mlx-community` repo id;
 - it can poll a local server's health, runtime metadata, and model list;
 - it can show the default local host/port, server action buttons, and full
   local HTTP endpoint URLs;
@@ -14,11 +16,12 @@ The manager is deliberately conservative:
 - it can project guarded job plans from the doctor workflow;
 - it can export a redacted support bundle;
 - it does not copy model weights, environment variables, API keys, or raw logs;
+- model downloads use `scripts/download_model.py <repo-id> --json`, then refresh
+  doctor state against the downloaded model directory;
 - server start/stop buttons are currently selectable preview controls; owned
   process launch, confirmation, and shutdown are intentionally a follow-up
   lifecycle slice;
-- it does not yet perform interactive downloads or benchmark launches from
-  inside the TUI.
+- it does not yet perform benchmark launches from inside the TUI.
 
 ## Install
 
@@ -63,6 +66,24 @@ Open the interactive cockpit:
 ```bash
 ax-engine-manager --model-dir "$MODEL_DIR"
 ```
+
+You can also open the manager without a model path and select one in the
+Models tab:
+
+```bash
+ax-engine-manager
+```
+
+In the Models tab, use `f` to cycle family, `s` to cycle size, and `d` or
+Enter to download. With mouse support enabled, click a family, click a size row,
+then click `[Download]`. The manager runs the same helper as the shell command:
+
+```bash
+python scripts/download_model.py <repo-id> --json
+```
+
+When the helper reports a destination path, the manager refreshes doctor state
+against that downloaded model directory.
 
 If you are running from a source checkout without installed release binaries,
 use the built binary instead:
@@ -160,21 +181,28 @@ Inside the interactive TUI:
 | `Tab` / Right arrow | Next tab |
 | `Shift-Tab` / Left arrow | Previous tab |
 | Left mouse click on a tab | Select that tab |
+| `f` in Models | Next model family |
+| `s` in Models | Next model size for the selected family |
+| `d` / Enter in Models | Download the selected model |
+| Left mouse click on a Models family | Select that family |
+| Left mouse click on a Models size row | Select that model size |
+| Left mouse click on Models `[Download]` | Download the selected model |
 | Left mouse click on a Server action | Select Start, Stop, or Restart preview |
 | Left mouse click on a Server URL row | Select that endpoint URL |
 | `q` / `Esc` | Exit |
 
-Mouse support is intentionally scoped today: tab selection, Server preview
-actions, and Server URL rows are clickable. Download pickers, benchmark launch,
-and real server process start/stop still need explicit ownership and
-confirmation contracts before they become mutating controls.
+Mouse support is intentionally scoped today: tab selection, Models family/size
+selection, Models download, Server preview actions, and Server URL rows are
+clickable. Benchmark launch and real server process start/stop still need
+explicit ownership and confirmation contracts before they become mutating
+controls.
 
 Tabs:
 
 | Tab | Purpose |
 |---|---|
 | Readiness | Doctor status, workflow mode, model-artifact readiness, runtime issues |
-| Models | Selected model artifact status, quantization, manifest and safetensors presence |
+| Models | Download family/size selector plus selected model artifact status, quantization, manifest and safetensors presence |
 | Server | Default host/port, Start/Stop/Restart preview selection, local endpoint URLs, and metadata from `--server-url` |
 | Jobs | Guarded job-plan projection from doctor workflow; currently non-mutating |
 | Benchmarks | One benchmark artifact summary from `--benchmark-json` |

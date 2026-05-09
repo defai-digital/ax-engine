@@ -118,6 +118,6 @@ cargo run --quiet -p ax-engine-tui --bin ax-engine-manager -- \
 grep -q "server=unavailable reason=server URL must be local" "$TMP_DIR/invalid-server.out"
 
 cargo run --quiet -p ax-engine-tui --bin ax-engine-manager -- --help >"$TMP_DIR/help.out"
-grep -q "Phase 1 is read-only" "$TMP_DIR/help.out"
+grep -q "Check mode is read-only" "$TMP_DIR/help.out"
 
 echo "CLI TUI Phase 1 read-only cockpit verified."
