@@ -305,9 +305,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> GenerateResult:
         return _generate_from_dict(
@@ -318,9 +321,12 @@ class Session:
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
+                min_p=min_p,
                 repetition_penalty=repetition_penalty,
+                repetition_context_size=repetition_context_size,
                 seed=seed,
                 deterministic=deterministic,
+                stop_sequences=stop_sequences,
                 metadata=metadata,
             )
         )
@@ -334,9 +340,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> int:
         return self._inner.submit(
@@ -346,9 +355,12 @@ class Session:
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            min_p=min_p,
             repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
             seed=seed,
             deterministic=deterministic,
+            stop_sequences=stop_sequences,
             metadata=metadata,
         )
 
@@ -373,9 +385,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]:
         for value in self._inner.stream_generate(
@@ -385,9 +400,12 @@ class Session:
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            min_p=min_p,
             repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
             seed=seed,
             deterministic=deterministic,
+            stop_sequences=stop_sequences,
             metadata=metadata,
         ):
             yield _stream_event_from_dict(value)
@@ -400,9 +418,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> GenerateResult:
         return self.generate(
@@ -411,9 +432,12 @@ class Session:
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            min_p=min_p,
             repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
             seed=seed,
             deterministic=deterministic,
+            stop_sequences=stop_sequences,
             metadata=metadata,
         )
 
@@ -425,9 +449,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> int:
         return self.submit(
@@ -436,9 +463,12 @@ class Session:
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            min_p=min_p,
             repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
             seed=seed,
             deterministic=deterministic,
+            stop_sequences=stop_sequences,
             metadata=metadata,
         )
 
@@ -450,9 +480,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]:
         return self.stream_generate(
@@ -461,9 +494,12 @@ class Session:
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            min_p=min_p,
             repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
             seed=seed,
             deterministic=deterministic,
+            stop_sequences=stop_sequences,
             metadata=metadata,
         )
 
@@ -475,9 +511,12 @@ class Session:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
+        min_p: float | None = None,
         repetition_penalty: float = 1.0,
+        repetition_context_size: int | None = None,
         seed: int = 0,
         deterministic: bool | None = None,
+        stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> GenerateResult:
         return self.generate_text(
@@ -486,9 +525,12 @@ class Session:
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            min_p=min_p,
             repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
             seed=seed,
             deterministic=deterministic,
+            stop_sequences=stop_sequences,
             metadata=metadata,
         )
 
