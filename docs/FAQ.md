@@ -1,13 +1,14 @@
 # FAQ
 
-## Why does the repo-owned MLX runtime require M4 or newer?
+## Why does the repo-owned MLX runtime require M2 Max or newer?
 
 The repo-owned MLX runtime is a supported performance contract, not only a
-best-effort code path. AX fails closed on M3 and older Apple Silicon because
-current runtime, benchmark, and support claims are scoped to macOS/aarch64 on
-Apple M4 or newer hosts. `AX_ALLOW_UNSUPPORTED_HOST=1` is only for internal
-development or CI bring-up; it does not make the host supported and should not
-be used for published benchmark numbers.
+best-effort code path. AX fails closed on M1 and base M2 Apple Silicon because
+current runtime, benchmark, and support claims are scoped to macOS 14
+(Sonoma) or later on Apple M2 Max or newer hosts with 32 GB RAM minimum.
+`AX_ALLOW_UNSUPPORTED_HOST=1` is only for internal development or CI bring-up;
+it does not make the host supported and should not be used for published
+benchmark numbers.
 
 Delegated routes are separate. A non-MLX or GGUF workflow can use `llama.cpp`,
 and unsupported MLX text models can use an explicitly configured

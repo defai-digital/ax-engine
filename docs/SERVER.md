@@ -9,7 +9,7 @@ The current preview server is intentionally narrow:
 
 - single-process local server
 - built entirely on the Rust SDK contract
-- fails closed on pre-M4 local hosts
+- fails closed on unsupported hosts (requires M2 Max or newer, macOS 14+, 32 GB RAM)
 - explicit backend and support-tier reporting
 - preview generation endpoint for bring-up and integration testing
 - preview OpenAI-compatible `/v1/completions` and `/v1/chat/completions`
@@ -145,9 +145,10 @@ generate the manifest first with:
 cargo run -p ax-engine-core --bin generate-manifest -- /absolute/path/to/model
 ```
 
-The preview server requires a local Apple M4-or-newer host.
-On M3 and older Macs, startup now fails closed instead of exposing an
-unsupported partial runtime.
+The preview server requires a local Apple M2 Max-or-newer host running
+macOS 14 (Sonoma) or later with 32 GB RAM minimum.
+On M1 Macs or unsupported configurations, startup fails closed instead of
+exposing an unsupported partial runtime.
 
 Use the llama.cpp delegated path against a local GGUF model:
 

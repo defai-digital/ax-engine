@@ -1,16 +1,25 @@
 {
-  "name": "@ax-engine/preview-client",
-  "version": "0.1.0",
-  "description": "Thin JavaScript preview client for AX Engine v4",
+  "name": "@ax-engine/sdk",
+  "version": "0.2.0",
+  "description": "JavaScript / TypeScript SDK for AX Engine v4 — local HTTP inference server",
   "type": "module",
   "main": "./index.js",
   "exports": {
-    ".": "./index.js"
+    ".": {
+      "import": "./index.js",
+      "types": "./index.d.ts"
+    },
+    "./langchain": {
+      "import": "./langchain.js",
+      "types": "./langchain.d.ts"
+    }
   },
   "types": "./index.d.ts",
   "files": [
     "index.js",
     "index.d.ts",
+    "langchain.js",
+    "langchain.d.ts",
     "README.md"
   ],
   "scripts": {
@@ -19,5 +28,14 @@
   "engines": {
     "node": ">=20"
   },
+  "peerDependencies": {
+    "@langchain/core": ">=0.2"
+  },
+  "peerDependenciesMeta": {
+    "@langchain/core": {
+      "optional": true
+    }
+  },
+  "keywords": ["llm", "inference", "mlx", "apple-silicon", "langchain"],
   "license": "MIT"
 }

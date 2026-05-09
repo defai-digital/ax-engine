@@ -1,26 +1,28 @@
-# JavaScript
+# JavaScript / TypeScript SDK
 
-AX Engine now includes a thin repo-local JavaScript preview client at
-`javascript/ax-engine`.
+`javascript/ax-engine` is the JavaScript and TypeScript SDK for AX Engine,
+published as `@ax-engine/sdk`.
 
-It is intentionally small:
+It is intentionally thin:
 
 - it speaks to `ax-engine-server`, not directly to `ax-engine-core`
-- it wraps the checked-in preview HTTP and OpenAI-compatible endpoints
-- it keeps transport ownership with the server and SDK layers
-- it stays dependency-free at runtime
+- zero runtime dependencies (uses standard `fetch`)
+- targets the preview HTTP and OpenAI-compatible endpoints
+- keeps transport ownership with the server and SDK layers
 
 ## Current Scope
 
-The current preview package provides:
+The current package provides:
 
-- `AxEngineClient`
+- `AxEngineClient` with full TypeScript types
 - JSON helpers for:
   `health()`, `runtime()`, `models()`, `generate()`, `submit()`,
   `requestSnapshot()`, `cancel()`, `step()`, and `embeddings()`
 - OpenAI-compatible helpers through `completion()` and `chatCompletion()`
-- SSE helpers through `streamGenerate()`, `streamCompletion()`, and
+- SSE streaming through `streamGenerate()`, `streamCompletion()`, and
   `streamChatCompletion()`
+- LangChain integration via `@ax-engine/sdk/langchain` — `ChatAXEngine` and
+  `AXEngineLLM` backed by the OpenAI-compatible server endpoints
 
 It does not yet provide:
 
@@ -28,7 +30,6 @@ It does not yet provide:
 - model-aware chat templating
 - a published npm release workflow
 - tool/function calling helpers
-- browser-specific packaging beyond standards-based `fetch`
 
 ## Install
 
@@ -38,16 +39,18 @@ From the repository root:
 npm install ./javascript/ax-engine
 ```
 
-This installs the checked-in preview package directly from the local repo.
+For LangChain integration also install the peer dependency:
+
+```text
+npm install @langchain/core
+```
 
 ## Example
 
 ```js
-import { AxEngineClient } from "@ax-engine/preview-client";
+import AxEngineClient from "@ax-engine/sdk";
 
-const client = new AxEngineClient({
-  baseUrl: "http://127.0.0.1:8080",
-});
+const client = new AxEngineClient({ baseUrl: "http://127.0.0.1:8080" });
 
 const runtime = await client.runtime();
 const result = await client.generate({
@@ -60,58 +63,116 @@ console.log(runtime.runtime.selected_backend);
 console.log(result.output_tokens);
 ```
 
-For a llama.cpp-backed text request through the preview
-OpenAI-compatible surface:
+OpenAI-compatible chat completion:
 
 ```js
-import { AxEngineClient } from "@ax-engine/preview-client";
-
-const client = new AxEngineClient({
-  baseUrl: "http://127.0.0.1:8080",
+const response = await client.chatCompletion({
+  messages: [{ role: "user", content: "Hello!" }],
+  max_tokens: 128,
+  temperature: 0.7,
 });
+console.log(response.choices[0].message.content);
+```
 
+OpenAI-compatible text completion:
+
+```js
 const response = await client.completion({
-  model: "qwen3_dense",
   prompt: "Hello from AX JavaScript",
   max_tokens: 32,
 });
-
 console.log(response.choices[0].text);
 ```
 
-For an embedding-capable local MLX server:
+Embeddings:
 
 ```js
-import { AxEngineClient } from "@ax-engine/preview-client";
-
-const client = new AxEngineClient({
-  baseUrl: "http://127.0.0.1:8080",
-});
-
 const response = await client.embeddings({
-  model: "qwen3_embedding",
   input: [1, 2, 3],
   pooling: "last",
   normalize: true,
 });
-
 console.log(response.data[0].embedding.length);
 ```
 
-Streaming helpers yield parsed SSE messages:
+Streaming (native ax-engine SSE):
 
 ```js
-import { AxEngineClient } from "@ax-engine/preview-client";
-
-const client = new AxEngineClient({
-  baseUrl: "http://127.0.0.1:8080",
-});
-
 for await (const event of client.streamGenerate({
-  model: "qwen3_dense",
   input_tokens: [1, 2, 3],
-  max_output_tokens: 2,
+  max_output_tokens: 32,
 })) {
-  console.log(event.event, event.data);
+  if (event.event === "step") {
+    process.stdout.write(event.data.delta_text ?? "");
+  }
 }
 ```
+
+Streaming chat completion:
+
+```js
+for await (const event of client.streamChatCompletion({
+  messages: [{ role: "user", content: "Count from 1 to 5." }],
+  max_tokens: 64,
+})) {
+  process.stdout.write(event.data.choices[0]?.delta?.content ?? "");
+}
+```
+
+## Runnable Examples
+
+```text
+node examples/javascript/basic.js      # health, chat, completion, streaming, native generate
+node examples/javascript/streaming.js  # all three streaming methods
+node examples/javascript/langchain_chat.js  # LangChain ChatAXEngine + AXEngineLLM
+```
+
+All examples require `ax-engine-server` running on `http://127.0.0.1:8080`.
+
+## LangChain Integration
+
+`@ax-engine/sdk/langchain` exposes two LangChain-compatible model classes that
+delegate to the ax-engine-server OpenAI-compatible endpoints. Requires
+`@langchain/core >= 0.2`.
+
+### `ChatAXEngine`
+
+```js
+import { ChatAXEngine } from "@ax-engine/sdk/langchain";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+
+const chat = new ChatAXEngine({
+  baseUrl: "http://127.0.0.1:8080",
+  maxTokens: 256,
+  temperature: 0.7,
+});
+
+// Blocking
+const response = await chat.invoke([
+  new SystemMessage("You are AX Engine."),
+  new HumanMessage("Say hello in one sentence."),
+]);
+console.log(response.content);
+
+// Streaming
+const stream = await chat.stream([new HumanMessage("Count from 1 to 5.")]);
+for await (const chunk of stream) {
+  process.stdout.write(chunk.content);
+}
+```
+
+### `AXEngineLLM`
+
+```js
+import { AXEngineLLM } from "@ax-engine/sdk/langchain";
+
+const llm = new AXEngineLLM({ baseUrl: "http://127.0.0.1:8080", maxTokens: 128 });
+const text = await llm.invoke("Once upon a time");
+console.log(text);
+```
+
+Both classes accept: `baseUrl`, `model`, `maxTokens`, `temperature`, `topP`,
+`topK`, `minP`, `repetitionPenalty`, `stop`, `seed`, plus any standard
+LangChain base params (`callbacks`, `tags`, `metadata`, etc.).
+
+A runnable example is at `examples/javascript/langchain_chat.js`.

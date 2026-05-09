@@ -44,7 +44,7 @@ pub use build::*;
 
 pub const PHASE1_METAL_KERNEL_MANIFEST_SCHEMA_VERSION: &str = "ax.metal.kernel_manifest.v1";
 pub const PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION: &str = "ax.metal.build_report.v1";
-pub const PHASE1_MLX_METAL_TARGET: &str = "apple_m4_or_newer_macos_aarch64";
+pub const PHASE1_MLX_METAL_TARGET: &str = "apple_m2_or_newer_macos_aarch64";
 pub const PHASE1_METAL_LANGUAGE_STANDARD: &str = "metal3.1";
 pub const PHASE1_METAL_LIBRARY_NAME: &str = "ax_phase1_dense_path";
 pub const PHASE1_METAL_BUILD_GATE: &str = "bringup_allowed";
