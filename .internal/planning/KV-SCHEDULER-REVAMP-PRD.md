@@ -205,6 +205,10 @@ surface through better defaults, route metadata, and benchmark artifacts.
 - MLX inference-stack `prefix_reuse_evidence` now summarizes physical prefix
   hits, misses, warmup tokens, cache footprint, and blocked reason breakdowns
   for AX rows.
+- MLX inference-stack `prefix_reuse_evidence` now includes explicit
+  `physical_snapshot_coverage` classification so zero-prefix, hit-only,
+  miss-warmup, blocked-only, and hit-plus-miss-warmup artifacts are not
+  conflated.
 
 #### Open
 

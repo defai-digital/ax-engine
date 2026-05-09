@@ -782,6 +782,58 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(evidence["warmup_token_count"], 8)
         self.assertEqual(evidence["cache_entry_count"], 6)
         self.assertEqual(evidence["cache_bytes_kib"], 128)
+        self.assertTrue(evidence["physical_snapshot_hit_observed"])
+        self.assertTrue(evidence["physical_snapshot_miss_warmup_observed"])
+        self.assertTrue(evidence["physical_snapshot_blocked_observed"])
+        self.assertEqual(evidence["physical_snapshot_coverage"], "hit_and_miss_warmup")
+        self.assertEqual(evidence["blocked_reason_count"], 4)
+        self.assertEqual(evidence["blocked_reason_accounting_gap_count"], 0)
+
+    def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:
+        self.assertEqual(
+            bench.summarize_prefix_reuse_evidence([])["physical_snapshot_coverage"],
+            "none_observed",
+        )
+        self.assertEqual(
+            bench.summarize_prefix_reuse_evidence(
+                [
+                    {
+                        "engine": "ax_engine_mlx",
+                        "ax_mlx_telemetry": {
+                            "ax_mlx_prefix_cache_hits": 1,
+                        },
+                    }
+                ]
+            )["physical_snapshot_coverage"],
+            "hit_only",
+        )
+        miss_warmup = bench.summarize_prefix_reuse_evidence(
+            [
+                {
+                    "engine": "ax_engine_mlx",
+                    "ax_mlx_telemetry": {
+                        "ax_mlx_prefix_cache_misses": 1,
+                        "ax_mlx_prefix_cache_warmup_tokens": 16,
+                    },
+                }
+            ]
+        )
+        self.assertEqual(miss_warmup["physical_snapshot_coverage"], "miss_warmup_only")
+        self.assertTrue(miss_warmup["physical_snapshot_miss_warmup_observed"])
+        blocked = bench.summarize_prefix_reuse_evidence(
+            [
+                {
+                    "engine": "ax_engine_mlx",
+                    "ax_mlx_telemetry": {
+                        "ax_mlx_prefix_cache_blocked": 2,
+                        "ax_mlx_prefix_cache_blocked_unsupported_layout": 1,
+                    },
+                }
+            ]
+        )
+        self.assertEqual(blocked["physical_snapshot_coverage"], "blocked_only")
+        self.assertEqual(blocked["blocked_reason_count"], 1)
+        self.assertEqual(blocked["blocked_reason_accounting_gap_count"], 1)
 
     def test_ax_mlx_gemma4_moe_profile_is_extracted_and_summarized(self) -> None:
         profile = bench.extract_ax_mlx_gemma4_moe_profile(

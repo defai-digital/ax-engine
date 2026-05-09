@@ -975,7 +975,44 @@ def summarize_scheduler_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     return totals
 
 
-def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, int]:
+def classify_prefix_reuse_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    hit_observed = int(evidence.get("hit_count", 0)) > 0
+    miss_warmup_observed = (
+        int(evidence.get("miss_count", 0)) > 0
+        and int(evidence.get("warmup_token_count", 0)) > 0
+    )
+    blocked_reason_count = (
+        int(evidence.get("blocked_policy_disabled_count", 0))
+        + int(evidence.get("blocked_unsupported_layout_count", 0))
+        + int(evidence.get("blocked_trim_failure_count", 0))
+    )
+    blocked_count = int(evidence.get("blocked_count", 0))
+    blocked_observed = blocked_count > 0
+
+    if hit_observed and miss_warmup_observed:
+        coverage = "hit_and_miss_warmup"
+    elif miss_warmup_observed:
+        coverage = "miss_warmup_only"
+    elif hit_observed:
+        coverage = "hit_only"
+    elif blocked_observed:
+        coverage = "blocked_only"
+    else:
+        coverage = "none_observed"
+
+    return {
+        "physical_snapshot_hit_observed": hit_observed,
+        "physical_snapshot_miss_warmup_observed": miss_warmup_observed,
+        "physical_snapshot_blocked_observed": blocked_observed,
+        "physical_snapshot_coverage": coverage,
+        "blocked_reason_count": blocked_reason_count,
+        "blocked_reason_accounting_gap_count": max(
+            0, blocked_count - blocked_reason_count
+        ),
+    }
+
+
+def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, Any]:
     evidence = {
         "hit_count": 0,
         "miss_count": 0,
@@ -1022,6 +1059,7 @@ def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, 
             evidence["cache_bytes_kib"],
             int(telemetry.get("ax_mlx_prefix_cache_bytes_kib", 0)),
         )
+    evidence.update(classify_prefix_reuse_evidence(evidence))
     return evidence
 
 

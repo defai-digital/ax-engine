@@ -155,7 +155,9 @@ unsupported-layout blocks, and trim-failure blocks while preserving the existing
 aggregate blocked counter. The MLX inference-stack benchmark summary also
 propagates those reason-specific counters into `prefix_reuse_evidence`, so
 artifact readers can distinguish eligible misses from unsupported or disabled
-physical snapshot paths.
+physical snapshot paths. That summary now carries an explicit
+`physical_snapshot_coverage` label to prevent hit-only or zero-prefix artifacts
+from being read as complete physical prefix-cache evidence.
 
 Only after evidence shows material warmup cost should AX consider an engine-runner
 coordination API for preflight physical-prefix availability.
