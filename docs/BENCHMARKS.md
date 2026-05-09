@@ -122,12 +122,19 @@ Physical prefix snapshot miss/warmup correctness uses a separate artifact
 contract:
 
 ```text
+python3 scripts/build_mlx_prefix_warmup_artifact.py \
+  --result-dir benchmarks/results/<ax-engine-bench-run> \
+  --manifest-root benchmarks/manifests/replay \
+  --output benchmarks/results/mlx-inference/<date>/<model>-prefix-warmup.json
+
 python3 scripts/check_mlx_prefix_warmup_artifact.py \
   benchmarks/results/mlx-inference/<date>/<model>-prefix-warmup.json
 ```
 
-Saved artifacts use schema `ax.mlx_prefix_warmup.v1`. The checker requires an
-MLX route, logical prefix reuse, an eligible physical snapshot miss, warmup
+Saved artifacts use schema `ax.mlx_prefix_warmup.v1`. The builder reads
+`ax-engine-bench` `manifest.json`, `metrics.json`, `routes.json`, and
+`trace.json`, then validates the output with the checker. The checker requires
+an MLX route, logical prefix reuse, an eligible physical snapshot miss, warmup
 tokens, zero physical snapshot hits, zero blocked snapshot paths, and passed
 deterministic correctness evidence. This is correctness and attribution
 evidence, not a throughput claim.

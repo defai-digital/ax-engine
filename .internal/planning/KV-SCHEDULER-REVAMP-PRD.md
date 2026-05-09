@@ -223,11 +223,14 @@ surface through better defaults, route metadata, and benchmark artifacts.
   consistent.
 - `ax.mlx_prefix_warmup.v1` artifact validation now defines the contract for
   physical prefix snapshot miss/warmup correctness evidence.
+- `build_mlx_prefix_warmup_artifact.py` now converts `ax-engine-bench` result
+  directories into checked `ax.mlx_prefix_warmup.v1` artifacts.
 
 #### Open
 
 - Produce a real checked-in replay/artifact that exercises a physical snapshot
-  miss with warmup and passes `check_mlx_prefix_warmup_artifact.py`.
+  miss with warmup and passes `build_mlx_prefix_warmup_artifact.py` plus
+  `check_mlx_prefix_warmup_artifact.py`.
 
 #### Exit Criteria
 

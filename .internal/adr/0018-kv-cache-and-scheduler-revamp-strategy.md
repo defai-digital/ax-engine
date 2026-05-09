@@ -170,7 +170,8 @@ must carry internally consistent positive overlap classification evidence. The
 `ax.mlx_prefix_warmup.v1` artifact checker captures the next Phase 3 evidence
 contract: logical prefix reuse plus physical snapshot miss/warmup must be paired
 with deterministic correctness evidence before deeper coordination work is
-justified.
+justified. The paired builder converts `ax-engine-bench` manifest, metrics,
+routes, and trace outputs into that checked artifact shape.
 
 Only after evidence shows material warmup cost should AX consider an engine-runner
 coordination API for preflight physical-prefix availability.

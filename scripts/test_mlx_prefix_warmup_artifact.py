@@ -30,6 +30,7 @@ def valid_observation() -> dict[str, object]:
     return {
         "request_id": "request-b",
         "prompt_token_ids_sha256": PROMPT_HASH,
+        "prompt_digest_kind": "token_ids",
         "route": {
             "selected_backend": "mlx",
             "route_identity": "repo_owned_mlx",
@@ -98,6 +99,29 @@ class PrefixWarmupArtifactTests(unittest.TestCase):
         path = self.write_fixture(artifact)
 
         with self.assertRaisesRegex(checker.PrefixWarmupArtifactError, "miss_count"):
+            checker.validate_prefix_warmup_artifact(path)
+
+    def test_accepts_prompt_ref_digest(self) -> None:
+        artifact = valid_artifact()
+        observation = artifact["observations"][0]
+        del observation["prompt_token_ids_sha256"]
+        observation["prompt_ref_sha256"] = PROMPT_HASH
+        observation["prompt_digest_kind"] = "prompt_ref_bytes"
+        path = self.write_fixture(artifact)
+
+        checked = checker.validate_prefix_warmup_artifact(path)
+
+        self.assertEqual(checked, ["request-b:matched=256:warmup=256"])
+
+    def test_requires_one_prompt_digest(self) -> None:
+        artifact = valid_artifact()
+        artifact["observations"][0]["prompt_ref_sha256"] = PROMPT_HASH
+        path = self.write_fixture(artifact)
+
+        with self.assertRaisesRegex(
+            checker.PrefixWarmupArtifactError,
+            "exactly one prompt digest",
+        ):
             checker.validate_prefix_warmup_artifact(path)
 
     def test_rejects_physical_hit_evidence(self) -> None:
