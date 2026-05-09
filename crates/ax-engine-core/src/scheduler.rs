@@ -47,6 +47,8 @@ pub const ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB: &str =
 pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS: &str = "ax_mlx_kv_linear_state_layers";
 pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB: &str = "ax_mlx_kv_linear_state_kib";
 pub const ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT: &str = "ax_mlx_kv_growth_count";
+pub const ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM: &str = "ax_mlx_model_mla_kv_latent_dim";
+pub const ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS: &str = "ax_mlx_model_moe_active_experts";
 pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS: &str =
     "ax_mlx_kv_compression_request_snapshots";
 pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS: &str = "ax_mlx_kv_compression_status";
@@ -145,6 +147,10 @@ pub const ROUTE_DECISION_AX_MLX_KV_KEYS: [&str; 13] = [
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB,
     ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
+];
+pub const ROUTE_DECISION_AX_MLX_MODEL_KEYS: [&str; 2] = [
+    ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM,
+    ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS,
 ];
 pub const ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS: [&str; 35] = [
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS,
@@ -638,6 +644,32 @@ mod tests {
         );
         assert!(
             ROUTE_DECISION_AX_MLX_KV_KEYS
+                .iter()
+                .all(|key| !key.contains('-'))
+        );
+    }
+
+    #[test]
+    fn mlx_model_route_decision_keys_are_stable_and_unique() {
+        assert_eq!(
+            ROUTE_DECISION_AX_MLX_MODEL_KEYS.len(),
+            ROUTE_DECISION_AX_MLX_MODEL_KEYS
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+        );
+        assert!(
+            ROUTE_DECISION_AX_MLX_MODEL_KEYS
+                .iter()
+                .all(|key| key.starts_with("ax_mlx_model_"))
+        );
+        assert!(
+            ROUTE_DECISION_AX_MLX_MODEL_KEYS
+                .iter()
+                .all(|key| key.is_ascii())
+        );
+        assert!(
+            ROUTE_DECISION_AX_MLX_MODEL_KEYS
                 .iter()
                 .all(|key| !key.contains('-'))
         );

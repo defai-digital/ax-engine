@@ -4489,6 +4489,18 @@ fn annotate_runtime_summary(
             "metal_dispatch_model_tied_word_embeddings".to_string(),
             u32::from(model.tie_word_embeddings),
         ));
+        if let Some(value) = model.mla_kv_latent_dim {
+            route_metadata.crossover_decisions.push((
+                crate::scheduler::ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM.to_string(),
+                value,
+            ));
+        }
+        if let Some(value) = model.moe_active_experts {
+            route_metadata.crossover_decisions.push((
+                crate::scheduler::ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS.to_string(),
+                value,
+            ));
+        }
     }
 }
 

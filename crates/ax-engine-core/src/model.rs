@@ -560,6 +560,18 @@ impl NativeModelArtifacts {
                         .resolved_full_attention_interval(&self.manifest.model_family)
                 })
                 .flatten(),
+            mla_kv_latent_dim: self
+                .manifest
+                .mla_attention
+                .is_enabled()
+                .then_some(self.manifest.mla_attention.kv_lora_rank)
+                .flatten(),
+            moe_active_experts: self
+                .manifest
+                .moe
+                .is_enabled()
+                .then_some(self.manifest.moe.experts_per_token)
+                .flatten(),
         }
     }
 
@@ -625,6 +637,12 @@ pub struct NativeModelArtifactsSummary {
     /// None for pure-attention or pure-linear-attention models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hybrid_full_attention_interval: Option<u32>,
+    /// For MLA models: latent KV dimension (`kv_lora_rank` in the manifest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mla_kv_latent_dim: Option<u32>,
+    /// For MoE models: active experts selected per token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moe_active_experts: Option<u32>,
 }
 
 #[derive(Debug, Error)]
@@ -3559,10 +3577,38 @@ mod tests {
                 is_moe: false,
                 is_hybrid_attention: false,
                 hybrid_full_attention_interval: None,
+                mla_kv_latent_dim: None,
+                moe_active_experts: None,
             }
         );
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_summary_reports_mla_and_moe_dimensions() {
+        let mut manifest = packed_layer_manifest();
+        manifest.mla_attention = NativeMlaAttentionConfig {
+            q_lora_rank: Some(768),
+            kv_lora_rank: Some(512),
+            qk_nope_head_dim: Some(192),
+            qk_rope_head_dim: Some(64),
+            value_head_dim: Some(256),
+        };
+        manifest.moe = NativeMoeConfig {
+            expert_count: Some(64),
+            experts_per_token: Some(4),
+            expert_intermediate_size: Some(1536),
+        };
+        let artifacts = NativeModelArtifacts {
+            root_dir: PathBuf::new(),
+            manifest,
+        };
+
+        let summary = artifacts.summary();
+
+        assert_eq!(summary.mla_kv_latent_dim, Some(512));
+        assert_eq!(summary.moe_active_experts, Some(4));
     }
 
     #[test]

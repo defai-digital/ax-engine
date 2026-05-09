@@ -2568,6 +2568,8 @@ mod tests {
                     is_moe: false,
                     is_hybrid_attention: false,
                     hybrid_full_attention_interval: None,
+                    mla_kv_latent_dim: None,
+                    moe_active_experts: None,
                 }),
             },
             workload: MetalDispatchWorkload {
@@ -3167,6 +3169,8 @@ sys.stdout.write(f"session::{prompt}")
                 is_moe: false,
                 is_hybrid_attention: false,
                 hybrid_full_attention_interval: None,
+                mla_kv_latent_dim: None,
+                moe_active_experts: None,
                 bindings_prepared: true,
                 buffers_bound: true,
                 buffer_count: 9,

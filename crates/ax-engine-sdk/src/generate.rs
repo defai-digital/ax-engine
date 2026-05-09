@@ -148,6 +148,16 @@ impl GenerateRouteReport {
         self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS)
     }
 
+    /// Returns the MLA latent KV dimension for this request, when reported by the MLX model route.
+    pub fn mla_kv_latent_dim(&self) -> Option<u32> {
+        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM)
+    }
+
+    /// Returns the number of active MoE experts selected per token, when reported by the route.
+    pub fn moe_active_experts(&self) -> Option<u32> {
+        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS)
+    }
+
     /// Returns the number of KV growth events recorded for this request.
     pub fn kv_growth_count(&self) -> Option<u32> {
         self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT)
@@ -502,6 +512,14 @@ mod tests {
                         .to_string(),
                     8,
                 ),
+                (
+                    ax_engine_core::ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM.to_string(),
+                    512,
+                ),
+                (
+                    ax_engine_core::ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS.to_string(),
+                    4,
+                ),
             ],
         };
 
@@ -529,6 +547,8 @@ mod tests {
                 .get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB),
             Some(&8)
         );
+        assert_eq!(report.mla_kv_latent_dim(), Some(512));
+        assert_eq!(report.moe_active_experts(), Some(4));
         assert_eq!(
             report.prefix_cache_path.as_deref(),
             Some("live_request_share")
