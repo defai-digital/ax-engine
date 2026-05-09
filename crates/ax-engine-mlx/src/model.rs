@@ -3,7 +3,7 @@ use mlx_sys::{
     astype, broadcast_to, concatenate, dequantize, divide, eval, expand_dims, expand_dims_axes,
     gather_mm, gather_qmm, gelu_approx, matmul, multiply, put_along_axis, quantized_matmul,
     reshape, rms_norm, rope, scaled_dot_product_attention_with_mask, slice, slice_last_dim,
-    softmax, sum_axis, take, take_along_axis, tanh, transpose, where_cond, zeros,
+    softmax, sum_axis, take, take_along_axis, tanh, transpose, zeros,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -2097,17 +2097,6 @@ fn glm_mla_project_and_cache_inputs(
     }
 }
 
-/// GLM4MoELite RoPE score bias: `(q_pe * scale) @ k_pe.T`.
-#[allow(dead_code)] // Reference for the split positional-score path replaced by packed SDPA.
-fn glm_mla_positional_scores(cfg: &ModelConfig, q_pe: &MlxArray, k_pe: &MlxArray) -> MlxArray {
-    let mla_cfg = cfg
-        .glm_mla_attention
-        .as_ref()
-        .expect("GLM MLA attention config");
-    let q_pe = scale_hidden(q_pe, mla_cfg.query_scale);
-    matmul(&q_pe, &transpose(k_pe, &[0, 1, 3, 2], None), None)
-}
-
 /// GLM4MoELite MLA attention up to the output projection boundary.
 ///
 /// Uses packed SDPA matching Swift's GLM4MoELite implementation:
@@ -2171,28 +2160,10 @@ fn glm_mla_attention_forward(
     )
 }
 
-#[allow(dead_code)] // Reference for the split positional-score causal mask replaced by packed SDPA.
-fn glm_mla_causal_positional_scores(
-    seq: usize,
-    key_len: usize,
-    positional_scores: &MlxArray,
-) -> MlxArray {
-    if seq == 1 {
-        return positional_scores.clone();
-    }
-    let offset = key_len
-        .checked_sub(seq)
-        .expect("GLM MLA key length must include current sequence");
-    let mask = create_causal_mask(seq, offset, None);
-    let mask = expand_dims_axes(&mask, &[0, 1], None);
-    let masked_value = scalar_like(-1.0e30, positional_scores.dtype());
-    where_cond(&mask, positional_scores, &masked_value, None)
-}
-
 /// Prefill path: `kv_latent [B,1,seq,kv_lora_rank] @ embed_q [n_heads,kv_lora_rank,qk_nope_head_dim]`
 /// → `[B,n_heads,seq,qk_nope_head_dim]`.  Uses quantized_matmul (transpose=false) so the 4-bit
 /// packed weight is never materialized as float — equivalent to mlx-lm QuantizedMultiLinear(transpose=False).
-#[allow(dead_code)] // Reference for the old split prefill path; packed SDPA uses decode embedding.
+#[cfg(test)]
 fn glm_mla_embed_q_prefill(cfg: &ModelConfig, w: &LayerWeights, kv_latent: &MlxArray) -> MlxArray {
     let mla_cfg = cfg
         .glm_mla_attention
