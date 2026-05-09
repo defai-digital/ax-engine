@@ -34,6 +34,10 @@ throughput baselines.
   selection, temporary paths, free-port allocation, and PID cleanup.
 - `check-scripts.sh`: fast script hygiene gate. It syntax-checks shell scripts,
   compiles Python scripts, and runs the MLX inference-stack contract tests.
+- `check-cli-tui-phase0.sh`: non-interactive Phase 0 gate for the future
+  Ratatui manager. It verifies the download, manifest-generation, doctor,
+  model-artifact readiness, benchmark-artifact, and server metadata JSON
+  contracts without requiring real model weights.
 - `download_model.py`: general-purpose MLX model download helper. It downloads a
   Hugging Face snapshot to `~/.cache/ax-engine/models/<repo-slug>` by default,
   validates local model files, and generates the AX model manifest when

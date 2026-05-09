@@ -252,6 +252,8 @@ Exit criteria:
 - no TUI code depends on fragile text parsing for success detection;
 - model download, manifest generation, doctor, model directory readiness, server
   health, and benchmark artifact paths are machine-readable.
+- `bash scripts/check-cli-tui-phase0.sh` passes as the non-interactive Phase 0
+  contract gate before Ratatui implementation begins.
 
 ### Phase 1: Read-Only Cockpit
 
@@ -336,6 +338,7 @@ and thiserror. It must not add dependencies to engine-core or server crates.
 - Test server polling with a local test HTTP server.
 - Add a non-interactive `--check` or `--doctor` mode for CI and Homebrew smoke
   tests.
+- Run `bash scripts/check-cli-tui-phase0.sh` after any Phase 0 contract change.
 - Run `cargo fmt --all` and `cargo test -p ax-engine-tui` for TUI-only changes.
 - Run broader workspace tests only when shared contracts or dependency manifests
   change.
