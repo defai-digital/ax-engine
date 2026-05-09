@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -114,6 +114,35 @@ where
     }
 
     unreachable!("delegated HTTP retry loop always returns from its final attempt")
+}
+
+pub(crate) fn send_json_post_request<T, E, F>(
+    endpoint: &str,
+    payload: &T,
+    accept: Option<&str>,
+    timeouts: DelegatedHttpTimeouts,
+    map_error: F,
+) -> Result<ureq::Response, E>
+where
+    T: Serialize + ?Sized,
+    F: FnOnce(DelegatedHttpPostError) -> E,
+{
+    send_json_post_with_retry(endpoint, payload, timeouts, accept).map_err(map_error)
+}
+
+pub(crate) fn parse_json_response<T, E, F>(response: ureq::Response, map_error: F) -> Result<T, E>
+where
+    T: DeserializeOwned,
+    F: FnOnce(serde_json::Error) -> E,
+{
+    serde_json::from_reader(response.into_reader()).map_err(map_error)
+}
+
+pub(crate) fn normalize_base_url(mut value: String) -> String {
+    while value.ends_with('/') {
+        value.pop();
+    }
+    value
 }
 
 fn is_retryable_transport_error(error: &ureq::Error) -> bool {
