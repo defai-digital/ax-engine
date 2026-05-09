@@ -120,7 +120,9 @@ cargo run -p ax-engine-server -- \
 `--list-presets` prints the built-in preset names. Presets do not download
 weights and do not silently scan local caches. If the model directory is already
 available through `AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`, the explicit path flag can
-be omitted.
+be omitted. Current built-ins are `gemma4-e2b`, `gemma4-31b`,
+`qwen3.6-35b`, and `glm4.7-flash-4bit` for GLM-4.7 Flash
+(`glm4_moe_lite`).
 
 Hugging Face cache discovery is opt-in:
 

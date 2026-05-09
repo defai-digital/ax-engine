@@ -63,6 +63,12 @@ pub enum ServerPreset {
     Gemma4E2b,
     #[value(name = "gemma4-31b")]
     Gemma4_31b,
+    #[value(
+        name = "glm4.7-flash-4bit",
+        alias = "glm47-flash-4bit",
+        alias = "glm4-moe-lite"
+    )]
+    Glm47Flash4bit,
     #[value(name = "qwen3.6-35b", alias = "qwen36-35b")]
     Qwen36_35b,
 }
@@ -116,6 +122,22 @@ impl ServerPreset {
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
+            Self::Glm47Flash4bit => PresetDefinition {
+                preset: self,
+                label: "glm4.7-flash-4bit",
+                model_id: "glm4_moe_lite",
+                aliases: &[
+                    "glm4.7-flash-4bit",
+                    "glm47-flash-4bit",
+                    "glm4-moe-lite",
+                    "glm4_moe_lite",
+                    "glm-4.7-flash-4bit",
+                    "glm-4-7-flash-4bit",
+                ],
+                model_types: &["glm4_moe_lite"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
             Self::Qwen36_35b => PresetDefinition {
                 preset: self,
                 label: "qwen3.6-35b",
@@ -139,6 +161,7 @@ pub fn render_presets() -> String {
     [
         ServerPreset::Gemma4E2b,
         ServerPreset::Gemma4_31b,
+        ServerPreset::Glm47Flash4bit,
         ServerPreset::Qwen36_35b,
     ]
     .into_iter()
@@ -922,6 +945,40 @@ mod tests {
     }
 
     #[test]
+    fn glm_preset_selects_mlx_preview_defaults() {
+        let mlx_model_artifacts_dir = PathBuf::from("/tmp/GLM-4.7-Flash-4bit");
+        let args = ServerArgs {
+            preset: Some(ServerPreset::Glm47Flash4bit),
+            mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
+            ..base_args()
+        };
+
+        let actual = args.session_config().expect("session config should build");
+
+        assert_eq!(args.effective_model_id(), "glm4_moe_lite");
+        assert_eq!(
+            args.effective_support_tier(),
+            PreviewSupportTier::MlxPreview
+        );
+        assert_eq!(
+            actual.resolved_backend.selected_backend,
+            SelectedBackend::Mlx
+        );
+        assert_eq!(actual.max_batch_tokens, 2048);
+        assert_eq!(
+            actual.mlx_model_artifacts_dir.as_deref(),
+            Some(mlx_model_artifacts_dir.as_path())
+        );
+    }
+
+    #[test]
+    fn render_presets_lists_glm_preset() {
+        let presets = render_presets();
+
+        assert!(presets.contains("glm4.7-flash-4bit\tmodel_id=glm4_moe_lite"));
+    }
+
+    #[test]
     fn preset_hf_cache_resolution_finds_single_valid_snapshot() {
         let root = unique_test_dir("hf-cache-single");
         let expected = write_hf_snapshot(
@@ -932,6 +989,31 @@ mod tests {
         );
         let args = ServerArgs {
             preset: Some(ServerPreset::Gemma4E2b),
+            resolve_model_artifacts: ModelArtifactResolution::HfCache,
+            hf_cache_root: Some(root.clone()),
+            ..base_args()
+        };
+
+        let actual = args.session_config().expect("session config should build");
+
+        assert_eq!(
+            actual.mlx_model_artifacts_dir.as_deref(),
+            Some(expected.as_path())
+        );
+        fs::remove_dir_all(root).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn glm_preset_hf_cache_resolution_finds_single_valid_snapshot() {
+        let root = unique_test_dir("hf-cache-glm");
+        let expected = write_hf_snapshot(
+            &root,
+            "models--mlx-community--GLM-4.7-Flash-4bit",
+            "abc123",
+            "glm4_moe_lite",
+        );
+        let args = ServerArgs {
+            preset: Some(ServerPreset::Glm47Flash4bit),
             resolve_model_artifacts: ModelArtifactResolution::HfCache,
             hf_cache_root: Some(root.clone()),
             ..base_args()
