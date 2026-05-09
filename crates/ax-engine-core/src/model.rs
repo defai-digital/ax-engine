@@ -1047,7 +1047,7 @@ fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::FfnGateUpExpsPacked)
             || roles.contains(&NativeTensorRole::FfnDownExps)
             || roles.contains(&NativeTensorRole::FfnDownExpsScale);
-        if manifest.model_family == "gemma4" {
+        if manifest.model_family == "gemma4" && has_moe_expert_ffn {
             if has_any_attention {
                 require_layer_role(
                     roles,
@@ -1062,15 +1062,13 @@ fn validate_native_model_manifest(
                 layer_index,
                 "ffn_post_norm",
             )?;
-            if has_moe_expert_ffn {
-                for (role, label) in [
-                    (NativeTensorRole::FfnGateInpScale, "ffn_gate_inp_scale"),
-                    (NativeTensorRole::FfnNorm2, "ffn_norm_2"),
-                    (NativeTensorRole::FfnPostNorm1, "ffn_post_norm_1"),
-                    (NativeTensorRole::FfnPostNorm2, "ffn_post_norm_2"),
-                ] {
-                    require_layer_role(roles, role, layer_index, label)?;
-                }
+            for (role, label) in [
+                (NativeTensorRole::FfnGateInpScale, "ffn_gate_inp_scale"),
+                (NativeTensorRole::FfnNorm2, "ffn_norm_2"),
+                (NativeTensorRole::FfnPostNorm1, "ffn_post_norm_1"),
+                (NativeTensorRole::FfnPostNorm2, "ffn_post_norm_2"),
+            ] {
+                require_layer_role(roles, role, layer_index, label)?;
             }
         }
         if has_any_attention {
@@ -3651,6 +3649,18 @@ mod tests {
                 .and_then(|config| config.expert_count),
             Some(128)
         );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_gemma4_dense_without_moe_only_norms() {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "gemma4".to_string();
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("Gemma4 dense manifests should not require MoE-only norm roles");
 
         let _ = fs::remove_dir_all(dir);
     }
