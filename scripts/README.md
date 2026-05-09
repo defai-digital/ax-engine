@@ -162,6 +162,11 @@ throughput baselines.
   hits, zero blocked snapshot paths, and deterministic correctness evidence.
 - `test_mlx_prefix_warmup_artifact.py`: unit tests for the prefix warmup
   artifact validator.
+- `build_mlx_prefix_warmup_artifact.py`: builds `ax.mlx_prefix_warmup.v1` from
+  an `ax-engine-bench` result directory by combining manifest events, route
+  prefix counters, trace prefix-reuse items, and correctness/determinism gates.
+- `test_build_mlx_prefix_warmup_artifact.py`: unit tests for the prefix warmup
+  artifact builder.
 - `run_mlx_p2_latency_artifacts.py`: real-model P2 runner for startup and
   concurrent-prefill evidence. It starts the AX MLX server in direct mode,
   writes prompt-token artifacts, captures `ax.mlx_startup_latency.v1` and

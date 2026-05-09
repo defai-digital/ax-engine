@@ -15,6 +15,10 @@ from typing import Any
 SCHEMA_VERSION = "ax.mlx_prefix_warmup.v1"
 PROMPT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 CORRECTNESS_STATUSES = {"passed"}
+PROMPT_DIGEST_FIELDS = {
+    "prompt_token_ids_sha256": "token_ids",
+    "prompt_ref_sha256": "prompt_ref_bytes",
+}
 
 
 class PrefixWarmupArtifactError(RuntimeError):
@@ -90,6 +94,26 @@ def validate_prompt_hash(value: str, *, owner: str) -> None:
         raise PrefixWarmupArtifactError(f"{owner} is not a valid sha256")
 
 
+def validate_prompt_digest(observation: dict[str, Any], *, owner: str) -> None:
+    digest_fields = [
+        (field, kind)
+        for field, kind in PROMPT_DIGEST_FIELDS.items()
+        if field in observation
+    ]
+    if len(digest_fields) != 1:
+        raise PrefixWarmupArtifactError(
+            f"{owner} must contain exactly one prompt digest field"
+        )
+    field, expected_kind = digest_fields[0]
+    prompt_hash = require_non_empty_str(observation, field, owner=owner)
+    validate_prompt_hash(prompt_hash, owner=f"{owner}.{field}")
+    kind = require_non_empty_str(observation, "prompt_digest_kind", owner=owner)
+    if kind != expected_kind:
+        raise PrefixWarmupArtifactError(
+            f"{owner}.prompt_digest_kind must be {expected_kind}"
+        )
+
+
 def validate_top_level(path: Path, artifact: dict[str, Any]) -> None:
     if artifact.get("schema_version") != SCHEMA_VERSION:
         raise PrefixWarmupArtifactError(
@@ -121,10 +145,7 @@ def parse_observation(
 ) -> PrefixWarmupObservation:
     owner = f"{path}.observations[{index}]"
     request_id = require_non_empty_str(observation, "request_id", owner=owner)
-    prompt_hash = require_non_empty_str(
-        observation, "prompt_token_ids_sha256", owner=owner
-    )
-    validate_prompt_hash(prompt_hash, owner=f"{owner}.prompt_token_ids_sha256")
+    validate_prompt_digest(observation, owner=owner)
 
     route = require_mapping(observation, "route", owner=owner)
     if route.get("selected_backend") != "mlx":
