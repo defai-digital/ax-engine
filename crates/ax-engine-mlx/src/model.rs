@@ -432,6 +432,9 @@ impl GlmMlaAttentionConfig {
             qk_rope_head_dim,
             value_head_dim,
             q_head_dim,
+            // GLM MLA scales scores by the original query head width
+            // (qk_nope_head_dim + qk_rope_head_dim), not by the packed
+            // SDPA key width (kv_lora_rank + qk_rope_head_dim).
             query_scale: 1.0 / (q_head_dim as f32).sqrt(),
         })
     }
@@ -3904,9 +3907,11 @@ mod tests {
         assert_eq!(mla.qk_rope_head_dim, 64);
         assert_eq!(mla.value_head_dim, 256);
         assert_eq!(mla.q_head_dim, 256);
+        assert_eq!(mla.kv_lora_rank + mla.qk_rope_head_dim, 576);
         assert_eq!(mla.latent_kv_cache_width(), 512);
         assert_eq!(mla.rope_key_cache_width(), 64);
         assert!((mla.query_scale - (1.0 / 256_f32.sqrt())).abs() < f32::EPSILON);
+        assert_ne!(mla.query_scale, 1.0 / 576_f32.sqrt());
         assert_eq!(cfg.query_scale, mla.query_scale);
     }
 
