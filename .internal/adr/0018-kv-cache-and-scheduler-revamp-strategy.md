@@ -173,7 +173,8 @@ with deterministic correctness evidence before deeper coordination work is
 justified. The paired builder converts `ax-engine-bench` manifest, metrics,
 routes, and trace outputs into that checked artifact shape, and rejects sources
 that are not deterministic MLX replay runs with prefix cache and prefix-reuse
-checks enabled.
+checks enabled. It also requires passing replay, churn, correctness, and
+determinism gates before emitting the artifact.
 
 Only after evidence shows material warmup cost should AX consider an engine-runner
 coordination API for preflight physical-prefix availability.

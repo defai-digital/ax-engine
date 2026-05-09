@@ -228,6 +228,8 @@ surface through better defaults, route metadata, and benchmark artifacts.
 - Prefix warmup artifact building now rejects non-replay manifests,
   non-MLX manifests, prefix-cache-disabled manifests, nondeterministic manifests,
   and manifests that do not require prefix reuse.
+- Prefix warmup artifact building now also requires passing replay status,
+  churn status, correctness, and determinism gates from `metrics.json`.
 
 #### Open
 
