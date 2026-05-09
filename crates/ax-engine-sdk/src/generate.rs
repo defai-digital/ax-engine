@@ -168,6 +168,7 @@ pub enum GenerateStatus {
 pub enum GenerateFinishReason {
     Stop,
     MaxOutputTokens,
+    ContentFilter,
     Cancelled,
     Error,
 }

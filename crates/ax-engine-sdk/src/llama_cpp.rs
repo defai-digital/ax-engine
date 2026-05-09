@@ -530,8 +530,16 @@ fn finish_reason_from_stop_type(
 
     match stop_type {
         Some("limit") => Some(GenerateFinishReason::MaxOutputTokens),
+        Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
         // "eos" = natural end-of-sequence, "word" = stop string match — both are Stop.
-        _ => Some(GenerateFinishReason::Stop),
+        Some("eos" | "word") | None => Some(GenerateFinishReason::Stop),
+        Some(unknown) => {
+            tracing::warn!(
+                stop_type = unknown,
+                "llama.cpp returned unknown stop_type; reporting generic stop"
+            );
+            Some(GenerateFinishReason::Stop)
+        }
     }
 }
 

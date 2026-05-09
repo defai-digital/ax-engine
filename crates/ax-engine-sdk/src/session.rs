@@ -40,6 +40,9 @@ const NATIVE_METAL_BUILD_DIR_ENV: &str = "AX_ENGINE_METAL_BUILD_DIR";
 const NATIVE_MODEL_DIR_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 const MAX_LLAMA_CPP_TERMINAL_REQUESTS: usize = 1024;
 const MAX_NATIVE_ROUTE_REPORTS: usize = 1024;
+// Native streaming advances through prompt prefill, decode, and occasional scheduler
+// bookkeeping steps; keep the guard explicit so it is not an unexplained literal.
+const NATIVE_STREAM_STEP_GUARD_BUFFER: u64 = 256;
 
 #[derive(Clone, Debug)]
 pub struct EngineSessionConfig {
@@ -1439,7 +1442,7 @@ impl GenerateStreamState {
     ) -> Self {
         let max_steps = u64::from(current_report.prompt_len)
             + u64::from(current_report.max_output_tokens)
-            + 256;
+            + NATIVE_STREAM_STEP_GUARD_BUFFER;
 
         Self::Native(Box::new(NativeGenerateStreamState {
             request_id,
@@ -1997,10 +2000,15 @@ fn finish_reason_from_stop_type(
         // OpenAI-compatible format (vLLM, mistral.rs, mlx)
         Some("length") => Some(crate::generate::GenerateFinishReason::MaxOutputTokens),
         Some("stop") => Some(crate::generate::GenerateFinishReason::Stop),
+        Some("content_filter") => Some(crate::generate::GenerateFinishReason::ContentFilter),
         None => Some(crate::generate::GenerateFinishReason::MaxOutputTokens),
-        // Unknown stop types (e.g. "content_filter"): default to MaxOutputTokens so the
-        // request is marked complete with a non-null finish reason.
-        Some(_) => Some(crate::generate::GenerateFinishReason::MaxOutputTokens),
+        Some(unknown) => {
+            tracing::warn!(
+                stop_type = unknown,
+                "llama.cpp stream returned unknown stop_type; reporting generic stop"
+            );
+            Some(crate::generate::GenerateFinishReason::Stop)
+        }
     }
 }
 
@@ -2013,6 +2021,9 @@ fn terminal_stop_reason_from_finish_reason(
         }
         Some(crate::generate::GenerateFinishReason::MaxOutputTokens) => {
             Some(ax_engine_core::StopReason::MaxOutputTokens)
+        }
+        Some(crate::generate::GenerateFinishReason::ContentFilter) => {
+            Some(ax_engine_core::StopReason::Error)
         }
         Some(crate::generate::GenerateFinishReason::Cancelled) => {
             Some(ax_engine_core::StopReason::Cancelled)
@@ -4222,6 +4233,20 @@ sys.stdout.write(f"session::{prompt}")
             error,
             EngineSessionError::RequestReportInvariantViolation { request_id: 41, .. }
         ));
+    }
+
+    #[test]
+    fn llama_cpp_stream_finish_reason_preserves_content_filter() {
+        assert_eq!(
+            finish_reason_from_stop_type(true, Some("content_filter")),
+            Some(crate::generate::GenerateFinishReason::ContentFilter)
+        );
+        assert_eq!(
+            terminal_stop_reason_from_finish_reason(Some(
+                crate::generate::GenerateFinishReason::ContentFilter
+            )),
+            Some(ax_engine_core::StopReason::Error)
+        );
     }
 
     #[test]

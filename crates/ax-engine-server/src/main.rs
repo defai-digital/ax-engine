@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::{Instant, sleep_until};
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -35,6 +35,11 @@ use args::{ServerArgs, render_presets};
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS: u64 = 2;
 const DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH: usize = 32;
+const STREAM_CHANNEL_CAPACITY: usize = 128;
+
+type StreamEvent = Result<Event, Infallible>;
+type StreamEventSender = mpsc::Sender<StreamEvent>;
+type StreamEventReceiver = mpsc::Receiver<StreamEvent>;
 
 #[derive(Clone)]
 struct AppState {
@@ -127,7 +132,10 @@ struct ErrorResponse {
 
 #[derive(Debug, Serialize)]
 struct ErrorBody {
-    code: &'static str,
+    #[serde(rename = "type")]
+    error_type: &'static str,
+    code: Option<String>,
+    param: Option<String>,
     message: String,
 }
 
@@ -406,6 +414,29 @@ impl OpenAiStreamKind {
             OpenAiStreamKind::ChatCompletion => {
                 Json(openai_chat_completion_response(response, id)).into_response()
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChatPromptTemplate {
+    QwenChatMl,
+    Llama3,
+    PlainRolePrefix,
+}
+
+impl ChatPromptTemplate {
+    fn for_model_id(model_id: &str) -> Self {
+        let normalized = model_id.to_ascii_lowercase();
+        if normalized.contains("qwen") {
+            Self::QwenChatMl
+        } else if normalized.contains("llama-3")
+            || normalized.contains("llama3")
+            || normalized.contains("llama_3")
+        {
+            Self::Llama3
+        } else {
+            Self::PlainRolePrefix
         }
     }
 }
@@ -886,16 +917,13 @@ async fn run_openai_text_generation(
 async fn generate_stream(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
-) -> Result<
-    Sse<UnboundedReceiverStream<Result<Event, Infallible>>>,
-    (StatusCode, Json<ErrorResponse>),
-> {
+) -> Result<Sse<ReceiverStream<StreamEvent>>, (StatusCode, Json<ErrorResponse>)> {
     validate_model(&state, request.model.as_deref())?;
 
     let request = build_generate_request(&state, request);
     let (stream_state, stream_context) = build_stream_state(&state, request).await?;
 
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_stream_task(
         tx,
         stream_state,
@@ -919,7 +947,7 @@ async fn stream_openai_request(
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let (stream_state, stream_context) = build_stream_state(&state, request).await?;
 
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_stream_task(
         tx,
         stream_state,
@@ -1015,14 +1043,9 @@ async fn run_stateless_generate_request(
     Ok((request_id, response))
 }
 
-fn spawn_stream_task<F>(
-    tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
-    stream_state: GenerateStreamState,
-    driver: F,
-) where
-    F: FnOnce(&mut GenerateStreamState, mpsc::UnboundedSender<Result<Event, Infallible>>)
-        + Send
-        + 'static,
+fn spawn_stream_task<F>(tx: StreamEventSender, stream_state: GenerateStreamState, driver: F)
+where
+    F: FnOnce(&mut GenerateStreamState, StreamEventSender) + Send + 'static,
 {
     tokio::task::spawn_blocking(move || {
         let mut stream_state = stream_state;
@@ -1041,7 +1064,7 @@ fn validate_openai_request(
 fn drive_generate_stream_state(
     session: &mut EngineSession,
     state: &mut GenerateStreamState,
-    tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
+    tx: StreamEventSender,
 ) {
     drive_stream_events(
         state,
@@ -1055,7 +1078,7 @@ fn drive_generate_stream_state(
 fn drive_stateless_generate_stream_state(
     context: Arc<StatelessGenerateContext>,
     state: &mut GenerateStreamState,
-    tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
+    tx: StreamEventSender,
 ) {
     drive_stream_events(
         state,
@@ -1069,7 +1092,7 @@ fn drive_stateless_generate_stream_state(
 fn drive_openai_stream_state(
     session: &mut EngineSession,
     state: &mut GenerateStreamState,
-    tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
+    tx: StreamEventSender,
     stream_kind: OpenAiStreamKind,
 ) {
     let mut chat_role_emitted = false;
@@ -1080,7 +1103,7 @@ fn drive_openai_stream_state(
         |state| session.next_stream_event(state),
         |event| send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted),
         || {
-            let _ = tx.send(Ok(Event::default().data("[DONE]")));
+            let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
         },
     );
 }
@@ -1088,7 +1111,7 @@ fn drive_openai_stream_state(
 fn drive_stateless_openai_stream_state(
     context: Arc<StatelessGenerateContext>,
     state: &mut GenerateStreamState,
-    tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
+    tx: StreamEventSender,
     stream_kind: OpenAiStreamKind,
 ) {
     let mut chat_role_emitted = false;
@@ -1099,14 +1122,14 @@ fn drive_stateless_openai_stream_state(
         |state| context.next_stream_event(state),
         |event| send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted),
         || {
-            let _ = tx.send(Ok(Event::default().data("[DONE]")));
+            let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
         },
     );
 }
 
 fn drive_stream_events<N, E, D>(
     state: &mut GenerateStreamState,
-    tx: &mpsc::UnboundedSender<Result<Event, Infallible>>,
+    tx: &StreamEventSender,
     mut next_event: N,
     mut emit_event: E,
     mut on_done: D,
@@ -1135,10 +1158,7 @@ fn drive_stream_events<N, E, D>(
     }
 }
 
-fn send_sdk_stream_event(
-    tx: &mpsc::UnboundedSender<Result<Event, Infallible>>,
-    event: GenerateStreamEvent,
-) -> bool {
+fn send_sdk_stream_event(tx: &StreamEventSender, event: GenerateStreamEvent) -> bool {
     let event_name = event.event_name();
 
     match event {
@@ -1149,7 +1169,7 @@ fn send_sdk_stream_event(
 }
 
 fn send_openai_stream_event(
-    tx: &mpsc::UnboundedSender<Result<Event, Infallible>>,
+    tx: &StreamEventSender,
     event: GenerateStreamEvent,
     stream_kind: OpenAiStreamKind,
     chat_role_emitted: &mut bool,
@@ -1239,21 +1259,19 @@ fn send_openai_stream_event(
     }
 }
 
-fn send_stream_event<T: Serialize>(
-    tx: &mpsc::UnboundedSender<Result<Event, Infallible>>,
-    event_name: &str,
-    payload: &T,
-) -> bool {
+fn send_stream_event<T: Serialize>(tx: &StreamEventSender, event_name: &str, payload: &T) -> bool {
     match serde_json::to_string(payload) {
         Ok(data) => tx
-            .send(Ok(Event::default().event(event_name).data(data)))
+            .blocking_send(Ok(Event::default().event(event_name).data(data)))
             .is_ok(),
         Err(error) => {
             send_stream_error(
                 tx,
                 ErrorResponse {
                     error: ErrorBody {
-                        code: "engine_error",
+                        error_type: "server_error",
+                        code: Some("engine_error".to_string()),
+                        param: None,
                         message: format!("failed to serialize {event_name} event: {error}"),
                     },
                 },
@@ -1263,37 +1281,33 @@ fn send_stream_event<T: Serialize>(
     }
 }
 
-fn build_keep_alive_stream(
-    rx: mpsc::UnboundedReceiver<Result<Event, Infallible>>,
-) -> Sse<UnboundedReceiverStream<Result<Event, Infallible>>> {
-    Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(
+fn build_keep_alive_stream(rx: StreamEventReceiver) -> Sse<ReceiverStream<StreamEvent>> {
+    Sse::new(ReceiverStream::new(rx)).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(5))
             .text("keep-alive"),
     )
 }
 
-fn send_stream_error(tx: &mpsc::UnboundedSender<Result<Event, Infallible>>, error: ErrorResponse) {
+fn send_stream_error(tx: &StreamEventSender, error: ErrorResponse) {
     let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
-        "{\"error\":{\"code\":\"engine_error\",\"message\":\"failed to serialize stream error\"}}"
-            .to_string()
+        "{\"error\":{\"type\":\"server_error\",\"code\":\"engine_error\",\"param\":null,\"message\":\"failed to serialize stream error\"}}".to_string()
     });
-    let _ = tx.send(Ok(Event::default().event("error").data(payload)));
-    let _ = tx.send(Ok(Event::default().data("[DONE]")));
+    let _ = tx.blocking_send(Ok(Event::default().event("error").data(payload)));
+    let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
 }
 
-fn send_openai_stream_chunk<T: Serialize>(
-    tx: &mpsc::UnboundedSender<Result<Event, Infallible>>,
-    payload: &T,
-) -> bool {
+fn send_openai_stream_chunk<T: Serialize>(tx: &StreamEventSender, payload: &T) -> bool {
     match serde_json::to_string(payload) {
-        Ok(data) => tx.send(Ok(Event::default().data(data))).is_ok(),
+        Ok(data) => tx.blocking_send(Ok(Event::default().data(data))).is_ok(),
         Err(error) => {
             send_stream_error(
                 tx,
                 ErrorResponse {
                     error: ErrorBody {
-                        code: "engine_error",
+                        error_type: "server_error",
+                        code: Some("engine_error".to_string()),
+                        param: None,
                         message: format!("failed to serialize OpenAI stream chunk: {error}"),
                     },
                 },
@@ -1437,7 +1451,7 @@ fn build_openai_chat_request(
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = require_openai_max_tokens(request.max_tokens)?;
-    let input_text = render_openai_chat_prompt(&request.messages)?;
+    let input_text = render_openai_chat_prompt(state.model_id.as_ref(), &request.messages)?;
 
     Ok(OpenAiBuiltRequest {
         generate_request: build_openai_generate_request(
@@ -1535,6 +1549,7 @@ fn require_openai_max_tokens(
 }
 
 fn render_openai_chat_prompt(
+    model_id: &str,
     messages: &[OpenAiChatMessage],
 ) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
     if messages.is_empty() {
@@ -1545,16 +1560,50 @@ fn render_openai_chat_prompt(
         ));
     }
 
+    render_openai_chat_prompt_with_template(ChatPromptTemplate::for_model_id(model_id), messages)
+}
+
+fn render_openai_chat_prompt_with_template(
+    template: ChatPromptTemplate,
+    messages: &[OpenAiChatMessage],
+) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
     let mut prompt = String::new();
+    if template == ChatPromptTemplate::Llama3 {
+        prompt.push_str("<|begin_of_text|>");
+    }
     for message in messages {
         let role = normalize_openai_chat_role(&message.role)?;
         let content = render_openai_chat_content(&message.content)?;
-        prompt.push_str(role);
-        prompt.push_str(": ");
-        prompt.push_str(&content);
-        prompt.push('\n');
+        match template {
+            ChatPromptTemplate::QwenChatMl => {
+                prompt.push_str("<|im_start|>");
+                prompt.push_str(role);
+                prompt.push('\n');
+                prompt.push_str(&content);
+                prompt.push_str("<|im_end|>\n");
+            }
+            ChatPromptTemplate::Llama3 => {
+                prompt.push_str("<|start_header_id|>");
+                prompt.push_str(role);
+                prompt.push_str("<|end_header_id|>\n\n");
+                prompt.push_str(&content);
+                prompt.push_str("<|eot_id|>");
+            }
+            ChatPromptTemplate::PlainRolePrefix => {
+                prompt.push_str(role);
+                prompt.push_str(": ");
+                prompt.push_str(&content);
+                prompt.push('\n');
+            }
+        }
     }
-    prompt.push_str("assistant:");
+    match template {
+        ChatPromptTemplate::QwenChatMl => prompt.push_str("<|im_start|>assistant\n"),
+        ChatPromptTemplate::Llama3 => {
+            prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
+        }
+        ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
+    }
     Ok(prompt)
 }
 
@@ -1657,6 +1706,7 @@ fn openai_finish_reason(finish_reason: Option<GenerateFinishReason>) -> Option<&
     match finish_reason {
         Some(GenerateFinishReason::MaxOutputTokens) => Some("length"),
         Some(GenerateFinishReason::Stop) => Some("stop"),
+        Some(GenerateFinishReason::ContentFilter) => Some("content_filter"),
         Some(GenerateFinishReason::Cancelled) | Some(GenerateFinishReason::Error) | None => None,
     }
 }
@@ -1791,9 +1841,22 @@ fn error_response(
     (
         status,
         Json(ErrorResponse {
-            error: ErrorBody { code, message },
+            error: ErrorBody {
+                error_type: openai_error_type(status),
+                code: Some(code.to_string()),
+                param: None,
+                message,
+            },
         }),
     )
+}
+
+fn openai_error_type(status: StatusCode) -> &'static str {
+    if status.is_client_error() {
+        "invalid_request_error"
+    } else {
+        "server_error"
+    }
 }
 
 fn request_not_found_response(request_id: u64) -> (StatusCode, Json<ErrorResponse>) {
@@ -1872,6 +1935,10 @@ mod tests {
 
     fn sample_openai_chat_request(message: &str, max_tokens: Option<u32>, stream: bool) -> Value {
         sample_openai_chat_request_with_role(message, "user", max_tokens, stream)
+    }
+
+    fn expected_qwen_chatml_user_prompt(message: &str) -> String {
+        format!("<|im_start|>user\n{message}<|im_end|>\n<|im_start|>assistant\n")
     }
 
     fn sample_openai_chat_request_with_role(
@@ -2667,9 +2734,19 @@ sys.stdout.write(f"server::{prompt}")
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(
             json.get("error")
+                .and_then(|error| error.get("type"))
+                .and_then(Value::as_str),
+            Some("invalid_request_error")
+        );
+        assert_eq!(
+            json.get("error")
                 .and_then(|error| error.get("code"))
                 .and_then(Value::as_str),
             Some("invalid_request")
+        );
+        assert_eq!(
+            json.get("error").and_then(|error| error.get("param")),
+            Some(&Value::Null)
         );
         assert!(
             json.get("error")
@@ -2677,6 +2754,29 @@ sys.stdout.write(f"server::{prompt}")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .contains("require max_tokens")
+        );
+    }
+
+    #[test]
+    fn openai_chat_prompt_renderer_uses_model_family_templates() {
+        let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "Hello"}
+        ]))
+        .expect("sample messages should deserialize");
+
+        assert_eq!(
+            render_openai_chat_prompt("qwen3_dense", &messages).expect("qwen prompt"),
+            "<|im_start|>system\nBe concise.<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n"
+        );
+        assert_eq!(
+            render_openai_chat_prompt("Meta-Llama-3.1-8B-Instruct", &messages)
+                .expect("llama prompt"),
+            "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nBe concise.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nHello<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        );
+        assert_eq!(
+            render_openai_chat_prompt("unknown-local-model", &messages).expect("plain prompt"),
+            "system: Be concise.\nuser: Hello\nassistant:"
         );
     }
 
@@ -2935,9 +3035,9 @@ sys.stdout.write(f"server::{prompt}")
             |payload| {
                 assert_eq!(
                     payload.get("prompt"),
-                    Some(&Value::String(
-                        "user: hello chat stream\nassistant:".to_string()
-                    ))
+                    Some(&Value::String(expected_qwen_chatml_user_prompt(
+                        "hello chat stream"
+                    )))
                 );
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
             },
@@ -3022,6 +3122,12 @@ sys.stdout.write(f"server::{prompt}")
             ],
             |payload| {
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
+                assert_eq!(
+                    payload.get("prompt"),
+                    Some(&Value::String(expected_qwen_chatml_user_prompt(
+                        "hello mlx-lm chat stream"
+                    )))
+                );
             },
         );
         let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));
@@ -3224,6 +3330,10 @@ sys.stdout.write(f"server::{prompt}")
         assert_eq!(
             openai_finish_reason(Some(GenerateFinishReason::MaxOutputTokens)),
             Some("length")
+        );
+        assert_eq!(
+            openai_finish_reason(Some(GenerateFinishReason::ContentFilter)),
+            Some("content_filter")
         );
         assert_eq!(
             openai_finish_reason(Some(GenerateFinishReason::Cancelled)),

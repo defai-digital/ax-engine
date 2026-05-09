@@ -205,13 +205,15 @@ same llama.cpp-backed path:
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
 
-Those routes are intentionally llama.cpp-only in this repository.
-The repo-owned MLX runtime remains token-based and therefore fails closed on
-those text or chat-oriented endpoints instead of inventing tokenizer or
-chat-template behavior inside the server.
+Those routes are intentionally delegated-text routes in this repository:
+`llama_cpp` and `mlx_lm_delegated` are supported, while the repo-owned MLX
+runtime remains token-based and therefore fails closed on those text or
+chat-oriented endpoints instead of inventing tokenizer behavior for native MLX.
+The delegated chat bridge renders messages through the built-in model-family
+template registry before forwarding text to the backend.
 
-For OpenAI-compatible MLX serving, run the optional Python shim with an explicit
-MLX model artifact directory and tokenizer:
+For OpenAI-compatible repo-owned MLX serving, run the optional Python shim with
+an explicit MLX model artifact directory and tokenizer:
 
 ```text
 python -m ax_engine.openai_server \
@@ -360,8 +362,9 @@ curl -N http://127.0.0.1:8080/v1/completions \
   }'
 ```
 
-To use the preview chat-completions bridge, send text-only chat messages and
-let AX flatten them into the same llama.cpp-backed request contract:
+To use the preview chat-completions bridge, send text-only chat messages. AX
+renders them with the configured model-family template, for example Qwen ChatML
+for Qwen model ids, before forwarding the text prompt to the delegated backend:
 
 ```text
 curl http://127.0.0.1:8080/v1/chat/completions \
@@ -481,10 +484,10 @@ For delegated text responses, `output_text` is authoritative. `output_tokens`
 is intentionally empty because AX did not tokenize the upstream text response;
 use `output_token_count` when `mlx_lm.server` reports usage. EOS/stop handling
 for this path follows the upstream `finish_reason`. Repo-owned MLX token
-requests stop on configured EOS token IDs in the model artifacts; raw text
-completion prompts are not chat-templated by AX, so short instruction prompts
-may still finish by `max_output_tokens` unless the upstream backend emits a
-stop finish reason.
+requests stop on configured EOS token IDs in the model artifacts; raw
+`/v1/completions` prompts are not chat-templated by AX, so short instruction
+prompts may still finish by `max_output_tokens` unless the upstream backend
+emits a stop finish reason.
 
 For Phase 1, the llama.cpp backend supports blocking `/v1/generate`,
 OpenAI-compatible `/v1/completions`, and OpenAI-compatible

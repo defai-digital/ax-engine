@@ -980,6 +980,7 @@ fn generate_finish_reason_label(finish_reason: GenerateFinishReason) -> &'static
     match finish_reason {
         GenerateFinishReason::Stop => "stop",
         GenerateFinishReason::MaxOutputTokens => "max_output_tokens",
+        GenerateFinishReason::ContentFilter => "content_filter",
         GenerateFinishReason::Cancelled => "cancelled",
         GenerateFinishReason::Error => "error",
     }
@@ -1001,6 +1002,7 @@ fn stop_reason_from_generate_finish_reason(
     match finish_reason {
         Some(GenerateFinishReason::Stop) => Some(StopReason::EosToken),
         Some(GenerateFinishReason::MaxOutputTokens) => Some(StopReason::MaxOutputTokens),
+        Some(GenerateFinishReason::ContentFilter) => Some(StopReason::Error),
         Some(GenerateFinishReason::Cancelled) => Some(StopReason::Cancelled),
         Some(GenerateFinishReason::Error) => Some(StopReason::Error),
         None => None,
