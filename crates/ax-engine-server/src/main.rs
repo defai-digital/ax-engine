@@ -2035,6 +2035,14 @@ mod tests {
         events
     }
 
+    fn openai_first_choice(payload: &Value) -> &Value {
+        payload
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+            .expect("openai payload should include a first choice")
+    }
+
     fn parse_sse_frames(body: &str) -> Vec<(Option<String>, String)> {
         let mut frames = Vec::new();
         let mut current_name: Option<String> = None;
@@ -2481,18 +2489,14 @@ sys.stdout.write(f"server::{prompt}")
             Some("text_completion")
         );
         assert_eq!(
-            json.get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("text"))
+            openai_first_choice(&json)
+                .get("text")
                 .and_then(Value::as_str),
             Some("server::hello openai")
         );
         assert_eq!(
-            json.get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("finish_reason"))
+            openai_first_choice(&json)
+                .get("finish_reason")
                 .and_then(Value::as_str),
             Some("length")
         );
@@ -2535,18 +2539,14 @@ sys.stdout.write(f"server::{prompt}")
             Some("text_completion")
         );
         assert_eq!(
-            json.get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("text"))
+            openai_first_choice(&json)
+                .get("text")
                 .and_then(Value::as_str),
             Some("mlx-lm::hello")
         );
         assert_eq!(
-            json.get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("finish_reason"))
+            openai_first_choice(&json)
+                .get("finish_reason")
                 .and_then(Value::as_str),
             Some("stop")
         );
@@ -2969,29 +2969,20 @@ sys.stdout.write(f"server::{prompt}")
         let payloads = parse_openai_sse_payloads(&body);
         assert_eq!(payloads.len(), 3);
         assert_eq!(
-            payloads[0]
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("text"))
+            openai_first_choice(&payloads[0])
+                .get("text")
                 .and_then(Value::as_str),
             Some("hello")
         );
         assert_eq!(
-            payloads[1]
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("text"))
+            openai_first_choice(&payloads[1])
+                .get("text")
                 .and_then(Value::as_str),
             Some(" world")
         );
         assert_eq!(
-            payloads[2]
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("finish_reason"))
+            openai_first_choice(&payloads[2])
+                .get("finish_reason")
                 .and_then(Value::as_str),
             Some("length")
         );
@@ -3049,41 +3040,29 @@ sys.stdout.write(f"server::{prompt}")
         let payloads = parse_openai_sse_payloads(&body);
         assert_eq!(payloads.len(), 3);
         assert_eq!(
-            payloads[0]
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("delta"))
+            openai_first_choice(&payloads[0])
+                .get("delta")
                 .and_then(|delta| delta.get("role"))
                 .and_then(Value::as_str),
             Some("assistant")
         );
         assert_eq!(
-            payloads[0]
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("delta"))
+            openai_first_choice(&payloads[0])
+                .get("delta")
                 .and_then(|delta| delta.get("content"))
                 .and_then(Value::as_str),
             Some("chat")
         );
         assert_eq!(
-            payloads[1]
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("delta"))
+            openai_first_choice(&payloads[1])
+                .get("delta")
                 .and_then(|delta| delta.get("content"))
                 .and_then(Value::as_str),
             Some(" stream")
         );
         assert_eq!(
-            payloads[2]
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("finish_reason"))
+            openai_first_choice(&payloads[2])
+                .get("finish_reason")
                 .and_then(Value::as_str),
             Some("length")
         );
@@ -3140,10 +3119,8 @@ sys.stdout.write(f"server::{prompt}")
         let text_chunks: Vec<&str> = payloads
             .iter()
             .filter_map(|p| {
-                p.get("choices")
-                    .and_then(|c| c.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|c| c.get("delta"))
+                openai_first_choice(p)
+                    .get("delta")
                     .and_then(|d| d.get("content"))
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty())
