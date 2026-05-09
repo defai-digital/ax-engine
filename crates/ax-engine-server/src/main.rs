@@ -1924,6 +1924,7 @@ mod tests {
     fn sample_openai_request_base(
         max_tokens: Option<u32>,
         stream: bool,
+        with_fields: impl FnOnce(&mut serde_json::Map<String, Value>),
     ) -> serde_json::Map<String, Value> {
         let mut request = serde_json::Map::new();
         request.insert("model".to_string(), json!(TEST_MODEL_ID));
@@ -1931,6 +1932,7 @@ mod tests {
             request.insert("max_tokens".to_string(), json!(max_tokens));
         }
         request.insert("stream".to_string(), json!(stream));
+        with_fields(&mut request);
         request
     }
 
@@ -1939,8 +1941,9 @@ mod tests {
         max_tokens: Option<u32>,
         stream: bool,
     ) -> Value {
-        let mut request = sample_openai_request_base(max_tokens, stream);
-        request.insert("prompt".to_string(), json!(prompt));
+        let request = sample_openai_request_base(max_tokens, stream, |request| {
+            request.insert("prompt".to_string(), json!(prompt));
+        });
         Value::Object(request)
     }
 
@@ -1958,14 +1961,15 @@ mod tests {
         max_tokens: Option<u32>,
         stream: bool,
     ) -> Value {
-        let mut request = sample_openai_request_base(max_tokens, stream);
-        request.insert(
-            "messages".to_string(),
-            json!([{
-                "role": role,
-                "content": message,
-            }]),
-        );
+        let request = sample_openai_request_base(max_tokens, stream, |request| {
+            request.insert(
+                "messages".to_string(),
+                json!([{
+                    "role": role,
+                    "content": message,
+                }]),
+            );
+        });
         Value::Object(request)
     }
 
