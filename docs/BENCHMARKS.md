@@ -118,6 +118,20 @@ be useful diagnostics, but they do not prove a physical prefix-cache reuse
 claim. Unknown `public_claims` entries are rejected; new public claim names must
 first add an explicit evidence mapping and checker coverage.
 
+Physical prefix snapshot miss/warmup correctness uses a separate artifact
+contract:
+
+```text
+python3 scripts/check_mlx_prefix_warmup_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>-prefix-warmup.json
+```
+
+Saved artifacts use schema `ax.mlx_prefix_warmup.v1`. The checker requires an
+MLX route, logical prefix reuse, an eligible physical snapshot miss, warmup
+tokens, zero physical snapshot hits, zero blocked snapshot paths, and passed
+deterministic correctness evidence. This is correctness and attribution
+evidence, not a throughput claim.
+
 The same checker treats `continuous_batching` as a positive public claim only
 when `concurrent_prefill_overlap_classification` has a recognized classification
 and `continuous_batching_claim=true`. `single_request_no_overlap` and

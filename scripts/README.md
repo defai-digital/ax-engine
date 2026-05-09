@@ -156,6 +156,12 @@ throughput baselines.
   ratios to the single-request baseline.
 - `test_mlx_concurrent_prefill_artifact.py`: unit tests for the concurrent
   prefill artifact validator.
+- `check_mlx_prefix_warmup_artifact.py`: validates physical prefix snapshot
+  miss/warmup correctness artifacts. It requires logical prefix reuse, an
+  eligible MLX physical snapshot miss, warmup tokens, zero physical snapshot
+  hits, zero blocked snapshot paths, and deterministic correctness evidence.
+- `test_mlx_prefix_warmup_artifact.py`: unit tests for the prefix warmup
+  artifact validator.
 - `run_mlx_p2_latency_artifacts.py`: real-model P2 runner for startup and
   concurrent-prefill evidence. It starts the AX MLX server in direct mode,
   writes prompt-token artifacts, captures `ax.mlx_startup_latency.v1` and
