@@ -1,0 +1,5607 @@
+{
+  "model": "gemma-4-e2b-it-4bit",
+  "commit": "c470744",
+  "manifest": "model-manifest.json",
+  "tensors": [
+    {
+      "role": "final_norm",
+      "layer": null,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_embedding",
+      "layer": null,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_model_projection",
+      "layer": null,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "document"
+    },
+    {
+      "role": "per_layer_projection_norm",
+      "layer": null,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "token_embedding",
+      "layer": null,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 0,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 1,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 2,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 3,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 4,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 5,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 6,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 7,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 8,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 9,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 10,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 11,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 12,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 13,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_v",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 14,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 15,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 16,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 17,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 18,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 19,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 20,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 21,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 22,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 23,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 24,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 25,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 26,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 27,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 28,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 29,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 30,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 31,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 32,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 33,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_k_norm",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_norm",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_o",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_post_norm",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "attention_q",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "attention_q_norm",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_down",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_gate",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "ffn_norm",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_post_norm",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "ffn_up",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "layer_scalar",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "non_gemv",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_gate",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_post_norm",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 0,
+      "sidecar_present": false,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_dense",
+      "action": "none"
+    },
+    {
+      "role": "per_layer_input_projection",
+      "layer": 34,
+      "source_dtype": "BF16",
+      "quantization_bits": 4,
+      "sidecar_present": true,
+      "runtime_dtype": "BF16",
+      "classification": "intentional_quantized",
+      "action": "none"
+    }
+  ]
+}

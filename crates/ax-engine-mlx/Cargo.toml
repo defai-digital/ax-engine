@@ -12,6 +12,7 @@ mlx-sys = { path = "../mlx-sys" }
 ax-engine-core = { path = "../ax-engine-core" }
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [[bin]]
 name = "turboquant-microbench"
