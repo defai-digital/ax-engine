@@ -41,6 +41,11 @@ ax-engine-bench doctor --json
 ax-engine-bench metal-build
 ```
 
+Add `--json` to `scenario`, `replay`, `matrix`, `compare`,
+`matrix-compare`, or `baseline` to emit an `ax.benchmark_artifact.v1` summary
+with the written `result_dir`. This is the stable automation path for CI and
+TUI callers; the legacy text output remains available for shell use.
+
 Successful scenario and replay runs emit `manifest.json`, `environment.json`,
 `metrics.json`, `routes.json`, `trace.json`, and `summary.md`. Contract failures
 emit `contract_failure.json` plus `summary.md` instead of synthetic metrics.

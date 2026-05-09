@@ -42,6 +42,9 @@ throughput baselines.
 - `ax-engine-bench generate-manifest <model-dir> --json`: stable
   `ax.generate_manifest.v1` summary for TUI and automation callers that need to
   distinguish newly written manifests from already-ready model directories.
+- `ax-engine-bench scenario|replay|matrix|compare|matrix-compare|baseline
+  ... --json`: stable `ax.benchmark_artifact.v1` summary for callers that need
+  the produced `result_dir` without parsing shell text.
 - `bench_mlx_inference_stack.py`: MLX model-inference comparison against
   `mlx_lm.benchmark`. It can pass through
   `--experimental-mlx-kv-compression turboquant-shadow` or
