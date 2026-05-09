@@ -20,6 +20,7 @@
 #   cargo     Rust toolchain
 #   brew      Homebrew
 #   ruby      For formula syntax validation (ruby -c)
+#   python3   For formula install stanza validation (checked just before tap update; not needed with --skip-tap)
 
 set -euo pipefail
 
@@ -29,6 +30,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MAIN_REPO="defai-digital/ax-engine"
 TAP_REPO="defai-digital/homebrew-ax-engine"
 TAP_FORMULA="Formula/ax-engine.rb"
+RELEASE_BINS=(ax-engine-server ax-engine-bench ax-engine-manager)
 
 # ── parse arguments ──────────────────────────────────────────────────────────
 
@@ -94,10 +96,10 @@ cd "$ROOT_DIR"
 
 if [[ "$SKIP_BUILD" = false ]]; then
     echo "▶ building release binaries…"
-    cargo build --release -p ax-engine-server -p ax-engine-bench
+    cargo build --release -p ax-engine-server -p ax-engine-bench -p ax-engine-tui
 else
     echo "▶ skipping build (--skip-build)"
-    for bin in ax-engine-server ax-engine-bench; do
+    for bin in "${RELEASE_BINS[@]}"; do
         if [[ ! -f "target/release/$bin" ]]; then
             echo "error: target/release/$bin not found — run without --skip-build first" >&2
             exit 1
@@ -111,7 +113,7 @@ ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
 ARCHIVE_PATH="/tmp/${ARCHIVE}"
 
 echo "▶ packaging ${ARCHIVE}…"
-tar -czf "$ARCHIVE_PATH" -C target/release ax-engine-server ax-engine-bench
+tar -czf "$ARCHIVE_PATH" -C target/release "${RELEASE_BINS[@]}"
 SHA256=$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')
 ARCHIVE_SIZE=$(du -sh "$ARCHIVE_PATH" | awk '{print $1}')
 
@@ -150,6 +152,8 @@ if [[ "$SKIP_TAP" = true ]]; then
     exit 0
 fi
 
+check_cmd python3 "python3 is required for formula install stanza validation"
+
 TAP_DIR="$(mktemp -d /tmp/ax-engine-tap.XXXXXX)"
 trap 'rm -rf "$TAP_DIR"' EXIT
 
@@ -182,6 +186,38 @@ sed -i '' \
 for pattern in "version \"${VERSION}\"" "url \"${DOWNLOAD_URL}\"" "sha256 \"${SHA256}\""; do
     if ! grep -qF "$pattern" "$FORMULA_PATH"; then
         echo "error: formula update failed — '$pattern' not found after sed" >&2
+        echo "       check the formula manually: $FORMULA_PATH" >&2
+        exit 1
+    fi
+done
+
+python3 - "$FORMULA_PATH" "${RELEASE_BINS[@]}" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+formula_path = Path(sys.argv[1])
+bins = sys.argv[2:]
+text = formula_path.read_text(encoding="utf-8")
+if all(f'"{binary}"' in text for binary in bins):
+    raise SystemExit(0)
+
+pattern = re.compile(r'^(?P<indent>\s*)bin\.install\s+.*ax-engine-server.*ax-engine-bench.*$', re.MULTILINE)
+match = pattern.search(text)
+if not match:
+    raise SystemExit(
+        "formula must install ax-engine-server and ax-engine-bench before ax-engine-manager can be added"
+    )
+
+replacement = f'{match.group("indent")}bin.install {", ".join(repr(binary).replace(chr(39), chr(34)) for binary in bins)}'
+formula_path.write_text(pattern.sub(replacement, text, count=1), encoding="utf-8")
+PY
+
+for bin in "${RELEASE_BINS[@]}"; do
+    if ! grep -qF "\"$bin\"" "$FORMULA_PATH"; then
+        echo "error: formula does not install $bin after update" >&2
         echo "       check the formula manually: $FORMULA_PATH" >&2
         exit 1
     fi

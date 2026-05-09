@@ -306,6 +306,8 @@ Exit criteria:
   `ax-engine-manager`;
 - a fresh install can run `ax-engine-manager --check` without terminal raw mode;
 - the support bundle contains no model weights or secrets.
+- `bash scripts/check-cli-tui-phase3.sh` passes before publishing Homebrew
+  artifacts.
 
 ## 12. Suggested Implementation Architecture
 

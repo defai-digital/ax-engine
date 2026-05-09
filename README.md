@@ -380,6 +380,8 @@ This installs:
 - `ax-engine-server`: local HTTP adapter over the SDK runtime
 - `ax-engine-bench`: workload-contract, readiness, direct-generate, and
   benchmark-support CLI
+- `ax-engine-manager`: Ratatui local manager for readiness, server metadata,
+  benchmark artifacts, guarded job plans, and redacted support bundles
 - the Homebrew `mlx-c` runtime dependency required by the released binaries
 
 Check the installed tools:
@@ -387,6 +389,7 @@ Check the installed tools:
 ```bash
 ax-engine-server --help
 ax-engine-bench doctor
+ax-engine-manager --check
 ```
 
 Homebrew is the quickest path for the released server and benchmark binaries.
