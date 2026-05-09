@@ -164,12 +164,21 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 "hit_count": 0,
                 "miss_count": 0,
                 "blocked_count": 0,
+                "blocked_policy_disabled_count": 0,
+                "blocked_unsupported_layout_count": 0,
+                "blocked_trim_failure_count": 0,
                 "stored_prefix_count": 0,
                 "eviction_count": 0,
                 "reused_token_count": 0,
                 "warmup_token_count": 0,
                 "cache_entry_count": 0,
                 "cache_bytes_kib": 0,
+                "physical_snapshot_hit_observed": False,
+                "physical_snapshot_miss_warmup_observed": False,
+                "physical_snapshot_blocked_observed": False,
+                "physical_snapshot_coverage": "none_observed",
+                "blocked_reason_count": 0,
+                "blocked_reason_accounting_gap_count": 0,
             },
             "reference_contract": {
                 "prompt_contract": {
@@ -282,6 +291,44 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 checker.ArtifactCheckError,
                 "without draft acceptance",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
+    def test_public_prefix_reuse_claim_requires_physical_snapshot_hit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["public_claims"] = ["prefix_reuse"]
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "physical snapshot hit evidence",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
+    def test_phase0_claim_gate_requires_prefix_coverage_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            artifact["prefix_reuse_evidence"].pop("physical_snapshot_coverage")
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "invalid physical_snapshot_coverage",
             ):
                 checker.check_readme_performance(
                     repo_root=root,
