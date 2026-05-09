@@ -2,6 +2,18 @@ from dataclasses import dataclass, field
 from typing import Iterator
 
 
+class EngineError(RuntimeError): ...
+
+
+class EngineBackendError(EngineError): ...
+
+
+class EngineInferenceError(EngineError): ...
+
+
+class EngineStateError(EngineError): ...
+
+
 @dataclass(frozen=True)
 class CapabilityReport:
     text_generation: bool

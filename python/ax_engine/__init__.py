@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
-from ._ax_engine import Session as _Session
+from ._ax_engine import (
+    EngineBackendError,
+    EngineError,
+    EngineInferenceError,
+    EngineStateError,
+    Session as _Session,
+)
 
 
 @dataclass(frozen=True)
@@ -236,7 +242,11 @@ class Session:
         llama_cli_path: str = "llama-cli",
         llama_model_path: str | None = None,
         llama_server_url: str | None = None,
+        mlx_lm_server_url: str | None = None,
         mlx_model_artifacts_dir: str | None = None,
+        delegated_http_connect_timeout_secs: int = 30,
+        delegated_http_read_timeout_secs: int = 300,
+        delegated_http_write_timeout_secs: int = 300,
     ) -> None:
         self._inner = _Session(
             model_id,
@@ -250,7 +260,11 @@ class Session:
             llama_cli_path=llama_cli_path,
             llama_model_path=llama_model_path,
             llama_server_url=llama_server_url,
+            mlx_lm_server_url=mlx_lm_server_url,
             mlx_model_artifacts_dir=mlx_model_artifacts_dir,
+            delegated_http_connect_timeout_secs=delegated_http_connect_timeout_secs,
+            delegated_http_read_timeout_secs=delegated_http_read_timeout_secs,
+            delegated_http_write_timeout_secs=delegated_http_write_timeout_secs,
         )
 
     @property
@@ -907,6 +921,10 @@ def _normalize_chat_message(message: ChatMessage | dict[str, str]) -> ChatMessag
 __all__ = [
     "CapabilityReport",
     "ChatMessage",
+    "EngineBackendError",
+    "EngineError",
+    "EngineInferenceError",
+    "EngineStateError",
     "GenerateResult",
     "GenerateRoute",
     "GenerateStreamEvent",
