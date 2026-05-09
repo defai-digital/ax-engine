@@ -89,6 +89,10 @@ ax-engine-manager --doctor-json /path/to/doctor.json --artifact-root benchmarks/
 `--check` prints a non-interactive summary for doctor, server, benchmark, and
 artifact readiness without entering terminal raw mode.
 
+The `Jobs` tab is still non-mutating in Phase 2. It projects the doctor workflow
+into guarded job plans with explicit job kind, evidence class, process ownership,
+command, and benchmark artifact requirements.
+
 `--phase2-check` verifies the local job-runner foundation without launching real
 downloads, benchmarks, or servers. It builds the job plan from doctor workflow
 JSON, writes and reads a manager profile under `--profile-dir`, runs a fake

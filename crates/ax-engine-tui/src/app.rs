@@ -8,15 +8,17 @@ pub enum AppTab {
     Readiness,
     Models,
     Server,
+    Jobs,
     Benchmarks,
     Artifacts,
 }
 
 impl AppTab {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Readiness,
         Self::Models,
         Self::Server,
+        Self::Jobs,
         Self::Benchmarks,
         Self::Artifacts,
     ];
@@ -26,6 +28,7 @@ impl AppTab {
             Self::Readiness => "Readiness",
             Self::Models => "Models",
             Self::Server => "Server",
+            Self::Jobs => "Jobs",
             Self::Benchmarks => "Benchmarks",
             Self::Artifacts => "Artifacts",
         }
@@ -84,7 +87,8 @@ impl AppState {
             benchmark_summary: LoadState::not_loaded("benchmark artifact summary not configured"),
             artifacts_root: None,
             artifacts: LoadState::not_loaded("artifact root not configured"),
-            status_message: "Read-only cockpit. Tab/arrow keys switch views, q exits.".to_string(),
+            status_message: "Read-only cockpit. Jobs tab shows guarded Phase 2 plans; q exits."
+                .to_string(),
         }
     }
 

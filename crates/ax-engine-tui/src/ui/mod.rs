@@ -1,5 +1,5 @@
 use crate::app::{AppState, AppTab, LoadState};
-use crate::contracts::{ArtifactEntry, DoctorReport, ModelCard};
+use crate::contracts::{ArtifactEntry, DoctorReport, ModelCard, WorkflowCommand};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -43,6 +43,7 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
         AppTab::Readiness => render_readiness(frame, state, chunks[1]),
         AppTab::Models => render_models(frame, state, chunks[1]),
         AppTab::Server => render_server(frame, state, chunks[1]),
+        AppTab::Jobs => render_jobs(frame, state, chunks[1]),
         AppTab::Benchmarks => render_benchmarks(frame, state, chunks[1]),
         AppTab::Artifacts => render_artifacts(frame, state, chunks[1]),
     }
@@ -157,6 +158,16 @@ fn render_server(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout:
     frame.render_widget(panel("Server", lines), area);
 }
 
+fn render_jobs(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout::Rect) {
+    let lines = match &state.doctor {
+        LoadState::Ready(report) => job_plan_lines(report),
+        LoadState::Unavailable(message) | LoadState::NotLoaded(message) => {
+            unavailable_lines("Job plan not loaded", message)
+        }
+    };
+    frame.render_widget(panel("Jobs", lines), area);
+}
+
 fn render_benchmarks(frame: &mut Frame<'_>, state: &AppState, area: ratatui::layout::Rect) {
     let lines = match &state.benchmark_summary {
         LoadState::Ready(summary) => vec![
@@ -238,6 +249,121 @@ fn readiness_lines(report: &DoctorReport) -> Vec<Line<'static>> {
         );
     }
     lines
+}
+
+fn job_plan_lines(report: &DoctorReport) -> Vec<Line<'static>> {
+    let planned_jobs = 3
+        + usize::from(report.workflow.download_model.is_some())
+        + usize::from(report.workflow.source_root.is_some());
+    let mut lines = vec![Line::from(format!("planned_jobs: {planned_jobs}"))];
+    if let Some(command) = report.workflow.download_model.as_ref() {
+        push_job_lines(
+            &mut lines,
+            JobProjection {
+                id: "download-model",
+                label: "Download model",
+                kind: "download_model",
+                evidence: "readiness",
+                command,
+                artifact_required: false,
+            },
+        );
+    }
+    push_job_lines(
+        &mut lines,
+        JobProjection {
+            id: "generate-manifest",
+            label: "Generate model manifest",
+            kind: "generate_manifest",
+            evidence: "readiness",
+            command: &report.workflow.generate_manifest,
+            artifact_required: false,
+        },
+    );
+    push_job_lines(
+        &mut lines,
+        JobProjection {
+            id: "server-launch",
+            label: "Start local server",
+            kind: "server_launch",
+            evidence: "route_contract",
+            command: &report.workflow.server,
+            artifact_required: false,
+        },
+    );
+    if report.workflow.source_root.is_some() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("server-smoke: ", key_style()),
+            Span::raw("Run server smoke check"),
+        ]));
+        lines.push(Line::from("kind: server_smoke"));
+        lines.push(Line::from("evidence: route_contract"));
+        lines.push(Line::from("owns_process: true"));
+        lines.push(Line::from(format!(
+            "cwd: {}",
+            report.workflow.source_root.as_deref().unwrap_or("current")
+        )));
+        lines.push(Line::from("command: bash scripts/check-server-preview.sh"));
+    }
+    push_job_lines(
+        &mut lines,
+        JobProjection {
+            id: "benchmark-scenario",
+            label: "Run benchmark scenario",
+            kind: "benchmark_scenario",
+            evidence: "workload_contract",
+            command: &report.workflow.benchmark,
+            artifact_required: true,
+        },
+    );
+    lines
+}
+
+struct JobProjection<'a> {
+    id: &'static str,
+    label: &'static str,
+    kind: &'static str,
+    evidence: &'static str,
+    command: &'a WorkflowCommand,
+    artifact_required: bool,
+}
+
+fn push_job_lines(lines: &mut Vec<Line<'static>>, job: JobProjection<'_>) {
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(format!("{}: ", job.id), key_style()),
+        Span::raw(job.label),
+    ]));
+    lines.push(Line::from(format!("kind: {}", job.kind)));
+    lines.push(Line::from(format!("evidence: {}", job.evidence)));
+    lines.push(Line::from("owns_process: true"));
+    lines.push(Line::from(format!(
+        "cwd: {}",
+        job.command.cwd.as_deref().unwrap_or("current")
+    )));
+    lines.push(Line::from(format!(
+        "command: {}",
+        command_text(job.command)
+    )));
+    if job.artifact_required {
+        lines.push(Line::from("official_result_guard: artifact path required"));
+    }
+}
+
+fn command_text(command: &WorkflowCommand) -> String {
+    let Some((program, args)) = command.argv.split_first() else {
+        return "missing command".to_string();
+    };
+    format!("{program}{}", command_args_suffix(args))
+}
+
+fn command_args_suffix(args: &[String]) -> String {
+    if args.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", args.join(" "))
+    }
 }
 
 fn unavailable_lines(title: &str, message: &str) -> Vec<Line<'static>> {
@@ -353,7 +479,7 @@ mod tests {
     }
 
     fn render_snapshot(state: &AppState) -> String {
-        let backend = TestBackend::new(100, 28);
+        let backend = TestBackend::new(100, 64);
         let mut terminal = Terminal::new(backend).expect("terminal should create");
         terminal
             .draw(|frame| render(frame, state))
@@ -387,6 +513,19 @@ mod tests {
 
         assert!(snapshot.contains("Server"));
         assert!(snapshot.contains("server URL not configured"));
+    }
+
+    #[test]
+    fn jobs_snapshot_projects_phase2_plan_with_evidence_labels() {
+        let snapshot = render_snapshot(&sample_state(AppTab::Jobs));
+
+        assert!(snapshot.contains("Jobs"));
+        assert!(snapshot.contains("planned_jobs: 5"));
+        assert!(snapshot.contains("server_launch"));
+        assert!(snapshot.contains("route_contract"));
+        assert!(snapshot.contains("benchmark_scenario"));
+        assert!(snapshot.contains("workload_contract"));
+        assert!(snapshot.contains("artifact path required"));
     }
 
     #[test]
