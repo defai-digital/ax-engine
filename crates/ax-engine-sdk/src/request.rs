@@ -193,6 +193,26 @@ pub struct MetalDispatchValidationStepReport {
 }
 
 impl EngineStepReport {
+    fn from_step_metrics(
+        metrics: &StepMetrics,
+        route: Option<GenerateRouteReport>,
+        metal_dispatch: Option<MetalDispatchStepReport>,
+    ) -> Self {
+        Self {
+            step_id: metrics.step_id.map(|step_id| step_id.0),
+            scheduled_requests: metrics.scheduled_requests,
+            scheduled_tokens: metrics.scheduled_tokens,
+            ttft_events: metrics.ttft_events,
+            prefix_hits: metrics.prefix_hits,
+            kv_usage_blocks: metrics.kv_usage_blocks,
+            evictions: metrics.evictions,
+            cpu_time_us: metrics.cpu_time_us,
+            runner_time_us: metrics.runner_time_us,
+            route,
+            metal_dispatch,
+        }
+    }
+
     pub fn accumulate(&mut self, other: Self) {
         if self.step_id.is_none() {
             self.step_id = other.step_id;
@@ -225,37 +245,13 @@ impl EngineStepReport {
             .filter(|route| route_has_data(route))
             .map(GenerateRouteReport::from_route);
 
-        Self {
-            step_id: outcome.metrics.step_id.map(|step_id| step_id.0),
-            scheduled_requests: outcome.metrics.scheduled_requests,
-            scheduled_tokens: outcome.metrics.scheduled_tokens,
-            ttft_events: outcome.metrics.ttft_events,
-            prefix_hits: outcome.metrics.prefix_hits,
-            kv_usage_blocks: outcome.metrics.kv_usage_blocks,
-            evictions: outcome.metrics.evictions,
-            cpu_time_us: outcome.metrics.cpu_time_us,
-            runner_time_us: outcome.metrics.runner_time_us,
-            route,
-            metal_dispatch,
-        }
+        Self::from_step_metrics(&outcome.metrics, route, metal_dispatch)
     }
 }
 
 impl From<StepMetrics> for EngineStepReport {
     fn from(metrics: StepMetrics) -> Self {
-        Self {
-            step_id: metrics.step_id.map(|step_id| step_id.0),
-            scheduled_requests: metrics.scheduled_requests,
-            scheduled_tokens: metrics.scheduled_tokens,
-            ttft_events: metrics.ttft_events,
-            prefix_hits: metrics.prefix_hits,
-            kv_usage_blocks: metrics.kv_usage_blocks,
-            evictions: metrics.evictions,
-            cpu_time_us: metrics.cpu_time_us,
-            runner_time_us: metrics.runner_time_us,
-            route: None,
-            metal_dispatch: None,
-        }
+        Self::from_step_metrics(&metrics, None, None)
     }
 }
 
