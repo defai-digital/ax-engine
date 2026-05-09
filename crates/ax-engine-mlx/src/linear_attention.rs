@@ -2,8 +2,8 @@ use std::sync::OnceLock;
 
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype,
-    concatenate, conv1d, exp, log1p, multiply, negative, reshape, rms_norm, slice, slice_last_dim,
-    where_cond, zeros,
+    concatenate, conv1d, exp, less, log1p, multiply, negative, reshape, rms_norm, slice,
+    slice_last_dim, where_cond, zeros,
 };
 
 use crate::model::LinearAttentionConfig;
@@ -16,7 +16,7 @@ pub struct LinearAttentionQkv {
 }
 
 static GATED_DELTA_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
-const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: i32 = 512;
+pub(crate) const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: usize = 512;
 
 /// compute_g from mlx-lm/mlx-swift-lm:
 /// `exp(-exp(A_log.float32) * softplus(a + dt_bias))`.
@@ -27,7 +27,14 @@ pub fn compute_gated_delta_g(a_log: &MlxArray, a: &MlxArray, dt_bias: &MlxArray)
     let a_log_f32 = astype(a_log, MlxDtype::Float32, None);
     let decay_rate = exp(&a_log_f32, None);
     let a_plus_bias = add(a, dt_bias, None);
-    let softplus = log1p(&exp(&a_plus_bias, None), None);
+    let threshold = scalar_f32_as(20.0, a_plus_bias.dtype());
+    let exp_branch = log1p(&exp(&a_plus_bias, None), None);
+    let softplus = where_cond(
+        &less(&threshold, &a_plus_bias, None),
+        &a_plus_bias,
+        &exp_branch,
+        None,
+    );
     let decay = multiply(&decay_rate, &softplus, None);
     let g = exp(&negative(&decay, None), None);
     astype(&g, a.dtype(), None)
@@ -45,27 +52,17 @@ pub fn linear_attention_conv1d(
     qkv: &MlxArray,
     conv_weight: &MlxArray,
     cached_conv_state: Option<&MlxArray>,
-    mask: Option<&MlxArray>,
 ) -> (MlxArray, MlxArray) {
     let shape = qkv.shape();
     let batch = shape[0];
-    let seq = shape[1];
     let conv_dim = cfg.conv_dim() as i32;
     let tail_len = cfg.conv_kernel_dim as i32 - 1;
     let dtype = qkv.dtype();
 
-    let qkv = if let Some(mask) = mask {
-        let mask = mlx_sys::expand_dims(mask, -1, None);
-        let zeros = zeros(&[batch, seq, conv_dim], dtype, None);
-        where_cond(&mask, qkv, &zeros, None)
-    } else {
-        qkv.clone()
-    };
-
     let conv_state = cached_conv_state
         .cloned()
         .unwrap_or_else(|| zeros(&[batch, tail_len, conv_dim], dtype, None));
-    let conv_input = concatenate(&[&conv_state, &qkv], 1, None);
+    let conv_input = concatenate(&[&conv_state, qkv], 1, None);
     let total = conv_input.shape()[1];
     let new_state = slice(
         &conv_input,
@@ -185,9 +182,10 @@ pub fn gated_delta_kernel(
     let key_head_dim = q_shape[3];
     let num_value_heads = v_shape[2];
     let value_head_dim = v_shape[3];
+    let cache_capacity = GATED_DELTA_THREADGROUP_CACHE_CAPACITY as i32;
     let seq_i32 = scalar_i32(seq);
     assert!(
-        seq <= GATED_DELTA_THREADGROUP_CACHE_CAPACITY,
+        seq <= cache_capacity,
         "gated_delta_kernel t_len ({seq}) exceeds threadgroup cache capacity ({GATED_DELTA_THREADGROUP_CACHE_CAPACITY})"
     );
     // The Metal kernel uses `constexpr int n_per_t = Dk / 32` (integer division over
@@ -408,6 +406,89 @@ mod tests {
         }
     }
 
+    fn f32_array(data: &[f32], shape: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data),
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    fn stable_softplus(value: f32) -> f32 {
+        if value > 20.0 {
+            value
+        } else {
+            (1.0 + value.exp()).ln()
+        }
+    }
+
+    fn sigmoid(value: f32) -> f32 {
+        1.0 / (1.0 + (-value).exp())
+    }
+
+    fn assert_close(label: &str, actual: &[f32], expected: &[f32], tolerance: f32) {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{label} length mismatch: actual={}, expected={}",
+            actual.len(),
+            expected.len()
+        );
+
+        for (idx, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+            let diff = (actual - expected).abs();
+            assert!(
+                diff <= tolerance,
+                "{label}[{idx}] mismatch: actual={actual}, expected={expected}, diff={diff}, tolerance={tolerance}"
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn gated_delta_cpu_reference(
+        q: &[f32],
+        k: &[f32],
+        v: &[f32],
+        a_log: &[f32],
+        a_raw: &[f32],
+        dt_bias: &[f32],
+        b_raw: &[f32],
+        initial_state: &[f32],
+        seq: usize,
+        key_head_dim: usize,
+        value_head_dim: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let mut state = initial_state.to_vec();
+        let mut y = vec![0.0; seq * value_head_dim];
+        let decay_rate = a_log[0].exp();
+
+        for t in 0..seq {
+            let g = (-decay_rate * stable_softplus(a_raw[t] + dt_bias[0])).exp();
+            let beta = sigmoid(b_raw[t]);
+            for dv in 0..value_head_dim {
+                let state_offset = dv * key_head_dim;
+                let mut kv_mem = 0.0;
+                for dk in 0..key_head_dim {
+                    let state_idx = state_offset + dk;
+                    state[state_idx] *= g;
+                    kv_mem += state[state_idx] * k[t * key_head_dim + dk];
+                }
+
+                let delta = (v[t * value_head_dim + dv] - kv_mem) * beta;
+                let mut out = 0.0;
+                for dk in 0..key_head_dim {
+                    let state_idx = state_offset + dk;
+                    state[state_idx] += k[t * key_head_dim + dk] * delta;
+                    out += state[state_idx] * q[t * key_head_dim + dk];
+                }
+                y[t * value_head_dim + dv] = out;
+            }
+        }
+
+        (y, state)
+    }
+
     #[test]
     fn compute_gated_delta_g_preserves_activation_shape_and_dtype() {
         let cfg = cfg();
@@ -426,6 +507,24 @@ mod tests {
     }
 
     #[test]
+    fn compute_gated_delta_g_uses_stable_softplus_for_large_positive_values() {
+        let a_log = f32_array(&[0.0], &[1]);
+        let a = f32_array(&[25.0], &[1, 1, 1]);
+        let dt_bias = f32_array(&[0.0], &[1]);
+
+        let g = compute_gated_delta_g(&a_log, &a, &dt_bias);
+        mlx_sys::eval(&[&g]);
+
+        let actual = g.data_f32()[0];
+        let expected = (-25.0_f32).exp();
+        assert!(actual.is_finite(), "g should stay finite, got {actual}");
+        assert!(
+            (actual - expected).abs() < 1e-12,
+            "actual={actual}, expected={expected}"
+        );
+    }
+
+    #[test]
     fn linear_attention_conv1d_returns_prompt_output_and_tail() {
         let cfg = cfg();
         let qkv = zeros(&[1, 5, cfg.conv_dim() as i32], MlxDtype::Float32, None);
@@ -435,7 +534,7 @@ mod tests {
             None,
         );
 
-        let (conv_out, new_state) = linear_attention_conv1d(&cfg, &qkv, &weight, None, None);
+        let (conv_out, new_state) = linear_attention_conv1d(&cfg, &qkv, &weight, None);
 
         assert_eq!(conv_out.shape(), vec![1, 5, 14]);
         assert_eq!(new_state.shape(), vec![1, 3, 14]);
@@ -476,7 +575,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds threadgroup cache capacity")]
     fn gated_delta_kernel_rejects_seq_above_threadgroup_cache_capacity() {
-        let seq = GATED_DELTA_THREADGROUP_CACHE_CAPACITY + 1;
+        let seq = (GATED_DELTA_THREADGROUP_CACHE_CAPACITY + 1) as i32;
         let q = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
         let k = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
         let v = zeros(&[1, seq, 1, 4], MlxDtype::Float32, None);
@@ -487,6 +586,60 @@ mod tests {
         let state = zeros(&[1, 1, 4, 32], MlxDtype::Float32, None);
 
         let _ = gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+    }
+
+    #[test]
+    fn gated_delta_kernel_matches_cpu_reference_for_small_sequence() {
+        const SEQ: usize = 2;
+        const KEY_HEAD_DIM: usize = 32;
+        const VALUE_HEAD_DIM: usize = 4;
+
+        let q_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.03)
+            .collect();
+        let k_data: Vec<f32> = (0..SEQ * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 5) as f32 - 2.0) * 0.02)
+            .collect();
+        let v_data = vec![0.10, -0.05, 0.07, 0.03, -0.02, 0.04, 0.08, -0.06];
+        let a_log_data = vec![-0.2];
+        let a_raw_data = vec![0.1, -0.15];
+        let dt_bias_data = vec![0.05];
+        let b_raw_data = vec![0.25, -0.1];
+        let state_data: Vec<f32> = (0..VALUE_HEAD_DIM * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 11) as f32 - 5.0) * 0.005)
+            .collect();
+        let (expected_y, expected_state) = gated_delta_cpu_reference(
+            &q_data,
+            &k_data,
+            &v_data,
+            &a_log_data,
+            &a_raw_data,
+            &dt_bias_data,
+            &b_raw_data,
+            &state_data,
+            SEQ,
+            KEY_HEAD_DIM,
+            VALUE_HEAD_DIM,
+        );
+
+        let q = f32_array(&q_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let k = f32_array(&k_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let v = f32_array(&v_data, &[1, SEQ as i32, 1, VALUE_HEAD_DIM as i32]);
+        let a_log = f32_array(&a_log_data, &[1]);
+        let a_raw = f32_array(&a_raw_data, &[1, SEQ as i32, 1]);
+        let dt_bias = f32_array(&dt_bias_data, &[1]);
+        let b_raw = f32_array(&b_raw_data, &[1, SEQ as i32, 1]);
+        let state = f32_array(
+            &state_data,
+            &[1, 1, VALUE_HEAD_DIM as i32, KEY_HEAD_DIM as i32],
+        );
+
+        let (y, new_state) =
+            gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+        mlx_sys::eval(&[&y, &new_state]);
+
+        assert_close("y", y.data_f32(), &expected_y, 1e-6);
+        assert_close("state", new_state.data_f32(), &expected_state, 1e-6);
     }
 
     #[test]
