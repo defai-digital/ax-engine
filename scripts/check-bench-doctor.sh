@@ -28,7 +28,7 @@ doctor_json = subprocess.check_output(
 report = json.loads(doctor_json)
 
 assert report["schema_version"] == "ax.engine_bench.doctor.v1"
-assert report["mlx_target"] == "apple_m4_or_newer_macos_aarch64"
+assert report["mlx_target"] == "apple_m2_or_newer_macos_aarch64"
 
 host = report["host"]
 toolchain = report["metal_toolchain"]
