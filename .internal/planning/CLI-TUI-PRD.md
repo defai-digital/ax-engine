@@ -288,6 +288,8 @@ Exit criteria:
   the TUI started;
 - server start/stop is covered by a fake-process or test harness;
 - no official benchmark result is displayed without an artifact path.
+- `bash scripts/check-cli-tui-phase2.sh` passes before interactive job controls
+  are added.
 
 ### Phase 3: Release Integration
 

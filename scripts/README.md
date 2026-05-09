@@ -42,6 +42,9 @@ throughput baselines.
   `ax-engine-manager`. It runs the TUI crate tests plus `--check` with fixed
   doctor, benchmark, and artifact fixtures, and verifies missing optional inputs
   plus non-local server URLs produce clear diagnostic states.
+- `check-cli-tui-phase2.sh`: non-interactive Phase 2 gate for the local job
+  runner foundation. It verifies explicit job-plan labels, profile persistence,
+  fake-process cancellation, log-tail capture, and the benchmark artifact guard.
 - `download_model.py`: general-purpose MLX model download helper. It downloads a
   Hugging Face snapshot to `~/.cache/ax-engine/models/<repo-slug>` by default,
   validates local model files, and generates the AX model manifest when
