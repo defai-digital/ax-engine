@@ -56,6 +56,11 @@ class PrefixWarmupBuilderTests(unittest.TestCase):
                 "id": "shared_prefix_long_churn",
                 "class": "replay",
                 "model": {"family": "qwen3_dense", "quant": "q4_k_m"},
+                "runtime": {
+                    "selected_backend": "mlx",
+                    "deterministic": True,
+                    "flags": {"prefix_cache": True},
+                },
                 "events": [
                     {
                         "type": "submit",
@@ -64,6 +69,10 @@ class PrefixWarmupBuilderTests(unittest.TestCase):
                         "output_tokens_target": 16,
                     }
                 ],
+                "checks": {
+                    "expect_deterministic": True,
+                    "require_prefix_reuse": True,
+                },
             },
         )
         write_json(
@@ -149,6 +158,42 @@ class PrefixWarmupBuilderTests(unittest.TestCase):
         write_json(metrics_path, metrics)
 
         with self.assertRaisesRegex(builder.PrefixWarmupBuildError, "correctness"):
+            builder.build_prefix_warmup_artifact(
+                result_dir=self.result_dir,
+                manifest_root=self.manifest_root,
+            )
+
+    def test_non_replay_manifest_fails(self) -> None:
+        manifest_path = self.result_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["class"] = "scenario"
+        write_json(manifest_path, manifest)
+
+        with self.assertRaisesRegex(builder.PrefixWarmupBuildError, "class"):
+            builder.build_prefix_warmup_artifact(
+                result_dir=self.result_dir,
+                manifest_root=self.manifest_root,
+            )
+
+    def test_prefix_cache_disabled_manifest_fails(self) -> None:
+        manifest_path = self.result_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["runtime"]["flags"]["prefix_cache"] = False
+        write_json(manifest_path, manifest)
+
+        with self.assertRaisesRegex(builder.PrefixWarmupBuildError, "prefix_cache"):
+            builder.build_prefix_warmup_artifact(
+                result_dir=self.result_dir,
+                manifest_root=self.manifest_root,
+            )
+
+    def test_manifest_must_require_prefix_reuse(self) -> None:
+        manifest_path = self.result_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["checks"]["require_prefix_reuse"] = False
+        write_json(manifest_path, manifest)
+
+        with self.assertRaisesRegex(builder.PrefixWarmupBuildError, "require_prefix_reuse"):
             builder.build_prefix_warmup_artifact(
                 result_dir=self.result_dir,
                 manifest_root=self.manifest_root,

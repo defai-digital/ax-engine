@@ -225,6 +225,9 @@ surface through better defaults, route metadata, and benchmark artifacts.
   physical prefix snapshot miss/warmup correctness evidence.
 - `build_mlx_prefix_warmup_artifact.py` now converts `ax-engine-bench` result
   directories into checked `ax.mlx_prefix_warmup.v1` artifacts.
+- Prefix warmup artifact building now rejects non-replay manifests,
+  non-MLX manifests, prefix-cache-disabled manifests, nondeterministic manifests,
+  and manifests that do not require prefix reuse.
 
 #### Open
 
