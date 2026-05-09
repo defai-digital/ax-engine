@@ -2276,10 +2276,7 @@ sys.stdout.write(f"server::{prompt}")
     }
 
     fn read_http_request_payload(stream: &mut std::net::TcpStream) -> Value {
-        parse_http_request_payload(&read_http_request(stream))
-    }
-
-    fn parse_http_request_payload(request: &[u8]) -> Value {
+        let request = read_http_request(stream);
         let header_end = request
             .windows(4)
             .position(|window| window == b"\r\n\r\n")
