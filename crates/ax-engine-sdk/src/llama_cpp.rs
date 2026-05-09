@@ -1,11 +1,11 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
+use wait_timeout::ChildExt;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
 use crate::delegated_http::DelegatedHttpTimeouts;
@@ -688,32 +688,26 @@ fn run_command_with_timeout(
             command: command_display.clone(),
             source,
         })?;
-    let deadline = Instant::now() + timeout;
 
-    loop {
-        match child
-            .try_wait()
+    match child
+        .wait_timeout(timeout)
+        .map_err(|source| LlamaCppBackendError::CommandLaunch {
+            command: command_display.clone(),
+            source,
+        })? {
+        Some(_) => child
+            .wait_with_output()
             .map_err(|source| LlamaCppBackendError::CommandLaunch {
-                command: command_display.clone(),
+                command: command_display,
                 source,
-            })? {
-            Some(_) => {
-                return child.wait_with_output().map_err(|source| {
-                    LlamaCppBackendError::CommandLaunch {
-                        command: command_display,
-                        source,
-                    }
-                });
-            }
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(LlamaCppBackendError::CommandTimedOut {
-                    command: command_display,
-                    timeout_seconds: timeout.as_secs(),
-                });
-            }
-            None => thread::sleep(Duration::from_millis(10)),
+            }),
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(LlamaCppBackendError::CommandTimedOut {
+                command: command_display,
+                timeout_seconds: timeout.as_secs(),
+            })
         }
     }
 }
@@ -827,6 +821,42 @@ mod tests {
         );
         assert!(looks_like_llama_cli_wrapped_output(
             "llama-cli v1.0\nhello\n[ Prompt: 1 t/s ]\nExiting..."
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_command_with_timeout_collects_output_without_polling() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("printf ready");
+
+        let output = run_command_with_timeout(
+            command,
+            "sh -c 'printf ready'".to_string(),
+            Duration::from_secs(1),
+        )
+        .expect("quick command should complete before timeout");
+
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "ready");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_command_with_timeout_kills_command_after_deadline() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("sleep 2");
+
+        let error = run_command_with_timeout(
+            command,
+            "sh -c 'sleep 2'".to_string(),
+            Duration::from_millis(20),
+        )
+        .expect_err("slow command should time out");
+
+        assert!(matches!(
+            error,
+            LlamaCppBackendError::CommandTimedOut { .. }
         ));
     }
 
