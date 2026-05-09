@@ -97,6 +97,7 @@ pub enum MlxLmBackendError {
     MissingStreamChoice { endpoint: String },
 }
 
+#[derive(Debug)]
 pub(crate) struct MlxLmStreamChunkResult {
     pub text: String,
     pub finish_reason: Option<String>,
@@ -440,7 +441,7 @@ struct MlxLmCompletionResponse {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
+    use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
     use std::thread;
 
@@ -540,6 +541,65 @@ mod tests {
         handle.join().expect("server thread should finish");
     }
 
+    #[test]
+    fn stream_handle_parses_openai_sse_chunks_and_usage() {
+        let mut stream = mlx_lm_stream(
+            "event: ignored\n\
+             \n\
+             data: {\"choices\":[{\"text\":\" hello\",\"finish_reason\":null}],\"usage\":null}\n\
+             \n\
+             data: {\"choices\":[{\"text\":\" world\",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2,\"total_tokens\":4}}\n\
+             \n\
+             data: [DONE]\n\n",
+        );
+
+        let first = stream
+            .next_chunk()
+            .expect("first chunk should parse")
+            .expect("first chunk should exist");
+        assert_eq!(first.text, " hello");
+        assert_eq!(first.finish_reason, None);
+        assert_eq!(first.prompt_token_count, None);
+        assert_eq!(first.output_token_count, None);
+
+        let second = stream
+            .next_chunk()
+            .expect("second chunk should parse")
+            .expect("second chunk should exist");
+        assert_eq!(second.text, " world");
+        assert_eq!(second.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(second.prompt_token_count, Some(2));
+        assert_eq!(second.output_token_count, Some(2));
+
+        assert!(stream.next_chunk().expect("DONE should parse").is_none());
+    }
+
+    #[test]
+    fn stream_handle_rejects_missing_stream_choice() {
+        let mut stream = mlx_lm_stream("data: {\"choices\":[]}\n\n");
+
+        let error = stream
+            .next_chunk()
+            .expect_err("missing stream choices should fail closed");
+        assert!(matches!(
+            error,
+            MlxLmBackendError::MissingStreamChoice { .. }
+        ));
+    }
+
+    #[test]
+    fn stream_handle_rejects_invalid_stream_json() {
+        let mut stream = mlx_lm_stream("data: {not-json}\n\n");
+
+        let error = stream
+            .next_chunk()
+            .expect_err("invalid stream JSON should fail closed");
+        assert!(matches!(
+            error,
+            MlxLmBackendError::InvalidStreamChunk { .. }
+        ));
+    }
+
     fn runtime_report() -> RuntimeReport {
         RuntimeReport::from_resolution(
             &BackendPolicy::allow_mlx_lm_delegated(),
@@ -557,6 +617,13 @@ mod tests {
             stop_sequences: Vec::new(),
             metadata: None,
         }
+    }
+
+    fn mlx_lm_stream(body: &str) -> MlxLmStreamHandle {
+        MlxLmStreamHandle::new(
+            "http://127.0.0.1:8090/v1/completions".to_string(),
+            Box::new(Cursor::new(body.as_bytes().to_vec())),
+        )
     }
 
     fn spawn_completion_server(
