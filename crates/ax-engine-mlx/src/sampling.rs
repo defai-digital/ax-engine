@@ -75,7 +75,38 @@ pub fn sample_categorical(
     let inv_temp = 1.0 / sampling.temperature;
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
-    // Compute exp((logit - max) / temperature) for numerical stability.
+    // Fast path: no top-k/top-p filtering. Avoids index-tracking allocation
+    // and the extra O(vocab) filtered_sum pass — the common case for plain
+    // temperature sampling.
+    if sampling.top_k == 0 && sampling.top_p >= 1.0 {
+        let probs: Vec<f32> = logits
+            .iter()
+            .map(|&l| {
+                let p = ((l - max_l) * inv_temp).exp();
+                if p.is_finite() { p } else { 0.0 }
+            })
+            .collect();
+        let sum: f32 = probs.iter().sum();
+        if sum == 0.0 || !sum.is_finite() {
+            return argmax_f32(logits);
+        }
+        let threshold = rng.next_f32() * sum;
+        let mut cumsum = 0.0f32;
+        for (i, p) in probs.iter().enumerate() {
+            cumsum += p;
+            if cumsum >= threshold {
+                return i as u32;
+            }
+        }
+        return probs
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i as u32)
+            .unwrap_or(0);
+    }
+
+    // Filtered path: top-k or top-p active — track indices for truncation.
     let mut candidates: Vec<(usize, f32)> = logits
         .iter()
         .enumerate()
@@ -95,7 +126,6 @@ pub fn sample_categorical(
         return argmax_f32(logits);
     }
 
-    // Normalize and sample.
     let threshold = rng.next_f32() * filtered_sum;
     let mut cumsum = 0.0f32;
     for (i, p) in candidates.iter() {
@@ -104,7 +134,6 @@ pub fn sample_categorical(
             return *i as u32;
         }
     }
-    // Rounding fallback: return the highest-probability token.
     candidates
         .iter()
         .copied()

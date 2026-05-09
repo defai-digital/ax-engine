@@ -533,7 +533,11 @@ impl KvManager {
     pub fn memory_pressure(&self) -> Option<String> {
         let free_blocks = self.available_block_count();
         if free_blocks == 0 {
-            Some("kv_exhausted".into())
+            if self.select_cached_block_eviction_candidate().is_some() {
+                Some("kv_exhausted_reclaimable_cache".into())
+            } else {
+                Some("kv_exhausted".into())
+            }
         } else if u64::from(free_blocks) * u64::from(KV_LOW_FREE_BLOCKS_DIVISOR)
             <= u64::from(self.config.total_blocks)
         {
@@ -1353,6 +1357,21 @@ mod tests {
         manager.allocate(RequestId(1), 4).unwrap();
 
         assert_eq!(manager.memory_pressure(), Some("kv_exhausted".into()));
+    }
+
+    #[test]
+    fn memory_pressure_reports_reclaimable_cache_when_no_free_blocks_can_evict() {
+        let mut manager = make_manager(1, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4])
+            .unwrap();
+        manager.allocate(RequestId(1), 4).unwrap();
+        manager.free(RequestId(1)).unwrap();
+
+        assert_eq!(
+            manager.memory_pressure(),
+            Some("kv_exhausted_reclaimable_cache".into())
+        );
     }
 
     #[test]
