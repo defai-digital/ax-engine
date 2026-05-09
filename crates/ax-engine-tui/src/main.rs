@@ -7,6 +7,7 @@ use ax_engine_tui::jobs::plan::{
 use ax_engine_tui::jobs::runner::{RunningJob, run_to_completion};
 use ax_engine_tui::jobs::{DoctorCommand, fetch_server_snapshot, run_doctor};
 use ax_engine_tui::profiles::{ManagerProfile, default_profile_root, read_profile, write_profile};
+use ax_engine_tui::support::write_support_bundle;
 use ax_engine_tui::ui;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
@@ -39,11 +40,18 @@ struct Options {
     benchmark_json: Option<PathBuf>,
     artifact_root: Option<PathBuf>,
     profile_dir: Option<PathBuf>,
+    support_bundle: Option<PathBuf>,
 }
 
 fn main() -> Result<(), ManagerError> {
     let options = parse_args(env::args().skip(1))?;
     let state = build_state(&options);
+    if let Some(path) = options.support_bundle.as_deref() {
+        let bundle_path = write_support_bundle(path, &state)
+            .map_err(|error| ManagerError::Message(error.to_string()))?;
+        println!("support_bundle={}", bundle_path.display());
+        return Ok(());
+    }
     if options.phase2_check {
         run_phase2_check(&options, &state)?;
         return Ok(());
@@ -72,6 +80,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, ManagerErro
                 options.artifact_root = Some(next_path(&mut args, "--artifact-root")?)
             }
             "--profile-dir" => options.profile_dir = Some(next_path(&mut args, "--profile-dir")?),
+            "--support-bundle" => {
+                options.support_bundle = Some(next_path(&mut args, "--support-bundle")?)
+            }
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
@@ -104,10 +115,11 @@ fn next_value(
 fn print_help() {
     println!(
         "AX Engine Manager\n\n\
-         Usage: ax-engine-manager [--check] [--phase2-check] [--doctor-json <path>] [--model-dir <path>] \\\n           [--server-url <url>] [--benchmark-json <path>] [--artifact-root <path>] [--profile-dir <path>]\n\n\
+         Usage: ax-engine-manager [--check] [--phase2-check] [--doctor-json <path>] [--model-dir <path>] \\\n           [--server-url <url>] [--benchmark-json <path>] [--artifact-root <path>] [--profile-dir <path>] \\\n           [--support-bundle <dir>]\n\n\
          Phase 1 is read-only. It may run doctor, read JSON contracts, poll server metadata,\n\
          and render local artifacts, but it does not start downloads, benchmarks, or servers.\n\
-         Phase 2 adds guarded local job planning, fake-process cancellation checks, and profiles."
+         Phase 2 adds guarded local job planning, fake-process cancellation checks, and profiles.\n\
+         Phase 3 support bundles write redacted diagnostics without model weights or secrets."
     );
 }
 
@@ -352,6 +364,8 @@ mod tests {
                 "benchmarks/results",
                 "--profile-dir",
                 "profiles",
+                "--support-bundle",
+                "bundle",
             ]
             .into_iter()
             .map(str::to_string),
@@ -367,6 +381,7 @@ mod tests {
             Some(PathBuf::from("benchmarks/results"))
         );
         assert_eq!(options.profile_dir, Some(PathBuf::from("profiles")));
+        assert_eq!(options.support_bundle, Some(PathBuf::from("bundle")));
     }
 
     #[test]

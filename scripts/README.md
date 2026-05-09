@@ -46,6 +46,11 @@ throughput baselines.
   runner foundation. It verifies explicit job-plan labels, profile persistence,
   fake-process cancellation, log-tail capture, the benchmark artifact guard, and
   the non-mutating Jobs tab projection.
+- `check-cli-tui-phase3.sh`: release-integration gate for `ax-engine-manager`.
+  It builds the release binaries, verifies the archive contains
+  `ax-engine-server`, `ax-engine-bench`, and `ax-engine-manager`, runs manager
+  help/check smoke tests, and checks support bundles do not copy model weights or
+  secret-like content.
 - `download_model.py`: general-purpose MLX model download helper. It downloads a
   Hugging Face snapshot to `~/.cache/ax-engine/models/<repo-slug>` by default,
   validates local model files, and generates the AX model manifest when

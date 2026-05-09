@@ -84,6 +84,7 @@ ax-engine-manager --check
 ax-engine-manager --model-dir /path/to/model
 ax-engine-manager --server-url http://127.0.0.1:8080
 ax-engine-manager --doctor-json /path/to/doctor.json --artifact-root benchmarks/results
+ax-engine-manager --doctor-json /path/to/doctor.json --support-bundle /tmp/ax-support
 ```
 
 `--check` prints a non-interactive summary for doctor, server, benchmark, and
@@ -104,6 +105,7 @@ covers contract parsers, tab rendering snapshots, server polling against a local
 test HTTP server, non-interactive `--check`, and unsupported/missing-state UI.
 Run `bash scripts/check-cli-tui-phase2.sh` before adding interactive job
 controls.
+Run `bash scripts/check-cli-tui-phase3.sh` before publishing Homebrew artifacts.
 
 ## MLX Inference Stack
 
