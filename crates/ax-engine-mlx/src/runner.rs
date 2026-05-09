@@ -1706,8 +1706,7 @@ impl ExecutionRunner for MlxRunner {
             }
             EmbeddingPooling::Last => {
                 // Gather hidden[b, actual_lens[b]-1, :] per sequence using take_along_axis.
-                let last_indices: Vec<u32> =
-                    actual_lens.iter().map(|&l| (l - 1) as u32).collect();
+                let last_indices: Vec<u32> = actual_lens.iter().map(|&l| (l - 1) as u32).collect();
                 let idx_b11 = MlxArray::from_raw_data(
                     last_indices.as_ptr() as *const u8,
                     last_indices.len() * std::mem::size_of::<u32>(),

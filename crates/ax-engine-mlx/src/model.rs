@@ -1266,7 +1266,12 @@ fn layer_forward_dense_embed(
 
     let q = reshape(
         &q_raw,
-        &[batch as i32, seq as i32, cfg.n_heads as i32, head_dim as i32],
+        &[
+            batch as i32,
+            seq as i32,
+            cfg.n_heads as i32,
+            head_dim as i32,
+        ],
         None,
     );
     let k = reshape(
@@ -1374,7 +1379,7 @@ pub fn forward_for_embedding(
 
 /// Embed a flat token-id array and reshape to [batch, max_seq, hidden_size].
 fn embed_tokens_batched(
-    ids_flat: &MlxArray,  // [batch * max_seq] u32
+    ids_flat: &MlxArray, // [batch * max_seq] u32
     embedding: &QuantizedWeight,
     hidden_size: usize,
     batch: usize,
@@ -1382,7 +1387,11 @@ fn embed_tokens_batched(
 ) -> MlxArray {
     // Reuse single-sequence path; it produces [1, batch*max_seq, hidden].
     let flat_hidden = embed_tokens_arr(ids_flat, embedding, hidden_size);
-    reshape(&flat_hidden, &[batch as i32, max_seq as i32, hidden_size as i32], None)
+    reshape(
+        &flat_hidden,
+        &[batch as i32, max_seq as i32, hidden_size as i32],
+        None,
+    )
 }
 
 /// Batch stateless forward pass for dense-embedding extraction.
@@ -1412,7 +1421,13 @@ pub fn forward_for_embedding_batch(
         MlxDtype::Uint32,
     );
 
-    let mut hidden = embed_tokens_batched(&ids_flat, &weights.token_embedding, cfg.hidden_size, batch, max_len);
+    let mut hidden = embed_tokens_batched(
+        &ids_flat,
+        &weights.token_embedding,
+        cfg.hidden_size,
+        batch,
+        max_len,
+    );
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
@@ -1594,26 +1609,37 @@ fn qk_norm_bshd(
     eps: f32,
 ) -> MlxArray {
     let Some(n) = norm else { return x };
-    let batch = x.shape()[0] as usize;
-    let flat = reshape(&x, &[(batch * n_heads * seq) as i32, head_dim as i32], None);
-    let normed = rms_norm(&flat, Some(n), eps, None);
-    reshape(
-        &normed,
-        &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
-        None,
-    )
+    if use_flat_qk_norm_path() {
+        let batch = x.shape()[0] as usize;
+        let flat = reshape(&x, &[(batch * n_heads * seq) as i32, head_dim as i32], None);
+        let normed = rms_norm(&flat, Some(n), eps, None);
+        return reshape(
+            &normed,
+            &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
+            None,
+        );
+    }
+    rms_norm(&x, Some(n), eps, None)
 }
 
 /// Apply no-scale per-head RMS norm in BSHD [batch, seq, n_heads, head_dim] space.
 fn rms_norm_no_scale_bshd(x: MlxArray, n_heads: usize, head_dim: usize, seq: usize) -> MlxArray {
-    let batch = x.shape()[0] as usize;
-    let flat = reshape(&x, &[(batch * n_heads * seq) as i32, head_dim as i32], None);
-    let normed = rms_norm(&flat, None, 1e-6, None);
-    reshape(
-        &normed,
-        &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
-        None,
-    )
+    if use_flat_qk_norm_path() {
+        let batch = x.shape()[0] as usize;
+        let flat = reshape(&x, &[(batch * n_heads * seq) as i32, head_dim as i32], None);
+        let normed = rms_norm(&flat, None, 1e-6, None);
+        return reshape(
+            &normed,
+            &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
+            None,
+        );
+    }
+    rms_norm(&x, None, 1e-6, None)
+}
+
+fn use_flat_qk_norm_path() -> bool {
+    static USE_FLAT: OnceLock<bool> = OnceLock::new();
+    *USE_FLAT.get_or_init(|| std::env::var("AX_MLX_QK_NORM_FLAT").as_deref() == Ok("1"))
 }
 
 /// Apply optional V RMSNorm in BSHD, then convert to BHSD for attention/KV cache.
@@ -1796,6 +1822,13 @@ fn build_layer_masks(
             .iter()
             .map(|lc| {
                 let mask_key_len = attention_mask_key_len(seq, key_len, lc.sliding_window);
+                // For decode (seq==1) with sliding window, key_len is already truncated
+                // to ≤ window by attention_mask_key_len. The single query can attend to
+                // all retained keys, so no mask is needed. This matches mlx_lm's behavior
+                // where N==1 → None mask for all layers (base.py create_attention_mask).
+                if seq == 1 && lc.sliding_window.is_some() {
+                    return None;
+                }
                 memo.entry((lc.sliding_window, mask_key_len))
                     .or_insert_with(|| attention_mask_array(seq, mask_key_len, lc.sliding_window))
                     .clone()
