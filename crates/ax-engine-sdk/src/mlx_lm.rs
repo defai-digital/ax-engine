@@ -382,6 +382,7 @@ pub(crate) fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateF
     match value {
         Some("stop") => Some(GenerateFinishReason::Stop),
         Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
+        Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
         Some(_) | None => None,
     }
 }
