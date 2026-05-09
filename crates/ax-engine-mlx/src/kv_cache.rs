@@ -1,5 +1,5 @@
 use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode};
-use mlx_sys::{MlxArray, MlxDtype, eval, slice, slice_update, zeros};
+use mlx_sys::{MlxArray, MlxDtype, astype, eval, slice, slice_update, zeros};
 
 use crate::turboquant::{
     FullPrecisionKvTokenVectors, TurboQuantAttentionPartitionStats, TurboQuantBlockLayout,
@@ -134,6 +134,7 @@ fn validate_glm_mla_append_inputs(
     }
 }
 
+#[cfg(test)]
 fn kv_heads_for_token(lkv: &LayerKV, token_index: usize) -> Vec<FullPrecisionKvTokenVectors> {
     (0..lkv.n_kv_heads as usize)
         .map(|head_index| {
@@ -145,6 +146,33 @@ fn kv_heads_for_token(lkv: &LayerKV, token_index: usize) -> Vec<FullPrecisionKvT
         .collect()
 }
 
+fn kv_heads_for_token_from_f32_slices(
+    k_values: &[f32],
+    v_values: &[f32],
+    lkv: &LayerKV,
+    token_index: usize,
+) -> Vec<FullPrecisionKvTokenVectors> {
+    (0..lkv.n_kv_heads as usize)
+        .map(|head_index| {
+            kv_head_for_token_from_f32_slices(k_values, v_values, lkv, token_index, head_index)
+        })
+        .collect()
+}
+
+fn kv_head_for_token_from_f32_slices(
+    k_values: &[f32],
+    v_values: &[f32],
+    lkv: &LayerKV,
+    token_index: usize,
+    head_index: usize,
+) -> FullPrecisionKvTokenVectors {
+    (
+        kv_vector_for_token_head_from_f32_slice(k_values, lkv, token_index, head_index),
+        kv_vector_for_token_head_from_f32_slice(v_values, lkv, token_index, head_index),
+    )
+}
+
+#[cfg(test)]
 fn kv_vector_for_token_head(
     array: &MlxArray,
     lkv: &LayerKV,
@@ -160,6 +188,24 @@ fn kv_vector_for_token_head(
     (0..head_dim)
         .map(|dim| array_element_as_f32(array, lkv.dtype, base_element + dim))
         .collect()
+}
+
+fn kv_vector_for_token_head_from_f32_slice(
+    values: &[f32],
+    lkv: &LayerKV,
+    token_index: usize,
+    head_index: usize,
+) -> Vec<f32> {
+    let capacity = lkv.capacity;
+    let head_dim = lkv.head_dim as usize;
+    let base_element = head_index
+        .saturating_mul(capacity)
+        .saturating_add(token_index)
+        .saturating_mul(head_dim);
+    values
+        .get(base_element..base_element.saturating_add(head_dim))
+        .map(|slice| slice.to_vec())
+        .unwrap_or_else(|| vec![0.0; head_dim])
 }
 
 fn copy_token_range_to_rotating(
@@ -197,6 +243,7 @@ fn copy_token_range_to_rotating(
     out
 }
 
+#[cfg(test)]
 fn array_element_as_f32(array: &MlxArray, dtype: MlxDtype, element_index: usize) -> f32 {
     let ptr = array.data_raw();
     if ptr.is_null() {
@@ -226,6 +273,7 @@ fn array_element_as_f32(array: &MlxArray, dtype: MlxDtype, element_index: usize)
     }
 }
 
+#[cfg(test)]
 fn f16_bits_to_f32(bits: u16) -> f32 {
     let sign = ((bits & 0x8000) as u32) << 16;
     let exponent = (bits >> 10) & 0x1f;
@@ -969,9 +1017,18 @@ impl MlxKVCache {
                 continue;
             }
 
-            eval(&[&lkv.k, &lkv.v]);
+            let k_f32 =
+                (lkv.dtype != MlxDtype::Float32).then(|| astype(&lkv.k, MlxDtype::Float32, None));
+            let v_f32 =
+                (lkv.dtype != MlxDtype::Float32).then(|| astype(&lkv.v, MlxDtype::Float32, None));
+            let k_source = k_f32.as_ref().unwrap_or(&lkv.k);
+            let v_source = v_f32.as_ref().unwrap_or(&lkv.v);
+            eval(&[k_source, v_source]);
+            let k_values = k_source.data_f32();
+            let v_values = v_source.data_f32();
             for token_index in storage.compressed_tokens..cold_tokens {
-                let heads = kv_heads_for_token(lkv, token_index);
+                let heads =
+                    kv_heads_for_token_from_f32_slices(k_values, v_values, lkv, token_index);
                 storage
                     .buffer
                     .write_token(token_index, &heads)
@@ -1241,7 +1298,15 @@ impl MlxKVCache {
                 actual: cold_stats.len(),
             });
         }
-        eval(&[&lkv.k, &lkv.v]);
+        let k_f32 =
+            (lkv.dtype != MlxDtype::Float32).then(|| astype(&lkv.k, MlxDtype::Float32, None));
+        let v_f32 =
+            (lkv.dtype != MlxDtype::Float32).then(|| astype(&lkv.v, MlxDtype::Float32, None));
+        let k_source = k_f32.as_ref().unwrap_or(&lkv.k);
+        let v_source = v_f32.as_ref().unwrap_or(&lkv.v);
+        eval(&[k_source, v_source]);
+        let k_values = k_source.data_f32();
+        let v_values = v_source.data_f32();
 
         let mut outputs = Vec::with_capacity(queries.len());
         for (query_head_index, query) in queries.iter().enumerate() {
@@ -1249,7 +1314,15 @@ impl MlxKVCache {
                 turboquant_query_head_to_kv_head(query_head_index, queries.len(), n_kv_heads)?;
             let cold_tokens = cold_stats[query_head_index].token_count;
             let hot_tokens = (cold_tokens..total_tokens)
-                .map(|token_index| kv_heads_for_token(lkv, token_index)[kv_head_index].clone())
+                .map(|token_index| {
+                    kv_head_for_token_from_f32_slices(
+                        k_values,
+                        v_values,
+                        lkv,
+                        token_index,
+                        kv_head_index,
+                    )
+                })
                 .collect::<Vec<_>>();
             if hot_tokens.is_empty() {
                 outputs.push(merge_attention_partition_stats(&[cold_stats

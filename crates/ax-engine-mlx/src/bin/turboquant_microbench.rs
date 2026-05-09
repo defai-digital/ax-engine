@@ -36,7 +36,7 @@ impl Default for Config {
         Self {
             cold_tokens: vec![512, 2048],
             hot_tokens: 0,
-            variants: known_variants()
+            variants: recommended_variants()
                 .iter()
                 .map(|variant| (*variant).to_string())
                 .collect(),
@@ -462,10 +462,14 @@ fn known_variants() -> [&'static str; 3] {
     ["dim_parallel", "head_serial", "two_stage_scores"]
 }
 
+fn recommended_variants() -> [&'static str; 1] {
+    ["two_stage_scores"]
+}
+
 fn help() -> String {
     "Usage: cargo run -p ax-engine-mlx --release --bin turboquant-microbench -- \\
        [--cold-tokens 512,2048] [--hot-tokens 0] [--n-query-heads 1] [--n-kv-heads 1] [--head-dim 128] \\
-       [--variants dim_parallel,head_serial,two_stage_scores] \\
+       [--variants two_stage_scores|dim_parallel,head_serial,two_stage_scores] \\
        [--repetitions 5] [--warmup 1] [--output path.json]"
         .to_string()
 }
@@ -501,6 +505,17 @@ mod tests {
         assert_eq!(config.n_query_heads, 4);
         assert_eq!(config.repetitions, 3);
         assert_eq!(config.output, Some(PathBuf::from("out.json")));
+    }
+
+    #[test]
+    fn default_variants_focus_on_runtime_candidate() {
+        let config = Config::default();
+
+        assert_eq!(config.variants, vec!["two_stage_scores"]);
+        assert_eq!(
+            known_variants(),
+            ["dim_parallel", "head_serial", "two_stage_scores"]
+        );
     }
 
     #[test]
