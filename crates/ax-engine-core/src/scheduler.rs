@@ -305,6 +305,8 @@ impl TokenBudgetTelemetry {
 pub struct Scheduler;
 
 const MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP: u32 = 1;
+const MEMORY_PRESSURE_KV_EXHAUSTED: &str = "kv_exhausted";
+const MEMORY_PRESSURE_KV_EXHAUSTED_RECLAIMABLE_CACHE: &str = "kv_exhausted_reclaimable_cache";
 
 impl Scheduler {
     pub fn new() -> Self {
@@ -352,10 +354,8 @@ impl Scheduler {
         let mut route_seed_anchor: Option<BatchRouteSeed> = None;
         let mut batch_mixes_prefill_decode = false;
         let mut token_budget = TokenBudgetTelemetry::default();
-        let mut pressure_prefill_budget = input
-            .memory_pressure
-            .as_ref()
-            .map(|_| MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP);
+        let mut pressure_prefill_budget =
+            prefill_budget_for_memory_pressure(input.memory_pressure.as_deref());
 
         for snapshot in runnable {
             if snapshot.model_id != batch_model_id {
@@ -559,6 +559,17 @@ fn schedulable_token_count(snapshot: &RequestSnapshot, mode: ExecutionMode) -> u
             .prompt_len
             .saturating_sub(snapshot.processed_prompt_tokens),
         ExecutionMode::Decode => 1,
+    }
+}
+
+fn prefill_budget_for_memory_pressure(memory_pressure: Option<&str>) -> Option<u32> {
+    match memory_pressure {
+        None => None,
+        Some(MEMORY_PRESSURE_KV_EXHAUSTED) => Some(0),
+        Some(MEMORY_PRESSURE_KV_EXHAUSTED_RECLAIMABLE_CACHE) => {
+            Some(MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP)
+        }
+        Some(_) => Some(MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP),
     }
 }
 
@@ -987,6 +998,70 @@ mod tests {
             decisions.get(ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS),
             Some(&3)
         );
+    }
+
+    #[test]
+    fn exhausted_memory_pressure_defers_prefill_without_starving_decode() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(16),
+            request_snapshots: vec![
+                make_snapshot(1, 1, "qwen3", &[10, 11, 12, 13], 0, &[], 16),
+                make_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 4, &[99], 16),
+            ],
+            memory_pressure: Some("kv_exhausted".into()),
+            global_token_budget: 8,
+        });
+
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(2)]);
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
+        let execution_batch = schedule_plan.execution_batch.unwrap();
+        assert_eq!(execution_batch.total_scheduled_tokens, 1);
+        assert_eq!(execution_batch.items[0].mode, ExecutionMode::Decode);
+        assert_eq!(execution_batch.items[0].scheduled_token_count, 1);
+
+        let decisions = execution_batch
+            .route_metadata
+            .crossover_decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS),
+            Some(&4)
+        );
+    }
+
+    #[test]
+    fn exhausted_reclaimable_cache_pressure_caps_prefill_without_starving_decode() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(17),
+            request_snapshots: vec![
+                make_snapshot(1, 1, "qwen3", &[10, 11, 12, 13], 0, &[], 16),
+                make_snapshot(2, 2, "qwen3", &[20, 21, 22, 23], 4, &[99], 16),
+            ],
+            memory_pressure: Some("kv_exhausted_reclaimable_cache".into()),
+            global_token_budget: 8,
+        });
+
+        assert_eq!(
+            schedule_plan.selected_requests,
+            vec![RequestId(2), RequestId(1)]
+        );
+        let execution_batch = schedule_plan.execution_batch.unwrap();
+        assert_eq!(execution_batch.total_scheduled_tokens, 2);
+        assert_eq!(execution_batch.items[0].mode, ExecutionMode::Decode);
+        assert_eq!(execution_batch.items[0].scheduled_token_count, 1);
+        assert_eq!(execution_batch.items[1].mode, ExecutionMode::Prefill);
+        assert_eq!(execution_batch.items[1].scheduled_token_count, 1);
     }
 
     #[test]

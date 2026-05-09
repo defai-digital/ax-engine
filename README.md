@@ -109,7 +109,8 @@ What AX Engine adds around model execution:
   the table recovers. No second draft model required.
 - **Scheduler and KV manager**: request lifecycle, batching, memory-blocked
   recovery, and execution planning live in `ax-engine-core` — deterministic,
-  async-free, no framework dependencies.
+  async-free, no framework dependencies. See [`docs/SCHEDULER.md`](docs/SCHEDULER.md)
+  and [`docs/KV-CACHE.md`](docs/KV-CACHE.md) for design details.
 - **Chunked KV cache**: keys and values grow in pre-allocated backing buffers via
   `slice_update`. Draft rollback is O(1) — only the sequence-length
   pointer moves. After each decode step, all KV buffers are evaluated with the
@@ -128,6 +129,10 @@ What AX Engine adds around model execution:
 memory at startup, preventing Metal from paging them between requests. A
 dedicated GPU stream avoids cross-stream synchronization on the shared default
 stream.
+
+See [`docs/KV-CACHE.md`](docs/KV-CACHE.md) for a detailed description of the
+two-layer KV cache architecture, prefix caching coordination, model-specific
+cache variants, and memory pressure handling.
 
 ## Supported Models
 
@@ -492,7 +497,11 @@ Coverage is collected by the report-only GitHub Actions workflow in
 only after the project has a stable baseline across macOS, MLX, and PyO3 paths.
 
 Public documentation is in `docs/`. Canonical benchmark manifests are in
-`benchmarks/manifests/`.
+`benchmarks/manifests/`. Key design documents:
+[SDK / API](docs/SDK.md) ·
+[Scheduler](docs/SCHEDULER.md) ·
+[KV Cache](docs/KV-CACHE.md) ·
+[Benchmarking](docs/BENCH-DESIGN.md)
 
 ## Contributing
 

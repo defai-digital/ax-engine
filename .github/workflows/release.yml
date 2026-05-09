@@ -1,117 +1,30 @@
-name: Release
+# This workflow is retired. Homebrew releases are now published from the local
+# machine using scripts/brew-release.sh, which builds on actual Apple Silicon
+# hardware and uses the developer's local gh auth instead of a TAP_TOKEN secret.
+#
+# To publish a release:
+#   scripts/brew-release.sh v4.x.y
+#   scripts/brew-release.sh v4.x.y --dry-run   # preview only
+#
+# This file is kept for reference only. The workflow_dispatch trigger is removed
+# so it cannot be accidentally re-run from the GitHub Actions UI.
+
+name: Release (retired)
 
 on:
-  release:
-    types: [published]
+  # Trigger disabled — use scripts/brew-release.sh instead
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Release tag to build (e.g. v4.2.2)"
-        required: true
+      _disabled:
+        description: "This workflow is retired. Use scripts/brew-release.sh on your local machine."
+        required: false
 
 jobs:
-  build-and-publish:
-    runs-on: macos-14
-    timeout-minutes: 60
-    permissions:
-      contents: write
-
+  retired:
+    runs-on: ubuntu-latest
     steps:
-      - name: Resolve tag
-        id: tag
+      - name: Workflow retired
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check out repository at tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.tag.outputs.name }}
-
-      - name: Ensure stable Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
-      - name: Install MLX C library
-        run: brew install mlx-c
-
-      - name: Build release binaries
-        run: cargo build --release -p ax-engine-server -p ax-engine-bench
-
-      - name: Package binaries
-        id: package
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.tag.outputs.name }}"
-          VERSION="${TAG#v}"
-          ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
-          tar -czf "/tmp/${ARCHIVE}" -C target/release ax-engine-server ax-engine-bench
-          SHA256=$(shasum -a 256 "/tmp/${ARCHIVE}" | awk '{print $1}')
-          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
-          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload binary to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ steps.tag.outputs.name }}" \
-            "/tmp/${{ steps.package.outputs.archive }}" \
-            --repo "${{ github.repository }}" \
-            --clobber
-
-      - name: Update Homebrew formula
-        env:
-          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.tag.outputs.name }}"
-          VERSION="${{ steps.package.outputs.version }}"
-          SHA256="${{ steps.package.outputs.sha256 }}"
-          ARCHIVE="${{ steps.package.outputs.archive }}"
-          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${ARCHIVE}"
-
-          git config --global credential.helper store
-          printf 'https://x-access-token:%s@github.com\n' "${TAP_TOKEN}" > ~/.git-credentials
-          git clone "https://github.com/defai-digital/homebrew-ax-engine.git" /tmp/tap
-          cd /tmp/tap
-
-          git config user.name "Automatosx"
-          git config user.email "automatosx@defai.digital"
-
-          if ! grep -q 'depends_on "mlx-c"' Formula/ax-engine.rb; then
-            ruby -0pi -e 'sub(/  depends_on :macos\n/, "  depends_on \"mlx-c\"\n  depends_on :macos\n")' Formula/ax-engine.rb
-          fi
-
-          sed -i '' \
-            -e "s|version \"[^\"]*\"|version \"${VERSION}\"|" \
-            -e "s|url \"[^\"]*\"|url \"${DOWNLOAD_URL}\"|" \
-            -e "s|sha256 \"[^\"]*\"|sha256 \"${SHA256}\"|" \
-            Formula/ax-engine.rb
-
-          grep -q 'depends_on "mlx-c"' Formula/ax-engine.rb
-          ruby -c Formula/ax-engine.rb
-
-          # Commit locally first so brew tap clones the updated formula
-          git add Formula/ax-engine.rb
-          git diff --cached --quiet || git commit -m "chore: update ax-engine to v${VERSION}"
-
-          brew uninstall --ignore-dependencies ax-engine || true
-          brew uninstall --ignore-dependencies mlx-c || true
-          brew untap defai-digital/ax-engine || true
-          HOMEBREW_NO_AUTO_UPDATE=1 brew tap defai-digital/ax-engine /tmp/tap
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install defai-digital/ax-engine/ax-engine
-          test -e "$(brew --prefix mlx-c)/lib/libmlxc.dylib"
-          HOMEBREW_NO_AUTO_UPDATE=1 brew test defai-digital/ax-engine/ax-engine
-
-          # Push only after successful install and test
-          cd /tmp/tap
-          if [ -z "${TAP_TOKEN}" ]; then
-            echo "TAP_TOKEN secret is not set; cannot push to Homebrew tap" >&2
-            exit 1
-          fi
-          git push "https://x-access-token:${TAP_TOKEN}@github.com/defai-digital/homebrew-ax-engine.git" main
+          echo "This release workflow is retired."
+          echo "Use scripts/brew-release.sh on your local machine to publish a release."
+          exit 1
