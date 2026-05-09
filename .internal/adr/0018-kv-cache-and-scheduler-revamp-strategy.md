@@ -160,7 +160,9 @@ physical snapshot paths. That summary now carries an explicit
 from being read as complete physical prefix-cache evidence. Public performance
 claim validation now requires physical snapshot hit evidence before an artifact
 may claim `prefix_reuse`; miss-warmup-only and blocked-only artifacts remain
-diagnostic evidence.
+diagnostic evidence. The same validation recalculates coverage from the raw
+counters and rejects inconsistent flags, labels, blocked-reason totals, and
+negative counters.
 
 Only after evidence shows material warmup cost should AX consider an engine-runner
 coordination API for preflight physical-prefix availability.

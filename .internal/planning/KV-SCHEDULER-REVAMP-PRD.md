@@ -212,6 +212,9 @@ surface through better defaults, route metadata, and benchmark artifacts.
 - README/public performance claim validation now rejects `prefix_reuse` claims
   unless the artifact has physical snapshot hit evidence; miss-warmup-only and
   blocked-only artifacts remain diagnostics, not proof of physical reuse.
+- README/public performance claim validation now recalculates prefix snapshot
+  coverage from raw counters and rejects inconsistent flags, coverage labels,
+  blocked-reason totals, and negative counters.
 
 #### Open
 
