@@ -104,7 +104,10 @@ prefixes, evictions, cache size, and blocked reasons
 (`blocked_policy_disabled_count`, `blocked_unsupported_layout_count`, and
 `blocked_trim_failure_count`). Treat these fields as runtime evidence for the
 MLX physical snapshot path, separate from scheduler/replay logical prefix
-contracts.
+contracts. The same block also includes `physical_snapshot_coverage`, with
+values such as `none_observed`, `hit_only`, `miss_warmup_only`, `blocked_only`,
+and `hit_and_miss_warmup`, so readers do not have to infer coverage from raw
+counters.
 
 Long-context prefill and TTFT claims require a separate scaling artifact. For a
 fresh run, use the repo-owned wrapper:
