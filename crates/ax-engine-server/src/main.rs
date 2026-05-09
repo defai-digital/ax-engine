@@ -2262,7 +2262,24 @@ sys.stdout.write(f"server::{prompt}")
                 if let Some(end) = header_end {
                     let headers =
                         String::from_utf8(request[..end].to_vec()).expect("headers should be utf8");
-                    content_length = Some(parse_content_length(&headers));
+                    content_length = Some(
+                        headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                if name.eq_ignore_ascii_case("content-length") {
+                                    Some(
+                                        value
+                                            .trim()
+                                            .parse::<usize>()
+                                            .expect("content-length should parse"),
+                                    )
+                                } else {
+                                    None
+                                }
+                            })
+                            .expect("content-length header should exist"),
+                    );
                 }
             }
 
@@ -2305,25 +2322,6 @@ sys.stdout.write(f"server::{prompt}")
         stream
             .write_all(response.as_bytes())
             .expect("response should write");
-    }
-
-    fn parse_content_length(headers: &str) -> usize {
-        headers
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                if name.eq_ignore_ascii_case("content-length") {
-                    Some(
-                        value
-                            .trim()
-                            .parse::<usize>()
-                            .expect("content-length should parse"),
-                    )
-                } else {
-                    None
-                }
-            })
-            .expect("content-length header should exist")
     }
 
     async fn json_response(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
