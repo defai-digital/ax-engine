@@ -3,13 +3,14 @@ use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use wait_timeout::ChildExt;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
 use crate::delegated_http::{
-    DelegatedHttpPostError, DelegatedHttpTimeouts, send_json_post_with_retry,
+    DelegatedHttpPostError, DelegatedHttpTimeouts, normalize_base_url, parse_json_response,
+    send_json_post_request,
 };
 use crate::generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
@@ -443,8 +444,38 @@ fn run_llama_cpp_server_completion_generate(
         stop: request.stop_sequences.clone(),
     };
 
-    let response = send_json_post_request(&endpoint, &payload, None, config.timeouts)?;
-    let response: LlamaCppCompletionResponse = parse_json_response(&endpoint, response)?;
+    let response =
+        send_json_post_request(
+            &endpoint,
+            &payload,
+            None,
+            config.timeouts,
+            |error| match error {
+                DelegatedHttpPostError::Serialize(source) => {
+                    LlamaCppBackendError::SerializeRequestJson {
+                        endpoint: endpoint.to_string(),
+                        source,
+                    }
+                }
+                DelegatedHttpPostError::Status { status, body } => {
+                    LlamaCppBackendError::HttpStatus {
+                        endpoint: endpoint.to_string(),
+                        status,
+                        body,
+                    }
+                }
+                DelegatedHttpPostError::Request(source) => LlamaCppBackendError::HttpRequest {
+                    endpoint: endpoint.to_string(),
+                    source,
+                },
+            },
+        )?;
+    let response: LlamaCppCompletionResponse = parse_json_response(response, |source| {
+        LlamaCppBackendError::InvalidResponseJson {
+            endpoint: endpoint.to_string(),
+            source,
+        }
+    })?;
 
     let output_tokens = response.tokens;
     let output_token_logprobs = vec![None; output_tokens.len()];
@@ -503,6 +534,23 @@ fn start_llama_cpp_server_completion_stream(
         &payload,
         Some("text/event-stream"),
         config.timeouts,
+        |error| match error {
+            DelegatedHttpPostError::Serialize(source) => {
+                LlamaCppBackendError::SerializeRequestJson {
+                    endpoint: endpoint.to_string(),
+                    source,
+                }
+            }
+            DelegatedHttpPostError::Status { status, body } => LlamaCppBackendError::HttpStatus {
+                endpoint: endpoint.to_string(),
+                status,
+                body,
+            },
+            DelegatedHttpPostError::Request(source) => LlamaCppBackendError::HttpRequest {
+                endpoint: endpoint.to_string(),
+                source,
+            },
+        },
     )?;
 
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
@@ -552,47 +600,6 @@ fn finish_reason_from_stop_type(
             Some(GenerateFinishReason::Stop)
         }
     }
-}
-
-fn send_json_post_request<T>(
-    endpoint: &str,
-    payload: &T,
-    accept: Option<&str>,
-    timeouts: DelegatedHttpTimeouts,
-) -> Result<ureq::Response, LlamaCppBackendError>
-where
-    T: Serialize + ?Sized,
-{
-    send_json_post_with_retry(endpoint, payload, timeouts, accept).map_err(|error| match error {
-        DelegatedHttpPostError::Serialize(source) => LlamaCppBackendError::SerializeRequestJson {
-            endpoint: endpoint.to_string(),
-            source,
-        },
-        DelegatedHttpPostError::Status { status, body } => LlamaCppBackendError::HttpStatus {
-            endpoint: endpoint.to_string(),
-            status,
-            body,
-        },
-        DelegatedHttpPostError::Request(source) => LlamaCppBackendError::HttpRequest {
-            endpoint: endpoint.to_string(),
-            source,
-        },
-    })
-}
-
-fn parse_json_response<T>(
-    endpoint: &str,
-    response: ureq::Response,
-) -> Result<T, LlamaCppBackendError>
-where
-    T: DeserializeOwned,
-{
-    serde_json::from_reader(response.into_reader()).map_err(|source| {
-        LlamaCppBackendError::InvalidResponseJson {
-            endpoint: endpoint.to_string(),
-            source,
-        }
-    })
 }
 
 fn append_sampling_args(command: &mut Command, sampling: &GenerateSampling) {
@@ -698,13 +705,6 @@ fn run_command_with_timeout(
             })
         }
     }
-}
-
-fn normalize_base_url(mut value: String) -> String {
-    while value.ends_with('/') {
-        value.pop();
-    }
-    value
 }
 
 #[derive(Debug, Serialize)]

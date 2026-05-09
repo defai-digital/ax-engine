@@ -1,11 +1,12 @@
 use std::io::{BufRead, BufReader, Read};
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
 use crate::delegated_http::{
-    DelegatedHttpPostError, DelegatedHttpTimeouts, send_json_post_with_retry,
+    DelegatedHttpPostError, DelegatedHttpTimeouts, normalize_base_url, parse_json_response,
+    send_json_post_request,
 };
 use crate::generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateStatus,
@@ -229,7 +230,30 @@ fn start_mlx_lm_server_completion_stream(
         stop: request.stop_sequences.clone(),
     };
 
-    let response = send_json_post_request(&endpoint, &payload, config.timeouts)?;
+    let response =
+        send_json_post_request(
+            &endpoint,
+            &payload,
+            None,
+            config.timeouts,
+            |error| match error {
+                DelegatedHttpPostError::Serialize(source) => {
+                    MlxLmBackendError::SerializeRequestJson {
+                        endpoint: endpoint.to_string(),
+                        source,
+                    }
+                }
+                DelegatedHttpPostError::Status { status, body } => MlxLmBackendError::HttpStatus {
+                    endpoint: endpoint.to_string(),
+                    status,
+                    body,
+                },
+                DelegatedHttpPostError::Request(source) => MlxLmBackendError::HttpRequest {
+                    endpoint: endpoint.to_string(),
+                    source,
+                },
+            },
+        )?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(MlxLmStreamHandle::new(endpoint, reader))
 }
@@ -284,8 +308,35 @@ fn run_mlx_lm_server_completion_generate(
         stop: request.stop_sequences.clone(),
     };
 
-    let response = send_json_post_request(&endpoint, &payload, config.timeouts)?;
-    let response: MlxLmCompletionResponse = parse_json_response(&endpoint, response)?;
+    let response =
+        send_json_post_request(
+            &endpoint,
+            &payload,
+            None,
+            config.timeouts,
+            |error| match error {
+                DelegatedHttpPostError::Serialize(source) => {
+                    MlxLmBackendError::SerializeRequestJson {
+                        endpoint: endpoint.to_string(),
+                        source,
+                    }
+                }
+                DelegatedHttpPostError::Status { status, body } => MlxLmBackendError::HttpStatus {
+                    endpoint: endpoint.to_string(),
+                    status,
+                    body,
+                },
+                DelegatedHttpPostError::Request(source) => MlxLmBackendError::HttpRequest {
+                    endpoint: endpoint.to_string(),
+                    source,
+                },
+            },
+        )?;
+    let response: MlxLmCompletionResponse =
+        parse_json_response(response, |source| MlxLmBackendError::InvalidResponseJson {
+            endpoint: endpoint.to_string(),
+            source,
+        })?;
     let choice = response.choices.into_iter().next().ok_or_else(|| {
         MlxLmBackendError::MissingCompletionChoice {
             endpoint: endpoint.clone(),
@@ -316,50 +367,6 @@ fn run_mlx_lm_server_completion_generate(
         },
         runtime: runtime.clone(),
     })
-}
-
-fn send_json_post_request<T>(
-    endpoint: &str,
-    payload: &T,
-    timeouts: DelegatedHttpTimeouts,
-) -> Result<ureq::Response, MlxLmBackendError>
-where
-    T: Serialize + ?Sized,
-{
-    send_json_post_with_retry(endpoint, payload, timeouts, None).map_err(|error| match error {
-        DelegatedHttpPostError::Serialize(source) => MlxLmBackendError::SerializeRequestJson {
-            endpoint: endpoint.to_string(),
-            source,
-        },
-        DelegatedHttpPostError::Status { status, body } => MlxLmBackendError::HttpStatus {
-            endpoint: endpoint.to_string(),
-            status,
-            body,
-        },
-        DelegatedHttpPostError::Request(source) => MlxLmBackendError::HttpRequest {
-            endpoint: endpoint.to_string(),
-            source,
-        },
-    })
-}
-
-fn parse_json_response<T>(endpoint: &str, response: ureq::Response) -> Result<T, MlxLmBackendError>
-where
-    T: DeserializeOwned,
-{
-    serde_json::from_reader(response.into_reader()).map_err(|source| {
-        MlxLmBackendError::InvalidResponseJson {
-            endpoint: endpoint.to_string(),
-            source,
-        }
-    })
-}
-
-fn normalize_base_url(mut value: String) -> String {
-    while value.ends_with('/') {
-        value.pop();
-    }
-    value
 }
 
 pub(crate) fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateFinishReason> {
