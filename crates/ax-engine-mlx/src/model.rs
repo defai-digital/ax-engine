@@ -2341,7 +2341,7 @@ fn linear_attention_forward(
     let profile_started = Instant::now();
     let conv_weight = linear_conv_weight(&linear_w.conv1d);
     let (conv_out, new_conv_state) =
-        linear_attention_conv1d(linear_cfg, &qkv, &conv_weight, conv_state, None);
+        linear_attention_conv1d(linear_cfg, &qkv, &conv_weight, conv_state);
     linear_attention_profile_eval_elapsed(
         profile_enabled,
         LinearAttentionProfileStage::Conv,

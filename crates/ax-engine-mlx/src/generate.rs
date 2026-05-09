@@ -1,6 +1,7 @@
 use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
 
 use crate::kv_cache::MlxKVCache;
+use crate::linear_attention::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward,
     forward_lazy_single_with_turboquant_context, forward_with_turboquant_context,
@@ -8,8 +9,9 @@ use crate::model::{
 use crate::sampling::{Xorshift64, sample_categorical};
 use crate::weights::ModelWeights;
 
-/// Default chunk size for chunked prefill, matching SwiftLM's default.
-pub const DEFAULT_PREFILL_CHUNK: usize = 512;
+/// Default chunk size for chunked prefill, matching SwiftLM's default and the
+/// GatedDelta Metal kernel's threadgroup cache capacity.
+pub const DEFAULT_PREFILL_CHUNK: usize = GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 
 /// Process the full prompt in chunks of `chunk_size` tokens.
 ///
