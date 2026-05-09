@@ -64,7 +64,15 @@ def _install_ax_engine_stub() -> None:
     sys.modules["ax_engine._ax_engine"] = native
 
 
-_install_ax_engine_stub()
+def _remove_ax_engine_stub() -> None:
+    """Remove the ax_engine stub from sys.modules and sys.path so that
+    subsequent tests that need the real extension can import it cleanly."""
+    for name in list(sys.modules):
+        if name == "ax_engine" or name.startswith("ax_engine."):
+            del sys.modules[name]
+    src = str(_SOURCE_ROOT)
+    if src in sys.path:
+        sys.path.remove(src)
 
 
 # ---------------------------------------------------------------------------
@@ -204,11 +212,13 @@ def _completion_sse(*texts):
 class TestAXEngineChatModel(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        _install_ax_engine_stub()
         cls.srv = _TestServer()
 
     @classmethod
     def tearDownClass(cls):
         cls.srv.close()
+        _remove_ax_engine_stub()
 
     def _make_chat(self, **kwargs):
         from ax_engine.langchain import AXEngineChatModel
@@ -307,11 +317,13 @@ class TestAXEngineChatModel(unittest.TestCase):
 class TestAXEngineLLM(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        _install_ax_engine_stub()
         cls.srv = _TestServer()
 
     @classmethod
     def tearDownClass(cls):
         cls.srv.close()
+        _remove_ax_engine_stub()
 
     def _make_llm(self, **kwargs):
         from ax_engine.langchain import AXEngineLLM
