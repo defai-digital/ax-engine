@@ -178,6 +178,63 @@ class PrefixWarmupBuilderTests(unittest.TestCase):
         artifact = json.loads(output.read_text())
         self.assertEqual(artifact["schema_version"], "ax.mlx_prefix_warmup.v1")
 
+    def test_cli_does_not_leave_output_when_validation_fails(self) -> None:
+        routes_path = self.result_dir / "routes.json"
+        routes = json.loads(routes_path.read_text())
+        routes["route"]["ax_mlx_prefix_cache_hits"] = 1
+        write_json(routes_path, routes)
+        output = self.root / "prefix-warmup.json"
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--result-dir",
+                str(self.result_dir),
+                "--manifest-root",
+                str(self.manifest_root),
+                "--output",
+                str(output),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertFalse(output.exists())
+        self.assertEqual(list(self.root.glob(".prefix-warmup.json.*.tmp")), [])
+
+    def test_cli_preserves_existing_output_when_validation_fails(self) -> None:
+        routes_path = self.result_dir / "routes.json"
+        routes = json.loads(routes_path.read_text())
+        routes["route"]["ax_mlx_prefix_cache_hits"] = 1
+        write_json(routes_path, routes)
+        output = self.root / "prefix-warmup.json"
+        output.write_text('{"schema_version":"existing"}\n')
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--result-dir",
+                str(self.result_dir),
+                "--manifest-root",
+                str(self.manifest_root),
+                "--output",
+                str(output),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(output.read_text(), '{"schema_version":"existing"}\n')
+        self.assertEqual(list(self.root.glob(".prefix-warmup.json.*.tmp")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

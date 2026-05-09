@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -261,6 +262,29 @@ def build_prefix_warmup_artifact(
     }
 
 
+def write_checked_artifact(output: Path, artifact: dict[str, Any]) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(artifact, handle, indent=2)
+            handle.write("\n")
+        checker.validate_prefix_warmup_artifact(temp_path)
+        temp_path.replace(output)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result-dir", required=True, type=Path)
@@ -272,9 +296,7 @@ def main(argv: list[str]) -> int:
             result_dir=args.result_dir,
             manifest_root=args.manifest_root,
         )
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(artifact, indent=2) + "\n")
-        checker.validate_prefix_warmup_artifact(args.output)
+        write_checked_artifact(args.output, artifact)
     except (PrefixWarmupBuildError, checker.PrefixWarmupArtifactError) as error:
         print(f"MLX prefix warmup artifact build failed: {error}", file=sys.stderr)
         return 1
