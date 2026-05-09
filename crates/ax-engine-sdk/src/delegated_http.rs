@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::time::Duration;
 
 /// Default connect timeout for delegated local/remote HTTP backends.
@@ -6,6 +7,8 @@ pub const DEFAULT_DELEGATED_HTTP_CONNECT_TIMEOUT_SECS: u64 = 30;
 /// the longer I/O timeout because streaming completions can stay open for the
 /// full generation window.
 pub const DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS: u64 = 300;
+const DELEGATED_HTTP_TRANSPORT_MAX_ATTEMPTS: usize = 2;
+const DELEGATED_HTTP_TRANSPORT_RETRY_BACKOFF: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DelegatedHttpTimeouts {
@@ -40,6 +43,73 @@ impl DelegatedHttpTimeouts {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum DelegatedHttpPostError {
+    Serialize(serde_json::Error),
+    Status { status: u16, body: String },
+    Request(Box<ureq::Error>),
+}
+
+pub(crate) fn send_json_post_with_retry<T>(
+    endpoint: &str,
+    payload: &T,
+    timeouts: DelegatedHttpTimeouts,
+    accept: Option<&str>,
+) -> Result<ureq::Response, DelegatedHttpPostError>
+where
+    T: Serialize + ?Sized,
+{
+    let body = serde_json::to_vec(payload).map_err(DelegatedHttpPostError::Serialize)?;
+    let agent = timeouts.build_agent();
+
+    for attempt in 1..=DELEGATED_HTTP_TRANSPORT_MAX_ATTEMPTS {
+        let mut request = agent.post(endpoint).set("Content-Type", "application/json");
+        if let Some(accept) = accept {
+            request = request.set("Accept", accept);
+        }
+
+        match request.send_bytes(&body) {
+            Ok(response) => return Ok(response),
+            Err(ureq::Error::Status(status, response)) => {
+                let body = response
+                    .into_string()
+                    .unwrap_or_else(|_| "<failed to read response body>".to_string());
+                return Err(DelegatedHttpPostError::Status {
+                    status,
+                    body: body.trim().to_string(),
+                });
+            }
+            Err(source)
+                if attempt < DELEGATED_HTTP_TRANSPORT_MAX_ATTEMPTS
+                    && is_retryable_transport_error(&source) =>
+            {
+                tracing::warn!(
+                    endpoint,
+                    attempt,
+                    max_attempts = DELEGATED_HTTP_TRANSPORT_MAX_ATTEMPTS,
+                    error = %source,
+                    "delegated HTTP transport request failed; retrying once"
+                );
+                std::thread::sleep(DELEGATED_HTTP_TRANSPORT_RETRY_BACKOFF);
+            }
+            Err(source) => return Err(DelegatedHttpPostError::Request(Box::new(source))),
+        }
+    }
+
+    unreachable!("delegated HTTP retry loop always returns from its final attempt")
+}
+
+fn is_retryable_transport_error(error: &ureq::Error) -> bool {
+    matches!(
+        error,
+        ureq::Error::Transport(transport)
+            if matches!(
+                transport.kind(),
+                ureq::ErrorKind::ConnectionFailed | ureq::ErrorKind::Dns | ureq::ErrorKind::Io
+            )
+    )
+}
+
 impl Default for DelegatedHttpTimeouts {
     fn default() -> Self {
         Self::from_secs(
@@ -47,5 +117,64 @@ impl Default for DelegatedHttpTimeouts {
             DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS,
             DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::thread;
+
+    #[test]
+    fn send_json_post_with_retry_retries_one_transport_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+        let endpoint = format!("http://{}/v1/completions", listener.local_addr().unwrap());
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = Arc::clone(&attempts);
+
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("first connection should arrive");
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+
+            let (mut stream, _) = listener.accept().expect("retry connection should arrive");
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            let mut request = [0_u8; 1024];
+            let bytes_read = stream.read(&mut request).expect("request should read");
+            let request = String::from_utf8_lossy(&request[..bytes_read]);
+            assert!(request.starts_with("POST /v1/completions HTTP/1.1"));
+            assert!(request.contains("Content-Type: application/json"));
+            assert!(request.contains(r#"{"prompt":"hello"}"#));
+
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\n\
+                      Content-Type: application/json\r\n\
+                      Content-Length: 11\r\n\
+                      Connection: close\r\n\
+                      \r\n\
+                      {\"ok\":true}",
+                )
+                .expect("response should write");
+        });
+
+        let response = send_json_post_with_retry(
+            &endpoint,
+            &json!({"prompt": "hello"}),
+            DelegatedHttpTimeouts::from_secs(1, 1, 1),
+            None,
+        )
+        .expect("request should succeed after one retry");
+
+        assert_eq!(response.status(), 200);
+        handle.join().expect("server thread should finish");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 }

@@ -8,7 +8,9 @@ use thiserror::Error;
 use wait_timeout::ChildExt;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
-use crate::delegated_http::DelegatedHttpTimeouts;
+use crate::delegated_http::{
+    DelegatedHttpPostError, DelegatedHttpTimeouts, send_json_post_with_retry,
+};
 use crate::generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
     GenerateStatus,
@@ -561,35 +563,21 @@ fn send_json_post_request<T>(
 where
     T: Serialize + ?Sized,
 {
-    let body = serde_json::to_vec(payload).map_err(|source| {
-        LlamaCppBackendError::SerializeRequestJson {
+    send_json_post_with_retry(endpoint, payload, timeouts, accept).map_err(|error| match error {
+        DelegatedHttpPostError::Serialize(source) => LlamaCppBackendError::SerializeRequestJson {
             endpoint: endpoint.to_string(),
             source,
-        }
-    })?;
-    let agent = timeouts.build_agent();
-    let mut request = agent.post(endpoint).set("Content-Type", "application/json");
-    if let Some(accept) = accept {
-        request = request.set("Accept", accept);
-    }
-
-    match request.send_bytes(&body) {
-        Ok(response) => Ok(response),
-        Err(ureq::Error::Status(status, response)) => {
-            let body = response
-                .into_string()
-                .unwrap_or_else(|_| "<failed to read response body>".to_string());
-            Err(LlamaCppBackendError::HttpStatus {
-                endpoint: endpoint.to_string(),
-                status,
-                body: body.trim().to_string(),
-            })
-        }
-        Err(source) => Err(LlamaCppBackendError::HttpRequest {
+        },
+        DelegatedHttpPostError::Status { status, body } => LlamaCppBackendError::HttpStatus {
             endpoint: endpoint.to_string(),
-            source: Box::new(source),
-        }),
-    }
+            status,
+            body,
+        },
+        DelegatedHttpPostError::Request(source) => LlamaCppBackendError::HttpRequest {
+            endpoint: endpoint.to_string(),
+            source,
+        },
+    })
 }
 
 fn parse_json_response<T>(

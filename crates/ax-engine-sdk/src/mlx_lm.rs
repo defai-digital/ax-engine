@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
-use crate::delegated_http::DelegatedHttpTimeouts;
+use crate::delegated_http::{
+    DelegatedHttpPostError, DelegatedHttpTimeouts, send_json_post_with_retry,
+};
 use crate::generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateStatus,
 };
@@ -324,34 +326,21 @@ fn send_json_post_request<T>(
 where
     T: Serialize + ?Sized,
 {
-    let body =
-        serde_json::to_vec(payload).map_err(|source| MlxLmBackendError::SerializeRequestJson {
+    send_json_post_with_retry(endpoint, payload, timeouts, None).map_err(|error| match error {
+        DelegatedHttpPostError::Serialize(source) => MlxLmBackendError::SerializeRequestJson {
             endpoint: endpoint.to_string(),
             source,
-        })?;
-
-    match timeouts
-        .build_agent()
-        .post(endpoint)
-        .set("Content-Type", "application/json")
-        .send_bytes(&body)
-    {
-        Ok(response) => Ok(response),
-        Err(ureq::Error::Status(status, response)) => {
-            let body = response
-                .into_string()
-                .unwrap_or_else(|_| "<failed to read response body>".to_string());
-            Err(MlxLmBackendError::HttpStatus {
-                endpoint: endpoint.to_string(),
-                status,
-                body: body.trim().to_string(),
-            })
-        }
-        Err(source) => Err(MlxLmBackendError::HttpRequest {
+        },
+        DelegatedHttpPostError::Status { status, body } => MlxLmBackendError::HttpStatus {
             endpoint: endpoint.to_string(),
-            source: Box::new(source),
-        }),
-    }
+            status,
+            body,
+        },
+        DelegatedHttpPostError::Request(source) => MlxLmBackendError::HttpRequest {
+            endpoint: endpoint.to_string(),
+            source,
+        },
+    })
 }
 
 fn parse_json_response<T>(endpoint: &str, response: ureq::Response) -> Result<T, MlxLmBackendError>
