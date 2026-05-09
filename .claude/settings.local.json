@@ -104,7 +104,16 @@
       "Bash(python scripts/bench_embedding_models.py --model-dir .internal/models/qwen3-embedding-0.6b-8bit --model-label qwen3-embedding-0.6b-8bit --trials 5 --cooldown 2 --skip-swift --skip-ax-http --output-dir benchmarks/results/embedding/ab-postfix)",
       "Bash(python scripts/bench_embedding_models.py --model-dir .internal/models/qwen3-embedding-4b-4bit --model-label qwen3-embedding-4b-4bit --trials 5 --cooldown 2 --skip-swift --skip-ax-http --output-dir benchmarks/results/embedding/ab-postfix)",
       "Bash(python scripts/bench_embedding_models.py --model-dir .internal/models/qwen3-embedding-8b-4bit-dwq --model-label qwen3-embedding-8b-4bit-dwq --trials 5 --cooldown 2 --skip-swift --skip-ax-http --output-dir benchmarks/results/embedding/ab-postfix)",
-      "Bash(git restore *)"
+      "Bash(git restore *)",
+      "Bash(python -m unittest discover -s python/tests -v)",
+      "Bash(git -C /Users/akiralam/code/ax-engine-v4 log --oneline --all)",
+      "Bash(git -C /Users/akiralam/code/ax-engine-v4 show 74b6ef4 --stat --format=\"%s%n%b\")",
+      "Bash(git -C /Users/akiralam/code/ax-engine-v4 show c35d4e8 --stat --format=\"%s%n%b\")",
+      "Bash(git -C /Users/akiralam/code/ax-engine-v4 diff crates/ax-engine-sdk/src/request.rs)",
+      "Bash(git -C /Users/akiralam/code/ax-engine-v4 log --oneline -6)",
+      "Bash(git *)",
+      "Bash(bash *)",
+      "Bash(xargs -I{} basename {} .json)"
     ]
   }
 }

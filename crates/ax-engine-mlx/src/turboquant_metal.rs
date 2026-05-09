@@ -552,11 +552,11 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
             },
         ],
         (
-            descriptor.head_dim as i32,
+            descriptor.value_group_count as i32,
             descriptor.n_query_heads as i32,
             1,
         ),
-        (1, 1, 1),
+        (descriptor.value_group_size as i32, 1, 1),
         None,
     );
 
@@ -787,9 +787,11 @@ const TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL_SOURCE: &str = r#"
 "#;
 
 const TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL_SOURCE: &str = r#"
-    const int dim = thread_position_in_grid.x;
+    const int lane = (int)thread_position_in_threadgroup.x;
+    const int group = (int)thread_position_in_grid.x;
+    const int dim = group * VALUE_GROUP_SIZE + lane;
     const int head = thread_position_in_grid.y;
-    if (dim >= HEAD_DIM || head >= HEADS) {
+    if (head >= HEADS) {
       return;
     }
     const int kv_head = head / (HEADS / KV_HEADS);
@@ -803,16 +805,18 @@ const TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL_SOURCE: &str = r#"
         + token_offset * TOKEN_STRIDE_BYTES
         + kv_head * SLOT_BYTES;
       const float weight = exp(scores[head * COLD_TOKENS + token] - max_score);
-      const int group = dim / VALUE_GROUP_SIZE;
       const int value_payload = slot + VALUE_PAYLOAD_OFFSET;
       const float value_min = tq_read_f32(compressed, slot + VALUE_MINS_OFFSET + group * 4);
       const float value_scale = tq_read_f32(compressed, slot + VALUE_SCALES_OFFSET + group * 4);
-      const float value = value_min + value_scale * (float)tq_unpack_v4(compressed, value_payload, dim);
-
-      weighted += weight * value;
+      if (dim < HEAD_DIM) {
+        const float value = value_min + value_scale * (float)tq_unpack_v4(compressed, value_payload, dim);
+        weighted += weight * value;
+      }
     }
 
-    weighted_value_sum[head * HEAD_DIM + dim] = weighted;
+    if (dim < HEAD_DIM) {
+      weighted_value_sum[head * HEAD_DIM + dim] = weighted;
+    }
 "#;
 
 #[cfg(test)]
@@ -882,12 +886,16 @@ mod tests {
             assert_eq!(actual.value_dim, expected.value_dim);
             assert!((actual.max_score - expected.max_score).abs() < 0.0001);
             assert!((actual.exp_sum - expected.exp_sum).abs() < 0.0001);
-            for (expected, actual) in expected
+            for (dim, (expected, actual)) in expected
                 .weighted_value_sum
                 .iter()
                 .zip(&actual.weighted_value_sum)
+                .enumerate()
             {
-                assert!((actual - expected).abs() < 0.0001);
+                assert!(
+                    (actual - expected).abs() < 0.0001,
+                    "weighted value mismatch at dim {dim}: actual={actual} expected={expected}"
+                );
             }
         }
 
@@ -990,12 +998,16 @@ mod tests {
             assert_eq!(actual.value_dim, expected.value_dim);
             assert!((actual.max_score - expected.max_score).abs() < 0.0001);
             assert!((actual.exp_sum - expected.exp_sum).abs() < 0.0001);
-            for (expected, actual) in expected
+            for (dim, (expected, actual)) in expected
                 .weighted_value_sum
                 .iter()
                 .zip(&actual.weighted_value_sum)
+                .enumerate()
             {
-                assert!((actual - expected).abs() < 0.0001);
+                assert!(
+                    (actual - expected).abs() < 0.0001,
+                    "weighted value mismatch at dim {dim}: actual={actual} expected={expected}"
+                );
             }
         }
     }

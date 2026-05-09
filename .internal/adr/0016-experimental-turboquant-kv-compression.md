@@ -438,7 +438,7 @@ the K/V slot layout together even if presets vary precision.
 
 Phase 1: Design and metadata
 
-- add `.internal/planning/MLX-TURBOQUANT-KV-PRD.md`
+- add and maintain `.internal/planning/TURBOQUANT-PROMOTION-PRD.md`
 - define internal policy/status names
 - add benchmark metadata requirements
 
@@ -472,4 +472,4 @@ Phase 5: Promotion
 - ADR 0003: Paged KV and Prefix Caching
 - ADR 0012: Retire AX Native Mode and Route Inference to MLX or llama.cpp
 - ADR 0013: MLX KV Cache Improvement Strategy
-- `.internal/planning/MLX-TURBOQUANT-KV-PRD.md`
+- `.internal/planning/TURBOQUANT-PROMOTION-PRD.md`

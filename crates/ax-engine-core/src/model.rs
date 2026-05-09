@@ -1047,6 +1047,32 @@ fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::FfnGateUpExpsPacked)
             || roles.contains(&NativeTensorRole::FfnDownExps)
             || roles.contains(&NativeTensorRole::FfnDownExpsScale);
+        if manifest.model_family == "gemma4" {
+            if has_any_attention {
+                require_layer_role(
+                    roles,
+                    NativeTensorRole::AttentionPostNorm,
+                    layer_index,
+                    "attention_post_norm",
+                )?;
+            }
+            require_layer_role(
+                roles,
+                NativeTensorRole::FfnPostNorm,
+                layer_index,
+                "ffn_post_norm",
+            )?;
+            if has_moe_expert_ffn {
+                for (role, label) in [
+                    (NativeTensorRole::FfnGateInpScale, "ffn_gate_inp_scale"),
+                    (NativeTensorRole::FfnNorm2, "ffn_norm_2"),
+                    (NativeTensorRole::FfnPostNorm1, "ffn_post_norm_1"),
+                    (NativeTensorRole::FfnPostNorm2, "ffn_post_norm_2"),
+                ] {
+                    require_layer_role(roles, role, layer_index, label)?;
+                }
+            }
+        }
         if has_any_attention {
             require_layer_role(
                 roles,
@@ -3166,6 +3192,10 @@ mod tests {
                 NativeTensorRole::FfnDown => tensor.shape = vec![2816, 2112],
                 _ => {}
             }
+            if tensor.role == NativeTensorRole::FfnNorm {
+                let layer = tensor.layer_index.expect("fixture layer tensor");
+                tensor.name = format!("model.layers.{layer}.pre_feedforward_layernorm.weight");
+            }
         }
         manifest.moe = NativeMoeConfig {
             expert_count: Some(128),
@@ -3173,6 +3203,36 @@ mod tests {
             expert_intermediate_size: Some(704),
         };
         manifest.tensors.extend([
+            tensor(
+                "model.layers.0.post_attention_layernorm.weight",
+                NativeTensorRole::AttentionPostNorm,
+                Some(0),
+                vec![2816],
+            ),
+            tensor(
+                "model.layers.0.post_feedforward_layernorm.weight",
+                NativeTensorRole::FfnPostNorm,
+                Some(0),
+                vec![2816],
+            ),
+            tensor(
+                "model.layers.0.pre_feedforward_layernorm_2.weight",
+                NativeTensorRole::FfnNorm2,
+                Some(0),
+                vec![2816],
+            ),
+            tensor(
+                "model.layers.0.post_feedforward_layernorm_1.weight",
+                NativeTensorRole::FfnPostNorm1,
+                Some(0),
+                vec![2816],
+            ),
+            tensor(
+                "model.layers.0.post_feedforward_layernorm_2.weight",
+                NativeTensorRole::FfnPostNorm2,
+                Some(0),
+                vec![2816],
+            ),
             tensor(
                 "model.layers.0.router.proj.weight",
                 NativeTensorRole::FfnGateInp,
@@ -3202,6 +3262,36 @@ mod tests {
                 NativeTensorRole::FfnDownExpsScale,
                 Some(0),
                 vec![128],
+            ),
+            tensor(
+                "model.layers.1.post_attention_layernorm.weight",
+                NativeTensorRole::AttentionPostNorm,
+                Some(1),
+                vec![2816],
+            ),
+            tensor(
+                "model.layers.1.post_feedforward_layernorm.weight",
+                NativeTensorRole::FfnPostNorm,
+                Some(1),
+                vec![2816],
+            ),
+            tensor(
+                "model.layers.1.pre_feedforward_layernorm_2.weight",
+                NativeTensorRole::FfnNorm2,
+                Some(1),
+                vec![2816],
+            ),
+            tensor(
+                "model.layers.1.post_feedforward_layernorm_1.weight",
+                NativeTensorRole::FfnPostNorm1,
+                Some(1),
+                vec![2816],
+            ),
+            tensor(
+                "model.layers.1.post_feedforward_layernorm_2.weight",
+                NativeTensorRole::FfnPostNorm2,
+                Some(1),
+                vec![2816],
             ),
             tensor(
                 "model.layers.1.router.proj.weight",
@@ -3560,6 +3650,27 @@ mod tests {
                 .moe_config()
                 .and_then(|config| config.expert_count),
             Some(128)
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_gemma4_moe_missing_second_ffn_norm() {
+        let mut manifest = moe_layer_manifest();
+        manifest
+            .tensors
+            .retain(|tensor| tensor.role != NativeTensorRole::FfnNorm2);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("Gemma4 MoE manifests must carry pre_feedforward_layernorm_2");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("ffn_norm_2"),
+            "unexpected error: {message}"
         );
 
         let _ = fs::remove_dir_all(dir);

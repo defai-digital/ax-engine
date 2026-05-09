@@ -437,7 +437,7 @@ MLX_TRIAL_RE = re.compile(
     r"total_time=(?P<total>[0-9.]+)"
 )
 
-def wait_for_server(url: str, timeout: float = 180.0) -> bool:
+def wait_for_server(url: str, timeout: float = 600.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -1402,6 +1402,11 @@ def run_mlx_swift_lm_adapter(
         cell["peak_memory_gb"] = metrics["peak_memory_gb"]
     if "trials" in metrics:
         cell["trials"] = metrics["trials"]
+    attach_derived_ttft_ms(
+        cell,
+        prompt_tokens=prompt_tokens,
+        source="derived_from_mlx_swift_lm_prefill_tok_s",
+    )
     return cell
 
 

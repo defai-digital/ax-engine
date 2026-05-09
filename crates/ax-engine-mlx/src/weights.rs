@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
-use mlx_sys::{MlxArray, concatenate, load_safetensors};
+use mlx_sys::{MlxArray, MlxDtype, astype, concatenate, load_safetensors, multiply};
 
 use ax_engine_core::{
     NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
@@ -57,6 +57,8 @@ pub struct LayerWeights {
     pub router_proj: Option<QuantizedWeight>,
     pub router_correction_bias: Option<MlxArray>,
     pub router_scale: Option<MlxArray>,
+    /// Precomputed `router_scale * hidden_size^-0.5` for Gemma4 MoE router RMSNorm.
+    pub router_combined_scale: Option<MlxArray>,
     /// Per-expert output scale (Gemma4 MoE): multiply top-k weights by this after softmax.
     pub router_expert_scale: Option<MlxArray>,
     /// Per-layer scalar applied to hidden states after the FFN residual (Gemma4).
@@ -339,6 +341,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         };
         let router_scale =
             try_take_plain(specs, &mut name_map, NativeTensorRole::FfnGateInpScale, idx)?;
+        let router_combined_scale = if artifacts.manifest().model_family == "gemma4" {
+            router_scale
+                .as_ref()
+                .map(|scale| gemma4_router_combined_scale(artifacts.manifest().hidden_size, scale))
+        } else {
+            None
+        };
         let router_expert_scale = try_take_plain(
             specs,
             &mut name_map,
@@ -603,6 +612,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                 idx,
             )?,
             router_scale,
+            router_combined_scale,
             router_expert_scale,
             layer_scalar,
             per_layer_gate,
@@ -628,6 +638,18 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         per_layer_model_proj,
         per_layer_proj_norm,
     })
+}
+
+fn gemma4_router_combined_scale(hidden_size: u32, router_scale: &MlxArray) -> MlxArray {
+    let root_factor = 1.0_f32 / (hidden_size as f32).sqrt();
+    let scale_arr = MlxArray::from_raw_data(
+        &root_factor as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[1_i32],
+        MlxDtype::Float32,
+    );
+    let scale_arr = astype(&scale_arr, MlxDtype::Bfloat16, None);
+    multiply(router_scale, &scale_arr, None)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

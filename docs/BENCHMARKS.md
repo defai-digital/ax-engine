@@ -376,12 +376,13 @@ model manifests cannot exercise the current `head_dim=128`, `head_dim=256`, or
 `head_dim=512` fused K8/V4 gate or no passing long-context fused-path quality
 artifact exists.
 
-The internal quantitative benchmark design lives in
-`.internal/benchmark/TURBOQUANT-BENCHMARK-DESIGN.md`. It separates microkernel
-timing, optional shadow-storage overhead, integrated fused compressed decode,
-and long-context quality gates so TurboQuant results can report decode ratio,
-prefill ratio, KV saved percent, runtime storage coverage, fallback rate, and
-quality pass/fail without mixing evidence types.
+The active internal TurboQuant promotion plan lives in
+`.internal/planning/TURBOQUANT-PROMOTION-PRD.md`, with the architecture boundary
+captured in `.internal/adr/0016-experimental-turboquant-kv-compression.md`.
+It separates microkernel timing, optional shadow-storage overhead, integrated
+fused compressed decode, and long-context quality gates so TurboQuant results
+can report decode ratio, prefill ratio, KV saved percent, runtime storage
+coverage, fallback rate, and quality pass/fail without mixing evidence types.
 
 For fused-kernel-only evidence, use the `ax-engine-mlx` microbenchmark:
 
