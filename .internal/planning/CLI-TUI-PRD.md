@@ -229,6 +229,8 @@ W0 is a prerequisite for a dependable TUI:
 - preserve `doctor --json` as the readiness source of truth;
 - use `ax-engine-bench doctor --json` workflow discovery to distinguish
   installed-tools mode from source-checkout mode;
+- use `ax-engine-bench doctor --json --mlx-model-artifacts-dir <path>`
+  `model_artifacts` fields for model-directory readiness;
 - use benchmark launcher `--json` output (`ax.benchmark_artifact.v1`) for
   discoverable artifact paths.
 
@@ -248,8 +250,8 @@ Scope:
 Exit criteria:
 
 - no TUI code depends on fragile text parsing for success detection;
-- model download, manifest generation, doctor, server health, and benchmark
-  artifact paths are machine-readable.
+- model download, manifest generation, doctor, model directory readiness, server
+  health, and benchmark artifact paths are machine-readable.
 
 ### Phase 1: Read-Only Cockpit
 

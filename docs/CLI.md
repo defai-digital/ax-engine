@@ -52,6 +52,12 @@ and the checkout root; outside a checkout it points callers at installed
 `ax-engine-bench` and `ax-engine-server` binaries. TUI code should use this
 contract instead of guessing Homebrew versus source mode from paths.
 
+When `--mlx-model-artifacts-dir <path>` is provided, the doctor JSON includes a
+structured `model_artifacts` report for `config.json`, `model-manifest.json`,
+safetensors presence, `model_type`, quantization metadata, and readiness
+blockers. TUI code should display those fields directly instead of parsing
+performance-advice text.
+
 Successful scenario and replay runs emit `manifest.json`, `environment.json`,
 `metrics.json`, `routes.json`, `trace.json`, and `summary.md`. Contract failures
 emit `contract_failure.json` plus `summary.md` instead of synthetic metrics.
