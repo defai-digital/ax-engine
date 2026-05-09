@@ -160,6 +160,24 @@ def validate_source_gates(metrics: dict[str, Any]) -> None:
         raise PrefixWarmupBuildError("metrics.determinism.passed must be true")
 
 
+def validate_manifest_contract(manifest: dict[str, Any]) -> None:
+    if manifest.get("class") != "replay":
+        raise PrefixWarmupBuildError("manifest.class must be replay")
+    runtime = require_mapping(manifest, "runtime", owner="manifest")
+    if runtime.get("selected_backend") != "mlx":
+        raise PrefixWarmupBuildError("manifest.runtime.selected_backend must be mlx")
+    flags = require_mapping(runtime, "flags", owner="manifest.runtime")
+    if flags.get("prefix_cache") is not True:
+        raise PrefixWarmupBuildError("manifest.runtime.flags.prefix_cache must be true")
+    if runtime.get("deterministic") is not True:
+        raise PrefixWarmupBuildError("manifest.runtime.deterministic must be true")
+    checks = require_mapping(manifest, "checks", owner="manifest")
+    if checks.get("expect_deterministic") is not True:
+        raise PrefixWarmupBuildError("manifest.checks.expect_deterministic must be true")
+    if checks.get("require_prefix_reuse") is not True:
+        raise PrefixWarmupBuildError("manifest.checks.require_prefix_reuse must be true")
+
+
 def normalize_model(manifest: dict[str, Any]) -> dict[str, Any]:
     model = require_mapping(manifest, "model", owner="manifest")
     normalized = dict(model)
@@ -188,6 +206,7 @@ def build_prefix_warmup_artifact(
     require_schema(metrics_path, metrics, SOURCE_SCHEMAS["metrics"])
     require_schema(routes_path, routes, SOURCE_SCHEMAS["routes"])
     require_schema(trace_path, trace, SOURCE_SCHEMAS["trace"])
+    validate_manifest_contract(manifest)
     validate_source_gates(metrics)
 
     logical = find_logical_prefix_observation(trace)
