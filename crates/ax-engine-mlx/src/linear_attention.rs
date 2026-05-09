@@ -16,6 +16,7 @@ pub struct LinearAttentionQkv {
 }
 
 static GATED_DELTA_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: i32 = 512;
 
 /// compute_g from mlx-lm/mlx-swift-lm:
 /// `exp(-exp(A_log.float32) * softplus(a + dt_bias))`.
@@ -130,10 +131,11 @@ pub fn normalize_linear_attention_qk(
     cfg: &LinearAttentionConfig,
     q: &MlxArray,
     k: &MlxArray,
+    eps: f32,
 ) -> (MlxArray, MlxArray) {
     let (q_scale, k_scale) = linear_attention_qk_scale(cfg.key_head_dim);
-    let q_normed = rms_norm(q, None, 1e-6, None);
-    let k_normed = rms_norm(k, None, 1e-6, None);
+    let q_normed = rms_norm(q, None, eps, None);
+    let k_normed = rms_norm(k, None, eps, None);
     let q_scale = scalar_f32_as(q_scale, q.dtype());
     let k_scale = scalar_f32_as(k_scale, k.dtype());
     (
@@ -184,6 +186,10 @@ pub fn gated_delta_kernel(
     let num_value_heads = v_shape[2];
     let value_head_dim = v_shape[3];
     let seq_i32 = scalar_i32(seq);
+    assert!(
+        seq <= GATED_DELTA_THREADGROUP_CACHE_CAPACITY,
+        "gated_delta_kernel t_len ({seq}) exceeds threadgroup cache capacity ({GATED_DELTA_THREADGROUP_CACHE_CAPACITY})"
+    );
     // The Metal kernel uses `constexpr int n_per_t = Dk / 32` (integer division over
     // 32 SIMD lanes).  If key_head_dim is not divisible by 32, the remainder is silently
     // dropped and the state update is mathematically wrong.
@@ -264,8 +270,13 @@ pub fn gated_delta_kernel(
 }
 
 /// Qwen3Next/Qwen3.5 gated RMSNorm: `silu(gate.float32) * rms_norm(x).float32`.
-pub fn rms_norm_gated(hidden_states: &MlxArray, gate: &MlxArray, weight: &MlxArray) -> MlxArray {
-    let normed = rms_norm(hidden_states, Some(weight), 1e-6, None);
+pub fn rms_norm_gated(
+    hidden_states: &MlxArray,
+    gate: &MlxArray,
+    weight: &MlxArray,
+    eps: f32,
+) -> MlxArray {
+    let normed = rms_norm(hidden_states, Some(weight), eps, None);
     let gate_f32 = astype(gate, MlxDtype::Float32, None);
     let normed_f32 = astype(&normed, MlxDtype::Float32, None);
     let gated = multiply(&mlx_sys::ops::silu(&gate_f32, None), &normed_f32, None);
@@ -463,6 +474,22 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "exceeds threadgroup cache capacity")]
+    fn gated_delta_kernel_rejects_seq_above_threadgroup_cache_capacity() {
+        let seq = GATED_DELTA_THREADGROUP_CACHE_CAPACITY + 1;
+        let q = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
+        let k = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
+        let v = zeros(&[1, seq, 1, 4], MlxDtype::Float32, None);
+        let a_log = zeros(&[1], MlxDtype::Float32, None);
+        let a_raw = zeros(&[1, seq, 1], MlxDtype::Float32, None);
+        let dt_bias = zeros(&[1], MlxDtype::Float32, None);
+        let b_raw = zeros(&[1, seq, 1], MlxDtype::Float32, None);
+        let state = zeros(&[1, 1, 4, 32], MlxDtype::Float32, None);
+
+        let _ = gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+    }
+
+    #[test]
     fn normalize_linear_attention_qk_preserves_reference_shapes() {
         let cfg = LinearAttentionConfig {
             full_attention_interval: 4,
@@ -475,7 +502,7 @@ mod tests {
         let q = zeros(&[1, 2, 1, 32], MlxDtype::Bfloat16, None);
         let k = zeros(&[1, 2, 1, 32], MlxDtype::Bfloat16, None);
 
-        let (q, k) = normalize_linear_attention_qk(&cfg, &q, &k);
+        let (q, k) = normalize_linear_attention_qk(&cfg, &q, &k, 1e-6);
 
         assert_eq!(q.shape(), vec![1, 2, 1, 32]);
         assert_eq!(k.shape(), vec![1, 2, 1, 32]);
@@ -498,7 +525,7 @@ mod tests {
         let gate = zeros(&[1, 5, 2, 3], MlxDtype::Bfloat16, None);
         let weight = zeros(&[3], MlxDtype::Bfloat16, None);
 
-        let out = rms_norm_gated(&hidden, &gate, &weight);
+        let out = rms_norm_gated(&hidden, &gate, &weight, 1e-6);
 
         assert_eq!(out.shape(), vec![1, 5, 2, 3]);
         assert_eq!(out.dtype(), MlxDtype::Bfloat16);
