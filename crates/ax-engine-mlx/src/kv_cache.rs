@@ -404,20 +404,42 @@ pub struct MlxKvCompressionDecodeUsage {
 
 impl MlxKvCompressionUsage {
     pub fn apply_decode_usage(&mut self, usage: MlxKvCompressionDecodeUsage) {
-        self.fused_decode_attempts = usage.fused_decode_attempts;
-        self.fused_decode_successes = usage.fused_decode_successes;
-        self.fused_decode_metal_successes = usage.fused_decode_metal_successes;
-        self.fused_decode_fallbacks = usage.fused_decode_fallbacks;
-        self.fused_decode_ready_candidates = usage.fused_decode_ready_candidates;
-        self.fused_decode_blocked_prefill_only = usage.fused_decode_blocked_prefill_only;
-        self.fused_decode_blocked_attention_kind = usage.fused_decode_blocked_attention_kind;
-        self.fused_decode_blocked_ineligible_layer = usage.fused_decode_blocked_ineligible_layer;
-        self.fused_decode_blocked_unsupported_preset =
-            usage.fused_decode_blocked_unsupported_preset;
-        self.fused_decode_blocked_unsupported_head_dim =
-            usage.fused_decode_blocked_unsupported_head_dim;
-        self.fused_decode_blocked_gqa = usage.fused_decode_blocked_gqa;
-        self.fused_decode_blocked_missing_storage = usage.fused_decode_blocked_missing_storage;
+        self.fused_decode_attempts = self
+            .fused_decode_attempts
+            .saturating_add(usage.fused_decode_attempts);
+        self.fused_decode_successes = self
+            .fused_decode_successes
+            .saturating_add(usage.fused_decode_successes);
+        self.fused_decode_metal_successes = self
+            .fused_decode_metal_successes
+            .saturating_add(usage.fused_decode_metal_successes);
+        self.fused_decode_fallbacks = self
+            .fused_decode_fallbacks
+            .saturating_add(usage.fused_decode_fallbacks);
+        self.fused_decode_ready_candidates = self
+            .fused_decode_ready_candidates
+            .saturating_add(usage.fused_decode_ready_candidates);
+        self.fused_decode_blocked_prefill_only = self
+            .fused_decode_blocked_prefill_only
+            .saturating_add(usage.fused_decode_blocked_prefill_only);
+        self.fused_decode_blocked_attention_kind = self
+            .fused_decode_blocked_attention_kind
+            .saturating_add(usage.fused_decode_blocked_attention_kind);
+        self.fused_decode_blocked_ineligible_layer = self
+            .fused_decode_blocked_ineligible_layer
+            .saturating_add(usage.fused_decode_blocked_ineligible_layer);
+        self.fused_decode_blocked_unsupported_preset = self
+            .fused_decode_blocked_unsupported_preset
+            .saturating_add(usage.fused_decode_blocked_unsupported_preset);
+        self.fused_decode_blocked_unsupported_head_dim = self
+            .fused_decode_blocked_unsupported_head_dim
+            .saturating_add(usage.fused_decode_blocked_unsupported_head_dim);
+        self.fused_decode_blocked_gqa = self
+            .fused_decode_blocked_gqa
+            .saturating_add(usage.fused_decode_blocked_gqa);
+        self.fused_decode_blocked_missing_storage = self
+            .fused_decode_blocked_missing_storage
+            .saturating_add(usage.fused_decode_blocked_missing_storage);
     }
 }
 
@@ -1732,6 +1754,44 @@ impl MlxKVCache {
 mod tests {
     use super::*;
     use crate::turboquant::reference_decode_attention;
+
+    #[test]
+    fn compression_usage_accumulates_decode_usage() {
+        let mut usage = MlxKvCompressionUsage {
+            fused_decode_attempts: 3,
+            fused_decode_successes: 2,
+            fused_decode_fallbacks: u64::MAX,
+            ..MlxKvCompressionUsage::default()
+        };
+
+        usage.apply_decode_usage(MlxKvCompressionDecodeUsage {
+            fused_decode_attempts: 4,
+            fused_decode_successes: 5,
+            fused_decode_metal_successes: 1,
+            fused_decode_fallbacks: 1,
+            fused_decode_ready_candidates: 6,
+            fused_decode_blocked_prefill_only: 7,
+            fused_decode_blocked_attention_kind: 8,
+            fused_decode_blocked_ineligible_layer: 9,
+            fused_decode_blocked_unsupported_preset: 10,
+            fused_decode_blocked_unsupported_head_dim: 11,
+            fused_decode_blocked_gqa: 12,
+            fused_decode_blocked_missing_storage: 13,
+        });
+
+        assert_eq!(usage.fused_decode_attempts, 7);
+        assert_eq!(usage.fused_decode_successes, 7);
+        assert_eq!(usage.fused_decode_metal_successes, 1);
+        assert_eq!(usage.fused_decode_fallbacks, u64::MAX);
+        assert_eq!(usage.fused_decode_ready_candidates, 6);
+        assert_eq!(usage.fused_decode_blocked_prefill_only, 7);
+        assert_eq!(usage.fused_decode_blocked_attention_kind, 8);
+        assert_eq!(usage.fused_decode_blocked_ineligible_layer, 9);
+        assert_eq!(usage.fused_decode_blocked_unsupported_preset, 10);
+        assert_eq!(usage.fused_decode_blocked_unsupported_head_dim, 11);
+        assert_eq!(usage.fused_decode_blocked_gqa, 12);
+        assert_eq!(usage.fused_decode_blocked_missing_storage, 13);
+    }
 
     #[test]
     fn linear_state_is_eval_tracked_and_reset() {
