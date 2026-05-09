@@ -7,13 +7,17 @@
 #   scripts/brew-release.sh v4.5.0 --dry-run
 #   scripts/brew-release.sh v4.5.0 --skip-build
 #   scripts/brew-release.sh v4.5.0 --skip-build --skip-upload
+#   scripts/brew-release.sh v4.5.0 --sign-identity "Developer ID Application: Your Name (TEAMID)"
 #
 # Flags:
-#   --dry-run       Build and package but do not upload or push anything
-#   --skip-build    Use existing target/release binaries (skip cargo build)
-#   --skip-upload   Skip uploading the archive to the GitHub release
-#   --skip-tap      Skip cloning/updating the Homebrew tap
-#   --skip-test     Skip the local brew install + test after updating the formula
+#   --dry-run                Build and package but do not upload or push anything
+#   --skip-build             Use existing target/release binaries (skip cargo build)
+#   --skip-upload            Skip uploading the archive to the GitHub release
+#   --skip-tap               Skip cloning/updating the Homebrew tap
+#   --skip-test              Skip the local brew install + test after updating the formula
+#   --sign-identity <id>     Codesign and notarize binaries with this Developer ID Application
+#                            certificate identity. If omitted, binaries are left unsigned and
+#                            users may see a Gatekeeper warning on first launch.
 #
 # Prerequisites (checked at start):
 #   gh        GitHub CLI, authenticated (gh auth status)
@@ -21,6 +25,12 @@
 #   brew      Homebrew
 #   ruby      For formula syntax validation (ruby -c)
 #   python3   For formula install stanza validation (checked just before tap update; not needed with --skip-tap)
+#
+# Additional prerequisites for --sign-identity:
+#   codesign  Xcode Command Line Tools
+#   xcrun     Xcode Command Line Tools (notarytool)
+#   zip       Temporary notarization submission archive
+#   Apple Developer ID Application certificate in the local Keychain
 
 set -euo pipefail
 
@@ -40,21 +50,31 @@ SKIP_BUILD=false
 SKIP_UPLOAD=false
 SKIP_TAP=false
 SKIP_TEST=false
+SIGN_IDENTITY=""
 
-for arg in "$@"; do
-    case "$arg" in
-        --dry-run)      DRY_RUN=true ;;
-        --skip-build)   SKIP_BUILD=true ;;
-        --skip-upload)  SKIP_UPLOAD=true ;;
-        --skip-tap)     SKIP_TAP=true ;;
-        --skip-test)    SKIP_TEST=true ;;
-        v*.*)           TAG="$arg" ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run)        DRY_RUN=true ;;
+        --skip-build)     SKIP_BUILD=true ;;
+        --skip-upload)    SKIP_UPLOAD=true ;;
+        --skip-tap)       SKIP_TAP=true ;;
+        --skip-test)      SKIP_TEST=true ;;
+        --sign-identity)
+            shift
+            if [[ -z "${1:-}" ]]; then
+                echo "error: --sign-identity requires an argument" >&2
+                exit 1
+            fi
+            SIGN_IDENTITY="$1"
+            ;;
+        v*.*)             TAG="$1" ;;
         *)
-            echo "error: unknown argument: $arg" >&2
-            echo "usage: $0 <tag> [--dry-run] [--skip-build] [--skip-upload] [--skip-tap] [--skip-test]" >&2
+            echo "error: unknown argument: $1" >&2
+            echo "usage: $0 <tag> [--dry-run] [--skip-build] [--skip-upload] [--skip-tap] [--skip-test] [--sign-identity <identity>]" >&2
             exit 1
             ;;
     esac
+    shift
 done
 
 if [[ -z "$TAG" ]]; then
@@ -77,6 +97,16 @@ check_cmd gh    "install the GitHub CLI: brew install gh"
 check_cmd cargo "install Rust: https://rustup.rs"
 check_cmd brew  "install Homebrew: https://brew.sh"
 check_cmd ruby  "ruby is required for formula syntax validation"
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+    check_cmd codesign "codesign is required for --sign-identity"
+    check_cmd xcrun    "xcrun notarytool is required for --sign-identity"
+    check_cmd zip      "zip is required for notarization submission"
+    if ! xcrun notarytool --help &>/dev/null; then
+        echo "error: xcrun notarytool is not available — install current Xcode Command Line Tools" >&2
+        exit 1
+    fi
+fi
 
 if ! gh auth status &>/dev/null; then
     echo "error: gh is not authenticated — run: gh auth login" >&2
@@ -107,6 +137,30 @@ else
     done
 fi
 
+# ── codesign + notarize ───────────────────────────────────────────────────────
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+    echo "▶ codesigning binaries with identity: $SIGN_IDENTITY"
+    for bin in "${RELEASE_BINS[@]}"; do
+        codesign \
+            --sign "$SIGN_IDENTITY" \
+            --options runtime \
+            --timestamp \
+            --force \
+            "target/release/$bin"
+        echo "  ✓ signed target/release/$bin"
+    done
+
+    echo "▶ verifying codesignatures…"
+    for bin in "${RELEASE_BINS[@]}"; do
+        codesign --verify --strict --verbose=2 "target/release/$bin"
+    done
+else
+    echo "⚠️  no --sign-identity provided — binaries will remain unsigned"
+    echo "   users on macOS 14+ may see a Gatekeeper warning on first launch"
+    echo "   pass --sign-identity \"Developer ID Application: ...\" to notarize"
+fi
+
 # ── package ───────────────────────────────────────────────────────────────────
 
 ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
@@ -131,6 +185,29 @@ if [[ "$DRY_RUN" = true ]]; then
     echo "  tag:      $TAG"
     echo "  version:  $VERSION"
     exit 0
+fi
+
+# ── notarize ─────────────────────────────────────────────────────────────────
+# Must run before upload so users cannot download an un-notarized binary.
+# notarytool only accepts .zip, .pkg, or .dmg — not .tar.gz — so we create a
+# temporary zip of the binaries solely for submission, then discard it.
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+    echo "▶ submitting binaries for notarization…"
+    # notarytool reads credentials from the Keychain; the store-credentials
+    # profile "ax-engine-notary" must be set up once with:
+    #   xcrun notarytool store-credentials ax-engine-notary \
+    #     --apple-id <email> --team-id <TEAMID> --password <app-specific-password>
+    NOTARIZE_PROFILE="${AX_NOTARY_PROFILE:-ax-engine-notary}"
+    NOTARIZE_ZIP="/tmp/ax-engine-${TAG}-notarize.zip"
+    (cd target/release && zip -j "$NOTARIZE_ZIP" "${RELEASE_BINS[@]}")
+    xcrun notarytool submit "$NOTARIZE_ZIP" \
+        --keychain-profile "$NOTARIZE_PROFILE" \
+        --wait
+    rm -f "$NOTARIZE_ZIP"
+    echo "  ✓ notarized"
+else
+    echo "▶ skipping notarization (no --sign-identity)"
 fi
 
 # ── upload to GitHub release ──────────────────────────────────────────────────
