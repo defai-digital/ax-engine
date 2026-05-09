@@ -1922,12 +1922,20 @@ mod tests {
         stream: bool,
         with_fields: impl FnOnce(&mut serde_json::Map<String, Value>),
     ) -> serde_json::Map<String, Value> {
+        sample_openai_request_base_fields(|request| {
+            if let Some(max_tokens) = max_tokens {
+                request.insert("max_tokens".to_string(), json!(max_tokens));
+            }
+            request.insert("stream".to_string(), json!(stream));
+            with_fields(request);
+        })
+    }
+
+    fn sample_openai_request_base_fields(
+        with_fields: impl FnOnce(&mut serde_json::Map<String, Value>),
+    ) -> serde_json::Map<String, Value> {
         let mut request = serde_json::Map::new();
         request.insert("model".to_string(), json!(TEST_MODEL_ID));
-        if let Some(max_tokens) = max_tokens {
-            request.insert("max_tokens".to_string(), json!(max_tokens));
-        }
-        request.insert("stream".to_string(), json!(stream));
         with_fields(&mut request);
         request
     }
@@ -1970,12 +1978,12 @@ mod tests {
     }
 
     fn sample_openai_embedding_request(input: &[u32], pooling: Option<&str>) -> Value {
-        let mut request = serde_json::Map::new();
-        request.insert("model".to_string(), json!(TEST_MODEL_ID));
-        request.insert("input".to_string(), json!(input));
-        if let Some(pooling) = pooling {
-            request.insert("pooling".to_string(), json!(pooling));
-        }
+        let request = sample_openai_request_base_fields(|request| {
+            request.insert("input".to_string(), json!(input));
+            if let Some(pooling) = pooling {
+                request.insert("pooling".to_string(), json!(pooling));
+            }
+        });
         Value::Object(request)
     }
 
