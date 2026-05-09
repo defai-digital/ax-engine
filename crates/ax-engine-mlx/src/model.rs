@@ -2346,7 +2346,7 @@ fn linear_attention_forward(
     );
     let qkv = split_linear_attention_qkv(linear_cfg, &conv_out);
     let profile_started = Instant::now();
-    let (q, k) = normalize_linear_attention_qk(linear_cfg, &qkv.q, &qkv.k);
+    let (q, k) = normalize_linear_attention_qk(linear_cfg, &qkv.q, &qkv.k, cfg.rms_norm_eps);
     linear_attention_profile_eval_elapsed(
         profile_enabled,
         LinearAttentionProfileStage::QkNorm,
@@ -2384,7 +2384,7 @@ fn linear_attention_forward(
     cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
 
     let profile_started = Instant::now();
-    let out = rms_norm_gated(&out, &z, &linear_w.norm);
+    let out = rms_norm_gated(&out, &z, &linear_w.norm, cfg.rms_norm_eps);
     let flat = reshape(&out, &[1, seq, linear_cfg.value_dim() as i32], None);
     let out = qw(&flat, &linear_w.out_proj);
     linear_attention_profile_eval_elapsed(
