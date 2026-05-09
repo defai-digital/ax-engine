@@ -15,20 +15,48 @@ class OpenAiShimError(ValueError):
     pass
 
 
-def render_chat_prompt(messages: list[dict[str, Any]]) -> str:
+def render_chat_prompt(messages: list[dict[str, Any]], model_id: str) -> str:
     if not messages:
         raise OpenAiShimError("chat.completions requires at least one message")
 
-    lines: list[str] = []
+    template = chat_prompt_template(model_id)
+    prompt_parts: list[str] = []
+    if template == "llama3":
+        prompt_parts.append("<|begin_of_text|>")
+
     for message in messages:
         role = str(message.get("role", "")).strip()
         if role not in ALLOWED_CHAT_ROLES:
             raise OpenAiShimError(
                 "unsupported chat role; expected one of system, user, assistant, tool, function"
             )
-        lines.append(f"{role}: {render_chat_content(message.get('content'))}")
-    lines.append("assistant:")
-    return "\n".join(lines)
+        content = render_chat_content(message.get("content"))
+        if template == "qwen_chatml":
+            prompt_parts.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
+        elif template == "llama3":
+            prompt_parts.append(
+                f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
+            )
+        else:
+            safe_content = content.replace("\\", "\\\\").replace("\n", "\\n")
+            prompt_parts.append(f"{role}: {safe_content}\n")
+
+    if template == "qwen_chatml":
+        prompt_parts.append("<|im_start|>assistant\n")
+    elif template == "llama3":
+        prompt_parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+    else:
+        prompt_parts.append("assistant:")
+    return "".join(prompt_parts)
+
+
+def chat_prompt_template(model_id: str) -> str:
+    normalized = model_id.lower()
+    if "qwen" in normalized:
+        return "qwen_chatml"
+    if "llama-3" in normalized or "llama3" in normalized or "llama_3" in normalized:
+        return "llama3"
+    return "plain_role_prefix"
 
 
 def render_chat_content(content: Any) -> str:
@@ -174,7 +202,7 @@ def create_app(
             return openai_error(*error)
 
         try:
-            prompt = render_chat_prompt(payload.get("messages") or [])
+            prompt = render_chat_prompt(payload.get("messages") or [], model_id)
             input_tokens, _prompt_text = prompt_to_tokens(prompt, tokenizer)
         except OpenAiShimError as error:
             return openai_error(400, str(error))
