@@ -56,6 +56,7 @@ PREFILL_TABLE_COLUMNS = {
 }
 
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
+REUSED_REFERENCE_MIN_REPETITIONS = 3
 
 AX_NGRAM_TELEMETRY_COUNTERS = {
     "ax_ngram_draft_attempts",
@@ -659,7 +660,8 @@ def validate_artifact_row(
             f"{artifact_path} {engine} prompt={prompt_tokens} has mismatched prefill_step_size"
         )
     trials = row.get("trials")
-    if not isinstance(trials, list) or len(trials) < int(artifact.get("repetitions", 0)):
+    required_trials = required_trial_count_for_row(artifact=artifact, row=row)
+    if not isinstance(trials, list) or len(trials) < required_trials:
         raise ArtifactCheckError(
             f"{artifact_path} {engine} prompt={prompt_tokens} lacks repetition trials"
         )
@@ -707,6 +709,31 @@ def validate_artifact_row(
             row=row,
             require_phase0=require_phase0,
         )
+
+
+def required_trial_count_for_row(
+    *, artifact: dict[str, Any], row: dict[str, Any]
+) -> int:
+    artifact_repetitions = max(1, int(artifact.get("repetitions", 0)))
+    engine = row.get("engine")
+    if row_uses_reused_reference_source(artifact=artifact, row=row):
+        return min(artifact_repetitions, REUSED_REFERENCE_MIN_REPETITIONS)
+    return artifact_repetitions
+
+
+def row_uses_reused_reference_source(
+    *, artifact: dict[str, Any], row: dict[str, Any]
+) -> bool:
+    if row.get("engine") not in {"mlx_lm", "mlx_swift_lm"}:
+        return False
+    ax_only_refresh = artifact.get("ax_only_refresh")
+    return bool(
+        artifact.get("reference_results_source")
+        or (
+            isinstance(ax_only_refresh, dict)
+            and ax_only_refresh.get("reference_results_source")
+        )
+    )
 
 
 def collect_artifact_rows(repo_root: Path, artifact_dir: Path) -> dict[tuple[str, str, int, str], ArtifactRow]:

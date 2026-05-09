@@ -86,7 +86,7 @@
   ],
   "generation_tokens": 128,
   "repetitions": 5,
-  "cooldown": 5.0,
+  "cooldown": 5,
   "prefill_step_size": 2048,
   "concurrency": 1,
   "concurrent_prefill_overlap_classification": {
@@ -103,7 +103,16 @@
     "reused_token_count": 0,
     "warmup_token_count": 0,
     "cache_entry_count": 0,
-    "cache_bytes_kib": 0
+    "cache_bytes_kib": 0,
+    "blocked_policy_disabled_count": 0,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": false,
+    "physical_snapshot_coverage": "none_observed",
+    "blocked_reason_count": 0,
+    "blocked_reason_accounting_gap_count": 0
   },
   "ax_gemma4_moe_profile": false,
   "ax_linear_attention_profile": false,
@@ -506,7 +515,7 @@
           "ttft_ms": 54.707,
           "prefill_tok_s": 2339.737145155099,
           "decode_tok_s": 108.12375487408265,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.117050170898438,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
@@ -568,7 +577,7 @@
           "ttft_ms": 54.827,
           "prefill_tok_s": 2334.616156273369,
           "decode_tok_s": 105.41938654217772,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.138046264648438,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
@@ -630,7 +639,7 @@
           "ttft_ms": 51.839000000000006,
           "prefill_tok_s": 2469.183433322402,
           "decode_tok_s": 109.85874069012051,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.15850830078125,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
@@ -692,7 +701,7 @@
           "ttft_ms": 54.964,
           "prefill_tok_s": 2328.797030783786,
           "decode_tok_s": 111.37537183588708,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.179092407226562,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
@@ -754,7 +763,7 @@
           "ttft_ms": 52.207,
           "prefill_tok_s": 2451.778497136399,
           "decode_tok_s": 116.39139033639862,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.199630737304688,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
@@ -944,7 +953,7 @@
           "ttft_ms": 124.45299999999999,
           "prefill_tok_s": 4114.002876587949,
           "decode_tok_s": 109.51089159111565,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.241241455078125,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
@@ -1006,7 +1015,7 @@
           "ttft_ms": 124.754,
           "prefill_tok_s": 4104.076823188034,
           "decode_tok_s": 107.71511641714079,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.26171875,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
@@ -1068,7 +1077,7 @@
           "ttft_ms": 124.837,
           "prefill_tok_s": 4101.348157998029,
           "decode_tok_s": 108.48905499199145,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.282424926757812,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
@@ -1130,7 +1139,7 @@
           "ttft_ms": 133.009,
           "prefill_tok_s": 3849.3635769008115,
           "decode_tok_s": 111.76025928380155,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.302932739257812,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
@@ -1192,7 +1201,7 @@
           "ttft_ms": 131.90099999999998,
           "prefill_tok_s": 3881.6991531527437,
           "decode_tok_s": 109.4686975552278,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.323440551757812,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
@@ -1383,7 +1392,7 @@
           "ttft_ms": 44.192,
           "prefill_tok_s": 2896.451846488052,
           "decode_tok_s": 336.33029223659645,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.1163330078125,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 18,
@@ -1446,7 +1455,7 @@
           "ttft_ms": 44.056,
           "prefill_tok_s": 2905.3931360087163,
           "decode_tok_s": 321.5531778062478,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.121917724609375,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 18,
@@ -1509,7 +1518,7 @@
           "ttft_ms": 43.986999999999995,
           "prefill_tok_s": 2909.9506672425946,
           "decode_tok_s": 331.5407507962199,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.122955322265625,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 18,
@@ -1572,7 +1581,7 @@
           "ttft_ms": 46.92700000000001,
           "prefill_tok_s": 2727.6408038016493,
           "decode_tok_s": 332.2432962720733,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.124496459960938,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 18,
@@ -1635,7 +1644,7 @@
           "ttft_ms": 44.261,
           "prefill_tok_s": 2891.9364677707235,
           "decode_tok_s": 342.98461430434884,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.125564575195312,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 18,
@@ -1827,7 +1836,7 @@
           "ttft_ms": 116.005,
           "prefill_tok_s": 4413.602861945606,
           "decode_tok_s": 340.6487884168683,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.128097534179688,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 18,
@@ -1890,7 +1899,7 @@
           "ttft_ms": 115.373,
           "prefill_tok_s": 4437.780069860366,
           "decode_tok_s": 343.86591936750335,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.129074096679688,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 18,
@@ -1953,7 +1962,7 @@
           "ttft_ms": 123.236,
           "prefill_tok_s": 4154.630140543348,
           "decode_tok_s": 324.3569049710888,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.13031005859375,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 18,
@@ -2016,7 +2025,7 @@
           "ttft_ms": 115.544,
           "prefill_tok_s": 4431.2123520044315,
           "decode_tok_s": 341.66328142024315,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.131271362304688,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 18,
@@ -2079,7 +2088,7 @@
           "ttft_ms": 122.52300000000001,
           "prefill_tok_s": 4178.807244354121,
           "decode_tok_s": 318.6943069151646,
-          "output_tokens": 128.0,
+          "output_tokens": 128,
           "peak_memory_gb": 8.132232666015625,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 18,

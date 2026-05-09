@@ -33,16 +33,21 @@ Install the released command-line tools and verify the local runtime contract:
 ```bash
 brew install defai-digital/ax-engine/ax-engine
 ax-engine-bench doctor
+ax-engine-manager --check
 ```
 
-Get a model and start the server:
+Get a model, start the server, and open the manager:
 
 ```bash
 # Download an mlx-community model and generate its manifest in one step
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit
+MODEL_DIR="$HOME/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit"
 
 # Start the server
-ax-engine-server --mlx --mlx-model-artifacts-dir ~/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit --port 8080
+ax-engine-server --mlx --mlx-model-artifacts-dir "$MODEL_DIR" --port 8080
+
+# In another terminal, open the local cockpit
+ax-engine-manager --model-dir "$MODEL_DIR" --server-url http://127.0.0.1:8080
 ```
 
 Or from Python (after `maturin develop` or `pip install ax-engine`):
@@ -55,7 +60,8 @@ with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
 ```
 
 `download_model()` downloads weights and auto-runs `ax-engine-bench generate-manifest`.
-See [Getting a Model](#getting-a-model) for all paths including raw HF checkpoints.
+See [Getting a Model](#getting-a-model) for all paths including raw HF checkpoints,
+and see [AX Engine Manager](docs/MANAGER.md) for the full TUI workflow.
 
 ## Why AX Engine
 
@@ -434,20 +440,39 @@ python -m unittest discover -s python/tests -v
 
 ## Quick Start
 
+The fastest local workflow is:
+
+1. install or build the command-line tools;
+2. download a supported MLX model and generate its manifest;
+3. start the local server;
+4. open `ax-engine-manager` to inspect readiness, server metadata, benchmark
+   artifacts, guarded job plans, and redacted support bundles.
+
+For a complete manager walkthrough, see [docs/MANAGER.md](docs/MANAGER.md).
+
 The commands below use source-build paths. If you installed with Homebrew, use
-`ax-engine-server` and `ax-engine-bench` directly instead of
-`./target/release/...`.
+`ax-engine-server`, `ax-engine-bench`, and `ax-engine-manager` directly instead
+of `./target/release/...`.
 
 ```bash
 # Download a model and generate its manifest
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit
 # prints the local path when ready, e.g. ~/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit
+MODEL_DIR="$HOME/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit"
+
+# Check readiness without entering terminal raw mode
+./target/release/ax-engine-manager --check --model-dir "$MODEL_DIR"
 
 # HTTP inference server (repo-owned MLX runtime)
 ./target/release/ax-engine-server \
   --mlx \
-  --mlx-model-artifacts-dir ~/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit \
+  --mlx-model-artifacts-dir "$MODEL_DIR" \
   --port 8080
+
+# Local Ratatui cockpit
+./target/release/ax-engine-manager \
+  --model-dir "$MODEL_DIR" \
+  --server-url http://127.0.0.1:8080
 ```
 
 ```python
@@ -498,6 +523,7 @@ python3 scripts/bench_mlx_inference_stack.py \
   --output-root benchmarks/results
 
 # Smoke checks
+./target/release/ax-engine-manager --check --model-dir "$MODEL_DIR"
 bash scripts/check-server-preview.sh
 bash scripts/check-python-preview.sh
 ```
@@ -736,6 +762,7 @@ only after the project has a stable baseline across macOS, MLX, and PyO3 paths.
 Public documentation is in `docs/`. Canonical benchmark manifests are in
 `benchmarks/manifests/`. Key design documents:
 [SDK / API](docs/SDK.md) ·
+[Manager](docs/MANAGER.md) ·
 [Python](docs/PYTHON.md) ·
 [JavaScript / TypeScript](docs/JAVASCRIPT.md) ·
 [Go](docs/GO.md) ·

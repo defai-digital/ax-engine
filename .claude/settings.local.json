@@ -152,7 +152,10 @@
       "Bash(pip show *)",
       "Read(//opt/homebrew/Cellar/mlx/0.31.2/lib/python3.14/site-packages/mlx-0.31.2.dist-info/**)",
       "Read(//opt/homebrew/lib/python3.14/site-packages/mlx-0.31.2.dist-info/**)",
-      "Bash(swift build *)"
+      "Bash(swift build *)",
+      "Bash(awk '/^#\\\\[cfg\\\\\\(test\\\\\\)\\\\]/,/^}/ {next} /\\\\.unwrap\\\\\\(\\\\\\)|\\\\.expect\\\\\\(/ {print NR\": \"$0}' /Users/akiralam/code/ax-engine-v4/crates/ax-engine-sdk/src/session.rs)",
+      "Bash(swift test *)",
+      "Bash(cargo update *)"
     ]
   }
 }
