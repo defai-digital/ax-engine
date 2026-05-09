@@ -123,6 +123,7 @@ dependencies = [
  "mlx-sys",
  "serde_json",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

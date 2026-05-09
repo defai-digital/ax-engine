@@ -654,6 +654,12 @@ struct DecodeTelemetry {
     ngram_decode_steps: u32,
     ngram_decode_wall_us: u32,
     bonus_tokens: u32,
+    // W1 sync-count instrumentation (ADR 0017 §policy 1).
+    // Counts blocking eval() calls by category so profiles can separate
+    // production-path GPU barriers from prefill drains.
+    production_decode_evals: u32,
+    prefill_eval_barriers: u32,
+    prefill_drain_async_evals: u32,
 }
 
 impl DecodeTelemetry {
@@ -691,6 +697,18 @@ impl DecodeTelemetry {
         self.bonus_tokens = self.bonus_tokens.saturating_add(1);
     }
 
+    fn record_production_decode_eval(&mut self) {
+        self.production_decode_evals = self.production_decode_evals.saturating_add(1);
+    }
+
+    fn record_prefill_eval_barrier(&mut self) {
+        self.prefill_eval_barriers = self.prefill_eval_barriers.saturating_add(1);
+    }
+
+    fn record_prefill_drain_async_evals(&mut self, count: u32) {
+        self.prefill_drain_async_evals = self.prefill_drain_async_evals.saturating_add(count);
+    }
+
     fn merge_from(&mut self, other: Self) {
         self.prefill_steps = self.prefill_steps.saturating_add(other.prefill_steps);
         self.prefill_wall_us = self.prefill_wall_us.saturating_add(other.prefill_wall_us);
@@ -721,6 +739,15 @@ impl DecodeTelemetry {
             .ngram_decode_wall_us
             .saturating_add(other.ngram_decode_wall_us);
         self.bonus_tokens = self.bonus_tokens.saturating_add(other.bonus_tokens);
+        self.production_decode_evals = self
+            .production_decode_evals
+            .saturating_add(other.production_decode_evals);
+        self.prefill_eval_barriers = self
+            .prefill_eval_barriers
+            .saturating_add(other.prefill_eval_barriers);
+        self.prefill_drain_async_evals = self
+            .prefill_drain_async_evals
+            .saturating_add(other.prefill_drain_async_evals);
     }
 
     fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
@@ -744,6 +771,15 @@ impl DecodeTelemetry {
             ("ax_mlx_ngram_decode_steps", self.ngram_decode_steps),
             ("ax_mlx_ngram_decode_wall_us", self.ngram_decode_wall_us),
             ("ax_mlx_bonus_tokens", self.bonus_tokens),
+            (
+                "ax_mlx_production_decode_evals",
+                self.production_decode_evals,
+            ),
+            ("ax_mlx_prefill_eval_barriers", self.prefill_eval_barriers),
+            (
+                "ax_mlx_prefill_drain_async_evals",
+                self.prefill_drain_async_evals,
+            ),
         ];
 
         for (key, value) in entries {
@@ -1645,14 +1681,18 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Cls => Some(0),
             EmbeddingPooling::Mean => None,
         };
+        let encode_started = Instant::now();
         let hidden = crate::model::forward_for_embedding(
             &self.cfg,
             &self.weights,
             token_ids,
             target_position,
         );
+        let encode_us = elapsed_us(encode_started);
+
         // Last/Cls: hidden is [1, 1, H] (already at the target position).
         // Mean:     hidden is [1, seq, H]; pool across the sequence here.
+        let pool_started = Instant::now();
         let seq = token_ids.len() as i32;
         let pooled = match pooling {
             EmbeddingPooling::Mean => {
@@ -1662,13 +1702,29 @@ impl ExecutionRunner for MlxRunner {
             }
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
+        let pool_us = elapsed_us(pool_started);
+
+        let normalize_started = Instant::now();
         let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
         let result = if normalize {
             l2_normalize_last_dim(&pooled_f32)
         } else {
             pooled_f32
         };
+        let normalize_us = elapsed_us(normalize_started);
+
+        let eval_started = Instant::now();
         mlx_sys::eval(&[&result]);
+        let eval_us = elapsed_us(eval_started);
+
+        tracing::debug!(
+            seq_len = token_ids.len(),
+            encode_us,
+            pool_us,
+            normalize_us,
+            eval_us,
+            "embed_single stage timing"
+        );
         Ok(result.data_f32().to_vec())
     }
 
@@ -1694,20 +1750,41 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Cls => Some(vec![0; batch.len()]),
             EmbeddingPooling::Mean => None,
         };
+        let encode_started = Instant::now();
         let (hidden, actual_lens) = crate::model::forward_for_embedding_batch(
             &self.cfg,
             &self.weights,
             batch,
             target_positions.as_deref(),
         );
+        let encode_us = elapsed_us(encode_started);
+
         // Last/Cls: hidden is [B, H] (already extracted).
         // Mean:     hidden is [B, max_seq, H]; pool across sequence here.
+        let pool_started = Instant::now();
         let batch_size = batch.len() as i32;
         let hidden_size = hidden.shape()[hidden.shape().len() - 1] as usize;
 
         let pooled = match pooling {
             EmbeddingPooling::Mean => {
-                let sums = sum_axis(&hidden, 1, false, None); // [B, H] bf16
+                let max_seq = hidden.shape()[1] as usize;
+                // Build a [B, max_seq, 1] mask (1.0 for real tokens, 0.0 for padding)
+                // so that right-padded positions are excluded from the mean.
+                let mut mask_data = vec![0.0f32; batch.len() * max_seq];
+                for (i, &l) in actual_lens.iter().enumerate() {
+                    for j in 0..l {
+                        mask_data[i * max_seq + j] = 1.0;
+                    }
+                }
+                let mask_arr = MlxArray::from_raw_data(
+                    mask_data.as_ptr() as *const u8,
+                    mask_data.len() * std::mem::size_of::<f32>(),
+                    &[batch_size, max_seq as i32, 1_i32],
+                    MlxDtype::Float32,
+                );
+                let mask_bf16 = astype(&mask_arr, MlxDtype::Bfloat16, None);
+                let masked = multiply(&hidden, &mask_bf16, None); // zero padding positions
+                let sums = sum_axis(&masked, 1, false, None); // [B, H] bf16
                 let scales: Vec<f32> = actual_lens.iter().map(|&l| 1.0 / l as f32).collect();
                 let scale_arr = MlxArray::from_raw_data(
                     scales.as_ptr() as *const u8,
@@ -1720,14 +1797,29 @@ impl ExecutionRunner for MlxRunner {
             }
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
+        let pool_us = elapsed_us(pool_started);
 
+        let normalize_started = Instant::now();
         let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
         let result = if normalize {
             l2_normalize_last_dim(&pooled_f32)
         } else {
             pooled_f32
         };
+        let normalize_us = elapsed_us(normalize_started);
+
+        let eval_started = Instant::now();
         mlx_sys::eval(&[&result]);
+        let eval_us = elapsed_us(eval_started);
+
+        tracing::debug!(
+            batch_size = batch.len(),
+            encode_us,
+            pool_us,
+            normalize_us,
+            eval_us,
+            "embed_batch stage timing"
+        );
 
         let data = result.data_f32();
         let vecs = (0..batch.len())
@@ -1865,6 +1957,14 @@ impl MlxRunner {
                     );
                 }
 
+                // Each non-final chunk in chunked_prefill calls async_eval; only the
+                // last chunk calls a blocking eval.  Compute counts from prompt length.
+                let drain_count =
+                    token_ids.len().saturating_sub(1) as u32 / self.prefill_chunk as u32;
+                state
+                    .decode_telemetry
+                    .record_prefill_drain_async_evals(drain_count);
+                state.decode_telemetry.record_prefill_eval_barrier();
                 state
                     .decode_telemetry
                     .record_prefill(elapsed_us(prefill_started));
@@ -2243,6 +2343,7 @@ impl MlxRunner {
         state
             .decode_telemetry
             .record_direct_pipeline(elapsed_us(branch_started));
+        state.decode_telemetry.record_production_decode_eval();
         state.pending_direct = Some(next_pending);
         self.maybe_clear_direct_pipeline_cache(state);
         tok
@@ -2388,6 +2489,7 @@ impl MlxRunner {
         state
             .decode_telemetry
             .record_single_decode(elapsed_us(branch_started));
+        state.decode_telemetry.record_production_decode_eval();
         result
     }
 
@@ -2508,6 +2610,7 @@ impl MlxRunner {
         state
             .decode_telemetry
             .record_ngram_decode(elapsed_us(branch_started));
+        state.decode_telemetry.record_production_decode_eval();
 
         // Beta-Bernoulli posterior update.
         // accept_count = result.len() - 1 (last element is next model input, not bonus).
@@ -4933,5 +5036,23 @@ mod tests {
             .expect_err("cross-type KV sharing should fail closed");
 
         assert!(error.to_string().contains("cannot reuse"));
+    }
+
+    #[test]
+    fn embed_batch_mean_mask_excludes_padding_positions() {
+        // Verify the mask layout used by embed_batch Mean pooling.
+        // batch = [[a,b,c], [x,y]] padded to max_len=3: positions 0..len are 1.0, rest 0.0.
+        let actual_lens: Vec<usize> = vec![3, 2];
+        let max_seq = 3usize;
+        let mut mask_data = vec![0.0f32; actual_lens.len() * max_seq];
+        for (i, &l) in actual_lens.iter().enumerate() {
+            for j in 0..l {
+                mask_data[i * max_seq + j] = 1.0;
+            }
+        }
+        // seq 0 (len 3): all positions active
+        assert_eq!(&mask_data[0..3], &[1.0, 1.0, 1.0]);
+        // seq 1 (len 2): position 2 is padding
+        assert_eq!(&mask_data[3..6], &[1.0, 1.0, 0.0]);
     }
 }
