@@ -463,6 +463,16 @@ fn run_web_manager(options: &Options) -> Result<(), ManagerError> {
                 let runtime = Arc::clone(&runtime);
                 std::thread::spawn(move || {
                     if let Err(error) = handle_client(stream, runtime) {
+                        // Suppress read-timeout errors from keep-alive / speculative
+                        // connections that the browser opens but never sends data on.
+                        if let ManagerError::Io(ref e) = error {
+                            if matches!(
+                                e.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                            ) {
+                                return;
+                            }
+                        }
                         eprintln!("manager request failed: {error}");
                     }
                 });

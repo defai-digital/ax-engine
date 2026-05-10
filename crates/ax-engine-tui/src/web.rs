@@ -215,6 +215,7 @@ body::after {
 .dot-amber { background:var(--amber);box-shadow:0 0 10px rgba(255,170,0,.28);animation:dot-p .8s ease-in-out infinite; }
 @keyframes dot-p { 0%,100%{opacity:1}50%{opacity:.3} }
 .text-green { color:var(--green); }
+.text-amber { color:var(--amber); }
 
 /* ── Buttons ─────────────────────────────────────────────── */
 .btn-icon {
@@ -367,6 +368,7 @@ body::after {
 .chat-header-right { display:flex;align-items:center;gap:10px;margin-left:auto; }
 .chat-conn { font-family:var(--mono);font-size:10px;letter-spacing:.5px;transition:color .3s; }
 .chat-conn.online  { color:var(--green); }
+.chat-conn.starting { color:var(--amber); }
 .chat-conn.offline { color:var(--text-dim); }
 
 /* ── Chat messages ───────────────────────────────────────── */
@@ -498,6 +500,7 @@ function selectedCatalogEntry() {
 const app = {
   catalog:          [],
   serverRunning:    false,
+  serverStarting:   false,
   serverPort:       8080,
   serverModelDir:   null,
   downloadedModels: [],
@@ -509,6 +512,7 @@ const app = {
 function applyState(data) {
   app.catalog          = data.catalog || [];
   app.serverRunning    = !!(data.server && data.server.running);
+  app.serverStarting   = !!(data.server && data.server.starting);
   app.serverPort       = (data.server && data.server.port) || 8080;
   app.downloadedModels = data.downloaded_models || [];
 
@@ -525,6 +529,8 @@ function applyState(data) {
   const dot = $('server-dot'), lbl = $('server-label');
   if (app.serverRunning) {
     dot.className = 'dot dot-on'; lbl.textContent = 'ONLINE'; lbl.className = 'text-green';
+  } else if (app.serverStarting) {
+    dot.className = 'dot dot-amber'; lbl.textContent = 'STARTING'; lbl.className = 'text-amber';
   } else {
     dot.className = 'dot dot-off'; lbl.textContent = 'OFFLINE'; lbl.className = '';
   }
@@ -541,6 +547,9 @@ function applyState(data) {
   if (app.serverRunning) {
     conn.textContent = `→ 127.0.0.1:${app.serverPort}`;
     conn.className   = 'chat-conn online';
+  } else if (app.serverStarting) {
+    conn.textContent = 'server starting';
+    conn.className   = 'chat-conn starting';
   } else {
     conn.textContent = 'server offline';
     conn.className   = 'chat-conn offline';
@@ -853,6 +862,10 @@ async function sendMessage() {
   const text  = input.value.trim();
   if (!text || app.streaming) return;
 
+  if (app.serverStarting) {
+    $('server-status').textContent = 'Server is still starting. Try again when it is online.';
+    return;
+  }
   if (!app.serverRunning) {
     $('server-status').textContent = 'Start the server first (Step 2).';
     return;
@@ -945,9 +958,28 @@ async function loadState() {
   try {
     const data = await api('/api/state');
     applyState(data);
+    // While server is starting, keep polling until it's running or stopped.
+    const starting = !!(data.server && data.server.starting);
+    if (starting) {
+      scheduleServerPoll();
+    } else {
+      cancelServerPoll();
+    }
   } catch (err) {
     $('sys-status').textContent = err.message;
   }
+}
+
+let _serverPollTimer = null;
+function scheduleServerPoll() {
+  if (_serverPollTimer) return;
+  _serverPollTimer = setTimeout(async () => {
+    _serverPollTimer = null;
+    await loadState();
+  }, 2000);
+}
+function cancelServerPoll() {
+  if (_serverPollTimer) { clearTimeout(_serverPollTimer); _serverPollTimer = null; }
 }
 
 // ── Wire events ───────────────────────────────────────────────────────────────
