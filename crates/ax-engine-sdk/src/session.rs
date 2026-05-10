@@ -1355,26 +1355,17 @@ fn next_llama_cpp_stream_event(
                         state.phase = GenerateStreamPhase::Done;
                         return Ok(Some(GenerateStreamEvent::Response(
                             GenerateStreamResponseEvent {
-                                response: GenerateResponse {
-                                    request_id: state.request_id,
-                                    model_id: state.current_report.model_id.clone(),
-                                    prompt_tokens: state.current_report.prompt_tokens.clone(),
-                                    prompt_text: state.prompt_text.clone(),
-                                    output_tokens: state.current_report.output_tokens.clone(),
-                                    output_token_logprobs: state
-                                        .current_report
-                                        .output_token_logprobs
-                                        .clone(),
-                                    output_text: Some(state.output_text.clone()),
-                                    prompt_token_count: state.prompt_token_count,
-                                    output_token_count: state.output_token_count,
-                                    status: crate::generate::GenerateStatus::Finished,
-                                    finish_reason: state.current_report.finish_reason,
-                                    step_count: state.step_count,
-                                    ttft_step: state.ttft_step,
-                                    route: state.current_report.route.clone(),
-                                    runtime: state.runtime.clone(),
-                                },
+                                response: delegated_stream_response(
+                                    state.request_id,
+                                    &state.current_report,
+                                    &state.runtime,
+                                    state.prompt_text.clone(),
+                                    Some(state.output_text.clone()),
+                                    state.prompt_token_count,
+                                    state.output_token_count,
+                                    state.step_count,
+                                    state.ttft_step,
+                                ),
                             },
                         )));
                     }
@@ -1733,31 +1724,52 @@ fn next_mlx_lm_stream_event(
                 state.phase = GenerateStreamPhase::Done;
                 Ok(Some(GenerateStreamEvent::Response(
                     GenerateStreamResponseEvent {
-                        response: crate::generate::GenerateResponse {
-                            request_id: state.request_id,
-                            model_id: state.current_report.model_id.clone(),
-                            prompt_tokens: state.current_report.prompt_tokens.clone(),
-                            prompt_text: state.prompt_text.clone(),
-                            output_tokens: state.current_report.output_tokens.clone(),
-                            output_token_logprobs: state
-                                .current_report
-                                .output_token_logprobs
-                                .clone(),
-                            output_text: Some(state.output_text.clone()),
-                            prompt_token_count: state.prompt_token_count,
-                            output_token_count: state.output_token_count,
-                            status: crate::generate::GenerateStatus::Finished,
-                            finish_reason: state.current_report.finish_reason,
-                            step_count: state.step_count,
-                            ttft_step: state.ttft_step,
-                            route: state.current_report.route.clone(),
-                            runtime: state.runtime.clone(),
-                        },
+                        response: delegated_stream_response(
+                            state.request_id,
+                            &state.current_report,
+                            &state.runtime,
+                            state.prompt_text.clone(),
+                            Some(state.output_text.clone()),
+                            state.prompt_token_count,
+                            state.output_token_count,
+                            state.step_count,
+                            state.ttft_step,
+                        ),
                     },
                 )))
             }
         },
         GenerateStreamPhase::Done => Ok(None),
+    }
+}
+
+fn delegated_stream_response(
+    request_id: u64,
+    report: &SessionRequestReport,
+    runtime: &RuntimeReport,
+    prompt_text: Option<String>,
+    output_text: Option<String>,
+    prompt_token_count: Option<u32>,
+    output_token_count: Option<u32>,
+    step_count: u64,
+    ttft_step: Option<u64>,
+) -> GenerateResponse {
+    GenerateResponse {
+        request_id,
+        model_id: report.model_id.clone(),
+        prompt_tokens: report.prompt_tokens.clone(),
+        prompt_text,
+        output_tokens: report.output_tokens.clone(),
+        output_token_logprobs: report.output_token_logprobs.clone(),
+        output_text,
+        prompt_token_count,
+        output_token_count,
+        status: crate::generate::GenerateStatus::Finished,
+        finish_reason: report.finish_reason,
+        step_count,
+        ttft_step,
+        route: report.route.clone(),
+        runtime: runtime.clone(),
     }
 }
 
