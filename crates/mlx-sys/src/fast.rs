@@ -1,19 +1,14 @@
 use std::ffi::CString;
-use std::ptr;
 
-use crate::array::MlxArray;
+use crate::array::{MlxArray, null_ffi_array};
 use crate::ffi;
-use crate::stream::MlxStream;
+use crate::stream::{MlxStream, default_gpu_raw};
 
 /// Attention mask accepted by MLX fast SDPA.
 pub enum ScaledDotProductAttentionMask<'a> {
     None,
     Causal,
     Array(&'a MlxArray),
-}
-
-fn gpu() -> ffi::mlx_stream {
-    unsafe { ffi::mlx_default_gpu_stream_new() }
 }
 
 /// RMS layer normalization.
@@ -24,10 +19,8 @@ pub fn rms_norm(
     s: Option<&MlxStream>,
 ) -> MlxArray {
     unsafe {
-        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
-        let weight_raw = weight.map(|w| w.inner).unwrap_or(ffi::mlx_array {
-            ctx: ptr::null_mut(),
-        });
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let weight_raw = weight.map(|w| w.inner).unwrap_or_else(null_ffi_array);
         let mut res = MlxArray::empty();
         ffi::mlx_fast_rms_norm(&mut res.inner, x.inner, weight_raw, eps, stream);
         res
@@ -47,14 +40,12 @@ pub fn rope(
     s: Option<&MlxStream>,
 ) -> MlxArray {
     unsafe {
-        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let base_opt = ffi::mlx_optional_float_ {
             has_value: base.is_some(),
             value: base.unwrap_or(10000.0),
         };
-        let freqs_raw = freqs.map(|f| f.inner).unwrap_or(ffi::mlx_array {
-            ctx: ptr::null_mut(),
-        });
+        let freqs_raw = freqs.map(|f| f.inner).unwrap_or_else(null_ffi_array);
         let mut res = MlxArray::empty();
         ffi::mlx_fast_rope(
             &mut res.inner,
@@ -101,16 +92,14 @@ pub fn scaled_dot_product_attention_with_mask(
     s: Option<&MlxStream>,
 ) -> MlxArray {
     unsafe {
-        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mask_mode = match mask {
             ScaledDotProductAttentionMask::Causal => CString::new("causal").unwrap(),
             ScaledDotProductAttentionMask::None | ScaledDotProductAttentionMask::Array(_) => {
                 CString::new("").unwrap()
             }
         };
-        let null_arr = ffi::mlx_array {
-            ctx: ptr::null_mut(),
-        };
+        let null_arr = null_ffi_array();
         let mask_arr = match mask {
             ScaledDotProductAttentionMask::Array(mask) => mask.inner,
             ScaledDotProductAttentionMask::None | ScaledDotProductAttentionMask::Causal => null_arr,

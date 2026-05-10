@@ -3,6 +3,13 @@ use std::ptr;
 
 use crate::ffi;
 
+#[inline]
+pub(crate) fn null_ffi_array() -> ffi::mlx_array {
+    ffi::mlx_array {
+        ctx: ptr::null_mut(),
+    }
+}
+
 /// A reference-counted MLX N-dimensional array.
 ///
 /// Wraps `mlx_array` and calls `mlx_array_free` on drop.
@@ -10,7 +17,9 @@ pub struct MlxArray {
     pub(crate) inner: ffi::mlx_array,
 }
 
-// mlx_array is reference-counted internally; sharing across threads is safe.
+// MLX's C API wraps C++ shared ownership internally; this relies on atomic
+// reference-count updates in that implementation rather than a stronger C API
+// contract.
 unsafe impl Send for MlxArray {}
 unsafe impl Sync for MlxArray {}
 
@@ -23,12 +32,14 @@ impl MlxArray {
     /// Build an empty (null) array. Useful as an out-parameter placeholder.
     pub(crate) fn empty() -> Self {
         Self {
-            inner: ffi::mlx_array {
-                ctx: ptr::null_mut(),
-            },
+            inner: null_ffi_array(),
         }
     }
 
+    /// Whether this wrapper currently holds no MLX array.
+    ///
+    /// This is a defensive inspection helper for FFI wrappers; public callers
+    /// cannot construct a null `MlxArray`.
     pub fn is_null(&self) -> bool {
         self.inner.ctx.is_null()
     }
@@ -126,7 +137,7 @@ impl MlxArray {
         );
         unsafe {
             let ptr = ffi::mlx_array_data_float32(self.inner);
-            let len = self.nbytes() / 4;
+            let len = self.nbytes() / self.dtype().size_bytes();
             if ptr.is_null() || len == 0 {
                 return &[];
             }
@@ -143,7 +154,7 @@ impl MlxArray {
         );
         unsafe {
             let ptr = ffi::mlx_array_data_uint32(self.inner);
-            let len = self.nbytes() / 4;
+            let len = self.nbytes() / self.dtype().size_bytes();
             if ptr.is_null() || len == 0 {
                 return &[];
             }

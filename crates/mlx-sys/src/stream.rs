@@ -2,6 +2,11 @@ use std::ptr;
 
 use crate::ffi;
 
+/// Get the current thread's default GPU stream without taking ownership.
+pub(crate) fn default_gpu_raw() -> ffi::mlx_stream {
+    unsafe { ffi::mlx_default_gpu_stream_new() }
+}
+
 /// A GPU compute stream.
 ///
 /// Wraps `mlx_stream`. Operations dispatched to the same stream execute in order.
@@ -16,11 +21,9 @@ unsafe impl Sync for MlxStream {}
 impl MlxStream {
     /// The default GPU stream (used by all ops when no stream is specified).
     pub fn default_gpu() -> Self {
-        unsafe {
-            Self {
-                inner: ffi::mlx_default_gpu_stream_new(),
-                owns: false,
-            }
+        Self {
+            inner: default_gpu_raw(),
+            owns: false,
         }
     }
 

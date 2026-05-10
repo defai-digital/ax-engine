@@ -33,6 +33,9 @@ pub fn load_safetensors(
         let rc = ffi::mlx_load_safetensors(&mut map, &mut meta, c_path.as_ptr(), stream);
         if rc != 0 {
             ffi::mlx_map_string_to_array_free(map);
+            if !meta.ctx.is_null() {
+                ffi::mlx_map_string_to_string_free(meta);
+            }
             return Err(format!(
                 "failed to load safetensors {}: error code {}",
                 path.display(),
