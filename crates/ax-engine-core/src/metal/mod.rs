@@ -2517,6 +2517,45 @@ impl MetalNativeTensorBinding {
     }
 }
 
+impl MetalAttentionQkvBindings {
+    fn visit_projection_bindings(&self, mut visitor: impl FnMut(&MetalNativeTensorBinding)) {
+        match self {
+            MetalAttentionQkvBindings::Packed(binding) => visitor(binding),
+            MetalAttentionQkvBindings::Split { q, k, v, .. } => {
+                visitor(q);
+                visitor(k);
+                if let Some(binding) = v {
+                    visitor(binding);
+                }
+            }
+        }
+    }
+}
+
+impl MetalFfnGateUpBindings {
+    fn visit_projection_bindings(&self, mut visitor: impl FnMut(&MetalNativeTensorBinding)) {
+        match self {
+            MetalFfnGateUpBindings::Packed(binding) => visitor(binding),
+            MetalFfnGateUpBindings::Split { gate, up } => {
+                visitor(gate);
+                visitor(up);
+            }
+        }
+    }
+}
+
+impl MetalMoeExpertGateUpBindings {
+    fn visit_projection_bindings(&self, mut visitor: impl FnMut(&MetalNativeTensorBinding)) {
+        match self {
+            MetalMoeExpertGateUpBindings::Packed(binding) => visitor(binding),
+            MetalMoeExpertGateUpBindings::Split { gate, up } => {
+                visitor(gate);
+                visitor(up);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum NativeDenseKernelCoverageBucket {
     F32,
@@ -2649,18 +2688,9 @@ fn native_dense_kernel_coverage_for_model_bindings(
             record_rms_norm_binding_coverage(&mut coverage, binding);
         }
         if let Some(attention_qkv) = &layer.attention_qkv {
-            match attention_qkv {
-                MetalAttentionQkvBindings::Packed(binding) => {
-                    record_projection_binding_coverage(&mut coverage, binding);
-                }
-                MetalAttentionQkvBindings::Split { q, k, v, .. } => {
-                    record_projection_binding_coverage(&mut coverage, q);
-                    record_projection_binding_coverage(&mut coverage, k);
-                    if let Some(binding) = v {
-                        record_projection_binding_coverage(&mut coverage, binding);
-                    }
-                }
-            }
+            attention_qkv.visit_projection_bindings(|binding| {
+                record_projection_binding_coverage(&mut coverage, binding)
+            });
         }
         if let Some(attention_o) = &layer.attention_o {
             record_projection_binding_coverage(&mut coverage, attention_o);
@@ -2686,30 +2716,18 @@ fn native_dense_kernel_coverage_for_model_bindings(
         if let Some(binding) = &layer.ffn_post_norm_2 {
             record_rms_norm_binding_coverage(&mut coverage, binding);
         }
-        match &layer.ffn_gate_up {
-            MetalFfnGateUpBindings::Packed(binding) => {
-                record_projection_binding_coverage(&mut coverage, binding);
-            }
-            MetalFfnGateUpBindings::Split { gate, up } => {
-                record_projection_binding_coverage(&mut coverage, gate);
-                record_projection_binding_coverage(&mut coverage, up);
-            }
-        }
+        layer.ffn_gate_up.visit_projection_bindings(|binding| {
+            record_projection_binding_coverage(&mut coverage, binding)
+        });
         record_projection_binding_coverage(&mut coverage, &layer.ffn_down);
         if let Some(moe) = &layer.moe {
             record_projection_binding_coverage(&mut coverage, &moe.router);
             if let Some(binding) = &moe.router_scale {
                 record_rms_norm_binding_coverage(&mut coverage, binding);
             }
-            match &moe.expert_gate_up {
-                MetalMoeExpertGateUpBindings::Packed(binding) => {
-                    record_projection_binding_coverage(&mut coverage, binding);
-                }
-                MetalMoeExpertGateUpBindings::Split { gate, up } => {
-                    record_projection_binding_coverage(&mut coverage, gate);
-                    record_projection_binding_coverage(&mut coverage, up);
-                }
-            }
+            moe.expert_gate_up.visit_projection_bindings(|binding| {
+                record_projection_binding_coverage(&mut coverage, binding)
+            });
             record_projection_binding_coverage(&mut coverage, &moe.expert_down);
         }
     }
@@ -2818,16 +2836,7 @@ impl MetalNativeModelBindings {
                 bindings.push(k_norm.clone());
             }
             if let Some(attention_qkv) = &layer.attention_qkv {
-                match attention_qkv {
-                    MetalAttentionQkvBindings::Packed(binding) => bindings.push(binding.clone()),
-                    MetalAttentionQkvBindings::Split { q, k, v, .. } => {
-                        bindings.push(q.clone());
-                        bindings.push(k.clone());
-                        if let Some(binding) = v {
-                            bindings.push(binding.clone());
-                        }
-                    }
-                }
+                attention_qkv.visit_projection_bindings(|binding| bindings.push(binding.clone()));
             }
             if let Some(attention_o) = &layer.attention_o {
                 bindings.push(attention_o.clone());
@@ -2856,26 +2865,17 @@ impl MetalNativeModelBindings {
             if let Some(ffn_post_norm_2) = &layer.ffn_post_norm_2 {
                 bindings.push(ffn_post_norm_2.clone());
             }
-            match &layer.ffn_gate_up {
-                MetalFfnGateUpBindings::Packed(binding) => bindings.push(binding.clone()),
-                MetalFfnGateUpBindings::Split { gate, up } => {
-                    bindings.push(gate.clone());
-                    bindings.push(up.as_ref().clone());
-                }
-            }
+            layer
+                .ffn_gate_up
+                .visit_projection_bindings(|binding| bindings.push(binding.clone()));
             bindings.push(layer.ffn_down.clone());
             if let Some(moe) = &layer.moe {
                 bindings.push(moe.router.clone());
                 if let Some(router_scale) = &moe.router_scale {
                     bindings.push(router_scale.clone());
                 }
-                match &moe.expert_gate_up {
-                    MetalMoeExpertGateUpBindings::Packed(binding) => bindings.push(binding.clone()),
-                    MetalMoeExpertGateUpBindings::Split { gate, up } => {
-                        bindings.push(gate.clone());
-                        bindings.push(up.as_ref().clone());
-                    }
-                }
+                moe.expert_gate_up
+                    .visit_projection_bindings(|binding| bindings.push(binding.clone()));
                 bindings.push(moe.expert_down.clone());
                 if let Some(expert_down_scale) = &moe.expert_down_scale {
                     bindings.push(expert_down_scale.clone());
