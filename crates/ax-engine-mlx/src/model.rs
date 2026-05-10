@@ -1044,7 +1044,7 @@ pub fn layer_forward_with_turboquant_context(
             };
             let mut out = moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights);
             if w.shared_gate_proj.is_some() {
-                out = add(&out, &shared_expert_forward(w, &normed2), None);
+                out = add(&out, &shared_expert_forward(cfg, w, &normed2), None);
             }
             rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
         }
@@ -2589,7 +2589,7 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     )
 }
 
-fn shared_expert_forward(w: &LayerWeights, x: &MlxArray) -> MlxArray {
+fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     let gate = qw(
         x,
         w.shared_gate_proj
@@ -2602,7 +2602,12 @@ fn shared_expert_forward(w: &LayerWeights, x: &MlxArray) -> MlxArray {
             .as_ref()
             .expect("shared expert must have up projection"),
     );
-    let hidden = multiply(&mlx_sys::ops::silu(&gate, None), &up, None);
+    let gate_act = if cfg.uses_geglu {
+        gelu_approx(&gate, None)
+    } else {
+        mlx_sys::ops::silu(&gate, None)
+    };
+    let hidden = multiply(&gate_act, &up, None);
     let shared = qw(
         &hidden,
         w.shared_down_proj
@@ -3523,6 +3528,29 @@ mod tests {
         QuantizedWeight::new(zeros(shape, MlxDtype::Float32, None), None, None)
     }
 
+    fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data),
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    fn dense_weight_from_data(data: &[f32], shape: &[i32]) -> QuantizedWeight {
+        QuantizedWeight::new(array_f32(data, shape), None, None)
+    }
+
+    fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
+        assert_eq!(actual.len(), expected.len());
+        for (idx, (actual, expected)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (*actual - *expected).abs() <= tolerance,
+                "index {idx}: actual {actual}, expected {expected}, tolerance {tolerance}"
+            );
+        }
+    }
+
     fn quantized_zero_weight(packed_shape: &[i32], scale_shape: &[i32]) -> QuantizedWeight {
         QuantizedWeight {
             weight: zeros(packed_shape, MlxDtype::Uint32, None),
@@ -4315,6 +4343,96 @@ mod tests {
     }
 
     #[test]
+    fn glm_mla_packed_prefill_matches_reference_direct_projection_path() {
+        let mut manifest = glm4_moe_lite_manifest();
+        manifest.hidden_size = 2;
+        manifest.layer_count = 1;
+        manifest.attention_head_count = 1;
+        manifest.kv_head_count = 1;
+        manifest.attention_head_dim = 4;
+        manifest.mla_attention.q_lora_rank = Some(2);
+        manifest.mla_attention.kv_lora_rank = Some(2);
+        manifest.mla_attention.qk_nope_head_dim = Some(2);
+        manifest.mla_attention.qk_rope_head_dim = Some(2);
+        manifest.mla_attention.value_head_dim = Some(2);
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let mut weights = glm_mla_layer_weights(&cfg);
+        weights.o_proj = Some(dense_weight_from_data(&[0.6, -0.4, 0.3, 0.8], &[2, 2]));
+        let mla_w = weights.glm_mla_attn.as_mut().expect("GLM MLA weights");
+        mla_w.qa_kva_fused = dense_weight_from_data(
+            &[
+                0.8, -0.1, // q_a row 0
+                0.2, 0.7, // q_a row 1
+                0.5, -0.3, // kv latent row 0
+                -0.4, 0.9, // kv latent row 1
+                0.3, 0.6, // k_pe row 0
+                -0.2, 0.4, // k_pe row 1
+            ],
+            &[6, 2],
+        );
+        mla_w.q_a_norm = array_f32(&[1.0, 1.0], &[2]);
+        mla_w.kv_a_norm = array_f32(&[1.0, 1.0], &[2]);
+        mla_w.q_b_proj = dense_weight_from_data(
+            &[
+                0.7, -0.2, // q_nope row 0
+                0.1, 0.5, // q_nope row 1
+                -0.3, 0.6, // q_pe row 0
+                0.4, 0.2, // q_pe row 1
+            ],
+            &[4, 2],
+        );
+        mla_w.embed_q = dense_weight_from_data(&[0.9, -0.5, 0.2, 0.7], &[2, 2]);
+        mla_w.unembed_out = dense_weight_from_data(&[0.8, 0.1, -0.3, 0.6], &[2, 2]);
+
+        let hidden = array_f32(&[0.2, -0.5, 1.0, 0.3, -0.7, 0.8], &[1, 3, 2]);
+
+        let mut packed_cache = MlxKVCache::new(cfg.layer_count);
+        let packed = glm_mla_attention_forward(&cfg, &weights, &hidden, &mut packed_cache, 0, 0);
+
+        let mut reference_cache = MlxKVCache::new(cfg.layer_count);
+        let cached =
+            glm_mla_project_and_cache_inputs(&cfg, &weights, &hidden, &mut reference_cache, 0, 0);
+        let reference_k = glm_mla_embed_q_prefill(&cfg, &weights, &cached.kv_latent);
+        let reference_v = glm_mla_unembed_out(&cfg, &weights, &cached.kv_latent);
+        let mla = cfg.glm_mla_attention.as_ref().expect("GLM MLA config");
+        let q_pe_scaled = scale_hidden(&cached.q_pe, mla.query_scale);
+        let pe_scores = matmul(
+            &q_pe_scaled,
+            &transpose(&cached.k_pe, &[0, 1, 3, 2], None),
+            None,
+        );
+        let causal_mask = create_causal_mask(3, 0, None);
+        let masked_pe_scores = mlx_sys::ops::where_cond(
+            &causal_mask,
+            &pe_scores,
+            &scalar_like(f32::MIN, pe_scores.dtype()),
+            None,
+        );
+        let reference_heads = scaled_dot_product_attention_with_mask(
+            &cached.q_nope,
+            &reference_k,
+            &reference_v,
+            mla.query_scale,
+            ScaledDotProductAttentionMask::Array(&masked_pe_scores),
+            None,
+        );
+        let reference_heads = transpose(&reference_heads, &[0, 2, 1, 3], None);
+        let reference_flat = reshape(&reference_heads, &[1, 3, 2], None);
+        let reference = attention_output_projection(
+            &reference_flat,
+            None,
+            weights
+                .o_proj
+                .as_ref()
+                .expect("GLM MLA layer must have o_proj"),
+        );
+
+        eval(&[&packed, &reference]);
+        assert_eq!(packed.shape(), reference.shape());
+        assert_close(&packed.data_f32(), &reference.data_f32(), 1e-3);
+    }
+
+    #[test]
     fn layer_forward_routes_glm_mla_without_standard_qkv_weights() {
         let mut manifest = glm4_moe_lite_manifest();
         manifest.hidden_size = 8;
@@ -4403,6 +4521,28 @@ mod tests {
 
         assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
         assert_eq!(cache.collect_eval_refs().len(), 2);
+    }
+
+    #[test]
+    fn shared_expert_forward_uses_geglu_when_configured() {
+        let mut cfg = cfg(false);
+        cfg.hidden_size = 1;
+        cfg.moe_expert_intermediate_size = 1;
+        cfg.uses_geglu = true;
+        let mut weights = empty_layer_weights(1);
+        weights.shared_gate_proj = Some(dense_weight_from_data(&[2.0], &[1, 1]));
+        weights.shared_up_proj = Some(dense_weight_from_data(&[1.0], &[1, 1]));
+        weights.shared_down_proj = Some(dense_weight_from_data(&[1.0], &[1, 1]));
+        let x = array_f32(&[1.0], &[1, 1, 1]);
+
+        let actual = shared_expert_forward(&cfg, &weights, &x);
+        let gate = qw(&x, weights.shared_gate_proj.as_ref().unwrap());
+        let up = qw(&x, weights.shared_up_proj.as_ref().unwrap());
+        let hidden = multiply(&gelu_approx(&gate, None), &up, None);
+        let expected = qw(&hidden, weights.shared_down_proj.as_ref().unwrap());
+
+        eval(&[&actual, &expected]);
+        assert_close(&actual.data_f32(), &expected.data_f32(), 1e-5);
     }
 
     #[test]
