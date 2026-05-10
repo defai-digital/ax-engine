@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
-use mlx_sys::{MlxArray, MlxDtype, add, astype, concatenate, eval, load_safetensors, multiply};
+use mlx_sys::{MlxArray, MlxDtype, astype, concatenate, eval, load_safetensors, multiply};
 
 use ax_engine_core::{
     NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
@@ -629,13 +629,12 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         });
     }
 
-    // Raw HF checkpoints store linear-attention norm weights as zero-centred deltas
-    // (mean ≈ 0); sanitized mlx-community weights have +1.0 applied (mean ≈ 1.0).
-    // Apply the offset on load so that unsanitized artifacts (e.g. models cloned
-    // directly from HuggingFace without running mlx_lm.convert) work correctly.
-    for layer in &mut layers {
-        if let Some(la) = layer.linear_attn.as_mut() {
-            la.norm = sanitize_norm_if_needed(la.norm.clone());
+    // Raw HF Qwen3.5/Next checkpoints store several RMSNorm weights as zero-centred
+    // deltas that require `mlx_lm.convert` sanitization.  Fail closed instead of
+    // partially fixing one norm and silently leaving the others wrong.
+    for (idx, layer) in layers.iter().enumerate() {
+        if let Some(la) = layer.linear_attn.as_ref() {
+            ensure_sanitized_linear_attention_norm(idx, &la.norm)?;
         }
     }
 
@@ -650,29 +649,24 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     })
 }
 
-/// Auto-sanitize a linear-attention norm weight if needed.
-///
-/// Raw HuggingFace checkpoints store these weights as zero-centred deltas (mean ≈ 0);
-/// the correct inference value requires adding +1.0, which mlx-lm's sanitize() step
-/// applies when converting. If the weight is already sanitized (mean abs ≈ 1.0) it is
-/// returned unchanged.
-fn sanitize_norm_if_needed(norm: MlxArray) -> MlxArray {
-    let f32_norm = astype(&norm, MlxDtype::Float32, None);
+fn ensure_sanitized_linear_attention_norm(
+    layer_index: usize,
+    norm: &MlxArray,
+) -> Result<(), WeightLoadError> {
+    let f32_norm = astype(norm, MlxDtype::Float32, None);
     eval(&[&f32_norm]);
     let data = f32_norm.data_f32();
     if data.len() < 8 {
-        return norm;
+        return Ok(());
     }
     let mean_abs: f32 = data.iter().map(|v| v.abs()).sum::<f32>() / data.len() as f32;
     if mean_abs < 0.15 {
-        let orig_dtype = norm.dtype();
-        let norm_f32 = astype(&norm, MlxDtype::Float32, None);
-        let one = MlxArray::from_f32_slice(&[1.0_f32]);
-        let sanitized = add(&norm_f32, &one, None);
-        astype(&sanitized, orig_dtype, None)
-    } else {
-        norm
+        return Err(WeightLoadError::UnsanitizedWeights(format!(
+            "linear attention layer {layer_index} norm mean_abs={mean_abs:.6}; expected ~1.0 for mlx_lm-sanitized weights. Raw HuggingFace Qwen3.5/Qwen3-Next checkpoints must be converted first: pip install mlx-lm && mlx_lm.convert ..."
+        )));
     }
+
+    Ok(())
 }
 
 fn gemma4_router_combined_scale(hidden_size: u32, router_scale: &MlxArray) -> MlxArray {
@@ -1124,6 +1118,8 @@ pub enum WeightLoadError {
     QuantizationMissing(String),
     #[error("invalid layer tensor layout: {0}")]
     InvalidLayer(String),
+    #[error("unsanitized weights: {0}")]
+    UnsanitizedWeights(String),
 }
 
 #[cfg(test)]
@@ -1179,6 +1175,35 @@ mod tests {
             .expect_err("mixed attention families should fail");
 
         assert!(matches!(error, WeightLoadError::InvalidLayer(_)));
+    }
+
+    #[test]
+    fn unsanitized_linear_attention_norm_is_rejected() {
+        let norm = zeros(&[8], MlxDtype::Float32, None);
+
+        let error = ensure_sanitized_linear_attention_norm(2, &norm)
+            .expect_err("zero-centred raw HF norm should fail closed");
+
+        let WeightLoadError::UnsanitizedWeights(message) = error else {
+            panic!("expected unsanitized weights error");
+        };
+        assert!(message.contains("layer 2"));
+        assert!(message.contains("mean_abs=0.000000"));
+        assert!(message.contains("mlx_lm.convert"));
+    }
+
+    #[test]
+    fn sanitized_linear_attention_norm_is_allowed() {
+        let data = [1.0_f32; 8];
+        let norm = MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(&data),
+            &[8],
+            MlxDtype::Float32,
+        );
+
+        ensure_sanitized_linear_attention_norm(0, &norm)
+            .expect("mlx_lm-sanitized norm should load");
     }
 
     #[test]

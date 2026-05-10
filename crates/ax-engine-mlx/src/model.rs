@@ -3,7 +3,7 @@ use mlx_sys::{
     astype, broadcast_to, concatenate, dequantize, divide, eval, expand_dims, expand_dims_axes,
     gather_mm, gather_qmm, gelu_approx, matmul, multiply, put_along_axis, quantized_matmul,
     reshape, rms_norm, rope, scaled_dot_product_attention_with_mask, slice, slice_last_dim,
-    softmax, sum_axis, take, take_along_axis, tanh, transpose, zeros,
+    softmax, softmax_precise, sum_axis, take, take_along_axis, tanh, transpose, zeros,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -2710,7 +2710,7 @@ fn moe_router_qwen3(
     let router_proj = w.router_proj.as_ref().unwrap();
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
-    let weights_all = softmax(&logits, last_axis, None);
+    let weights_all = softmax_precise(&logits, last_axis, None);
     let (top_k_indices, top_k_weights) = top_k_by_argpartition(
         &weights_all,
         cfg.moe_expert_count,

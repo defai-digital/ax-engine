@@ -1,6 +1,6 @@
 use ax_engine_tui::app::{AppState, LoadState, MODEL_CATALOG};
 use ax_engine_tui::contracts::{
-    WorkflowCommand, read_benchmark_artifact_json, read_doctor_json, scan_artifacts,
+    DoctorReport, WorkflowCommand, read_benchmark_artifact_json, read_doctor_json, scan_artifacts,
 };
 use ax_engine_tui::jobs::plan::{
     CommandInvocation, EvidenceClass, JobDisplaySummary, JobKind, JobPlan, JobSpec,
@@ -17,7 +17,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -349,6 +349,12 @@ struct DownloadJobSnapshot {
     progress: u8,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CachedModelSnapshot {
+    repo_id: String,
+    path: String,
+}
+
 struct ManagedServer {
     child: Child,
     port: u16,
@@ -395,6 +401,7 @@ struct WebRuntime {
     state: AppState,
     next_job_id: u64,
     download_jobs: Vec<DownloadJobSnapshot>,
+    hf_cache_models: Option<Vec<CachedModelSnapshot>>,
     server: Option<ManagedServer>,
     status_message: String,
 }
@@ -405,6 +412,7 @@ impl WebRuntime {
             state,
             next_job_id: 1,
             download_jobs: Vec::new(),
+            hf_cache_models: None,
             server: None,
             status_message: "Web manager ready".to_string(),
         }
@@ -1242,15 +1250,8 @@ print(text, end='')
 }
 
 fn run_python_text_script(args: Vec<String>) -> Result<String, ManagerError> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = Command::new("python3").args(args).output();
-        let _ = tx.send(result);
-    });
-    let output = rx
-        .recv_timeout(Duration::from_secs(15))
-        .map_err(|_| ManagerError::Message("decode timed out after 15s".to_string()))?
-        .map_err(|e| ManagerError::Message(format!("decode subprocess failed: {e}")))?;
+    let output =
+        run_subprocess_output_with_timeout("python3", args, Duration::from_secs(15), "decode")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(ManagerError::Message(format!(
@@ -1262,18 +1263,8 @@ fn run_python_text_script(args: Vec<String>) -> Result<String, ManagerError> {
 }
 
 fn run_python_tokenizer_script(args: Vec<String>) -> Result<Vec<u32>, ManagerError> {
-    // Run in a thread so we can apply a hard timeout — Python startup can be slow
-    // and we must not block the request handler indefinitely.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = Command::new("python3").args(args).output();
-        let _ = tx.send(result);
-    });
-
-    let output = rx
-        .recv_timeout(Duration::from_secs(15))
-        .map_err(|_| ManagerError::Message("tokenizer timed out after 15s".to_string()))?
-        .map_err(|e| ManagerError::Message(format!("tokenizer subprocess failed: {e}")))?;
+    let output =
+        run_subprocess_output_with_timeout("python3", args, Duration::from_secs(15), "tokenizer")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1287,6 +1278,56 @@ fn run_python_tokenizer_script(args: Vec<String>) -> Result<Vec<u32>, ManagerErr
     let ids: Vec<u64> = serde_json::from_str(stdout.trim())
         .map_err(|e| ManagerError::Message(format!("tokenizer output parse error: {e}")))?;
     Ok(ids.into_iter().map(|id| id as u32).collect())
+}
+
+fn run_subprocess_output_with_timeout(
+    program: &str,
+    args: Vec<String>,
+    timeout: Duration,
+    label: &str,
+) -> Result<Output, ManagerError> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| ManagerError::Message(format!("{label} subprocess failed: {e}")))?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_end(&mut stdout);
+                }
+                let mut stderr = Vec::new();
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_end(&mut stderr);
+                }
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ManagerError::Message(format!(
+                    "{label} timed out after {}s",
+                    timeout.as_secs()
+                )));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ManagerError::Message(format!(
+                    "{label} subprocess failed: {e}"
+                )));
+            }
+        }
+    }
 }
 
 fn render_fallback_chat_prompt(
@@ -1572,11 +1613,27 @@ fn hf_cache_path(repo_id: &str) -> Option<String> {
     }
 }
 
+fn scan_hf_cache_models() -> Vec<CachedModelSnapshot> {
+    MODEL_CATALOG
+        .iter()
+        .filter_map(|entry| {
+            hf_cache_path(entry.repo_id).map(|path| CachedModelSnapshot {
+                repo_id: entry.repo_id.to_string(),
+                path,
+            })
+        })
+        .collect()
+}
+
 fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
     let mut runtime = runtime
         .lock()
         .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
     runtime.cleanup_server();
+    if runtime.hf_cache_models.is_none() {
+        runtime.hf_cache_models = Some(scan_hf_cache_models());
+    }
+    let hf_cache_models = runtime.hf_cache_models.clone().unwrap_or_default();
     let port = runtime.server_port();
     let base_url = format!("http://127.0.0.1:{port}");
     let server_status = match runtime.server.as_ref() {
@@ -1632,16 +1689,14 @@ fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
                 models.push(json!({ "repo_id": "local", "path": path }));
             }
         }
-        // 3. HuggingFace cache scan for catalog models (pre-downloaded outside manager).
-        use ax_engine_tui::app::MODEL_CATALOG;
-        for entry in MODEL_CATALOG.iter() {
-            if seen.contains(entry.repo_id) {
+        // 3. Cached HuggingFace cache scan for catalog models (pre-downloaded outside manager).
+        for model in hf_cache_models.iter() {
+            if seen.contains(model.repo_id.as_str()) {
                 continue;
             }
-            if let Some(path) = hf_cache_path(entry.repo_id)
-                && seen.insert(entry.repo_id.to_string())
-            {
-                models.push(json!({ "repo_id": entry.repo_id, "path": path }));
+            if seen.insert(model.repo_id.clone()) {
+                models
+                    .push(json!({ "repo_id": model.repo_id.clone(), "path": model.path.clone() }));
             }
         }
         models
@@ -1736,32 +1791,44 @@ fn finish_download_job(
     job_id: &str,
     result: Result<String, DownloadRunError>,
 ) {
-    let mut runtime = match runtime.lock() {
-        Ok(runtime) => runtime,
-        Err(_) => return,
-    };
-    let Some(index) = runtime
-        .download_jobs
-        .iter()
-        .position(|job| job.id == job_id)
-    else {
-        return;
-    };
-    match result {
-        Ok(model_dir) => {
-            runtime.download_jobs[index].status = "succeeded".to_string();
-            runtime.download_jobs[index].model_dir = Some(model_dir.clone());
-            runtime.download_jobs[index].message = None;
-            runtime.status_message = format!("Downloaded {}", runtime.download_jobs[index].repo_id);
-            refresh_doctor_after_download(&mut runtime.state, Path::new(&model_dir));
+    let refresh_model_dir = {
+        let mut runtime = match runtime.lock() {
+            Ok(runtime) => runtime,
+            Err(_) => return,
+        };
+        let Some(index) = runtime
+            .download_jobs
+            .iter()
+            .position(|job| job.id == job_id)
+        else {
+            return;
+        };
+        match result {
+            Ok(model_dir) => {
+                runtime.download_jobs[index].status = "succeeded".to_string();
+                runtime.download_jobs[index].model_dir = Some(model_dir.clone());
+                runtime.download_jobs[index].message = None;
+                runtime.hf_cache_models = None;
+                runtime.status_message =
+                    format!("Downloaded {}", runtime.download_jobs[index].repo_id);
+                Some(model_dir)
+            }
+            Err(error) => {
+                runtime.download_jobs[index].status = "failed".to_string();
+                runtime.download_jobs[index].message = Some(error.to_string());
+                runtime.status_message = format!(
+                    "Download failed for {}",
+                    runtime.download_jobs[index].repo_id
+                );
+                None
+            }
         }
-        Err(error) => {
-            runtime.download_jobs[index].status = "failed".to_string();
-            runtime.download_jobs[index].message = Some(error.to_string());
-            runtime.status_message = format!(
-                "Download failed for {}",
-                runtime.download_jobs[index].repo_id
-            );
+    };
+
+    if let Some(model_dir) = refresh_model_dir {
+        let refreshed = refresh_doctor_after_download(Path::new(&model_dir));
+        if let Ok(mut runtime) = runtime.lock() {
+            runtime.state.doctor = refreshed;
         }
     }
 }
@@ -1825,7 +1892,7 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
     let server_bin = which_server_binary();
     let stderr_path = std::env::temp_dir().join(format!("ax-engine-server-{port}.log"));
     let stderr_file = std::fs::File::create(&stderr_path).ok();
-    let launch = server_launch_plan(&repo_id, &model_dir, port as u16, engine);
+    let launch = server_launch_plan(&repo_id, &model_dir, port as u16, engine)?;
 
     let stopped_existing = {
         let mut rt = runtime
@@ -2008,7 +2075,7 @@ fn server_launch_plan(
     model_dir: &str,
     port: u16,
     engine: ManagerEngine,
-) -> ServerLaunchPlan {
+) -> Result<ServerLaunchPlan, ManagerError> {
     let port_arg = port.to_string();
     let repo_lower = repo_id.to_ascii_lowercase();
     if let Some((preset, model_id)) = server_preset_for_repo(&repo_lower) {
@@ -2023,10 +2090,15 @@ fn server_launch_plan(
         if engine == ManagerEngine::AxEngine {
             args.push("--disable-ngram-acceleration".to_string());
         }
-        return ServerLaunchPlan {
+        return Ok(ServerLaunchPlan {
             args,
             model_id: model_id.to_string(),
-        };
+        });
+    }
+    if repo_lower.contains("gemma-4") || repo_lower.contains("gemma4") {
+        return Err(ManagerError::Message(format!(
+            "manager cannot start {repo_id}: no ax-engine-server preset is available yet"
+        )));
     }
 
     let mut args = vec![
@@ -2042,10 +2114,10 @@ fn server_launch_plan(
         args.push("--disable-ngram-acceleration".to_string());
     }
 
-    ServerLaunchPlan {
+    Ok(ServerLaunchPlan {
         args,
         model_id: repo_id.to_string(),
-    }
+    })
 }
 
 fn server_preset_for_repo(repo_lower: &str) -> Option<(&'static str, &'static str)> {
@@ -2576,17 +2648,15 @@ fn parse_download_output(output: Output) -> Result<String, DownloadRunError> {
     Err(DownloadRunError::Failed(errors))
 }
 
-fn refresh_doctor_after_download(state: &mut AppState, model_dir: &Path) {
+fn refresh_doctor_after_download(model_dir: &Path) -> LoadState<DoctorReport> {
     match env::current_dir() {
         Ok(cwd) => {
             let command = DoctorCommand::from_cwd(&cwd, Some(model_dir));
-            state.doctor = run_doctor(&command)
+            run_doctor(&command)
                 .map(LoadState::Ready)
-                .unwrap_or_else(|error| LoadState::unavailable(error.to_string()));
+                .unwrap_or_else(|error| LoadState::unavailable(error.to_string()))
         }
-        Err(error) => {
-            state.doctor = LoadState::unavailable(format!("failed to refresh doctor: {error}"));
-        }
+        Err(error) => LoadState::unavailable(format!("failed to refresh doctor: {error}")),
     }
 }
 
@@ -3031,6 +3101,25 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     }
 
     #[test]
+    fn subprocess_timeout_returns_without_waiting_for_child_exit() {
+        let started = Instant::now();
+
+        let error = run_subprocess_output_with_timeout(
+            "sleep",
+            vec!["2".to_string()],
+            Duration::from_millis(50),
+            "test subprocess",
+        )
+        .expect_err("sleep should time out");
+
+        assert!(error.to_string().contains("test subprocess timed out"));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "timeout should kill the subprocess instead of waiting for natural exit"
+        );
+    }
+
+    #[test]
     fn parses_ready_download_output() {
         let output = Output {
             status: std::process::ExitStatus::from_raw(0),
@@ -3252,7 +3341,8 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
             "/models/glm",
             9090,
             ManagerEngine::AxEngineNgram,
-        );
+        )
+        .expect("glm preset should be startable");
 
         assert_eq!(plan.model_id, "glm4_moe_lite");
         assert_eq!(
@@ -3276,7 +3366,8 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
             "/models/gemma",
             8081,
             ManagerEngine::AxEngineNgram,
-        );
+        )
+        .expect("gemma e2b preset should be startable");
 
         assert_eq!(plan.model_id, "gemma4-e2b");
         assert_eq!(plan.args[0], "--preset");
@@ -3285,9 +3376,26 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     }
 
     #[test]
+    fn server_launch_plan_rejects_gemma_catalog_entries_without_server_preset() {
+        let error = server_launch_plan(
+            "mlx-community/gemma-4-e4b-it-4bit",
+            "/models/gemma-e4b",
+            8082,
+            ManagerEngine::AxEngineNgram,
+        )
+        .expect_err("unmapped gemma catalog entry should fail closed");
+
+        assert_eq!(
+            error.to_string(),
+            "manager cannot start mlx-community/gemma-4-e4b-it-4bit: no ax-engine-server preset is available yet"
+        );
+    }
+
+    #[test]
     fn server_launch_plan_keeps_generic_mlx_model_id_for_qwen() {
         let repo = "mlx-community/Qwen3-4B-4bit";
-        let plan = server_launch_plan(repo, "/models/qwen", 8080, ManagerEngine::AxEngineNgram);
+        let plan = server_launch_plan(repo, "/models/qwen", 8080, ManagerEngine::AxEngineNgram)
+            .expect("qwen should use generic mlx route");
 
         assert_eq!(plan.model_id, repo);
         assert!(plan.args.iter().any(|arg| arg == "--mlx"));
@@ -3301,7 +3409,8 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     #[test]
     fn server_launch_plan_respects_direct_ax_engine_selection() {
         let repo = "mlx-community/Qwen3-4B-4bit";
-        let plan = server_launch_plan(repo, "/models/qwen", 8080, ManagerEngine::AxEngine);
+        let plan = server_launch_plan(repo, "/models/qwen", 8080, ManagerEngine::AxEngine)
+            .expect("qwen should use generic mlx route");
 
         assert!(
             plan.args
@@ -3314,7 +3423,8 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     #[test]
     fn server_launch_plan_respects_ngram_engine_selection() {
         let repo = "mlx-community/Qwen3-4B-4bit";
-        let plan = server_launch_plan(repo, "/models/qwen", 8080, ManagerEngine::AxEngineNgram);
+        let plan = server_launch_plan(repo, "/models/qwen", 8080, ManagerEngine::AxEngineNgram)
+            .expect("qwen should use generic mlx route");
 
         assert!(
             !plan
@@ -3360,6 +3470,27 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
         assert!(!request_complete(bytes));
         let error = parse_http_request_bytes(bytes).expect_err("content length should overflow");
         assert_eq!(error.to_string(), "content-length is too large");
+    }
+
+    #[test]
+    fn state_json_uses_cached_hf_cache_models() {
+        let runtime = Arc::new(Mutex::new(WebRuntime::new(AppState::empty())));
+        {
+            let mut guard = runtime.lock().expect("runtime lock should work");
+            guard.hf_cache_models = Some(vec![CachedModelSnapshot {
+                repo_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+                path: "/cached/qwen".to_string(),
+            }]);
+        }
+
+        let state = runtime_state_json(&runtime).expect("state should render");
+        let downloaded = state["downloaded_models"]
+            .as_array()
+            .expect("downloaded models should be an array");
+
+        assert!(downloaded.iter().any(|model| {
+            model["repo_id"] == "mlx-community/Qwen3-4B-4bit" && model["path"] == "/cached/qwen"
+        }));
     }
 
     #[test]

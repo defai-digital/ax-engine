@@ -37,6 +37,7 @@ use args::{ServerArgs, render_presets};
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS: u64 = 2;
 const DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH: usize = 32;
+const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 const STREAM_CHANNEL_CAPACITY: usize = 128;
 const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT: &str =
     "<|im_start|>assistant\n<think>\n\n</think>\n\n";
@@ -301,6 +302,7 @@ struct OpenAiCompletionResponse {
     object: &'static str,
     created: u64,
     model: String,
+    system_fingerprint: Option<&'static str>,
     choices: Vec<OpenAiCompletionChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<OpenAiUsage>,
@@ -319,6 +321,7 @@ struct OpenAiChatCompletionResponse {
     object: &'static str,
     created: u64,
     model: String,
+    system_fingerprint: Option<&'static str>,
     choices: Vec<OpenAiChatCompletionChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<OpenAiUsage>,
@@ -343,6 +346,7 @@ struct OpenAiCompletionChunk {
     object: &'static str,
     created: u64,
     model: String,
+    system_fingerprint: Option<&'static str>,
     choices: Vec<OpenAiCompletionChunkChoice>,
 }
 
@@ -359,6 +363,7 @@ struct OpenAiChatCompletionChunk {
     object: &'static str,
     created: u64,
     model: String,
+    system_fingerprint: Option<&'static str>,
     choices: Vec<OpenAiChatCompletionChunkChoice>,
 }
 
@@ -1248,6 +1253,7 @@ fn send_openai_stream_event(
                     object: stream_kind.stream_chunk_object(),
                     created: unix_timestamp_secs(),
                     model: payload.request.model_id,
+                    system_fingerprint: None,
                     choices: vec![OpenAiCompletionChunkChoice {
                         index: 0,
                         text: delta_text,
@@ -1268,6 +1274,7 @@ fn send_openai_stream_event(
                     object: stream_kind.stream_chunk_object(),
                     created: unix_timestamp_secs(),
                     model: payload.request.model_id,
+                    system_fingerprint: None,
                     choices: vec![OpenAiChatCompletionChunkChoice {
                         index: 0,
                         delta: OpenAiChatDelta {
@@ -1292,6 +1299,7 @@ fn send_openai_stream_event(
                     object: stream_kind.stream_chunk_object(),
                     created: unix_timestamp_secs(),
                     model: payload.response.model_id,
+                    system_fingerprint: None,
                     choices: vec![OpenAiCompletionChunkChoice {
                         index: 0,
                         text: String::new(),
@@ -1306,6 +1314,7 @@ fn send_openai_stream_event(
                     object: stream_kind.stream_chunk_object(),
                     created: unix_timestamp_secs(),
                     model: payload.response.model_id,
+                    system_fingerprint: None,
                     choices: vec![OpenAiChatCompletionChunkChoice {
                         index: 0,
                         delta: OpenAiChatDelta::default(),
@@ -1334,6 +1343,7 @@ fn drive_openai_mlx_lm_chat_stream(
                         object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
                         created: unix_timestamp_secs(),
                         model: model_id.clone(),
+                        system_fingerprint: None,
                         choices: vec![OpenAiChatCompletionChunkChoice {
                             index: 0,
                             delta: OpenAiChatDelta {
@@ -1389,6 +1399,7 @@ fn send_openai_mlx_lm_chat_final_chunk(
         object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
         created: unix_timestamp_secs(),
         model: model_id.to_string(),
+        system_fingerprint: None,
         choices: vec![OpenAiChatCompletionChunkChoice {
             index: 0,
             delta: OpenAiChatDelta::default(),
@@ -1568,10 +1579,16 @@ fn build_openai_completion_request(
     state: &AppState,
     request: OpenAiCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
-    let max_output_tokens = require_openai_max_tokens(request.max_tokens)?;
+    let max_output_tokens = openai_max_tokens(request.max_tokens);
     let (input_tokens, input_text) = match request.prompt {
         OpenAiPromptInput::Text(text) => (Vec::new(), Some(text)),
-        OpenAiPromptInput::TextBatch(texts) => (Vec::new(), Some(texts.join("\n"))),
+        OpenAiPromptInput::TextBatch(_) => {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "batch completion prompts are not supported by this preview endpoint; send one prompt per request".to_string(),
+            ));
+        }
         OpenAiPromptInput::Tokens(tokens) => (tokens, None),
     };
 
@@ -1606,7 +1623,7 @@ fn build_openai_chat_request(
     state: &AppState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
-    let max_output_tokens = require_openai_max_tokens(request.max_tokens)?;
+    let max_output_tokens = openai_max_tokens(request.max_tokens);
     let input_text = render_openai_chat_prompt(state.model_id.as_ref(), &request.messages)?;
 
     let payload = OpenAiBuiltPayload {
@@ -1637,7 +1654,7 @@ fn build_openai_mlx_lm_chat_request(
     state: &AppState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
-    let max_output_tokens = require_openai_max_tokens(request.max_tokens)?;
+    let max_output_tokens = openai_max_tokens(request.max_tokens);
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling(
         request.temperature,
@@ -1726,16 +1743,8 @@ fn build_openai_sampling(
     }
 }
 
-fn require_openai_max_tokens(
-    max_tokens: Option<u32>,
-) -> Result<u32, (StatusCode, Json<ErrorResponse>)> {
-    max_tokens.ok_or_else(|| {
-        error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "OpenAI-compatible preview endpoints require max_tokens; refusing to apply a hidden default".to_string(),
-        )
-    })
+fn openai_max_tokens(max_tokens: Option<u32>) -> u32 {
+    max_tokens.unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
 }
 
 fn render_openai_chat_prompt(
@@ -1936,6 +1945,7 @@ fn openai_completion_response(response: &GenerateResponse, id: String) -> OpenAi
         object: "text_completion",
         created: unix_timestamp_secs(),
         model: response.model_id.clone(),
+        system_fingerprint: None,
         choices: vec![OpenAiCompletionChoice {
             index: 0,
             text: response.output_text.clone().unwrap_or_default(),
@@ -1954,6 +1964,7 @@ fn openai_chat_completion_response(
         object: "chat.completion",
         created: unix_timestamp_secs(),
         model: response.model_id.clone(),
+        system_fingerprint: None,
         choices: vec![OpenAiChatCompletionChoice {
             index: 0,
             message: OpenAiChatMessageResponse {
@@ -2750,6 +2761,7 @@ sys.stdout.write(f"server::{prompt}")
             json.get("object").and_then(Value::as_str),
             Some("text_completion")
         );
+        assert_eq!(json.get("system_fingerprint"), Some(&Value::Null));
         assert_eq!(
             openai_first_choice(&json)
                 .get("text")
@@ -2800,6 +2812,7 @@ sys.stdout.write(f"server::{prompt}")
             json.get("object").and_then(Value::as_str),
             Some("text_completion")
         );
+        assert_eq!(json.get("system_fingerprint"), Some(&Value::Null));
         assert_eq!(
             openai_first_choice(&json)
                 .get("text")
@@ -2862,8 +2875,27 @@ sys.stdout.write(f"server::{prompt}")
     }
 
     #[tokio::test]
-    async fn openai_completions_endpoint_requires_max_tokens() {
-        let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+    async fn openai_completions_endpoint_defaults_max_tokens() {
+        let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
+            serde_json::json!({
+                "content": "server::default max tokens",
+                "tokens": [4, 5],
+                "stop": true,
+                "stop_type": "limit"
+            })
+            .to_string(),
+            |payload| {
+                assert_eq!(
+                    payload.get("prompt"),
+                    Some(&Value::String("hello openai".to_string()))
+                );
+                assert_eq!(
+                    payload.get("n_predict"),
+                    Some(&json!(DEFAULT_OPENAI_MAX_TOKENS))
+                );
+            },
+        );
+        let app = build_router(llama_cpp_server_state(llama_server_url));
         let (status, json) = json_response(
             &app,
             Request::builder()
@@ -2876,9 +2908,43 @@ sys.stdout.write(f"server::{prompt}")
                 .unwrap(),
         )
         .await;
+        llama_cpp_server_handle
+            .join()
+            .expect("llama.cpp server thread should finish");
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            openai_first_choice(&json)
+                .get("text")
+                .and_then(Value::as_str),
+            Some("server::default max tokens")
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_completions_endpoint_rejects_text_batch_prompt() {
+        let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+        let mut request = sample_openai_request_base(Some(2), false, |request| {
+            request.insert(
+                "prompt".to_string(),
+                json!(["first prompt", "second prompt"]),
+            );
+        });
+        request.remove("model");
+
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(json_request_body(&Value::Object(request))))
+                .unwrap(),
+        )
+        .await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_invalid_request_response(&json, "require max_tokens");
+        assert_invalid_request_response(&json, "batch completion prompts are not supported");
     }
 
     #[tokio::test]
@@ -2976,8 +3042,23 @@ sys.stdout.write(f"server::{prompt}")
     }
 
     #[tokio::test]
-    async fn openai_chat_completions_endpoint_requires_max_tokens() {
-        let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+    async fn openai_chat_completions_endpoint_defaults_max_tokens() {
+        let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
+            serde_json::json!({
+                "content": "server::default chat max tokens",
+                "tokens": [4, 5],
+                "stop": true,
+                "stop_type": "limit"
+            })
+            .to_string(),
+            |payload| {
+                assert_eq!(
+                    payload.get("n_predict"),
+                    Some(&json!(DEFAULT_OPENAI_MAX_TOKENS))
+                );
+            },
+        );
+        let app = build_router(llama_cpp_server_state(llama_server_url));
         let (status, json) = json_response(
             &app,
             Request::builder()
@@ -2992,25 +3073,18 @@ sys.stdout.write(f"server::{prompt}")
                 .unwrap(),
         )
         .await;
+        llama_cpp_server_handle
+            .join()
+            .expect("llama.cpp server thread should finish");
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json.get("system_fingerprint"), Some(&Value::Null));
         assert_eq!(
-            json.get("error")
-                .and_then(|error| error.get("type"))
+            openai_first_choice(&json)
+                .get("message")
+                .and_then(|message| message.get("content"))
                 .and_then(Value::as_str),
-            Some("invalid_request_error")
-        );
-        assert_invalid_request_response(&json, "require max_tokens");
-        assert_eq!(
-            json.get("error").and_then(|error| error.get("param")),
-            Some(&Value::Null)
-        );
-        assert!(
-            json.get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .contains("require max_tokens")
+            Some("server::default chat max tokens")
         );
     }
 
@@ -3319,6 +3393,7 @@ sys.stdout.write(f"server::{prompt}")
         assert!(content_type.starts_with("text/event-stream"));
         let payloads = parse_openai_sse_payloads(&body);
         assert_eq!(payloads.len(), 3);
+        assert_eq!(payloads[0].get("system_fingerprint"), Some(&Value::Null));
         assert_eq!(
             openai_first_choice(&payloads[0])
                 .get("text")
@@ -3390,6 +3465,7 @@ sys.stdout.write(f"server::{prompt}")
         assert!(content_type.starts_with("text/event-stream"));
         let payloads = parse_openai_sse_payloads(&body);
         assert_eq!(payloads.len(), 3);
+        assert_eq!(payloads[0].get("system_fingerprint"), Some(&Value::Null));
         assert_eq!(
             openai_first_choice(&payloads[0])
                 .get("delta")
@@ -3488,6 +3564,7 @@ sys.stdout.write(f"server::{prompt}")
             })
             .collect();
         assert_eq!(text_chunks, vec![" hello", " world"]);
+        assert_eq!(payloads[0].get("system_fingerprint"), Some(&Value::Null));
         assert_eq!(
             openai_first_choice(payloads.last().expect("final chunk should exist"))
                 .get("finish_reason")
@@ -3537,6 +3614,7 @@ sys.stdout.write(f"server::{prompt}")
             .expect("mlx-lm server thread should finish");
 
         assert_eq!(status, StatusCode::OK);
+        assert_eq!(json.get("system_fingerprint"), Some(&Value::Null));
         assert_eq!(
             json.get("choices")
                 .and_then(Value::as_array)
