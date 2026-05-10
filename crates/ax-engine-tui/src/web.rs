@@ -844,7 +844,12 @@ async function sendMessage() {
 
     if (!res.ok) {
       let msg;
-      try { msg = (await res.json()).error; } catch { msg = res.statusText; }
+      try {
+        const e = (await res.json()).error;
+        if (typeof e === 'string') msg = e;
+        else if (e && typeof e.message === 'string') msg = e.message;
+        else msg = JSON.stringify(e);
+      } catch { msg = res.statusText; }
       throw new Error(msg || `HTTP ${res.status}`);
     }
 
