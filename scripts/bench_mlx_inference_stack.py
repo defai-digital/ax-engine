@@ -84,6 +84,26 @@ AX_MLX_RUNTIME_IDENTITY = {
     "benchmark_surface": "mlx_inference_stack",
 }
 
+
+def ensure_ax_engine_server_binary(*, build: bool = True) -> None:
+    if build:
+        cmd = ["cargo", "build", "-p", "ax-engine-server", "--release"]
+        print(f"  [build] {' '.join(cmd)}", file=sys.stderr)
+        try:
+            subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+        except FileNotFoundError as error:
+            raise RuntimeError("cargo was not found; cannot build ax-engine-server") from error
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(
+                f"cargo build -p ax-engine-server --release failed with exit={error.returncode}"
+            ) from error
+
+    if not AX_ENGINE_SERVER.exists():
+        raise RuntimeError(
+            f"ax-engine-server not found at {AX_ENGINE_SERVER}. "
+            "Run: cargo build -p ax-engine-server --release"
+        )
+
 CLAIMS_REQUIRING_ARTIFACT_EVIDENCE = [
     "continuous_batching",
     "prefix_reuse",
@@ -1673,6 +1693,14 @@ def main() -> None:
     )
     parser.add_argument("--skip-ax-engine", action="store_true")
     parser.add_argument(
+        "--no-build-ax-engine",
+        action="store_true",
+        help=(
+            "Do not run `cargo build -p ax-engine-server --release` before AX rows. "
+            "Use only when the release binary freshness is managed externally."
+        ),
+    )
+    parser.add_argument(
         "--reuse-reference-results-from",
         type=Path,
         help=(
@@ -1861,13 +1889,12 @@ def main() -> None:
     if gateddelta_prefill_profile_contract:
         print("  profile: gateddelta_prefill", file=sys.stderr)
 
-    if not args.skip_ax_engine and not AX_ENGINE_SERVER.exists():
-        print(
-            f"ERROR: ax-engine-server not found at {AX_ENGINE_SERVER}. "
-            "Run: cargo build -p ax-engine-server --release",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    if not args.skip_ax_engine:
+        try:
+            ensure_ax_engine_server_binary(build=not args.no_build_ax_engine)
+        except RuntimeError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            sys.exit(1)
 
     prompts = build_reference_prompts(
         prompt_lengths,

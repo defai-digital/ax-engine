@@ -2554,7 +2554,16 @@ fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
 fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_packed {
         let out = qw(x, packed);
-        let half = cfg.intermediate_size as i32;
+        let packed_dim = out
+            .shape()
+            .last()
+            .copied()
+            .expect("packed FFN output must have a last dimension");
+        assert!(
+            packed_dim > 0 && packed_dim % 2 == 0,
+            "packed FFN output last dimension must be positive and even, got {packed_dim}"
+        );
+        let half = packed_dim / 2;
         let gate = mlx_slice_last_dim(&out, 0, half);
         let up = mlx_slice_last_dim(&out, half, half * 2);
         (gate, up)
@@ -3524,6 +3533,48 @@ mod tests {
         }
     }
 
+    fn empty_layer_weights(hidden_size: usize) -> LayerWeights {
+        LayerWeights {
+            attn_norm: zeros(&[hidden_size as i32], MlxDtype::Float32, None),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: None,
+            glm_mla_attn: None,
+            ffn_norm: zeros(&[hidden_size as i32], MlxDtype::Float32, None),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: None,
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: None,
+            router_correction_bias: None,
+            router_scale: None,
+            router_combined_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
+            gate_up_exps_packed: None,
+            gate_exps: None,
+            up_exps: None,
+            down_exps: None,
+        }
+    }
+
     fn glm_mla_layer_weights(cfg: &ModelConfig) -> LayerWeights {
         let mla = cfg.glm_mla_attention.as_ref().expect("GLM MLA config");
         LayerWeights {
@@ -3628,6 +3679,29 @@ mod tests {
             cfg.hidden_size as i32,
             cfg.intermediate_size as i32,
         ]));
+    }
+
+    fn gemma4_kv_shared_config() -> ModelConfig {
+        let mut manifest = gemma4_interleaved_manifest();
+        manifest.layer_count = 2;
+        manifest.hidden_size = 8;
+        manifest.intermediate_size = 6;
+        manifest.attention_head_count = 2;
+        manifest.attention_head_dim = 4;
+        manifest.kv_head_count = 1;
+        manifest.vocab_size = 16;
+        manifest.partial_rotary_factor = None;
+        manifest.global_head_dim = None;
+        manifest.sliding_window_size = Some(8);
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+        ];
+        manifest.kv_shared_source_layers.insert(1, 0);
+        manifest.attention_v_norm_no_scale_layers = vec![0];
+        manifest.final_logit_softcapping = None;
+        manifest.hidden_states_scale = None;
+        ModelConfig::from_manifest(&manifest)
     }
 
     fn attach_glm_moe_ffn(weights: &mut LayerWeights, cfg: &ModelConfig) {
@@ -3839,6 +3913,23 @@ mod tests {
     }
 
     #[test]
+    fn ffn_swiglu_packed_splits_by_runtime_output_width() {
+        let mut cfg = cfg(false);
+        cfg.hidden_size = 4;
+        cfg.intermediate_size = 3;
+        cfg.uses_geglu = true;
+        let mut weights = empty_layer_weights(cfg.hidden_size);
+        weights.gate_up_packed = Some(dense_weight(&[12, cfg.hidden_size as i32]));
+        weights.down_proj = Some(dense_weight(&[cfg.hidden_size as i32, 6]));
+        let x = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
+
+        let out = ffn_swiglu(&cfg, &weights, &x);
+
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
+    }
+
+    #[test]
     fn gemma4_layer_configs_keep_sliding_rope_at_full_head_dim() {
         let cfg = ModelConfig::from_manifest(&gemma4_interleaved_manifest());
 
@@ -3852,6 +3943,48 @@ mod tests {
         assert_eq!(cfg.layer_configs[1].rope_theta, 1_000_000.0);
         assert_eq!(cfg.layer_configs[1].rope_dims, 128);
         assert_eq!(cfg.layer_configs[1].sliding_window, None);
+    }
+
+    #[test]
+    fn gemma4_kv_shared_layer_forward_reuses_source_cache() {
+        let cfg = gemma4_kv_shared_config();
+        assert_eq!(cfg.layer_configs[1].kv_source_layer, Some(0));
+
+        let mut weights = empty_layer_weights(cfg.hidden_size);
+        weights.q_proj = Some(dense_weight(&[
+            (cfg.n_heads * cfg.head_dim) as i32,
+            cfg.hidden_size as i32,
+        ]));
+        weights.q_norm = Some(zeros(&[cfg.head_dim as i32], MlxDtype::Float32, None));
+        weights.o_proj = Some(dense_weight(&[
+            cfg.hidden_size as i32,
+            (cfg.n_heads * cfg.head_dim) as i32,
+        ]));
+        attach_dense_ffn(&mut weights, &cfg);
+
+        let mut cache = MlxKVCache::new(cfg.layer_count);
+        let source_k = zeros(
+            &[1, cfg.n_kv_heads as i32, 2, cfg.head_dim as i32],
+            MlxDtype::Float32,
+            None,
+        );
+        let source_v = zeros(
+            &[1, cfg.n_kv_heads as i32, 2, cfg.head_dim as i32],
+            MlxDtype::Float32,
+            None,
+        );
+        cache.append(0, source_k, source_v);
+
+        let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
+        let out = layer_forward(&cfg, &weights, &hidden, &mut cache, 1, 0, None, None);
+
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);
+        assert_eq!(
+            cache.collect_eval_refs().len(),
+            2,
+            "KV-shared consumer must not append its own K/V cache"
+        );
     }
 
     #[test]

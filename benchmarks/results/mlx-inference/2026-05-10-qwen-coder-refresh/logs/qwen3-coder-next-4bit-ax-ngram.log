@@ -1,0 +1,21 @@
+
+=== AX Engine MLX inference stack ===
+  model: .internal/models/Qwen3-Coder-Next-4bit
+  model_dir: .internal/models/Qwen3-Coder-Next-4bit
+  prompt_tokens: [128, 512]
+  generation_tokens: 128
+  repetitions: 3 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh/qwen3-coder-next-4bit-ax-ngram-prompts
+  [prompt] prompt_tokens=128 sha256=3b05f6bc7d91 path=benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh/qwen3-coder-next-4bit-ax-ngram-prompts/prompt-128-gen-128-3b05f6bc7d91.json
+  [prompt] prompt_tokens=512 sha256=e46d8899eb1d path=benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh/qwen3-coder-next-4bit-ax-ngram-prompts/prompt-512-gen-128-e46d8899eb1d.json
+  [reference] reused 4 mlx_lm/mlx_swift_lm rows from benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh/qwen3-coder-next-4bit-reference.json
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/Qwen3-Coder-Next-4bit --port 8091
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 2131, in <module>
+    main()
+    ~~~~^^
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 1959, in main
+    raise RuntimeError(f"ax-engine-server did not become ready:\n{stderr}")
+RuntimeError: ax-engine-server did not become ready:
+Error: MetalRuntime(Generic("weight loading failed: unsanitized checkpoint detected: linear_attention norm mean absolute value is 0.0113 (expected ~1.0 for sanitized mlx-community weights). This checkpoint appears to store norm weights as zero-centered deltas — a raw HuggingFace format that ax-engine does not transform on load. To fix:\n  pip install mlx-lm\n  mlx_lm.convert --hf-path <org/model> --mlx-path <dest> -q --q-bits 4\n  Or download a pre-sanitized artifact from mlx-community on Hugging Face."))
+
