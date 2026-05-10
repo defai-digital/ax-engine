@@ -151,6 +151,7 @@ const COMMON_EOT_TOKEN_STRINGS: &[&str] = &[
     "<|eot_id|>",
     "<|im_end|>",
     "<|end|>",
+    "<turn|>",
     "<end_of_turn>",
     "<|endoftext|>",
     "<EOT>",
@@ -3879,6 +3880,21 @@ mod tests {
         .expect("tokenizer should write");
 
         assert_eq!(resolve_terminal_token_ids(&artifacts), vec![106, 151645]);
+    }
+
+    #[test]
+    fn terminal_token_ids_resolve_common_gemma4_turn_end_from_tokenizer_json() {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "gemma4".to_string();
+        set_vocab_size(&mut manifest, 200_000);
+        let artifacts = write_artifacts(manifest);
+        fs::write(
+            artifacts.root_dir().join("tokenizer.json"),
+            r#"{"added_tokens":[{"id":105,"content":"<|turn>"},{"id":106,"content":"<turn|>"}]}"#,
+        )
+        .expect("tokenizer should write");
+
+        assert_eq!(resolve_terminal_token_ids(&artifacts), vec![106]);
     }
 
     fn qwen35_linear_manifest() -> NativeModelManifest {

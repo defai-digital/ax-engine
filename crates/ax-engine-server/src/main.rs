@@ -426,6 +426,7 @@ impl OpenAiStreamKind {
 enum ChatPromptTemplate {
     QwenChatMl,
     Llama3,
+    Gemma4,
     PlainRolePrefix,
 }
 
@@ -434,6 +435,8 @@ impl ChatPromptTemplate {
         let normalized = model_id.to_ascii_lowercase();
         if normalized.contains("qwen") {
             Self::QwenChatMl
+        } else if normalized.contains("gemma-4") || normalized.contains("gemma4") {
+            Self::Gemma4
         } else if normalized.contains("llama-3")
             || normalized.contains("llama3")
             || normalized.contains("llama_3")
@@ -1613,10 +1616,7 @@ fn build_openai_chat_request(
             request.repetition_context_size,
             request.seed,
         ),
-        stop_sequences: request
-            .stop
-            .map(OpenAiStopInput::into_vec)
-            .unwrap_or_default(),
+        stop_sequences: openai_chat_stop_sequences(state.model_id.as_ref(), request.stop),
         stream: request.stream,
         metadata: request.metadata,
     };
@@ -1645,10 +1645,7 @@ fn build_openai_mlx_lm_chat_request(
         request.repetition_context_size,
         request.seed,
     );
-    let stop_sequences = request
-        .stop
-        .map(OpenAiStopInput::into_vec)
-        .unwrap_or_default();
+    let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
 
     Ok(OpenAiBuiltMlxLmChatRequest {
         chat_request: MlxLmChatGenerateRequest {
@@ -1779,13 +1776,31 @@ fn qwen_chat_template_kwargs(model_id: &str) -> Option<serde_json::Value> {
         .then(|| json!({"enable_thinking": false}))
 }
 
+fn openai_chat_stop_sequences(model_id: &str, stop: Option<OpenAiStopInput>) -> Vec<String> {
+    match stop {
+        Some(stop) => stop.into_vec(),
+        None => default_chat_stop_sequences(ChatPromptTemplate::for_model_id(model_id)),
+    }
+}
+
+fn default_chat_stop_sequences(template: ChatPromptTemplate) -> Vec<String> {
+    match template {
+        ChatPromptTemplate::QwenChatMl => vec!["<|im_end|>".to_string()],
+        ChatPromptTemplate::Llama3 => vec!["<|eot_id|>".to_string()],
+        ChatPromptTemplate::Gemma4 => vec!["<turn|>".to_string()],
+        ChatPromptTemplate::PlainRolePrefix => Vec::new(),
+    }
+}
+
 fn render_openai_chat_prompt_with_template(
     template: ChatPromptTemplate,
     messages: &[OpenAiChatMessage],
 ) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
     let mut prompt = String::new();
-    if template == ChatPromptTemplate::Llama3 {
-        prompt.push_str("<|begin_of_text|>");
+    match template {
+        ChatPromptTemplate::Llama3 => prompt.push_str("<|begin_of_text|>"),
+        ChatPromptTemplate::Gemma4 => prompt.push_str("<bos>"),
+        ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
     }
     for message in messages {
         let role = normalize_openai_chat_role(&message.role)?;
@@ -1805,6 +1820,14 @@ fn render_openai_chat_prompt_with_template(
                 prompt.push_str(&content);
                 prompt.push_str("<|eot_id|>");
             }
+            ChatPromptTemplate::Gemma4 => {
+                let turn = if role == "assistant" { "model" } else { role };
+                prompt.push_str("<|turn>");
+                prompt.push_str(turn);
+                prompt.push('\n');
+                prompt.push_str(&content);
+                prompt.push_str("<turn|>\n");
+            }
             ChatPromptTemplate::PlainRolePrefix => {
                 prompt.push_str(role);
                 prompt.push_str(": ");
@@ -1818,6 +1841,7 @@ fn render_openai_chat_prompt_with_template(
         ChatPromptTemplate::Llama3 => {
             prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
         }
+        ChatPromptTemplate::Gemma4 => prompt.push_str("<|turn>model\n"),
         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
     }
     Ok(prompt)
@@ -2975,8 +2999,55 @@ sys.stdout.write(f"server::{prompt}")
             "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nBe concise.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nHello<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         );
         assert_eq!(
+            render_openai_chat_prompt("gemma4-e2b", &messages).expect("gemma4 prompt"),
+            "<bos><|turn>system\nBe concise.<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n"
+        );
+        assert_eq!(
             render_openai_chat_prompt("unknown-local-model", &messages).expect("plain prompt"),
             "system: Be concise.\nuser: Hello\nassistant:"
+        );
+    }
+
+    #[test]
+    fn openai_chat_stop_sequences_use_family_defaults_unless_user_supplies_stop() {
+        assert_eq!(
+            openai_chat_stop_sequences("qwen3_dense", None),
+            vec!["<|im_end|>".to_string()]
+        );
+        assert_eq!(
+            openai_chat_stop_sequences("Meta-Llama-3.1-8B-Instruct", None),
+            vec!["<|eot_id|>".to_string()]
+        );
+        assert_eq!(
+            openai_chat_stop_sequences("gemma4-e2b", None),
+            vec!["<turn|>".to_string()]
+        );
+        assert_eq!(
+            openai_chat_stop_sequences(
+                "gemma4-e2b",
+                Some(OpenAiStopInput::Multiple(vec!["custom".to_string()]))
+            ),
+            vec!["custom".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_chat_request_applies_gemma4_default_stop_to_native_generate() {
+        let state = test_app_state(|args| {
+            args.model_id = "gemma4-e2b".to_string();
+            args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+        });
+        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 8
+        }))
+        .expect("sample chat request should deserialize");
+
+        let built = build_openai_chat_request(&state, request).expect("chat request should build");
+
+        assert_eq!(
+            built.generate_request.stop_sequences,
+            vec!["<turn|>".to_string()]
         );
     }
 
