@@ -161,11 +161,7 @@ impl MlxLmStreamHandle {
                 }
             })?;
 
-            let choice = chunk.choices.into_iter().next().ok_or_else(|| {
-                MlxLmBackendError::MissingStreamChoice {
-                    endpoint: self.endpoint.clone(),
-                }
-            })?;
+            let choice = first_choice_for_stream(&self.endpoint, chunk.choices)?;
 
             return Ok(Some(MlxLmStreamChunkResult {
                 text: choice
@@ -351,6 +347,24 @@ where
     })
 }
 
+fn first_choice_for_stream<T>(endpoint: &str, choices: Vec<T>) -> Result<T, MlxLmBackendError> {
+    choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| MlxLmBackendError::MissingStreamChoice {
+            endpoint: endpoint.to_string(),
+        })
+}
+
+fn first_choice_for_completion<T>(endpoint: &str, choices: Vec<T>) -> Result<T, MlxLmBackendError> {
+    choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| MlxLmBackendError::MissingCompletionChoice {
+            endpoint: endpoint.to_string(),
+        })
+}
+
 pub fn run_blocking_generate(
     request_id: u64,
     runtime: &RuntimeReport,
@@ -423,11 +437,7 @@ fn run_mlx_lm_server_completion_generate(
 
     let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let response: MlxLmCompletionResponse = parse_mlx_lm_json_response(response, &endpoint)?;
-    let choice = response.choices.into_iter().next().ok_or_else(|| {
-        MlxLmBackendError::MissingCompletionChoice {
-            endpoint: endpoint.clone(),
-        }
-    })?;
+    let choice = first_choice_for_completion(&endpoint, response.choices)?;
 
     Ok(GenerateResponse {
         request_id,
@@ -481,11 +491,7 @@ fn run_mlx_lm_server_chat_completion_generate(
 
     let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let response: MlxLmChatCompletionResponse = parse_mlx_lm_json_response(response, &endpoint)?;
-    let choice = response.choices.into_iter().next().ok_or_else(|| {
-        MlxLmBackendError::MissingCompletionChoice {
-            endpoint: endpoint.clone(),
-        }
-    })?;
+    let choice = first_choice_for_completion(&endpoint, response.choices)?;
 
     Ok(GenerateResponse {
         request_id,
