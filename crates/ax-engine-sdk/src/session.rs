@@ -2234,13 +2234,7 @@ fn run_llama_cpp_generate_prevalidated(
     request_id: u64,
     request: &GenerateRequest,
 ) -> Result<GenerateResponse, EngineSessionError> {
-    let llama_backend =
-        config
-            .llama_backend
-            .as_ref()
-            .ok_or(EngineSessionError::MissingLlamaCppConfig {
-                selected_backend: config.resolved_backend.selected_backend,
-            })?;
+    let llama_backend = resolved_llama_cpp_backend(config)?;
 
     run_blocking_generate(request_id, runtime, llama_backend, request)
         .map_err(EngineSessionError::from)
@@ -2252,13 +2246,7 @@ fn start_llama_cpp_stream_prevalidated(
     _request_id: u64,
     request: &GenerateRequest,
 ) -> Result<(RuntimeReport, LlamaCppStreamHandle, SelectedBackend), EngineSessionError> {
-    let llama_backend =
-        config
-            .llama_backend
-            .as_ref()
-            .ok_or(EngineSessionError::MissingLlamaCppConfig {
-                selected_backend: config.resolved_backend.selected_backend,
-            })?;
+    let llama_backend = resolved_llama_cpp_backend(config)?;
 
     start_streaming_generate(runtime, llama_backend, request)
         .map(|stream| {
@@ -2269,6 +2257,17 @@ fn start_llama_cpp_stream_prevalidated(
             )
         })
         .map_err(EngineSessionError::from)
+}
+
+fn resolved_llama_cpp_backend(
+    config: &EngineSessionConfig,
+) -> Result<&LlamaCppConfig, EngineSessionError> {
+    config
+        .llama_backend
+        .as_ref()
+        .ok_or(EngineSessionError::MissingLlamaCppConfig {
+            selected_backend: config.resolved_backend.selected_backend,
+        })
 }
 
 fn resolve_native_model_report(
