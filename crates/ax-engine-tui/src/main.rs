@@ -67,22 +67,24 @@ impl Default for Options {
 
 fn main() -> Result<(), ManagerError> {
     let options = parse_args(env::args().skip(1))?;
-    let state = build_state(&options);
-    if let Some(path) = options.support_bundle.as_deref() {
-        let bundle_path = write_support_bundle(path, &state)
-            .map_err(|error| ManagerError::Message(error.to_string()))?;
-        println!("support_bundle={}", bundle_path.display());
-        return Ok(());
-    }
-    if options.phase2_check {
-        run_phase2_check(&options, &state)?;
-        return Ok(());
-    }
-    if options.check {
+    // Check and bundle modes need the full state synchronously before printing results.
+    if options.check || options.phase2_check || options.support_bundle.is_some() {
+        let state = build_state(&options);
+        if let Some(path) = options.support_bundle.as_deref() {
+            let bundle_path = write_support_bundle(path, &state)
+                .map_err(|error| ManagerError::Message(error.to_string()))?;
+            println!("support_bundle={}", bundle_path.display());
+            return Ok(());
+        }
+        if options.phase2_check {
+            run_phase2_check(&options, &state)?;
+            return Ok(());
+        }
         print_check_summary(&state);
         return Ok(());
     }
-    run_web_manager(state, &options)
+    // Web mode: bind and open browser immediately; run slow doctor checks in the background.
+    run_web_manager(&options)
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, ManagerError> {
@@ -425,10 +427,30 @@ impl WebRuntime {
 
 type SharedRuntime = Arc<Mutex<WebRuntime>>;
 
-fn run_web_manager(state: AppState, options: &Options) -> Result<(), ManagerError> {
+fn run_web_manager(options: &Options) -> Result<(), ManagerError> {
     let address = format!("{}:{}", options.web_host, options.web_port);
     let listener = TcpListener::bind(&address)?;
-    let runtime = Arc::new(Mutex::new(WebRuntime::new(state)));
+
+    // Start with empty state so the UI is reachable immediately.
+    let mut web_runtime = WebRuntime::new(AppState::empty());
+    web_runtime.status_message = "Checking environment…".to_string();
+    let runtime = Arc::new(Mutex::new(web_runtime));
+
+    // Run the slow doctor + option-driven state setup in the background.
+    {
+        let rt = Arc::clone(&runtime);
+        let opts = options.clone();
+        std::thread::spawn(move || {
+            let state = build_state(&opts);
+            if let Ok(mut guard) = rt.lock() {
+                guard.state = state;
+                if guard.status_message == "Checking environment…" {
+                    guard.status_message = "Ready.".to_string();
+                }
+            }
+        });
+    }
+
     let url = format!("http://{address}");
     println!("ax-engine-manager web={url}");
     println!("Press Ctrl+C to stop.");
@@ -1979,6 +2001,49 @@ mod tests {
         .expect("manual path should be accepted");
 
         assert_eq!(resolved, "/manual/model");
+    }
+
+    #[test]
+    fn server_launch_plan_uses_glm_preset() {
+        let plan = server_launch_plan("mlx-community/GLM-4.7-Flash-4bit", "/models/glm", 9090);
+
+        assert_eq!(plan.model_id, "glm4_moe_lite");
+        assert_eq!(
+            plan.args,
+            vec![
+                "--preset",
+                "glm4.7-flash-4bit",
+                "--mlx-model-artifacts-dir",
+                "/models/glm",
+                "--port",
+                "9090"
+            ]
+        );
+        assert!(!plan.args.iter().any(|arg| arg == "--model-id"));
+    }
+
+    #[test]
+    fn server_launch_plan_uses_gemma_preset() {
+        let plan = server_launch_plan("mlx-community/gemma-4-e2b-it-4bit", "/models/gemma", 8081);
+
+        assert_eq!(plan.model_id, "gemma4-e2b");
+        assert_eq!(plan.args[0], "--preset");
+        assert_eq!(plan.args[1], "gemma4-e2b");
+        assert!(!plan.args.iter().any(|arg| arg == "--model-id"));
+    }
+
+    #[test]
+    fn server_launch_plan_keeps_generic_mlx_model_id_for_qwen() {
+        let repo = "mlx-community/Qwen3-4B-4bit";
+        let plan = server_launch_plan(repo, "/models/qwen", 8080);
+
+        assert_eq!(plan.model_id, repo);
+        assert!(plan.args.iter().any(|arg| arg == "--mlx"));
+        assert!(
+            plan.args
+                .windows(2)
+                .any(|pair| pair == ["--model-id", repo])
+        );
     }
 
     #[test]
