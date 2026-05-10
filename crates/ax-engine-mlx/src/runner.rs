@@ -147,6 +147,16 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_REUSED_TOKENS: &str = "ax_mlx_prefix_ca
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_WARMUP_TOKENS: &str = "ax_mlx_prefix_cache_warmup_tokens";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_ENTRIES: &str = "ax_mlx_prefix_cache_entries";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BYTES_KIB: &str = "ax_mlx_prefix_cache_bytes_kib";
+const COMMON_EOT_TOKEN_STRINGS: &[&str] = &[
+    "<|eot_id|>",
+    "<|im_end|>",
+    "<|end|>",
+    "<end_of_turn>",
+    "<|endoftext|>",
+    "<EOT>",
+    "_<EOT>",
+    "<｜end▁of▁sentence｜>",
+];
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct MlxPrefixCacheKey {
@@ -3121,15 +3131,8 @@ fn resolve_terminal_token_ids(artifacts: &NativeModelArtifacts) -> Vec<u32> {
         collect_token_strings(value.get("pad_token"), &mut token_strings);
     }
 
-    if artifacts
-        .manifest()
-        .model_family
-        .to_ascii_lowercase()
-        .contains("qwen")
-    {
-        for token in ["<|im_end|>", "<|endoftext|>"] {
-            token_strings.insert(token.to_string());
-        }
+    for token in COMMON_EOT_TOKEN_STRINGS {
+        token_strings.insert((*token).to_string());
     }
 
     if !token_strings.is_empty()
@@ -3849,7 +3852,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_token_ids_resolve_qwen_chatml_eot_from_tokenizer_json() {
+    fn terminal_token_ids_resolve_common_chatml_eot_from_tokenizer_json() {
         let mut manifest = dense_manifest();
         manifest.model_family = "qwen3_dense".to_string();
         set_vocab_size(&mut manifest, 200_000);
@@ -3864,18 +3867,18 @@ mod tests {
     }
 
     #[test]
-    fn terminal_token_ids_do_not_infer_qwen_chatml_eot_for_other_families() {
+    fn terminal_token_ids_resolve_common_gemma_eot_for_other_families() {
         let mut manifest = dense_manifest();
         manifest.model_family = "gemma3".to_string();
         set_vocab_size(&mut manifest, 200_000);
         let artifacts = write_artifacts(manifest);
         fs::write(
             artifacts.root_dir().join("tokenizer.json"),
-            r#"{"added_tokens":[{"id":151645,"content":"<|im_end|>"}]}"#,
+            r#"{"added_tokens":[{"id":106,"content":"<end_of_turn>"},{"id":151645,"content":"<|im_end|>"}]}"#,
         )
         .expect("tokenizer should write");
 
-        assert_eq!(resolve_terminal_token_ids(&artifacts), Vec::<u32>::new());
+        assert_eq!(resolve_terminal_token_ids(&artifacts), vec![106, 151645]);
     }
 
     fn qwen35_linear_manifest() -> NativeModelManifest {
