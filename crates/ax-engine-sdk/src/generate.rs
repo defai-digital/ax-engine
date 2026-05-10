@@ -453,6 +453,33 @@ mod tests {
     use crate::request::{SessionRequestReport, SessionRequestState};
     use ax_engine_core::StopReason;
 
+    fn runtime_report(
+        selected_backend: SelectedBackend,
+        capabilities: CapabilityReport,
+        fallback_reason: Option<&str>,
+    ) -> RuntimeReport {
+        let (support_tier, resolution_policy) = match selected_backend {
+            SelectedBackend::Mlx => (SupportTier::MlxPreview, ResolutionPolicy::MlxOnly),
+            SelectedBackend::MlxLmDelegated => (
+                SupportTier::MlxLmDelegated,
+                ResolutionPolicy::AllowMlxLmDelegated,
+            ),
+            SelectedBackend::LlamaCpp => (SupportTier::LlamaCpp, ResolutionPolicy::AllowLlamaCpp),
+        };
+
+        RuntimeReport {
+            selected_backend,
+            support_tier,
+            resolution_policy,
+            capabilities,
+            fallback_reason: fallback_reason.map(|reason| reason.to_string()),
+            host: Default::default(),
+            metal_toolchain: Default::default(),
+            mlx_runtime: None,
+            mlx_model: None,
+        }
+    }
+
     #[test]
     fn sampling_effective_deterministic_inherits_session_default() {
         let sampling = GenerateSampling::default();
@@ -596,17 +623,7 @@ mod tests {
             },
             3,
             Some(2),
-            RuntimeReport {
-                selected_backend: SelectedBackend::Mlx,
-                support_tier: SupportTier::MlxPreview,
-                resolution_policy: ResolutionPolicy::MlxOnly,
-                capabilities: CapabilityReport::mlx_preview(),
-                fallback_reason: None,
-                host: Default::default(),
-                metal_toolchain: Default::default(),
-                mlx_runtime: None,
-                mlx_model: None,
-            },
+            runtime_report(SelectedBackend::Mlx, CapabilityReport::mlx_preview(), None),
         );
 
         assert_eq!(response.request_id, 9);
@@ -649,17 +666,7 @@ mod tests {
             },
             2,
             Some(2),
-            RuntimeReport {
-                selected_backend: SelectedBackend::Mlx,
-                support_tier: SupportTier::MlxPreview,
-                resolution_policy: ResolutionPolicy::MlxOnly,
-                capabilities: CapabilityReport::mlx_preview(),
-                fallback_reason: None,
-                host: Default::default(),
-                metal_toolchain: Default::default(),
-                mlx_runtime: None,
-                mlx_model: None,
-            },
+            runtime_report(SelectedBackend::Mlx, CapabilityReport::mlx_preview(), None),
         );
 
         assert_eq!(response.finish_reason, Some(GenerateFinishReason::Stop));
@@ -711,17 +718,7 @@ mod tests {
             step_count: 2,
             ttft_step: Some(1),
             route: GenerateRouteReport::default(),
-            runtime: RuntimeReport {
-                selected_backend: SelectedBackend::Mlx,
-                support_tier: SupportTier::MlxPreview,
-                resolution_policy: ResolutionPolicy::MlxOnly,
-                capabilities: CapabilityReport::mlx_preview(),
-                fallback_reason: None,
-                host: Default::default(),
-                metal_toolchain: Default::default(),
-                mlx_runtime: None,
-                mlx_model: None,
-            },
+            runtime: runtime_report(SelectedBackend::Mlx, CapabilityReport::mlx_preview(), None),
         };
 
         assert_eq!(response.known_prompt_token_count(), Some(3));
@@ -746,17 +743,11 @@ mod tests {
             step_count: 0,
             ttft_step: None,
             route: GenerateRouteReport::default(),
-            runtime: RuntimeReport {
-                selected_backend: SelectedBackend::LlamaCpp,
-                support_tier: SupportTier::LlamaCpp,
-                resolution_policy: ResolutionPolicy::AllowLlamaCpp,
-                capabilities: CapabilityReport::llama_cpp_baseline(),
-                fallback_reason: Some("MLX preview not ready".to_string()),
-                host: Default::default(),
-                metal_toolchain: Default::default(),
-                mlx_runtime: None,
-                mlx_model: None,
-            },
+            runtime: runtime_report(
+                SelectedBackend::LlamaCpp,
+                CapabilityReport::llama_cpp_baseline(),
+                Some("MLX preview not ready"),
+            ),
         };
 
         assert_eq!(response.known_prompt_token_count(), Some(7));
@@ -788,17 +779,11 @@ mod tests {
                 barrier_mode: None,
                 crossover_decisions: BTreeMap::new(),
             },
-            runtime: RuntimeReport {
-                selected_backend: SelectedBackend::LlamaCpp,
-                support_tier: SupportTier::LlamaCpp,
-                resolution_policy: ResolutionPolicy::AllowLlamaCpp,
-                capabilities: CapabilityReport::llama_cpp_cli_baseline(),
-                fallback_reason: Some("MLX preview not ready".to_string()),
-                host: Default::default(),
-                metal_toolchain: Default::default(),
-                mlx_runtime: None,
-                mlx_model: None,
-            },
+            runtime: runtime_report(
+                SelectedBackend::LlamaCpp,
+                CapabilityReport::llama_cpp_cli_baseline(),
+                Some("MLX preview not ready"),
+            ),
         };
 
         assert_eq!(response.known_prompt_token_count(), None);
@@ -830,17 +815,7 @@ mod tests {
                 barrier_mode: None,
                 crossover_decisions: BTreeMap::new(),
             },
-            runtime: RuntimeReport {
-                selected_backend: SelectedBackend::Mlx,
-                support_tier: SupportTier::MlxPreview,
-                resolution_policy: ResolutionPolicy::MlxOnly,
-                capabilities: CapabilityReport::mlx_preview(),
-                fallback_reason: None,
-                host: Default::default(),
-                metal_toolchain: Default::default(),
-                mlx_runtime: None,
-                mlx_model: None,
-            },
+            runtime: runtime_report(SelectedBackend::Mlx, CapabilityReport::mlx_preview(), None),
         };
 
         assert_eq!(response.known_prompt_token_count(), Some(3));
