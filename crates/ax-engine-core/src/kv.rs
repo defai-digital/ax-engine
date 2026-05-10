@@ -129,6 +129,7 @@ pub struct KvManager {
     block_tables: BTreeMap<RequestId, BlockTable>,
     prompt_tokens: BTreeMap<RequestId, Vec<u32>>,
     block_ref_counts: BTreeMap<BlockId, u32>,
+    live_prefix_requests_by_first_block: BTreeMap<CachedBlockKey, BTreeSet<RequestId>>,
     cached_blocks: BTreeMap<CachedBlockKey, CachedBlockEntry>,
     cached_children_by_parent: BTreeMap<CachedBlockKey, BTreeSet<CachedBlockKey>>,
     next_cache_tick: u64,
@@ -144,6 +145,7 @@ impl KvManager {
             block_tables: BTreeMap::new(),
             prompt_tokens: BTreeMap::new(),
             block_ref_counts: BTreeMap::new(),
+            live_prefix_requests_by_first_block: BTreeMap::new(),
             cached_blocks: BTreeMap::new(),
             cached_children_by_parent: BTreeMap::new(),
             next_cache_tick: 0,
@@ -209,11 +211,21 @@ impl KvManager {
         let target_block_keys =
             self.full_block_key_sequence(prompt_tokens, target_full_block_count)?;
         let mut best_match = PrefixLookupResult::miss(self.config.cache_group_id);
-        for (candidate_request_id, candidate_prompt_tokens) in &self.prompt_tokens {
+        let Some(candidate_request_ids) = self
+            .live_prefix_requests_by_first_block
+            .get(&target_block_keys[0])
+        else {
+            return Ok(best_match);
+        };
+
+        for candidate_request_id in candidate_request_ids {
             if *candidate_request_id == request_id {
                 continue;
             }
 
+            let Some(candidate_prompt_tokens) = self.prompt_tokens.get(candidate_request_id) else {
+                continue;
+            };
             let Some(candidate_table) = self.block_tables.get(candidate_request_id) else {
                 continue;
             };
@@ -280,6 +292,7 @@ impl KvManager {
         table.logical_token_count = lookup.matched_token_count;
         table.full_block_count = matched_block_count;
         table.partial_block_tokens = 0;
+        self.insert_live_prefix_index(request_id)?;
         Ok(())
     }
 
@@ -300,6 +313,8 @@ impl KvManager {
                 "prefix share rollback target no longer matches lookup",
             ));
         }
+
+        self.remove_live_prefix_index(request_id)?;
 
         for block_id in lookup.matched_blocks.iter().rev() {
             let ref_count = self.block_ref_counts.get_mut(block_id).ok_or(
@@ -429,20 +444,24 @@ impl KvManager {
             new_block_ids.push(block_id);
         }
 
-        let table = self
-            .block_tables
-            .get_mut(&request_id)
-            .ok_or(KvManagerError::UnknownRequest(request_id))?;
-        table.block_ids.extend(new_block_ids.iter().copied());
-        table.logical_token_count = table
-            .logical_token_count
-            .checked_add(scheduled_tokens)
-            .ok_or(KvManagerError::InvariantViolation(
-                "logical_token_count overflow",
-            ))?;
-        table.full_block_count = table.logical_token_count / self.config.block_size_tokens;
-        table.partial_block_tokens =
-            (table.logical_token_count % self.config.block_size_tokens) as u16;
+        self.remove_live_prefix_index(request_id)?;
+        {
+            let table = self
+                .block_tables
+                .get_mut(&request_id)
+                .ok_or(KvManagerError::UnknownRequest(request_id))?;
+            table.block_ids.extend(new_block_ids.iter().copied());
+            table.logical_token_count = table
+                .logical_token_count
+                .checked_add(scheduled_tokens)
+                .ok_or(KvManagerError::InvariantViolation(
+                    "logical_token_count overflow",
+                ))?;
+            table.full_block_count = table.logical_token_count / self.config.block_size_tokens;
+            table.partial_block_tokens =
+                (table.logical_token_count % self.config.block_size_tokens) as u16;
+        }
+        self.insert_live_prefix_index(request_id)?;
 
         Ok(AllocationPlan {
             request_id,
@@ -468,6 +487,7 @@ impl KvManager {
             .cloned()
             .ok_or(KvManagerError::UnknownRequest(request_id))?;
         self.promote_prompt_prefix_to_cache(&table, &prompt_tokens)?;
+        self.remove_live_prefix_index(request_id)?;
         let table = self
             .block_tables
             .remove(&request_id)
@@ -691,6 +711,65 @@ impl KvManager {
         self.block_ref_counts
             .get(&entry.block_id)
             .is_some_and(|ref_count| *ref_count == 1)
+    }
+
+    fn live_prefix_index_key(
+        &self,
+        table: &BlockTable,
+        prompt_tokens: &[u32],
+    ) -> Result<Option<CachedBlockKey>, KvManagerError> {
+        if table.full_block_count == 0
+            || prompt_full_block_count(prompt_tokens, self.config.block_size_tokens) == 0
+        {
+            return Ok(None);
+        }
+
+        Ok(self
+            .full_block_key_sequence(prompt_tokens, 1)?
+            .first()
+            .copied())
+    }
+
+    fn insert_live_prefix_index(&mut self, request_id: RequestId) -> Result<(), KvManagerError> {
+        let table = self
+            .block_tables
+            .get(&request_id)
+            .ok_or(KvManagerError::UnknownRequest(request_id))?;
+        let prompt_tokens = self
+            .prompt_tokens
+            .get(&request_id)
+            .ok_or(KvManagerError::UnknownRequest(request_id))?;
+        if let Some(first_block_key) = self.live_prefix_index_key(table, prompt_tokens)? {
+            self.live_prefix_requests_by_first_block
+                .entry(first_block_key)
+                .or_default()
+                .insert(request_id);
+        }
+        Ok(())
+    }
+
+    fn remove_live_prefix_index(&mut self, request_id: RequestId) -> Result<(), KvManagerError> {
+        let table = self
+            .block_tables
+            .get(&request_id)
+            .ok_or(KvManagerError::UnknownRequest(request_id))?;
+        let prompt_tokens = self
+            .prompt_tokens
+            .get(&request_id)
+            .ok_or(KvManagerError::UnknownRequest(request_id))?;
+        if let Some(first_block_key) = self.live_prefix_index_key(table, prompt_tokens)? {
+            if let Some(requests) = self
+                .live_prefix_requests_by_first_block
+                .get_mut(&first_block_key)
+            {
+                requests.remove(&request_id);
+                if requests.is_empty() {
+                    self.live_prefix_requests_by_first_block
+                        .remove(&first_block_key);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn evict_cached_block(&mut self, cache_key: &CachedBlockKey) -> Result<(), KvManagerError> {
@@ -1019,6 +1098,117 @@ mod tests {
         assert_eq!(lookup.matched_blocks, vec![BlockId(0), BlockId(1)]);
         assert_eq!(lookup.matched_token_count, 8);
         assert!(lookup.hit);
+    }
+
+    #[test]
+    fn live_prefix_lookup_uses_first_block_index() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager
+            .register_request(RequestId(2), vec![9, 10, 11, 12, 13, 14, 15, 16])
+            .unwrap();
+        manager
+            .register_request(RequestId(3), vec![1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+        manager.allocate(RequestId(2), 8).unwrap();
+
+        let shared_first_key = manager.full_block_key_sequence(&[1, 2, 3, 4], 1).unwrap()[0];
+        let unrelated_first_key = manager
+            .full_block_key_sequence(&[9, 10, 11, 12], 1)
+            .unwrap()[0];
+
+        assert_eq!(
+            manager
+                .live_prefix_requests_by_first_block
+                .get(&shared_first_key)
+                .cloned(),
+            Some(std::collections::BTreeSet::from([RequestId(1)]))
+        );
+        assert_eq!(
+            manager
+                .live_prefix_requests_by_first_block
+                .get(&unrelated_first_key)
+                .cloned(),
+            Some(std::collections::BTreeSet::from([RequestId(2)]))
+        );
+
+        let lookup = manager
+            .lookup_prefix(RequestId(3), &[1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+
+        assert_eq!(lookup.matched_blocks, vec![BlockId(0), BlockId(1)]);
+        assert_eq!(lookup.matched_token_count, 8);
+        assert!(lookup.hit);
+    }
+
+    #[test]
+    fn free_removes_request_from_live_prefix_index() {
+        let mut manager = make_manager(4, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4])
+            .unwrap();
+        manager.allocate(RequestId(1), 4).unwrap();
+
+        let first_key = manager.full_block_key_sequence(&[1, 2, 3, 4], 1).unwrap()[0];
+        assert_eq!(
+            manager
+                .live_prefix_requests_by_first_block
+                .get(&first_key)
+                .cloned(),
+            Some(std::collections::BTreeSet::from([RequestId(1)]))
+        );
+
+        manager.free(RequestId(1)).unwrap();
+
+        assert!(
+            !manager
+                .live_prefix_requests_by_first_block
+                .contains_key(&first_key)
+        );
+    }
+
+    #[test]
+    fn rollback_prefix_share_removes_target_from_live_prefix_index() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+        manager.share_prefix(RequestId(2), &lookup).unwrap();
+
+        let first_key = manager.full_block_key_sequence(&[1, 2, 3, 4], 1).unwrap()[0];
+        assert_eq!(
+            manager
+                .live_prefix_requests_by_first_block
+                .get(&first_key)
+                .cloned(),
+            Some(std::collections::BTreeSet::from([
+                RequestId(1),
+                RequestId(2)
+            ]))
+        );
+
+        manager
+            .rollback_prefix_share(RequestId(2), &lookup)
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .live_prefix_requests_by_first_block
+                .get(&first_key)
+                .cloned(),
+            Some(std::collections::BTreeSet::from([RequestId(1)]))
+        );
     }
 
     #[test]
