@@ -102,6 +102,17 @@ pub struct GenerateRouteReport {
 }
 
 impl GenerateRouteReport {
+    pub(crate) fn with_execution_plan(plan: impl Into<String>) -> Self {
+        Self {
+            execution_plan: Some(plan.into()),
+            attention_route: None,
+            kv_mode: None,
+            prefix_cache_path: None,
+            barrier_mode: None,
+            crossover_decisions: Default::default(),
+        }
+    }
+
     pub fn from_route(route: &RouteMetadata) -> Self {
         let crossover_decisions = route
             .crossover_decisions
