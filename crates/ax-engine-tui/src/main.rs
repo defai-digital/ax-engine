@@ -580,7 +580,116 @@ fn proxy_chat(
     };
     upstream.set_read_timeout(Some(Duration::from_secs(120)))?;
 
-    // POST to the native streaming endpoint.
+    // Native MLX streaming never populates delta_text in step events — tokens
+    // are generated but not decoded server-side.  Use the blocking endpoint
+    // when we own the model dir (always true for managed servers) so we can
+    // decode output_tokens ourselves via the Python tokenizer.
+    if let Some(ref dir) = model_dir {
+        return proxy_chat_blocking(client, &mut upstream, port, &native_body, dir);
+    }
+
+    // Fallback for external/unknown servers: forward to the native SSE endpoint.
+    proxy_chat_streaming(client, &mut upstream, port, &native_body)
+}
+
+/// POST to /v1/generate (blocking), decode output_tokens with Python, return as SSE.
+/// Used for native MLX servers where streaming never emits delta_text.
+fn proxy_chat_blocking(
+    client: &mut TcpStream,
+    upstream: &mut TcpStream,
+    port: u16,
+    native_body: &str,
+    model_dir: &str,
+) -> Result<(), ManagerError> {
+    let forward = format!(
+        "POST /v1/generate HTTP/1.1\r\n\
+         Host: 127.0.0.1:{port}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\r\n{}",
+        native_body.len(),
+        native_body
+    );
+    upstream.write_all(forward.as_bytes())?;
+
+    // Read the full response (headers + body).
+    let mut buf: Vec<u8> = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        match upstream.read(&mut tmp) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+        }
+        if buf.len() > 8 * 1024 * 1024 {
+            break;
+        }
+    }
+
+    let header_end = find_header_end(&buf).unwrap_or(0);
+    let header_str = String::from_utf8_lossy(&buf[..header_end]);
+    let status_ok = header_str
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .map(|s| s.starts_with('2'))
+        .unwrap_or(false);
+
+    let body_start = (header_end + 4).min(buf.len());
+    let body_bytes = &buf[body_start..];
+
+    if !status_ok {
+        let err_text = String::from_utf8_lossy(body_bytes);
+        let msg = serde_json::from_str::<serde_json::Value>(&err_text)
+            .ok()
+            .and_then(|v| {
+                let e = v.get("error")?;
+                if e.is_string() {
+                    e.as_str().map(str::to_string)
+                } else {
+                    e.get("message")?.as_str().map(str::to_string)
+                }
+            })
+            .unwrap_or_else(|| err_text.trim().to_string());
+        return write_json_error(client, "502 Bad Gateway", &msg);
+    }
+
+    // Extract output_tokens from the response JSON.
+    let output_tokens: Vec<u32> = serde_json::from_slice::<serde_json::Value>(body_bytes)
+        .ok()
+        .and_then(|v| v["output_tokens"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u32))
+        .collect();
+
+    // Decode token IDs to text using the model's tokenizer.
+    let text = decode_tokens(model_dir, &output_tokens)?;
+
+    // Write OpenAI-format SSE to the JS client.
+    client.write_all(
+        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
+    )?;
+    if !text.is_empty() {
+        let delta = format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":null,\"index\":0}}]}}\n\n",
+            serde_json::to_string(&text).unwrap_or_default()
+        );
+        let _ = client.write_all(delta.as_bytes());
+    }
+    let _ = client.write_all(
+        b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}]}\n\ndata: [DONE]\n\n",
+    );
+    client.flush().ok();
+    Ok(())
+}
+
+/// Fallback streaming path for external/OpenAI-compatible servers.
+fn proxy_chat_streaming(
+    client: &mut TcpStream,
+    upstream: &mut TcpStream,
+    port: u16,
+    native_body: &str,
+) -> Result<(), ManagerError> {
     let forward = format!(
         "POST /v1/generate/stream HTTP/1.1\r\n\
          Host: 127.0.0.1:{port}\r\n\
@@ -592,7 +701,6 @@ fn proxy_chat(
     );
     upstream.write_all(forward.as_bytes())?;
 
-    // Read upstream response headers.
     let mut buf: Vec<u8> = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {
@@ -624,7 +732,6 @@ fn proxy_chat(
         .unwrap_or(false);
 
     if !is_sse || !status_ok {
-        // Read the error body and forward as a clean JSON error.
         let body_start = (header_end + 4).min(buf.len());
         let mut err_bytes = buf[body_start..].to_vec();
         loop {
@@ -661,15 +768,11 @@ fn proxy_chat(
         return Ok(());
     }
 
-    // Upstream is native SSE. Write OpenAI-compatible SSE headers to client.
     client.write_all(
         b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
     )?;
-
-    // Stream native SSE → OpenAI SSE.
     let body_start = (header_end + 4).min(buf.len());
-    stream_native_as_openai(client, &mut upstream, &buf[body_start..])?;
-
+    stream_native_as_openai(client, upstream, &buf[body_start..])?;
     Ok(())
 }
 
@@ -896,6 +999,57 @@ fn tokenize_prompt(model_dir: &str, text: &str) -> Result<Vec<u32>, ManagerError
         model_dir.to_string(),
         text.to_string(),
     ])
+}
+
+/// Decode a list of token IDs to a UTF-8 string using the model's tokenizer.
+fn decode_tokens(model_dir: &str, tokens: &[u32]) -> Result<String, ManagerError> {
+    if tokens.is_empty() {
+        return Ok(String::new());
+    }
+    let ids_json = serde_json::to_string(tokens)?;
+    let script = r#"
+import json, sys
+model_dir = sys.argv[1]
+ids = json.loads(sys.argv[2])
+try:
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(
+        model_dir, local_files_only=True, trust_remote_code=True
+    )
+    text = tok.decode(ids, skip_special_tokens=True)
+except Exception:
+    from tokenizers import Tokenizer
+    t = Tokenizer.from_file(model_dir + '/tokenizer.json')
+    t.no_truncation()
+    text = t.decode(ids)
+print(text, end='')
+"#;
+    run_python_text_script(vec![
+        "-c".to_string(),
+        script.to_string(),
+        model_dir.to_string(),
+        ids_json,
+    ])
+}
+
+fn run_python_text_script(args: Vec<String>) -> Result<String, ManagerError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = Command::new("python3").args(args).output();
+        let _ = tx.send(result);
+    });
+    let output = rx
+        .recv_timeout(Duration::from_secs(15))
+        .map_err(|_| ManagerError::Message("decode timed out after 15s".to_string()))?
+        .map_err(|e| ManagerError::Message(format!("decode subprocess failed: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ManagerError::Message(format!(
+            "decode error: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn run_python_tokenizer_script(args: Vec<String>) -> Result<Vec<u32>, ManagerError> {
