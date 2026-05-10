@@ -44,6 +44,8 @@ pub const ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS: &str =
     "ax_mlx_kv_sliding_reclaimable_capacity_tokens";
 pub const ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB: &str =
     "ax_mlx_kv_sliding_reclaimable_capacity_kib";
+pub const ROUTE_KV_MODE_PAGED_METADATA: &str = "paged_metadata";
+pub const ROUTE_BARRIER_MODE_SERIAL: &str = "serial";
 pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS: &str = "ax_mlx_kv_linear_state_layers";
 pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB: &str = "ax_mlx_kv_linear_state_kib";
 pub const ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT: &str = "ax_mlx_kv_growth_count";

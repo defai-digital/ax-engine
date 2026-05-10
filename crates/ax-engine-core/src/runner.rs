@@ -39,6 +39,10 @@ pub struct RunnerRequestContext {
     pub top_p: f32,
     /// Top-k sampling candidate count. 0 disables top-k filtering.
     pub top_k: u32,
+    /// Penalty applied once to each recent token before sampling.
+    pub repetition_penalty: f32,
+    /// Number of most-recent prompt/generated tokens considered by repetition penalty.
+    pub repetition_context_size: Option<u32>,
 }
 
 impl RunnerInput {
@@ -387,6 +391,8 @@ mod tests {
                     temperature: 0.0,
                     top_p: 1.0,
                     top_k: 0,
+                    repetition_penalty: 1.0,
+                    repetition_context_size: None,
                 },
                 RunnerRequestContext {
                     request_id: RequestId(2),
@@ -398,6 +404,8 @@ mod tests {
                     temperature: 0.0,
                     top_p: 1.0,
                     top_k: 0,
+                    repetition_penalty: 1.0,
+                    repetition_context_size: None,
                 },
             ],
         });
@@ -524,6 +532,8 @@ mod tests {
                 temperature: 0.0,
                 top_p: 1.0,
                 top_k: 0,
+                repetition_penalty: 1.0,
+                repetition_context_size: None,
             }],
         });
 

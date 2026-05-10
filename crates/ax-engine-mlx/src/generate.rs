@@ -6,7 +6,7 @@ use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward,
     forward_lazy_single_with_turboquant_context, forward_with_turboquant_context,
 };
-use crate::sampling::{MlxSamplingParams, Xorshift64, sample_categorical};
+use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical};
 use crate::weights::ModelWeights;
 
 /// Default chunk size for chunked prefill, matching SwiftLM's default and the
@@ -22,9 +22,10 @@ pub fn chunked_prefill(
     prompt_tokens: &[u32],
     cache: &mut MlxKVCache,
     chunk_size: usize,
-    sampling: MlxSamplingParams,
+    sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
 ) -> u32 {
+    let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
 
@@ -37,10 +38,15 @@ pub fn chunked_prefill(
         offset = end;
 
         if offset == total {
-            let tok = if sampling.temperature > 0.0 {
+            let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
                 eval_with_kv_refs(&logits, cache);
                 let logits_data = logits.data_f32();
-                sample_categorical(logits_data, sampling, rng)
+                sample_categorical(
+                    logits_data,
+                    sampling,
+                    sampling_request.repetition_tokens,
+                    rng,
+                )
             } else {
                 // GPU argmax over [vocab] logits -> token ID.
                 let token_arr = argmax(&logits, None);
@@ -206,7 +212,10 @@ pub fn decode_step_with_turboquant_context(
     if sampling.temperature > 0.0 {
         eval_with_kv_refs(&logits, cache);
         let logits_data = logits.data_f32();
-        sample_categorical(logits_data, sampling, rng)
+        sample_categorical(logits_data, sampling, &[last_token], rng)
+    } else if sampling.uses_repetition_penalty() {
+        eval_with_kv_refs(&logits, cache);
+        sample_categorical(logits.data_f32(), sampling, &[last_token], rng)
     } else {
         // Deterministic argmax path: GPU argmax, no CPU data movement.
         let token_arr = argmax(&logits, None);

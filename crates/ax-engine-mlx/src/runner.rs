@@ -74,7 +74,7 @@ use crate::ngram_accel::{
     NgramDraftOutcome, NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
     ngram_accel_decode_step, single_decode_with_turboquant_context,
 };
-use crate::sampling::{MlxSamplingParams, Xorshift64};
+use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64};
 use crate::turboquant::{
     TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION, TurboQuantProductionRequirements,
     turboquant_support_report,
@@ -1506,6 +1506,7 @@ impl KvCacheTelemetry {
 struct RequestState {
     cache: MlxKVCache,
     prompt_prefix_tokens: Vec<u32>,
+    generated_tokens: Vec<u32>,
     cached_prefill_output_token: Option<u32>,
     ngram: NgramTable,
     /// Per-request PRNG for temperature sampling.  Seeded from request_id so
@@ -1562,6 +1563,7 @@ impl RequestState {
         Self {
             cache: MlxKVCache::new(num_layers),
             prompt_prefix_tokens: Vec::new(),
+            generated_tokens: Vec::new(),
             cached_prefill_output_token: None,
             ngram: NgramTable::new(),
             rng: Xorshift64::new(request_id.0),
@@ -1583,6 +1585,51 @@ impl RequestState {
     fn ngram_posterior_mean(&self) -> f32 {
         self.ngram_beta_alpha / (self.ngram_beta_alpha + self.ngram_beta_beta)
     }
+
+    fn repetition_history(
+        &self,
+        additional_prompt_tokens: &[u32],
+        sampling: MlxSamplingParams,
+    ) -> Vec<u32> {
+        if !sampling.uses_repetition_penalty() {
+            return Vec::new();
+        }
+
+        let total_len = self
+            .prompt_prefix_tokens
+            .len()
+            .saturating_add(additional_prompt_tokens.len())
+            .saturating_add(self.generated_tokens.len());
+        let keep_len = sampling
+            .repetition_context_size
+            .map(|size| size as usize)
+            .unwrap_or(total_len)
+            .min(total_len);
+        if keep_len == 0 {
+            return Vec::new();
+        }
+
+        let start = total_len - keep_len;
+        let mut history = Vec::with_capacity(keep_len);
+        let mut remaining_skip = start;
+        append_tail(
+            &mut history,
+            &self.prompt_prefix_tokens,
+            &mut remaining_skip,
+        );
+        append_tail(&mut history, additional_prompt_tokens, &mut remaining_skip);
+        append_tail(&mut history, &self.generated_tokens, &mut remaining_skip);
+        history
+    }
+}
+
+fn append_tail(target: &mut Vec<u32>, source: &[u32], skip: &mut usize) {
+    if *skip >= source.len() {
+        *skip -= source.len();
+        return;
+    }
+    target.extend_from_slice(&source[*skip..]);
+    *skip = 0;
 }
 
 /// ExecutionRunner backed by the MLX inference path.
@@ -1696,7 +1743,7 @@ impl MlxRunner {
                 &dummy_tokens,
                 &mut dummy_cache,
                 prefill_chunk,
-                MlxSamplingParams::greedy(),
+                MlxSamplingRequest::new(MlxSamplingParams::greedy(), &dummy_tokens),
                 &mut dummy_rng,
             );
         }
@@ -2031,7 +2078,10 @@ impl MlxRunner {
         let prefill_completes_prompt = prefill_item_completes_prompt(item, ctx);
         let is_prefill = matches!(item.mode, ExecutionMode::Prefill);
         let sampling = ctx
-            .map(|c| MlxSamplingParams::new(c.temperature, c.top_p, c.top_k))
+            .map(|c| {
+                MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
+                    .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
+            })
             .unwrap_or_default();
         let is_greedy = ctx
             .map(|c| c.deterministic_argmax_sampling)
@@ -2074,13 +2124,14 @@ impl MlxRunner {
         let sampled_token = match item.mode {
             ExecutionMode::Prefill => {
                 let prefill_started = Instant::now();
+                let repetition_history = state.repetition_history(token_ids, sampling);
                 let tok = chunked_prefill(
                     &self.cfg,
                     &self.weights,
                     token_ids,
                     &mut state.cache,
                     self.prefill_chunk,
-                    sampling,
+                    MlxSamplingRequest::new(sampling, &repetition_history),
                     &mut state.rng,
                 );
                 extend_prompt_prefix_tokens(&mut state, item, token_ids);
@@ -2153,6 +2204,9 @@ impl MlxRunner {
                 &self.terminal_token_ids,
             )
         });
+        if let Some(sampled_token) = sampled_token {
+            state.generated_tokens.push(sampled_token);
+        }
 
         // Re-insert state only if the request continues — lock held briefly.
         let ngram_acceleration = state.ngram_acceleration;
@@ -2345,17 +2399,25 @@ impl MlxRunner {
         } else {
             Xorshift64::new(request_id.0 ^ 0xA5A5_5A5A_F00D_CAFE)
         };
+        let repetition_history = if capture_prefill_output {
+            state.repetition_history(tokens, sampling)
+        } else {
+            Vec::new()
+        };
         let prefill_output_token = chunked_prefill(
             &self.cfg,
             &self.weights,
             tokens,
             &mut state.cache,
             self.prefill_chunk,
-            if capture_prefill_output {
-                sampling
-            } else {
-                MlxSamplingParams::greedy()
-            },
+            MlxSamplingRequest::new(
+                if capture_prefill_output {
+                    sampling
+                } else {
+                    MlxSamplingParams::greedy()
+                },
+                &repetition_history,
+            ),
             &mut warmup_rng,
         );
         if capture_prefill_output {
@@ -2578,6 +2640,10 @@ impl MlxRunner {
             return Some(self.run_single_decode(state, last_token, sampling));
         }
 
+        if sampling.uses_repetition_penalty() {
+            return Some(self.run_single_decode(state, last_token, sampling));
+        }
+
         if state.ngram_acceleration_disabled_for_request {
             return Some(self.run_request_disabled_decode(state, last_token, sampling, is_greedy));
         }
@@ -2641,6 +2707,7 @@ impl MlxRunner {
     ) -> Vec<u32> {
         let branch_started = Instant::now();
         let turboquant_context = self.turboquant_model_decode_context();
+        let repetition_history = state.repetition_history(&[], sampling);
         let result = single_decode_with_turboquant_context(
             &self.cfg,
             &self.weights,
@@ -2648,6 +2715,7 @@ impl MlxRunner {
             &mut state.ngram,
             last_token,
             sampling,
+            &repetition_history,
             &mut state.rng,
             turboquant_context.as_ref(),
         );
@@ -3702,6 +3770,8 @@ mod tests {
             temperature: 0.0,
             top_p: 1.0,
             top_k: 0,
+            repetition_penalty: 1.0,
+            repetition_context_size: None,
         };
         assert!(!prefill_item_completes_prompt(&item, Some(&first_context)));
 

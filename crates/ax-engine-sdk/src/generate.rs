@@ -252,6 +252,7 @@ impl GenerateSampling {
             top_p: self.top_p,
             top_k: self.top_k,
             repetition_penalty: self.repetition_penalty,
+            repetition_context_size: self.repetition_context_size,
             seed: self.seed,
             deterministic,
         }
