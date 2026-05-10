@@ -12,6 +12,16 @@ let package = Package(
             name: "AxEngine",
             path: "Sources/AxEngine"
         ),
+        .executableTarget(
+            name: "ChatExample",
+            dependencies: ["AxEngine"],
+            path: "Examples/Chat"
+        ),
+        .executableTarget(
+            name: "StreamExample",
+            dependencies: ["AxEngine"],
+            path: "Examples/Stream"
+        ),
         .testTarget(
             name: "AxEngineTests",
             dependencies: ["AxEngine"],

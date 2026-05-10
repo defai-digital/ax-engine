@@ -1,4 +1,4 @@
-use ax_engine_tui::app::{AppState, LoadState};
+use ax_engine_tui::app::{AppState, LoadState, MODEL_CATALOG};
 use ax_engine_tui::contracts::{
     WorkflowCommand, read_benchmark_artifact_json, read_doctor_json, scan_artifacts,
 };
@@ -1676,8 +1676,11 @@ fn start_download_job(runtime: &SharedRuntime, body: &str) -> Result<Value, Mana
     let repo_id = payload
         .get("repo_id")
         .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .ok_or_else(|| ManagerError::Message("repo_id is required".to_string()))?
         .to_string();
+    validate_catalog_repo_id(&repo_id)?;
 
     let (job_id, invocation) = {
         let mut runtime = runtime
@@ -1705,6 +1708,15 @@ fn start_download_job(runtime: &SharedRuntime, body: &str) -> Result<Value, Mana
     });
 
     Ok(json!({"id": job_id, "status": "running"}))
+}
+
+fn validate_catalog_repo_id(repo_id: &str) -> Result<(), ManagerError> {
+    if MODEL_CATALOG.iter().any(|entry| entry.repo_id == repo_id) {
+        return Ok(());
+    }
+    Err(ManagerError::Message(format!(
+        "unknown manager catalog repo_id: {repo_id}"
+    )))
 }
 
 fn download_job_json(runtime: &SharedRuntime, id: &str) -> Result<Value, ManagerError> {
@@ -1815,15 +1827,19 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
     let stderr_file = std::fs::File::create(&stderr_path).ok();
     let launch = server_launch_plan(&repo_id, &model_dir, port as u16, engine);
 
-    {
+    let stopped_existing = {
         let mut rt = runtime
             .lock()
             .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
-        stop_server_locked(&mut rt);
+        let stopped = stop_server_locked(&mut rt);
         rt.status_message = format!(
             "Launching server on port {port} with {}",
             short_model_label(&repo_id)
         );
+        stopped
+    };
+    if stopped_existing {
+        std::thread::sleep(Duration::from_millis(300));
     }
 
     let child = Command::new(&server_bin)
@@ -1875,13 +1891,22 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         let rt = Arc::clone(runtime);
         let port_u16 = port as u16;
         let repo = repo_id.clone();
+        let model_id = launch.model_id.clone();
+        let poll_model_dir = model_dir.clone();
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(Duration::from_millis(500));
                 if server_health_ok(port_u16) {
                     if let Ok(mut guard) = rt.lock()
                         && let Some(server) = guard.server.as_mut()
-                        && server.port == port_u16
+                        && server_matches_launch(
+                            server,
+                            port_u16,
+                            &repo,
+                            &model_id,
+                            &poll_model_dir,
+                            engine,
+                        )
                         && !server.ready
                     {
                         server.ready = true;
@@ -1897,7 +1922,18 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
                 let still_ours = rt
                     .lock()
                     .ok()
-                    .and_then(|g| g.server.as_ref().map(|s| s.port == port_u16))
+                    .and_then(|g| {
+                        g.server.as_ref().map(|server| {
+                            server_matches_launch(
+                                server,
+                                port_u16,
+                                &repo,
+                                &model_id,
+                                &poll_model_dir,
+                                engine,
+                            )
+                        })
+                    })
                     .unwrap_or(false);
                 if !still_ours {
                     break;
@@ -1907,6 +1943,21 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
     }
 
     Ok(response)
+}
+
+fn server_matches_launch(
+    server: &ManagedServer,
+    port: u16,
+    repo_id: &str,
+    model_id: &str,
+    model_dir: &str,
+    engine: ManagerEngine,
+) -> bool {
+    server.port == port
+        && server.repo_id == repo_id
+        && server.model_id == model_id
+        && server.model_dir == model_dir
+        && server.engine == engine
 }
 
 /// Run `ax-engine-bench generate-manifest <model_dir>` to produce model-manifest.json.
@@ -2074,19 +2125,6 @@ fn stop_server(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
 }
 
 fn restart_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerError> {
-    let stopped = {
-        let mut rt = runtime
-            .lock()
-            .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
-        let s = stop_server_locked(&mut rt);
-        rt.status_message = "Server restarting…".to_string();
-        s
-    };
-    // Brief pause OUTSIDE the lock so the OS can fully release the port
-    // without blocking concurrent state-poll or chat requests.
-    if stopped {
-        std::thread::sleep(Duration::from_millis(300));
-    }
     start_server(runtime, body)
 }
 
@@ -2968,6 +3006,31 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     }
 
     #[test]
+    fn start_download_rejects_non_catalog_repo_without_creating_job() {
+        let runtime = Arc::new(Mutex::new(WebRuntime::new(AppState::empty())));
+
+        let error = start_download_job(
+            &runtime,
+            r#"{"repo_id":"mlx-community/Not-In-Manager-Catalog"}"#,
+        )
+        .expect_err("non-catalog repo should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "unknown manager catalog repo_id: mlx-community/Not-In-Manager-Catalog"
+        );
+        let guard = runtime.lock().expect("runtime lock should work");
+        assert!(guard.download_jobs.is_empty());
+        assert_eq!(guard.next_job_id, 1);
+    }
+
+    #[test]
+    fn catalog_repo_validation_accepts_catalog_id() {
+        validate_catalog_repo_id("mlx-community/Qwen3-4B-4bit")
+            .expect("catalog repo should validate");
+    }
+
+    #[test]
     fn parses_ready_download_output() {
         let output = Output {
             status: std::process::ExitStatus::from_raw(0),
@@ -3095,6 +3158,91 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
             "old server should not be killed by validation failure"
         );
         stop_server_locked(&mut guard);
+    }
+
+    #[test]
+    fn restart_server_keeps_running_server_when_model_resolution_fails() {
+        let child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("fake server should start");
+        let runtime = Arc::new(Mutex::new(WebRuntime::new(AppState::empty())));
+        {
+            let mut guard = runtime.lock().expect("runtime lock should work");
+            guard.server = Some(ManagedServer {
+                child,
+                port: 32125,
+                repo_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+                model_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+                model_dir: "/models/qwen".to_string(),
+                engine: ManagerEngine::AxEngineNgram,
+                ready: true,
+                stderr_file: None,
+            });
+        }
+
+        let error = restart_server(
+            &runtime,
+            r#"{"repo_id":"local-test/missing-selected-model","model_dir":"/stale/model","manual_model_dir":false,"port":32126}"#,
+        )
+        .expect_err("missing selected model should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "selected model is not downloaded: local-test/missing-selected-model"
+        );
+        let mut guard = runtime.lock().expect("runtime lock should work");
+        let still_running = guard
+            .server
+            .as_mut()
+            .expect("old server should still be tracked")
+            .child
+            .try_wait()
+            .expect("fake server status should be readable")
+            .is_none();
+        assert!(
+            still_running,
+            "old server should not be killed by restart validation failure"
+        );
+        stop_server_locked(&mut guard);
+    }
+
+    #[test]
+    fn server_health_poll_identity_rejects_reused_port_with_different_model() {
+        let child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("fake server should start");
+        let mut server = ManagedServer {
+            child,
+            port: 32127,
+            repo_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+            model_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+            model_dir: "/models/qwen".to_string(),
+            engine: ManagerEngine::AxEngineNgram,
+            ready: false,
+            stderr_file: None,
+        };
+
+        assert!(server_matches_launch(
+            &server,
+            32127,
+            "mlx-community/Qwen3-4B-4bit",
+            "mlx-community/Qwen3-4B-4bit",
+            "/models/qwen",
+            ManagerEngine::AxEngineNgram,
+        ));
+        assert!(!server_matches_launch(
+            &server,
+            32127,
+            "mlx-community/Gemma-4-E2B-it-4bit",
+            "gemma4-e2b",
+            "/models/gemma",
+            ManagerEngine::AxEngineNgram,
+        ));
+
+        let _ = server.child.kill();
+        let _ = server.child.wait();
     }
 
     #[test]

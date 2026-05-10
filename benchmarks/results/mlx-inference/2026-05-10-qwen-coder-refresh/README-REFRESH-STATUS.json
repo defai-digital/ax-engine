@@ -4,10 +4,38 @@
   "model_scope": [
     "qwen3-coder-next-4bit"
   ],
-  "completed": [],
+  "completed": [
+    "qwen3-coder-next-4bit"
+  ],
+  "stage_results": [
+    {
+      "stage": "reference",
+      "status": "completed",
+      "artifact": "benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh/qwen3-coder-next-4bit-reference.json",
+      "rows": [
+        "mlx_lm prompt=128",
+        "mlx_lm prompt=512",
+        "mlx_swift_lm prompt=128",
+        "mlx_swift_lm prompt=512"
+      ]
+    }
+  ],
   "failed": [],
+  "blocked": [],
   "total": 1,
-  "note": "Qwen Coder Next single-model refresh started. Reference rows will be recorded first, then AX direct and AX n-gram will be attempted after a 10-second cooling pause.",
-  "last_completed": null,
-  "updated_at": "2026-05-10T00:00:00Z"
+  "note": "Qwen Coder Next refresh completed. Root cause of the earlier AX startup failure was a stale target/release/ax-engine-server binary; the benchmark harness now rebuilds before AX rows.",
+  "last_completed": "qwen3-coder-next-4bit",
+  "updated_at": "2026-05-10T14:22:04+00:00",
+  "resolved_blocked": [
+    {
+      "stage": "ax_direct_same_policy",
+      "status": "resolved_by_rebuilding_release_server",
+      "log": "benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh/logs/qwen3-coder-next-4bit.log"
+    },
+    {
+      "stage": "ax_default_ngram",
+      "status": "resolved_by_rebuilding_release_server",
+      "log": "benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh/logs/qwen3-coder-next-4bit.log"
+    }
+  ]
 }

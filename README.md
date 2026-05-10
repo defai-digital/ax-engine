@@ -224,35 +224,13 @@ files are present.
 
 ## Performance ([methodology](docs/PERFORMANCE.md))
 
-Qwen Coder Next single-model benchmark refresh is in progress on 2026-05-10.
-Artifact directory:
-`benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh/`. The run
-scope is `qwen3-coder-next-4bit` with `mlx_lm`, `mlx_swift_lm`, AX direct
-same-policy, and AX default n-gram at 128/512 prompt tokens and 128 generated
-tokens. Reference rows are running first; AX direct and AX n-gram will be
-attempted after a 10-second cooling pause. The table rows below remain from the
-last validated README state until the Qwen Coder refresh stage has a complete
-or explicitly blocked artifact.
+Full README generation-model benchmark refresh ran on 2026-05-10. Artifact directory: `benchmarks/results/mlx-inference/2026-05-10-full-readme-refresh/`. Fresh rows are now complete for all 14 README generation models with `mlx_lm`, `mlx_swift_lm`, AX direct same-policy, and AX default n-gram at 128/512 prompt tokens and 128 generated tokens. A follow-up Qwen Coder rerun fixed a stale `target/release/ax-engine-server` binary issue by rebuilding before AX rows; the latest Qwen Coder direct and n-gram rows use the fast linear-attention no-draft fallback artifact at `benchmarks/results/mlx-inference/2026-05-10-qwen-coder-fast-fallback/qwen3-coder-next-4bit.json`. Each model switch in the full run used a 10-second cooling pause; the Qwen Coder follow-up also used 10-second cooling pauses before AX direct and AX n-gram attempts.
 
-**Prefill** — Across the 13 fresh rows, AX engine prefill is +39–142% vs
-mlx_lm at 128 tokens. At 512 tokens the spread is wider: Gemma E4B 4-bit is
-5% behind mlx_lm, while Qwen 3.6 35B 8-bit is +94%. Coder Next is still shown
-from the 2026-05-09 seed artifact until a sanitized local checkpoint is
-available.
+**Prefill** — Across all 14 fresh models, AX engine prefill is -5% to +186% vs mlx_lm. At 128 tokens every row remains faster than mlx_lm; at 512 tokens Gemma E4B 4-bit is the weakest row, while Qwen 3.6 35B 8-bit is the strongest.
 
-**Decode** — Direct decode (n-gram disabled) spans −17% to +13% vs mlx_lm on
-the fresh rows. Qwen 3.6 35B variants remain positive in direct mode, while
-Gemma E2B and E4B quantizations are behind. With n-gram acceleration (the
-default), 25/26 fresh prompt rows are above mlx_lm, reaching +198%; the Qwen
-3.5 512-token row backs off to roughly parity when no draft candidates are
-available.
+**Decode** — Direct decode (n-gram disabled) spans -17% to +13% vs mlx_lm. Qwen 3.6 35B variants and Qwen Coder are positive in direct mode; several Gemma rows remain behind. With n-gram acceleration (the default), most rows are above mlx_lm, while Qwen 3.5 512-token and Qwen Coder rows are classified as no-draft fallback and should be treated as direct-path behavior for this prompt shape.
 
-**TTFT** — AX TTFT is lower than mlx_lm on 23/26 fresh prompt rows. The best
-fresh rows are the Qwen 3.6 35B variants (up to −59% at 128 tokens and −48% at
-512 tokens); the only fresh regression above +5% is Gemma E4B 4-bit at 512
-tokens. Source: `benchmarks/results/mlx-inference/2026-05-10-full-readme-refresh/`.
-mlx_lm TTFT is derived from reported prefill throughput; ax engine TTFT is
-measured directly from per-step runner timing.
+**TTFT** — AX TTFT is lower than mlx_lm on 25/28 fresh prompt rows. The strongest rows remain Qwen 3.6 35B; the visible regressions are limited to a few Gemma 512-token rows. Source: `benchmarks/results/mlx-inference/2026-05-10-full-readme-refresh/`. mlx_lm TTFT is derived from reported prefill throughput; ax engine TTFT is measured directly from per-step runner timing.
 
 Additional long-context validation artifacts are checked in separately from the
 short/mid-prompt public tables. On 2026-05-07, `mlx-community/Qwen3-4B-4bit`
@@ -270,71 +248,73 @@ evidence for long-context serving claims, not as proof of continuous batching.
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |
 |---|---|---:|---:|---:|---:|
 | Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 2,328.7 | 2,161.0 (-7.2%) | 3,238.0 (+39.0%) |
-|      |      | 512 | 7,376.7 | 5,825.5 (-21.0%) | 7,187.4 (-2.6%) |
+|       |       | 512 | 7,376.7 | 5,825.5 (-21.0%) | 7,187.4 (-2.6%) |
 | Gemma 4 E2B | 5-bit · group=64 · affine | 128 | 2,099.0 | 1,951.1 (-7.0%) | 3,252.9 (+55.0%) |
-|      |      | 512 | 6,982.7 | 5,392.1 (-22.8%) | 7,001.4 (+0.3%) |
+|       |       | 512 | 6,982.7 | 5,392.1 (-22.8%) | 7,001.4 (+0.3%) |
 | Gemma 4 E2B | 6-bit · group=64 · affine | 128 | 1,968.4 | 2,240.1 (+13.8%) | 2,947.7 (+49.8%) |
-|      |      | 512 | 6,919.9 | 6,315.8 (-8.7%) | 6,826.5 (-1.3%) |
+|       |       | 512 | 6,919.9 | 6,315.8 (-8.7%) | 6,826.5 (-1.3%) |
 | Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 1,977.8 | 2,225.3 (+12.5%) | 3,132.3 (+58.4%) |
-|      |      | 512 | 6,451.9 | 5,598.0 (-13.2%) | 6,839.6 (+6.0%) |
+|       |       | 512 | 6,451.9 | 5,598.0 (-13.2%) | 6,839.6 (+6.0%) |
 | Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 1,628.1 | 2,242.7 (+37.7%) | 2,435.5 (+49.6%) |
-|      |      | 512 | 4,339.4 | 4,307.5 (-0.7%) | 4,115.6 (-5.2%) |
+|       |       | 512 | 4,339.4 | 4,307.5 (-0.7%) | 4,115.6 (-5.2%) |
 | Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 651.5 | 1,274.3 (+95.6%) | 1,140.9 (+75.1%) |
-|      |      | 512 | 1,979.8 | 2,834.8 (+43.2%) | 2,716.7 (+37.2%) |
+|       |       | 512 | 1,979.8 | 2,834.8 (+43.2%) | 2,716.7 (+37.2%) |
 | Gemma 4 31B | 4-bit · group=64 · affine | 128 | 332.9 | 623.6 (+87.3%) | 522.5 (+56.9%) |
-|      |      | 512 | 590.0 | 783.4 (+32.8%) | 685.6 (+16.2%) |
+|       |       | 512 | 590.0 | 783.4 (+32.8%) | 685.6 (+16.2%) |
 | Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 1,122.4 | 1,913.1 (+70.4%) | 1,969.4 (+75.5%) |
-|      |      | 512 | 2,226.5 | 3,113.8 (+39.8%) | 2,740.9 (+23.1%) |
+|       |       | 512 | 2,226.5 | 3,113.8 (+39.8%) | 2,740.9 (+23.1%) |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine | 128 | 525.0 | 984.9 (+87.6%) | 1,032.5 (+96.7%) |
-|      |      | 512 | 1,606.4 | 2,532.3 (+57.6%) | 2,623.5 (+63.3%) |
+|       |       | 512 | 1,606.4 | 2,532.3 (+57.6%) | 2,623.5 (+63.3%) |
 | Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine | 128 | 452.2 | 826.9 (+82.8%) | 1,007.4 (+122.8%) |
-|      |      | 512 | 1,497.7 | 2,453.7 (+63.8%) | 2,571.7 (+71.7%) |
+|       |       | 512 | 1,497.7 | 2,453.7 (+63.8%) | 2,571.7 (+71.7%) |
 | Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine | 128 | 416.7 | 758.0 (+81.9%) | 964.3 (+131.4%) |
-|      |      | 512 | 1,378.7 | 2,393.3 (+73.6%) | 2,445.8 (+77.4%) |
+|       |       | 512 | 1,378.7 | 2,393.3 (+73.6%) | 2,445.8 (+77.4%) |
 | Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 400.7 | 644.4 (+60.8%) | 968.0 (+141.6%) |
-|      |      | 512 | 1,261.9 | 2,321.8 (+84.0%) | 2,449.0 (+94.1%) |
-| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 267.1 | 384.9 (+44.1%) | 714.4 (+167.4%) |
-|      |      | 512 | 815.4 | 1,417.0 (+73.8%) | 1,665.1 (+104.2%) |
+|       |       | 512 | 1,261.9 | 2,321.8 (+84.0%) | 2,449.0 (+94.1%) |
+| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 267.1 | 428.2 (+60.3%) | 814.0 (+204.8%) |
+|       |       | 512 | 862.5 | 1,534.7 (+77.9%) | 1,908.5 (+121.3%) |
 | GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 495.2 | 997.9 (+101.5%) | 869.7 (+75.6%) |
-|      |      | 512 | 1,600.7 | 2,518.8 (+57.4%) | 2,384.3 (+49.0%) |
+|       |       | 512 | 1,600.7 | 2,518.8 (+57.4%) | 2,384.3 (+49.0%) |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
 Higher is better. The direct AX column is the same-policy baseline with n-gram acceleration
 disabled. The n-gram column is the default AX decode policy and the row to use for
-user-facing throughput expectations. For Qwen 3.5 at 512 prompt tokens, the default
-n-gram row can fall back below direct mode when no draft candidates are available.
+user-facing throughput expectations. For Qwen 3.5 at 512 prompt tokens and Qwen
+Coder Next in this refresh, the default n-gram row can still report no-draft
+fallback when no candidates are available; Qwen Coder now falls back quickly to
+direct-pipeline behavior instead of paying a full linear-attention probe window.
 
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax direct baseline | ax default n-gram |
 |---|---|---:|---:|---:|---:|---:|
 | Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 204.9 | 187.9 (-8.3%) | 175.7 (-14.2%) | **526.6 (+157.0%)** |
-|      |      | 512 | 196.7 | 187.3 (-4.8%) | 162.9 (-17.2%) | **526.9 (+167.8%)** |
+|       |       | 512 | 196.7 | 187.3 (-4.8%) | 162.9 (-17.2%) | **526.9 (+167.8%)** |
 | Gemma 4 E2B | 5-bit · group=64 · affine | 128 | 183.6 | 170.5 (-7.1%) | 164.0 (-10.7%) | **423.9 (+131.0%)** |
-|      |      | 512 | 174.3 | 170.2 (-2.4%) | 154.2 (-11.5%) | **404.7 (+132.2%)** |
+|       |       | 512 | 174.3 | 170.2 (-2.4%) | 154.2 (-11.5%) | **404.7 (+132.2%)** |
 | Gemma 4 E2B | 6-bit · group=64 · affine | 128 | 153.0 | 149.4 (-2.3%) | 138.4 (-9.6%) | **392.5 (+156.6%)** |
-|      |      | 512 | 158.8 | 148.9 (-6.2%) | 135.8 (-14.5%) | **394.1 (+148.2%)** |
+|       |       | 512 | 158.8 | 148.9 (-6.2%) | 135.8 (-14.5%) | **394.1 (+148.2%)** |
 | Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 141.2 | 135.8 (-3.8%) | 130.2 (-7.8%) | **420.2 (+197.6%)** |
-|      |      | 512 | 140.5 | 131.1 (-6.7%) | 125.3 (-10.8%) | **406.7 (+189.5%)** |
+|       |       | 512 | 140.5 | 131.1 (-6.7%) | 125.3 (-10.8%) | **406.7 (+189.5%)** |
 | Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 127.2 | 122.4 (-3.8%) | 112.8 (-11.3%) | **325.8 (+156.2%)** |
-|      |      | 512 | 123.7 | 119.5 (-3.4%) | 109.5 (-11.5%) | **325.4 (+163.1%)** |
+|       |       | 512 | 123.7 | 119.5 (-3.4%) | 109.5 (-11.5%) | **325.4 (+163.1%)** |
 | Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 119.7 | 107.9 (-9.8%) | 108.1 (-9.7%) | **250.7 (+109.4%)** |
-|      |      | 512 | 112.7 | 104.3 (-7.4%) | 107.0 (-5.1%) | **209.2 (+85.6%)** |
+|       |       | 512 | 112.7 | 104.3 (-7.4%) | 107.0 (-5.1%) | **209.2 (+85.6%)** |
 | Gemma 4 31B | 4-bit · group=64 · affine | 128 | 24.6 | 26.5 (+7.8%) | 24.3 (-1.1%) | **46.3 (+88.2%)** |
-|      |      | 512 | 25.6 | 25.5 (-0.5%) | 25.1 (-2.1%) | **57.8 (+126.1%)** |
+|       |       | 512 | 25.6 | 25.5 (-0.5%) | 25.1 (-2.1%) | **57.8 (+126.1%)** |
 | Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 91.0 | 90.9 (-0.1%) | 93.8 (+3.1%) | **196.0 (+115.3%)** |
-|      |      | 512 | 91.7 | 89.9 (-2.0%) | 94.3 (+2.8%) | 91.5 (-0.3%) |
+|       |       | 512 | 91.7 | 89.9 (-2.0%) | 94.3 (+2.8%) | 91.5 (-0.3%) |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine | 128 | 109.8 | 113.5 (+3.3%) | 119.6 (+8.9%) | **271.9 (+147.6%)** |
-|      |      | 512 | 112.8 | 110.9 (-1.7%) | 118.4 (+5.0%) | **271.1 (+140.4%)** |
+|       |       | 512 | 112.8 | 110.9 (-1.7%) | 118.4 (+5.0%) | **271.1 (+140.4%)** |
 | Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine | 128 | 116.9 | 116.1 (-0.6%) | 131.9 (+12.9%) | **277.2 (+137.2%)** |
-|      |      | 512 | 121.0 | 115.7 (-4.4%) | 130.8 (+8.0%) | **265.6 (+119.4%)** |
+|       |       | 512 | 121.0 | 115.7 (-4.4%) | 130.8 (+8.0%) | **265.6 (+119.4%)** |
 | Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine | 128 | 106.5 | 104.2 (-2.2%) | 117.9 (+10.6%) | **246.1 (+131.0%)** |
-|      |      | 512 | 106.4 | 101.9 (-4.2%) | 116.7 (+9.8%) | **240.9 (+126.5%)** |
+|       |       | 512 | 106.4 | 101.9 (-4.2%) | 116.7 (+9.8%) | **240.9 (+126.5%)** |
 | Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 99.6 | 99.4 (-0.2%) | 106.9 (+7.3%) | **253.5 (+154.5%)** |
-|      |      | 512 | 101.1 | 97.7 (-3.4%) | 108.0 (+6.8%) | **255.6 (+152.8%)** |
-| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 92.2 | 89.4 (-3.0%) | 89.3 (-3.1%) | **223.2 (+142.2%)** |
-|      |      | 512 | 90.4 | 89.2 (-1.3%) | 89.2 (-1.3%) | **220.8 (+144.3%)** |
+|       |       | 512 | 101.1 | 97.7 (-3.4%) | 108.0 (+6.8%) | **255.6 (+152.8%)** |
+| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 89.5 | 85.5 (-4.5%) | **98.2 (+9.7%)** | **96.6 (+7.9%)** |
+|       |       | 512 | 90.0 | 84.2 (-6.4%) | **98.0 (+9.0%)** | **96.5 (+7.2%)** |
 | GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 105.3 | 98.8 (-6.2%) | 104.4 (-0.8%) | **279.8 (+165.8%)** |
-|      |      | 512 | 100.3 | 96.0 (-4.4%) | 103.9 (+3.5%) | **273.3 (+172.3%)** |
+|       |       | 512 | 100.3 | 96.0 (-4.4%) | 103.9 (+3.5%) | **273.3 (+172.3%)** |
 
 ### Time to first token (ms) — generation=128 tokens, temp=0
 
@@ -346,33 +326,33 @@ measured from per-step runner timing in the SSE event stream. Source:
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |
 |---|---|---:|---:|---:|---:|
 | Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 55.0 | 59.2 (+7.8%) | **39.5 (-28.1%)** |
-|      |      | 512 | 69.4 | 87.9 (+26.6%) | 71.2 (+2.6%) |
+|       |       | 512 | 69.4 | 87.9 (+26.6%) | 71.2 (+2.6%) |
 | Gemma 4 E2B | 5-bit · group=64 · affine | 128 | 61.0 | 65.6 (+7.6%) | **39.3 (-35.5%)** |
-|      |      | 512 | 73.3 | 95.0 (+29.5%) | **73.1 (-0.3%)** |
+|       |       | 512 | 73.3 | 95.0 (+29.5%) | **73.1 (-0.3%)** |
 | Gemma 4 E2B | 6-bit · group=64 · affine | 128 | 65.0 | 57.1 (-12.1%) | **43.4 (-33.2%)** |
-|      |      | 512 | 74.0 | 81.1 (+9.6%) | 75.0 (+1.4%) |
+|       |       | 512 | 74.0 | 81.1 (+9.6%) | 75.0 (+1.4%) |
 | Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 64.7 | 57.5 (-11.1%) | **40.9 (-36.9%)** |
-|      |      | 512 | 79.4 | 91.5 (+15.3%) | **74.9 (-5.7%)** |
+|       |       | 512 | 79.4 | 91.5 (+15.3%) | **74.9 (-5.7%)** |
 | Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 78.6 | 57.1 (-27.4%) | **52.6 (-33.2%)** |
-|      |      | 512 | 118.0 | 118.9 (+0.7%) | 124.4 (+5.4%) |
+|       |       | 512 | 118.0 | 118.9 (+0.7%) | 124.4 (+5.4%) |
 | Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 196.5 | 100.4 (-48.9%) | **112.2 (-42.9%)** |
-|      |      | 512 | 258.6 | 180.6 (-30.2%) | **188.5 (-27.1%)** |
+|       |       | 512 | 258.6 | 180.6 (-30.2%) | **188.5 (-27.1%)** |
 | Gemma 4 31B | 4-bit · group=64 · affine | 128 | 384.5 | 205.3 (-46.6%) | **245.0 (-36.3%)** |
-|      |      | 512 | 867.7 | 653.6 (-24.7%) | **746.7 (-13.9%)** |
+|       |       | 512 | 867.7 | 653.6 (-24.7%) | **746.7 (-13.9%)** |
 | Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 114.0 | 66.9 (-41.3%) | **65.0 (-43.0%)** |
-|      |      | 512 | 230.0 | 164.4 (-28.5%) | **186.8 (-18.8%)** |
+|       |       | 512 | 230.0 | 164.4 (-28.5%) | **186.8 (-18.8%)** |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine | 128 | 243.8 | 130.0 (-46.7%) | **124.0 (-49.1%)** |
-|      |      | 512 | 318.7 | 202.2 (-36.6%) | **195.2 (-38.8%)** |
+|       |       | 512 | 318.7 | 202.2 (-36.6%) | **195.2 (-38.8%)** |
 | Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine | 128 | 283.0 | 154.8 (-45.3%) | **127.1 (-55.1%)** |
-|      |      | 512 | 341.8 | 208.7 (-39.0%) | **199.1 (-41.8%)** |
+|       |       | 512 | 341.8 | 208.7 (-39.0%) | **199.1 (-41.8%)** |
 | Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine | 128 | 307.1 | 168.9 (-45.0%) | **132.7 (-56.8%)** |
-|      |      | 512 | 371.4 | 213.9 (-42.4%) | **209.3 (-43.6%)** |
+|       |       | 512 | 371.4 | 213.9 (-42.4%) | **209.3 (-43.6%)** |
 | Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 319.5 | 198.6 (-37.8%) | **132.2 (-58.6%)** |
-|      |      | 512 | 405.7 | 220.5 (-45.6%) | **209.1 (-48.5%)** |
-| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 479.2 | 332.6 (-30.6%) | **179.2 (-62.6%)** |
-|      |      | 512 | 627.9 | 361.3 (-42.5%) | **307.5 (-51.0%)** |
+|       |       | 512 | 405.7 | 220.5 (-45.6%) | **209.1 (-48.5%)** |
+| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 479.2 | 298.9 (-37.6%) | **157.2 (-67.2%)** |
+|       |       | 512 | 593.6 | 333.6 (-43.8%) | **268.3 (-54.8%)** |
 | GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 258.5 | 128.3 (-50.4%) | **147.2 (-43.1%)** |
-|      |      | 512 | 319.9 | 203.3 (-36.4%) | **214.7 (-32.9%)** |
+|       |       | 512 | 319.9 | 203.3 (-36.4%) | **214.7 (-32.9%)** |
 
 ### Embedding throughput (tok/s) — runtime apples-to-apples
 

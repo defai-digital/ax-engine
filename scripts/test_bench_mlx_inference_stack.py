@@ -121,6 +121,29 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertFalse(ready)
         urlopen.assert_not_called()
 
+    def test_ensure_ax_engine_server_binary_builds_before_checking_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "ax-engine-server"
+            binary.write_text("#!/bin/sh\n")
+            with (
+                patch.object(bench, "AX_ENGINE_SERVER", binary),
+                patch.object(bench.subprocess, "run") as run,
+            ):
+                bench.ensure_ax_engine_server_binary(build=True)
+
+        run.assert_called_once_with(
+            ["cargo", "build", "-p", "ax-engine-server", "--release"],
+            cwd=bench.REPO_ROOT,
+            check=True,
+        )
+
+    def test_ensure_ax_engine_server_binary_reports_missing_without_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "missing-server"
+            with patch.object(bench, "AX_ENGINE_SERVER", binary):
+                with self.assertRaisesRegex(RuntimeError, "ax-engine-server not found"):
+                    bench.ensure_ax_engine_server_binary(build=False)
+
     def test_prompt_artifact_records_hash_and_validates_inline_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prompt = bench.write_prompt_tokens(

@@ -1,0 +1,98 @@
+{
+  "schema_version": "ax.mlx_inference_stack_partial_refresh.v2",
+  "model": "qwen3-coder-next-4bit",
+  "model_dir": ".internal/models/Qwen3-Coder-Next-4bit",
+  "artifact_dir": "benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh",
+  "prompt_tokens": [
+    128,
+    512
+  ],
+  "generation_tokens": 128,
+  "repetitions": 3,
+  "root_cause": "The earlier AX startup failure used a stale target/release/ax-engine-server binary that still hard-failed unsanitized Qwen3-Next norm weights. Rebuilding picked up the current loader, which auto-sanitizes linear-attention norm deltas on load.",
+  "fix": "scripts/bench_mlx_inference_stack.py now runs cargo build -p ax-engine-server --release before AX rows by default, with --no-build-ax-engine for externally managed binaries.",
+  "cooling_pauses": [
+    {
+      "from": "reference",
+      "to": "ax_direct_same_policy",
+      "seconds": 10
+    },
+    {
+      "from": "ax_direct_same_policy",
+      "to": "ax_default_ngram",
+      "seconds": 10
+    }
+  ],
+  "complete_artifact": "benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh/qwen3-coder-next-4bit.json",
+  "rows": [
+    {
+      "engine": "mlx_lm",
+      "prompt_tokens": 128,
+      "prefill_tok_s_median": 267.113,
+      "decode_tok_s_median": 89.519,
+      "ttft_ms_median": 479.1979424438346,
+      "ax_decode_claim_status": null
+    },
+    {
+      "engine": "mlx_lm",
+      "prompt_tokens": 512,
+      "prefill_tok_s_median": 862.533,
+      "decode_tok_s_median": 89.96,
+      "ttft_ms_median": 593.6004767353828,
+      "ax_decode_claim_status": null
+    },
+    {
+      "engine": "mlx_swift_lm",
+      "prompt_tokens": 128,
+      "prefill_tok_s_median": 428.2168750039881,
+      "decode_tok_s_median": 85.53416294336309,
+      "ttft_ms_median": 298.91395568847656,
+      "ax_decode_claim_status": null
+    },
+    {
+      "engine": "mlx_swift_lm",
+      "prompt_tokens": 512,
+      "prefill_tok_s_median": 1534.7028785456553,
+      "decode_tok_s_median": 84.24677466760423,
+      "ttft_ms_median": 333.6150646209717,
+      "ax_decode_claim_status": null
+    },
+    {
+      "engine": "ax_engine_mlx",
+      "prompt_tokens": 128,
+      "prefill_tok_s_median": 763.3360169365179,
+      "decode_tok_s_median": 86.42907065610552,
+      "ttft_ms_median": 167.685,
+      "ax_decode_claim_status": "direct_same_policy_baseline"
+    },
+    {
+      "engine": "ax_engine_mlx",
+      "prompt_tokens": 512,
+      "prefill_tok_s_median": 1744.302909102059,
+      "decode_tok_s_median": 82.6932205232853,
+      "ttft_ms_median": 293.527,
+      "ax_decode_claim_status": "direct_same_policy_baseline"
+    },
+    {
+      "engine": "ax_engine_mlx_ngram_accel",
+      "prompt_tokens": 128,
+      "prefill_tok_s_median": 824.1103792839252,
+      "decode_tok_s_median": 84.54711704316763,
+      "ttft_ms_median": 155.31900000000002,
+      "ax_decode_claim_status": "ngram_no_draft_direct_fallback"
+    },
+    {
+      "engine": "ax_engine_mlx_ngram_accel",
+      "prompt_tokens": 512,
+      "prefill_tok_s_median": 1897.8637912053289,
+      "decode_tok_s_median": 83.27732332256848,
+      "ttft_ms_median": 269.777,
+      "ax_decode_claim_status": "ngram_no_draft_direct_fallback"
+    }
+  ],
+  "mode_outcome": {
+    "ax_direct_same_policy": "completed",
+    "ax_default_ngram": "completed_no_draft_direct_fallback"
+  },
+  "notes": "AX default n-gram completed but the claim status is ngram_no_draft_direct_fallback for both prompt lengths, so treat those rows as default-mode fallback behavior rather than effective n-gram acceleration."
+}
