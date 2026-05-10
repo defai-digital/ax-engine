@@ -883,6 +883,7 @@ async function sendMessage() {
   $('chat-send').textContent = '···';
 
   let accumulated = '';
+  let streamError = false;
 
   try {
     const msgsToSend = [
@@ -930,10 +931,15 @@ async function sendMessage() {
     }
   } catch (err) {
     accumulated = `[error: ${err.message}]`;
+    streamError = true;
   }
 
   finalizeBody(bodyEl, accumulated || '(empty response)');
-  history.push({ role: 'assistant', content: accumulated });
+  // Only add real content to history — empty or error responses would appear
+  // as the assistant's previous turn and confuse the model on the next request.
+  if (accumulated && !streamError) {
+    history.push({ role: 'assistant', content: accumulated });
+  }
   app.streaming = false;
   $('chat-send').disabled = false;
   $('chat-send').textContent = 'SEND';

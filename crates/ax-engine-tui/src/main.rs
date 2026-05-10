@@ -511,8 +511,6 @@ fn proxy_chat(
     runtime: &SharedRuntime,
     body: &str,
 ) -> Result<(), ManagerError> {
-    use std::io::Write;
-
     let (port, model_dir, managed_model_id) = {
         let mut rt = runtime
             .lock()
@@ -547,14 +545,7 @@ fn proxy_chat(
     let native_body = match openai_to_generate_request(body, &model_id, model_dir.as_deref()) {
         Ok(b) => b,
         Err(e) => {
-            let err = format!(r#"{{"error":"bad request: {e}"}}"#);
-            let resp = format!(
-                "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                err.len(),
-                err
-            );
-            client.write_all(resp.as_bytes())?;
-            return Ok(());
+            return write_json_error(client, "400 Bad Request", &format!("bad request: {e}"));
         }
     };
 
@@ -579,7 +570,7 @@ fn proxy_chat(
     // when we own the model dir (always true for managed servers) so we can
     // decode output_tokens ourselves via the Python tokenizer.
     if let Some(ref dir) = model_dir {
-        return proxy_chat_blocking(client, &mut upstream, port, &native_body, dir);
+        return proxy_chat_blocking(client, &mut upstream, port, &native_body, &model_id, dir);
     }
 
     // Fallback for external/unknown servers: forward to the native SSE endpoint.
@@ -593,6 +584,7 @@ fn proxy_chat_blocking(
     upstream: &mut TcpStream,
     port: u16,
     native_body: &str,
+    model_id: &str,
     model_dir: &str,
 ) -> Result<(), ManagerError> {
     let forward = format!(
@@ -658,7 +650,7 @@ fn proxy_chat_blocking(
 
     // Decode token IDs to text using the model's tokenizer.
     let raw_text = decode_tokens(model_dir, &output_tokens)?;
-    let text = strip_generation_artifacts(&raw_text, model_dir);
+    let text = strip_generation_artifacts(&raw_text, model_id, model_dir);
 
     // Write OpenAI-format SSE to the JS client.
     client.write_all(
@@ -833,10 +825,16 @@ fn detect_prompt_family(model_id: &str, model_dir: Option<&str>) -> &'static str
     if from_id != "chatml" {
         return from_id;
     }
+    // Walk all path segments from the end — the model name typically appears in a
+    // middle segment (e.g. "models--google--gemma-4-e2b-it-5bit") while the last
+    // segment is a commit hash and wouldn't match.
     model_dir
-        .and_then(|dir| dir.trim_end_matches('/').rsplit('/').next())
-        .map(classify)
-        .filter(|&f| f != "chatml")
+        .and_then(|dir| {
+            dir.trim_end_matches('/').split('/').rev().find_map(|part| {
+                let f = classify(part);
+                if f != "chatml" { Some(f) } else { None }
+            })
+        })
         .unwrap_or("chatml")
 }
 
@@ -1014,8 +1012,8 @@ fn tokenize_prompt(model_dir: &str, text: &str) -> Result<Vec<u32>, ManagerError
 /// Native MLX servers may not stop exactly at every EOT boundary; extra turn-prefix
 /// tokens then get decoded as plain text ("model\n" for Gemma, role tags for GLM).
 /// Runaway repetition from absent repetition-penalty is stripped for all models.
-fn strip_generation_artifacts(text: &str, model_dir: &str) -> String {
-    let family = detect_prompt_family("", Some(model_dir));
+fn strip_generation_artifacts(text: &str, model_id: &str, model_dir: &str) -> String {
+    let family = detect_prompt_family(model_id, Some(model_dir));
     let cleaned = match family {
         "gemma" => {
             // When the decode fallback fires without skip_special_tokens, special token
@@ -1722,17 +1720,17 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_millis(500));
             if server_health_ok(port_u16) {
-                if let Ok(mut guard) = rt.lock() {
-                    if let Some(server) = guard.server.as_mut() {
-                        if server.port == port_u16 && !server.ready {
-                            server.ready = true;
-                            guard.status_message = format!(
-                                "Server ready on port {} with {}",
-                                port_u16,
-                                short_model_label(&repo)
-                            );
-                        }
-                    }
+                if let Ok(mut guard) = rt.lock()
+                    && let Some(server) = guard.server.as_mut()
+                    && server.port == port_u16
+                    && !server.ready
+                {
+                    server.ready = true;
+                    guard.status_message = format!(
+                        "Server ready on port {} with {}",
+                        port_u16,
+                        short_model_label(&repo)
+                    );
                 }
                 break;
             }
