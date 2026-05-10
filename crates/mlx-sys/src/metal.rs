@@ -3,7 +3,7 @@ use std::ptr;
 
 use crate::array::{MlxArray, MlxDtype};
 use crate::ffi;
-use crate::stream::MlxStream;
+use crate::stream::{MlxStream, default_gpu_raw};
 
 /// A compiled custom Metal kernel callable from within the MLX compute graph.
 pub struct MlxMetalKernel {
@@ -81,9 +81,7 @@ impl MlxMetalKernel {
         s: Option<&MlxStream>,
     ) -> Vec<MlxArray> {
         unsafe {
-            let stream = s
-                .map(|s| s.inner)
-                .unwrap_or_else(|| ffi::mlx_default_gpu_stream_new());
+            let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
 
             // Build input vector.
             let in_vec = ffi::mlx_vector_array_new();

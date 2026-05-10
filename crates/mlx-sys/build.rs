@@ -17,14 +17,18 @@ fn main() {
 
     println!("cargo:rustc-link-lib=mlxc");
     println!("cargo:rustc-link-search=native={lib_dir}");
+    println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={include_dir}/mlx/c/mlx.h");
+    println!("cargo:rerun-if-changed={include_dir}/mlx/c");
     println!("cargo:rerun-if-env-changed=HOMEBREW_PREFIX");
+
+    let mlx_c_header_pattern = format!(r".*{}/mlx/c/.*\.h", regex::escape(&include_dir));
 
     let bindings = bindgen::Builder::default()
         .header(format!("{include_dir}/mlx/c/mlx.h"))
         .clang_arg(format!("-I{include_dir}"))
         // Only generate bindings for mlx/c headers
-        .allowlist_file(format!(".*{include_dir}/mlx/c/.*\\.h"))
+        .allowlist_file(mlx_c_header_pattern)
         // Represent C enums as Rust enums
         .rustified_enum("mlx_dtype_")
         // Don't derive Default for opaque types that need explicit init

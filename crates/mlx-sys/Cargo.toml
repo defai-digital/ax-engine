@@ -10,5 +10,6 @@ unsafe_code = "allow"
 
 [build-dependencies]
 bindgen = "0.72"
+regex = "1"
 
 [dependencies]

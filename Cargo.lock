@@ -1005,6 +1005,7 @@ name = "mlx-sys"
 version = "4.6.0"
 dependencies = [
  "bindgen",
+ "regex",
 ]
 
 [[package]]
