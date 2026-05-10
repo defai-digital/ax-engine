@@ -399,7 +399,7 @@ impl WebRuntime {
                 .unwrap_or_default();
             self.status_message = format!("Server exited ({status}){hint}");
             self.server = None;
-        } else if !server.ready && local_port_accepts(server.port) {
+        } else if !server.ready && server_health_ok(server.port) {
             server.ready = true;
             self.status_message = format!(
                 "Server ready on port {} with {}",
@@ -742,8 +742,10 @@ fn detect_prompt_family(model_id: &str, model_dir: Option<&str>) -> &'static str
         .unwrap_or("chatml")
 }
 
-/// Convert an OpenAI chat-completions request body into a native
-/// GenerateRequest JSON string using the correct prompt template for the model.
+/// Convert an OpenAI chat-completions request body into a native GenerateRequest JSON string.
+///
+/// Prefer the real tokenizer chat template, matching mlx-engine/mlx-lm. The
+/// built-in prompt renderer is only a fallback when `transformers` is missing.
 fn openai_to_generate_request(
     body: &str,
     model_id: &str,
@@ -757,6 +759,178 @@ fn openai_to_generate_request(
     let max_tokens = v["max_tokens"].as_u64().unwrap_or(2048) as u32;
     let temperature = v["temperature"].as_f64().unwrap_or(0.7) as f32;
 
+    // Native MLX backend requires pre-tokenized input_tokens.
+    let input_tokens = model_dir
+        .map(|dir| tokenize_chat_messages(dir, model_id, messages))
+        .transpose()?
+        .unwrap_or_default();
+
+    let native = json!({
+        "model_id": model_id,
+        "input_tokens": input_tokens,
+        "max_output_tokens": max_tokens,
+        "sampling": {
+            "temperature": temperature,
+            "top_p": 1.0,
+            "top_k": 0,
+            "seed": 0
+        }
+    });
+
+    Ok(native.to_string())
+}
+
+fn normalize_chat_messages(messages: &[Value]) -> Result<Vec<Value>, ManagerError> {
+    messages
+        .iter()
+        .map(|message| {
+            let role = message
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("user")
+                .trim();
+            let content = render_chat_content(message.get("content").unwrap_or(&Value::Null))?;
+            Ok(json!({
+                "role": role,
+                "content": content,
+            }))
+        })
+        .collect()
+}
+
+fn render_chat_content(content: &Value) -> Result<String, ManagerError> {
+    match content {
+        Value::String(text) => Ok(text.clone()),
+        Value::Array(parts) => {
+            let mut rendered = String::new();
+            for part in parts {
+                if part.get("type").and_then(Value::as_str) != Some("text") {
+                    return Err(ManagerError::Message(
+                        "manager chat proxy currently accepts text-only content parts".to_string(),
+                    ));
+                }
+                rendered.push_str(part.get("text").and_then(Value::as_str).unwrap_or(""));
+            }
+            Ok(rendered)
+        }
+        Value::Null => Ok(String::new()),
+        _ => Err(ManagerError::Message(
+            "manager chat proxy content must be a string or text parts".to_string(),
+        )),
+    }
+}
+
+fn tokenize_chat_messages(
+    model_dir: &str,
+    model_id: &str,
+    messages: &[Value],
+) -> Result<Vec<u32>, ManagerError> {
+    let normalized = normalize_chat_messages(messages)?;
+    let messages_json = serde_json::to_string(&normalized)?;
+    let script = r#"
+import json
+import sys
+
+model_dir = sys.argv[1]
+model_id = sys.argv[2].lower()
+messages = json.loads(sys.argv[3])
+
+try:
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(
+        model_dir,
+        local_files_only=True,
+        trust_remote_code=True,
+    )
+    kwargs = {}
+    if "qwen" in model_id or "qwen" in model_dir.lower():
+        kwargs["enable_thinking"] = False
+    if getattr(tok, "chat_template", None) is not None:
+        ids = tok.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            **kwargs,
+        )
+    else:
+        prompt = "\n".join(f"{m.get('role', 'user')}: {m.get('content', '')}" for m in messages) + "\nassistant:"
+        ids = tok.encode(prompt, add_special_tokens=False)
+    print(json.dumps([int(i) for i in ids]))
+except Exception as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(2)
+"#
+    .to_string();
+
+    run_python_tokenizer_script(vec![
+        "-c".to_string(),
+        script,
+        model_dir.to_string(),
+        model_id.to_string(),
+        messages_json,
+    ])
+    .or_else(|template_error| {
+        let prompt = render_fallback_chat_prompt(model_id, Some(model_dir), &normalized);
+        tokenize_prompt(model_dir, &prompt).map_err(|fallback_error| {
+            ManagerError::Message(format!(
+                "tokenizer chat_template failed ({template_error}); fallback tokenizer failed ({fallback_error})"
+            ))
+        })
+    })
+}
+
+/// Tokenize `text` using the model's tokenizer.json via the Python `tokenizers` package.
+/// Returns token IDs suitable for the native MLX generate endpoint.
+fn tokenize_prompt(model_dir: &str, text: &str) -> Result<Vec<u32>, ManagerError> {
+    // The `tokenizers` package is a dependency of mlx-lm so it is always present.
+    let script = "import sys, json\n\
+        from tokenizers import Tokenizer\n\
+        t = Tokenizer.from_file(sys.argv[1] + '/tokenizer.json')\n\
+        t.no_truncation()\n\
+        enc = t.encode(sys.argv[2])\n\
+        print(json.dumps(enc.ids))\n"
+        .to_string();
+    run_python_tokenizer_script(vec![
+        "-c".to_string(),
+        script,
+        model_dir.to_string(),
+        text.to_string(),
+    ])
+}
+
+fn run_python_tokenizer_script(args: Vec<String>) -> Result<Vec<u32>, ManagerError> {
+    // Run in a thread so we can apply a hard timeout — Python startup can be slow
+    // and we must not block the request handler indefinitely.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = Command::new("python3").args(args).output();
+        let _ = tx.send(result);
+    });
+
+    let output = rx
+        .recv_timeout(Duration::from_secs(15))
+        .map_err(|_| ManagerError::Message("tokenizer timed out after 15s".to_string()))?
+        .map_err(|e| ManagerError::Message(format!("tokenizer subprocess failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ManagerError::Message(format!(
+            "tokenizer error: {}",
+            stderr.trim()
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let ids: Vec<u64> = serde_json::from_str(stdout.trim())
+        .map_err(|e| ManagerError::Message(format!("tokenizer output parse error: {e}")))?;
+    Ok(ids.into_iter().map(|id| id as u32).collect())
+}
+
+fn render_fallback_chat_prompt(
+    model_id: &str,
+    model_dir: Option<&str>,
+    messages: &[Value],
+) -> String {
     let family = detect_prompt_family(model_id, model_dir);
     let mut prompt = String::new();
     match family {
@@ -790,73 +964,14 @@ fn openai_to_generate_request(
                 prompt.push_str(&format!("<|im_start|>{role}\n{content}<|im_end|>\n"));
             }
             prompt.push_str("<|im_start|>assistant\n");
+            if model_id.to_ascii_lowercase().contains("qwen")
+                || model_dir.is_some_and(|dir| dir.to_ascii_lowercase().contains("qwen"))
+            {
+                prompt.push_str("<think>\n\n</think>\n\n");
+            }
         }
     }
-
-    // Native MLX backend requires pre-tokenized input_tokens.
-    // Tokenize via the HuggingFace tokenizers Python package which is a transitive
-    // dependency of mlx-lm and is already installed in the user's Python environment.
-    let input_tokens = model_dir
-        .map(|dir| tokenize_prompt(dir, &prompt))
-        .transpose()?
-        .unwrap_or_default();
-
-    let native = json!({
-        "model_id": model_id,
-        "input_tokens": input_tokens,
-        "max_output_tokens": max_tokens,
-        "sampling": {
-            "temperature": temperature,
-            "top_p": 1.0,
-            "top_k": 0,
-            "seed": 0
-        }
-    });
-
-    Ok(native.to_string())
-}
-
-/// Tokenize `text` using the model's tokenizer.json via the Python `tokenizers` package.
-/// Returns token IDs suitable for the native MLX generate endpoint.
-fn tokenize_prompt(model_dir: &str, text: &str) -> Result<Vec<u32>, ManagerError> {
-    // The `tokenizers` package is a dependency of mlx-lm so it is always present.
-    let script = "import sys, json\n\
-        from tokenizers import Tokenizer\n\
-        t = Tokenizer.from_file(sys.argv[1] + '/tokenizer.json')\n\
-        t.no_truncation()\n\
-        enc = t.encode(sys.argv[2])\n\
-        print(json.dumps(enc.ids))\n"
-        .to_string();
-    let model_dir = model_dir.to_string();
-    let text = text.to_string();
-
-    // Run in a thread so we can apply a hard timeout — Python startup can be slow
-    // and we must not block the request handler indefinitely.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = Command::new("python3")
-            .args(["-c", &script, &model_dir, &text])
-            .output();
-        let _ = tx.send(result);
-    });
-
-    let output = rx
-        .recv_timeout(Duration::from_secs(15))
-        .map_err(|_| ManagerError::Message("tokenizer timed out after 15s".to_string()))?
-        .map_err(|e| ManagerError::Message(format!("tokenizer subprocess failed: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ManagerError::Message(format!(
-            "tokenizer error: {}",
-            stderr.trim()
-        )));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let ids: Vec<u64> = serde_json::from_str(stdout.trim())
-        .map_err(|e| ManagerError::Message(format!("tokenizer output parse error: {e}")))?;
-    Ok(ids.into_iter().map(|id| id as u32).collect())
+    prompt
 }
 
 /// Read native AX Engine SSE from `upstream` (and any already-buffered `initial` bytes)
@@ -868,16 +983,15 @@ fn tokenize_prompt(model_dir: &str, text: &str) -> Result<Vec<u32>, ManagerError
 ///
 /// OpenAI format emitted:
 ///   data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null,"index":0}]}
-fn stream_native_as_openai(
-    client: &mut TcpStream,
-    upstream: &mut TcpStream,
+fn stream_native_as_openai<W: Write, R: Read>(
+    client: &mut W,
+    upstream: &mut R,
     initial: &[u8],
 ) -> Result<(), ManagerError> {
-    use std::io::Write;
-
     let mut raw = Vec::from(initial);
     let mut tmp = [0u8; 4096];
     let mut current_event = String::new();
+    let mut emitted_text = String::new();
     let mut done_sent = false;
 
     loop {
@@ -903,15 +1017,41 @@ fn stream_native_as_openai(
                             if client.write_all(chunk.as_bytes()).is_err() {
                                 return Ok(());
                             }
+                            emitted_text.push_str(delta);
                             client.flush().ok();
                         }
                     }
                     "response" => {
-                        // Final event — send finish chunk then [DONE].
-                        let _ = client.write_all(
-                            b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}]}\n\n\
+                        let mut finish_reason = "stop";
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                            if let Some(reason) = v["response"]["finish_reason"].as_str() {
+                                finish_reason = openai_finish_reason(reason);
+                            }
+                            if let Some(output_text) = v["response"]["output_text"].as_str() {
+                                let missing = if emitted_text.is_empty() {
+                                    output_text
+                                } else {
+                                    output_text.strip_prefix(&emitted_text).unwrap_or("")
+                                };
+                                if !missing.is_empty() {
+                                    let chunk = format!(
+                                        "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":null,\"index\":0}}]}}\n\n",
+                                        serde_json::to_string(missing).unwrap_or_default()
+                                    );
+                                    if client.write_all(chunk.as_bytes()).is_err() {
+                                        return Ok(());
+                                    }
+                                    emitted_text.push_str(missing);
+                                }
+                            }
+                        }
+                        let final_chunk = format!(
+                            "data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":{},\"index\":0}}]}}\n\n\
                               data: [DONE]\n\n",
+                            serde_json::to_string(finish_reason)
+                                .unwrap_or_else(|_| "\"stop\"".to_string())
                         );
+                        let _ = client.write_all(final_chunk.as_bytes());
                         client.flush().ok();
                         done_sent = true;
                     }
@@ -958,6 +1098,14 @@ fn stream_native_as_openai(
     }
 
     Ok(())
+}
+
+fn openai_finish_reason(value: &str) -> &'static str {
+    match value {
+        "length" | "max_output_tokens" => "length",
+        "content_filter" => "content_filter",
+        _ => "stop",
+    }
 }
 
 fn route_request(request: HttpRequest, runtime: SharedRuntime) -> Result<String, ManagerError> {
@@ -1490,8 +1638,20 @@ fn stop_server_locked(runtime: &mut WebRuntime) -> bool {
     true
 }
 
-fn local_port_accepts(port: u16) -> bool {
-    TcpStream::connect(("127.0.0.1", port)).is_ok()
+fn server_health_ok(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+    let req = format!("GET /health HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 64];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    let response = std::str::from_utf8(&buf[..n]).unwrap_or("");
+    response.starts_with("HTTP/1.") && response.contains(" 200 ")
 }
 
 /// Return the absolute path of `ax-engine-server`, falling back to the name
@@ -1929,6 +2089,71 @@ mod tests {
         assert!(summary.contains("server=not_loaded"));
         assert!(summary.contains("benchmark=unavailable reason=missing benchmark artifact"));
         assert!(summary.contains("artifacts=ready count=0"));
+    }
+
+    #[test]
+    fn fallback_qwen_prompt_matches_enable_thinking_false_shape() {
+        let messages = vec![json!({"role":"user","content":"hello"})];
+
+        let prompt = render_fallback_chat_prompt("mlx-community/Qwen3-4B-4bit", None, &messages);
+
+        assert_eq!(
+            prompt,
+            "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        );
+    }
+
+    #[test]
+    fn chat_content_parts_are_normalized_for_tokenizer_template() {
+        let messages = vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello "},
+                {"type": "text", "text": "world"}
+            ]
+        })];
+
+        let normalized = normalize_chat_messages(&messages).expect("messages should normalize");
+
+        assert_eq!(normalized[0]["role"], "user");
+        assert_eq!(normalized[0]["content"], "hello world");
+    }
+
+    #[test]
+    fn native_sse_proxy_emits_final_response_output_text_when_steps_are_empty() {
+        let initial = br#"event: response
+data: {"response":{"output_text":"hello final","finish_reason":"max_output_tokens"}}
+
+"#;
+        let mut output = Vec::new();
+        let mut upstream = std::io::Cursor::new(Vec::<u8>::new());
+
+        stream_native_as_openai(&mut output, &mut upstream, initial).expect("sse should convert");
+
+        let response = String::from_utf8(output).expect("response should be utf8");
+        assert!(response.contains("\"content\":\"hello final\""));
+        assert!(response.contains("\"finish_reason\":\"length\""));
+        assert!(response.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn native_sse_proxy_emits_only_missing_final_output_tail() {
+        let initial = br#"event: step
+data: {"delta_text":"hello"}
+
+event: response
+data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
+
+"#;
+        let mut output = Vec::new();
+        let mut upstream = std::io::Cursor::new(Vec::<u8>::new());
+
+        stream_native_as_openai(&mut output, &mut upstream, initial).expect("sse should convert");
+
+        let response = String::from_utf8(output).expect("response should be utf8");
+        assert!(response.contains("\"content\":\"hello\""));
+        assert!(response.contains("\"content\":\" world\""));
+        assert!(response.contains("\"finish_reason\":\"stop\""));
     }
 
     #[test]
