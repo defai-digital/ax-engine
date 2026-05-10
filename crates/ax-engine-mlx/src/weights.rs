@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
-use mlx_sys::{MlxArray, MlxDtype, astype, concatenate, eval, load_safetensors, multiply};
+use mlx_sys::{MlxArray, MlxDtype, add, astype, concatenate, eval, load_safetensors, multiply};
 
 use ax_engine_core::{
     NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
@@ -629,12 +629,14 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         });
     }
 
-    // Heuristic guard: raw HF checkpoints store linear-attention norm weights as
-    // zero-centered deltas (mean ≈ 0). Sanitized mlx-community weights have +1.0
-    // applied (mean ≈ 1.0). Check once on the first hybrid layer to catch this early
-    // rather than silently producing wrong output.
-    if let Some(la) = layers.first().and_then(|l| l.linear_attn.as_ref()) {
-        check_norm_sanitized(&la.norm)?;
+    // Raw HF checkpoints store linear-attention norm weights as zero-centred deltas
+    // (mean ≈ 0); sanitized mlx-community weights have +1.0 applied (mean ≈ 1.0).
+    // Apply the offset on load so that unsanitized artifacts (e.g. models cloned
+    // directly from HuggingFace without running mlx_lm.convert) work correctly.
+    for layer in &mut layers {
+        if let Some(la) = layer.linear_attn.as_mut() {
+            la.norm = sanitize_norm_if_needed(la.norm.clone());
+        }
     }
 
     Ok(ModelWeights {
@@ -648,29 +650,29 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     })
 }
 
-/// Detect unsanitized raw HuggingFace checkpoints by sampling norm weight mean.
-/// Sanitized mlx-community norm weights have +1.0 applied (mean abs ≈ 1.0).
-/// Raw HF delta weights are centred near 0.0 (mean abs typically < 0.05).
-fn check_norm_sanitized(norm: &MlxArray) -> Result<(), WeightLoadError> {
-    let f32_norm = astype(norm, MlxDtype::Float32, None);
+/// Auto-sanitize a linear-attention norm weight if needed.
+///
+/// Raw HuggingFace checkpoints store these weights as zero-centred deltas (mean ≈ 0);
+/// the correct inference value requires adding +1.0, which mlx-lm's sanitize() step
+/// applies when converting. If the weight is already sanitized (mean abs ≈ 1.0) it is
+/// returned unchanged.
+fn sanitize_norm_if_needed(norm: MlxArray) -> MlxArray {
+    let f32_norm = astype(&norm, MlxDtype::Float32, None);
     eval(&[&f32_norm]);
     let data = f32_norm.data_f32();
     if data.len() < 8 {
-        return Ok(());
+        return norm;
     }
     let mean_abs: f32 = data.iter().map(|v| v.abs()).sum::<f32>() / data.len() as f32;
     if mean_abs < 0.15 {
-        return Err(WeightLoadError::UnsanitizedWeights(format!(
-            "linear_attention norm mean absolute value is {mean_abs:.4} (expected ~1.0 for \
-             sanitized mlx-community weights). This checkpoint appears to store norm weights \
-             as zero-centered deltas — a raw HuggingFace format that ax-engine does not \
-             transform on load. To fix:\n  \
-             pip install mlx-lm\n  \
-             mlx_lm.convert --hf-path <org/model> --mlx-path <dest> -q --q-bits 4\n  \
-             Or download a pre-sanitized artifact from mlx-community on Hugging Face."
-        )));
+        let orig_dtype = norm.dtype();
+        let norm_f32 = astype(&norm, MlxDtype::Float32, None);
+        let one = MlxArray::from_f32_slice(&[1.0_f32]);
+        let sanitized = add(&norm_f32, &one, None);
+        astype(&sanitized, orig_dtype, None)
+    } else {
+        norm
     }
-    Ok(())
 }
 
 fn gemma4_router_combined_scale(hidden_size: u32, router_scale: &MlxArray) -> MlxArray {
@@ -1122,8 +1124,6 @@ pub enum WeightLoadError {
     QuantizationMissing(String),
     #[error("invalid layer tensor layout: {0}")]
     InvalidLayer(String),
-    #[error("unsanitized checkpoint detected: {0}")]
-    UnsanitizedWeights(String),
 }
 
 #[cfg(test)]

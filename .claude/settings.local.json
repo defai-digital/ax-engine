@@ -157,7 +157,8 @@
       "Bash(swift test *)",
       "Bash(cargo update *)",
       "Bash(shasum *)",
-      "Bash(ln -sf \"$\\(pwd\\)/target/release/ax-engine-manager\" /opt/homebrew/bin/ax-engine-manager)"
+      "Bash(ln -sf \"$\\(pwd\\)/target/release/ax-engine-manager\" /opt/homebrew/bin/ax-engine-manager)",
+      "Bash(swift --version)"
     ]
   }
 }

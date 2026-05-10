@@ -224,7 +224,15 @@ files are present.
 
 ## Performance ([methodology](docs/PERFORMANCE.md))
 
-Full README generation-model benchmark refresh ran on 2026-05-10. Artifact directory: `benchmarks/results/mlx-inference/2026-05-10-full-readme-refresh/`. Fresh rows were completed for 13/14 README generation models with `mlx_lm`, `mlx_swift_lm`, AX direct same-policy, and AX default n-gram at 128/512 prompt tokens and 128 generated tokens. `qwen3-coder-next-4bit` is blocked for fresh AX rows because the local artifact is an unsanitized Qwen3-Next checkpoint (`linear_attention` norm mean absolute value 0.0113, expected approximately 1.0); its table rows remain seeded from `benchmarks/results/mlx-inference/2026-05-09-post-v4.5.0/` until a sanitized artifact is available. Each completed switch to the next model used a 10-second cooling pause; each row uses 3 timed trials.
+Qwen Coder Next single-model benchmark refresh is in progress on 2026-05-10.
+Artifact directory:
+`benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh/`. The run
+scope is `qwen3-coder-next-4bit` with `mlx_lm`, `mlx_swift_lm`, AX direct
+same-policy, and AX default n-gram at 128/512 prompt tokens and 128 generated
+tokens. Reference rows are running first; AX direct and AX n-gram will be
+attempted after a 10-second cooling pause. The table rows below remain from the
+last validated README state until the Qwen Coder refresh stage has a complete
+or explicitly blocked artifact.
 
 **Prefill** — Across the 13 fresh rows, AX engine prefill is +39–142% vs
 mlx_lm at 128 tokens. At 512 tokens the spread is wider: Gemma E4B 4-bit is

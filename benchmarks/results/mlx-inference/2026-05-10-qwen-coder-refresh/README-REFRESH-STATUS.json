@@ -1,0 +1,13 @@
+{
+  "schema_version": "ax.readme_refresh_status.v1",
+  "artifact_dir": "benchmarks/results/mlx-inference/2026-05-10-qwen-coder-refresh",
+  "model_scope": [
+    "qwen3-coder-next-4bit"
+  ],
+  "completed": [],
+  "failed": [],
+  "total": 1,
+  "note": "Qwen Coder Next single-model refresh started. Reference rows will be recorded first, then AX direct and AX n-gram will be attempted after a 10-second cooling pause.",
+  "last_completed": null,
+  "updated_at": "2026-05-10T00:00:00Z"
+}
