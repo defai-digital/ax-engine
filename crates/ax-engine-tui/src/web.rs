@@ -885,10 +885,14 @@ async function sendMessage() {
   let accumulated = '';
 
   try {
+    const msgsToSend = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      ...history.slice(),
+    ];
     const res = await fetch('/api/proxy/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ messages: history.slice(), stream: true, max_tokens: 2048 }),
+      body: JSON.stringify({ messages: msgsToSend, stream: true, max_tokens: 2048 }),
     });
 
     if (!res.ok) {
@@ -905,8 +909,9 @@ async function sendMessage() {
     const reader  = res.body.getReader();
     const decoder = new TextDecoder();
     let sseBuf = '';
+    let sawDone = false;
 
-    while (true) {
+    while (!sawDone) {
       const { done, value } = await reader.read();
       if (done) break;
       sseBuf += decoder.decode(value, { stream: true });
@@ -916,7 +921,7 @@ async function sendMessage() {
         sseBuf = sseBuf.slice(nl + 1);
         if (!line.startsWith('data: ')) continue;
         const payload = line.slice(6);
-        if (payload === '[DONE]') break;
+        if (payload === '[DONE]') { sawDone = true; break; }
         let chunk;
         try { chunk = JSON.parse(payload); } catch { continue; }
         const delta = (chunk.choices?.[0]?.delta?.content) || '';
