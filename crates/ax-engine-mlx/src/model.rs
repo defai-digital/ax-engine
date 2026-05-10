@@ -4429,7 +4429,7 @@ mod tests {
 
         eval(&[&packed, &reference]);
         assert_eq!(packed.shape(), reference.shape());
-        assert_close(&packed.data_f32(), &reference.data_f32(), 1e-3);
+        assert_close(packed.data_f32(), reference.data_f32(), 1e-3);
     }
 
     #[test]
@@ -4542,7 +4542,7 @@ mod tests {
         let expected = qw(&hidden, weights.shared_down_proj.as_ref().unwrap());
 
         eval(&[&actual, &expected]);
-        assert_close(&actual.data_f32(), &expected.data_f32(), 1e-5);
+        assert_close(actual.data_f32(), expected.data_f32(), 1e-5);
     }
 
     #[test]

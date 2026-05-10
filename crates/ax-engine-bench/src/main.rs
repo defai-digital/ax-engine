@@ -241,7 +241,7 @@ fn handle_replay(args: &[String]) -> Result<(), CliError> {
 fn handle_autotune(args: &[String]) -> Result<(), CliError> {
     let _ = parse_autotune_args(args)?;
     Err(CliError::Contract(
-        "autotune is not supported; use MLX mode or llama.cpp".to_string(),
+        "autotune is not yet available; use explicit scenario or matrix benchmark runs".to_string(),
     ))
 }
 
@@ -1888,7 +1888,8 @@ struct DoctorModelArtifactsHint {
 struct DoctorQuantizationHint {
     mode: String,
     group_size: u32,
-    bits: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bits: Option<u32>,
 }
 
 fn doctor_performance_advice(
@@ -2013,7 +2014,7 @@ fn doctor_model_performance_advice(hint: &DoctorModelArtifactsHint) -> Vec<Docto
 
     match model_type {
         "gemma4" => {
-            if quantization.map(|q| q.bits) == Some(4) {
+            if quantization.and_then(|q| q.bits) == Some(4) {
                 advice.push(DoctorAdvice::info(
                     "gemma4_4bit_first",
                     "Gemma 4 4-bit is the first throughput candidate.",
@@ -2028,13 +2029,14 @@ fn doctor_model_performance_advice(hint: &DoctorModelArtifactsHint) -> Vec<Docto
             }
         }
         "qwen3_next" | "qwen3_6" | "qwen3.6" => {
-            if quantization.map(|q| q.bits) == Some(4) || hint.path_label.contains("ud-mlx") {
+            if quantization.and_then(|q| q.bits) == Some(4) || hint.path_label.contains("ud-mlx")
+            {
                 advice.push(DoctorAdvice::warning(
                     "qwen36_quantization_compare",
                     "Do not assume Qwen 3.6 4-bit is the fastest checkpoint.",
                     "Current Qwen 3.6 35B rows show the MLX 5-bit checkpoint ahead of the UD-MLX 4-bit checkpoint on decode throughput; compare both on the target prompt mix.",
                 ));
-            } else if quantization.map(|q| q.bits) == Some(5) {
+            } else if quantization.and_then(|q| q.bits) == Some(5) {
                 advice.push(DoctorAdvice::info(
                     "qwen36_5bit_throughput_candidate",
                     "Qwen 3.6 5-bit is a strong throughput candidate.",
@@ -2065,6 +2067,12 @@ fn doctor_model_performance_advice(hint: &DoctorModelArtifactsHint) -> Vec<Docto
             "Quantization metadata was not found in config.json.",
             "Doctor cannot rank quantization choices without a quantization or quantization_config block.",
         ));
+    } else if quantization.and_then(|q| q.bits).is_none() {
+        advice.push(DoctorAdvice::info(
+            "quantization_bits_missing",
+            "Quantization metadata did not include a bits field.",
+            "Doctor will not infer 4-bit or 5-bit policy advice without explicit quantization bits.",
+        ));
     }
 
     advice
@@ -2090,7 +2098,10 @@ fn doctor_config_quantization(config: &Value) -> Option<DoctorQuantizationHint> 
             .unwrap_or("affine")
             .to_string(),
         group_size: obj.get("group_size").and_then(Value::as_u64).unwrap_or(64) as u32,
-        bits: obj.get("bits").and_then(Value::as_u64).unwrap_or(4) as u32,
+        bits: obj
+            .get("bits")
+            .and_then(Value::as_u64)
+            .map(|bits| bits.min(u64::from(u32::MAX)) as u32),
     })
 }
 
@@ -2260,7 +2271,12 @@ fn command_text(command: &DoctorWorkflowCommand) -> String {
     if command.argv.is_empty() {
         return "none".to_string();
     }
-    command.argv.join(" ")
+    let argv = command.argv.join(" ");
+    if let Some(cwd) = command.cwd.as_deref() {
+        format!("{argv} [in: {cwd}]")
+    } else {
+        argv
+    }
 }
 
 fn required_string_flag(args: &[String], name: &str) -> Result<String, CliError> {
@@ -4578,7 +4594,6 @@ fn run_llama_cpp_blocking_scenario_workload(
     let mut session = build_session(&runtime, &specs)?;
     observation.runtime_report = Some(session.runtime_report());
 
-    let mut total_proxy_ms = 0u64;
     let mut final_reports = Vec::new();
     for spec in specs {
         let request_started = Instant::now();
@@ -4601,12 +4616,10 @@ fn run_llama_cpp_blocking_scenario_workload(
             .known_prompt_token_count()
             .unwrap_or(spec.prompt_token_target);
         let known_output_token_count = response.known_output_token_count();
-        total_proxy_ms = total_proxy_ms.saturating_add(elapsed_ms);
         observation.step_count += 1;
         observation.total_selected_requests += 1;
         observation.prefill_tokens += u64::from(prompt_token_count);
         observation.total_scheduled_tokens += u64::from(prompt_token_count);
-        observation.prefill_steps += elapsed_ms;
         if observation.ttft_ms.is_none() {
             observation.ttft_ms = Some(elapsed_ms);
         }
@@ -4627,7 +4640,6 @@ fn run_llama_cpp_blocking_scenario_workload(
         let output_token_count = known_output_token_count.unwrap_or(output_tokens.len() as u32);
         observation.decode_tokens += u64::from(output_token_count);
         observation.total_scheduled_tokens += u64::from(output_token_count);
-        observation.decode_steps += elapsed_ms;
 
         let route_metadata = route_metadata_from_generate_route(&response.route);
         observation.merge_route_metadata(&route_metadata);
@@ -4671,8 +4683,6 @@ fn run_llama_cpp_blocking_scenario_workload(
 
     observation.e2e_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64 + 1;
     observation.finalize_llama_cpp(final_reports, observation.e2e_latency_ms.max(1));
-    observation.prefill_steps = observation.prefill_steps.max(total_proxy_ms.max(1));
-    observation.decode_steps = observation.decode_steps.max(total_proxy_ms.max(1));
     Ok(observation)
 }
 
@@ -4848,11 +4858,7 @@ fn run_scenario_workload(
     specs: Vec<SyntheticRequestSpec>,
 ) -> Result<RuntimeObservation, CliError> {
     let started = Instant::now();
-    let max_steps = specs
-        .iter()
-        .map(|spec| u64::from(spec.max_output_tokens).saturating_add(256))
-        .sum::<u64>()
-        .max(256);
+    let max_steps = workload_step_guard_from_specs(&specs);
     let mut session = build_session(&runtime, &specs)?;
     let mut submitted_request_ids = Vec::new();
     let mut external_ids = BTreeMap::new();
@@ -4960,7 +4966,7 @@ fn run_replay_workload(
     };
     let mut event_index = 0usize;
     let mut current_time_ms = 0u64;
-    let max_steps = 10_000u64;
+    let max_steps = replay_step_guard(&events);
 
     while event_index < events.len() || has_live_requests(session.core(), &request_ids)? {
         while let Some(event) = events.get(event_index) {
@@ -5008,9 +5014,9 @@ fn run_replay_workload(
         observation.observe_step(session.core(), &outcome, current_time_ms);
 
         if current_time_ms > max_steps {
-            return Err(CliError::Runtime(
-                "replay workload exceeded engine step guard".to_string(),
-            ));
+            return Err(CliError::Runtime(format!(
+                "replay workload exceeded engine step guard: current_time_ms={current_time_ms}, max_steps={max_steps}"
+            )));
         }
 
         if outcome.runner_output.is_none()
@@ -5033,6 +5039,35 @@ fn run_replay_workload(
         runtime.block_size_tokens,
     )?;
     Ok(observation)
+}
+
+fn workload_step_guard_from_specs(specs: &[SyntheticRequestSpec]) -> u64 {
+    specs
+        .iter()
+        .map(|spec| u64::from(spec.max_output_tokens).saturating_add(256))
+        .sum::<u64>()
+        .max(256)
+}
+
+fn replay_step_guard(events: &[ReplayEvent]) -> u64 {
+    let output_budget = events
+        .iter()
+        .filter_map(|event| match event {
+            ReplayEvent::Submit { spec, .. } => {
+                Some(u64::from(spec.max_output_tokens).saturating_add(256))
+            }
+            ReplayEvent::Cancel { .. } => None,
+        })
+        .sum::<u64>()
+        .max(256);
+    let timeline_budget = events
+        .iter()
+        .map(ReplayEvent::t_ms)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(output_budget);
+
+    output_budget.max(timeline_budget)
 }
 
 fn session_config_from_runtime(
@@ -5128,6 +5163,18 @@ fn evaluate_correctness(
         ));
     }
 
+    if manifest_requests_output(manifest)
+        && observation.decode_tokens == 0
+        && observation
+            .final_requests
+            .iter()
+            .any(|request| request.state == "Finished")
+    {
+        return Ok(GateStatus::fail(
+            "one or more finished requests produced zero output tokens",
+        ));
+    }
+
     let require_prefix_reuse = manifest.checks.require_prefix_reuse;
     if require_prefix_reuse && observation.prefix_hit_rate() <= f64::EPSILON {
         return Ok(GateStatus::fail(
@@ -5152,6 +5199,26 @@ fn evaluate_correctness(
     }
 
     Ok(GateStatus::pass())
+}
+
+fn manifest_requests_output(manifest: &BenchmarkManifest) -> bool {
+    match manifest.class {
+        ManifestClass::Scenario => manifest
+            .shape
+            .as_ref()
+            .is_some_and(|shape| shape.output_tokens_target > 0),
+        ManifestClass::Replay => manifest.events.iter().any(|event| match event {
+            ReplayEventManifest {
+                kind: ReplayEventKind::Submit,
+                output_tokens_target,
+                ..
+            } => output_tokens_target.unwrap_or(0) > 0,
+            ReplayEventManifest {
+                kind: ReplayEventKind::Cancel,
+                ..
+            } => false,
+        }),
+    }
 }
 
 fn enforce_runtime_gates(execution: &RuntimeResult) -> Result<(), CliError> {
@@ -5187,19 +5254,7 @@ fn write_execution_artifacts(
     started_at_unix_s: u64,
     execution: &RuntimeResult,
 ) -> Result<PathBuf, CliError> {
-    let run_id = format!(
-        "{}-{}",
-        unix_timestamp_secs()?,
-        sanitize_component(&manifest.id)
-    );
-    let result_dir = output_root.join(run_id.clone());
-
-    fs::create_dir_all(&result_dir).map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to create result directory {}: {error}",
-            result_dir.display()
-        ))
-    })?;
+    let (run_id, result_dir) = create_unique_result_dir(output_root, None, &manifest.id)?;
 
     write_json_file(&result_dir.join("manifest.json"), manifest)?;
     write_json_file(
@@ -5247,19 +5302,8 @@ fn write_contract_failure_artifacts(
     started_at_unix_s: u64,
     message: &str,
 ) -> Result<PathBuf, CliError> {
-    let run_id = format!(
-        "{}-{}-contract-failure",
-        unix_timestamp_secs()?,
-        sanitize_component(&manifest.id)
-    );
-    let result_dir = output_root.join(run_id.clone());
-
-    fs::create_dir_all(&result_dir).map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to create contract-failure directory {}: {error}",
-            result_dir.display()
-        ))
-    })?;
+    let (run_id, result_dir) =
+        create_unique_result_dir(output_root, Some("contract-failure"), &manifest.id)?;
 
     write_json_file(&result_dir.join("manifest.json"), manifest)?;
     write_json_file(
@@ -5308,19 +5352,8 @@ fn write_compare_artifacts(
         .get("id")
         .and_then(Value::as_str)
         .unwrap_or("compare");
-    let compare_id = format!(
-        "{}-compare-{}",
-        unix_timestamp_secs()?,
-        sanitize_component(manifest_id)
-    );
-    let result_dir = output_root.join(compare_id);
-
-    fs::create_dir_all(&result_dir).map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to create compare directory {}: {error}",
-            result_dir.display()
-        ))
-    })?;
+    let (_compare_id, result_dir) =
+        create_unique_result_dir(output_root, Some("compare"), manifest_id)?;
 
     let regression_json = build_regression_json(
         &baseline_metrics,
@@ -5579,12 +5612,8 @@ fn execute_matrix_manifest(
     matrix_manifest: &BenchmarkMatrixManifest,
     output_root: &Path,
 ) -> Result<MatrixExecutionResult, CliError> {
-    let run_id = format!(
-        "{}-matrix-{}",
-        unix_timestamp_secs()?,
-        sanitize_component(&matrix_manifest.id)
-    );
-    let result_dir = output_root.join(&run_id);
+    let (run_id, result_dir) =
+        create_unique_result_dir(output_root, Some("matrix"), &matrix_manifest.id)?;
     let cases_dir = result_dir.join("cases");
     fs::create_dir_all(&cases_dir).map_err(|error| {
         CliError::Runtime(format!(
@@ -11023,6 +11052,48 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), CliError>
         .map_err(|error| CliError::Runtime(format!("failed to write {}: {error}", path.display())))
 }
 
+fn create_unique_result_dir(
+    output_root: &Path,
+    label: Option<&str>,
+    component: &str,
+) -> Result<(String, PathBuf), CliError> {
+    let timestamp = unix_timestamp_secs()?;
+    let component = sanitize_component(component);
+
+    for attempt in 0..32 {
+        let suffix = unique_run_suffix(attempt)?;
+        let run_id = match label {
+            Some(label) => format!("{timestamp}-{suffix}-{label}-{component}"),
+            None => format!("{timestamp}-{suffix}-{component}"),
+        };
+        let result_dir = output_root.join(&run_id);
+        match fs::create_dir(&result_dir) {
+            Ok(()) => return Ok((run_id, result_dir)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(CliError::Runtime(format!(
+                    "failed to create result directory {}: {error}",
+                    result_dir.display()
+                )));
+            }
+        }
+    }
+
+    Err(CliError::Runtime(format!(
+        "failed to create unique result directory under {} after repeated collisions",
+        output_root.display()
+    )))
+}
+
+fn unique_run_suffix(attempt: u32) -> Result<String, CliError> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .map_err(|error| CliError::Runtime(format!("system clock error: {error}")))?;
+    let mixed = (nanos as u64) ^ u64::from(std::process::id()) ^ u64::from(attempt);
+    Ok(format!("{:06x}", mixed & 0xFF_FFFF))
+}
+
 fn unix_timestamp_secs() -> Result<u64, CliError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -11048,7 +11119,7 @@ Usage:
   ax-engine-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
   ax-engine-bench scenario --manifest <path> --output-root <path> [--json]
   ax-engine-bench replay --manifest <path> --output-root <path> [--json]
-  ax-engine-bench autotune --manifest <path> --output-root <path> [--iterations <n>] [--exploration-weight <value>] [--max-batch-token-options <list>] [--kv-total-block-options <list>] [--prefix-cache-options <list>] [--disable-history]
+  ax-engine-bench autotune --manifest <path> --output-root <path> [--iterations <n>] [--exploration-weight <value>] [--max-batch-token-options <list>] [--kv-total-block-options <list>] [--prefix-cache-options <list>] [--disable-history] (not yet available)
   ax-engine-bench compare --baseline <path> --candidate <path> --output-root <path> [--json]
   ax-engine-bench matrix-compare --baseline <path> --candidate <path> --output-root <path> [--json]
   ax-engine-bench baseline --source <path> --name <name> --output-root <path> [--json]
@@ -11857,7 +11928,8 @@ impl RuntimeObservation {
     }
 
     /// Prefill throughput from runner execution time when available.
-    /// Legacy synthetic/llama.cpp paths fall back to the old step proxy.
+    /// Synthetic core paths can fall back to step counts; blocking delegated
+    /// adapters leave this at 0 because they only expose request round-trip time.
     fn prefill_tok_s(&self) -> f64 {
         if self.prefill_tokens == 0 {
             0.0
@@ -13216,6 +13288,24 @@ mod tests {
             "ax-engine-bench-{label}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn create_unique_result_dir_does_not_reuse_same_component_directory() {
+        let root = unique_test_dir("unique-result-dir");
+        fs::create_dir_all(&root).expect("result root should create");
+
+        let (first_id, first_dir) =
+            create_unique_result_dir(&root, None, "same-manifest").expect("first dir");
+        let (second_id, second_dir) =
+            create_unique_result_dir(&root, None, "same-manifest").expect("second dir");
+
+        assert_ne!(first_id, second_id);
+        assert_ne!(first_dir, second_dir);
+        assert!(first_dir.is_dir());
+        assert!(second_dir.is_dir());
+
+        fs::remove_dir_all(root).expect("test directory should clean up");
     }
 
     #[test]
@@ -15095,7 +15185,7 @@ mod tests {
                 .model_artifacts
                 .quantization
                 .as_ref()
-                .map(|quantization| quantization.bits),
+                .and_then(|quantization| quantization.bits),
             Some(4)
         );
         assert!(report.model_artifacts.issues.is_empty());
@@ -15178,6 +15268,7 @@ mod tests {
                 "--json"
             ]
         );
+        assert!(command_text(&report.doctor).contains("[in:"));
         assert_eq!(
             report.download_model.as_ref().map(|command| &command.argv),
             Some(&vec![
@@ -15186,6 +15277,52 @@ mod tests {
                 "<repo-id>".to_string(),
                 "--json".to_string()
             ])
+        );
+
+        fs::remove_dir_all(root).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn doctor_quantization_without_bits_does_not_infer_four_bit_policy() {
+        let root = unique_test_dir("doctor-quantization-missing-bits");
+        let model_dir = root.join("gemma4-no-bits");
+        fs::create_dir_all(&model_dir).expect("model dir should create");
+        fs::write(
+            model_dir.join("config.json"),
+            r#"{
+                "model_type": "gemma4",
+                "quantization": {
+                    "mode": "affine",
+                    "group_size": 64
+                }
+            }"#,
+        )
+        .expect("config should write");
+        write_doctor_model_manifest(&model_dir);
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+        let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+        assert_eq!(
+            report
+                .model_artifacts
+                .quantization
+                .as_ref()
+                .and_then(|quantization| quantization.bits),
+            None
+        );
+        assert!(
+            report
+                .performance_advice
+                .iter()
+                .any(|advice| advice.id == "quantization_bits_missing")
+        );
+        assert!(
+            !report
+                .performance_advice
+                .iter()
+                .any(|advice| advice.id == "gemma4_4bit_first")
         );
 
         fs::remove_dir_all(root).expect("test dir should clean up");
@@ -16855,6 +16992,33 @@ mod tests {
         };
 
         assert_eq!(observation.decode_tok_s(), 2_000.0);
+    }
+
+    #[test]
+    fn correctness_fails_finished_requests_with_zero_output_tokens() {
+        let manifest = llama_cpp_scenario_manifest("http://127.0.0.1:1");
+        let observation = RuntimeObservation {
+            final_requests: vec![FinalRequestState {
+                external_id: "req-1".to_string(),
+                request_id: RequestId(1),
+                state: "Finished".to_string(),
+                processed_prompt_tokens: 32,
+                generated_tokens: Vec::new(),
+                cancel_requested: false,
+                last_error: None,
+            }],
+            decode_tokens: 0,
+            ..RuntimeObservation::default()
+        };
+
+        let status = evaluate_correctness(&manifest, &observation)
+            .expect("correctness evaluation should not fail structurally");
+
+        assert!(!status.passed);
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("one or more finished requests produced zero output tokens")
+        );
     }
 
     #[test]
