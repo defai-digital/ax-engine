@@ -106,12 +106,13 @@ const LINEAR_NGRAM_RETRY_INTERVAL: u32 = 16;
 /// Steps to suppress after a *partial* accept (≥1 draft token accepted but not all).
 /// Partial accept means the n-gram is close — retry quickly.
 const LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL: u32 = 4;
-/// If a linear-attention request cannot produce any n-gram draft after a short
-/// probe window, stop probing for the rest of the request and use the direct
-/// pipeline. Unlike rejected drafts, empty drafts have no verifier feedback and
-/// repeatedly fall back to single-token decode; keeping the window short avoids
-/// making no-draft Qwen3-Next rows slower than explicit direct mode.
-const LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD: u32 = LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL;
+/// If a linear-attention request repeatedly cannot produce any n-gram draft
+/// after several short probe windows, stop probing for the rest of the request
+/// and use the direct pipeline. Empty drafts have no verifier feedback, but
+/// Qwen3-Next coding-style output can develop repeated continuations after the
+/// first few generated tokens, so do not permanently disable on the first empty
+/// probe window.
+const LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD: u32 = 8;
 /// Maximum number of prompt tail tokens fed into the n-gram table.
 /// Long prompts (especially random-token benchmarks) would otherwise fill the
 /// table with useless bigrams that trigger false-positive n-gram acceleration and force
@@ -2480,6 +2481,12 @@ impl MlxRunner {
                     self.run_request_disabled_decode(state, last_token, sampling, is_greedy),
                 );
             }
+            if is_greedy {
+                state.ngram_disabled_steps = LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL;
+                state
+                    .ngram_acceleration
+                    .record_cooldown_event(LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL);
+            }
         }
         None
     }
@@ -4367,15 +4374,9 @@ mod tests {
     #[test]
     fn linear_attention_no_draft_threshold_disables_request_acceleration() {
         assert_eq!(
-            LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD, LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL,
-            "empty linear-attention drafts should fail over faster than verified misses"
+            LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD, 8,
+            "empty linear-attention drafts should allow several generated-output probe windows"
         );
-        const {
-            assert!(
-            LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD < LINEAR_NGRAM_RETRY_INTERVAL,
-            "no-draft fallback should not wait for a full rejected-draft retry window"
-            );
-        }
         assert!(!linear_ngram_no_draft_should_disable(
             LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD - 1
         ));

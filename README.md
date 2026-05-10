@@ -224,11 +224,11 @@ files are present.
 
 ## Performance ([methodology](docs/PERFORMANCE.md))
 
-Full README generation-model benchmark refresh ran on 2026-05-10. Artifact directory: `benchmarks/results/mlx-inference/2026-05-10-full-readme-refresh/`. Fresh rows are now complete for all 14 README generation models with `mlx_lm`, `mlx_swift_lm`, AX direct same-policy, and AX default n-gram at 128/512 prompt tokens and 128 generated tokens. A follow-up Qwen Coder rerun fixed a stale `target/release/ax-engine-server` binary issue by rebuilding before AX rows; the latest Qwen Coder direct and n-gram rows use the fast linear-attention no-draft fallback artifact at `benchmarks/results/mlx-inference/2026-05-10-qwen-coder-fast-fallback/qwen3-coder-next-4bit.json`. Each model switch in the full run used a 10-second cooling pause; the Qwen Coder follow-up also used 10-second cooling pauses before AX direct and AX n-gram attempts.
+Full README generation-model benchmark refresh ran on 2026-05-10. Artifact directory: `benchmarks/results/mlx-inference/2026-05-10-full-readme-refresh/`. Fresh rows are now complete for all 14 README generation models with `mlx_lm`, `mlx_swift_lm`, AX direct same-policy, and AX default n-gram at 128/512 prompt tokens and 128 generated tokens. A follow-up Qwen Coder rerun fixed a stale `target/release/ax-engine-server` binary issue by rebuilding before AX rows; the latest Qwen Coder direct and n-gram rows use the linear-attention n-gram recovery artifact at `benchmarks/results/mlx-inference/2026-05-10-qwen-coder-ngram-recovery/qwen3-coder-next-4bit.json`. Each model switch in the full run used a 10-second cooling pause; the Qwen Coder follow-up also used 10-second cooling pauses before AX direct and AX n-gram attempts.
 
 **Prefill** — Across all 14 fresh models, AX engine prefill is -5% to +186% vs mlx_lm. At 128 tokens every row remains faster than mlx_lm; at 512 tokens Gemma E4B 4-bit is the weakest row, while Qwen 3.6 35B 8-bit is the strongest.
 
-**Decode** — Direct decode (n-gram disabled) spans -17% to +13% vs mlx_lm. Qwen 3.6 35B variants and Qwen Coder are positive in direct mode; several Gemma rows remain behind. With n-gram acceleration (the default), most rows are above mlx_lm, while Qwen 3.5 512-token and Qwen Coder rows are classified as no-draft fallback and should be treated as direct-path behavior for this prompt shape.
+**Decode** — Direct decode (n-gram disabled) spans -17% to +13% vs mlx_lm. Qwen 3.6 35B variants and Qwen Coder are positive in direct mode; several Gemma rows remain behind. With n-gram acceleration (the default), most rows are above mlx_lm. Qwen 3.5 512-token remains a no-draft fallback row for this prompt shape; Qwen Coder now reports effective n-gram throughput again after retaining short no-draft probe windows long enough for generated-output repetitions to seed the draft table.
 
 **TTFT** — AX TTFT is lower than mlx_lm on 25/28 fresh prompt rows. The strongest rows remain Qwen 3.6 35B; the visible regressions are limited to a few Gemma 512-token rows. Source: `benchmarks/results/mlx-inference/2026-05-10-full-readme-refresh/`. mlx_lm TTFT is derived from reported prefill throughput; ax engine TTFT is measured directly from per-step runner timing.
 
@@ -271,8 +271,8 @@ evidence for long-context serving claims, not as proof of continuous batching.
 |       |       | 512 | 1,378.7 | 2,393.3 (+73.6%) | 2,445.8 (+77.4%) |
 | Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 400.7 | 644.4 (+60.8%) | 968.0 (+141.6%) |
 |       |       | 512 | 1,261.9 | 2,321.8 (+84.0%) | 2,449.0 (+94.1%) |
-| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 267.1 | 428.2 (+60.3%) | 814.0 (+204.8%) |
-|       |       | 512 | 862.5 | 1,534.7 (+77.9%) | 1,908.5 (+121.3%) |
+| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 267.1 | 428.2 (+60.3%) | 804.8 (+201.3%) |
+|       |       | 512 | 862.5 | 1,534.7 (+77.9%) | 1,819.7 (+111.0%) |
 | GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 495.2 | 997.9 (+101.5%) | 869.7 (+75.6%) |
 |       |       | 512 | 1,600.7 | 2,518.8 (+57.4%) | 2,384.3 (+49.0%) |
 
@@ -280,10 +280,10 @@ evidence for long-context serving claims, not as proof of continuous batching.
 
 Higher is better. The direct AX column is the same-policy baseline with n-gram acceleration
 disabled. The n-gram column is the default AX decode policy and the row to use for
-user-facing throughput expectations. For Qwen 3.5 at 512 prompt tokens and Qwen
-Coder Next in this refresh, the default n-gram row can still report no-draft
-fallback when no candidates are available; Qwen Coder now falls back quickly to
-direct-pipeline behavior instead of paying a full linear-attention probe window.
+user-facing throughput expectations. For Qwen 3.5 at 512 prompt tokens, the default
+n-gram row can still report no-draft fallback when no candidates are available.
+Qwen Coder Next now stays in short no-draft cooldown long enough for generated
+repetitions to seed n-gram drafts, so its default row reports effective throughput.
 
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax direct baseline | ax default n-gram |
 |---|---|---:|---:|---:|---:|---:|
@@ -311,8 +311,8 @@ direct-pipeline behavior instead of paying a full linear-attention probe window.
 |       |       | 512 | 106.4 | 101.9 (-4.2%) | 116.7 (+9.8%) | **240.9 (+126.5%)** |
 | Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 99.6 | 99.4 (-0.2%) | 106.9 (+7.3%) | **253.5 (+154.5%)** |
 |       |       | 512 | 101.1 | 97.7 (-3.4%) | 108.0 (+6.8%) | **255.6 (+152.8%)** |
-| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 89.5 | 85.5 (-4.5%) | **98.2 (+9.7%)** | **96.6 (+7.9%)** |
-|       |       | 512 | 90.0 | 84.2 (-6.4%) | **98.0 (+9.0%)** | **96.5 (+7.2%)** |
+| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 89.5 | 85.5 (-4.5%) | **96.6 (+7.9%)** | **116.8 (+30.5%)** |
+|       |       | 512 | 90.0 | 84.2 (-6.4%) | **92.0 (+2.3%)** | **99.6 (+10.8%)** |
 | GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 105.3 | 98.8 (-6.2%) | 104.4 (-0.8%) | **279.8 (+165.8%)** |
 |       |       | 512 | 100.3 | 96.0 (-4.4%) | 103.9 (+3.5%) | **273.3 (+172.3%)** |
 
@@ -349,8 +349,8 @@ measured from per-step runner timing in the SSE event stream. Source:
 |       |       | 512 | 371.4 | 213.9 (-42.4%) | **209.3 (-43.6%)** |
 | Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 319.5 | 198.6 (-37.8%) | **132.2 (-58.6%)** |
 |       |       | 512 | 405.7 | 220.5 (-45.6%) | **209.1 (-48.5%)** |
-| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 479.2 | 298.9 (-37.6%) | **157.2 (-67.2%)** |
-|       |       | 512 | 593.6 | 333.6 (-43.8%) | **268.3 (-54.8%)** |
+| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 479.2 | 298.9 (-37.6%) | **159.0 (-66.8%)** |
+|       |       | 512 | 593.6 | 333.6 (-43.8%) | **281.4 (-52.6%)** |
 | GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 258.5 | 128.3 (-50.4%) | **147.2 (-43.1%)** |
 |       |       | 512 | 319.9 | 203.3 (-36.4%) | **214.7 (-32.9%)** |
 

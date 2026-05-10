@@ -526,6 +526,15 @@ function shortenPath(p) {
   return parts.length > 4 ? '…/' + parts.slice(-3).join('/') : p;
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function selectedCatalogEntry() {
   return app.catalog.find(e => e.repo_id === $('model').value) || null;
 }
@@ -652,7 +661,7 @@ function updateModelStatus() {
     // Model is available locally
     statusEl.innerHTML =
       `<span class="badge-ready">● READY</span>` +
-      `<span class="badge-path">${shortenPath(downloaded.path)}</span>`;
+      `<span class="badge-path">${escapeHtml(shortenPath(downloaded.path))}</span>`;
 
     // Auto-fill model-dir for the server (user can still override)
     if (!$('model-dir').dataset.userEdited) {
@@ -679,7 +688,7 @@ function updateModelStatus() {
 
 function renderEndpoints(eps) {
   $('endpoint-list').innerHTML = eps.slice(0, 4).map(ep =>
-    `<li><a href="${ep.url}" target="_blank" rel="noopener">${ep.label}</a></li>`
+    `<li><a href="${escapeHtml(ep.url)}" target="_blank" rel="noopener">${escapeHtml(ep.label)}</a></li>`
   ).join('');
 }
 
@@ -703,13 +712,15 @@ function renderDownloaded(models) {
       const active = m.repo_id === activeRepo ? ' dl-item-active' : '';
       const name   = shortModelName(m.repo_id);
       const manual = app.catalog.some(e => e.repo_id === m.repo_id) ? '0' : '1';
+      const repo   = escapeHtml(m.repo_id);
+      const path   = escapeHtml(m.path || '');
       return `
-      <div class="dl-item${active}" data-repo="${m.repo_id}">
+      <div class="dl-item${active}" data-repo="${repo}">
         <span class="dl-check">✓</span>
-        <span class="dl-repo" title="${m.path || ''}">${name}</span>
+        <span class="dl-repo" title="${path}">${escapeHtml(name)}</span>
         <button class="btn btn-ghost btn-xs dl-use"
-          data-path="${m.path || ''}"
-          data-repo="${m.repo_id}"
+          data-path="${path}"
+          data-repo="${repo}"
           data-manual="${manual}">USE</button>
       </div>`;
     }).join('') +
@@ -1222,6 +1233,20 @@ mod tests {
         assert!(js.contains("data-manual"));
         assert!(js.contains("dataset.repoId"));
         assert!(js.contains("manual && manualRepo ? manualRepo"));
+    }
+
+    #[test]
+    fn manager_js_escapes_downloaded_model_markup_values() {
+        let js = manager_js();
+
+        assert!(js.contains("function escapeHtml"));
+        assert!(js.contains("const repo   = escapeHtml(m.repo_id);"));
+        assert!(js.contains("const path   = escapeHtml(m.path || '');"));
+        assert!(js.contains("${escapeHtml(shortenPath(downloaded.path))}"));
+        assert!(js.contains("href=\"${escapeHtml(ep.url)}\""));
+        assert!(js.contains("${escapeHtml(ep.label)}"));
+        assert!(!js.contains("data-path=\"${m.path || ''}\""));
+        assert!(!js.contains("href=\"${ep.url}\""));
     }
 
     #[test]

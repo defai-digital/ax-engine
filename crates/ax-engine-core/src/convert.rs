@@ -1564,6 +1564,8 @@ fn validate_glm4_moe_lite_contract(
     config: &serde_json::Value,
     manifest: &NativeModelManifest,
 ) -> Result<(), ConvertError> {
+    validate_glm4_moe_lite_rope_scaling(config)?;
+
     let first_dense_layers = arch_u64(config, "glm4_moe_lite", "first_k_dense_replace")
         .and_then(u64_to_u32)
         .unwrap_or(1)
@@ -1656,6 +1658,20 @@ fn validate_glm4_moe_lite_contract(
                 require_glm_role(manifest, layer_index, NativeTensorRole::FfnSharedExpertDown)?;
             }
         }
+    }
+
+    Ok(())
+}
+
+fn validate_glm4_moe_lite_rope_scaling(config: &serde_json::Value) -> Result<(), ConvertError> {
+    if config
+        .get("rope_scaling")
+        .is_some_and(|rope_scaling| !rope_scaling.is_null())
+    {
+        return invalid_model_contract(
+            "glm4_moe_lite",
+            "rope_scaling is not yet supported for GLM MLA; mscale_all_dim changes attention scale and scaling_config changes RoPE frequencies",
+        );
     }
 
     Ok(())
@@ -3348,6 +3364,32 @@ mod tests {
             .expect("runtime-ready GLM manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rejects_glm4_moe_lite_rope_scaling_until_scale_contract_is_manifested() {
+        validate_glm4_moe_lite_rope_scaling(&serde_json::json!({}))
+            .expect("missing rope_scaling should use current GLM scale contract");
+        validate_glm4_moe_lite_rope_scaling(&serde_json::json!({ "rope_scaling": null }))
+            .expect("null rope_scaling should use current GLM scale contract");
+
+        let error = validate_glm4_moe_lite_rope_scaling(&serde_json::json!({
+            "rope_scaling": {
+                "factor": 2.0,
+                "mscale_all_dim": 1.0
+            }
+        }))
+        .expect_err("GLM rope scaling should fail closed until represented in the manifest");
+        let ConvertError::InvalidModelContract {
+            model_type,
+            message,
+        } = error
+        else {
+            panic!("expected invalid model contract");
+        };
+        assert_eq!(model_type, "glm4_moe_lite");
+        assert!(message.contains("rope_scaling"));
+        assert!(message.contains("mscale_all_dim"));
     }
 
     #[test]
