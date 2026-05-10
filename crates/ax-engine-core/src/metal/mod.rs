@@ -3408,6 +3408,18 @@ pub enum MetalRuntimeError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("failed to serialize JSON file {path}: {source}")]
+    SerializeJson {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("failed to read build artifact {path}: {source}")]
+    ReadBuildArtifact {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to write build artifact {path}: {source}")]
     WriteBuildArtifact {
         path: PathBuf,

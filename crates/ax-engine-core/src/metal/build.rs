@@ -298,10 +298,12 @@ pub fn build_phase1_kernel_artifacts(
             .compile_commands
             .push(compile_metallib_cmd.clone());
 
+        let developer_dir_candidates = xcrun_developer_dir_candidates("xcrun");
         let compile_result = run_toolchain_command(
             &compile_air_cmd,
             &workspace_root,
             request.toolchain_path_override.as_ref(),
+            &developer_dir_candidates,
         );
         let compile_result = if request.doctor.metal_toolchain.metal_ar.available {
             compile_result.and_then(|_| {
@@ -309,6 +311,7 @@ pub fn build_phase1_kernel_artifacts(
                     &compile_metalar_cmd,
                     &workspace_root,
                     request.toolchain_path_override.as_ref(),
+                    &developer_dir_candidates,
                 )
             })
         } else {
@@ -319,6 +322,7 @@ pub fn build_phase1_kernel_artifacts(
                 &compile_metallib_cmd,
                 &workspace_root,
                 request.toolchain_path_override.as_ref(),
+                &developer_dir_candidates,
             )
         });
 
@@ -574,10 +578,11 @@ fn write_json_pretty_file<T>(path: &Path, value: &T) -> Result<(), MetalRuntimeE
 where
     T: Serialize,
 {
-    let json = serde_json::to_vec_pretty(value).map_err(|source| MetalRuntimeError::ParseJson {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let json =
+        serde_json::to_vec_pretty(value).map_err(|source| MetalRuntimeError::SerializeJson {
+            path: path.to_path_buf(),
+            source,
+        })?;
     fs::write(path, json).map_err(|source| MetalRuntimeError::WriteBuildArtifact {
         path: path.to_path_buf(),
         source,
@@ -666,13 +671,20 @@ fn run_toolchain_command(
     command: &[String],
     cwd: &Path,
     path_override: Option<&OsString>,
+    developer_dir_candidates: &[Option<String>],
 ) -> Result<(), String> {
     let Some((program, args)) = command.split_first() else {
         return Err("toolchain command must not be empty".to_string());
     };
 
     let mut attempt_failures = Vec::new();
-    for developer_dir in xcrun_developer_dir_candidates(program) {
+    let fallback_developer_dir_candidates = [None];
+    let developer_dir_candidates = if program == "xcrun" {
+        developer_dir_candidates
+    } else {
+        &fallback_developer_dir_candidates
+    };
+    for developer_dir in developer_dir_candidates {
         let mut process = Command::new(program);
         process.args(args).current_dir(cwd);
         if let Some(path) = path_override {
@@ -1269,33 +1281,37 @@ fn extract_declared_kernel_names(source_text: &str) -> BTreeSet<String> {
 }
 
 fn strip_metal_comments(source_text: &str) -> String {
-    let bytes = source_text.as_bytes();
     let mut stripped = String::with_capacity(source_text.len());
-    let mut index = 0;
+    let mut chars = source_text.chars().peekable();
 
-    while index < bytes.len() {
-        if bytes[index] == b'/' && index + 1 < bytes.len() {
-            if bytes[index + 1] == b'/' {
-                index += 2;
-                while index < bytes.len() && bytes[index] != b'\n' {
-                    index += 1;
-                }
-                continue;
-            }
-
-            if bytes[index + 1] == b'*' {
-                index += 2;
-                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
-                {
-                    index += 1;
-                }
-                index = (index + 2).min(bytes.len());
-                continue;
-            }
+    while let Some(ch) = chars.next() {
+        if ch != '/' {
+            stripped.push(ch);
+            continue;
         }
 
-        stripped.push(bytes[index] as char);
-        index += 1;
+        match chars.peek().copied() {
+            Some('/') => {
+                chars.next();
+                for comment_ch in chars.by_ref() {
+                    if comment_ch == '\n' {
+                        stripped.push('\n');
+                        break;
+                    }
+                }
+            }
+            Some('*') => {
+                chars.next();
+                let mut previous = '\0';
+                for comment_ch in chars.by_ref() {
+                    if previous == '*' && comment_ch == '/' {
+                        break;
+                    }
+                    previous = comment_ch;
+                }
+            }
+            _ => stripped.push(ch),
+        }
     }
 
     stripped
@@ -1426,8 +1442,9 @@ pub(super) fn validate_compiled_kernel_inventory(
 }
 
 fn read_non_empty_file(path: &Path) -> Result<Vec<u8>, MetalRuntimeError> {
-    let bytes = fs::read(path).map_err(|_| MetalRuntimeError::MissingBuildArtifact {
+    let bytes = fs::read(path).map_err(|source| MetalRuntimeError::ReadBuildArtifact {
         path: path.to_path_buf(),
+        source,
     })?;
     if bytes.is_empty() {
         return Err(MetalRuntimeError::MissingBuildArtifact {
@@ -1449,4 +1466,45 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
         text.push_str(&format!("{byte:02x}"));
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_metal_comments_preserves_non_ascii_source_text() {
+        let stripped = strip_metal_comments(
+            "constant float π = 3.14; // 中文 comment\n/* emoji ✓ */ kernel void foo() {}\n",
+        );
+
+        assert_eq!(
+            stripped,
+            "constant float π = 3.14; \n kernel void foo() {}\n"
+        );
+        assert_eq!(
+            extract_declared_kernel_names(&stripped)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["foo".to_string()]
+        );
+    }
+
+    #[test]
+    fn read_non_empty_file_preserves_read_errors() {
+        let path = std::env::temp_dir().join(format!(
+            "ax-engine-missing-build-artifact-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos()
+        ));
+
+        let error = read_non_empty_file(&path).expect_err("missing file should fail");
+        assert!(matches!(
+            error,
+            MetalRuntimeError::ReadBuildArtifact { path: _, source: _ }
+        ));
+    }
 }

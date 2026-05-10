@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::request::RequestSnapshot;
-use crate::scheduler::RouteMetadata;
+use crate::scheduler::{ROUTE_BARRIER_MODE_SERIAL, ROUTE_KV_MODE_PAGED_METADATA, RouteMetadata};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionPlanBinding {
@@ -42,9 +42,9 @@ fn binding_for_phase(
         route_metadata: RouteMetadata {
             execution_plan: Some(execution_plan_ref.to_string()),
             attention_route: Some(attention_route_label(model_slug, phase)),
-            kv_mode: Some("paged_metadata".into()),
+            kv_mode: Some(ROUTE_KV_MODE_PAGED_METADATA.into()),
             prefix_cache_path: None,
-            barrier_mode: Some("serial".into()),
+            barrier_mode: Some(ROUTE_BARRIER_MODE_SERIAL.into()),
             crossover_decisions: Vec::new(),
         },
     }

@@ -19,7 +19,7 @@ use crate::runner::{
 };
 use crate::sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, TokenSampler,
-    sampling_params_allow_deterministic_argmax_fast_path,
+    recent_repetition_tokens, sampling_params_allow_deterministic_argmax_fast_path,
 };
 use crate::scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, SchedulePlan, Scheduler, SchedulerInput,
@@ -561,6 +561,8 @@ impl EngineCore {
                     temperature: record.sampling_params.temperature,
                     top_p: record.sampling_params.top_p,
                     top_k: record.sampling_params.top_k,
+                    repetition_penalty: record.sampling_params.repetition_penalty,
+                    repetition_context_size: record.sampling_params.repetition_context_size,
                 });
             }
         }
@@ -664,6 +666,15 @@ impl EngineCore {
                 request_id,
                 previous_token,
                 logits,
+                recent_tokens: if record.sampling_params.repetition_penalty == 1.0 {
+                    Vec::new()
+                } else {
+                    recent_repetition_tokens(
+                        &record.prompt_tokens,
+                        &record.generated_tokens,
+                        record.sampling_params.repetition_context_size,
+                    )
+                },
                 generated_len: record.generated_tokens.len() as u32,
                 max_output_tokens: record.max_output_tokens,
                 sampling_params: record.sampling_params.clone(),
@@ -1499,6 +1510,8 @@ mod tests {
         temperature: f32,
         top_p: f32,
         top_k: u32,
+        repetition_penalty: f32,
+        repetition_context_size: Option<u32>,
         deterministic_argmax_sampling: bool,
     }
 
@@ -1511,6 +1524,11 @@ mod tests {
             assert_eq!(context.temperature, self.temperature);
             assert_eq!(context.top_p, self.top_p);
             assert_eq!(context.top_k, self.top_k);
+            assert_eq!(context.repetition_penalty, self.repetition_penalty);
+            assert_eq!(
+                context.repetition_context_size,
+                self.repetition_context_size
+            );
             assert_eq!(
                 context.deterministic_argmax_sampling,
                 self.deterministic_argmax_sampling
@@ -1613,6 +1631,8 @@ mod tests {
                 temperature: 0.8,
                 top_p: 0.7,
                 top_k: 32,
+                repetition_penalty: 1.2,
+                repetition_context_size: Some(16),
                 deterministic_argmax_sampling: false,
             },
             DeterministicSampler,
@@ -1622,6 +1642,8 @@ mod tests {
             temperature: 0.8,
             top_p: 0.7,
             top_k: 32,
+            repetition_penalty: 1.2,
+            repetition_context_size: Some(16),
             ..SamplingParams::default()
         };
 

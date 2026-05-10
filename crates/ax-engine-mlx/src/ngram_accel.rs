@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use mlx_sys::{MlxArray, argmax, eval};
 
-use crate::sampling::{MlxSamplingParams, Xorshift64, sample_categorical};
+use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical};
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
@@ -788,8 +788,16 @@ pub fn ngram_accel_decode_step(
     sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> Vec<u32> {
-    if draft.is_empty() {
-        return single_decode(cfg, weights, cache, ngram, last_token, sampling, rng);
+    if draft.is_empty() || sampling.uses_repetition_penalty() {
+        return single_decode(
+            cfg,
+            weights,
+            cache,
+            ngram,
+            last_token,
+            MlxSamplingRequest::new(sampling, &[last_token]),
+            rng,
+        );
     }
 
     if cfg.linear_attention.is_some() {
@@ -1024,7 +1032,7 @@ fn sample_pos(
     if end > cpu_logits.len() {
         return argmax_tok;
     }
-    sample_categorical(&cpu_logits[start..end], sampling, rng)
+    sample_categorical(&cpu_logits[start..end], sampling, &[], rng)
 }
 
 /// Single-token decode fallback (used when n-gram table has no prediction).
@@ -1036,11 +1044,19 @@ pub fn single_decode(
     cache: &mut MlxKVCache,
     ngram: &mut NgramTable,
     last_token: u32,
-    sampling: MlxSamplingParams,
+    sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
 ) -> Vec<u32> {
     single_decode_with_turboquant_context(
-        cfg, weights, cache, ngram, last_token, sampling, rng, None,
+        cfg,
+        weights,
+        cache,
+        ngram,
+        last_token,
+        sampling_request.params,
+        sampling_request.repetition_tokens,
+        rng,
+        None,
     )
 }
 
@@ -1052,6 +1068,7 @@ pub fn single_decode_with_turboquant_context(
     ngram: &mut NgramTable,
     last_token: u32,
     sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
     rng: &mut Xorshift64,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> Vec<u32> {
@@ -1067,12 +1084,12 @@ pub fn single_decode_with_turboquant_context(
     cache.seq_len += 1;
 
     let kv_refs = cache.collect_eval_refs();
-    let tok = if sampling.temperature > 0.0 {
+    let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
         let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
         targets.push(&logits);
         targets.extend(kv_refs);
         eval(&targets);
-        sample_categorical(logits.data_f32(), sampling, rng)
+        sample_categorical(logits.data_f32(), sampling, repetition_tokens, rng)
     } else {
         let token_arr = argmax(&logits, None);
         let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());

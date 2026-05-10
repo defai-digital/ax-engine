@@ -15,7 +15,7 @@ use ax_engine_mlx::{
     kv_cache::MlxKVCache,
     model::ModelConfig,
     ngram_accel::{DEFAULT_DRAFT_LEN, NgramTable, ngram_accel_decode_step},
-    sampling::{MlxSamplingParams, Xorshift64},
+    sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64},
     weights::load_weights,
 };
 use mlx_sys::clear_cache;
@@ -73,7 +73,7 @@ fn main() {
             &prompt,
             &mut cache,
             DEFAULT_PREFILL_CHUNK,
-            MlxSamplingParams::greedy(),
+            MlxSamplingRequest::new(MlxSamplingParams::greedy(), &prompt),
             &mut rng,
         );
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -102,7 +102,7 @@ fn main() {
             &short_prompt,
             &mut cache,
             DEFAULT_PREFILL_CHUNK,
-            MlxSamplingParams::greedy(),
+            MlxSamplingRequest::new(MlxSamplingParams::greedy(), &short_prompt),
             &mut rng,
         );
         let mut step_times = Vec::with_capacity(DECODE_STEPS);
@@ -157,7 +157,7 @@ fn main() {
             &ngram_prompt,
             &mut cache,
             DEFAULT_PREFILL_CHUNK,
-            MlxSamplingParams::greedy(),
+            MlxSamplingRequest::new(MlxSamplingParams::greedy(), &ngram_prompt),
             &mut rng,
         );
 

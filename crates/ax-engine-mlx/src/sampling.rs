@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 /// Minimal xorshift64 PRNG — no external dependency.
 ///
 /// Used for per-request temperature sampling.  Each request gets its own
@@ -32,6 +34,8 @@ pub struct MlxSamplingParams {
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: u32,
+    pub repetition_penalty: f32,
+    pub repetition_context_size: Option<u32>,
 }
 
 impl MlxSamplingParams {
@@ -40,11 +44,44 @@ impl MlxSamplingParams {
             temperature,
             top_p,
             top_k,
+            repetition_penalty: 1.0,
+            repetition_context_size: None,
         }
     }
 
     pub const fn greedy() -> Self {
         Self::new(0.0, 1.0, 0)
+    }
+
+    pub const fn with_repetition_penalty(
+        mut self,
+        repetition_penalty: f32,
+        repetition_context_size: Option<u32>,
+    ) -> Self {
+        self.repetition_penalty = repetition_penalty;
+        self.repetition_context_size = repetition_context_size;
+        self
+    }
+
+    pub fn uses_repetition_penalty(self) -> bool {
+        self.repetition_penalty.is_finite()
+            && self.repetition_penalty > 0.0
+            && self.repetition_penalty != 1.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MlxSamplingRequest<'a> {
+    pub params: MlxSamplingParams,
+    pub repetition_tokens: &'a [u32],
+}
+
+impl<'a> MlxSamplingRequest<'a> {
+    pub const fn new(params: MlxSamplingParams, repetition_tokens: &'a [u32]) -> Self {
+        Self {
+            params,
+            repetition_tokens,
+        }
     }
 }
 
@@ -63,11 +100,23 @@ impl Default for MlxSamplingParams {
 pub fn sample_categorical(
     logits: &[f32],
     sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
     rng: &mut Xorshift64,
 ) -> u32 {
     if logits.is_empty() {
         return 0;
     }
+    let adjusted_logits;
+    let logits = if sampling.uses_repetition_penalty() && !repetition_tokens.is_empty() {
+        adjusted_logits = logits_with_repetition_penalty(
+            logits,
+            sampling.repetition_penalty,
+            recent_repetition_tokens(repetition_tokens, sampling.repetition_context_size),
+        );
+        adjusted_logits.as_slice()
+    } else {
+        logits
+    };
     if sampling.temperature <= 0.0 {
         return argmax_f32(logits);
     }
@@ -142,6 +191,37 @@ pub fn sample_categorical(
         .unwrap_or(0)
 }
 
+fn recent_repetition_tokens(tokens: &[u32], context_size: Option<u32>) -> &[u32] {
+    let keep_len = context_size
+        .map(|size| size as usize)
+        .unwrap_or(tokens.len())
+        .min(tokens.len());
+    &tokens[tokens.len() - keep_len..]
+}
+
+fn logits_with_repetition_penalty(
+    logits: &[f32],
+    repetition_penalty: f32,
+    repetition_tokens: &[u32],
+) -> Vec<f32> {
+    let mut adjusted = logits.to_vec();
+    let mut seen_tokens = BTreeSet::new();
+    for token in repetition_tokens {
+        if !seen_tokens.insert(*token) {
+            continue;
+        }
+        let Some(logit) = adjusted.get_mut(*token as usize) else {
+            continue;
+        };
+        if *logit < 0.0 {
+            *logit *= repetition_penalty;
+        } else {
+            *logit /= repetition_penalty;
+        }
+    }
+    adjusted
+}
+
 fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32, total_mass: f32) {
     let filters_enabled = top_k > 0 || top_p < 1.0;
     if !filters_enabled {
@@ -192,7 +272,7 @@ mod tests {
         let logits = vec![0.1_f32, 5.0, 1.0, 2.0];
         let mut rng = Xorshift64::new(42);
         assert_eq!(
-            sample_categorical(&logits, MlxSamplingParams::greedy(), &mut rng),
+            sample_categorical(&logits, MlxSamplingParams::greedy(), &[], &mut rng),
             1
         );
     }
@@ -206,6 +286,7 @@ mod tests {
             seen.insert(sample_categorical(
                 &logits,
                 MlxSamplingParams::new(1.0, 1.0, 0),
+                &[],
                 &mut rng,
             ));
         }
@@ -225,7 +306,7 @@ mod tests {
         let mut rng = Xorshift64::new(7);
         for _ in 0..50 {
             assert_eq!(
-                sample_categorical(&logits, MlxSamplingParams::new(1.0, 1.0, 0), &mut rng),
+                sample_categorical(&logits, MlxSamplingParams::new(1.0, 1.0, 0), &[], &mut rng),
                 3
             );
         }
@@ -238,7 +319,7 @@ mod tests {
         let sampling = MlxSamplingParams::new(1.0, 1.0, 2);
 
         for _ in 0..100 {
-            let tok = sample_categorical(&logits, sampling, &mut rng);
+            let tok = sample_categorical(&logits, sampling, &[], &mut rng);
             assert!(tok < 2, "top_k=2 should exclude token {tok}");
         }
     }
@@ -250,7 +331,7 @@ mod tests {
         let sampling = MlxSamplingParams::new(1.0, 0.5, 0);
 
         for _ in 0..100 {
-            let tok = sample_categorical(&logits, sampling, &mut rng);
+            let tok = sample_categorical(&logits, sampling, &[], &mut rng);
             assert!(tok < 3, "top_p=0.5 should exclude token {tok}");
         }
     }
@@ -268,7 +349,7 @@ mod tests {
         // All-NaN logits produce a non-finite sum; must not panic and must return a valid index.
         let logits = vec![f32::NAN, f32::NAN, f32::NAN];
         let mut rng = Xorshift64::new(99);
-        let tok = sample_categorical(&logits, MlxSamplingParams::new(1.0, 1.0, 0), &mut rng);
+        let tok = sample_categorical(&logits, MlxSamplingParams::new(1.0, 1.0, 0), &[], &mut rng);
         assert!((tok as usize) < logits.len());
     }
 
@@ -277,7 +358,25 @@ mod tests {
         // exp(−∞) = 0 for every entry → sum == 0 → fall back to argmax (index 0).
         let logits = vec![f32::NEG_INFINITY; 4];
         let mut rng = Xorshift64::new(3);
-        let tok = sample_categorical(&logits, MlxSamplingParams::new(1.0, 1.0, 0), &mut rng);
+        let tok = sample_categorical(&logits, MlxSamplingParams::new(1.0, 1.0, 0), &[], &mut rng);
         assert!((tok as usize) < logits.len());
+    }
+
+    #[test]
+    fn repetition_penalty_demotes_recent_tokens_before_argmax() {
+        let logits = vec![1.0_f32, 1.8, 0.9];
+        let mut rng = Xorshift64::new(1);
+        let sampling = MlxSamplingParams::greedy().with_repetition_penalty(2.0, None);
+
+        assert_eq!(sample_categorical(&logits, sampling, &[1], &mut rng), 0);
+    }
+
+    #[test]
+    fn repetition_penalty_respects_context_window() {
+        let logits = vec![1.0_f32, 1.8, 0.9];
+        let mut rng = Xorshift64::new(1);
+        let sampling = MlxSamplingParams::greedy().with_repetition_penalty(2.0, Some(1));
+
+        assert_eq!(sample_categorical(&logits, sampling, &[1, 2], &mut rng), 1);
     }
 }

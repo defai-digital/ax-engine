@@ -9361,6 +9361,7 @@ fn sampling_from_manifest(manifest: &BenchmarkManifest) -> Result<SamplingParams
         top_p: manifest.sampling.top_p,
         top_k: manifest.sampling.top_k,
         repetition_penalty: 1.0,
+        repetition_context_size: None,
         seed: manifest.sampling.seed,
         deterministic: manifest.runtime.deterministic,
     })
