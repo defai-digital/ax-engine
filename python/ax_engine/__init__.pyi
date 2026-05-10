@@ -54,17 +54,44 @@ class MlxRuntimeInfo:
 
 
 @dataclass(frozen=True)
+class SourceQuantizationInfo:
+    format: str
+    tensor_type_counts: dict[str, int]
+    quantized_tensor_count: int
+    contains_quantized_tensors: bool
+
+
+@dataclass(frozen=True)
+class RuntimeStatusInfo:
+    ready: bool
+    blockers: list[str]
+    notes: list[str]
+
+
+@dataclass(frozen=True)
 class MlxModelInfo:
     artifacts_source: str | None
     model_family: str
     tensor_format: str
+    source_quantization: SourceQuantizationInfo | None
+    runtime_status: RuntimeStatusInfo
     layer_count: int
     tensor_count: int
     tie_word_embeddings: bool
+    is_moe: bool
+    is_hybrid_attention: bool
+    hybrid_full_attention_interval: int | None
+    mla_kv_latent_dim: int | None
+    moe_active_experts: int | None
     bindings_prepared: bool
     buffers_bound: bool
     buffer_count: int
     buffer_bytes: int
+    source_quantized_binding_count: int
+    source_q4_k_binding_count: int
+    source_q5_k_binding_count: int
+    source_q6_k_binding_count: int
+    source_q8_0_binding_count: int
 
 
 @dataclass(frozen=True)

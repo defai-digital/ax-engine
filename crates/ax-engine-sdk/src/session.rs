@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use ax_engine_core::{
@@ -397,6 +396,11 @@ impl EngineSessionConfig {
     }
 }
 
+/// Stateless generation helper for delegated backends.
+///
+/// For native MLX, blocking generation still constructs a full `EngineSession`
+/// per call so the model and KV state are not reused. Use `EngineSession`
+/// directly for repeated MLX requests.
 #[derive(Clone, Debug)]
 pub struct StatelessGenerateContext {
     config: EngineSessionConfig,
@@ -472,18 +476,14 @@ impl StatelessGenerateContext {
 
         match self.config.resolved_backend.selected_backend {
             SelectedBackend::LlamaCpp => {
-                let (runtime, stream, route_backend) = start_llama_cpp_stream_prevalidated(
+                let (runtime, stream, _route_backend) = start_llama_cpp_stream_prevalidated(
                     &self.config,
                     runtime,
                     request_id,
                     &request,
                 )?;
                 Ok(build_llama_cpp_stream_state(
-                    request_id,
-                    request,
-                    runtime,
-                    stream,
-                    route_backend,
+                    request_id, request, runtime, stream,
                 ))
             }
             SelectedBackend::MlxLmDelegated => {
@@ -536,12 +536,6 @@ struct MlxModelArtifactsSelection {
     source: NativeModelArtifactsSource,
 }
 
-#[derive(Clone, Debug)]
-struct PreparedEngineSessionConfig {
-    config: EngineSessionConfig,
-    ephemeral_mlx_model_artifacts_dir: Option<PathBuf>,
-}
-
 fn resolve_default_mlx_runtime_artifacts_selection(
     explicit_dir: Option<PathBuf>,
     current_dir: Option<&Path>,
@@ -557,7 +551,7 @@ fn resolve_default_mlx_runtime_artifacts_selection(
 fn detect_repo_owned_mlx_runtime_artifacts_dir_from(
     start_dir: &Path,
 ) -> Option<MlxRuntimeArtifactsSelection> {
-    for candidate_root in start_dir.ancestors() {
+    for candidate_root in start_dir.ancestors().take(20) {
         let manifest_path = candidate_root.join("metal/phase1-kernels.json");
         let build_dir = candidate_root.join("build/metal");
         let build_report_path = build_dir.join("build_report.json");
@@ -579,28 +573,12 @@ fn detect_repo_owned_mlx_runtime_artifacts_dir_from(
     None
 }
 
-fn prepare_engine_session_config(
-    config: EngineSessionConfig,
-) -> Result<PreparedEngineSessionConfig, EngineSessionError> {
-    Ok(PreparedEngineSessionConfig {
-        config,
-        ephemeral_mlx_model_artifacts_dir: None,
-    })
-}
-
-fn cleanup_ephemeral_mlx_model_artifacts_dir(path: Option<&Path>) {
-    if let Some(path) = path {
-        let _ = fs::remove_dir_all(path);
-    }
-}
-
 #[derive(Debug)]
 pub struct EngineSession {
     core: EngineCore,
     config: EngineSessionConfig,
     runtime: RuntimeReport,
     next_request_id: u64,
-    ephemeral_mlx_model_artifacts_dir: Option<PathBuf>,
     native_request_routes: BTreeMap<u64, GenerateRouteReport>,
     native_route_report_order: VecDeque<u64>,
     llama_requests: BTreeMap<u64, LlamaCppLifecycleRequestSlot>,
@@ -788,9 +766,9 @@ impl EngineSession {
     ) -> Result<u64, EngineSessionError> {
         Self::validate_generate_request(request_id, &request)?;
         self.advance_request_id(request_id);
-        let (_runtime, stream, route_backend) =
+        let (_runtime, stream, _route_backend) =
             self.llama_cpp_stream_start(request_id, &request)?;
-        let route = llama_cpp_stream_route(route_backend);
+        let route = llama_cpp_stream_route();
         let current_report = SessionRequestReport {
             request_id,
             model_id: request.model_id,
@@ -829,13 +807,10 @@ impl EngineSession {
         Self::validate_generate_request(request_id, &request)?;
         self.advance_request_id(request_id);
 
-        let (runtime, stream, route_backend) = self.llama_cpp_stream_start(request_id, &request)?;
+        let (runtime, stream, _route_backend) =
+            self.llama_cpp_stream_start(request_id, &request)?;
         Ok(build_llama_cpp_stream_state(
-            request_id,
-            request,
-            runtime,
-            stream,
-            route_backend,
+            request_id, request, runtime, stream,
         ))
     }
 
@@ -849,23 +824,8 @@ impl EngineSession {
     }
 
     pub fn new(config: EngineSessionConfig) -> Result<Self, EngineSessionError> {
-        let PreparedEngineSessionConfig {
-            config,
-            ephemeral_mlx_model_artifacts_dir,
-        } = prepare_engine_session_config(config)?;
-        if let Err(error) = config.validate() {
-            cleanup_ephemeral_mlx_model_artifacts_dir(ephemeral_mlx_model_artifacts_dir.as_deref());
-            return Err(error);
-        }
-        let core = match build_native_core(&config) {
-            Ok(core) => core,
-            Err(error) => {
-                cleanup_ephemeral_mlx_model_artifacts_dir(
-                    ephemeral_mlx_model_artifacts_dir.as_deref(),
-                );
-                return Err(error);
-            }
-        };
+        config.validate()?;
+        let core = build_native_core(&config)?;
         let runtime = config
             .runtime_report()
             .with_mlx_model(resolve_native_model_report(&config, &core));
@@ -874,7 +834,6 @@ impl EngineSession {
             config,
             runtime,
             next_request_id: 1,
-            ephemeral_mlx_model_artifacts_dir,
             native_request_routes: BTreeMap::new(),
             native_route_report_order: VecDeque::new(),
             llama_requests: BTreeMap::new(),
@@ -1902,7 +1861,7 @@ fn is_terminal_request_state(state: SessionRequestState) -> bool {
     )
 }
 
-fn llama_cpp_stream_route(_selected_backend: SelectedBackend) -> GenerateRouteReport {
+fn llama_cpp_stream_route() -> GenerateRouteReport {
     GenerateRouteReport::with_execution_plan(LLAMA_CPP_STREAM_EXECUTION_PLAN)
 }
 
@@ -1990,9 +1949,9 @@ fn finish_reason_from_stop_type(
         Some(unknown) => {
             tracing::warn!(
                 stop_type = unknown,
-                "llama.cpp stream returned unknown stop_type; reporting generic stop"
+                "llama.cpp stream returned unknown stop_type; reporting error finish reason"
             );
-            Some(crate::generate::GenerateFinishReason::Stop)
+            Some(crate::generate::GenerateFinishReason::Error)
         }
     }
 }
@@ -2017,14 +1976,6 @@ fn terminal_stop_reason_from_finish_reason(
             Some(ax_engine_core::StopReason::Error)
         }
         None => None,
-    }
-}
-
-impl Drop for EngineSession {
-    fn drop(&mut self) {
-        cleanup_ephemeral_mlx_model_artifacts_dir(
-            self.ephemeral_mlx_model_artifacts_dir.as_deref(),
-        );
     }
 }
 
@@ -2164,9 +2115,8 @@ fn build_llama_cpp_stream_state(
     request: GenerateRequest,
     runtime: RuntimeReport,
     stream: LlamaCppStreamHandle,
-    route_backend: SelectedBackend,
 ) -> GenerateStreamState {
-    let route = llama_cpp_stream_route(route_backend);
+    let route = llama_cpp_stream_route();
     let current_report = initial_stream_request_report(
         request_id,
         request.model_id,
@@ -2369,7 +2319,7 @@ mod tests {
             max_output_tokens: 2,
             cancel_requested: false,
             execution_plan_ref: Some(LLAMA_CPP_STREAM_EXECUTION_PLAN.to_string()),
-            route: llama_cpp_stream_route(SelectedBackend::LlamaCpp),
+            route: llama_cpp_stream_route(),
             finish_reason: Some(GenerateFinishReason::Stop),
             terminal_stop_reason: None,
             last_error: None,
@@ -4010,7 +3960,6 @@ sys.stdout.write(f"session::{prompt}")
             runtime: config.runtime_report(),
             config,
             next_request_id: 2,
-            ephemeral_mlx_model_artifacts_dir: None,
             native_request_routes: BTreeMap::new(),
             native_route_report_order: VecDeque::new(),
             llama_requests: BTreeMap::new(),
@@ -4188,7 +4137,6 @@ sys.stdout.write(f"session::{prompt}")
             runtime: config.runtime_report(),
             config,
             next_request_id: 2,
-            ephemeral_mlx_model_artifacts_dir: None,
             native_request_routes: BTreeMap::new(),
             native_route_report_order: VecDeque::new(),
             llama_requests: BTreeMap::new(),
@@ -4244,6 +4192,10 @@ sys.stdout.write(f"session::{prompt}")
         assert_eq!(
             finish_reason_from_stop_type(true, Some("content_filter")),
             Some(crate::generate::GenerateFinishReason::ContentFilter)
+        );
+        assert_eq!(
+            finish_reason_from_stop_type(true, Some("backend_error")),
+            Some(crate::generate::GenerateFinishReason::Error)
         );
         assert_eq!(
             terminal_stop_reason_from_finish_reason(Some(

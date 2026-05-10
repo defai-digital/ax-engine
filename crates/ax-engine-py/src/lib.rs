@@ -171,7 +171,7 @@ impl Session {
         self.inner
             .lock()
             .map(|slot| matches!(*slot, SessionSlot::Closed))
-            .unwrap_or(false)
+            .unwrap_or(true)
     }
 
     fn close(&mut self) -> PyResult<()> {
@@ -689,12 +689,40 @@ fn native_model_dict<'py>(
         .expect("native_model.model_family should serialize");
     dict.set_item("tensor_format", enum_label(py, native_model.tensor_format))
         .expect("native_model.tensor_format should serialize");
+    if let Some(source_quantization) = native_model.source_quantization.as_ref() {
+        dict.set_item(
+            "source_quantization",
+            native_source_quantization_dict(py, source_quantization),
+        )
+        .expect("native_model.source_quantization should serialize");
+    }
+    dict.set_item(
+        "runtime_status",
+        native_runtime_status_dict(py, &native_model.runtime_status),
+    )
+    .expect("native_model.runtime_status should serialize");
     dict.set_item("layer_count", native_model.layer_count)
         .expect("native_model.layer_count should serialize");
     dict.set_item("tensor_count", native_model.tensor_count)
         .expect("native_model.tensor_count should serialize");
     dict.set_item("tie_word_embeddings", native_model.tie_word_embeddings)
         .expect("native_model.tie_word_embeddings should serialize");
+    dict.set_item("is_moe", native_model.is_moe)
+        .expect("native_model.is_moe should serialize");
+    dict.set_item("is_hybrid_attention", native_model.is_hybrid_attention)
+        .expect("native_model.is_hybrid_attention should serialize");
+    if let Some(interval) = native_model.hybrid_full_attention_interval {
+        dict.set_item("hybrid_full_attention_interval", interval)
+            .expect("native_model.hybrid_full_attention_interval should serialize");
+    }
+    if let Some(dim) = native_model.mla_kv_latent_dim {
+        dict.set_item("mla_kv_latent_dim", dim)
+            .expect("native_model.mla_kv_latent_dim should serialize");
+    }
+    if let Some(experts) = native_model.moe_active_experts {
+        dict.set_item("moe_active_experts", experts)
+            .expect("native_model.moe_active_experts should serialize");
+    }
     dict.set_item("bindings_prepared", native_model.bindings_prepared)
         .expect("native_model.bindings_prepared should serialize");
     dict.set_item("buffers_bound", native_model.buffers_bound)
@@ -703,6 +731,114 @@ fn native_model_dict<'py>(
         .expect("native_model.buffer_count should serialize");
     dict.set_item("buffer_bytes", native_model.buffer_bytes)
         .expect("native_model.buffer_bytes should serialize");
+    dict.set_item(
+        "source_quantized_binding_count",
+        native_model.source_quantized_binding_count,
+    )
+    .expect("native_model.source_quantized_binding_count should serialize");
+    dict.set_item(
+        "source_q4_k_binding_count",
+        native_model.source_q4_k_binding_count,
+    )
+    .expect("native_model.source_q4_k_binding_count should serialize");
+    dict.set_item(
+        "source_q5_k_binding_count",
+        native_model.source_q5_k_binding_count,
+    )
+    .expect("native_model.source_q5_k_binding_count should serialize");
+    dict.set_item(
+        "source_q6_k_binding_count",
+        native_model.source_q6_k_binding_count,
+    )
+    .expect("native_model.source_q6_k_binding_count should serialize");
+    dict.set_item(
+        "source_q8_0_binding_count",
+        native_model.source_q8_0_binding_count,
+    )
+    .expect("native_model.source_q8_0_binding_count should serialize");
+    dict.unbind()
+}
+
+fn native_source_quantization_dict<'py, T>(py: Python<'py>, source_quantization: &T) -> Py<PyDict>
+where
+    T: serde::Serialize,
+{
+    let value = serde_json::to_value(source_quantization)
+        .expect("native source quantization should serialize to JSON");
+    let dict = PyDict::new(py);
+    if let Some(format) = value.get("format").and_then(|value| value.as_str()) {
+        dict.set_item("format", format)
+            .expect("source_quantization.format should serialize");
+    }
+    if let Some(counts) = value
+        .get("tensor_type_counts")
+        .and_then(|value| value.as_object())
+    {
+        let counts_dict = PyDict::new(py);
+        for (key, value) in counts {
+            if let Some(count) = value.as_u64() {
+                counts_dict
+                    .set_item(key, count)
+                    .expect("source_quantization.tensor_type_counts should serialize");
+            }
+        }
+        dict.set_item("tensor_type_counts", counts_dict)
+            .expect("source_quantization.tensor_type_counts should serialize");
+    }
+    if let Some(count) = value
+        .get("quantized_tensor_count")
+        .and_then(|value| value.as_u64())
+    {
+        dict.set_item("quantized_tensor_count", count)
+            .expect("source_quantization.quantized_tensor_count should serialize");
+    }
+    if let Some(contains) = value
+        .get("contains_quantized_tensors")
+        .and_then(|value| value.as_bool())
+    {
+        dict.set_item("contains_quantized_tensors", contains)
+            .expect("source_quantization.contains_quantized_tensors should serialize");
+    }
+    dict.unbind()
+}
+
+fn native_runtime_status_dict<'py, T>(py: Python<'py>, runtime_status: &T) -> Py<PyDict>
+where
+    T: serde::Serialize,
+{
+    let value = serde_json::to_value(runtime_status)
+        .expect("native runtime status should serialize to JSON");
+    let dict = PyDict::new(py);
+    let ready = value
+        .get("ready")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    dict.set_item("ready", ready)
+        .expect("runtime_status.ready should serialize");
+    let blockers = value
+        .get("blockers")
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    dict.set_item("blockers", blockers)
+        .expect("runtime_status.blockers should serialize");
+    let notes = value
+        .get("notes")
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    dict.set_item("notes", notes)
+        .expect("runtime_status.notes should serialize");
     dict.unbind()
 }
 
@@ -822,7 +958,7 @@ fn request_report_dict<'py>(py: Python<'py>, report: &SessionRequestReport) -> P
         .expect("processed_prompt_tokens should serialize");
     dict.set_item("output_tokens", report.output_tokens.clone())
         .expect("output_tokens should serialize");
-    if !report.output_token_logprobs.is_empty() {
+    if has_observed_token_logprobs(&report.output_token_logprobs) {
         dict.set_item(
             "output_token_logprobs",
             report.output_token_logprobs.clone(),
@@ -1153,7 +1289,7 @@ fn generate_response_dict<'py>(py: Python<'py>, response: &GenerateResponse) -> 
     }
     dict.set_item("output_tokens", response.output_tokens.clone())
         .expect("output_tokens should serialize");
-    if !response.output_token_logprobs.is_empty() {
+    if has_observed_token_logprobs(&response.output_token_logprobs) {
         dict.set_item(
             "output_token_logprobs",
             response.output_token_logprobs.clone(),
@@ -1202,7 +1338,7 @@ fn stream_event_dict<'py>(py: Python<'py>, event: &SdkGenerateStreamEvent) -> Py
                 .expect("step payload should serialize");
             dict.set_item("delta_tokens", payload.delta_tokens.clone())
                 .expect("delta tokens should serialize");
-            if !payload.delta_token_logprobs.is_empty() {
+            if has_observed_token_logprobs(&payload.delta_token_logprobs) {
                 dict.set_item("delta_token_logprobs", payload.delta_token_logprobs.clone())
                     .expect("delta token logprobs should serialize");
             }
@@ -1218,6 +1354,10 @@ fn stream_event_dict<'py>(py: Python<'py>, event: &SdkGenerateStreamEvent) -> Py
     }
 
     dict.unbind()
+}
+
+fn has_observed_token_logprobs(logprobs: &[Option<f32>]) -> bool {
+    logprobs.iter().any(Option::is_some)
 }
 
 fn enum_label<T>(py: Python<'_>, value: T) -> PyObject
@@ -1793,8 +1933,34 @@ sys.stdout.write(f"python::{prompt}")
         }
     }
 
+    fn strip_unobserved_logprobs(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for key in ["output_token_logprobs", "delta_token_logprobs"] {
+                    let remove = map.get(key).is_some_and(|value| {
+                        value
+                            .as_array()
+                            .is_some_and(|values| values.iter().all(Value::is_null))
+                    });
+                    if remove {
+                        map.remove(key);
+                    }
+                }
+                for value in map.values_mut() {
+                    strip_unobserved_logprobs(value);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    strip_unobserved_logprobs(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn sdk_stream_event_json(event: &SdkGenerateStreamEvent) -> Value {
-        match event {
+        let mut value = match event {
             SdkGenerateStreamEvent::Request(payload) => json!({
                 "event": "request",
                 "runtime": payload.runtime,
@@ -1826,7 +1992,15 @@ sys.stdout.write(f"python::{prompt}")
                 "event": "response",
                 "response": payload.response,
             }),
-        }
+        };
+        strip_unobserved_logprobs(&mut value);
+        value
+    }
+
+    fn sdk_request_report_json(report: SessionRequestReport) -> Value {
+        let mut value = serde_json::to_value(report).expect("sdk request report should serialize");
+        strip_unobserved_logprobs(&mut value);
+        value
     }
 
     #[test]
@@ -2084,8 +2258,7 @@ sys.stdout.write(f"python::{prompt}")
                 let state = dict_string(snapshot, "state");
                 assert_eq!(
                     py_dict_to_json(snapshot),
-                    serde_json::to_value(expected_snapshot.clone())
-                        .expect("sdk llama.cpp snapshot should serialize")
+                    sdk_request_report_json(expected_snapshot.clone())
                 );
                 if state == "finished" {
                     break;
@@ -2114,8 +2287,7 @@ sys.stdout.write(f"python::{prompt}")
                 .expect("sdk llama.cpp terminal snapshot should exist");
             assert_eq!(
                 py_dict_to_json(terminal),
-                serde_json::to_value(expected_terminal)
-                    .expect("sdk llama.cpp terminal snapshot should serialize")
+                sdk_request_report_json(expected_terminal)
             );
         });
 
@@ -2232,8 +2404,7 @@ sys.stdout.write(f"python::{prompt}")
                         .expect("sdk llama.cpp snapshot should exist");
                     assert_eq!(
                         py_dict_to_json(snapshot),
-                        serde_json::to_value(expected_snapshot)
-                            .expect("sdk llama.cpp snapshot should serialize")
+                        sdk_request_report_json(expected_snapshot)
                     );
                 }
             }
@@ -2302,8 +2473,7 @@ sys.stdout.write(f"python::{prompt}")
 
             assert_eq!(
                 py_dict_to_json(snapshot),
-                serde_json::to_value(expected_snapshot)
-                    .expect("sdk llama.cpp cancelled snapshot should serialize")
+                sdk_request_report_json(expected_snapshot)
             );
         });
 

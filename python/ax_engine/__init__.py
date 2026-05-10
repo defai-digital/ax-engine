@@ -58,17 +58,44 @@ class MlxRuntimeInfo:
 
 
 @dataclass(frozen=True)
+class SourceQuantizationInfo:
+    format: str = ""
+    tensor_type_counts: dict[str, int] = field(default_factory=dict)
+    quantized_tensor_count: int = 0
+    contains_quantized_tensors: bool = False
+
+
+@dataclass(frozen=True)
+class RuntimeStatusInfo:
+    ready: bool = True
+    blockers: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class MlxModelInfo:
     artifacts_source: str | None = None
     model_family: str = ""
     tensor_format: str = ""
+    source_quantization: SourceQuantizationInfo | None = None
+    runtime_status: RuntimeStatusInfo = field(default_factory=RuntimeStatusInfo)
     layer_count: int = 0
     tensor_count: int = 0
     tie_word_embeddings: bool = False
+    is_moe: bool = False
+    is_hybrid_attention: bool = False
+    hybrid_full_attention_interval: int | None = None
+    mla_kv_latent_dim: int | None = None
+    moe_active_experts: int | None = None
     bindings_prepared: bool = False
     buffers_bound: bool = False
     buffer_count: int = 0
     buffer_bytes: int = 0
+    source_quantized_binding_count: int = 0
+    source_q4_k_binding_count: int = 0
+    source_q5_k_binding_count: int = 0
+    source_q6_k_binding_count: int = 0
+    source_q8_0_binding_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -719,13 +746,59 @@ def _mlx_model_from_dict(value: dict[str, Any]) -> MlxModelInfo:
         artifacts_source=value.get("artifacts_source"),
         model_family=str(value.get("model_family", "")),
         tensor_format=str(value.get("tensor_format", "")),
+        source_quantization=_source_quantization_from_dict(value["source_quantization"])
+        if value.get("source_quantization") is not None
+        else None,
+        runtime_status=_runtime_status_from_dict(value.get("runtime_status", {})),
         layer_count=int(value.get("layer_count", 0)),
         tensor_count=int(value.get("tensor_count", 0)),
         tie_word_embeddings=bool(value.get("tie_word_embeddings", False)),
+        is_moe=bool(value.get("is_moe", False)),
+        is_hybrid_attention=bool(value.get("is_hybrid_attention", False)),
+        hybrid_full_attention_interval=(
+            int(value["hybrid_full_attention_interval"])
+            if value.get("hybrid_full_attention_interval") is not None
+            else None
+        ),
+        mla_kv_latent_dim=(
+            int(value["mla_kv_latent_dim"])
+            if value.get("mla_kv_latent_dim") is not None
+            else None
+        ),
+        moe_active_experts=(
+            int(value["moe_active_experts"])
+            if value.get("moe_active_experts") is not None
+            else None
+        ),
         bindings_prepared=bool(value.get("bindings_prepared", False)),
         buffers_bound=bool(value.get("buffers_bound", False)),
         buffer_count=int(value.get("buffer_count", 0)),
         buffer_bytes=int(value.get("buffer_bytes", 0)),
+        source_quantized_binding_count=int(value.get("source_quantized_binding_count", 0)),
+        source_q4_k_binding_count=int(value.get("source_q4_k_binding_count", 0)),
+        source_q5_k_binding_count=int(value.get("source_q5_k_binding_count", 0)),
+        source_q6_k_binding_count=int(value.get("source_q6_k_binding_count", 0)),
+        source_q8_0_binding_count=int(value.get("source_q8_0_binding_count", 0)),
+    )
+
+
+def _source_quantization_from_dict(value: dict[str, Any]) -> SourceQuantizationInfo:
+    return SourceQuantizationInfo(
+        format=str(value.get("format", "")),
+        tensor_type_counts={
+            str(key): int(count)
+            for key, count in dict(value.get("tensor_type_counts", {})).items()
+        },
+        quantized_tensor_count=int(value.get("quantized_tensor_count", 0)),
+        contains_quantized_tensors=bool(value.get("contains_quantized_tensors", False)),
+    )
+
+
+def _runtime_status_from_dict(value: dict[str, Any]) -> RuntimeStatusInfo:
+    return RuntimeStatusInfo(
+        ready=bool(value.get("ready", True)),
+        blockers=[str(item) for item in value.get("blockers", [])],
+        notes=[str(item) for item in value.get("notes", [])],
     )
 
 
@@ -1154,7 +1227,9 @@ __all__ = [
     "MlxRuntimeInfo",
     "RequestReport",
     "RuntimeInfo",
+    "RuntimeStatusInfo",
     "Session",
+    "SourceQuantizationInfo",
     "StepReport",
     "download_model",
 ]
