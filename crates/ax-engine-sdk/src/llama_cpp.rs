@@ -283,12 +283,8 @@ pub fn run_blocking_generate(
     config: &LlamaCppConfig,
     request: &GenerateRequest,
 ) -> Result<GenerateResponse, LlamaCppBackendError> {
-    if runtime.selected_backend != SelectedBackend::LlamaCpp {
-        return Err(LlamaCppBackendError::BackendConfigMismatch {
-            configured_backend: SelectedBackend::LlamaCpp,
-            resolved_backend: runtime.selected_backend,
-        });
-    }
+    ensure_llama_cpp_backend(runtime)?;
+
     run_llama_cpp_generate(request_id, runtime, config, request)
 }
 
@@ -297,13 +293,20 @@ pub(crate) fn start_streaming_generate(
     config: &LlamaCppConfig,
     request: &GenerateRequest,
 ) -> Result<LlamaCppStreamHandle, LlamaCppBackendError> {
+    ensure_llama_cpp_backend(runtime)?;
+
+    start_llama_cpp_streaming_generate(config, request)
+}
+
+fn ensure_llama_cpp_backend(runtime: &RuntimeReport) -> Result<(), LlamaCppBackendError> {
     if runtime.selected_backend != SelectedBackend::LlamaCpp {
         return Err(LlamaCppBackendError::BackendConfigMismatch {
             configured_backend: SelectedBackend::LlamaCpp,
             resolved_backend: runtime.selected_backend,
         });
     }
-    start_llama_cpp_streaming_generate(config, request)
+
+    Ok(())
 }
 
 fn run_llama_cpp_generate(
