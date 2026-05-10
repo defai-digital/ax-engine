@@ -85,7 +85,7 @@ pub enum GenerateStreamEvent {
     Response(GenerateStreamResponseEvent),
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
 pub struct GenerateRouteReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_plan: Option<String>,
@@ -642,14 +642,7 @@ mod tests {
                 max_output_tokens: 4,
                 cancel_requested: false,
                 execution_plan_ref: None,
-                route: GenerateRouteReport {
-                    execution_plan: None,
-                    attention_route: None,
-                    kv_mode: None,
-                    prefix_cache_path: None,
-                    barrier_mode: None,
-                    crossover_decisions: BTreeMap::new(),
-                },
+                route: GenerateRouteReport::default(),
                 finish_reason: Some(GenerateFinishReason::Stop),
                 terminal_stop_reason: Some(StopReason::EosToken),
                 last_error: None,
@@ -717,14 +710,7 @@ mod tests {
             finish_reason: Some(GenerateFinishReason::Stop),
             step_count: 2,
             ttft_step: Some(1),
-            route: GenerateRouteReport {
-                execution_plan: None,
-                attention_route: None,
-                kv_mode: None,
-                prefix_cache_path: None,
-                barrier_mode: None,
-                crossover_decisions: BTreeMap::new(),
-            },
+            route: GenerateRouteReport::default(),
             runtime: RuntimeReport {
                 selected_backend: SelectedBackend::Mlx,
                 support_tier: SupportTier::MlxPreview,
@@ -759,14 +745,7 @@ mod tests {
             finish_reason: Some(GenerateFinishReason::Stop),
             step_count: 0,
             ttft_step: None,
-            route: GenerateRouteReport {
-                execution_plan: None,
-                attention_route: None,
-                kv_mode: None,
-                prefix_cache_path: None,
-                barrier_mode: None,
-                crossover_decisions: BTreeMap::new(),
-            },
+            route: GenerateRouteReport::default(),
             runtime: RuntimeReport {
                 selected_backend: SelectedBackend::LlamaCpp,
                 support_tier: SupportTier::LlamaCpp,
