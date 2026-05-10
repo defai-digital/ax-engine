@@ -215,12 +215,7 @@ pub(crate) fn start_streaming_generate(
     config: &MlxLmConfig,
     request: &GenerateRequest,
 ) -> Result<MlxLmStreamHandle, MlxLmBackendError> {
-    if runtime.selected_backend != SelectedBackend::MlxLmDelegated {
-        return Err(MlxLmBackendError::BackendConfigMismatch {
-            configured_backend: SelectedBackend::MlxLmDelegated,
-            resolved_backend: runtime.selected_backend,
-        });
-    }
+    ensure_mlx_lm_backend(runtime)?;
 
     match config {
         MlxLmConfig::ServerCompletion(config) => {
@@ -234,12 +229,7 @@ pub fn start_streaming_chat_generate(
     config: &MlxLmConfig,
     request: &MlxLmChatGenerateRequest,
 ) -> Result<MlxLmStreamHandle, MlxLmBackendError> {
-    if runtime.selected_backend != SelectedBackend::MlxLmDelegated {
-        return Err(MlxLmBackendError::BackendConfigMismatch {
-            configured_backend: SelectedBackend::MlxLmDelegated,
-            resolved_backend: runtime.selected_backend,
-        });
-    }
+    ensure_mlx_lm_backend(runtime)?;
 
     match config {
         MlxLmConfig::ServerCompletion(config) => {
@@ -279,6 +269,17 @@ fn start_mlx_lm_server_completion_stream(
     let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(MlxLmStreamHandle::new(endpoint, reader))
+}
+
+fn ensure_mlx_lm_backend(runtime: &RuntimeReport) -> Result<(), MlxLmBackendError> {
+    if runtime.selected_backend != SelectedBackend::MlxLmDelegated {
+        return Err(MlxLmBackendError::BackendConfigMismatch {
+            configured_backend: SelectedBackend::MlxLmDelegated,
+            resolved_backend: runtime.selected_backend,
+        });
+    }
+
+    Ok(())
 }
 
 fn start_mlx_lm_server_chat_completion_stream(
@@ -371,12 +372,7 @@ pub fn run_blocking_generate(
     config: &MlxLmConfig,
     request: &GenerateRequest,
 ) -> Result<GenerateResponse, MlxLmBackendError> {
-    if runtime.selected_backend != SelectedBackend::MlxLmDelegated {
-        return Err(MlxLmBackendError::BackendConfigMismatch {
-            configured_backend: SelectedBackend::MlxLmDelegated,
-            resolved_backend: runtime.selected_backend,
-        });
-    }
+    ensure_mlx_lm_backend(runtime)?;
 
     match config {
         MlxLmConfig::ServerCompletion(config) => {
@@ -391,12 +387,7 @@ pub fn run_blocking_chat_generate(
     config: &MlxLmConfig,
     request: &MlxLmChatGenerateRequest,
 ) -> Result<GenerateResponse, MlxLmBackendError> {
-    if runtime.selected_backend != SelectedBackend::MlxLmDelegated {
-        return Err(MlxLmBackendError::BackendConfigMismatch {
-            configured_backend: SelectedBackend::MlxLmDelegated,
-            resolved_backend: runtime.selected_backend,
-        });
-    }
+    ensure_mlx_lm_backend(runtime)?;
 
     match config {
         MlxLmConfig::ServerCompletion(config) => {
