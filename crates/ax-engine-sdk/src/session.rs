@@ -1768,24 +1768,13 @@ fn build_mlx_lm_stream_state(
     stream: MlxLmStreamHandle,
 ) -> GenerateStreamState {
     let route = GenerateRouteReport::with_execution_plan(MLX_LM_STREAM_EXECUTION_PLAN);
-    let current_report = SessionRequestReport {
+    let current_report = initial_stream_request_report(
         request_id,
-        model_id: request.model_id.clone(),
-        state: SessionRequestState::Waiting,
-        prompt_tokens: request.input_tokens.clone(),
-        processed_prompt_tokens: 0,
-        output_tokens: Vec::new(),
-        output_token_logprobs: Vec::new(),
-        prompt_len: 0,
-        output_len: 0,
-        max_output_tokens: request.max_output_tokens,
-        cancel_requested: false,
-        execution_plan_ref: route.execution_plan.clone(),
+        request.model_id,
+        request.input_tokens,
+        request.max_output_tokens,
         route,
-        finish_reason: None,
-        terminal_stop_reason: None,
-        last_error: None,
-    };
+    );
 
     GenerateStreamState::MlxLm(Box::new(MlxLmGenerateStreamState::new(
         request_id,
@@ -2166,24 +2155,13 @@ fn build_llama_cpp_stream_state(
     route_backend: SelectedBackend,
 ) -> GenerateStreamState {
     let route = llama_cpp_stream_route(route_backend);
-    let current_report = SessionRequestReport {
+    let current_report = initial_stream_request_report(
         request_id,
-        model_id: request.model_id,
-        state: SessionRequestState::Waiting,
-        prompt_tokens: request.input_tokens,
-        processed_prompt_tokens: 0,
-        output_tokens: Vec::new(),
-        output_token_logprobs: Vec::new(),
-        prompt_len: 0,
-        output_len: 0,
-        max_output_tokens: request.max_output_tokens,
-        cancel_requested: false,
-        execution_plan_ref: route.execution_plan.clone(),
+        request.model_id,
+        request.input_tokens,
+        request.max_output_tokens,
         route,
-        finish_reason: None,
-        terminal_stop_reason: None,
-        last_error: None,
-    };
+    );
 
     GenerateStreamState::LlamaCpp(Box::new(LlamaCppGenerateStreamState::new(
         request_id,
@@ -2192,6 +2170,33 @@ fn build_llama_cpp_stream_state(
         request.input_text,
         stream,
     )))
+}
+
+fn initial_stream_request_report(
+    request_id: u64,
+    model_id: String,
+    input_tokens: Vec<u32>,
+    max_output_tokens: u32,
+    route: GenerateRouteReport,
+) -> SessionRequestReport {
+    SessionRequestReport {
+        request_id,
+        model_id,
+        state: SessionRequestState::Waiting,
+        prompt_tokens: input_tokens,
+        processed_prompt_tokens: 0,
+        output_tokens: Vec::new(),
+        output_token_logprobs: Vec::new(),
+        prompt_len: 0,
+        output_len: 0,
+        max_output_tokens,
+        cancel_requested: false,
+        execution_plan_ref: route.execution_plan.clone(),
+        route,
+        finish_reason: None,
+        terminal_stop_reason: None,
+        last_error: None,
+    }
 }
 
 fn run_delegated_generate_with_config(
