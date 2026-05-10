@@ -771,14 +771,7 @@ mod tests {
             finish_reason: Some(GenerateFinishReason::MaxOutputTokens),
             step_count: 0,
             ttft_step: None,
-            route: GenerateRouteReport {
-                execution_plan: Some("llama_cpp.blocking_cli".to_string()),
-                attention_route: None,
-                kv_mode: None,
-                prefix_cache_path: None,
-                barrier_mode: None,
-                crossover_decisions: BTreeMap::new(),
-            },
+            route: GenerateRouteReport::with_execution_plan("llama_cpp.blocking_cli"),
             runtime: runtime_report(
                 SelectedBackend::LlamaCpp,
                 CapabilityReport::llama_cpp_cli_baseline(),
@@ -807,14 +800,7 @@ mod tests {
             finish_reason: Some(GenerateFinishReason::MaxOutputTokens),
             step_count: 0,
             ttft_step: None,
-            route: GenerateRouteReport {
-                execution_plan: Some("mlx.preview".to_string()),
-                attention_route: None,
-                kv_mode: None,
-                prefix_cache_path: None,
-                barrier_mode: None,
-                crossover_decisions: BTreeMap::new(),
-            },
+            route: GenerateRouteReport::with_execution_plan("mlx.preview"),
             runtime: runtime_report(SelectedBackend::Mlx, CapabilityReport::mlx_preview(), None),
         };
 
