@@ -349,7 +349,11 @@ struct DownloadJobSnapshot {
 struct ManagedServer {
     child: Child,
     port: u16,
+    repo_id: String,
+    model_id: String,
     model_dir: String,
+    ready: bool,
+    stderr_file: Option<PathBuf>,
 }
 
 struct WebRuntime {
@@ -376,8 +380,30 @@ impl WebRuntime {
             return;
         };
         if let Ok(Some(status)) = server.child.try_wait() {
-            self.status_message = format!("Server exited with {status}");
+            // Try to read the last few lines of stderr for a user-facing hint.
+            let hint = server
+                .stderr_file
+                .as_deref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|s| {
+                    s.lines()
+                        .rfind(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string()
+                })
+                .filter(|s| !s.is_empty())
+                .map(|s| format!(": {s}"))
+                .unwrap_or_default();
+            self.status_message = format!("Server exited ({status}){hint}");
             self.server = None;
+        } else if !server.ready && local_port_accepts(server.port) {
+            server.ready = true;
+            self.status_message = format!(
+                "Server ready on port {} with {}",
+                server.port,
+                short_model_label(&server.repo_id)
+            );
         }
     }
 
@@ -386,6 +412,14 @@ impl WebRuntime {
             .as_ref()
             .map(|server| server.port)
             .unwrap_or(self.state.server_control.port)
+    }
+
+    fn server_model_dir(&self) -> Option<String> {
+        self.server.as_ref().map(|s| s.model_dir.clone())
+    }
+
+    fn server_model_id(&self) -> Option<String> {
+        self.server.as_ref().map(|s| s.model_id.clone())
     }
 }
 
@@ -441,8 +475,11 @@ fn handle_client(mut stream: TcpStream, runtime: SharedRuntime) -> Result<(), Ma
     Ok(())
 }
 
-/// Forward a chat-completions request to the running inference server and
-/// stream the response (SSE or JSON) back to the browser client.
+/// Forward a chat request to the inference server.
+///
+/// Uses `/v1/generate/stream` (native AX endpoint that works with all
+/// backends including native MLX), converting OpenAI-format messages to
+/// a ChatML prompt and re-emitting native SSE as OpenAI-compatible chunks.
 fn proxy_chat(
     client: &mut TcpStream,
     runtime: &SharedRuntime,
@@ -450,40 +487,74 @@ fn proxy_chat(
 ) -> Result<(), ManagerError> {
     use std::io::Write;
 
-    let port = runtime
-        .lock()
-        .map_err(|_| ManagerError::Message("runtime lock poisoned".to_string()))?
-        .server_port();
+    let (port, model_dir, managed_model_id) = {
+        let mut rt = runtime
+            .lock()
+            .map_err(|_| ManagerError::Message("runtime lock poisoned".to_string()))?;
+        rt.cleanup_server();
+        let Some(server) = rt.server.as_ref() else {
+            return write_json_error(
+                client,
+                "503 Service Unavailable",
+                "server is not running. Start the selected model first.",
+            );
+        };
+        if !server.ready {
+            return write_json_error(
+                client,
+                "503 Service Unavailable",
+                "server is still starting. Try again after the status changes to online.",
+            );
+        }
+        (server.port, rt.server_model_dir(), rt.server_model_id())
+    };
+
+    // Prefer the model id that manager used to launch the server. Falling back
+    // to /v1/models keeps compatibility with externally started servers.
+    let model_id = managed_model_id
+        .or_else(|| fetch_server_model_id(port))
+        .unwrap_or_else(|| "default".to_string());
+
+    // Convert OpenAI messages payload to a native GenerateRequest.
+    let native_body = match openai_to_generate_request(body, &model_id, model_dir.as_deref()) {
+        Ok(b) => b,
+        Err(e) => {
+            let err = format!(r#"{{"error":"bad request: {e}"}}"#);
+            let resp = format!(
+                "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                err.len(),
+                err
+            );
+            client.write_all(resp.as_bytes())?;
+            return Ok(());
+        }
+    };
 
     // Connect to inference server.
-    let mut upstream =
-        match std::net::TcpStream::connect(format!("127.0.0.1:{port}")) {
-            Ok(s) => s,
-            Err(e) => {
-                let err_body = format!(r#"{{"error":"server not reachable: {e}"}}"#);
-                let resp = format!(
-                    "HTTP/1.1 503 Service Unavailable\r\n\
-                     content-type: application/json\r\n\
-                     content-length: {}\r\n\
-                     connection: close\r\n\r\n{}",
-                    err_body.len(),
-                    err_body
-                );
-                client.write_all(resp.as_bytes())?;
-                return Ok(());
+    let mut upstream = match std::net::TcpStream::connect(format!("127.0.0.1:{port}")) {
+        Ok(s) => s,
+        Err(e) => {
+            if let Ok(mut rt) = runtime.lock() {
+                rt.cleanup_server();
             }
-        };
+            return write_json_error(
+                client,
+                "503 Service Unavailable",
+                &format!("server is not ready on port {port}: {e}"),
+            );
+        }
+    };
     upstream.set_read_timeout(Some(Duration::from_secs(120)))?;
 
-    // Forward request to upstream.
+    // POST to the native streaming endpoint.
     let forward = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\n\
+        "POST /v1/generate/stream HTTP/1.1\r\n\
          Host: 127.0.0.1:{port}\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\r\n{}",
-        body.len(),
-        body
+        native_body.len(),
+        native_body
     );
     upstream.write_all(forward.as_bytes())?;
 
@@ -500,51 +571,335 @@ fn proxy_chat(
             break;
         }
         if buf.len() > 64 * 1024 {
-            return Err(ManagerError::Message("upstream headers too large".to_string()));
+            return Err(ManagerError::Message(
+                "upstream headers too large".to_string(),
+            ));
         }
     }
 
     let header_end = find_header_end(&buf).unwrap_or(buf.len());
     let header_str = String::from_utf8_lossy(&buf[..header_end]);
-    let status_code = header_str
+    let is_sse = header_str
+        .to_ascii_lowercase()
+        .contains("text/event-stream");
+    let status_ok = header_str
         .lines()
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
-        .unwrap_or("200");
-    let content_type = if header_str.to_ascii_lowercase().contains("text/event-stream") {
-        "text/event-stream"
-    } else {
-        "application/json"
-    };
+        .map(|s| s.starts_with('2'))
+        .unwrap_or(false);
 
-    // Write response headers to browser client.
-    let client_headers = format!(
-        "HTTP/1.1 {status_code} OK\r\n\
-         content-type: {content_type}\r\n\
-         cache-control: no-cache\r\n\
-         connection: close\r\n\r\n"
-    );
-    client.write_all(client_headers.as_bytes())?;
-
-    // Forward body already buffered from upstream.
-    let body_start = header_end + 4;
-    if body_start < buf.len() {
-        client.write_all(&buf[body_start..])?;
-        client.flush()?;
+    if !is_sse || !status_ok {
+        // Read the error body and forward as a clean JSON error.
+        let body_start = (header_end + 4).min(buf.len());
+        let mut err_bytes = buf[body_start..].to_vec();
+        loop {
+            match upstream.read(&mut tmp) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => err_bytes.extend_from_slice(&tmp[..n]),
+            }
+            if err_bytes.len() > 64 * 1024 {
+                break;
+            }
+        }
+        let err_text = String::from_utf8_lossy(&err_bytes);
+        let msg = serde_json::from_str::<serde_json::Value>(&err_text)
+            .ok()
+            .and_then(|v| {
+                let e = v.get("error")?;
+                if e.is_string() {
+                    e.as_str().map(str::to_string)
+                } else {
+                    e.get("message")?.as_str().map(str::to_string)
+                }
+            })
+            .unwrap_or_else(|| err_text.trim().to_string());
+        let out = format!(
+            r#"{{"error":{}}}"#,
+            serde_json::to_string(&msg).unwrap_or_default()
+        );
+        let resp = format!(
+            "HTTP/1.1 502 Bad Gateway\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            out.len(),
+            out
+        );
+        client.write_all(resp.as_bytes())?;
+        return Ok(());
     }
 
-    // Stream remaining upstream data to client.
+    // Upstream is native SSE. Write OpenAI-compatible SSE headers to client.
+    client.write_all(
+        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
+    )?;
+
+    // Stream native SSE → OpenAI SSE.
+    let body_start = (header_end + 4).min(buf.len());
+    stream_native_as_openai(client, &mut upstream, &buf[body_start..])?;
+
+    Ok(())
+}
+
+fn write_json_error(
+    client: &mut TcpStream,
+    status: &str,
+    message: &str,
+) -> Result<(), ManagerError> {
+    let body = serde_json::to_string(&json!({ "error": message }))?;
+    let resp = format!(
+        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(resp.as_bytes())?;
+    Ok(())
+}
+
+/// Query `/v1/models` and return the first model id the server reports.
+fn fetch_server_model_id(port: u16) -> Option<String> {
+    use std::io::Write;
+    let mut conn = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).ok()?;
+    conn.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    let req =
+        format!("GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    conn.write_all(req.as_bytes()).ok()?;
+
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
     loop {
-        match upstream.read(&mut tmp) {
-            Ok(0) => break,
-            Ok(n) => {
-                if client.write_all(&tmp[..n]).is_err() {
-                    break;
-                }
-                client.flush().ok();
-            }
-            Err(_) => break,
+        match conn.read(&mut tmp) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
         }
+        if buf.len() > 32 * 1024 {
+            break;
+        }
+    }
+    let header_end = find_header_end(&buf)?;
+    let body = String::from_utf8_lossy(&buf[header_end + 4..]);
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    v["data"]
+        .as_array()?
+        .first()?
+        .get("id")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Detect the prompt template family from a model ID or snapshot directory name.
+fn detect_prompt_family(model_id: &str, model_dir: Option<&str>) -> &'static str {
+    let classify = |s: &str| -> &'static str {
+        let lo = s.to_lowercase();
+        if lo.contains("gemma") {
+            "gemma"
+        } else if lo.contains("glm") {
+            "glm"
+        } else {
+            "chatml"
+        }
+    };
+    let from_id = classify(model_id);
+    if from_id != "chatml" {
+        return from_id;
+    }
+    model_dir
+        .and_then(|dir| dir.trim_end_matches('/').rsplit('/').next())
+        .map(classify)
+        .filter(|&f| f != "chatml")
+        .unwrap_or("chatml")
+}
+
+/// Convert an OpenAI chat-completions request body into a native
+/// GenerateRequest JSON string using the correct prompt template for the model.
+fn openai_to_generate_request(
+    body: &str,
+    model_id: &str,
+    model_dir: Option<&str>,
+) -> Result<String, ManagerError> {
+    let v: serde_json::Value = serde_json::from_str(body)?;
+    let messages = v["messages"]
+        .as_array()
+        .ok_or_else(|| ManagerError::Message("messages field required".to_string()))?;
+
+    let max_tokens = v["max_tokens"].as_u64().unwrap_or(2048) as u32;
+    let temperature = v["temperature"].as_f64().unwrap_or(0.7) as f32;
+
+    let family = detect_prompt_family(model_id, model_dir);
+    let mut prompt = String::new();
+    match family {
+        "gemma" => {
+            for msg in messages {
+                let role = msg["role"].as_str().unwrap_or("user");
+                let content = msg["content"].as_str().unwrap_or("");
+                let turn = if role == "assistant" { "model" } else { role };
+                prompt.push_str(&format!("<start_of_turn>{turn}\n{content}<end_of_turn>\n"));
+            }
+            prompt.push_str("<start_of_turn>model\n");
+        }
+        "glm" => {
+            prompt.push_str("[gMASK]<sop>");
+            for msg in messages {
+                let role = msg["role"].as_str().unwrap_or("user");
+                let content = msg["content"].as_str().unwrap_or("");
+                let tag = match role {
+                    "assistant" => "<|assistant|>",
+                    "system" => "<|system|>",
+                    _ => "<|user|>",
+                };
+                prompt.push_str(&format!("{tag}\n{content}"));
+            }
+            prompt.push_str("<|assistant|>\n");
+        }
+        _ => {
+            for msg in messages {
+                let role = msg["role"].as_str().unwrap_or("user");
+                let content = msg["content"].as_str().unwrap_or("");
+                prompt.push_str(&format!("<|im_start|>{role}\n{content}<|im_end|>\n"));
+            }
+            prompt.push_str("<|im_start|>assistant\n");
+        }
+    }
+
+    // Native MLX backend requires pre-tokenized input_tokens.
+    // Tokenize via the HuggingFace tokenizers Python package which is a transitive
+    // dependency of mlx-lm and is already installed in the user's Python environment.
+    let input_tokens = model_dir
+        .map(|dir| tokenize_prompt(dir, &prompt))
+        .transpose()?
+        .unwrap_or_default();
+
+    let native = json!({
+        "model_id": model_id,
+        "input_tokens": input_tokens,
+        "max_output_tokens": max_tokens,
+        "sampling": {
+            "temperature": temperature,
+            "top_p": 1.0,
+            "top_k": 0,
+            "seed": 0
+        }
+    });
+
+    Ok(native.to_string())
+}
+
+/// Tokenize `text` using the model's tokenizer.json via the Python `tokenizers` package.
+/// Returns token IDs suitable for the native MLX generate endpoint.
+fn tokenize_prompt(model_dir: &str, text: &str) -> Result<Vec<u32>, ManagerError> {
+    // The `tokenizers` package is a dependency of mlx-lm so it is always present.
+    let script = "import sys, json\n\
+        from tokenizers import Tokenizer\n\
+        t = Tokenizer.from_file(sys.argv[1] + '/tokenizer.json')\n\
+        t.no_truncation()\n\
+        enc = t.encode(sys.argv[2])\n\
+        print(json.dumps(enc.ids))\n"
+        .to_string();
+    let model_dir = model_dir.to_string();
+    let text = text.to_string();
+
+    // Run in a thread so we can apply a hard timeout — Python startup can be slow
+    // and we must not block the request handler indefinitely.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = Command::new("python3")
+            .args(["-c", &script, &model_dir, &text])
+            .output();
+        let _ = tx.send(result);
+    });
+
+    let output = rx
+        .recv_timeout(Duration::from_secs(15))
+        .map_err(|_| ManagerError::Message("tokenizer timed out after 15s".to_string()))?
+        .map_err(|e| ManagerError::Message(format!("tokenizer subprocess failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ManagerError::Message(format!(
+            "tokenizer error: {}",
+            stderr.trim()
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let ids: Vec<u64> = serde_json::from_str(stdout.trim())
+        .map_err(|e| ManagerError::Message(format!("tokenizer output parse error: {e}")))?;
+    Ok(ids.into_iter().map(|id| id as u32).collect())
+}
+
+/// Read native AX Engine SSE from `upstream` (and any already-buffered `initial` bytes)
+/// and re-emit as OpenAI-compatible SSE to `client`.
+///
+/// Native format per event:
+///   event: step
+///   data: {"delta_text":"hello",...}
+///
+/// OpenAI format emitted:
+///   data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null,"index":0}]}
+fn stream_native_as_openai(
+    client: &mut TcpStream,
+    upstream: &mut TcpStream,
+    initial: &[u8],
+) -> Result<(), ManagerError> {
+    use std::io::Write;
+
+    let mut raw = Vec::from(initial);
+    let mut tmp = [0u8; 4096];
+    let mut current_event = String::new();
+    let mut done_sent = false;
+
+    loop {
+        // Process all complete lines already in the buffer.
+        while let Some(nl) = raw.iter().position(|&b| b == b'\n') {
+            let line_bytes = raw.drain(..=nl).collect::<Vec<_>>();
+            let line = String::from_utf8_lossy(&line_bytes);
+            let line = line.trim_end_matches(['\r', '\n']);
+
+            if let Some(ev) = line.strip_prefix("event: ") {
+                current_event = ev.to_string();
+            } else if let Some(data) = line.strip_prefix("data: ") {
+                match current_event.as_str() {
+                    "step" => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data)
+                            && let Some(delta) = v["delta_text"].as_str()
+                            && !delta.is_empty()
+                        {
+                            let chunk = format!(
+                                "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":null,\"index\":0}}]}}\n\n",
+                                serde_json::to_string(delta).unwrap_or_default()
+                            );
+                            if client.write_all(chunk.as_bytes()).is_err() {
+                                return Ok(());
+                            }
+                            client.flush().ok();
+                        }
+                    }
+                    "response" => {
+                        // Final event — send finish chunk then [DONE].
+                        let _ = client.write_all(
+                            b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}]}\n\n\
+                              data: [DONE]\n\n",
+                        );
+                        client.flush().ok();
+                        done_sent = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if done_sent {
+            break;
+        }
+
+        // Read more bytes from upstream.
+        match upstream.read(&mut tmp) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => raw.extend_from_slice(&tmp[..n]),
+        }
+    }
+
+    if !done_sent {
+        let _ = client.write_all(b"data: [DONE]\n\n");
+        client.flush().ok();
     }
 
     Ok(())
@@ -554,7 +909,7 @@ fn route_request(request: HttpRequest, runtime: SharedRuntime) -> Result<String,
     let path = request.path.split('?').next().unwrap_or("/");
     Ok(match (request.method.as_str(), path) {
         ("GET", "/") | ("GET", "/index.html") => {
-            http_response("200 OK", "text/html; charset=utf-8", web::index_html())
+            http_response("200 OK", "text/html; charset=utf-8", &web::index_html())
         }
         ("GET", "/assets/manager.css") => {
             http_response("200 OK", "text/css; charset=utf-8", web::manager_css())
@@ -630,8 +985,29 @@ fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
     let port = runtime.server_port();
     let base_url = format!("http://127.0.0.1:{port}");
     let server_status = match runtime.server.as_ref() {
-        Some(server) => format!("Running on port {} ({})", server.port, server.model_dir),
-        None => "Stopped".to_string(),
+        Some(server) if server.ready => {
+            format!(
+                "Running on port {} ({})",
+                server.port,
+                short_model_label(&server.repo_id)
+            )
+        }
+        Some(server) => {
+            format!(
+                "Starting on port {} ({})",
+                server.port,
+                short_model_label(&server.repo_id)
+            )
+        }
+        None => {
+            // If the last status_message is a crash hint, surface it here too.
+            let msg = &runtime.status_message;
+            if msg.starts_with("Server exited") {
+                msg.clone()
+            } else {
+                "Stopped".to_string()
+            }
+        }
     };
     let selected_repo_id = runtime.state.model_download.selected_entry().repo_id;
     let download_status = runtime
@@ -644,12 +1020,11 @@ fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
         let mut models: Vec<Value> = Vec::new();
         // 1. Successful download jobs from this session.
         for job in runtime.download_jobs.iter().rev() {
-            if job.status == "succeeded" {
-                if let Some(ref path) = job.model_dir {
-                    if seen.insert(job.repo_id.clone()) {
-                        models.push(json!({ "repo_id": job.repo_id, "path": path }));
-                    }
-                }
+            if job.status == "succeeded"
+                && let Some(ref path) = job.model_dir
+                && seen.insert(job.repo_id.clone())
+            {
+                models.push(json!({ "repo_id": job.repo_id, "path": path }));
             }
         }
         // 2. Doctor-reported pre-existing model (if not already listed).
@@ -668,10 +1043,10 @@ fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
             if seen.contains(entry.repo_id) {
                 continue;
             }
-            if let Some(path) = hf_cache_path(entry.repo_id) {
-                if seen.insert(entry.repo_id.to_string()) {
-                    models.push(json!({ "repo_id": entry.repo_id, "path": path }));
-                }
+            if let Some(path) = hf_cache_path(entry.repo_id)
+                && seen.insert(entry.repo_id.to_string())
+            {
+                models.push(json!({ "repo_id": entry.repo_id, "path": path }));
             }
         }
         models
@@ -687,9 +1062,13 @@ fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
         "readiness": web::readiness_json(&runtime.state),
         "server": {
             "status": server_status,
-            "running": runtime.server.is_some(),
+            "running": runtime.server.as_ref().is_some_and(|server| server.ready),
+            "starting": runtime.server.as_ref().is_some_and(|server| !server.ready),
             "port": port,
             "base_url": base_url,
+            "model_id": runtime.server.as_ref().map(|server| server.model_id.clone()),
+            "repo_id": runtime.server.as_ref().map(|server| server.repo_id.clone()),
+            "model_dir": runtime.server.as_ref().map(|server| server.model_dir.clone()),
             "endpoints": web::server_endpoints(&base_url),
         },
         "jobs": runtime.download_jobs.iter().map(download_job_value).collect::<Vec<_>>(),
@@ -793,34 +1172,113 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let requested_repo_id = payload
+        .get("repo_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let manual_model_dir = payload
+        .get("manual_model_dir")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let mut runtime = runtime
         .lock()
         .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
     stop_server_locked(&mut runtime);
-    let model_dir = requested_model_dir
-        .or_else(|| latest_model_dir(&runtime))
-        .or_else(|| web::current_model_dir(&runtime.state))
-        .ok_or_else(|| {
-            ManagerError::Message("model_dir is required to start server".to_string())
-        })?;
-    let child = Command::new("ax-engine-server")
+    let repo_id = requested_repo_id.unwrap_or_else(|| "local".to_string());
+    let model_dir = resolve_start_model_dir(
+        &runtime,
+        if repo_id == "local" {
+            None
+        } else {
+            Some(repo_id.as_str())
+        },
+        requested_model_dir.as_deref(),
+        manual_model_dir,
+    )?;
+    // Resolve binary at call-time; background threads may not inherit the user's full PATH.
+    let server_bin = which_server_binary();
+
+    // Capture stderr to a temp file so crash messages are visible in the UI.
+    let stderr_path = std::env::temp_dir().join(format!("ax-engine-server-{port}.log"));
+    let stderr_file = std::fs::File::create(&stderr_path).ok();
+
+    let child = Command::new(&server_bin)
         .arg("--mlx")
         .arg("--mlx-model-artifacts-dir")
         .arg(&model_dir)
+        .arg("--model-id")
+        .arg(&repo_id)
         .arg("--port")
         .arg(port.to_string())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(match stderr_file {
+            Some(f) => Stdio::from(f),
+            None => Stdio::null(),
+        })
+        .spawn()
+        .map_err(|e| {
+            ManagerError::Message(format!(
+                "failed to launch ax-engine-server ({server_bin}): {e}"
+            ))
+        })?;
     runtime.server = Some(ManagedServer {
         child,
         port: port as u16,
+        repo_id: repo_id.clone(),
         model_dir: model_dir.clone(),
+        stderr_file: Some(stderr_path),
     });
     runtime.state.server_control.port = port as u16;
-    runtime.status_message = format!("Server starting on port {port}");
-    Ok(json!({"status": "starting", "port": port, "model_dir": model_dir}))
+    runtime.status_message = format!(
+        "Server starting on port {port} with {}",
+        short_model_label(&repo_id)
+    );
+    Ok(json!({"status": "starting", "port": port, "repo_id": repo_id, "model_dir": model_dir}))
+}
+
+fn resolve_start_model_dir(
+    runtime: &WebRuntime,
+    repo_id: Option<&str>,
+    requested_model_dir: Option<&str>,
+    manual_model_dir: bool,
+) -> Result<String, ManagerError> {
+    if manual_model_dir {
+        return requested_model_dir
+            .map(str::to_string)
+            .ok_or_else(|| ManagerError::Message("manual model_dir is empty".to_string()));
+    }
+
+    if let Some(repo_id) = repo_id {
+        if let Some(path) = model_dir_for_repo(runtime, repo_id) {
+            return Ok(path);
+        }
+        return Err(ManagerError::Message(format!(
+            "selected model is not downloaded: {repo_id}"
+        )));
+    }
+
+    requested_model_dir.map(str::to_string).ok_or_else(|| {
+        ManagerError::Message(
+            "model_dir is required — select a downloaded model and enter its path".to_string(),
+        )
+    })
+}
+
+fn model_dir_for_repo(runtime: &WebRuntime, repo_id: &str) -> Option<String> {
+    runtime
+        .download_jobs
+        .iter()
+        .rev()
+        .find(|job| job.status == "succeeded" && job.repo_id == repo_id)
+        .and_then(|job| job.model_dir.clone())
+        .or_else(|| hf_cache_path(repo_id))
+}
+
+fn short_model_label(repo_id: &str) -> &str {
+    repo_id.rsplit('/').next().unwrap_or(repo_id)
 }
 
 fn stop_server(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
@@ -837,12 +1295,18 @@ fn stop_server(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
 }
 
 fn restart_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerError> {
-    {
+    let stopped = {
         let mut rt = runtime
             .lock()
             .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
-        stop_server_locked(&mut rt);
+        let s = stop_server_locked(&mut rt);
         rt.status_message = "Server restarting…".to_string();
+        s
+    };
+    // Brief pause OUTSIDE the lock so the OS can fully release the port
+    // without blocking concurrent state-poll or chat requests.
+    if stopped {
+        std::thread::sleep(Duration::from_millis(300));
     }
     start_server(runtime, body)
 }
@@ -854,6 +1318,26 @@ fn stop_server_locked(runtime: &mut WebRuntime) -> bool {
     let _ = server.child.kill();
     let _ = server.child.wait();
     true
+}
+
+/// Return the absolute path of `ax-engine-server`, falling back to the name
+/// itself (let the OS resolve from PATH) if which-lookup fails.
+fn which_server_binary() -> String {
+    // Prefer the binary next to the current executable (same release tree).
+    if let Ok(exe) = std::env::current_exe() {
+        let candidate = exe.with_file_name("ax-engine-server");
+        if candidate.is_file() {
+            return candidate.display().to_string();
+        }
+    }
+    // Scan PATH entries explicitly so background threads don't need the shell PATH.
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+        let candidate = Path::new(dir).join("ax-engine-server");
+        if candidate.is_file() {
+            return candidate.display().to_string();
+        }
+    }
+    "ax-engine-server".to_string()
 }
 
 fn latest_model_dir(runtime: &WebRuntime) -> Option<String> {
@@ -1376,6 +1860,59 @@ mod tests {
             error.to_string(),
             "download command exited unsuccessfully: missing dependency"
         );
+    }
+
+    #[test]
+    fn start_model_resolution_uses_selected_repo_not_stale_path() {
+        let mut runtime = WebRuntime::new(AppState::empty());
+        runtime.download_jobs.push(DownloadJobSnapshot {
+            id: "download-1".to_string(),
+            repo_id: "mlx-community/gemma-4-e2b-it-4bit".to_string(),
+            status: "succeeded".to_string(),
+            model_dir: Some("/models/gemma".to_string()),
+            message: None,
+        });
+
+        let resolved = resolve_start_model_dir(
+            &runtime,
+            Some("mlx-community/gemma-4-e2b-it-4bit"),
+            Some("/models/qwen3"),
+            false,
+        )
+        .expect("selected repo should resolve to its own model dir");
+
+        assert_eq!(resolved, "/models/gemma");
+    }
+
+    #[test]
+    fn start_model_resolution_rejects_missing_selected_repo() {
+        let runtime = WebRuntime::new(AppState::empty());
+        let error = resolve_start_model_dir(
+            &runtime,
+            Some("local-test/missing-selected-model"),
+            Some("/models/qwen3"),
+            false,
+        )
+        .expect_err("missing selected repo should not fall back to stale path");
+
+        assert_eq!(
+            error.to_string(),
+            "selected model is not downloaded: local-test/missing-selected-model"
+        );
+    }
+
+    #[test]
+    fn start_model_resolution_allows_manual_path_override() {
+        let runtime = WebRuntime::new(AppState::empty());
+        let resolved = resolve_start_model_dir(
+            &runtime,
+            Some("mlx-community/gemma-4-e2b-it-4bit"),
+            Some("/manual/model"),
+            true,
+        )
+        .expect("manual path should be accepted");
+
+        assert_eq!(resolved, "/manual/model");
     }
 
     #[test]
