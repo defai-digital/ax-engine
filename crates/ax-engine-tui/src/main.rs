@@ -431,6 +431,7 @@ fn run_web_manager(state: AppState, options: &Options) -> Result<(), ManagerErro
     let runtime = Arc::new(Mutex::new(WebRuntime::new(state)));
     let url = format!("http://{address}");
     println!("ax-engine-manager web={url}");
+    println!("Press Ctrl+C to stop.");
     if !options.no_open {
         open_browser(&url);
     }
@@ -1204,15 +1205,10 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
     // Capture stderr to a temp file so crash messages are visible in the UI.
     let stderr_path = std::env::temp_dir().join(format!("ax-engine-server-{port}.log"));
     let stderr_file = std::fs::File::create(&stderr_path).ok();
+    let launch = server_launch_plan(&repo_id, &model_dir, port as u16);
 
     let child = Command::new(&server_bin)
-        .arg("--mlx")
-        .arg("--mlx-model-artifacts-dir")
-        .arg(&model_dir)
-        .arg("--model-id")
-        .arg(&repo_id)
-        .arg("--port")
-        .arg(port.to_string())
+        .args(&launch.args)
         .stdout(Stdio::null())
         .stderr(match stderr_file {
             Some(f) => Stdio::from(f),
@@ -1228,7 +1224,9 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         child,
         port: port as u16,
         repo_id: repo_id.clone(),
+        model_id: launch.model_id.clone(),
         model_dir: model_dir.clone(),
+        ready: false,
         stderr_file: Some(stderr_path),
     });
     runtime.state.server_control.port = port as u16;
@@ -1236,7 +1234,71 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         "Server starting on port {port} with {}",
         short_model_label(&repo_id)
     );
-    Ok(json!({"status": "starting", "port": port, "repo_id": repo_id, "model_dir": model_dir}))
+    Ok(json!({
+        "status": "starting",
+        "port": port,
+        "repo_id": repo_id,
+        "model_id": launch.model_id,
+        "model_dir": model_dir
+    }))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ServerLaunchPlan {
+    args: Vec<String>,
+    model_id: String,
+}
+
+fn server_launch_plan(repo_id: &str, model_dir: &str, port: u16) -> ServerLaunchPlan {
+    let port_arg = port.to_string();
+    let repo_lower = repo_id.to_ascii_lowercase();
+    if let Some((preset, model_id)) = server_preset_for_repo(&repo_lower) {
+        return ServerLaunchPlan {
+            args: vec![
+                "--preset".to_string(),
+                preset.to_string(),
+                "--mlx-model-artifacts-dir".to_string(),
+                model_dir.to_string(),
+                "--port".to_string(),
+                port_arg,
+            ],
+            model_id: model_id.to_string(),
+        };
+    }
+
+    ServerLaunchPlan {
+        args: vec![
+            "--mlx".to_string(),
+            "--mlx-model-artifacts-dir".to_string(),
+            model_dir.to_string(),
+            "--model-id".to_string(),
+            repo_id.to_string(),
+            "--port".to_string(),
+            port_arg,
+        ],
+        model_id: repo_id.to_string(),
+    }
+}
+
+fn server_preset_for_repo(repo_lower: &str) -> Option<(&'static str, &'static str)> {
+    if repo_lower.contains("gemma-4-e2b") || repo_lower.contains("gemma4-e2b") {
+        Some(("gemma4-e2b", "gemma4-e2b"))
+    } else if repo_lower.contains("gemma-4-31b") || repo_lower.contains("gemma4-31b") {
+        Some(("gemma4-31b", "gemma4-31b"))
+    } else if repo_lower.contains("glm-4.7")
+        || repo_lower.contains("glm-4-7")
+        || repo_lower.contains("glm4.7")
+        || repo_lower.contains("glm47")
+    {
+        Some(("glm4.7-flash-4bit", "glm4_moe_lite"))
+    } else if repo_lower.contains("qwen3.6-35b")
+        || repo_lower.contains("qwen3-6-35b")
+        || repo_lower.contains("qwen36-35b")
+    {
+        Some(("qwen3.6-35b", "qwen3.6-35b"))
+    } else {
+        None
+    }
 }
 
 fn resolve_start_model_dir(
@@ -1318,6 +1380,10 @@ fn stop_server_locked(runtime: &mut WebRuntime) -> bool {
     let _ = server.child.kill();
     let _ = server.child.wait();
     true
+}
+
+fn local_port_accepts(port: u16) -> bool {
+    TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
 
 /// Return the absolute path of `ax-engine-server`, falling back to the name
