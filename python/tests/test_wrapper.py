@@ -786,7 +786,7 @@ class WrapperContractTests(unittest.TestCase):
             ),
             "<|im_start|>system\nYou are AX<|im_end|>\n"
             "<|im_start|>user\nSay hi<|im_end|>\n"
-            "<|im_start|>assistant\n",
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n",
         )
         self.assertEqual(
             openai_server.render_chat_prompt(
@@ -807,6 +807,39 @@ class WrapperContractTests(unittest.TestCase):
                 "unknown-local-model",
             ),
             "user: Line 1\\nLine 2\nassistant:",
+        )
+
+    def test_qwen_chat_prompt_matches_real_tokenizer_enable_thinking_false(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        try:
+            from transformers import AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(
+                "mlx-community/Qwen3-4B-4bit",
+                local_files_only=True,
+                trust_remote_code=True,
+            )
+        except Exception as exc:
+            self.skipTest(f"cached Qwen tokenizer is unavailable: {exc}")
+
+        messages = [
+            {"role": "system", "content": "You are AX"},
+            {"role": "user", "content": "Say hi"},
+        ]
+        expected = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+
+        self.assertEqual(
+            self.ax_engine._render_chat_prompt(messages, "qwen3_dense"),
+            expected,
+        )
+        self.assertEqual(
+            openai_server.render_chat_prompt(messages, "qwen3_dense"),
+            expected,
         )
 
     def test_openai_mlx_shim_builds_mlx_session_with_artifacts_dir(self) -> None:
@@ -857,13 +890,13 @@ class WrapperContractTests(unittest.TestCase):
             native.generate_calls[0][1]["input_text"],
             "<|im_start|>system\nYou are AX<|im_end|>\n"
             "<|im_start|>user\nSay hello<|im_end|>\n"
-            "<|im_start|>assistant\n",
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n",
         )
         self.assertEqual(
             result.prompt_text,
             "<|im_start|>system\nYou are AX<|im_end|>\n"
             "<|im_start|>user\nSay hello<|im_end|>\n"
-            "<|im_start|>assistant\n",
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n",
         )
 
     def test_chat_convenience_uses_llama3_template_for_llama3_models(self) -> None:
@@ -936,7 +969,7 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(request_id, 11)
         self.assertEqual(
             native.submit_calls[0][1]["input_text"],
-            "<|im_start|>user\nqueue this<|im_end|>\n<|im_start|>assistant\n",
+            "<|im_start|>user\nqueue this<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
         )
 
     def test_stepwise_controls_convert_native_payloads(self) -> None:
@@ -1117,11 +1150,11 @@ class WrapperContractTests(unittest.TestCase):
         native = FakeNativeSession.instances[-1]
         self.assertEqual(
             native.generate_calls[0][1]["input_text"],
-            "<|im_start|>user\nhello chat helper<|im_end|>\n<|im_start|>assistant\n",
+            "<|im_start|>user\nhello chat helper<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
         )
         self.assertEqual(
             events[-1].response.prompt_text,
-            "<|im_start|>user\nhello chat helper<|im_end|>\n<|im_start|>assistant\n",
+            "<|im_start|>user\nhello chat helper<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
         )
 
     def test_chat_convenience_rejects_empty_messages(self) -> None:

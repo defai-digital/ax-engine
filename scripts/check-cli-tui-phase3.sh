@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
-TMP_DIR="$(ax_tmp_dir ax-cli-tui-phase3)"
+TMP_DIR="$(ax_tmp_dir ax-manager-phase3)"
 
 cleanup() {
     ax_rm_rf "$TMP_DIR"
@@ -84,7 +84,7 @@ grep -qx "ax-engine-bench" "$TMP_DIR/archive.txt"
 grep -qx "ax-engine-manager" "$TMP_DIR/archive.txt"
 
 target/release/ax-engine-manager --help >"$TMP_DIR/help.out"
-grep -q "support bundles write redacted diagnostics" "$TMP_DIR/help.out"
+grep -q "Support bundles write redacted diagnostics" "$TMP_DIR/help.out"
 
 target/release/ax-engine-manager --check --doctor-json "$TMP_DIR/doctor.json" >"$TMP_DIR/check.out"
 grep -q "ax-engine-manager check" "$TMP_DIR/check.out"
@@ -107,4 +107,4 @@ if grep -qE 'model\.safetensors|secret-model|API_KEY|TOKEN|PASSWORD' "$TMP_DIR/s
   exit 1
 fi
 
-echo "CLI TUI Phase 3 release integration verified."
+echo "Manager Phase 3 release integration verified."

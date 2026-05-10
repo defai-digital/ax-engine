@@ -13,6 +13,10 @@ from ._ax_engine import (
     Session as _Session,
 )
 
+_QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = (
+    "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+)
+
 
 @dataclass(frozen=True)
 class CapabilityReport:
@@ -964,7 +968,7 @@ def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]], model_id: 
             prompt_parts.append(f"{role}: {safe_content}\n")
 
     if template == "qwen_chatml":
-        prompt_parts.append("<|im_start|>assistant\n")
+        prompt_parts.append(_QWEN_CHATML_ASSISTANT_GENERATION_PROMPT)
     elif template == "llama3":
         prompt_parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
     else:
@@ -1020,7 +1024,7 @@ def download_model(
 
     Args:
         repo_id: HuggingFace repo id, e.g. ``"mlx-community/Qwen3-4B-4bit"``.
-        dest: Destination directory. Defaults to ``~/.cache/ax-engine/models/<repo-slug>``.
+        dest: Destination directory. Defaults to the Hugging Face Hub snapshot cache.
         force: Re-download even if already present.
     """
     try:
@@ -1032,10 +1036,19 @@ def download_model(
         ) from exc
 
     if dest is None:
-        slug = repo_id.replace("/", "--")
-        dest = Path.home() / ".cache" / "ax-engine" / "models" / slug
-    dest = Path(dest)
+        dest = Path(
+            snapshot_download(
+                repo_id=repo_id,
+                ignore_patterns=_IGNORE_PATTERNS,
+                force_download=force,
+            )
+        )
+        if not (dest / _MODEL_MANIFEST_FILE).exists():
+            if not _try_generate_manifest(dest):
+                _print_manifest_reminder(dest)
+        return dest
 
+    dest = Path(dest)
     if dest.exists() and not force:
         safetensors = list(dest.glob("*.safetensors"))
         if safetensors and (dest / _MODEL_MANIFEST_FILE).exists():
@@ -1050,6 +1063,7 @@ def download_model(
         repo_id=repo_id,
         local_dir=str(dest),
         ignore_patterns=_IGNORE_PATTERNS,
+        force_download=force,
     )
 
     if not (dest / _MODEL_MANIFEST_FILE).exists():

@@ -7,7 +7,7 @@ AX Engine currently exposes three command surfaces:
 - `scripts/bench_mlx_inference_stack.py` for repo-owned MLX runtime
   model-inference comparison against MLX-family references.
 - `ax-engine-server` for the preview local HTTP adapter.
-- `ax-engine-manager` for the read-only Ratatui cockpit over those contracts.
+- `ax-engine-manager` for the local web manager over those contracts.
 
 For a step-by-step manager workflow, including server metadata, benchmark
 artifacts, support bundles, and release checks, see [`MANAGER.md`](MANAGER.md).
@@ -48,22 +48,22 @@ ax-engine-bench metal-build
 Add `--json` to `scenario`, `replay`, `matrix`, `compare`,
 `matrix-compare`, or `baseline` to emit an `ax.benchmark_artifact.v1` summary
 with the written `result_dir`. This is the stable automation path for CI and
-TUI callers; the legacy text output remains available for shell use.
+manager callers; the legacy text output remains available for shell use.
 
 `ax-engine-bench doctor --json` also reports workflow discovery. When run from a
 source checkout it points callers at `cargo run ...`, `scripts/download_model.py`,
 and the checkout root; outside a checkout it points callers at installed
-`ax-engine-bench` and `ax-engine-server` binaries. TUI code should use this
+`ax-engine-bench` and `ax-engine-server` binaries. Manager code should use this
 contract instead of guessing Homebrew versus source mode from paths.
 
 When `--mlx-model-artifacts-dir <path>` is provided, the doctor JSON includes a
 structured `model_artifacts` report for `config.json`, `model-manifest.json`,
 safetensors presence, `model_type`, quantization metadata, and readiness
-blockers. TUI code should display those fields directly instead of parsing
+blockers. Manager code should display those fields directly instead of parsing
 performance-advice text.
 
 Run `bash scripts/check-cli-tui-phase0.sh` to verify the full Phase 0 contract
-set before adding Ratatui code. The check covers download JSON,
+set before changing manager workflows. The check covers download JSON,
 manifest-generation JSON, doctor workflow discovery, model-artifact readiness,
 benchmark artifact summaries, and server `/health`, `/v1/runtime`, and
 `/v1/models` metadata.
@@ -78,11 +78,11 @@ manifest/runtime family.
 
 ## `ax-engine-manager`
 
-`ax-engine-manager` is the local TUI shell. Its `--check` mode is read-only:
+`ax-engine-manager` is the local web manager. Its `--check` mode is read-only:
 it may run doctor, read existing JSON contracts, poll server metadata, and
 browse local artifact directories without starting downloads, benchmarks, or
-servers. The interactive Models tab can run the guarded download helper for the
-selected model family and size.
+servers. Interactive mode starts a localhost web app for model downloads,
+server port controls, endpoint URLs, readiness, and job state.
 
 ```text
 ax-engine-manager --check
@@ -93,7 +93,7 @@ ax-engine-manager --doctor-json /path/to/doctor.json --support-bundle /tmp/ax-su
 ```
 
 `--check` prints a non-interactive summary for doctor, server, benchmark, and
-artifact readiness without entering terminal raw mode.
+artifact readiness without opening the browser.
 
 The `Jobs` tab is still non-mutating in Phase 2. It projects the doctor workflow
 into guarded job plans with explicit job kind, evidence class, process ownership,
@@ -105,11 +105,10 @@ JSON, writes and reads a manager profile under `--profile-dir`, runs a fake
 short-lived job, cancels a fake owned server process, and checks that benchmark
 results cannot be presented without an artifact path.
 
-Run `bash scripts/check-cli-tui-phase1.sh` before extending the TUI. The check
-covers contract parsers, tab rendering snapshots, server polling against a local
-test HTTP server, non-interactive `--check`, and unsupported/missing-state UI.
-Run `bash scripts/check-cli-tui-phase2.sh` before adding interactive job
-controls.
+Run `bash scripts/check-cli-tui-phase1.sh` before extending the manager. The
+check covers contract parsers, web assets, server polling against a local test
+HTTP server, non-interactive `--check`, and unsupported/missing-state outputs.
+Run `bash scripts/check-cli-tui-phase2.sh` before changing job controls.
 Run `bash scripts/check-cli-tui-phase3.sh` before publishing Homebrew artifacts.
 
 See [`MANAGER.md`](MANAGER.md) for user-facing usage examples and troubleshooting.

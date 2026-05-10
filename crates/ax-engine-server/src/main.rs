@@ -10,8 +10,10 @@ use std::time::Duration;
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent,
-    GenerateStreamState, LlamaCppBackendError, MlxLmBackendError, RuntimeReport, SelectedBackend,
-    SessionRequestReport, StatelessGenerateContext,
+    GenerateStreamState, LlamaCppBackendError, MlxLmBackendError, MlxLmChatGenerateRequest,
+    MlxLmChatMessage, MlxLmStreamHandle, RuntimeReport, SelectedBackend, SessionRequestReport,
+    StatelessGenerateContext, finish_reason_from_mlx_lm, run_blocking_chat_generate,
+    start_streaming_chat_generate,
 };
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
@@ -36,6 +38,8 @@ const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS: u64 = 2;
 const DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH: usize = 32;
 const STREAM_CHANNEL_CAPACITY: usize = 128;
+const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT: &str =
+    "<|im_start|>assistant\n<think>\n\n</think>\n\n";
 
 type StreamEvent = Result<Event, Infallible>;
 type StreamEventSender = mpsc::Sender<StreamEvent>;
@@ -894,9 +898,38 @@ async fn openai_chat_completions(
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     validate_openai_request(&state, request.model.as_deref())?;
+    if state.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated {
+        return run_openai_mlx_lm_chat_generation(state, request).await;
+    }
     let request = build_openai_chat_request(&state, request)?;
 
     run_openai_text_generation(state, request, OpenAiStreamKind::ChatCompletion).await
+}
+
+async fn run_openai_mlx_lm_chat_generation(
+    state: AppState,
+    request: OpenAiChatCompletionHttpRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let request = build_openai_mlx_lm_chat_request(&state, request)?;
+    if request.stream {
+        return stream_openai_mlx_lm_chat_request(state, request.chat_request).await;
+    }
+
+    let request_id = allocate_request_id(&state);
+    let runtime = state.runtime_report.clone();
+    let mlx_lm_backend = state
+        .session_config
+        .mlx_lm_backend
+        .clone()
+        .ok_or(EngineSessionError::MissingMlxLmConfig)
+        .map_err(map_session_error)?;
+    let response = run_blocking_session_task(move || {
+        run_blocking_chat_generate(request_id, &runtime, &mlx_lm_backend, &request.chat_request)
+            .map_err(EngineSessionError::from)
+    })
+    .await?;
+
+    Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(&response, request_id))
 }
 
 async fn run_openai_text_generation(
@@ -968,6 +1001,33 @@ async fn stream_openai_request(
             }
         },
     );
+
+    Ok(build_keep_alive_stream(rx).into_response())
+}
+
+async fn stream_openai_mlx_lm_chat_request(
+    state: AppState,
+    request: MlxLmChatGenerateRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let request_id = allocate_request_id(&state);
+    let model_id = request.model_id.clone();
+    let runtime = state.runtime_report.clone();
+    let mlx_lm_backend = state
+        .session_config
+        .mlx_lm_backend
+        .clone()
+        .ok_or(EngineSessionError::MissingMlxLmConfig)
+        .map_err(map_session_error)?;
+    let stream = run_blocking_session_task(move || {
+        start_streaming_chat_generate(&runtime, &mlx_lm_backend, &request)
+            .map_err(EngineSessionError::from)
+    })
+    .await?;
+
+    let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
+    tokio::task::spawn_blocking(move || {
+        drive_openai_mlx_lm_chat_stream(tx, request_id, model_id, stream);
+    });
 
     Ok(build_keep_alive_stream(rx).into_response())
 }
@@ -1252,6 +1312,86 @@ fn send_openai_stream_event(
     }
 }
 
+fn drive_openai_mlx_lm_chat_stream(
+    tx: StreamEventSender,
+    request_id: u64,
+    model_id: String,
+    mut stream: MlxLmStreamHandle,
+) {
+    let mut chat_role_emitted = false;
+    loop {
+        match stream.next_chunk() {
+            Ok(Some(chunk)) => {
+                if !chunk.text.is_empty() {
+                    let delta = OpenAiChatCompletionChunk {
+                        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
+                        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
+                        created: unix_timestamp_secs(),
+                        model: model_id.clone(),
+                        choices: vec![OpenAiChatCompletionChunkChoice {
+                            index: 0,
+                            delta: OpenAiChatDelta {
+                                role: if chat_role_emitted {
+                                    None
+                                } else {
+                                    chat_role_emitted = true;
+                                    Some("assistant")
+                                },
+                                content: Some(chunk.text),
+                            },
+                            finish_reason: None,
+                        }],
+                    };
+                    if !send_openai_stream_chunk(&tx, &delta) {
+                        return;
+                    }
+                }
+
+                if let Some(finish_reason) = chunk.finish_reason {
+                    send_openai_mlx_lm_chat_final_chunk(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        Some(finish_reason.as_str()),
+                    );
+                    let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
+                    return;
+                }
+            }
+            Ok(None) => {
+                send_openai_mlx_lm_chat_final_chunk(&tx, request_id, &model_id, None);
+                let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
+                return;
+            }
+            Err(error) => {
+                let (_, Json(error)) = map_session_error(EngineSessionError::from(error));
+                send_stream_error(&tx, error);
+                return;
+            }
+        }
+    }
+}
+
+fn send_openai_mlx_lm_chat_final_chunk(
+    tx: &StreamEventSender,
+    request_id: u64,
+    model_id: &str,
+    finish_reason: Option<&str>,
+) -> bool {
+    let chunk = OpenAiChatCompletionChunk {
+        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
+        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
+        created: unix_timestamp_secs(),
+        model: model_id.to_string(),
+        choices: vec![OpenAiChatCompletionChunkChoice {
+            index: 0,
+            delta: OpenAiChatDelta::default(),
+            finish_reason: openai_finish_reason(finish_reason_from_mlx_lm(finish_reason)),
+        }],
+    };
+    send_openai_stream_chunk(tx, &chunk)
+}
+
 fn send_stream_event<T: Serialize>(tx: &StreamEventSender, event_name: &str, payload: &T) -> bool {
     match serde_json::to_string(payload) {
         Ok(data) => tx
@@ -1401,6 +1541,11 @@ struct OpenAiBuiltPayload {
     metadata: Option<String>,
 }
 
+struct OpenAiBuiltMlxLmChatRequest {
+    chat_request: MlxLmChatGenerateRequest,
+    stream: bool,
+}
+
 fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> GenerateRequest {
     build_generate_request_internal(
         state,
@@ -1483,6 +1628,40 @@ fn build_openai_chat_request(
         max_output_tokens,
         payload,
     ))
+}
+
+fn build_openai_mlx_lm_chat_request(
+    state: &AppState,
+    request: OpenAiChatCompletionHttpRequest,
+) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
+    let max_output_tokens = require_openai_max_tokens(request.max_tokens)?;
+    let messages = build_mlx_lm_chat_messages(&request.messages)?;
+    let sampling = build_openai_sampling(
+        request.temperature,
+        request.top_p,
+        request.top_k,
+        request.min_p,
+        request.repetition_penalty,
+        request.repetition_context_size,
+        request.seed,
+    );
+    let stop_sequences = request
+        .stop
+        .map(OpenAiStopInput::into_vec)
+        .unwrap_or_default();
+
+    Ok(OpenAiBuiltMlxLmChatRequest {
+        chat_request: MlxLmChatGenerateRequest {
+            model_id: state.model_id.to_string(),
+            messages,
+            max_output_tokens,
+            sampling,
+            stop_sequences,
+            metadata: request.metadata,
+            chat_template_kwargs: qwen_chat_template_kwargs(state.model_id.as_ref()),
+        },
+        stream: request.stream,
+    })
 }
 
 fn build_openai_generate_request(
@@ -1574,6 +1753,32 @@ fn render_openai_chat_prompt(
     render_openai_chat_prompt_with_template(ChatPromptTemplate::for_model_id(model_id), messages)
 }
 
+fn build_mlx_lm_chat_messages(
+    messages: &[OpenAiChatMessage],
+) -> Result<Vec<MlxLmChatMessage>, (StatusCode, Json<ErrorResponse>)> {
+    if messages.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "chat.completions requires at least one message".to_string(),
+        ));
+    }
+
+    messages
+        .iter()
+        .map(|message| {
+            let role = normalize_openai_chat_role(&message.role)?;
+            let content = render_openai_chat_content(&message.content)?;
+            Ok(MlxLmChatMessage::new(role, content))
+        })
+        .collect()
+}
+
+fn qwen_chat_template_kwargs(model_id: &str) -> Option<serde_json::Value> {
+    (ChatPromptTemplate::for_model_id(model_id) == ChatPromptTemplate::QwenChatMl)
+        .then(|| json!({"enable_thinking": false}))
+}
+
 fn render_openai_chat_prompt_with_template(
     template: ChatPromptTemplate,
     messages: &[OpenAiChatMessage],
@@ -1609,7 +1814,7 @@ fn render_openai_chat_prompt_with_template(
         }
     }
     match template {
-        ChatPromptTemplate::QwenChatMl => prompt.push_str("<|im_start|>assistant\n"),
+        ChatPromptTemplate::QwenChatMl => prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT),
         ChatPromptTemplate::Llama3 => {
             prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
         }
@@ -1960,7 +2165,7 @@ mod tests {
     }
 
     fn expected_qwen_chatml_user_prompt(message: &str) -> String {
-        format!("<|im_start|>user\n{message}<|im_end|>\n<|im_start|>assistant\n")
+        format!("<|im_start|>user\n{message}<|im_end|>\n{QWEN_CHATML_ASSISTANT_GENERATION_PROMPT}")
     }
 
     fn sample_openai_chat_request_with_role(
@@ -2762,7 +2967,7 @@ sys.stdout.write(f"server::{prompt}")
 
         assert_eq!(
             render_openai_chat_prompt("qwen3_dense", &messages).expect("qwen prompt"),
-            "<|im_start|>system\nBe concise.<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n"
+            "<|im_start|>system\nBe concise.<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
         );
         assert_eq!(
             render_openai_chat_prompt("Meta-Llama-3.1-8B-Instruct", &messages)
@@ -3074,21 +3279,31 @@ sys.stdout.write(f"server::{prompt}")
             1,
             vec![
                 serde_json::json!({
-                    "choices": [{"index": 0, "text": " hello", "finish_reason": null}],
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}],
                     "usage": null
                 }),
                 serde_json::json!({
-                    "choices": [{"index": 0, "text": " world", "finish_reason": "stop"}],
+                    "choices": [{"index": 0, "delta": {"content": " hello"}, "finish_reason": null}],
+                    "usage": null
+                }),
+                serde_json::json!({
+                    "choices": [{"index": 0, "delta": {"content": " world"}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4}
                 }),
             ],
             |payload| {
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
+                assert!(payload.get("prompt").is_none());
                 assert_eq!(
-                    payload.get("prompt"),
-                    Some(&Value::String(expected_qwen_chatml_user_prompt(
-                        "hello mlx-lm chat stream"
-                    )))
+                    payload.get("messages"),
+                    Some(&json!([{
+                        "role": "user",
+                        "content": "hello mlx-lm chat stream"
+                    }]))
+                );
+                assert_eq!(
+                    payload.get("chat_template_kwargs"),
+                    Some(&json!({"enable_thinking": false}))
                 );
             },
         );
@@ -3126,9 +3341,64 @@ sys.stdout.write(f"server::{prompt}")
                     .filter(|s| !s.is_empty())
             })
             .collect();
-        assert!(
-            !text_chunks.is_empty(),
-            "streaming response should have text chunks"
+        assert_eq!(text_chunks, vec![" hello", " world"]);
+        assert_eq!(
+            openai_first_choice(payloads.last().expect("final chunk should exist"))
+                .get("finish_reason")
+                .and_then(Value::as_str),
+            Some("stop")
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_chat_endpoint_forwards_messages_for_mlx_lm_delegated() {
+        let (mlx_lm_server_url, mlx_lm_server_handle) = spawn_llama_cpp_completion_server(
+            r#"{"choices":[{"message":{"content":"chat reply"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}"#.to_string(),
+            |payload| {
+                assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
+                assert!(payload.get("prompt").is_none());
+                assert_eq!(
+                    payload.get("messages"),
+                    Some(&json!([{
+                        "role": "user",
+                        "content": "hello mlx-lm chat"
+                    }]))
+                );
+                assert_eq!(
+                    payload.get("chat_template_kwargs"),
+                    Some(&json!({"enable_thinking": false}))
+                );
+            },
+        );
+        let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(json_request_body(&sample_openai_chat_request(
+                    "hello mlx-lm chat",
+                    Some(2),
+                    false,
+                ))))
+                .unwrap(),
+        )
+        .await;
+
+        mlx_lm_server_handle
+            .join()
+            .expect("mlx-lm server thread should finish");
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            json.get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("message"))
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_str),
+            Some("chat reply")
         );
     }
 

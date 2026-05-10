@@ -465,13 +465,13 @@ fn run_web_manager(options: &Options) -> Result<(), ManagerError> {
                     if let Err(error) = handle_client(stream, runtime) {
                         // Suppress read-timeout errors from keep-alive / speculative
                         // connections that the browser opens but never sends data on.
-                        if let ManagerError::Io(ref e) = error {
-                            if matches!(
+                        if let ManagerError::Io(ref e) = error
+                            && matches!(
                                 e.kind(),
                                 io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                            ) {
-                                return;
-                            }
+                            )
+                        {
+                            return;
                         }
                         eprintln!("manager request failed: {error}");
                     }
@@ -1241,10 +1241,7 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
     let manifest_path = Path::new(&model_dir).join("model-manifest.json");
     if !manifest_path.is_file() {
         if let Ok(mut rt) = runtime.lock() {
-            rt.status_message = format!(
-                "Generating manifest for {}…",
-                short_model_label(&repo_id)
-            );
+            rt.status_message = format!("Generating manifest for {}…", short_model_label(&repo_id));
         }
         generate_model_manifest(&model_dir)?;
     }

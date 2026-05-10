@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
-TMP_DIR="$(ax_tmp_dir ax-cli-tui-phase0)"
+TMP_DIR="$(ax_tmp_dir ax-manager-phase0)"
 SERVER_PORT="$(ax_allocate_port)"
 SERVER_LOG="$TMP_DIR/server.log"
 SERVER_PID=""
@@ -160,4 +160,4 @@ assert models["data"][0]["object"] == "model", models
 assert isinstance(models["data"][0]["runtime"], dict), models
 PY
 
-echo "CLI TUI Phase 0 contracts verified."
+echo "Manager Phase 0 contracts verified."

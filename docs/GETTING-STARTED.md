@@ -162,7 +162,8 @@ need `mlx_lm.convert` first.
 
 ### Path A — mlx-community model (recommended)
 
-`download_model()` downloads weights and auto-generates the manifest in one call:
+`download_model()` downloads weights into the standard Hugging Face Hub snapshot
+cache and auto-generates the manifest in one call:
 
 ```python
 from ax_engine import download_model

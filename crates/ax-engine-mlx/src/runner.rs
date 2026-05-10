@@ -3121,6 +3121,17 @@ fn resolve_terminal_token_ids(artifacts: &NativeModelArtifacts) -> Vec<u32> {
         collect_token_strings(value.get("pad_token"), &mut token_strings);
     }
 
+    if artifacts
+        .manifest()
+        .model_family
+        .to_ascii_lowercase()
+        .contains("qwen")
+    {
+        for token in ["<|im_end|>", "<|endoftext|>"] {
+            token_strings.insert(token.to_string());
+        }
+    }
+
     if !token_strings.is_empty()
         && let Some(tokenizer) = read_json_file(&artifacts.root_dir().join("tokenizer.json"))
     {
@@ -3835,6 +3846,36 @@ mod tests {
         .expect("tokenizer should write");
 
         assert_eq!(resolve_terminal_token_ids(&artifacts), vec![151643, 151645]);
+    }
+
+    #[test]
+    fn terminal_token_ids_resolve_qwen_chatml_eot_from_tokenizer_json() {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "qwen3_dense".to_string();
+        set_vocab_size(&mut manifest, 200_000);
+        let artifacts = write_artifacts(manifest);
+        fs::write(
+            artifacts.root_dir().join("tokenizer.json"),
+            r#"{"added_tokens":[{"id":151643,"content":"<|endoftext|>"},{"id":151645,"content":"<|im_end|>"}]}"#,
+        )
+        .expect("tokenizer should write");
+
+        assert_eq!(resolve_terminal_token_ids(&artifacts), vec![151643, 151645]);
+    }
+
+    #[test]
+    fn terminal_token_ids_do_not_infer_qwen_chatml_eot_for_other_families() {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "gemma3".to_string();
+        set_vocab_size(&mut manifest, 200_000);
+        let artifacts = write_artifacts(manifest);
+        fs::write(
+            artifacts.root_dir().join("tokenizer.json"),
+            r#"{"added_tokens":[{"id":151645,"content":"<|im_end|>"}]}"#,
+        )
+        .expect("tokenizer should write");
+
+        assert_eq!(resolve_terminal_token_ids(&artifacts), Vec::<u32>::new());
     }
 
     fn qwen35_linear_manifest() -> NativeModelManifest {

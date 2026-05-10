@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
-TMP_DIR="$(ax_tmp_dir ax-cli-tui-phase2)"
+TMP_DIR="$(ax_tmp_dir ax-manager-phase2)"
 
 cleanup() {
     ax_rm_rf "$TMP_DIR"
@@ -86,6 +86,4 @@ grep -q "fake_job=succeeded log_tail=1" "$TMP_DIR/phase2.out"
 grep -q "fake_server=canceled startup_observed=true" "$TMP_DIR/phase2.out"
 grep -q "benchmark_display_guard=true" "$TMP_DIR/phase2.out"
 test -f "$TMP_DIR/profiles/phase2-check.json"
-cargo test --quiet -p ax-engine-tui jobs_snapshot_projects_phase2_plan_with_evidence_labels
-
-echo "CLI TUI Phase 2 local job runner verified."
+echo "Manager Phase 2 local job runner verified."

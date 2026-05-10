@@ -28,7 +28,7 @@ M3, M4, M5 chip variants are supported across all three lines. M1 is not support
 
 ## 30-Second Setup
 
-Install the released command-line tools and open the local TUI cockpit:
+Install the released command-line tools and open the local web manager:
 
 ```bash
 brew install defai-digital/ax-engine/ax-engine
@@ -40,20 +40,17 @@ Then connect it to a model and server:
 
 ```bash
 # Download an mlx-community model and generate its manifest in one step
-python scripts/download_model.py mlx-community/Qwen3-4B-4bit
-MODEL_DIR="$HOME/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit"
+MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
 
 # Start the server
 ax-engine-server --mlx --mlx-model-artifacts-dir "$MODEL_DIR" --port 8080
 
-# In another terminal, open the TUI cockpit with live server metadata
+# In another terminal, open the web manager with live server metadata
 ax-engine-manager --model-dir "$MODEL_DIR" --server-url http://127.0.0.1:8080
 ```
 
-The TUI Server tab also shows the default `127.0.0.1:8080` target, full local
-endpoint URLs, and clickable preview controls for Start, Stop, and Restart.
-The Models tab lets you pick a model family and size, then press `d` or click
-`[Download]` to run the existing download helper for the resolved repo id.
+The manager opens a localhost page with model type, family, and size dropdowns,
+a `[Download]` action, server port controls, and full local endpoint URLs.
 
 Or from Python (after `maturin develop` or `pip install ax-engine`):
 
@@ -66,7 +63,7 @@ with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
 
 `download_model()` downloads weights and auto-runs `ax-engine-bench generate-manifest`.
 See [Getting a Model](#getting-a-model) for all paths including raw HF checkpoints,
-and see [AX Engine Manager](docs/MANAGER.md) for the full TUI workflow.
+and see [AX Engine Manager](docs/MANAGER.md) for the full web workflow.
 
 ## Why AX Engine
 
@@ -404,8 +401,8 @@ This installs:
 - `ax-engine-server`: local HTTP adapter over the SDK runtime
 - `ax-engine-bench`: workload-contract, readiness, direct-generate, and
   benchmark-support CLI
-- `ax-engine-manager`: Ratatui local manager for readiness, server metadata,
-  benchmark artifacts, guarded job plans, and redacted support bundles
+- `ax-engine-manager`: local web manager for readiness, model downloads, server
+  metadata, endpoint URLs, guarded job plans, and redacted support bundles
 - the Homebrew `mlx-c` runtime dependency required by the released binaries
 
 Check the installed tools:
@@ -450,8 +447,8 @@ The fastest local workflow is:
 1. install or build the command-line tools;
 2. download a supported MLX model and generate its manifest;
 3. start the local server;
-4. open `ax-engine-manager` to inspect readiness, server metadata, benchmark
-   artifacts, guarded job plans, and redacted support bundles.
+4. open `ax-engine-manager` to manage downloads, server port controls,
+   readiness, endpoint URLs, benchmark artifacts, and support bundles.
 
 For a complete manager walkthrough, see [docs/MANAGER.md](docs/MANAGER.md).
 
@@ -461,11 +458,11 @@ of `./target/release/...`.
 
 ```bash
 # Download a model and generate its manifest
-python scripts/download_model.py mlx-community/Qwen3-4B-4bit
-# prints the local path when ready, e.g. ~/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit
-MODEL_DIR="$HOME/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit"
+MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
+# MODEL_DIR uses the Hugging Face Hub snapshot cache by default, e.g.
+# ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
 
-# Check readiness without entering terminal raw mode
+# Check readiness without opening the browser
 ./target/release/ax-engine-manager --check --model-dir "$MODEL_DIR"
 
 # HTTP inference server (repo-owned MLX runtime)
@@ -474,7 +471,7 @@ MODEL_DIR="$HOME/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit"
   --mlx-model-artifacts-dir "$MODEL_DIR" \
   --port 8080
 
-# Local Ratatui cockpit
+# Local web manager
 ./target/release/ax-engine-manager \
   --model-dir "$MODEL_DIR" \
   --server-url http://127.0.0.1:8080
@@ -549,7 +546,7 @@ the required `model-manifest.json` in one step:
 # Script (works with Homebrew install or source build)
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit
 
-# For automation and future TUI integration, emit a parseable summary
+# For automation and manager integration, emit a parseable summary
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json
 
 # Python SDK
@@ -557,8 +554,9 @@ from ax_engine import download_model
 path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
-If you already have `mlx_lm` installed, its download also lands in the standard HF
-cache that ax-engine can auto-discover:
+By default these helpers use the same Hugging Face Hub snapshot cache as
+`mlx_lm` and `huggingface_hub`. If you already have `mlx_lm` installed, its
+download also lands in that cache and ax-engine can auto-discover it:
 
 ```bash
 python -m mlx_lm.generate --model mlx-community/Qwen3-4B-4bit --prompt "x" --max-tokens 1
