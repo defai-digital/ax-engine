@@ -2557,6 +2557,86 @@ impl MetalMoeExpertGateUpBindings {
 }
 
 #[derive(Clone, Copy)]
+struct FfnGateUpProjectionBindings<'a> {
+    gate: &'a MetalNativeTensorBufferBinding,
+    gate_row_offset: usize,
+    up: &'a MetalNativeTensorBufferBinding,
+    up_row_offset: usize,
+    is_packed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct MoeExpertGateUpProjectionBindings<'a> {
+    gate: &'a MetalNativeTensorBufferBinding,
+    gate_row_offset: usize,
+    up: &'a MetalNativeTensorBufferBinding,
+    up_row_offset: usize,
+    is_packed: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn ffn_gate_up_projection_bindings<'a>(
+    ffn_gate_up: &'a MetalFfnGateUpBindings,
+    buffers: &'a MetalNativeModelBufferBindings,
+    intermediate_dim: usize,
+) -> Option<FfnGateUpProjectionBindings<'a>> {
+    match ffn_gate_up {
+        MetalFfnGateUpBindings::Packed(binding) => {
+            let gate = buffers.binding_for(binding)?;
+            Some(FfnGateUpProjectionBindings {
+                gate,
+                gate_row_offset: 0,
+                up: gate,
+                up_row_offset: intermediate_dim,
+                is_packed: true,
+            })
+        }
+        MetalFfnGateUpBindings::Split { gate, up } => {
+            let gate_binding = buffers.binding_for(gate)?;
+            let up_binding = buffers.binding_for(up)?;
+            Some(FfnGateUpProjectionBindings {
+                gate: gate_binding,
+                gate_row_offset: 0,
+                up: up_binding,
+                up_row_offset: 0,
+                is_packed: false,
+            })
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn moe_expert_gate_up_projection_bindings<'a>(
+    expert_gate_up: &'a MetalMoeExpertGateUpBindings,
+    buffers: &'a MetalNativeModelBufferBindings,
+    intermediate_dim: usize,
+) -> Option<MoeExpertGateUpProjectionBindings<'a>> {
+    match expert_gate_up {
+        MetalMoeExpertGateUpBindings::Packed(binding) => {
+            let gate = buffers.binding_for(binding)?;
+            Some(MoeExpertGateUpProjectionBindings {
+                gate,
+                gate_row_offset: 0,
+                up: gate,
+                up_row_offset: intermediate_dim,
+                is_packed: true,
+            })
+        }
+        MetalMoeExpertGateUpBindings::Split { gate, up } => {
+            let gate_binding = buffers.binding_for(gate)?;
+            let up_binding = buffers.binding_for(up)?;
+            Some(MoeExpertGateUpProjectionBindings {
+                gate: gate_binding,
+                gate_row_offset: 0,
+                up: up_binding,
+                up_row_offset: 0,
+                is_packed: false,
+            })
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 enum NativeDenseKernelCoverageBucket {
     F32,
     F16,
@@ -6596,21 +6676,10 @@ fn ffn_gate_up_input_cols(
     ffn_gate_up: &MetalFfnGateUpBindings,
     buffers: &MetalNativeModelBufferBindings,
 ) -> Option<usize> {
-    match ffn_gate_up {
-        MetalFfnGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            Some(tensor_matrix_dimensions(&packed.meta.spec)?.1)
-        }
-        MetalFfnGateUpBindings::Split { gate, up } => {
-            let gate_binding = buffers.binding_for(gate)?;
-            let up_binding = buffers.binding_for(up)?;
-            Some(
-                tensor_matrix_dimensions(&gate_binding.meta.spec)?
-                    .1
-                    .min(tensor_matrix_dimensions(&up_binding.meta.spec)?.1),
-            )
-        }
-    }
+    let projections = ffn_gate_up_projection_bindings(ffn_gate_up, buffers, 0)?;
+    let gate_cols = tensor_matrix_dimensions(&projections.gate.meta.spec)?.1;
+    let up_cols = tensor_matrix_dimensions(&projections.up.meta.spec)?.1;
+    Some(gate_cols.min(up_cols))
 }
 
 #[cfg(target_os = "macos")]
@@ -6619,19 +6688,13 @@ fn resolved_ffn_intermediate_dim(
     buffers: &MetalNativeModelBufferBindings,
     ffn_down_cols: usize,
 ) -> Option<usize> {
-    let intermediate_dim = match ffn_gate_up {
-        MetalFfnGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            let (rows, _) = tensor_matrix_dimensions(&packed.meta.spec)?;
-            rows / 2
-        }
-        MetalFfnGateUpBindings::Split { gate, up } => {
-            let gate_binding = buffers.binding_for(gate)?;
-            let up_binding = buffers.binding_for(up)?;
-            tensor_matrix_dimensions(&gate_binding.meta.spec)?
-                .0
-                .min(tensor_matrix_dimensions(&up_binding.meta.spec)?.0)
-        }
+    let projections = ffn_gate_up_projection_bindings(ffn_gate_up, buffers, ffn_down_cols)?;
+    let intermediate_dim = if projections.is_packed {
+        tensor_matrix_dimensions(&projections.gate.meta.spec)?.0 / 2
+    } else {
+        tensor_matrix_dimensions(&projections.gate.meta.spec)?
+            .0
+            .min(tensor_matrix_dimensions(&projections.up.meta.spec)?.0)
     };
 
     let resolved = intermediate_dim.min(ffn_down_cols);
@@ -6647,23 +6710,22 @@ fn project_ffn_gate_up(
     input: &[f32],
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<(Vec<f32>, Vec<f32>)> {
-    match ffn_gate_up {
-        MetalFfnGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            let gate = project_matrix_rows(packed, 0, intermediate_dim, input, bringup)?;
-            let up =
-                project_matrix_rows(packed, intermediate_dim, intermediate_dim, input, bringup)?;
-            Some((gate, up))
-        }
-        MetalFfnGateUpBindings::Split { gate, up } => {
-            let gate_binding = buffers.binding_for(gate)?;
-            let up_binding = buffers.binding_for(up)?;
-            Some((
-                project_matrix_rows(gate_binding, 0, intermediate_dim, input, bringup)?,
-                project_matrix_rows(up_binding, 0, intermediate_dim, input, bringup)?,
-            ))
-        }
-    }
+    let projections = ffn_gate_up_projection_bindings(ffn_gate_up, buffers, intermediate_dim)?;
+    let gate = project_matrix_rows(
+        projections.gate,
+        projections.gate_row_offset,
+        intermediate_dim,
+        input,
+        bringup,
+    )?;
+    let up = project_matrix_rows(
+        projections.up,
+        projections.up_row_offset,
+        intermediate_dim,
+        input,
+        bringup,
+    )?;
+    Some((gate, up))
 }
 
 #[cfg(target_os = "macos")]
@@ -6700,51 +6762,25 @@ fn project_ffn_gate_up_with_coverage_and_retry_policy(
     input: &[f32],
     retry_policy: SingleFfnGateUpProjectionNativeRetryPolicy<'_>,
 ) -> Option<(Vec<f32>, Vec<f32>, DirectDecodeNativeDenseTally)> {
-    match ffn_gate_up {
-        MetalFfnGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            let (gate, used_native_gate) = project_matrix_rows_with_path(
-                packed,
-                0,
-                intermediate_dim,
-                input,
-                retry_policy.gate_projection,
-            )?;
-            let (up, used_native_up) = project_matrix_rows_with_path(
-                packed,
-                intermediate_dim,
-                intermediate_dim,
-                input,
-                retry_policy.up_projection,
-            )?;
-            let tally = DirectDecodeNativeDenseTally::default()
-                .record_projection_rows(intermediate_dim, used_native_gate)
-                .record_projection_rows(intermediate_dim, used_native_up);
-            Some((gate, up, tally))
-        }
-        MetalFfnGateUpBindings::Split { gate, up } => {
-            let gate_binding = buffers.binding_for(gate)?;
-            let up_binding = buffers.binding_for(up)?;
-            let (gate, used_native_gate) = project_matrix_rows_with_path(
-                gate_binding,
-                0,
-                intermediate_dim,
-                input,
-                retry_policy.gate_projection,
-            )?;
-            let (up, used_native_up) = project_matrix_rows_with_path(
-                up_binding,
-                0,
-                intermediate_dim,
-                input,
-                retry_policy.up_projection,
-            )?;
-            let tally = DirectDecodeNativeDenseTally::default()
-                .record_projection_rows(intermediate_dim, used_native_gate)
-                .record_projection_rows(intermediate_dim, used_native_up);
-            Some((gate, up, tally))
-        }
-    }
+    let projections = ffn_gate_up_projection_bindings(ffn_gate_up, buffers, intermediate_dim)?;
+    let (gate, used_native_gate) = project_matrix_rows_with_path(
+        projections.gate,
+        projections.gate_row_offset,
+        intermediate_dim,
+        input,
+        retry_policy.gate_projection,
+    )?;
+    let (up, used_native_up) = project_matrix_rows_with_path(
+        projections.up,
+        projections.up_row_offset,
+        intermediate_dim,
+        input,
+        retry_policy.up_projection,
+    )?;
+    let tally = DirectDecodeNativeDenseTally::default()
+        .record_projection_rows(intermediate_dim, used_native_gate)
+        .record_projection_rows(intermediate_dim, used_native_up);
+    Some((gate, up, tally))
 }
 
 #[cfg(target_os = "macos")]
@@ -6784,49 +6820,24 @@ fn project_batched_ffn_gate_up_with_tally(
     }
 
     // Fallback: individual dispatches per projection.
-    match ffn_gate_up {
-        MetalFfnGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            let (gate_rows, gate_tally) = project_batched_matrix_rows_with_tally(
-                packed,
-                0,
-                intermediate_dim,
-                input_rows,
-                input_width,
-                bringup,
-            )?;
-            let (up_rows, up_tally) = project_batched_matrix_rows_with_tally(
-                packed,
-                intermediate_dim,
-                intermediate_dim,
-                input_rows,
-                input_width,
-                bringup,
-            )?;
-            Some((gate_rows, up_rows, gate_tally.merge(up_tally)))
-        }
-        MetalFfnGateUpBindings::Split { gate, up } => {
-            let gate_binding = buffers.binding_for(gate)?;
-            let up_binding = buffers.binding_for(up)?;
-            let (gate_rows, gate_tally) = project_batched_matrix_rows_with_tally(
-                gate_binding,
-                0,
-                intermediate_dim,
-                input_rows,
-                input_width,
-                bringup,
-            )?;
-            let (up_rows, up_tally) = project_batched_matrix_rows_with_tally(
-                up_binding,
-                0,
-                intermediate_dim,
-                input_rows,
-                input_width,
-                bringup,
-            )?;
-            Some((gate_rows, up_rows, gate_tally.merge(up_tally)))
-        }
-    }
+    let projections = ffn_gate_up_projection_bindings(ffn_gate_up, buffers, intermediate_dim)?;
+    let (gate_rows, gate_tally) = project_batched_matrix_rows_with_tally(
+        projections.gate,
+        projections.gate_row_offset,
+        intermediate_dim,
+        input_rows,
+        input_width,
+        bringup,
+    )?;
+    let (up_rows, up_tally) = project_batched_matrix_rows_with_tally(
+        projections.up,
+        projections.up_row_offset,
+        intermediate_dim,
+        input_rows,
+        input_width,
+        bringup,
+    )?;
+    Some((gate_rows, up_rows, gate_tally.merge(up_tally)))
 }
 
 /// Attempts to dispatch FFN gate and up projections in a single Metal command buffer.
@@ -6842,27 +6853,17 @@ fn project_batched_ffn_gate_up_multi_dispatch(
 ) -> Option<BatchedFfnGateUpProjection> {
     let bringup = bringup?;
 
-    let (gate_binding, gate_row_offset, up_binding, up_row_offset) = match ffn_gate_up {
-        MetalFfnGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            (packed, 0_usize, packed, intermediate_dim)
-        }
-        MetalFfnGateUpBindings::Split { gate, up } => {
-            let gate_b = buffers.binding_for(gate)?;
-            let up_b = buffers.binding_for(up)?;
-            (gate_b, 0_usize, up_b, 0_usize)
-        }
-    };
+    let projections = ffn_gate_up_projection_bindings(ffn_gate_up, buffers, intermediate_dim)?;
 
     let tasks = [
         MultiProjectionTask {
-            binding: gate_binding,
-            row_offset: gate_row_offset,
+            binding: projections.gate,
+            row_offset: projections.gate_row_offset,
             output_dim: intermediate_dim,
         },
         MultiProjectionTask {
-            binding: up_binding,
-            row_offset: up_row_offset,
+            binding: projections.up,
+            row_offset: projections.up_row_offset,
             output_dim: intermediate_dim,
         },
     ];
@@ -6941,23 +6942,22 @@ fn resolved_layer_moe_dims(
         return None;
     }
 
-    let (expert_gate_up_count, expert_rows, expert_input_dim) = match &moe.expert_gate_up {
-        MetalMoeExpertGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            let (count, rows, cols) = tensor_3d_dimensions(&packed.meta.spec)?;
-            (count, rows / 2, cols)
-        }
-        MetalMoeExpertGateUpBindings::Split { gate, up } => {
-            let gate_binding = buffers.binding_for(gate)?;
-            let up_binding = buffers.binding_for(up)?;
-            let (gate_count, gate_rows, gate_cols) = tensor_3d_dimensions(&gate_binding.meta.spec)?;
-            let (up_count, up_rows, up_cols) = tensor_3d_dimensions(&up_binding.meta.spec)?;
-            (
-                gate_count.min(up_count),
-                gate_rows.min(up_rows),
-                gate_cols.min(up_cols),
-            )
-        }
+    let expert_gate_up = moe_expert_gate_up_projection_bindings(&moe.expert_gate_up, buffers, 0)?;
+    let expert_gate_up_count = if expert_gate_up.is_packed {
+        tensor_3d_dimensions(&expert_gate_up.gate.meta.spec)?.0
+    } else {
+        tensor_3d_dimensions(&expert_gate_up.gate.meta.spec)?
+            .0
+            .min(tensor_3d_dimensions(&expert_gate_up.up.meta.spec)?.0)
+    };
+    let (expert_rows, expert_input_dim) = if expert_gate_up.is_packed {
+        let (_count, rows, cols) = tensor_3d_dimensions(&expert_gate_up.gate.meta.spec)?;
+        (rows / 2, cols)
+    } else {
+        let (_gate_count, gate_rows, gate_cols) =
+            tensor_3d_dimensions(&expert_gate_up.gate.meta.spec)?;
+        let (_, up_rows, up_cols) = tensor_3d_dimensions(&expert_gate_up.up.meta.spec)?;
+        (gate_rows.min(up_rows), gate_cols.min(up_cols))
     };
     let expert_down = buffers.binding_for(&moe.expert_down)?;
     let (expert_down_count, expert_down_hidden_dim, expert_down_cols) =
@@ -7512,28 +7512,19 @@ fn project_batched_moe_expert_gate_up_multi_dispatch(
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<BatchedFfnGateUpProjection> {
     let bringup = bringup?;
-    let (gate_binding, gate_row_offset, up_binding, up_row_offset) = match expert_gate_up {
-        MetalMoeExpertGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            (packed, 0_usize, packed, intermediate_dim)
-        }
-        MetalMoeExpertGateUpBindings::Split { gate, up } => {
-            let gate_b = buffers.binding_for(gate)?;
-            let up_b = buffers.binding_for(up)?;
-            (gate_b, 0_usize, up_b, 0_usize)
-        }
-    };
+    let projections =
+        moe_expert_gate_up_projection_bindings(expert_gate_up, buffers, intermediate_dim)?;
     let tasks = [
         MoeExpertMultiProjectionTask {
-            binding: gate_binding,
+            binding: projections.gate,
             expert_index,
-            row_offset: gate_row_offset,
+            row_offset: projections.gate_row_offset,
             output_dim: intermediate_dim,
         },
         MoeExpertMultiProjectionTask {
-            binding: up_binding,
+            binding: projections.up,
             expert_index,
-            row_offset: up_row_offset,
+            row_offset: projections.up_row_offset,
             output_dim: intermediate_dim,
         },
     ];
@@ -7710,53 +7701,27 @@ fn project_batched_moe_expert_gate_up_with_tally(
         return Some(result);
     }
 
-    match expert_gate_up {
-        MetalMoeExpertGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            let (gate_rows, gate_tally) = project_batched_moe_expert_matrix_rows_with_tally(
-                packed,
-                expert_index,
-                0,
-                intermediate_dim,
-                input_rows,
-                input_width,
-                bringup,
-            )?;
-            let (up_rows, up_tally) = project_batched_moe_expert_matrix_rows_with_tally(
-                packed,
-                expert_index,
-                intermediate_dim,
-                intermediate_dim,
-                input_rows,
-                input_width,
-                bringup,
-            )?;
-            Some((gate_rows, up_rows, gate_tally.merge(up_tally)))
-        }
-        MetalMoeExpertGateUpBindings::Split { gate, up } => {
-            let gate_binding = buffers.binding_for(gate)?;
-            let up_binding = buffers.binding_for(up)?;
-            let (gate_rows, gate_tally) = project_batched_moe_expert_matrix_rows_with_tally(
-                gate_binding,
-                expert_index,
-                0,
-                intermediate_dim,
-                input_rows,
-                input_width,
-                bringup,
-            )?;
-            let (up_rows, up_tally) = project_batched_moe_expert_matrix_rows_with_tally(
-                up_binding,
-                expert_index,
-                0,
-                intermediate_dim,
-                input_rows,
-                input_width,
-                bringup,
-            )?;
-            Some((gate_rows, up_rows, gate_tally.merge(up_tally)))
-        }
-    }
+    let projections =
+        moe_expert_gate_up_projection_bindings(expert_gate_up, buffers, intermediate_dim)?;
+    let (gate_rows, gate_tally) = project_batched_moe_expert_matrix_rows_with_tally(
+        projections.gate,
+        expert_index,
+        projections.gate_row_offset,
+        intermediate_dim,
+        input_rows,
+        input_width,
+        bringup,
+    )?;
+    let (up_rows, up_tally) = project_batched_moe_expert_matrix_rows_with_tally(
+        projections.up,
+        expert_index,
+        projections.up_row_offset,
+        intermediate_dim,
+        input_rows,
+        input_width,
+        bringup,
+    )?;
+    Some((gate_rows, up_rows, gate_tally.merge(up_tally)))
 }
 
 #[cfg(target_os = "macos")]
@@ -15067,18 +15032,12 @@ fn fused_layer_continuation_on_gpu(
     .ok()?;
 
     // Resolve FFN gate/up weight bindings.
-    let (gate_weight, gate_row_offset, up_weight, up_row_offset) = match &layer.ffn_gate_up {
-        MetalFfnGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            (packed, 0_usize, packed, intermediate_dim)
-        }
-        MetalFfnGateUpBindings::Split { gate, up } => (
-            buffers.binding_for(gate)?,
-            0_usize,
-            buffers.binding_for(up)?,
-            0_usize,
-        ),
-    };
+    let ffn_gate_up_weights =
+        ffn_gate_up_projection_bindings(&layer.ffn_gate_up, buffers, intermediate_dim)?;
+    let gate_weight = ffn_gate_up_weights.gate;
+    let up_weight = ffn_gate_up_weights.up;
+    let gate_row_offset = ffn_gate_up_weights.gate_row_offset;
+    let up_row_offset = ffn_gate_up_weights.up_row_offset;
 
     let hidden_dim_u32 = saturating_usize_to_u32(hidden_dim);
     let intermediate_dim_u32 = saturating_usize_to_u32(intermediate_dim);
@@ -15356,18 +15315,12 @@ fn fused_ffn_only_on_gpu(
     )
     .ok()?;
 
-    let (gate_weight, gate_row_offset, up_weight, up_row_offset) = match &layer.ffn_gate_up {
-        MetalFfnGateUpBindings::Packed(binding) => {
-            let packed = buffers.binding_for(binding)?;
-            (packed, 0_usize, packed, intermediate_dim)
-        }
-        MetalFfnGateUpBindings::Split { gate, up } => (
-            buffers.binding_for(gate)?,
-            0_usize,
-            buffers.binding_for(up)?,
-            0_usize,
-        ),
-    };
+    let ffn_gate_up_weights =
+        ffn_gate_up_projection_bindings(&layer.ffn_gate_up, buffers, intermediate_dim)?;
+    let gate_weight = ffn_gate_up_weights.gate;
+    let up_weight = ffn_gate_up_weights.up;
+    let gate_row_offset = ffn_gate_up_weights.gate_row_offset;
+    let up_row_offset = ffn_gate_up_weights.up_row_offset;
 
     let hidden_dim_u32 = saturating_usize_to_u32(hidden_dim);
     let intermediate_dim_u32 = saturating_usize_to_u32(intermediate_dim);

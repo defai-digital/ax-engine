@@ -194,14 +194,14 @@ class InstalledPreviewTests(unittest.TestCase):
         self.assertEqual(events[0].runtime.support_tier, "llama_cpp")
         self.assertEqual(events[1].request.state, "running")
         self.assertEqual(events[1].delta_tokens, [41])
-        self.assertEqual(events[1].delta_token_logprobs, [None])
+        self.assertIsNone(events[1].delta_token_logprobs)
         self.assertEqual(events[2].request.state, "finished")
         self.assertEqual(events[2].request.finish_reason, "max_output_tokens")
         self.assertEqual(events[2].request.terminal_stop_reason, "max_output_tokens")
         self.assertEqual(events[2].delta_tokens, [42])
-        self.assertEqual(events[2].delta_token_logprobs, [None])
+        self.assertIsNone(events[2].delta_token_logprobs)
         self.assertEqual(events[3].response.output_tokens, [41, 42])
-        self.assertEqual(events[3].response.output_token_logprobs, [None, None])
+        self.assertEqual(events[3].response.output_token_logprobs, [])
         self.assertEqual(events[3].response.output_text, "llama stream")
         self.assertEqual(
             events[3].response.route.execution_plan,
@@ -246,7 +246,7 @@ class InstalledPreviewTests(unittest.TestCase):
                 self.assertIsNotNone(running)
                 self.assertEqual(running.state, "running")
                 self.assertEqual(running.output_tokens, [41])
-                self.assertEqual(running.output_token_logprobs, [None])
+                self.assertEqual(running.output_token_logprobs, [])
 
                 second_step = session.step()
                 terminal = session.snapshot(request_id)
@@ -260,7 +260,7 @@ class InstalledPreviewTests(unittest.TestCase):
                 self.assertIsNotNone(terminal)
                 self.assertEqual(terminal.state, "finished")
                 self.assertEqual(terminal.output_tokens, [41, 42])
-                self.assertEqual(terminal.output_token_logprobs, [None, None])
+                self.assertEqual(terminal.output_token_logprobs, [])
                 self.assertEqual(terminal.finish_reason, "max_output_tokens")
                 self.assertEqual(terminal.terminal_stop_reason, "max_output_tokens")
                 self.assertEqual(

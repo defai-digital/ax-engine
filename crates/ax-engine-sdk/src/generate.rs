@@ -78,6 +78,8 @@ pub struct GenerateStreamResponseEvent {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", tag = "event", content = "data")]
+// Keep the wire schema unboxed so SDK, Python, and SSE callers see the same
+// event payload shape even though the terminal response is the largest variant.
 #[allow(clippy::large_enum_variant)]
 pub enum GenerateStreamEvent {
     Request(GenerateStreamRequestEvent),

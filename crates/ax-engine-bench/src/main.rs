@@ -126,6 +126,7 @@ fn handle_scenario(args: &[String]) -> Result<(), CliError> {
     let manifest = required_flag(args, "--manifest")?;
     let output_root = required_flag(args, "--output-root")?;
     let json = has_flag(args, "--json");
+    let write_trace = !has_flag(args, "--no-trace");
 
     require_existing_file(&manifest)?;
     ensure_output_root(&output_root)?;
@@ -166,6 +167,7 @@ fn handle_scenario(args: &[String]) -> Result<(), CliError> {
         &output_root,
         started_at_unix_s,
         &execution,
+        write_trace,
     )?;
 
     let summary = BenchmarkArtifactSummary::manifest_run(
@@ -184,6 +186,7 @@ fn handle_replay(args: &[String]) -> Result<(), CliError> {
     let manifest = required_flag(args, "--manifest")?;
     let output_root = required_flag(args, "--output-root")?;
     let json = has_flag(args, "--json");
+    let write_trace = !has_flag(args, "--no-trace");
 
     require_existing_file(&manifest)?;
     ensure_output_root(&output_root)?;
@@ -224,6 +227,7 @@ fn handle_replay(args: &[String]) -> Result<(), CliError> {
         &output_root,
         started_at_unix_s,
         &execution,
+        write_trace,
     )?;
 
     let summary = BenchmarkArtifactSummary::manifest_run(
@@ -404,12 +408,14 @@ fn handle_matrix(args: &[String]) -> Result<(), CliError> {
     let manifest = required_flag(args, "--manifest")?;
     let output_root = required_flag(args, "--output-root")?;
     let json = has_flag(args, "--json");
+    let write_trace = !has_flag(args, "--no-trace");
 
     require_existing_file(&manifest)?;
     ensure_output_root(&output_root)?;
     let matrix_manifest = load_matrix_manifest(&manifest)?;
     validate_matrix_manifest(&matrix_manifest)?;
-    let execution = execute_matrix_manifest(&manifest, &matrix_manifest, &output_root)?;
+    let execution =
+        execute_matrix_manifest(&manifest, &matrix_manifest, &output_root, write_trace)?;
 
     let summary = BenchmarkArtifactSummary::manifest_run(
         "matrix",
@@ -586,12 +592,19 @@ fn handle_generate_manifest(args: &[String]) -> Result<(), CliError> {
             .map_err(|e| CliError::Runtime(format!("error writing manifest: {e}")))?;
         GenerateManifestStatus::Written
     };
+    let validation = if args.validate {
+        validate_native_model_artifacts(&model_dir)?;
+        Some(GenerateManifestValidationSummary { passed: true })
+    } else {
+        None
+    };
     let summary = GenerateManifestSummary {
         schema_version: GENERATE_MANIFEST_SCHEMA_VERSION,
         model_dir: model_dir.display().to_string(),
         manifest_path: manifest_path.display().to_string(),
         status,
         manifest_present: manifest_path.exists(),
+        validation,
     };
 
     if args.json {
@@ -603,8 +616,14 @@ fn handle_generate_manifest(args: &[String]) -> Result<(), CliError> {
         println!("{json}");
     } else if status == GenerateManifestStatus::AlreadyExists {
         println!("manifest already exists: {}", manifest_path.display());
+        if args.validate {
+            println!("validated {}", manifest_path.display());
+        }
     } else {
         println!("wrote {}", manifest_path.display());
+        if args.validate {
+            println!("validated {}", manifest_path.display());
+        }
     }
     Ok(())
 }
@@ -613,15 +632,18 @@ fn handle_generate_manifest(args: &[String]) -> Result<(), CliError> {
 struct GenerateManifestArgs {
     model_dir: PathBuf,
     json: bool,
+    validate: bool,
 }
 
 fn parse_generate_manifest_args(args: &[String]) -> Result<GenerateManifestArgs, CliError> {
     let mut model_dir = None;
     let mut json = false;
+    let mut validate = false;
 
     for arg in args {
         match arg.as_str() {
             "--json" => json = true,
+            "--validate" => validate = true,
             value if value.starts_with('-') => {
                 return Err(CliError::Usage(format!(
                     "unknown generate-manifest option: {value}\n\n{}",
@@ -644,14 +666,30 @@ fn parse_generate_manifest_args(args: &[String]) -> Result<GenerateManifestArgs,
         return Err(CliError::Usage(generate_manifest_usage()));
     };
 
-    Ok(GenerateManifestArgs { model_dir, json })
+    Ok(GenerateManifestArgs {
+        model_dir,
+        json,
+        validate,
+    })
 }
 
 fn generate_manifest_usage() -> String {
-    "Usage: ax-engine-bench generate-manifest <model-dir> [--json]\n\n\
+    "Usage: ax-engine-bench generate-manifest <model-dir> [--json] [--validate]\n\n\
      Generates model-manifest.json for an MLX model snapshot. Required before \
-     ax-engine can load the model."
+     ax-engine can load the model. With --validate, reads the generated \
+     model-manifest.json back through the native model artifact validator."
         .to_string()
+}
+
+fn validate_native_model_artifacts(model_dir: &Path) -> Result<(), CliError> {
+    ax_engine_core::model::NativeModelArtifacts::from_dir(model_dir)
+        .map(|_| ())
+        .map_err(|error| {
+            CliError::Runtime(format!(
+                "generated manifest validation failed for {}: {error}",
+                model_dir.display()
+            ))
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -668,6 +706,13 @@ struct GenerateManifestSummary {
     manifest_path: String,
     status: GenerateManifestStatus,
     manifest_present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation: Option<GenerateManifestValidationSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct GenerateManifestValidationSummary {
+    passed: bool,
 }
 
 fn handle_metal_build(args: &[String]) -> Result<(), CliError> {
@@ -2839,6 +2884,7 @@ fn execute_autotune_trial(
                 trials_dir,
                 started_at_unix_s,
                 &execution,
+                true,
             )?;
             let metrics = autotune_trial_metrics(&execution);
             let score = autotune_score(&execution, &metrics);
@@ -2924,6 +2970,7 @@ fn execute_autotune_probe_trial(
                 &probes_dir,
                 started_at_unix_s,
                 &execution,
+                true,
             )?;
             let metrics = autotune_trial_metrics(&execution);
             let score = autotune_score(&execution, &metrics);
@@ -4616,6 +4663,10 @@ fn run_llama_cpp_blocking_scenario_workload(
             .known_prompt_token_count()
             .unwrap_or(spec.prompt_token_target);
         let known_output_token_count = response.known_output_token_count();
+        observation.record_token_accounting_source(
+            "prompt",
+            prompt_token_count_source(&response, response.known_prompt_token_count().is_none()),
+        );
         observation.step_count += 1;
         observation.total_selected_requests += 1;
         observation.prefill_tokens += u64::from(prompt_token_count);
@@ -4624,10 +4675,12 @@ fn run_llama_cpp_blocking_scenario_workload(
             observation.ttft_ms = Some(elapsed_ms);
         }
 
+        let mut used_synthetic_output_estimate = false;
         let output_tokens = if response.output_tokens.is_empty() {
             if known_output_token_count.is_some() {
                 Vec::new()
             } else {
+                used_synthetic_output_estimate = response.output_text.is_some();
                 response
                     .output_text
                     .as_deref()
@@ -4638,6 +4691,10 @@ fn run_llama_cpp_blocking_scenario_workload(
             response.output_tokens.clone()
         };
         let output_token_count = known_output_token_count.unwrap_or(output_tokens.len() as u32);
+        observation.record_token_accounting_source(
+            "output",
+            output_token_count_source(&response, used_synthetic_output_estimate),
+        );
         observation.decode_tokens += u64::from(output_token_count);
         observation.total_scheduled_tokens += u64::from(output_token_count);
 
@@ -5253,6 +5310,7 @@ fn write_execution_artifacts(
     output_root: &Path,
     started_at_unix_s: u64,
     execution: &RuntimeResult,
+    write_trace: bool,
 ) -> Result<PathBuf, CliError> {
     let (run_id, result_dir) = create_unique_result_dir(output_root, None, &manifest.id)?;
 
@@ -5276,10 +5334,12 @@ fn write_execution_artifacts(
         &result_dir.join("routes.json"),
         &build_routes_json(&run_id, execution),
     )?;
-    write_json_file(
-        &result_dir.join("trace.json"),
-        &build_trace_json(&run_id, execution),
-    )?;
+    if write_trace {
+        write_json_file(
+            &result_dir.join("trace.json"),
+            &build_trace_json(&run_id, execution),
+        )?;
+    }
     fs::write(
         result_dir.join("summary.md"),
         build_execution_summary_markdown(&run_id, command, manifest_path, execution),
@@ -5611,6 +5671,7 @@ fn execute_matrix_manifest(
     matrix_manifest_path: &Path,
     matrix_manifest: &BenchmarkMatrixManifest,
     output_root: &Path,
+    write_trace: bool,
 ) -> Result<MatrixExecutionResult, CliError> {
     let (run_id, result_dir) =
         create_unique_result_dir(output_root, Some("matrix"), &matrix_manifest.id)?;
@@ -5646,6 +5707,7 @@ fn execute_matrix_manifest(
                     &member_output_root,
                     started_at_unix_s,
                     &execution,
+                    write_trace,
                 )?;
                 MatrixMemberResult {
                     label: member.label.clone().unwrap_or_else(|| manifest.id.clone()),
@@ -6756,7 +6818,6 @@ fn validate_comparable_manifests(baseline: &Value, candidate: &Value) -> Result<
         ["class"].as_slice(),
         ["scenario"].as_slice(),
         ["model"].as_slice(),
-        ["runtime"].as_slice(),
         ["sampling"].as_slice(),
         ["checks"].as_slice(),
     ];
@@ -6766,6 +6827,18 @@ fn validate_comparable_manifests(baseline: &Value, candidate: &Value) -> Result<
     }
 
     validate_matching_optional_json_field(baseline, candidate, &["source"])?;
+    validate_matching_json_field(baseline, candidate, &["runtime", "selected_backend"])?;
+    validate_matching_json_field(baseline, candidate, &["runtime", "support_tier"])?;
+    validate_matching_json_field(baseline, candidate, &["runtime", "resolution_policy"])?;
+    validate_matching_json_field(baseline, candidate, &["runtime", "deterministic"])?;
+    validate_matching_optional_json_field(baseline, candidate, &["runtime", "fallback_reason"])?;
+    validate_matching_optional_json_field(baseline, candidate, &["runtime", "backend_adapter"])?;
+    validate_matching_optional_json_field(baseline, candidate, &["runtime", "llama_cpp_preset"])?;
+    validate_matching_optional_json_field(
+        baseline,
+        candidate,
+        &["runtime", "mlx_model_artifacts_dir"],
+    )?;
 
     match nested_string(baseline, &["class"])? {
         "scenario" => validate_matching_json_field(baseline, candidate, &["shape"])?,
@@ -7132,6 +7205,42 @@ fn string_at_path_or_unknown(json: &Value, path: &[&str]) -> String {
         .to_string()
 }
 
+fn informational_diff_entry(baseline: &Value, candidate: &Value, path: &[&str]) -> Value {
+    let baseline_value = nested_value(baseline, path).cloned().unwrap_or(Value::Null);
+    let candidate_value = nested_value(candidate, path)
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    json!({
+        "baseline": baseline_value,
+        "candidate": candidate_value,
+        "changed": baseline_value != candidate_value
+    })
+}
+
+fn runtime_tuning_informational_diff_json(
+    baseline_environment: &Value,
+    candidate_environment: &Value,
+) -> Value {
+    json!({
+        "max_batch_tokens": informational_diff_entry(
+            baseline_environment,
+            candidate_environment,
+            &["runtime", "max_batch_tokens"],
+        ),
+        "kv_total_blocks": informational_diff_entry(
+            baseline_environment,
+            candidate_environment,
+            &["runtime", "kv_total_blocks"],
+        ),
+        "prefix_cache": informational_diff_entry(
+            baseline_environment,
+            candidate_environment,
+            &["runtime", "flags", "prefix_cache"],
+        )
+    })
+}
+
 fn compare_result_label(tool_mode: &str, execution_semantics: &str) -> &'static str {
     match tool_mode {
         "llama_cpp_stepwise_runtime" => "llama_cpp_stepwise_compare",
@@ -7391,6 +7500,11 @@ fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
             "kv_block_usage": execution.observation.kv_peak_blocks as f64,
             "evictions": execution.observation.evictions as f64
         },
+        "memory_peak_estimate": memory_peak_estimate_json(
+            &execution.runtime,
+            &execution.observation,
+        ),
+        "token_accounting": token_accounting_json(&execution.observation),
         "correctness": {
             "passed": execution.correctness.passed,
             "reason": execution.correctness.reason
@@ -7429,6 +7543,28 @@ fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
     }
 
     metrics_json
+}
+
+fn memory_peak_estimate_json(runtime: &RuntimeConfig, observation: &RuntimeObservation) -> Value {
+    json!({
+        "kind": "kv_cache_legacy_estimate",
+        "metric": "memory_peak_mb",
+        "formula": "kv_peak_blocks * block_size_tokens * estimated_bytes_per_token / 1024",
+        "kv_peak_blocks": observation.kv_peak_blocks,
+        "block_size_tokens": runtime.block_size_tokens,
+        "estimated_bytes_per_token": LEGACY_KV_CACHE_ESTIMATED_BYTES_PER_TOKEN,
+        "model_architecture_adjusted": false
+    })
+}
+
+fn token_accounting_json(observation: &RuntimeObservation) -> Value {
+    json!({
+        "sources": observation.token_accounting_sources.clone(),
+        "contains_estimates": observation
+            .token_accounting_sources
+            .keys()
+            .any(|source| source.contains("estimate") || source.contains("synthetic")),
+    })
 }
 
 fn build_routes_json(run_id: &str, execution: &RuntimeResult) -> Value {
@@ -8503,6 +8639,12 @@ fn build_regression_json(
         "baseline_run_id": baseline_run_id,
         "candidate_run_id": candidate_run_id,
         "runtime": runtime,
+        "informational_diff": {
+            "runtime_tuning": runtime_tuning_informational_diff_json(
+                baseline_environment,
+                candidate_environment
+            )
+        },
         "comparison": {
             "ttft_ms_pct": percentage_delta(metric_number(baseline_metrics, "ttft_ms")?, metric_number(candidate_metrics, "ttft_ms")?),
             "decode_tok_s_pct": percentage_delta(metric_number(baseline_metrics, "decode_tok_s")?, metric_number(candidate_metrics, "decode_tok_s")?),
@@ -10716,6 +10858,36 @@ fn runtime_backend_adapter_for_report<'a>(
         .filter(|adapter| adapter.selected_backend() == selected_backend)
 }
 
+fn prompt_token_count_source(
+    response: &GenerateResponse,
+    used_manifest_target: bool,
+) -> &'static str {
+    if response.prompt_token_count.is_some() {
+        "backend_reported_usage"
+    } else if !response.prompt_tokens.is_empty() {
+        "token_array"
+    } else if used_manifest_target {
+        "manifest_synthetic_target"
+    } else {
+        "unknown"
+    }
+}
+
+fn output_token_count_source(
+    response: &GenerateResponse,
+    used_synthetic_text_estimate: bool,
+) -> &'static str {
+    if response.output_token_count.is_some() {
+        "backend_reported_usage"
+    } else if !response.output_tokens.is_empty() {
+        "token_array"
+    } else if used_synthetic_text_estimate {
+        "synthetic_text_estimate"
+    } else {
+        "unknown"
+    }
+}
+
 fn json_string_label<T: Serialize>(value: T) -> String {
     serde_json::to_value(value)
         .ok()
@@ -11117,15 +11289,15 @@ fn usage() -> String {
 Usage:
   ax-engine-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
   ax-engine-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
-  ax-engine-bench scenario --manifest <path> --output-root <path> [--json]
-  ax-engine-bench replay --manifest <path> --output-root <path> [--json]
+  ax-engine-bench scenario --manifest <path> --output-root <path> [--json] [--no-trace]
+  ax-engine-bench replay --manifest <path> --output-root <path> [--json] [--no-trace]
   ax-engine-bench autotune --manifest <path> --output-root <path> [--iterations <n>] [--exploration-weight <value>] [--max-batch-token-options <list>] [--kv-total-block-options <list>] [--prefix-cache-options <list>] [--disable-history] (not yet available)
   ax-engine-bench compare --baseline <path> --candidate <path> --output-root <path> [--json]
   ax-engine-bench matrix-compare --baseline <path> --candidate <path> --output-root <path> [--json]
   ax-engine-bench baseline --source <path> --name <name> --output-root <path> [--json]
-  ax-engine-bench matrix --manifest <path> --output-root <path> [--json]
+  ax-engine-bench matrix --manifest <path> --output-root <path> [--json] [--no-trace]
   ax-engine-bench doctor [--json] [--mlx-model-artifacts-dir <path>]
-  ax-engine-bench generate-manifest <model-dir> [--json]
+  ax-engine-bench generate-manifest <model-dir> [--json] [--validate]
   ax-engine-bench metal-build [--manifest <path>] [--output-dir <path>]
 "#;
 
@@ -11599,6 +11771,7 @@ struct RuntimeObservation {
     cleanup_count: usize,
     llama_cpp_processing_request_events: u64,
     llama_cpp_deferred_request_events: u64,
+    token_accounting_sources: BTreeMap<String, u64>,
     route_metadata: RouteMetadata,
     step_trace: Vec<StepTraceEntry>,
     final_requests: Vec<FinalRequestState>,
@@ -11628,7 +11801,15 @@ fn tokens_per_second_from_micros(tokens: u64, elapsed_us: u64) -> f64 {
     }
 }
 
+const LEGACY_KV_CACHE_ESTIMATED_BYTES_PER_TOKEN: f64 = 16.0;
+
 impl RuntimeObservation {
+    fn record_token_accounting_source(&mut self, phase: &str, source: &str) {
+        let key = format!("{phase}.{source}");
+        let entry = self.token_accounting_sources.entry(key).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+
     fn observe_step(
         &mut self,
         engine: &EngineCore,
@@ -11822,8 +12003,10 @@ impl RuntimeObservation {
         block_size_tokens: u32,
     ) -> Result<(), CliError> {
         self.e2e_latency_ms = current_time_ms;
-        self.memory_peak_mb =
-            (f64::from(self.kv_peak_blocks) * f64::from(block_size_tokens) * 16.0) / 1024.0;
+        self.memory_peak_mb = (f64::from(self.kv_peak_blocks)
+            * f64::from(block_size_tokens)
+            * LEGACY_KV_CACHE_ESTIMATED_BYTES_PER_TOKEN)
+            / 1024.0;
 
         let mut final_requests = Vec::new();
         for request_id in request_ids {
@@ -12145,6 +12328,7 @@ impl Default for RuntimeObservation {
             cleanup_count: 0,
             llama_cpp_processing_request_events: 0,
             llama_cpp_deferred_request_events: 0,
+            token_accounting_sources: BTreeMap::new(),
             route_metadata: RouteMetadata::empty(),
             step_trace: Vec::new(),
             final_requests: Vec::new(),
@@ -13227,6 +13411,49 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            nested_value(&metrics, &["memory_peak_estimate", "kind"]).and_then(Value::as_str),
+            Some("kv_cache_legacy_estimate")
+        );
+        assert_eq!(
+            nested_value(
+                &metrics,
+                &["memory_peak_estimate", "estimated_bytes_per_token"]
+            )
+            .and_then(Value::as_f64),
+            Some(LEGACY_KV_CACHE_ESTIMATED_BYTES_PER_TOKEN)
+        );
+        assert_eq!(
+            nested_value(&metrics, &["token_accounting", "contains_estimates"])
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn token_accounting_json_marks_synthetic_estimates() {
+        let mut observation = RuntimeObservation::default();
+        observation.record_token_accounting_source("prompt", "backend_reported_usage");
+        observation.record_token_accounting_source("output", "synthetic_text_estimate");
+
+        let accounting = token_accounting_json(&observation);
+
+        assert_eq!(
+            nested_value(&accounting, &["sources", "prompt.backend_reported_usage"])
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            nested_value(&accounting, &["sources", "output.synthetic_text_estimate"])
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            accounting
+                .get("contains_estimates")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     fn repo_manifest_path(relative: &str) -> String {
@@ -13309,12 +13536,51 @@ mod tests {
     }
 
     #[test]
+    fn write_execution_artifacts_can_skip_trace_file() {
+        let root = unique_test_dir("no-trace-artifacts");
+        fs::create_dir_all(&root).expect("result root should create");
+        let manifest_path = PathBuf::from(repo_manifest_path(
+            "benchmarks/manifests/scenario/chat_qwen_short.json",
+        ));
+        let manifest = load_manifest(&manifest_path).expect("test manifest should load");
+        let runtime = runtime_config_from_manifest(&manifest).expect("runtime config should build");
+        let execution = RuntimeResult {
+            tool_mode: runtime.tool_mode(),
+            runtime,
+            observation: RuntimeObservation::default(),
+            correctness: GateStatus::pass(),
+            determinism: GateStatus::pass(),
+        };
+
+        let result_dir = write_execution_artifacts(
+            "scenario",
+            &manifest_path,
+            &manifest,
+            &root,
+            123,
+            &execution,
+            false,
+        )
+        .expect("execution artifacts should write");
+
+        assert!(result_dir.join("metrics.json").is_file());
+        assert!(result_dir.join("routes.json").is_file());
+        assert!(
+            !result_dir.join("trace.json").exists(),
+            "--no-trace should skip trace artifact materialization"
+        );
+
+        fs::remove_dir_all(root).expect("test directory should clean up");
+    }
+
+    #[test]
     fn generate_manifest_args_accept_json_flag_after_model_dir() {
         let args = parse_generate_manifest_args(&["/tmp/model".to_string(), "--json".to_string()])
             .expect("generate-manifest args should parse");
 
         assert_eq!(args.model_dir, PathBuf::from("/tmp/model"));
         assert!(args.json);
+        assert!(!args.validate);
     }
 
     #[test]
@@ -13324,6 +13590,21 @@ mod tests {
 
         assert_eq!(args.model_dir, PathBuf::from("/tmp/model"));
         assert!(args.json);
+        assert!(!args.validate);
+    }
+
+    #[test]
+    fn generate_manifest_args_accept_validate_flag() {
+        let args = parse_generate_manifest_args(&[
+            "--validate".to_string(),
+            "/tmp/model".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("generate-manifest args should parse");
+
+        assert_eq!(args.model_dir, PathBuf::from("/tmp/model"));
+        assert!(args.json);
+        assert!(args.validate);
     }
 
     #[test]
@@ -13332,7 +13613,7 @@ mod tests {
             .expect_err("missing model directory should fail");
 
         assert!(
-            matches!(error, CliError::Usage(message) if message.contains("generate-manifest <model-dir> [--json]"))
+            matches!(error, CliError::Usage(message) if message.contains("generate-manifest <model-dir> [--json] [--validate]"))
         );
     }
 
@@ -13344,6 +13625,7 @@ mod tests {
             manifest_path: "/tmp/model/model-manifest.json".to_string(),
             status: GenerateManifestStatus::AlreadyExists,
             manifest_present: true,
+            validation: Some(GenerateManifestValidationSummary { passed: true }),
         };
 
         let value =
@@ -13359,6 +13641,10 @@ mod tests {
         );
         assert_eq!(
             value.get("manifest_present").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            nested_value(&value, &["validation", "passed"]).and_then(Value::as_bool),
             Some(true)
         );
     }
@@ -18055,11 +18341,19 @@ mod tests {
                 "prefix_hit_rate": 55.0
             }
         });
+        let mut baseline_runtime = llama_runtime_fixture("http://127.0.0.1:8081");
+        baseline_runtime["max_batch_tokens"] = json!(2048);
+        baseline_runtime["kv_total_blocks"] = json!(512);
+        baseline_runtime["flags"] = json!({ "prefix_cache": false });
+        let mut candidate_runtime = llama_runtime_fixture("http://127.0.0.1:8081");
+        candidate_runtime["max_batch_tokens"] = json!(4096);
+        candidate_runtime["kv_total_blocks"] = json!(1024);
+        candidate_runtime["flags"] = json!({ "prefix_cache": true });
         let baseline_environment = json!({
             "software": {
                 "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": baseline_runtime,
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",
@@ -18071,7 +18365,7 @@ mod tests {
             "software": {
                 "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": candidate_runtime,
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",
@@ -18161,6 +18455,32 @@ mod tests {
                 .and_then(|field| field.get("baseline"))
                 .and_then(Value::as_str),
             Some("llama_cpp")
+        );
+        assert_eq!(
+            nested_value(
+                &regression,
+                &[
+                    "informational_diff",
+                    "runtime_tuning",
+                    "max_batch_tokens",
+                    "changed"
+                ]
+            )
+            .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            nested_value(
+                &regression,
+                &[
+                    "informational_diff",
+                    "runtime_tuning",
+                    "prefix_cache",
+                    "candidate"
+                ]
+            )
+            .and_then(Value::as_bool),
+            Some(true)
         );
         assert_eq!(
             regression
@@ -19054,20 +19374,34 @@ mod tests {
     }
 
     #[test]
-    fn compare_validation_rejects_runtime_drift() {
+    fn compare_validation_allows_runtime_tuning_drift() {
         let baseline = load_test_manifest_json(
             repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
         let mut candidate = baseline.clone();
         candidate["runtime"]["max_batch_tokens"] = json!(4096);
+        candidate["runtime"]["kv_total_blocks"] = json!(1024);
+        candidate["runtime"]["flags"]["prefix_cache"] = json!(true);
+
+        validate_comparable_manifests(&baseline, &candidate)
+            .expect("compare validation should allow runtime tuning drift");
+    }
+
+    #[test]
+    fn compare_validation_rejects_runtime_identity_drift() {
+        let baseline = load_test_manifest_json(
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
+        );
+        let mut candidate = baseline.clone();
+        candidate["runtime"]["selected_backend"] = json!("llama_cpp");
 
         let error = validate_comparable_manifests(&baseline, &candidate)
-            .expect_err("compare validation should reject runtime drift");
+            .expect_err("compare validation should reject runtime identity drift");
         let CliError::Contract(message) = error else {
             panic!("compare validation should return a contract error");
         };
 
-        assert!(message.contains("runtime"));
+        assert!(message.contains("runtime.selected_backend"));
     }
 
     #[test]

@@ -143,13 +143,34 @@ class FakeNativeSession:
                 "artifacts_source": "explicit_config",
                 "model_family": "qwen3_dense",
                 "tensor_format": "safetensors",
+                "source_quantization": {
+                    "format": "gguf",
+                    "tensor_type_counts": {"q4_k": 7},
+                    "quantized_tensor_count": 7,
+                    "contains_quantized_tensors": True,
+                },
+                "runtime_status": {
+                    "ready": True,
+                    "blockers": [],
+                    "notes": ["fixture"],
+                },
                 "layer_count": 36,
                 "tensor_count": 512,
                 "tie_word_embeddings": False,
+                "is_moe": True,
+                "is_hybrid_attention": True,
+                "hybrid_full_attention_interval": 6,
+                "mla_kv_latent_dim": 512,
+                "moe_active_experts": 4,
                 "bindings_prepared": True,
                 "buffers_bound": True,
                 "buffer_count": 12,
                 "buffer_bytes": 4096,
+                "source_quantized_binding_count": 7,
+                "source_q4_k_binding_count": 7,
+                "source_q5_k_binding_count": 0,
+                "source_q6_k_binding_count": 0,
+                "source_q8_0_binding_count": 0,
             }
         return runtime
 
@@ -204,7 +225,6 @@ class FakeNativeSession:
                         "prompt_tokens": tokens,
                         "processed_prompt_tokens": 0,
                         "output_tokens": [],
-                        "output_token_logprobs": [],
                         "prompt_len": len(tokens),
                         "output_len": 0,
                         "max_output_tokens": 2,
@@ -224,7 +244,6 @@ class FakeNativeSession:
                         "prompt_tokens": tokens,
                         "processed_prompt_tokens": len(tokens),
                         "output_tokens": [4],
-                        "output_token_logprobs": [None],
                         "prompt_len": len(tokens),
                         "output_len": 1,
                         "max_output_tokens": 2,
@@ -246,7 +265,6 @@ class FakeNativeSession:
                         "runner_time_us": 0,
                     },
                     "delta_tokens": [4],
-                    "delta_token_logprobs": [None],
                     "delta_text": "llama",
                 },
                 {
@@ -258,7 +276,6 @@ class FakeNativeSession:
                         "prompt_tokens": tokens,
                         "processed_prompt_tokens": len(tokens),
                         "output_tokens": [4, 5],
-                        "output_token_logprobs": [None, None],
                         "prompt_len": len(tokens),
                         "output_len": 2,
                         "max_output_tokens": 2,
@@ -282,7 +299,6 @@ class FakeNativeSession:
                         "runner_time_us": 0,
                     },
                     "delta_tokens": [5],
-                    "delta_token_logprobs": [None],
                     "delta_text": " stream",
                 },
                 {
@@ -293,7 +309,6 @@ class FakeNativeSession:
                         "prompt_tokens": tokens,
                         "prompt_text": prompt_text if isinstance(prompt_text, str) else None,
                         "output_tokens": [4, 5],
-                        "output_token_logprobs": [None, None],
                         "output_text": (
                             f"llama::{prompt_text}" if isinstance(prompt_text, str) else "llama::stream"
                         ),
@@ -677,7 +692,21 @@ class WrapperContractTests(unittest.TestCase):
         self.assertFalse(result.runtime.metal_toolchain.fully_available)
         self.assertEqual(result.runtime.mlx_runtime.runner, "metal_bringup")
         self.assertEqual(result.runtime.mlx_model.model_family, "qwen3_dense")
+        self.assertEqual(result.runtime.mlx_model.source_quantization.format, "gguf")
+        self.assertEqual(
+            result.runtime.mlx_model.source_quantization.tensor_type_counts,
+            {"q4_k": 7},
+        )
+        self.assertTrue(result.runtime.mlx_model.runtime_status.ready)
+        self.assertEqual(result.runtime.mlx_model.runtime_status.notes, ["fixture"])
+        self.assertTrue(result.runtime.mlx_model.is_moe)
+        self.assertTrue(result.runtime.mlx_model.is_hybrid_attention)
+        self.assertEqual(result.runtime.mlx_model.hybrid_full_attention_interval, 6)
+        self.assertEqual(result.runtime.mlx_model.mla_kv_latent_dim, 512)
+        self.assertEqual(result.runtime.mlx_model.moe_active_experts, 4)
         self.assertTrue(result.runtime.mlx_model.bindings_prepared)
+        self.assertEqual(result.runtime.mlx_model.source_quantized_binding_count, 7)
+        self.assertEqual(result.runtime.mlx_model.source_q4_k_binding_count, 7)
         self.assertEqual(result.route.execution_plan, "phase1.qwen3_dense.paged_decode")
 
         native = FakeNativeSession.instances[-1]
@@ -1101,15 +1130,15 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(events[0].runtime.support_tier, "llama_cpp")
         self.assertEqual(events[1].request.state, "running")
         self.assertEqual(events[1].delta_tokens, [4])
-        self.assertEqual(events[1].delta_token_logprobs, [None])
+        self.assertIsNone(events[1].delta_token_logprobs)
         self.assertEqual(events[1].delta_text, "llama")
         self.assertEqual(events[2].request.state, "finished")
         self.assertEqual(events[2].request.finish_reason, "max_output_tokens")
         self.assertEqual(events[2].request.terminal_stop_reason, "max_output_tokens")
-        self.assertEqual(events[2].delta_token_logprobs, [None])
+        self.assertIsNone(events[2].delta_token_logprobs)
         self.assertEqual(events[2].delta_text, " stream")
         self.assertEqual(events[3].response.output_tokens, [4, 5])
-        self.assertEqual(events[3].response.output_token_logprobs, [None, None])
+        self.assertEqual(events[3].response.output_token_logprobs, [])
         self.assertEqual(
             events[3].response.route.execution_plan,
             "llama_cpp.server_completion_stream",
