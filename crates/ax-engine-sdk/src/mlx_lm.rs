@@ -242,29 +242,9 @@ fn start_mlx_lm_server_completion_stream(
     config: &MlxLmServerCompletionConfig,
     request: &GenerateRequest,
 ) -> Result<MlxLmStreamHandle, MlxLmBackendError> {
-    if !request.input_tokens.is_empty() {
-        return Err(MlxLmBackendError::UnsupportedTokenPrompt);
-    }
-    let prompt = request
-        .input_text
-        .clone()
-        .ok_or(MlxLmBackendError::MissingInputText)?;
-
     let endpoint = config.completions_url();
-    let payload = MlxLmCompletionRequest {
-        model: &request.model_id,
-        prompt: &prompt,
-        max_tokens: request.max_output_tokens,
-        temperature: request.sampling.temperature,
-        top_p: request.sampling.top_p,
-        top_k: request.sampling.top_k,
-        min_p: request.sampling.min_p,
-        repetition_penalty: request.sampling.repetition_penalty,
-        repetition_context_size: request.sampling.repetition_context_size,
-        seed: request.sampling.seed,
-        stream: true,
-        stop: request.stop_sequences.clone(),
-    };
+    let prompt = completion_prompt_text(request)?;
+    let payload = build_mlx_lm_completion_request(request, &prompt, true);
 
     let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
@@ -287,22 +267,7 @@ fn start_mlx_lm_server_chat_completion_stream(
     request: &MlxLmChatGenerateRequest,
 ) -> Result<MlxLmStreamHandle, MlxLmBackendError> {
     let endpoint = config.chat_completions_url();
-    let payload = MlxLmChatCompletionRequest {
-        model: &request.model_id,
-        messages: &request.messages,
-        max_tokens: request.max_output_tokens,
-        temperature: request.sampling.temperature,
-        top_p: request.sampling.top_p,
-        top_k: request.sampling.top_k,
-        min_p: request.sampling.min_p,
-        repetition_penalty: request.sampling.repetition_penalty,
-        repetition_context_size: request.sampling.repetition_context_size,
-        seed: request.sampling.seed,
-        stream: true,
-        stop: request.stop_sequences.clone(),
-        metadata: request.metadata.as_deref(),
-        chat_template_kwargs: request.chat_template_kwargs.as_ref(),
-    };
+    let payload = build_mlx_lm_chat_completion_request(request, true);
 
     let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
@@ -402,29 +367,9 @@ fn run_mlx_lm_server_completion_generate(
     config: &MlxLmServerCompletionConfig,
     request: &GenerateRequest,
 ) -> Result<GenerateResponse, MlxLmBackendError> {
-    if !request.input_tokens.is_empty() {
-        return Err(MlxLmBackendError::UnsupportedTokenPrompt);
-    }
-    let prompt = request
-        .input_text
-        .clone()
-        .ok_or(MlxLmBackendError::MissingInputText)?;
-
     let endpoint = config.completions_url();
-    let payload = MlxLmCompletionRequest {
-        model: &request.model_id,
-        prompt: &prompt,
-        max_tokens: request.max_output_tokens,
-        temperature: request.sampling.temperature,
-        top_p: request.sampling.top_p,
-        top_k: request.sampling.top_k,
-        min_p: request.sampling.min_p,
-        repetition_penalty: request.sampling.repetition_penalty,
-        repetition_context_size: request.sampling.repetition_context_size,
-        seed: request.sampling.seed,
-        stream: false,
-        stop: request.stop_sequences.clone(),
-    };
+    let prompt = completion_prompt_text(request)?;
+    let payload = build_mlx_lm_completion_request(request, &prompt, false);
 
     let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let response: MlxLmCompletionResponse = parse_mlx_lm_json_response(response, &endpoint)?;
@@ -463,22 +408,7 @@ fn run_mlx_lm_server_chat_completion_generate(
     request: &MlxLmChatGenerateRequest,
 ) -> Result<GenerateResponse, MlxLmBackendError> {
     let endpoint = config.chat_completions_url();
-    let payload = MlxLmChatCompletionRequest {
-        model: &request.model_id,
-        messages: &request.messages,
-        max_tokens: request.max_output_tokens,
-        temperature: request.sampling.temperature,
-        top_p: request.sampling.top_p,
-        top_k: request.sampling.top_k,
-        min_p: request.sampling.min_p,
-        repetition_penalty: request.sampling.repetition_penalty,
-        repetition_context_size: request.sampling.repetition_context_size,
-        seed: request.sampling.seed,
-        stream: false,
-        stop: request.stop_sequences.clone(),
-        metadata: request.metadata.as_deref(),
-        chat_template_kwargs: request.chat_template_kwargs.as_ref(),
-    };
+    let payload = build_mlx_lm_chat_completion_request(request, false);
 
     let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let response: MlxLmChatCompletionResponse = parse_mlx_lm_json_response(response, &endpoint)?;
@@ -508,6 +438,59 @@ fn run_mlx_lm_server_chat_completion_generate(
         },
         runtime: runtime.clone(),
     })
+}
+
+fn build_mlx_lm_completion_request<'a>(
+    request: &'a GenerateRequest,
+    prompt: &'a str,
+    stream: bool,
+) -> MlxLmCompletionRequest<'a> {
+    MlxLmCompletionRequest {
+        model: &request.model_id,
+        prompt,
+        max_tokens: request.max_output_tokens,
+        temperature: request.sampling.temperature,
+        top_p: request.sampling.top_p,
+        top_k: request.sampling.top_k,
+        min_p: request.sampling.min_p,
+        repetition_penalty: request.sampling.repetition_penalty,
+        repetition_context_size: request.sampling.repetition_context_size,
+        seed: request.sampling.seed,
+        stream,
+        stop: request.stop_sequences.clone(),
+    }
+}
+
+fn completion_prompt_text(request: &GenerateRequest) -> Result<String, MlxLmBackendError> {
+    if !request.input_tokens.is_empty() {
+        return Err(MlxLmBackendError::UnsupportedTokenPrompt);
+    }
+    request
+        .input_text
+        .clone()
+        .ok_or(MlxLmBackendError::MissingInputText)
+}
+
+fn build_mlx_lm_chat_completion_request(
+    request: &MlxLmChatGenerateRequest,
+    stream: bool,
+) -> MlxLmChatCompletionRequest<'_> {
+    MlxLmChatCompletionRequest {
+        model: &request.model_id,
+        messages: &request.messages,
+        max_tokens: request.max_output_tokens,
+        temperature: request.sampling.temperature,
+        top_p: request.sampling.top_p,
+        top_k: request.sampling.top_k,
+        min_p: request.sampling.min_p,
+        repetition_penalty: request.sampling.repetition_penalty,
+        repetition_context_size: request.sampling.repetition_context_size,
+        seed: request.sampling.seed,
+        stream,
+        stop: request.stop_sequences.clone(),
+        metadata: request.metadata.as_deref(),
+        chat_template_kwargs: request.chat_template_kwargs.as_ref(),
+    }
 }
 
 pub fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateFinishReason> {

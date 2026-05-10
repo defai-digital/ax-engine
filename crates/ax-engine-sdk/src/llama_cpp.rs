@@ -431,21 +431,7 @@ fn run_llama_cpp_server_completion_generate(
 ) -> Result<GenerateResponse, LlamaCppBackendError> {
     let prompt = build_llama_cpp_prompt(request)?;
     let endpoint = config.completion_url();
-    let payload = LlamaCppCompletionRequest {
-        prompt,
-        temperature: request.sampling.temperature,
-        top_p: request.sampling.top_p,
-        top_k: request.sampling.top_k,
-        min_p: request.sampling.min_p,
-        repeat_penalty: request.sampling.repetition_penalty,
-        repeat_last_n: request.sampling.repetition_context_size,
-        seed: request.sampling.seed,
-        n_predict: request.max_output_tokens,
-        stream: false,
-        return_tokens: true,
-        return_progress: false,
-        stop: request.stop_sequences.clone(),
-    };
+    let payload = build_llama_cpp_completion_request(prompt, request, false, false);
 
     let response = send_llama_cpp_json_post_request(&endpoint, &payload, None, config.timeouts)?;
     let response: LlamaCppCompletionResponse = parse_llama_cpp_json_response(response, &endpoint)?;
@@ -486,21 +472,7 @@ fn start_llama_cpp_server_completion_stream(
 ) -> Result<LlamaCppStreamHandle, LlamaCppBackendError> {
     let prompt = build_llama_cpp_prompt(request)?;
     let endpoint = config.completion_url();
-    let payload = LlamaCppCompletionRequest {
-        prompt,
-        temperature: request.sampling.temperature,
-        top_p: request.sampling.top_p,
-        top_k: request.sampling.top_k,
-        min_p: request.sampling.min_p,
-        repeat_penalty: request.sampling.repetition_penalty,
-        repeat_last_n: request.sampling.repetition_context_size,
-        seed: request.sampling.seed,
-        n_predict: request.max_output_tokens,
-        stream: true,
-        return_tokens: true,
-        return_progress: true,
-        stop: request.stop_sequences.clone(),
-    };
+    let payload = build_llama_cpp_completion_request(prompt, request, true, true);
 
     let response = send_llama_cpp_json_post_request(
         &endpoint,
@@ -556,6 +528,29 @@ where
             source,
         }
     })
+}
+
+fn build_llama_cpp_completion_request<'a>(
+    prompt: LlamaCppPrompt<'a>,
+    request: &'a GenerateRequest,
+    stream: bool,
+    return_progress: bool,
+) -> LlamaCppCompletionRequest<'a> {
+    LlamaCppCompletionRequest {
+        prompt,
+        temperature: request.sampling.temperature,
+        top_p: request.sampling.top_p,
+        top_k: request.sampling.top_k,
+        min_p: request.sampling.min_p,
+        repeat_penalty: request.sampling.repetition_penalty,
+        repeat_last_n: request.sampling.repetition_context_size,
+        seed: request.sampling.seed,
+        n_predict: request.max_output_tokens,
+        stream,
+        return_tokens: true,
+        return_progress,
+        stop: request.stop_sequences.clone(),
+    }
 }
 
 fn build_llama_cpp_prompt(
