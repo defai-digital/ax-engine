@@ -2517,6 +2517,37 @@ impl MetalNativeTensorBinding {
     }
 }
 
+#[derive(Clone, Copy)]
+enum NativeDenseKernelCoverageBucket {
+    F32,
+    F16,
+    BF16,
+    Ignore,
+}
+
+fn native_dense_kernel_coverage_bucket(
+    dtype: NativeTensorDataType,
+    quantized_goes_to_f16: bool,
+) -> NativeDenseKernelCoverageBucket {
+    match native_dense_effective_dtype(dtype) {
+        NativeTensorDataType::F32 => NativeDenseKernelCoverageBucket::F32,
+        NativeTensorDataType::F16 => NativeDenseKernelCoverageBucket::F16,
+        NativeTensorDataType::Bf16 => NativeDenseKernelCoverageBucket::BF16,
+        NativeTensorDataType::Q4Km
+        | NativeTensorDataType::Q5Km
+        | NativeTensorDataType::Q6Km
+        | NativeTensorDataType::Q8Zero
+        | NativeTensorDataType::U32 => {
+            if quantized_goes_to_f16 {
+                NativeDenseKernelCoverageBucket::F16
+            } else {
+                NativeDenseKernelCoverageBucket::Ignore
+            }
+        }
+        NativeTensorDataType::I8 | NativeTensorDataType::U8 => unreachable!(),
+    }
+}
+
 fn record_projection_binding_coverage(
     coverage: &mut MetalNativeDenseKernelCoverage,
     binding: &MetalNativeTensorBinding,
@@ -2526,29 +2557,20 @@ fn record_projection_binding_coverage(
             .projection_source_quantized_binding_count
             .saturating_add(1);
     }
-    match native_dense_effective_dtype(binding.spec.dtype) {
-        NativeTensorDataType::F32 => {
+    match native_dense_kernel_coverage_bucket(binding.spec.dtype, true) {
+        NativeDenseKernelCoverageBucket::F32 => {
             coverage.projection_f32_binding_count =
                 coverage.projection_f32_binding_count.saturating_add(1);
         }
-        NativeTensorDataType::F16 => {
+        NativeDenseKernelCoverageBucket::F16 => {
             coverage.projection_f16_binding_count =
                 coverage.projection_f16_binding_count.saturating_add(1);
         }
-        NativeTensorDataType::Bf16 => {
+        NativeDenseKernelCoverageBucket::BF16 => {
             coverage.projection_bf16_binding_count =
                 coverage.projection_bf16_binding_count.saturating_add(1);
         }
-        NativeTensorDataType::Q4Km
-        | NativeTensorDataType::Q5Km
-        | NativeTensorDataType::Q6Km
-        | NativeTensorDataType::Q8Zero
-        | NativeTensorDataType::U32 => {
-            // Quantized/integer projections counted under f16 bucket for coverage reporting.
-            coverage.projection_f16_binding_count =
-                coverage.projection_f16_binding_count.saturating_add(1);
-        }
-        NativeTensorDataType::I8 | NativeTensorDataType::U8 => unreachable!(),
+        NativeDenseKernelCoverageBucket::Ignore => {}
     }
 }
 
@@ -2561,26 +2583,20 @@ fn record_rms_norm_binding_coverage(
             .rms_norm_source_quantized_binding_count
             .saturating_add(1);
     }
-    match native_dense_effective_dtype(binding.spec.dtype) {
-        NativeTensorDataType::F32 => {
+    match native_dense_kernel_coverage_bucket(binding.spec.dtype, false) {
+        NativeDenseKernelCoverageBucket::F32 => {
             coverage.rms_norm_f32_binding_count =
                 coverage.rms_norm_f32_binding_count.saturating_add(1);
         }
-        NativeTensorDataType::F16 => {
+        NativeDenseKernelCoverageBucket::F16 => {
             coverage.rms_norm_f16_binding_count =
                 coverage.rms_norm_f16_binding_count.saturating_add(1);
         }
-        NativeTensorDataType::Bf16 => {
+        NativeDenseKernelCoverageBucket::BF16 => {
             coverage.rms_norm_bf16_binding_count =
                 coverage.rms_norm_bf16_binding_count.saturating_add(1);
         }
-        // Quantized/integer types are never used for norms; ignore if somehow present.
-        NativeTensorDataType::Q4Km
-        | NativeTensorDataType::Q5Km
-        | NativeTensorDataType::Q6Km
-        | NativeTensorDataType::Q8Zero
-        | NativeTensorDataType::U32 => {}
-        NativeTensorDataType::I8 | NativeTensorDataType::U8 => unreachable!(),
+        NativeDenseKernelCoverageBucket::Ignore => {}
     }
 }
 
