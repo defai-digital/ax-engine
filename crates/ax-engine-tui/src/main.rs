@@ -813,7 +813,9 @@ fn fetch_server_model_id(port: u16) -> Option<String> {
 fn detect_prompt_family(model_id: &str, model_dir: Option<&str>) -> &'static str {
     let classify = |s: &str| -> &'static str {
         let lo = s.to_lowercase();
-        if lo.contains("gemma") {
+        if lo.contains("gemma-4") || lo.contains("gemma4") {
+            "gemma4"
+        } else if lo.contains("gemma") {
             "gemma"
         } else if lo.contains("glm") {
             "glm"
@@ -1015,24 +1017,8 @@ fn tokenize_prompt(model_dir: &str, text: &str) -> Result<Vec<u32>, ManagerError
 fn strip_generation_artifacts(text: &str, model_id: &str, model_dir: &str) -> String {
     let family = detect_prompt_family(model_id, Some(model_dir));
     let cleaned = match family {
-        "gemma" => {
-            // When the decode fallback fires without skip_special_tokens, special token
-            // strings appear literally.  Strip them first.
-            let t = text.replace("<start_of_turn>", "").replace("<end_of_turn>", "");
-            // skip_special_tokens decode removes <start_of_turn>/<end_of_turn> but
-            // leaves the plain-text role prefix "model\n".  Strip leading copies and
-            // truncate at the first next-turn boundary.
-            let t = t.trim_start_matches('\n').to_string();
-            let mut t: &str = t.trim_start();
-            while let Some(rest) = t.strip_prefix("model\n") {
-                t = rest.trim_start();
-            }
-            if let Some(idx) = t.find("\nmodel\n") {
-                t[..idx].trim_end().to_string()
-            } else {
-                t.trim_end().to_string()
-            }
-        }
+        "gemma4" => strip_gemma_turn_artifacts(text, &["<|turn>", "<turn|>"]),
+        "gemma" => strip_gemma_turn_artifacts(text, &["<start_of_turn>", "<end_of_turn>"]),
         "glm" => {
             // Strip any role tags that survived decoding.
             let mut t = text.trim_end();
@@ -1046,6 +1032,55 @@ fn strip_generation_artifacts(text: &str, model_id: &str, model_dir: &str) -> St
         _ => text.trim_end().to_string(),
     };
     strip_runaway_repetition(&cleaned)
+}
+
+fn strip_gemma_turn_artifacts(text: &str, tokens: &[&str]) -> String {
+    let mut cleaned = text.to_string();
+    for token in tokens {
+        cleaned = cleaned.replace(token, "");
+    }
+
+    let mut t = cleaned.trim_start_matches('\n').trim_start();
+    loop {
+        let Some(rest) = strip_leading_gemma_role(t) else {
+            break;
+        };
+        t = rest.trim_start();
+    }
+
+    truncate_at_gemma_turn_role(t).trim_end().to_string()
+}
+
+fn strip_leading_gemma_role(text: &str) -> Option<&str> {
+    for role in ["model", "assistant"] {
+        if let Some(rest) = text.strip_prefix(role).and_then(|rest| {
+            rest.strip_prefix('\n')
+                .or_else(|| rest.strip_prefix(": "))
+                .or_else(|| rest.strip_prefix(':'))
+        }) {
+            return Some(rest);
+        }
+    }
+    None
+}
+
+fn truncate_at_gemma_turn_role(text: &str) -> &str {
+    let mut cutoff = text.len();
+    for marker in [
+        "\nuser\n",
+        "\nmodel\n",
+        "\nassistant\n",
+        "\nsystem\n",
+        "\nuser:",
+        "\nmodel:",
+        "\nassistant:",
+        "\nsystem:",
+    ] {
+        if let Some(idx) = text.find(marker) {
+            cutoff = cutoff.min(idx);
+        }
+    }
+    &text[..cutoff]
 }
 
 /// Detect and remove a repetitively-looping suffix (e.g. "5555…" or "9, 9, 9.").
@@ -1182,6 +1217,16 @@ fn render_fallback_chat_prompt(
     let family = detect_prompt_family(model_id, model_dir);
     let mut prompt = String::new();
     match family {
+        "gemma4" => {
+            prompt.push_str("<bos>");
+            for msg in messages {
+                let role = msg["role"].as_str().unwrap_or("user");
+                let content = msg["content"].as_str().unwrap_or("");
+                let turn = if role == "assistant" { "model" } else { role };
+                prompt.push_str(&format!("<|turn>{turn}\n{content}<turn|>\n"));
+            }
+            prompt.push_str("<|turn>model\n");
+        }
         "gemma" => {
             for msg in messages {
                 let role = msg["role"].as_str().unwrap_or("user");
@@ -2388,6 +2433,42 @@ mod tests {
             prompt,
             "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
         );
+    }
+
+    #[test]
+    fn fallback_gemma4_prompt_matches_turn_template_shape() {
+        let messages = vec![
+            json!({"role":"system","content":"You are helpful."}),
+            json!({"role":"user","content":"hello"}),
+        ];
+
+        let prompt =
+            render_fallback_chat_prompt("mlx-community/gemma-4-e2b-it-4bit", None, &messages);
+
+        assert_eq!(
+            prompt,
+            "<bos><|turn>system\nYou are helpful.<turn|>\n<|turn>user\nhello<turn|>\n<|turn>model\n"
+        );
+    }
+
+    #[test]
+    fn strip_gemma4_turn_artifacts_truncates_next_turn_loop() {
+        let text = "model\nhello there<turn|>\n<|turn>user\nrepeat?<turn|>\n<|turn>model\n";
+
+        let cleaned =
+            strip_generation_artifacts(text, "mlx-community/gemma-4-e2b-it-4bit", "/models/gemma");
+
+        assert_eq!(cleaned, "hello there");
+    }
+
+    #[test]
+    fn strip_legacy_gemma_turn_artifacts_truncates_next_turn_loop() {
+        let text =
+            "<start_of_turn>model\nhello<end_of_turn>\n<start_of_turn>user\nagain?<end_of_turn>";
+
+        let cleaned = strip_generation_artifacts(text, "gemma-3n-e4b-it", "/models/gemma-3n");
+
+        assert_eq!(cleaned, "hello");
     }
 
     #[test]
