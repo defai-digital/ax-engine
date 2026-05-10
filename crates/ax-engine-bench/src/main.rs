@@ -1,5 +1,5 @@
 #![recursion_limit = "512"]
-#![allow(clippy::collapsible_if, clippy::single_match, dead_code)]
+#![allow(clippy::collapsible_if, clippy::single_match)]
 
 use ax_engine_core::{
     CacheGroupId, EngineCore, MetalBuildDoctorReport, MetalBuildHostReport, MetalBuildStatus,
@@ -1276,6 +1276,7 @@ fn optional_route_label(value: Option<&str>) -> &str {
     value.unwrap_or("none")
 }
 
+#[cfg(test)]
 fn optional_u32_label(value: Option<u32>) -> String {
     value
         .map(|value| value.to_string())
@@ -2598,6 +2599,7 @@ fn execute_manifest_runtime_with_test_options(
     })
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct AutotuneCandidateConfig {
     max_batch_tokens: u32,
@@ -2605,6 +2607,7 @@ struct AutotuneCandidateConfig {
     prefix_cache: bool,
 }
 
+#[cfg(test)]
 impl AutotuneCandidateConfig {
     fn label(&self) -> String {
         format!(
@@ -2616,6 +2619,7 @@ impl AutotuneCandidateConfig {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 struct AutotuneSearchSpace {
     max_batch_token_options: Vec<u32>,
@@ -2623,12 +2627,14 @@ struct AutotuneSearchSpace {
     prefix_cache_options: Vec<bool>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Default)]
 struct AutotuneWarmStartHistory {
     trials: Vec<AutotuneTrialRecord>,
     source_dirs: Vec<PathBuf>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct AutotuneHistoryIndexEntry {
     result_dir: PathBuf,
@@ -2637,6 +2643,7 @@ struct AutotuneHistoryIndexEntry {
     trials: Vec<Value>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct AutotuneHistoryIndexSummary {
     manifest_id: String,
@@ -2645,6 +2652,7 @@ struct AutotuneHistoryIndexSummary {
     best_trials: Vec<Value>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct AutotuneSelectionDiagnostics {
     strategy: String,
@@ -2657,12 +2665,15 @@ struct AutotuneSelectionDiagnostics {
     novelty_bonus: Option<f64>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct AutotuneCandidateSelection {
     candidate_index: usize,
     diagnostics: AutotuneSelectionDiagnostics,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 struct AutotuneTrialMetrics {
     ttft_ms: Option<u64>,
@@ -2687,6 +2698,8 @@ struct AutotuneTrialMetrics {
     model_bound_ffn_decode: bool,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct AutotuneTrialRecord {
     trial_index: usize,
@@ -2700,12 +2713,16 @@ struct AutotuneTrialRecord {
     metrics: Option<AutotuneTrialMetrics>,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 impl AutotuneTrialRecord {
     fn label(&self) -> String {
         format!("trial-{:03}", self.trial_index + 1)
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct AutotuneProbeObservation {
     shape: ScenarioShape,
@@ -2718,6 +2735,7 @@ struct AutotuneProbeObservation {
     metrics: AutotuneTrialMetrics,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct AutotuneProbeBaseline {
     observed_trial_count: usize,
@@ -2729,10 +2747,15 @@ struct AutotuneProbeBaseline {
     ttft_ceiling_ms: Option<u64>,
 }
 
+#[cfg(test)]
 const AUTOTUNE_SCHEMA_VERSION: &str = "ax.engine_bench.autotune.v1";
+#[cfg(test)]
 const AUTOTUNE_HISTORY_INDEX_SCHEMA_VERSION: &str = "ax.engine_bench.autotune_history_index.v1";
+#[cfg(test)]
+#[allow(dead_code)]
 const AUTOTUNE_FAILURE_SCORE: f64 = -1_000_000.0;
 
+#[cfg(test)]
 fn resolve_autotune_search_space(
     manifest: &BenchmarkManifest,
     args: &AutotuneArgs,
@@ -2771,6 +2794,7 @@ fn resolve_autotune_search_space(
     }
 }
 
+#[cfg(test)]
 fn autotune_candidate_configs(
     manifest: &BenchmarkManifest,
     search_space: &AutotuneSearchSpace,
@@ -2811,6 +2835,7 @@ fn autotune_candidate_configs(
     candidates
 }
 
+#[cfg(test)]
 fn select_next_autotune_candidate(
     candidates: &[AutotuneCandidateConfig],
     search_space: &AutotuneSearchSpace,
@@ -2839,6 +2864,7 @@ fn select_next_autotune_candidate(
     select_next_autotune_candidate_by_tpe(candidates, search_space, trials, exploration_weight)
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 fn execute_autotune_trial(
@@ -2935,6 +2961,7 @@ fn execute_autotune_trial(
     }
 }
 
+#[cfg(test)]
 #[allow(dead_code)]
 fn execute_autotune_probe_trial(
     manifest_path: &Path,
@@ -3020,6 +3047,7 @@ fn execute_autotune_probe_trial(
     }
 }
 
+#[cfg(test)]
 fn autotune_probe_manifest(
     base_manifest: &BenchmarkManifest,
     trial_index: usize,
@@ -3042,6 +3070,7 @@ fn autotune_probe_manifest(
     Some(manifest)
 }
 
+#[cfg(test)]
 fn autotune_probe_skip_reason(
     execution: &RuntimeResult,
     metrics: &AutotuneTrialMetrics,
@@ -3140,6 +3169,7 @@ fn autotune_probe_skip_reason(
     None
 }
 
+#[cfg(test)]
 fn autotune_probe_baseline(
     observed_trials: &[AutotuneTrialRecord],
 ) -> Option<AutotuneProbeBaseline> {
@@ -3193,6 +3223,7 @@ fn autotune_probe_baseline(
     })
 }
 
+#[cfg(test)]
 fn percentile_f64(values: &[f64], quantile: f64) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -3204,6 +3235,7 @@ fn percentile_f64(values: &[f64], quantile: f64) -> Option<f64> {
     values.get(index).copied()
 }
 
+#[cfg(test)]
 fn percentile_u64(values: &[u64], quantile: f64) -> Option<u64> {
     if values.is_empty() {
         return None;
@@ -3215,6 +3247,7 @@ fn percentile_u64(values: &[u64], quantile: f64) -> Option<u64> {
     values.get(index).copied()
 }
 
+#[cfg(test)]
 fn select_next_autotune_candidate_by_coverage(
     candidates: &[AutotuneCandidateConfig],
     trials: &[AutotuneTrialRecord],
@@ -3248,6 +3281,7 @@ fn select_next_autotune_candidate_by_coverage(
     }
 }
 
+#[cfg(test)]
 fn select_next_autotune_candidate_by_tpe(
     candidates: &[AutotuneCandidateConfig],
     search_space: &AutotuneSearchSpace,
@@ -3305,6 +3339,7 @@ fn select_next_autotune_candidate_by_tpe(
     }
 }
 
+#[cfg(test)]
 fn collect_tried_autotune_candidates(
     trials: &[AutotuneTrialRecord],
 ) -> BTreeSet<AutotuneCandidateConfig> {
@@ -3314,6 +3349,7 @@ fn collect_tried_autotune_candidates(
         .collect::<BTreeSet<_>>()
 }
 
+#[cfg(test)]
 fn split_autotune_trials_by_score(
     trials: &[AutotuneTrialRecord],
 ) -> (Vec<&AutotuneTrialRecord>, Vec<&AutotuneTrialRecord>) {
@@ -3338,6 +3374,7 @@ fn split_autotune_trials_by_score(
     (good_trials, bad_trials)
 }
 
+#[cfg(test)]
 fn autotune_candidate_density(
     candidate: &AutotuneCandidateConfig,
     search_space: &AutotuneSearchSpace,
@@ -3361,6 +3398,7 @@ fn autotune_candidate_density(
     )
 }
 
+#[cfg(test)]
 fn autotune_candidate_novelty(
     candidate: &AutotuneCandidateConfig,
     trials: &[AutotuneTrialRecord],
@@ -3371,6 +3409,7 @@ fn autotune_candidate_novelty(
     (max_batch_rarity + kv_total_blocks_rarity + prefix_cache_rarity) / 3.0
 }
 
+#[cfg(test)]
 fn rarity_score<T>(
     trials: &[AutotuneTrialRecord],
     candidate: &AutotuneCandidateConfig,
@@ -3382,6 +3421,7 @@ where
     1.0 / (1.0 + matching_trial_count(trials, candidate, accessor) as f64)
 }
 
+#[cfg(test)]
 fn matching_trial_count<T>(
     trials: &[AutotuneTrialRecord],
     candidate: &AutotuneCandidateConfig,
@@ -3397,6 +3437,7 @@ where
         .count()
 }
 
+#[cfg(test)]
 fn smoothed_probability<T>(
     value: T,
     option_count: usize,
@@ -3413,6 +3454,7 @@ where
     (matching + 1.0) / (trials.len() as f64 + option_count as f64)
 }
 
+#[cfg(test)]
 fn load_autotune_warm_start_history(
     output_root: &Path,
     manifest: &BenchmarkManifest,
@@ -3436,10 +3478,12 @@ fn load_autotune_warm_start_history(
     ))
 }
 
+#[cfg(test)]
 fn autotune_history_index_path(output_root: &Path) -> PathBuf {
     output_root.join("autotune-history-index.json")
 }
 
+#[cfg(test)]
 fn load_autotune_warm_start_history_from_index(
     output_root: &Path,
     manifest: &BenchmarkManifest,
@@ -3466,6 +3510,7 @@ fn load_autotune_warm_start_history_from_index(
     )))
 }
 
+#[cfg(test)]
 fn load_autotune_history_index_json(output_root: &Path) -> Result<Option<Value>, CliError> {
     let index_path = autotune_history_index_path(output_root);
     let Some(index_json) = load_optional_json_value(&index_path)? else {
@@ -3479,6 +3524,7 @@ fn load_autotune_history_index_json(output_root: &Path) -> Result<Option<Value>,
     Ok(Some(index_json))
 }
 
+#[cfg(test)]
 fn load_matching_autotune_history_index_summary(
     index_json: &Value,
     manifest: &BenchmarkManifest,
@@ -3499,6 +3545,7 @@ fn load_matching_autotune_history_index_summary(
     }))
 }
 
+#[cfg(test)]
 fn load_autotune_history_index_entries_from_json(
     index_json: &Value,
 ) -> Result<Option<Vec<AutotuneHistoryIndexEntry>>, CliError> {
@@ -3515,6 +3562,7 @@ fn load_autotune_history_index_entries_from_json(
     Ok(Some(entries))
 }
 
+#[cfg(test)]
 fn collect_autotune_history_index_entries_from_output_root(
     output_root: &Path,
 ) -> Result<Vec<AutotuneHistoryIndexEntry>, CliError> {
@@ -3548,6 +3596,7 @@ fn collect_autotune_history_index_entries_from_output_root(
     Ok(entries)
 }
 
+#[cfg(test)]
 fn autotune_history_index_entry_from_result_json(
     result_dir: &Path,
     history_json: &Value,
@@ -3563,6 +3612,7 @@ fn autotune_history_index_entry_from_result_json(
     })
 }
 
+#[cfg(test)]
 fn autotune_history_index_entry_from_json(entry_json: &Value) -> Option<AutotuneHistoryIndexEntry> {
     Some(AutotuneHistoryIndexEntry {
         result_dir: PathBuf::from(entry_json.get("result_dir")?.as_str()?),
@@ -3572,6 +3622,7 @@ fn autotune_history_index_entry_from_json(entry_json: &Value) -> Option<Autotune
     })
 }
 
+#[cfg(test)]
 fn autotune_history_index_summary_from_json(
     summary_json: &Value,
 ) -> Option<AutotuneHistoryIndexSummary> {
@@ -3593,6 +3644,7 @@ fn autotune_history_index_summary_from_json(
     })
 }
 
+#[cfg(test)]
 fn autotune_warm_start_history_from_index_entries(
     entries: &[AutotuneHistoryIndexEntry],
     manifest: &BenchmarkManifest,
@@ -3637,6 +3689,7 @@ fn autotune_warm_start_history_from_index_entries(
     }
 }
 
+#[cfg(test)]
 fn autotune_warm_start_history_from_index_summary(
     summary: &AutotuneHistoryIndexSummary,
     search_space: &AutotuneSearchSpace,
@@ -3655,6 +3708,7 @@ fn autotune_warm_start_history_from_index_summary(
     }
 }
 
+#[cfg(test)]
 fn write_autotune_history_index_incremental(
     output_root: &Path,
     result_dir: &Path,
@@ -3676,11 +3730,13 @@ fn write_autotune_history_index_incremental(
     write_autotune_history_index_entries(output_root, &entries)
 }
 
+#[cfg(test)]
 fn write_autotune_history_index(output_root: &Path) -> Result<(), CliError> {
     let entries = collect_autotune_history_index_entries_from_output_root(output_root)?;
     write_autotune_history_index_entries(output_root, &entries)
 }
 
+#[cfg(test)]
 fn write_autotune_history_index_entries(
     output_root: &Path,
     entries: &[AutotuneHistoryIndexEntry],
@@ -3710,6 +3766,7 @@ fn write_autotune_history_index_entries(
     write_json_file(&autotune_history_index_path(output_root), &index_json)
 }
 
+#[cfg(test)]
 fn upsert_autotune_history_index_entry(
     entries: &mut Vec<AutotuneHistoryIndexEntry>,
     entry: AutotuneHistoryIndexEntry,
@@ -3726,6 +3783,7 @@ fn upsert_autotune_history_index_entry(
     entries.dedup_by(|left, right| left.result_dir == right.result_dir);
 }
 
+#[cfg(test)]
 fn summarize_autotune_history_index_entries(
     entries: &[AutotuneHistoryIndexEntry],
 ) -> Vec<AutotuneHistoryIndexSummary> {
@@ -3775,6 +3833,7 @@ fn summarize_autotune_history_index_entries(
         .collect()
 }
 
+#[cfg(test)]
 fn autotune_trial_record_from_history_json(
     trial_index: usize,
     trial_json: &Value,
@@ -3817,6 +3876,7 @@ fn autotune_trial_record_from_history_json(
     })
 }
 
+#[cfg(test)]
 fn autotune_candidate_config_from_history_json(
     trial_json: &Value,
 ) -> Option<AutotuneCandidateConfig> {
@@ -3834,6 +3894,7 @@ fn autotune_candidate_config_from_history_json(
     })
 }
 
+#[cfg(test)]
 fn autotune_selection_from_history_json(
     selection_json: Option<&Value>,
 ) -> AutotuneSelectionDiagnostics {
@@ -3865,6 +3926,7 @@ fn autotune_selection_from_history_json(
     }
 }
 
+#[cfg(test)]
 fn autotune_metrics_from_history_json(
     metrics_json: Option<&Value>,
 ) -> Option<AutotuneTrialMetrics> {
@@ -3937,6 +3999,7 @@ fn autotune_metrics_from_history_json(
     })
 }
 
+#[cfg(test)]
 fn autotune_trial_manifest(
     base_manifest: &BenchmarkManifest,
     trial_index: usize,
@@ -3955,6 +4018,7 @@ fn autotune_trial_manifest(
     manifest
 }
 
+#[cfg(test)]
 #[allow(dead_code)]
 fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
     let route = &execution.observation.route_metadata;
@@ -4049,6 +4113,7 @@ fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
     }
 }
 
+#[cfg(test)]
 #[allow(dead_code)]
 fn autotune_score(execution: &RuntimeResult, metrics: &AutotuneTrialMetrics) -> f64 {
     let throughput_reward = metrics.decode_tok_s + (metrics.prefill_tok_s * 0.25);
@@ -4113,6 +4178,7 @@ fn unique_sorted_bool(values: Vec<bool>) -> Vec<bool> {
     values
 }
 
+#[cfg(test)]
 fn best_autotune_trial<'a>(
     trials: impl IntoIterator<Item = &'a AutotuneTrialRecord>,
 ) -> Option<&'a AutotuneTrialRecord> {
@@ -4123,6 +4189,8 @@ fn best_autotune_trial<'a>(
     })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn best_autotune_trial_with_history<'a>(
     trials: &'a [AutotuneTrialRecord],
     warm_start_history: &'a AutotuneWarmStartHistory,
@@ -4130,6 +4198,8 @@ fn best_autotune_trial_with_history<'a>(
     best_autotune_trial(trials.iter().chain(warm_start_history.trials.iter()))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn autotune_probe_baseline_json(baseline: &AutotuneProbeBaseline) -> Value {
     json!({
         "observed_trial_count": baseline.observed_trial_count,
@@ -4142,6 +4212,8 @@ fn autotune_probe_baseline_json(baseline: &AutotuneProbeBaseline) -> Value {
     })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn autotune_probe_json(probe: &AutotuneProbeObservation) -> Value {
     json!({
         "status": probe.status,
@@ -4158,6 +4230,8 @@ fn autotune_probe_json(probe: &AutotuneProbeObservation) -> Value {
     })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn autotune_candidate_config_json(candidate: &AutotuneCandidateConfig) -> Value {
     json!({
         "max_batch_tokens": candidate.max_batch_tokens,
@@ -4166,6 +4240,8 @@ fn autotune_candidate_config_json(candidate: &AutotuneCandidateConfig) -> Value 
     })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn autotune_selection_json(selection: &AutotuneSelectionDiagnostics) -> Value {
     json!({
         "strategy": selection.strategy,
@@ -4179,6 +4255,8 @@ fn autotune_selection_json(selection: &AutotuneSelectionDiagnostics) -> Value {
     })
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn autotune_trial_base_json(trial: &AutotuneTrialRecord) -> serde_json::Map<String, Value> {
     let mut object = serde_json::Map::new();
     object.insert("label".to_string(), json!(trial.label()));
@@ -4208,6 +4286,8 @@ fn autotune_trial_base_json(trial: &AutotuneTrialRecord) -> serde_json::Map<Stri
     object
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn autotune_probe_run_label(probe: Option<&AutotuneProbeObservation>) -> &'static str {
     match probe {
         Some(probe) if probe.skipped_full_trial => "early-stop",
@@ -4216,22 +4296,29 @@ fn autotune_probe_run_label(probe: Option<&AutotuneProbeObservation>) -> &'stati
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn format_optional_f64_3(value: Option<f64>, fallback: &str) -> String {
     value
         .map(|value| format!("{value:.3}"))
         .unwrap_or_else(|| fallback.to_string())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn format_optional_to_string<T: ToString>(value: Option<T>, fallback: &str) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| fallback.to_string())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn join_display(values: impl IntoIterator<Item = String>) -> String {
     values.into_iter().collect::<Vec<_>>().join(", ")
 }
 
+#[cfg(test)]
 #[allow(dead_code)]
 fn build_autotune_result_json(
     manifest_path: &Path,
@@ -4300,6 +4387,7 @@ fn build_autotune_result_json(
     })
 }
 
+#[cfg(test)]
 #[allow(dead_code)]
 fn build_autotune_summary_markdown(
     manifest_path: &Path,
@@ -13485,33 +13573,6 @@ mod tests {
         load_json_value(Path::new(path)).expect("manifest JSON should load")
     }
 
-    fn write_test_manifest_with_mlx_backend(root: &Path, source_path: &str) -> PathBuf {
-        let mut manifest_json = load_test_manifest_json(source_path);
-        if manifest_json
-            .get("runtime")
-            .and_then(|runtime| runtime.get("selected_backend"))
-            .and_then(Value::as_str)
-            == Some("mlx")
-        {
-            let runtime = manifest_json
-                .get_mut("runtime")
-                .and_then(Value::as_object_mut)
-                .expect("test manifest runtime should be an object");
-            runtime.insert("deterministic".to_string(), json!(false));
-            runtime.insert(
-                "mlx_model_artifacts_dir".to_string(),
-                json!(write_valid_native_model_fixture()),
-            );
-        }
-
-        let file_name = Path::new(source_path)
-            .file_name()
-            .expect("source manifest should have filename");
-        let manifest_path = root.join(file_name);
-        write_json_file(&manifest_path, &manifest_json).expect("test manifest should write");
-        manifest_path
-    }
-
     fn unique_test_dir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -16459,21 +16520,6 @@ mod tests {
         run_dir
     }
 
-    fn write_matrix_manifest_fixture(root: &Path, members: &[Value]) -> PathBuf {
-        let manifest_path = root.join("matrix.json");
-        write_json_file(
-            &manifest_path,
-            &json!({
-                "schema_version": "ax.engine_bench.matrix.v1",
-                "id": "test_mlx_mlx_matrix",
-                "class": "scenario_matrix",
-                "members": members
-            }),
-        )
-        .expect("matrix manifest should write");
-        manifest_path
-    }
-
     fn write_matrix_result_fixture(
         root: &Path,
         dir_name: &str,
@@ -16681,16 +16727,6 @@ mod tests {
             candidate,
             score,
         )
-    }
-
-    fn find_fresh_autotune_result_dir(output_root: &Path, excluded_dirs: &[&Path]) -> PathBuf {
-        fs::read_dir(output_root)
-            .expect("autotune output root should be readable")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.is_dir())
-            .find(|path| excluded_dirs.iter().all(|excluded| path != *excluded))
-            .expect("fresh autotune result dir should exist")
     }
 
     #[test]
