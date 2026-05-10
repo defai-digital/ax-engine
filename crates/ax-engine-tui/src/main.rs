@@ -542,10 +542,11 @@ fn proxy_chat(
         (server.port, rt.server_model_dir(), rt.server_model_id())
     };
 
-    // Prefer the model id that manager used to launch the server. Falling back
-    // to /v1/models keeps compatibility with externally started servers.
-    let model_id = managed_model_id
-        .or_else(|| fetch_server_model_id(port))
+    // Always query /v1/models for the model id the server actually registered.
+    // Falling back to the manager's pre-computed label (managed_model_id) keeps
+    // compatibility with externally started servers that don't expose /v1/models.
+    let model_id = fetch_server_model_id(port)
+        .or(managed_model_id)
         .unwrap_or_else(|| "default".to_string());
 
     // Convert OpenAI messages payload to a native GenerateRequest.
@@ -911,6 +912,27 @@ fn stream_native_as_openai(
                             b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}]}\n\n\
                               data: [DONE]\n\n",
                         );
+                        client.flush().ok();
+                        done_sent = true;
+                    }
+                    "error" => {
+                        // Server-side error event — surface the message in the chat.
+                        let msg = serde_json::from_str::<serde_json::Value>(data)
+                            .ok()
+                            .and_then(|v| {
+                                v["error"]["message"]
+                                    .as_str()
+                                    .or_else(|| v["error"].as_str())
+                                    .map(str::to_string)
+                            })
+                            .unwrap_or_else(|| data.to_string());
+                        let label = format!("[server error: {msg}]");
+                        let chunk = format!(
+                            "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":\"stop\",\"index\":0}}]}}\n\n\
+                             data: [DONE]\n\n",
+                            serde_json::to_string(&label).unwrap_or_default()
+                        );
+                        let _ = client.write_all(chunk.as_bytes());
                         client.flush().ok();
                         done_sent = true;
                     }
