@@ -184,6 +184,15 @@ pub fn softmax(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
     }
 }
 
+pub fn softmax_precise(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_softmax_axis(&mut res.inner, a.inner, axis, true, stream);
+        res
+    }
+}
+
 pub fn concatenate(arrays: &[&MlxArray], axis: i32, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);

@@ -711,6 +711,10 @@ fn is_qwen_gated_delta_family(model_type: &str) -> bool {
     is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
 }
 
+fn is_qwen_family_model_type(model_type: &str) -> bool {
+    model_type.starts_with("qwen3")
+}
+
 fn is_glm4_moe_lite(model_type: &str) -> bool {
     model_type == "glm4_moe_lite"
 }
@@ -1475,6 +1479,9 @@ fn validate_converted_model_contract(
     if is_glm4_moe_lite(model_type) {
         return validate_glm4_moe_lite_contract(config, manifest);
     }
+    if is_qwen_family_model_type(model_type) {
+        validate_qwen_rope_scaling(config, model_type)?;
+    }
 
     Ok(())
 }
@@ -1671,6 +1678,28 @@ fn validate_glm4_moe_lite_rope_scaling(config: &serde_json::Value) -> Result<(),
         return invalid_model_contract(
             "glm4_moe_lite",
             "rope_scaling is not yet supported for GLM MLA; mscale_all_dim changes attention scale and scaling_config changes RoPE frequencies",
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_qwen_rope_scaling(
+    config: &serde_json::Value,
+    model_type: &str,
+) -> Result<(), ConvertError> {
+    let has_unsupported_rope_scaling = config
+        .get("rope_scaling")
+        .is_some_and(|value| !value.is_null())
+        || (uses_text_config(model_type)
+            && config
+                .get("text_config")
+                .and_then(|tc| tc.get("rope_scaling"))
+                .is_some_and(|value| !value.is_null()));
+    if has_unsupported_rope_scaling {
+        return invalid_model_contract(
+            model_type,
+            "rope_scaling is not yet supported for Qwen MLX runtime; current manifest/runtime only support absent or null rope_scaling",
         );
     }
 
@@ -3390,6 +3419,40 @@ mod tests {
         assert_eq!(model_type, "glm4_moe_lite");
         assert!(message.contains("rope_scaling"));
         assert!(message.contains("mscale_all_dim"));
+    }
+
+    #[test]
+    fn rejects_qwen_rope_scaling_until_runtime_contract_is_manifested() {
+        validate_qwen_rope_scaling(&serde_json::json!({}), "qwen3_next")
+            .expect("missing rope_scaling should use current Qwen RoPE contract");
+        validate_qwen_rope_scaling(
+            &serde_json::json!({ "text_config": { "rope_scaling": null } }),
+            "qwen3_next",
+        )
+        .expect("null rope_scaling should use current Qwen RoPE contract");
+
+        let error = validate_qwen_rope_scaling(
+            &serde_json::json!({
+                "text_config": {
+                    "rope_scaling": {
+                        "type": "longrope",
+                        "factor": 4.0
+                    }
+                }
+            }),
+            "qwen3_next",
+        )
+        .expect_err("Qwen rope scaling should fail closed until represented in the manifest");
+        let ConvertError::InvalidModelContract {
+            model_type,
+            message,
+        } = error
+        else {
+            panic!("expected invalid model contract");
+        };
+        assert_eq!(model_type, "qwen3_next");
+        assert!(message.contains("rope_scaling"));
+        assert!(message.contains("Qwen MLX runtime"));
     }
 
     #[test]

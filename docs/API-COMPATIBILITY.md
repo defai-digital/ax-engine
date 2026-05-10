@@ -9,8 +9,8 @@ not as a claim that the entire OpenAI API is implemented.
 | Endpoint | Status | Runtime paths | Request scope | Response scope |
 |---|---|---|---|---|
 | `GET /v1/models` | Preview-compatible model list | All server modes | None | OpenAI-style `object=list`, one local model card, AX runtime metadata |
-| `POST /v1/completions` | Preview-compatible text completion | `llama_cpp`, `mlx_lm_delegated` | `prompt` as string, string array, or token array; `max_tokens` required; `temperature`, `top_p`, `seed`, `stream`, `metadata` | OpenAI-style completion envelope or SSE chunks; `usage` only when backend token counts are authoritative |
-| `POST /v1/chat/completions` | Preview-compatible text chat completion | `llama_cpp`, `mlx_lm_delegated` | text-only messages; roles `system`, `user`, `assistant`, `tool`, `function`; `max_tokens` required; `temperature`, `top_p`, `seed`, `stream`, `metadata` | OpenAI-style chat envelope or SSE chunks after AX renders messages with the selected model-family prompt template |
+| `POST /v1/completions` | Preview-compatible text completion | `llama_cpp`, `mlx_lm_delegated` | `prompt` as one string or one token array; string-array batch prompts are rejected until per-prompt result assembly is implemented; `max_tokens` optional, defaults to 256; `temperature`, `top_p`, `seed`, `stream`, `metadata` | OpenAI-style completion envelope or SSE chunks with `system_fingerprint: null`; `usage` only when backend token counts are authoritative |
+| `POST /v1/chat/completions` | Preview-compatible text chat completion | `llama_cpp`, `mlx_lm_delegated` | text-only messages; roles `system`, `user`, `assistant`, `tool`, `function`; `max_tokens` optional, defaults to 256; `temperature`, `top_p`, `seed`, `stream`, `metadata` | OpenAI-style chat envelope or SSE chunks with `system_fingerprint: null` after AX renders messages with the selected model-family prompt template |
 | `POST /v1/embeddings` | AX embedding route with OpenAI-shaped response | repo-owned MLX embedding-capable sessions | token-array `input`; optional `pooling`, `normalize`, and `encoding_format` placeholder | OpenAI-style embedding list with float vectors and token usage |
 
 ## Explicit Non-Goals Today
@@ -21,6 +21,7 @@ These are not in the current compatibility contract:
 - JSON mode or structured output validation
 - multimodal chat content beyond text parts
 - assistant `tool_calls` replay semantics
+- batch completion prompt arrays on `/v1/completions`
 - full OpenAI parameter parity such as penalties, logprobs, `n`, `stop`, or
   response-format controls
 - full tokenizer ownership or arbitrary model chat-template discovery inside

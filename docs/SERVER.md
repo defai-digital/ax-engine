@@ -359,6 +359,12 @@ curl http://127.0.0.1:8080/v1/completions \
   }'
 ```
 
+If `max_tokens` is omitted on OpenAI-compatible completion or chat routes, the
+server applies the preview default of 256 generated tokens. `/v1/completions`
+accepts one string prompt or one token-array prompt per request; string-array
+batch prompts fail closed until the server can return one independent choice per
+input prompt.
+
 To stream OpenAI-compatible completion chunks instead:
 
 ```text
@@ -476,7 +482,9 @@ preview SSE events named `request`, `step`, `response`, and `error`.
 adapters over the same stateless text request flow for server-backed
 `llama_cpp` and `mlx_lm_delegated`; their streaming mode emits unnamed SSE
 `data:` chunks plus `[DONE]` in the familiar OpenAI-style envelope instead of
-AX-specific lifecycle event names.
+AX-specific lifecycle event names. OpenAI-shaped completion and chat responses
+include `system_fingerprint: null` because the preview server does not yet
+publish a stable backend fingerprint.
 The `/v1/requests` and `/v1/step` endpoints instead operate on one shared
 preview session held by the server so they can surface the same request
 lifecycle contract as the SDK.

@@ -878,6 +878,8 @@ async function pollDownload(jobId, repoId) {
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
+const MAX_CHAT_HISTORY_TURNS = 20;
+const MAX_CHAT_HISTORY_MESSAGES = MAX_CHAT_HISTORY_TURNS * 2;
 const history = [];
 
 function ensureChatOpen() {
@@ -942,6 +944,17 @@ function scrollChat() {
   el.scrollTop = el.scrollHeight;
 }
 
+function recentChatHistory() {
+  const recent = history.slice(-MAX_CHAT_HISTORY_MESSAGES);
+  while (recent.length && recent[0].role !== 'user') recent.shift();
+  return recent;
+}
+
+function trimChatHistory() {
+  while (history.length > MAX_CHAT_HISTORY_MESSAGES) history.shift();
+  while (history.length && history[0].role !== 'user') history.shift();
+}
+
 async function sendMessage() {
   const input = $('chat-input');
   const text  = input.value.trim();
@@ -972,7 +985,7 @@ async function sendMessage() {
   try {
     const msgsToSend = [
       { role: 'system', content: 'You are a helpful assistant.' },
-      ...history.slice(),
+      ...recentChatHistory(),
     ];
     const res = await fetch('/api/proxy/chat', {
       method: 'POST',
@@ -1038,6 +1051,7 @@ async function sendMessage() {
   // as the assistant's previous turn and confuse the model on the next request.
   if (accumulated && !streamError) {
     history.push({ role: 'assistant', content: accumulated });
+    trimChatHistory();
   }
   app.streaming = false;
   $('chat-send').disabled = false;
@@ -1247,6 +1261,16 @@ mod tests {
         assert!(js.contains("${escapeHtml(ep.label)}"));
         assert!(!js.contains("data-path=\"${m.path || ''}\""));
         assert!(!js.contains("href=\"${ep.url}\""));
+    }
+
+    #[test]
+    fn manager_js_bounds_chat_history_sent_to_proxy() {
+        let js = manager_js();
+
+        assert!(js.contains("const MAX_CHAT_HISTORY_TURNS = 20;"));
+        assert!(js.contains("function recentChatHistory()"));
+        assert!(js.contains("...recentChatHistory(),"));
+        assert!(js.contains("trimChatHistory();"));
     }
 
     #[test]
