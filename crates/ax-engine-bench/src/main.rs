@@ -11285,7 +11285,6 @@ Usage:
   ax-engine-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
   ax-engine-bench scenario --manifest <path> --output-root <path> [--json] [--no-trace]
   ax-engine-bench replay --manifest <path> --output-root <path> [--json] [--no-trace]
-  ax-engine-bench autotune --manifest <path> --output-root <path> [--iterations <n>] [--exploration-weight <value>] [--max-batch-token-options <list>] [--kv-total-block-options <list>] [--prefix-cache-options <list>] [--disable-history] (not yet available)
   ax-engine-bench compare --baseline <path> --candidate <path> --output-root <path> [--json]
   ax-engine-bench matrix-compare --baseline <path> --candidate <path> --output-root <path> [--json]
   ax-engine-bench baseline --source <path> --name <name> --output-root <path> [--json]
@@ -16269,7 +16268,26 @@ mod tests {
         let text = usage();
         assert!(text.contains("ax-engine-bench generate"));
         assert!(text.contains("ax-engine-bench stream"));
-        assert!(text.contains("ax-engine-bench autotune"));
+        assert!(
+            !text.contains("ax-engine-bench autotune"),
+            "public usage should not advertise unfinished autotune commands"
+        );
+    }
+
+    #[test]
+    fn handle_autotune_returns_contract_error_while_hidden_from_usage() {
+        let error = handle_autotune(&[
+            "--manifest".to_string(),
+            "/tmp/manifest.json".to_string(),
+            "--output-root".to_string(),
+            "/tmp/out".to_string(),
+        ])
+        .expect_err("autotune should remain unavailable");
+
+        let CliError::Contract(message) = error else {
+            panic!("autotune should return a contract error");
+        };
+        assert!(message.contains("not yet available"));
     }
 
     #[test]
