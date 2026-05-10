@@ -39,7 +39,11 @@ pub use generate::{
 pub use llama_cpp::{
     LlamaCppBackendError, LlamaCppCliConfig, LlamaCppConfig, LlamaCppServerCompletionConfig,
 };
-pub use mlx_lm::{MlxLmBackendError, MlxLmConfig, MlxLmServerCompletionConfig};
+pub use mlx_lm::{
+    MlxLmBackendError, MlxLmChatGenerateRequest, MlxLmChatMessage, MlxLmConfig,
+    MlxLmServerCompletionConfig, MlxLmStreamChunkResult, MlxLmStreamHandle,
+    finish_reason_from_mlx_lm, run_blocking_chat_generate, start_streaming_chat_generate,
+};
 pub use request::{
     EngineStepReport, MetalDispatchKernelStepReport, MetalDispatchNumericStepReport,
     MetalDispatchStepReport, MetalDispatchValidationStepReport, SessionRequestReport,

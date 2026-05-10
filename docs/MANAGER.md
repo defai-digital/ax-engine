@@ -1,27 +1,29 @@
 # AX Engine Manager
 
-`ax-engine-manager` is the local Ratatui cockpit for AX Engine. It gives a
-terminal UI over the same contracts used by `ax-engine-bench`, `ax-engine-server`,
+`ax-engine-manager` is the local web manager for AX Engine. By default it starts
+a loopback-only web app at:
+
+```text
+http://127.0.0.1:8765
+```
+
+The manager uses the same contracts as `ax-engine-bench`, `ax-engine-server`,
 and benchmark artifacts.
 
-The manager is deliberately conservative:
+The manager can:
 
-- it can run doctor and show model-artifact readiness;
-- it can select a model family and size, then run the existing guarded download
+- run doctor and show model-artifact readiness;
+- select a model type, family, and size, then run the existing guarded download
   helper for the resolved `mlx-community` repo id;
-- it can poll a local server's health, runtime metadata, and model list;
-- it can show the default local host/port, server action buttons, and full
-  local HTTP endpoint URLs;
-- it can show benchmark artifact summaries and scan a results directory;
-- it can project guarded job plans from the doctor workflow;
-- it can export a redacted support bundle;
-- it does not copy model weights, environment variables, API keys, or raw logs;
-- model downloads use `scripts/download_model.py <repo-id> --json`, then refresh
-  doctor state against the downloaded model directory;
-- server start/stop buttons are currently selectable preview controls; owned
-  process launch, confirmation, and shutdown are intentionally a follow-up
-  lifecycle slice;
-- it does not yet perform benchmark launches from inside the TUI.
+- start and stop an owned local `ax-engine-server` process for a selected model
+  directory and port;
+- show full local HTTP endpoint URLs;
+- show benchmark artifact summaries and scan a results directory;
+- project guarded job plans from the doctor workflow;
+- export a redacted support bundle.
+
+The manager does not copy model weights, environment variables, API keys, or raw
+logs into support bundles.
 
 ## Install
 
@@ -40,43 +42,28 @@ cargo build --release -p ax-engine-server -p ax-engine-bench -p ax-engine-tui
 target/release/ax-engine-manager --check
 ```
 
-Use `cargo run` while developing the TUI:
+Use `cargo run` while developing the manager:
 
 ```bash
-cargo run -p ax-engine-tui --bin ax-engine-manager -- --check
+cargo run -p ax-engine-tui --bin ax-engine-manager -- --no-open
 ```
 
 ## Quick Start
 
-Download a supported MLX model and generate its AX manifest:
-
-```bash
-python scripts/download_model.py mlx-community/Qwen3-4B-4bit
-MODEL_DIR="$HOME/.cache/ax-engine/models/mlx-community--Qwen3-4B-4bit"
-```
-
-Check local readiness without entering terminal raw mode:
-
-```bash
-ax-engine-manager --check --model-dir "$MODEL_DIR"
-```
-
-Open the interactive cockpit:
-
-```bash
-ax-engine-manager --model-dir "$MODEL_DIR"
-```
-
-You can also open the manager without a model path and select one in the
-Models tab:
+Open the local web manager:
 
 ```bash
 ax-engine-manager
 ```
 
-In the Models tab, use `f` to cycle family, `s` to cycle size, and `d` or
-Enter to download. With mouse support enabled, click a family, click a size row,
-then click `[Download]`. The manager runs the same helper as the shell command:
+Use `--no-open` if you want the URL printed without opening the browser:
+
+```bash
+ax-engine-manager --no-open
+```
+
+The Models panel lets you choose `Text` or `Embedding`, then family and size
+from browser-native dropdowns. Clicking `[Download]` runs:
 
 ```bash
 python scripts/download_model.py <repo-id> --json
@@ -85,47 +72,24 @@ python scripts/download_model.py <repo-id> --json
 When the helper reports a destination path, the manager refreshes doctor state
 against that downloaded model directory.
 
-If you are running from a source checkout without installed release binaries,
-use the built binary instead:
-
-```bash
-target/release/ax-engine-manager --model-dir "$MODEL_DIR"
-```
-
 ## Start With A Server
 
-Start the local HTTP server in another terminal:
+If you already have a model directory:
 
 ```bash
-ax-engine-server \
-  --mlx \
-  --mlx-model-artifacts-dir "$MODEL_DIR" \
-  --port 8080
+MODEL_DIR="$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>"
+ax-engine-manager --model-dir "$MODEL_DIR"
 ```
 
-Then launch the manager with the server URL:
+In the web page, set the port and click `Start`. The manager starts:
 
 ```bash
-ax-engine-manager \
-  --model-dir "$MODEL_DIR" \
-  --server-url http://127.0.0.1:8080
+ax-engine-server --mlx --mlx-model-artifacts-dir "$MODEL_DIR" --port 8080
 ```
 
-The manager polls:
+Click `Stop` to kill the owned server process.
 
-- `/health`
-- `/v1/runtime`
-- `/v1/models`
-
-Use `--server-url` to point at a different local port. Without `--server-url`,
-the Server tab still shows the default local target:
-
-```text
-http://127.0.0.1:8080
-```
-
-The Server tab lists clickable preview controls for `Start`, `Stop`, and
-`Restart`, plus the full local URLs for:
+The Server panel lists:
 
 - `/health`
 - `/v1/runtime`
@@ -135,11 +99,7 @@ The Server tab lists clickable preview controls for `Start`, `Stop`, and
 - `/v1/chat/completions`
 - `/v1/completions`
 
-Selecting a server action updates the status line, but does not yet spawn or
-kill a process. This keeps the current TUI safe while the next phase defines the
-owned-process lifecycle, confirmation rules, and log capture contract.
-
-## Use Existing JSON Contracts
+## Existing JSON Contracts
 
 For reproducible diagnostics or CI-style workflows, generate JSON with the
 canonical tools and give those files to the manager.
@@ -172,41 +132,19 @@ ax-engine-manager \
 `--artifact-root` scans benchmark result directories and reports whether
 `summary.md` or `contract_failure.json` is present for each artifact.
 
-## TUI Controls
+## CLI Options
 
-Inside the interactive TUI:
-
-| Key | Action |
+| Option | Purpose |
 |---|---|
-| `Tab` / Right arrow | Next tab |
-| `Shift-Tab` / Left arrow | Previous tab |
-| Left mouse click on a tab | Select that tab |
-| `f` in Models | Next model family |
-| `s` in Models | Next model size for the selected family |
-| `d` / Enter in Models | Download the selected model |
-| Left mouse click on a Models family | Select that family |
-| Left mouse click on a Models size row | Select that model size |
-| Left mouse click on Models `[Download]` | Download the selected model |
-| Left mouse click on a Server action | Select Start, Stop, or Restart preview |
-| Left mouse click on a Server URL row | Select that endpoint URL |
-| `q` / `Esc` | Exit |
-
-Mouse support is intentionally scoped today: tab selection, Models family/size
-selection, Models download, Server preview actions, and Server URL rows are
-clickable. Benchmark launch and real server process start/stop still need
-explicit ownership and confirmation contracts before they become mutating
-controls.
-
-Tabs:
-
-| Tab | Purpose |
-|---|---|
-| Readiness | Doctor status, workflow mode, model-artifact readiness, runtime issues |
-| Models | Download family/size selector plus selected model artifact status, quantization, manifest and safetensors presence |
-| Server | Default host/port, Start/Stop/Restart preview selection, local endpoint URLs, and metadata from `--server-url` |
-| Jobs | Guarded job-plan projection from doctor workflow; currently non-mutating |
-| Benchmarks | One benchmark artifact summary from `--benchmark-json` |
-| Artifacts | Result-directory scan from `--artifact-root` |
+| `--check` | Print a script-friendly readiness summary and exit |
+| `--model-dir <path>` | Run doctor against a model directory |
+| `--server-url <url>` | Poll an existing local server for metadata |
+| `--benchmark-json <path>` | Load one benchmark artifact summary |
+| `--artifact-root <path>` | Scan benchmark result directories |
+| `--support-bundle <dir>` | Write a redacted support bundle and exit |
+| `--web-host <host>` | Bind the web manager host, default `127.0.0.1` |
+| `--web-port <port>` | Bind the web manager port, default `8765` |
+| `--no-open` | Print the URL without opening a browser |
 
 ## Support Bundle
 
@@ -256,35 +194,3 @@ This builds the release binaries, verifies the release archive contains
 `ax-engine-server`, `ax-engine-bench`, and `ax-engine-manager`, runs manager
 help/check smoke tests, and verifies support bundles do not contain model
 weights or secret-like content.
-
-## Troubleshooting
-
-If `ax-engine-manager --check` reports `doctor=unavailable`, first run:
-
-```bash
-ax-engine-bench doctor --mlx-model-artifacts-dir "$MODEL_DIR" --json
-```
-
-If server panels are not loaded, pass a local server URL:
-
-```bash
-ax-engine-manager --server-url http://127.0.0.1:8080
-```
-
-If benchmark panels are empty, pass either a JSON summary from an
-`ax-engine-bench ... --json` command or a result root:
-
-```bash
-ax-engine-manager \
-  --benchmark-json /tmp/ax-benchmark.json \
-  --artifact-root benchmarks/results
-```
-
-If you installed through Homebrew and `ax-engine-bench doctor` fails with
-`Library not loaded: /opt/homebrew/opt/mlx-c/lib/libmlxc.dylib`, repair the MLX
-C runtime:
-
-```bash
-brew install mlx-c
-brew reinstall defai-digital/ax-engine/ax-engine
-```

@@ -22,13 +22,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODELS_DIR = Path.home() / ".cache" / "ax-engine" / "models"
 
 IGNORE_PATTERNS = ["*.bin", "*.pt", "*.gguf", "*.msgpack", "flax_model*"]
 MODEL_MANIFEST_FILE = "model-manifest.json"
@@ -42,8 +42,35 @@ def _slug(repo_id: str) -> str:
     return repo_id.replace("/", "--")
 
 
-def download(repo_id: str, dest: Path, force: bool = False, *, quiet: bool = False) -> Path:
-    if dest.exists() and not force:
+def default_hf_cache_root() -> Path:
+    """Return the Hugging Face Hub cache root used by snapshot_download."""
+    if hf_hub_cache := os.environ.get("HF_HUB_CACHE"):
+        return Path(hf_hub_cache).expanduser()
+    if hf_home := os.environ.get("HF_HOME"):
+        return Path(hf_home).expanduser() / "hub"
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
+    return cache_home / "huggingface" / "hub"
+
+
+def default_hf_repo_cache_dir(repo_id: str) -> Path:
+    """Return the repository cache directory that contains snapshot revisions."""
+    return default_hf_cache_root() / f"models--{_slug(repo_id)}"
+
+
+def _disable_hf_progress_bars() -> None:
+    try:
+        from huggingface_hub.utils import disable_progress_bars
+
+        disable_progress_bars()
+    except Exception:
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+
+def download(repo_id: str, dest: Path | None, force: bool = False, *, quiet: bool = False) -> Path:
+    if dest is not None:
+        dest = Path(dest)
+
+    if dest is not None and dest.exists() and not force:
         safetensors = list(dest.glob("*.safetensors"))
         if safetensors and (dest / MODEL_MANIFEST_FILE).exists():
             if not quiet:
@@ -62,6 +89,20 @@ def download(repo_id: str, dest: Path, force: bool = False, *, quiet: bool = Fal
             "  pip install huggingface_hub"
         )
 
+    if quiet:
+        _disable_hf_progress_bars()
+
+    if dest is None:
+        if not quiet:
+            print(f"  downloading {repo_id} -> Hugging Face Hub cache")
+        return Path(
+            snapshot_download(
+                repo_id=repo_id,
+                ignore_patterns=IGNORE_PATTERNS,
+                force_download=force,
+            )
+        )
+
     dest.mkdir(parents=True, exist_ok=True)
     if not quiet:
         print(f"  downloading {repo_id} -> {dest}")
@@ -69,6 +110,7 @@ def download(repo_id: str, dest: Path, force: bool = False, *, quiet: bool = Fal
         repo_id=repo_id,
         local_dir=str(dest),
         ignore_patterns=IGNORE_PATTERNS,
+        force_download=force,
     )
     return dest
 
@@ -182,20 +224,21 @@ def main() -> int:
         "--dest",
         type=Path,
         default=None,
-        help="Destination directory (default: ~/.cache/ax-engine/models/<repo-slug>)",
+        help="Destination directory (default: Hugging Face Hub cache)",
     )
     parser.add_argument("--force", action="store_true", help="Re-download even if present")
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable run summary")
     args = parser.parse_args()
 
-    dest = args.dest or (DEFAULT_MODELS_DIR / _slug(args.repo_id))
+    dest = args.dest
+    summary_dest = dest or default_hf_repo_cache_dir(args.repo_id)
     if not args.json:
         print(f"\n[{args.repo_id}]")
     try:
         dest = download(args.repo_id, dest, force=args.force, quiet=args.json)
     except RuntimeError as error:
         if args.json:
-            _print_json(_summary(args.repo_id, dest, status=DOWNLOAD_FAILED_STATUS, errors=[str(error)]))
+            _print_json(_summary(args.repo_id, summary_dest, status=DOWNLOAD_FAILED_STATUS, errors=[str(error)]))
         else:
             print(f"error: {error}", file=sys.stderr)
         return 1

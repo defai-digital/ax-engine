@@ -50,9 +50,9 @@ The current preview package does not yet provide:
 ## Getting a Model
 
 `download_model()` is the fastest path from nothing to a running session.
-It downloads weights from Hugging Face Hub and auto-generates the required
-`model-manifest.json` via `ax-engine-bench generate-manifest` (if installed)
-or `cargo run` (dev build):
+It downloads weights into the standard Hugging Face Hub snapshot cache and
+auto-generates the required `model-manifest.json` via
+`ax-engine-bench generate-manifest` (if installed) or `cargo run` (dev build):
 
 ```python
 from ax_engine import download_model
@@ -61,7 +61,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 # path is ready to pass directly to Session(mlx_model_artifacts_dir=...)
 ```
 
-The source-tree script uses the same default destination and can emit a
+The source-tree script uses the same Hugging Face default cache and can emit a
 machine-readable summary for automation:
 
 ```text

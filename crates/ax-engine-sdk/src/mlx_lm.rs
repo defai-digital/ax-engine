@@ -45,6 +45,10 @@ impl MlxLmServerCompletionConfig {
     pub fn completions_url(&self) -> String {
         format!("{}/v1/completions", self.base_url)
     }
+
+    pub fn chat_completions_url(&self) -> String {
+        format!("{}/v1/chat/completions", self.base_url)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -101,14 +105,14 @@ pub enum MlxLmBackendError {
 }
 
 #[derive(Debug)]
-pub(crate) struct MlxLmStreamChunkResult {
+pub struct MlxLmStreamChunkResult {
     pub text: String,
     pub finish_reason: Option<String>,
     pub prompt_token_count: Option<u32>,
     pub output_token_count: Option<u32>,
 }
 
-pub(crate) struct MlxLmStreamHandle {
+pub struct MlxLmStreamHandle {
     endpoint: String,
     reader: BufReader<Box<dyn Read + Send>>,
 }
@@ -121,9 +125,7 @@ impl MlxLmStreamHandle {
         }
     }
 
-    pub(crate) fn next_chunk(
-        &mut self,
-    ) -> Result<Option<MlxLmStreamChunkResult>, MlxLmBackendError> {
+    pub fn next_chunk(&mut self) -> Result<Option<MlxLmStreamChunkResult>, MlxLmBackendError> {
         loop {
             let mut line = String::new();
             let bytes_read =
@@ -166,13 +168,42 @@ impl MlxLmStreamHandle {
             })?;
 
             return Ok(Some(MlxLmStreamChunkResult {
-                text: choice.text,
+                text: choice
+                    .delta
+                    .and_then(|delta| delta.content)
+                    .unwrap_or(choice.text),
                 finish_reason: choice.finish_reason,
                 prompt_token_count: chunk.usage.as_ref().map(|u| u.prompt_tokens),
                 output_token_count: chunk.usage.as_ref().map(|u| u.completion_tokens),
             }));
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MlxLmChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl MlxLmChatMessage {
+    pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MlxLmChatGenerateRequest {
+    pub model_id: String,
+    pub messages: Vec<MlxLmChatMessage>,
+    pub max_output_tokens: u32,
+    pub sampling: crate::generate::GenerateSampling,
+    pub stop_sequences: Vec<String>,
+    pub metadata: Option<String>,
+    pub chat_template_kwargs: Option<serde_json::Value>,
 }
 
 impl std::fmt::Debug for MlxLmStreamHandle {
@@ -198,6 +229,25 @@ pub(crate) fn start_streaming_generate(
     match config {
         MlxLmConfig::ServerCompletion(config) => {
             start_mlx_lm_server_completion_stream(config, request)
+        }
+    }
+}
+
+pub fn start_streaming_chat_generate(
+    runtime: &RuntimeReport,
+    config: &MlxLmConfig,
+    request: &MlxLmChatGenerateRequest,
+) -> Result<MlxLmStreamHandle, MlxLmBackendError> {
+    if runtime.selected_backend != SelectedBackend::MlxLmDelegated {
+        return Err(MlxLmBackendError::BackendConfigMismatch {
+            configured_backend: SelectedBackend::MlxLmDelegated,
+            resolved_backend: runtime.selected_backend,
+        });
+    }
+
+    match config {
+        MlxLmConfig::ServerCompletion(config) => {
+            start_mlx_lm_server_chat_completion_stream(config, request)
         }
     }
 }
@@ -258,6 +308,56 @@ fn start_mlx_lm_server_completion_stream(
     Ok(MlxLmStreamHandle::new(endpoint, reader))
 }
 
+fn start_mlx_lm_server_chat_completion_stream(
+    config: &MlxLmServerCompletionConfig,
+    request: &MlxLmChatGenerateRequest,
+) -> Result<MlxLmStreamHandle, MlxLmBackendError> {
+    let endpoint = config.chat_completions_url();
+    let payload = MlxLmChatCompletionRequest {
+        model: &request.model_id,
+        messages: &request.messages,
+        max_tokens: request.max_output_tokens,
+        temperature: request.sampling.temperature,
+        top_p: request.sampling.top_p,
+        top_k: request.sampling.top_k,
+        min_p: request.sampling.min_p,
+        repetition_penalty: request.sampling.repetition_penalty,
+        repetition_context_size: request.sampling.repetition_context_size,
+        seed: request.sampling.seed,
+        stream: true,
+        stop: request.stop_sequences.clone(),
+        metadata: request.metadata.as_deref(),
+        chat_template_kwargs: request.chat_template_kwargs.as_ref(),
+    };
+
+    let response =
+        send_json_post_request(
+            &endpoint,
+            &payload,
+            None,
+            config.timeouts,
+            |error| match error {
+                DelegatedHttpPostError::Serialize(source) => {
+                    MlxLmBackendError::SerializeRequestJson {
+                        endpoint: endpoint.to_string(),
+                        source,
+                    }
+                }
+                DelegatedHttpPostError::Status { status, body } => MlxLmBackendError::HttpStatus {
+                    endpoint: endpoint.to_string(),
+                    status,
+                    body,
+                },
+                DelegatedHttpPostError::Request(source) => MlxLmBackendError::HttpRequest {
+                    endpoint: endpoint.to_string(),
+                    source,
+                },
+            },
+        )?;
+    let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
+    Ok(MlxLmStreamHandle::new(endpoint, reader))
+}
+
 pub fn run_blocking_generate(
     request_id: u64,
     runtime: &RuntimeReport,
@@ -274,6 +374,26 @@ pub fn run_blocking_generate(
     match config {
         MlxLmConfig::ServerCompletion(config) => {
             run_mlx_lm_server_completion_generate(request_id, runtime, config, request)
+        }
+    }
+}
+
+pub fn run_blocking_chat_generate(
+    request_id: u64,
+    runtime: &RuntimeReport,
+    config: &MlxLmConfig,
+    request: &MlxLmChatGenerateRequest,
+) -> Result<GenerateResponse, MlxLmBackendError> {
+    if runtime.selected_backend != SelectedBackend::MlxLmDelegated {
+        return Err(MlxLmBackendError::BackendConfigMismatch {
+            configured_backend: SelectedBackend::MlxLmDelegated,
+            resolved_backend: runtime.selected_backend,
+        });
+    }
+
+    match config {
+        MlxLmConfig::ServerCompletion(config) => {
+            run_mlx_lm_server_chat_completion_generate(request_id, runtime, config, request)
         }
     }
 }
@@ -369,7 +489,92 @@ fn run_mlx_lm_server_completion_generate(
     })
 }
 
-pub(crate) fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateFinishReason> {
+fn run_mlx_lm_server_chat_completion_generate(
+    request_id: u64,
+    runtime: &RuntimeReport,
+    config: &MlxLmServerCompletionConfig,
+    request: &MlxLmChatGenerateRequest,
+) -> Result<GenerateResponse, MlxLmBackendError> {
+    let endpoint = config.chat_completions_url();
+    let payload = MlxLmChatCompletionRequest {
+        model: &request.model_id,
+        messages: &request.messages,
+        max_tokens: request.max_output_tokens,
+        temperature: request.sampling.temperature,
+        top_p: request.sampling.top_p,
+        top_k: request.sampling.top_k,
+        min_p: request.sampling.min_p,
+        repetition_penalty: request.sampling.repetition_penalty,
+        repetition_context_size: request.sampling.repetition_context_size,
+        seed: request.sampling.seed,
+        stream: false,
+        stop: request.stop_sequences.clone(),
+        metadata: request.metadata.as_deref(),
+        chat_template_kwargs: request.chat_template_kwargs.as_ref(),
+    };
+
+    let response =
+        send_json_post_request(
+            &endpoint,
+            &payload,
+            None,
+            config.timeouts,
+            |error| match error {
+                DelegatedHttpPostError::Serialize(source) => {
+                    MlxLmBackendError::SerializeRequestJson {
+                        endpoint: endpoint.to_string(),
+                        source,
+                    }
+                }
+                DelegatedHttpPostError::Status { status, body } => MlxLmBackendError::HttpStatus {
+                    endpoint: endpoint.to_string(),
+                    status,
+                    body,
+                },
+                DelegatedHttpPostError::Request(source) => MlxLmBackendError::HttpRequest {
+                    endpoint: endpoint.to_string(),
+                    source,
+                },
+            },
+        )?;
+    let response: MlxLmChatCompletionResponse =
+        parse_json_response(response, |source| MlxLmBackendError::InvalidResponseJson {
+            endpoint: endpoint.to_string(),
+            source,
+        })?;
+    let choice = response.choices.into_iter().next().ok_or_else(|| {
+        MlxLmBackendError::MissingCompletionChoice {
+            endpoint: endpoint.clone(),
+        }
+    })?;
+
+    Ok(GenerateResponse {
+        request_id,
+        model_id: request.model_id.clone(),
+        prompt_tokens: Vec::new(),
+        prompt_text: None,
+        output_tokens: Vec::new(),
+        output_token_logprobs: Vec::new(),
+        output_text: Some(choice.message.content),
+        prompt_token_count: response.usage.as_ref().map(|usage| usage.prompt_tokens),
+        output_token_count: response.usage.as_ref().map(|usage| usage.completion_tokens),
+        status: GenerateStatus::Finished,
+        finish_reason: finish_reason_from_mlx_lm(choice.finish_reason.as_deref()),
+        step_count: 0,
+        ttft_step: None,
+        route: GenerateRouteReport {
+            execution_plan: Some("mlx_lm_delegated.server_chat_completion".to_string()),
+            attention_route: None,
+            kv_mode: None,
+            prefix_cache_path: None,
+            barrier_mode: None,
+            crossover_decisions: Default::default(),
+        },
+        runtime: runtime.clone(),
+    })
+}
+
+pub fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateFinishReason> {
     match value {
         Some("stop") => Some(GenerateFinishReason::Stop),
         Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
@@ -383,7 +588,15 @@ struct MlxLmStreamChoice {
     #[serde(default)]
     text: String,
     #[serde(default)]
+    delta: Option<MlxLmStreamDelta>,
+    #[serde(default)]
     finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct MlxLmStreamDelta {
+    #[serde(default)]
+    content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -413,6 +626,29 @@ struct MlxLmCompletionRequest<'a> {
     stop: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct MlxLmChatCompletionRequest<'a> {
+    model: &'a str,
+    messages: &'a [MlxLmChatMessage],
+    max_tokens: u32,
+    temperature: f32,
+    top_p: f32,
+    top_k: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_p: Option<f32>,
+    repetition_penalty: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repetition_context_size: Option<u32>,
+    seed: u64,
+    stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stop: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_template_kwargs: Option<&'a serde_json::Value>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct MlxLmCompletionChoice {
     #[serde(default)]
@@ -431,6 +667,28 @@ struct MlxLmCompletionUsage {
 struct MlxLmCompletionResponse {
     #[serde(default)]
     choices: Vec<MlxLmCompletionChoice>,
+    #[serde(default)]
+    usage: Option<MlxLmCompletionUsage>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct MlxLmChatCompletionMessage {
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct MlxLmChatCompletionChoice {
+    #[serde(default)]
+    message: MlxLmChatCompletionMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MlxLmChatCompletionResponse {
+    #[serde(default)]
+    choices: Vec<MlxLmChatCompletionChoice>,
     #[serde(default)]
     usage: Option<MlxLmCompletionUsage>,
 }
@@ -455,6 +713,10 @@ mod tests {
         assert_eq!(
             config.completions_url(),
             "http://127.0.0.1:8090/v1/completions"
+        );
+        assert_eq!(
+            config.chat_completions_url(),
+            "http://127.0.0.1:8090/v1/chat/completions"
         );
     }
 
@@ -495,6 +757,47 @@ mod tests {
         assert_eq!(
             response.route.execution_plan.as_deref(),
             Some("mlx_lm_delegated.server_completion")
+        );
+        handle.join().expect("server thread should finish");
+    }
+
+    #[test]
+    fn blocking_chat_generate_calls_mlx_lm_chat_completions_contract() {
+        let response_body = r#"{"choices":[{"message":{"content":"bonjour"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":1}}"#.to_string();
+        let (server_url, handle) = spawn_completion_server(response_body, |payload| {
+            assert_eq!(payload["model"], "qwen3_dense");
+            assert_eq!(payload["messages"][0]["role"], "system");
+            assert_eq!(payload["messages"][0]["content"], "Be concise.");
+            assert_eq!(payload["messages"][1]["role"], "user");
+            assert_eq!(payload["messages"][1]["content"], "hello");
+            assert_eq!(payload["max_tokens"], 3);
+            assert_eq!(payload["stream"], false);
+            assert_eq!(
+                payload["chat_template_kwargs"],
+                serde_json::json!({"enable_thinking": false})
+            );
+            assert!(
+                payload.get("prompt").is_none(),
+                "chat forwarding must not flatten messages into a completion prompt"
+            );
+        });
+
+        let response = run_blocking_chat_generate(
+            9,
+            &runtime_report(),
+            &MlxLmConfig::server_completion(server_url),
+            &chat_request(),
+        )
+        .expect("mlx-lm delegated chat completion should succeed");
+
+        assert_eq!(response.request_id, 9);
+        assert_eq!(response.prompt_text, None);
+        assert_eq!(response.output_text.as_deref(), Some("bonjour"));
+        assert_eq!(response.prompt_token_count, Some(8));
+        assert_eq!(response.output_token_count, Some(1));
+        assert_eq!(
+            response.route.execution_plan.as_deref(),
+            Some("mlx_lm_delegated.server_chat_completion")
         );
         handle.join().expect("server thread should finish");
     }
@@ -571,6 +874,42 @@ mod tests {
     }
 
     #[test]
+    fn stream_handle_parses_chat_completion_delta_chunks() {
+        let mut stream = mlx_lm_stream(
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}],\"usage\":null}\n\
+             \n\
+             data: {\"choices\":[{\"delta\":{\"content\":\" hello\"},\"finish_reason\":null}],\"usage\":null}\n\
+             \n\
+             data: {\"choices\":[{\"delta\":{\"content\":\" world\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\
+             \n\
+             data: [DONE]\n\n",
+        );
+
+        let role_only = stream
+            .next_chunk()
+            .expect("role chunk should parse")
+            .expect("role chunk should exist");
+        assert_eq!(role_only.text, "");
+        assert_eq!(role_only.finish_reason, None);
+
+        let first = stream
+            .next_chunk()
+            .expect("first delta chunk should parse")
+            .expect("first delta chunk should exist");
+        assert_eq!(first.text, " hello");
+        assert_eq!(first.finish_reason, None);
+
+        let second = stream
+            .next_chunk()
+            .expect("second delta chunk should parse")
+            .expect("second delta chunk should exist");
+        assert_eq!(second.text, " world");
+        assert_eq!(second.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(second.prompt_token_count, Some(5));
+        assert_eq!(second.output_token_count, Some(2));
+    }
+
+    #[test]
     fn stream_handle_rejects_missing_stream_choice() {
         let mut stream = mlx_lm_stream("data: {\"choices\":[]}\n\n");
 
@@ -612,6 +951,21 @@ mod tests {
             sampling: GenerateSampling::default(),
             stop_sequences: Vec::new(),
             metadata: None,
+        }
+    }
+
+    fn chat_request() -> MlxLmChatGenerateRequest {
+        MlxLmChatGenerateRequest {
+            model_id: "qwen3_dense".to_string(),
+            messages: vec![
+                MlxLmChatMessage::new("system", "Be concise."),
+                MlxLmChatMessage::new("user", "hello"),
+            ],
+            max_output_tokens: 3,
+            sampling: GenerateSampling::default(),
+            stop_sequences: Vec::new(),
+            metadata: None,
+            chat_template_kwargs: Some(serde_json::json!({"enable_thinking": false})),
         }
     }
 

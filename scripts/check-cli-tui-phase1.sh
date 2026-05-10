@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
-TMP_DIR="$(ax_tmp_dir ax-cli-tui-phase1)"
+TMP_DIR="$(ax_tmp_dir ax-manager-phase1)"
 
 cleanup() {
     ax_rm_rf "$TMP_DIR"
@@ -120,4 +120,4 @@ grep -q "server=unavailable reason=server URL must be local" "$TMP_DIR/invalid-s
 cargo run --quiet -p ax-engine-tui --bin ax-engine-manager -- --help >"$TMP_DIR/help.out"
 grep -q "Check mode is read-only" "$TMP_DIR/help.out"
 
-echo "CLI TUI Phase 1 read-only cockpit verified."
+echo "Manager Phase 1 check mode verified."

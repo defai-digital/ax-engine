@@ -9,6 +9,9 @@ from typing import Any
 
 
 ALLOWED_CHAT_ROLES = {"system", "user", "assistant", "tool", "function"}
+QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = (
+    "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+)
 
 
 class OpenAiShimError(ValueError):
@@ -42,7 +45,7 @@ def render_chat_prompt(messages: list[dict[str, Any]], model_id: str) -> str:
             prompt_parts.append(f"{role}: {safe_content}\n")
 
     if template == "qwen_chatml":
-        prompt_parts.append("<|im_start|>assistant\n")
+        prompt_parts.append(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT)
     elif template == "llama3":
         prompt_parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
     else:

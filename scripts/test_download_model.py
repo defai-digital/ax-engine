@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT_PATH = Path(__file__).with_name("download_model.py")
 spec = importlib.util.spec_from_file_location("download_model", SCRIPT_PATH)
@@ -17,19 +19,28 @@ spec.loader.exec_module(download_model)
 
 
 class DownloadModelScriptTest(unittest.TestCase):
-    def test_default_destination_matches_public_download_helper(self) -> None:
-        self.assertEqual(
-            download_model.DEFAULT_MODELS_DIR,
-            Path.home() / ".cache" / "ax-engine" / "models",
-        )
-        self.assertEqual(
-            download_model.DEFAULT_MODELS_DIR / download_model._slug("mlx-community/Qwen3-4B-4bit"),
-            Path.home()
-            / ".cache"
-            / "ax-engine"
-            / "models"
-            / "mlx-community--Qwen3-4B-4bit",
-        )
+    def test_default_destination_uses_huggingface_cache_root(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                download_model.default_hf_repo_cache_dir("mlx-community/Qwen3-4B-4bit"),
+                Path.home()
+                / ".cache"
+                / "huggingface"
+                / "hub"
+                / "models--mlx-community--Qwen3-4B-4bit",
+            )
+
+        with patch.dict(os.environ, {"HF_HOME": "/tmp/hf-home"}, clear=True):
+            self.assertEqual(
+                download_model.default_hf_repo_cache_dir("mlx-community/Qwen3-4B-4bit"),
+                Path("/tmp/hf-home/hub/models--mlx-community--Qwen3-4B-4bit"),
+            )
+
+        with patch.dict(os.environ, {"HF_HUB_CACHE": "/tmp/hf-hub"}, clear=True):
+            self.assertEqual(
+                download_model.default_hf_repo_cache_dir("mlx-community/Qwen3-4B-4bit"),
+                Path("/tmp/hf-hub/models--mlx-community--Qwen3-4B-4bit"),
+            )
 
     def test_json_summary_for_existing_ready_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
