@@ -1582,11 +1582,14 @@ fn build_openai_completion_request(
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let (input_tokens, input_text) = match request.prompt {
         OpenAiPromptInput::Text(text) => (Vec::new(), Some(text)),
-        OpenAiPromptInput::TextBatch(_) => {
+        OpenAiPromptInput::TextBatch(prompts) => {
             return Err(error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
-                "batch completion prompts are not supported by this preview endpoint; send one prompt per request".to_string(),
+                format!(
+                    "batch completion prompts are not supported by this preview endpoint; send one prompt per request (received {})",
+                    prompts.len()
+                ),
             ));
         }
         OpenAiPromptInput::Tokens(tokens) => (tokens, None),
