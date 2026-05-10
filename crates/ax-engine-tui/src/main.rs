@@ -399,13 +399,6 @@ impl WebRuntime {
                 .unwrap_or_default();
             self.status_message = format!("Server exited ({status}){hint}");
             self.server = None;
-        } else if !server.ready && server_health_ok(server.port) {
-            server.ready = true;
-            self.status_message = format!(
-                "Server ready on port {} with {}",
-                server.port,
-                short_model_label(&server.repo_id)
-            );
         }
     }
 
@@ -542,11 +535,12 @@ fn proxy_chat(
         (server.port, rt.server_model_dir(), rt.server_model_id())
     };
 
-    // Always query /v1/models for the model id the server actually registered.
-    // Falling back to the manager's pre-computed label (managed_model_id) keeps
-    // compatibility with externally started servers that don't expose /v1/models.
-    let model_id = fetch_server_model_id(port)
-        .or(managed_model_id)
+    // Prefer the manager's pre-computed model_id (set at server-spawn time)
+    // to avoid a 5-second /v1/models network round-trip on every chat request.
+    // Only fall back to querying the server for external servers where no
+    // managed_model_id is available.
+    let model_id = managed_model_id
+        .or_else(|| fetch_server_model_id(port))
         .unwrap_or_else(|| "default".to_string());
 
     // Convert OpenAI messages payload to a native GenerateRequest.
@@ -663,7 +657,8 @@ fn proxy_chat_blocking(
         .collect();
 
     // Decode token IDs to text using the model's tokenizer.
-    let text = decode_tokens(model_dir, &output_tokens)?;
+    let raw_text = decode_tokens(model_dir, &output_tokens)?;
+    let text = strip_generation_artifacts(&raw_text, model_dir);
 
     // Write OpenAI-format SSE to the JS client.
     client.write_all(
@@ -672,7 +667,7 @@ fn proxy_chat_blocking(
     if !text.is_empty() {
         let delta = format!(
             "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":null,\"index\":0}}]}}\n\n",
-            serde_json::to_string(&text).unwrap_or_default()
+            serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string())
         );
         let _ = client.write_all(delta.as_bytes());
     }
@@ -757,7 +752,7 @@ fn proxy_chat_streaming(
             .unwrap_or_else(|| err_text.trim().to_string());
         let out = format!(
             r#"{{"error":{}}}"#,
-            serde_json::to_string(&msg).unwrap_or_default()
+            serde_json::to_string(&msg).unwrap_or_else(|_| "\"\"".to_string())
         );
         let resp = format!(
             "HTTP/1.1 502 Bad Gateway\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -1001,6 +996,77 @@ fn tokenize_prompt(model_dir: &str, text: &str) -> Result<Vec<u32>, ManagerError
     ])
 }
 
+/// Remove role-loop artifacts that appear after decoding with skip_special_tokens.
+///
+/// Native MLX servers may not stop exactly at every EOT boundary; extra turn-prefix
+/// tokens then get decoded as plain text ("model\n" for Gemma, role tags for GLM).
+/// Runaway repetition from absent repetition-penalty is stripped for all models.
+fn strip_generation_artifacts(text: &str, model_dir: &str) -> String {
+    let family = detect_prompt_family("", Some(model_dir));
+    let cleaned = match family {
+        "gemma" => {
+            // skip_special_tokens removes <start_of_turn> and <end_of_turn> but leaves
+            // the plain-text role prefix "model\n".  Strip leading copies and truncate
+            // at the first next-turn boundary.
+            let t = text.trim_start_matches('\n');
+            let mut t = t;
+            while let Some(rest) = t.strip_prefix("model\n") {
+                t = rest;
+            }
+            if let Some(idx) = t.find("\nmodel\n") {
+                t[..idx].trim_end().to_string()
+            } else {
+                t.trim_end().to_string()
+            }
+        }
+        "glm" => {
+            // Strip any role tags that survived decoding.
+            let mut t = text.trim_end();
+            for marker in &["<|user|>", "<|assistant|>", "<|system|>", "<|endoftext|>"] {
+                if let Some(idx) = t.find(marker) {
+                    t = t[..idx].trim_end();
+                }
+            }
+            t.to_string()
+        }
+        _ => text.trim_end().to_string(),
+    };
+    strip_runaway_repetition(&cleaned)
+}
+
+/// Detect and remove a repetitively-looping suffix (e.g. "5555…" or "model\nmodel\n…").
+/// Checks pattern lengths 1–16; requires ≥ 10 consecutive repetitions to trigger.
+fn strip_runaway_repetition(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    'outer: for pat_len in 1..=16usize {
+        if n < pat_len * 10 {
+            continue;
+        }
+        let pat = &bytes[n - pat_len..];
+        let mut count = 0usize;
+        let mut pos = n;
+        loop {
+            if pos < pat_len {
+                break;
+            }
+            if &bytes[pos - pat_len..pos] == pat {
+                count += 1;
+                pos -= pat_len;
+            } else {
+                break;
+            }
+        }
+        if count >= 10 {
+            if !text.is_char_boundary(pos) {
+                continue 'outer;
+            }
+            return text[..pos].trim_end().to_string();
+        }
+    }
+    text.to_string()
+}
+
 /// Decode a list of token IDs to a UTF-8 string using the model's tokenizer.
 fn decode_tokens(model_dir: &str, tokens: &[u32]) -> Result<String, ManagerError> {
     if tokens.is_empty() {
@@ -1166,7 +1232,7 @@ fn stream_native_as_openai<W: Write, R: Read>(
                         {
                             let chunk = format!(
                                 "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":null,\"index\":0}}]}}\n\n",
-                                serde_json::to_string(delta).unwrap_or_default()
+                                serde_json::to_string(delta).unwrap_or_else(|_| "\"\"".to_string())
                             );
                             if client.write_all(chunk.as_bytes()).is_err() {
                                 return Ok(());
@@ -1190,7 +1256,7 @@ fn stream_native_as_openai<W: Write, R: Read>(
                                 if !missing.is_empty() {
                                     let chunk = format!(
                                         "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":null,\"index\":0}}]}}\n\n",
-                                        serde_json::to_string(missing).unwrap_or_default()
+                                        serde_json::to_string(missing).unwrap_or_else(|_| "\"\"".to_string())
                                     );
                                     if client.write_all(chunk.as_bytes()).is_err() {
                                         return Ok(());
@@ -1224,7 +1290,7 @@ fn stream_native_as_openai<W: Write, R: Read>(
                         let chunk = format!(
                             "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":\"stop\",\"index\":0}}]}}\n\n\
                              data: [DONE]\n\n",
-                            serde_json::to_string(&label).unwrap_or_default()
+                            serde_json::to_string(&label).unwrap_or_else(|_| "\"\"".to_string())
                         );
                         let _ = client.write_all(chunk.as_bytes());
                         client.flush().ok();
@@ -1590,30 +1656,69 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
             ))
         })?;
 
-    let mut rt = runtime
-        .lock()
-        .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
-    rt.server = Some(ManagedServer {
-        child,
-        port: port as u16,
-        repo_id: repo_id.clone(),
-        model_id: launch.model_id.clone(),
-        model_dir: model_dir.clone(),
-        ready: false,
-        stderr_file: Some(stderr_path),
-    });
-    rt.state.server_control.port = port as u16;
-    rt.status_message = format!(
-        "Server starting on port {port} with {}",
-        short_model_label(&repo_id)
-    );
-    Ok(json!({
-        "status": "starting",
-        "port": port,
-        "repo_id": repo_id,
-        "model_id": launch.model_id,
-        "model_dir": model_dir
-    }))
+    let response = {
+        let mut rt = runtime
+            .lock()
+            .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
+        rt.server = Some(ManagedServer {
+            child,
+            port: port as u16,
+            repo_id: repo_id.clone(),
+            model_id: launch.model_id.clone(),
+            model_dir: model_dir.clone(),
+            ready: false,
+            stderr_file: Some(stderr_path),
+        });
+        rt.state.server_control.port = port as u16;
+        rt.status_message = format!(
+            "Server starting on port {port} with {}",
+            short_model_label(&repo_id)
+        );
+        json!({
+            "status": "starting",
+            "port": port,
+            "repo_id": repo_id,
+            "model_id": launch.model_id,
+            "model_dir": model_dir
+        })
+    }; // lock released before spawning the poll thread
+
+    // Poll /health in a background thread so we never block the mutex.
+    // Sets server.ready=true as soon as the server accepts HTTP traffic.
+    {
+        let rt = Arc::clone(runtime);
+        let port_u16 = port as u16;
+        let repo = repo_id.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(500));
+            if server_health_ok(port_u16) {
+                if let Ok(mut guard) = rt.lock() {
+                    if let Some(server) = guard.server.as_mut() {
+                        if server.port == port_u16 && !server.ready {
+                            server.ready = true;
+                            guard.status_message = format!(
+                                "Server ready on port {} with {}",
+                                port_u16,
+                                short_model_label(&repo)
+                            );
+                        }
+                    }
+                }
+                break;
+            }
+            // Stop polling if the server was stopped or replaced.
+            let still_ours = rt
+                .lock()
+                .ok()
+                .and_then(|g| g.server.as_ref().map(|s| s.port == port_u16))
+                .unwrap_or(false);
+            if !still_ours {
+                break;
+            }
+        });
+    }
+
+    Ok(response)
 }
 
 /// Run `ax-engine-bench generate-manifest <model_dir>` to produce model-manifest.json.
