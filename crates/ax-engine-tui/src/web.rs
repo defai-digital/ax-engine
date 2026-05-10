@@ -1,8 +1,12 @@
 use crate::app::{AppState, LoadState, MODEL_CATALOG, ServerUrlKind};
 use serde_json::{Value, json};
 
-pub fn index_html() -> &'static str {
-    r##"<!doctype html>
+const LOGO_B64: &str = include_str!("logo_b64.txt");
+
+pub fn index_html() -> String {
+    let logo_src = format!("data:image/png;base64,{LOGO_B64}");
+    format!(
+        r##"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -13,7 +17,7 @@ pub fn index_html() -> &'static str {
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-glyph">◈</span>
+      <img src="{logo_src}" class="brand-logo" alt="AX Engine">
       <span class="brand-name">AX ENGINE</span>
       <span class="brand-tag">MANAGER</span>
     </div>
@@ -32,7 +36,7 @@ pub fn index_html() -> &'static str {
   <div class="workspace">
     <aside class="sidebar">
 
-      <!-- ── STEP 1: SELECT MODEL ───────────────────────────── -->
+      <!-- STEP 1: SELECT MODEL -->
       <div class="panel">
         <div class="panel-header">
           <span class="step-badge">1</span>
@@ -52,23 +56,15 @@ pub fn index_html() -> &'static str {
           <select id="model" class="field-select"></select>
         </div>
 
-        <div class="repo-row">
-          <span class="field-label">REPO</span>
-          <span id="repo-id" class="repo-id">—</span>
-        </div>
-
-        <!-- Download status badge -->
         <div id="model-status" class="model-status"></div>
 
-        <!-- Download CTA -->
         <button id="download" type="button" class="btn btn-accent full-width">DOWNLOAD</button>
         <p id="download-status" class="status-text"></p>
 
-        <!-- Previously downloaded quick-pick -->
         <div id="downloaded-list"></div>
       </div>
 
-      <!-- ── STEP 2: LAUNCH SERVER ──────────────────────────── -->
+      <!-- STEP 2: LAUNCH SERVER -->
       <div class="panel">
         <div class="panel-header">
           <span class="step-badge">2</span>
@@ -98,7 +94,7 @@ pub fn index_html() -> &'static str {
 
     </aside>
 
-    <!-- ── STEP 3: CHAT ────────────────────────────────────── -->
+    <!-- STEP 3: CHAT -->
     <section class="chat-area">
       <div class="chat-header">
         <span class="step-badge">3</span>
@@ -111,7 +107,7 @@ pub fn index_html() -> &'static str {
 
       <div id="chat-messages" class="chat-messages">
         <div class="chat-empty" id="chat-empty">
-          <div class="chat-empty-glyph">◈</div>
+          <img src="{logo_src}" class="chat-empty-logo" alt="AX Engine">
           <ol class="flow-steps">
             <li>Select a model above</li>
             <li>Download it if needed</li>
@@ -139,7 +135,9 @@ pub fn index_html() -> &'static str {
   <script src="/assets/manager.js"></script>
 </body>
 </html>
-"##
+"##,
+        logo_src = logo_src
+    )
 }
 
 pub fn manager_css() -> &'static str {
@@ -202,7 +200,7 @@ body::after {
   position:relative;z-index:10;
 }
 .brand { display:flex;align-items:center;gap:9px;flex-shrink:0; }
-.brand-glyph { color:var(--accent);font-size:18px;text-shadow:0 0 12px var(--accent); }
+.brand-logo { width:28px;height:28px;object-fit:contain;filter:drop-shadow(0 0 6px rgba(0,180,255,0.55)); }
 .brand-name  { font-family:var(--mono);font-size:14px;font-weight:700;color:var(--text-hi);letter-spacing:3px; }
 .brand-tag   { font-family:var(--mono);font-size:9px;letter-spacing:2px;color:var(--accent-d);border:1px solid rgba(0,212,255,0.22);padding:2px 5px;border-radius:3px; }
 .topbar-center { flex:1;text-align:center; }
@@ -305,10 +303,6 @@ body::after {
 }
 .field-select option { background:#0c1121;color:#d4eeff; }
 
-/* ── Repo row ────────────────────────────────────────────── */
-.repo-row { display:flex;align-items:flex-start;gap:7px;margin:8px 0 10px; }
-.repo-id  { font-family:var(--mono);font-size:10px;color:var(--text-hi);word-break:break-all;flex:1; }
-
 /* ── Model status badge ──────────────────────────────────── */
 .model-status {
   min-height:30px;padding:6px 0;
@@ -343,10 +337,24 @@ body::after {
   font-family:var(--mono);font-size:9px;letter-spacing:1px;
   color:var(--text-dim);text-transform:uppercase;margin:12px 0 5px;
 }
+.dl-scroll {
+  max-height:120px;overflow-y:auto;
+  scrollbar-width:thin;scrollbar-color:var(--border-hi) transparent;
+}
+.dl-scroll::-webkit-scrollbar { width:4px; }
+.dl-scroll::-webkit-scrollbar-thumb { background:var(--border-hi);border-radius:2px; }
 .dl-item {
   display:flex;align-items:center;gap:5px;
-  padding:5px 0;border-bottom:1px solid var(--border);
+  padding:5px 6px;border-bottom:1px solid var(--border);
+  border-radius:3px;transition:background .1s;
 }
+.dl-item-active {
+  background:rgba(0,212,255,0.07);
+  border-left:2px solid var(--accent);
+  padding-left:4px;
+}
+.dl-item-active .dl-repo { color:var(--accent); }
+.dl-item-active .dl-use  { border-color:var(--accent);color:var(--accent); }
 .dl-check { color:var(--green);font-size:11px;flex-shrink:0; }
 .dl-repo  { font-family:var(--mono);font-size:9px;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 
@@ -371,12 +379,12 @@ body::after {
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   flex:1;min-height:200px;gap:14px;color:var(--text-dim);user-select:none;
 }
-.chat-empty-glyph {
-  font-size:38px;color:rgba(0,212,255,.10);
-  text-shadow:0 0 20px rgba(0,212,255,.18);
-  animation:glyph-f 4s ease-in-out infinite;
+.chat-empty-logo {
+  width:72px;height:72px;object-fit:contain;
+  opacity:.25;filter:drop-shadow(0 0 16px rgba(0,180,255,0.4));
+  animation:logo-float 4s ease-in-out infinite;
 }
-@keyframes glyph-f { 0%,100%{transform:translateY(0);opacity:.6}50%{transform:translateY(-5px);opacity:1} }
+@keyframes logo-float { 0%,100%{transform:translateY(0);opacity:.25}50%{transform:translateY(-6px);opacity:.45} }
 
 /* flow steps in empty state */
 .flow-steps {
@@ -481,12 +489,17 @@ function shortenPath(p) {
   return parts.length > 4 ? '…/' + parts.slice(-3).join('/') : p;
 }
 
+function selectedCatalogEntry() {
+  return app.catalog.find(e => e.repo_id === $('model').value) || null;
+}
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
 const app = {
   catalog:          [],
   serverRunning:    false,
   serverPort:       8080,
+  serverModelDir:   null,
   downloadedModels: [],
   streaming:        false,
 };
@@ -498,6 +511,13 @@ function applyState(data) {
   app.serverRunning    = !!(data.server && data.server.running);
   app.serverPort       = (data.server && data.server.port) || 8080;
   app.downloadedModels = data.downloaded_models || [];
+
+  // Clear chat when the running model changes (e.g. user switches from Qwen to Gemma).
+  const newModelDir = (data.server && data.server.model_dir) || '';
+  if (app.serverModelDir && newModelDir && app.serverModelDir !== newModelDir) {
+    clearChat();
+  }
+  app.serverModelDir = newModelDir;
 
   $('sys-status').textContent = data.status || '';
 
@@ -526,12 +546,8 @@ function applyState(data) {
     conn.className   = 'chat-conn offline';
   }
 
-  $('chat-model-label').textContent = (() => {
-    const dir = data.model_dir || '';
-    if (!dir) return '';
-    const parts = dir.split('/');
-    return parts.slice(-2).join('/');
-  })();
+  $('chat-model-label').textContent =
+    data.server && data.server.model_id ? `model: ${shortModelName(data.server.model_id)}` : '';
 }
 
 // ── Model selectors ───────────────────────────────────────────────────────────
@@ -561,12 +577,11 @@ function fillModelSelectors(data) {
 function fillSizes(kind, fam, preferred) {
   const models = modelsOf(kind, fam);
   $('model').innerHTML = models.map(m =>
-    `<option value="${m.repo_id}">${m.label} · ${m.note}</option>`
+    `<option value="${m.repo_id}">${m.label}</option>`
   ).join('');
   if (preferred && models.some(m => m.repo_id === preferred)) {
     $('model').value = preferred;
   }
-  $('repo-id').textContent = $('model').value || '—';
   updateModelStatus();
 }
 
@@ -597,9 +612,7 @@ function updateModelStatus() {
 
     // Clear model-dir if it was auto-filled from a different downloaded model
     if (!$('model-dir').dataset.userEdited) {
-      const currentPath = $('model-dir').value;
-      const belongsToOther = app.downloadedModels.some(m => m.path === currentPath);
-      if (belongsToOther) $('model-dir').value = '';
+      $('model-dir').value = '';
     }
 
     dlBtn.textContent = 'DOWNLOAD';
@@ -617,35 +630,53 @@ function renderEndpoints(eps) {
 
 // ── Downloaded quick-pick ─────────────────────────────────────────────────────
 
+function shortModelName(repoId) {
+  // "mlx-community/Qwen3-4B-4bit" → "Qwen3-4B-4bit"
+  return repoId.split('/').pop() || repoId;
+}
+
 function renderDownloaded(models) {
   const el = $('downloaded-list');
   if (!models.length) { el.innerHTML = ''; return; }
 
+  const activeRepo = $('model').value;
+
   el.innerHTML =
     `<div class="dl-section-label">DOWNLOADED</div>` +
-    models.map(m => `
-      <div class="dl-item">
+    `<div class="dl-scroll">` +
+    models.map(m => {
+      const active = m.repo_id === activeRepo ? ' dl-item-active' : '';
+      const name   = shortModelName(m.repo_id);
+      return `
+      <div class="dl-item${active}" data-repo="${m.repo_id}">
         <span class="dl-check">✓</span>
-        <span class="dl-repo" title="${m.path || ''}">${m.repo_id}</span>
+        <span class="dl-repo" title="${m.path || ''}">${name}</span>
         <button class="btn btn-ghost btn-xs dl-use"
           data-path="${m.path || ''}"
           data-repo="${m.repo_id}">USE</button>
-      </div>`).join('');
+      </div>`;
+    }).join('') +
+    `</div>`;
 
   el.querySelectorAll('.dl-use').forEach(btn => {
     btn.addEventListener('click', () => {
-      // Selecting a downloaded model: fill model-dir and try to match catalog
+      const repo = btn.dataset.repo;
+      const entry = app.catalog.find(e => e.repo_id === repo);
+      if (entry) {
+        delete $('model-dir').dataset.userEdited;
+        $('model-kind').value = entry.kind;
+        $('family').innerHTML = familiesOf(entry.kind).map(f => `<option value="${f}">${f}</option>`).join('');
+        $('family').value = entry.family;
+        fillSizes(entry.kind, entry.family, repo);
+      }
       $('model-dir').value = btn.dataset.path;
       delete $('model-dir').dataset.userEdited;
 
-      // Try to select the matching catalog entry
-      const repo = btn.dataset.repo;
-      const opt  = [...$('model').options].find(o => o.value === repo);
-      if (opt) {
-        $('model').value = repo;
-        $('repo-id').textContent = repo;
-        updateModelStatus();
-      }
+      // Highlight this row, remove highlight from others
+      el.querySelectorAll('.dl-item').forEach(row => row.classList.remove('dl-item-active'));
+      btn.closest('.dl-item').classList.add('dl-item-active');
+
+      updateModelStatus();
     });
   });
 }
@@ -653,9 +684,12 @@ function renderDownloaded(models) {
 // ── Server controls ───────────────────────────────────────────────────────────
 
 function serverPayload() {
+  const entry = selectedCatalogEntry();
   return JSON.stringify({
     port:      Number($('port').value || 8080),
+    repo_id:   entry ? entry.repo_id : '',
     model_dir: $('model-dir').value.trim(),
+    manual_model_dir: $('model-dir').dataset.userEdited === '1',
   });
 }
 
@@ -891,8 +925,9 @@ function clearChat() {
   msgs.innerHTML = '';
   const empty = document.createElement('div');
   empty.className = 'chat-empty'; empty.id = 'chat-empty';
+  const logoSrc = document.querySelector('.brand-logo')?.src || '';
   empty.innerHTML =
-    '<div class="chat-empty-glyph">◈</div>' +
+    '<img src="' + logoSrc + '" class="chat-empty-logo" alt="AX Engine">' +
     '<ol class="flow-steps"><li>Select a model above</li><li>Download it if needed</li><li>Start the server</li><li>Chat here</li></ol>';
   msgs.appendChild(empty);
 }
@@ -918,6 +953,8 @@ async function loadState() {
 // ── Wire events ───────────────────────────────────────────────────────────────
 
 $('model-kind').addEventListener('change', () => {
+  // User explicitly changed the model — let model-dir follow the new selection.
+  delete $('model-dir').dataset.userEdited;
   const kind = $('model-kind').value;
   const fams = familiesOf(kind);
   $('family').innerHTML = fams.map(f => `<option value="${f}">${f}</option>`).join('');
@@ -925,11 +962,12 @@ $('model-kind').addEventListener('change', () => {
 });
 
 $('family').addEventListener('change', () => {
+  delete $('model-dir').dataset.userEdited;
   fillSizes($('model-kind').value, $('family').value, null);
 });
 
 $('model').addEventListener('change', () => {
-  $('repo-id').textContent = $('model').value || '—';
+  delete $('model-dir').dataset.userEdited;
   updateModelStatus();
 });
 
@@ -1018,9 +1056,9 @@ fn model_artifacts_label(state: &AppState) -> String {
 
 fn load_state_label<T>(state: &LoadState<T>) -> &'static str {
     match state {
-        LoadState::Ready(_)       => "ready",
+        LoadState::Ready(_) => "ready",
         LoadState::Unavailable(_) => "unavailable",
-        LoadState::NotLoaded(_)   => "not_loaded",
+        LoadState::NotLoaded(_) => "not_loaded",
     }
 }
 
