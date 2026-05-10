@@ -12409,9 +12409,22 @@ fn delegated_cached_tokens_from_generate_route(route: &GenerateRouteReport) -> u
 }
 
 fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, value: u32) {
-    if let Some((_, existing)) = decisions.iter_mut().find(|(decision, _)| decision == key) {
-        *existing = value;
-    } else {
+    let mut updated = false;
+    decisions.retain_mut(|(decision, existing)| {
+        if decision == key {
+            if updated {
+                false
+            } else {
+                *existing = value;
+                updated = true;
+                true
+            }
+        } else {
+            true
+        }
+    });
+
+    if !updated {
         decisions.push((key.to_string(), value));
     }
 }
@@ -17262,6 +17275,25 @@ mod tests {
         observation.merge_route_metadata(&second);
 
         assert_eq!(route_decision(&observation, "live_share_hits"), u32::MAX);
+    }
+
+    #[test]
+    fn route_decision_upsert_replaces_existing_value_and_removes_duplicates() {
+        let mut decisions = vec![
+            ("delegated_cached_tokens".to_string(), 32),
+            ("other_counter".to_string(), 7),
+            ("delegated_cached_tokens".to_string(), 64),
+        ];
+
+        upsert_route_decision(&mut decisions, "delegated_cached_tokens", 96);
+
+        assert_eq!(
+            decisions,
+            vec![
+                ("delegated_cached_tokens".to_string(), 96),
+                ("other_counter".to_string(), 7),
+            ]
+        );
     }
 
     #[test]
