@@ -516,12 +516,14 @@ function applyState(data) {
   app.serverPort       = (data.server && data.server.port) || 8080;
   app.downloadedModels = data.downloaded_models || [];
 
-  // Clear chat when the running model changes (e.g. user switches from Qwen to Gemma).
-  const newModelDir = (data.server && data.server.model_dir) || '';
-  if (app.serverModelDir && newModelDir && app.serverModelDir !== newModelDir) {
+  // Clear chat when the active model changes, including after a stop+restart cycle.
+  // app.serverModelDir tracks the last non-null model_dir; we only update it when
+  // a server is running so a stop→restart transition triggers a clear correctly.
+  const newModelDir = (data.server && data.server.model_dir) || null;
+  if (newModelDir && newModelDir !== app.serverModelDir) {
     clearChat();
   }
-  app.serverModelDir = newModelDir;
+  if (newModelDir) app.serverModelDir = newModelDir;
 
   $('sys-status').textContent = data.status || '';
 
@@ -967,6 +969,11 @@ async function loadState() {
     }
   } catch (err) {
     $('sys-status').textContent = err.message;
+    // Keep polling if the server was in "starting" state — a transient request
+    // error shouldn't leave the UI stuck with no way to detect readiness.
+    if (app.serverStarting) {
+      scheduleServerPoll();
+    }
   }
 }
 
