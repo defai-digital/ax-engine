@@ -389,14 +389,7 @@ fn run_mlx_lm_server_completion_generate(
         finish_reason: finish_reason_from_mlx_lm(choice.finish_reason.as_deref()),
         step_count: 0,
         ttft_step: None,
-        route: GenerateRouteReport {
-            execution_plan: Some("mlx_lm_delegated.server_completion".to_string()),
-            attention_route: None,
-            kv_mode: None,
-            prefix_cache_path: None,
-            barrier_mode: None,
-            crossover_decisions: Default::default(),
-        },
+        route: GenerateRouteReport::with_execution_plan("mlx_lm_delegated.server_completion"),
         runtime: runtime.clone(),
     })
 }
@@ -428,14 +421,7 @@ fn run_mlx_lm_server_chat_completion_generate(
         finish_reason: finish_reason_from_mlx_lm(choice.finish_reason.as_deref()),
         step_count: 0,
         ttft_step: None,
-        route: GenerateRouteReport {
-            execution_plan: Some("mlx_lm_delegated.server_chat_completion".to_string()),
-            attention_route: None,
-            kv_mode: None,
-            prefix_cache_path: None,
-            barrier_mode: None,
-            crossover_decisions: Default::default(),
-        },
+        route: GenerateRouteReport::with_execution_plan("mlx_lm_delegated.server_chat_completion"),
         runtime: runtime.clone(),
     })
 }

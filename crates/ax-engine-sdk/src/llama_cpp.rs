@@ -411,14 +411,7 @@ fn run_llama_cpp_cli_generate(
         finish_reason: None,
         step_count: 0,
         ttft_step: None,
-        route: GenerateRouteReport {
-            execution_plan: Some("llama_cpp.blocking_cli".to_string()),
-            attention_route: None,
-            kv_mode: None,
-            prefix_cache_path: None,
-            barrier_mode: None,
-            crossover_decisions: Default::default(),
-        },
+        route: GenerateRouteReport::with_execution_plan("llama_cpp.blocking_cli"),
         runtime: runtime.clone(),
     })
 }
@@ -747,14 +740,7 @@ fn llama_cpp_server_completion_route(
     execution_plan: &str,
     tokens_cached: u32,
 ) -> GenerateRouteReport {
-    let mut route = GenerateRouteReport {
-        execution_plan: Some(execution_plan.to_string()),
-        attention_route: None,
-        kv_mode: None,
-        prefix_cache_path: None,
-        barrier_mode: None,
-        crossover_decisions: Default::default(),
-    };
+    let mut route = GenerateRouteReport::with_execution_plan(execution_plan);
 
     if tokens_cached > 0 {
         route.prefix_cache_path = Some("delegated_prompt_cache".to_string());

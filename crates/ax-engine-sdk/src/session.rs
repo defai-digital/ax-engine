@@ -1767,7 +1767,7 @@ fn build_mlx_lm_stream_state(
     runtime: RuntimeReport,
     stream: MlxLmStreamHandle,
 ) -> GenerateStreamState {
-    let route = delegated_stream_route(MLX_LM_STREAM_EXECUTION_PLAN);
+    let route = GenerateRouteReport::with_execution_plan(MLX_LM_STREAM_EXECUTION_PLAN);
     let current_report = SessionRequestReport {
         request_id,
         model_id: request.model_id.clone(),
@@ -1902,18 +1902,7 @@ fn is_terminal_request_state(state: SessionRequestState) -> bool {
 }
 
 fn llama_cpp_stream_route(_selected_backend: SelectedBackend) -> GenerateRouteReport {
-    delegated_stream_route(LLAMA_CPP_STREAM_EXECUTION_PLAN)
-}
-
-fn delegated_stream_route(execution_plan: &str) -> GenerateRouteReport {
-    GenerateRouteReport {
-        execution_plan: Some(execution_plan.to_string()),
-        attention_route: None,
-        kv_mode: None,
-        prefix_cache_path: None,
-        barrier_mode: None,
-        crossover_decisions: Default::default(),
-    }
+    GenerateRouteReport::with_execution_plan(LLAMA_CPP_STREAM_EXECUTION_PLAN)
 }
 
 fn apply_native_step_route_to_report(report: &mut SessionRequestReport, step: &EngineStepReport) {
