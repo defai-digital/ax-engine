@@ -871,7 +871,8 @@ fn openai_to_generate_request(
             "temperature": temperature,
             "top_p": 1.0,
             "top_k": 0,
-            "seed": 0
+            "seed": 0,
+            "repetition_penalty": 1.15
         }
     });
 
@@ -944,12 +945,24 @@ try:
     if "qwen" in model_id or "qwen" in model_dir.lower():
         kwargs["enable_thinking"] = False
     if getattr(tok, "chat_template", None) is not None:
-        ids = tok.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            **kwargs,
-        )
+        try:
+            ids = tok.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                **kwargs,
+            )
+        except Exception:
+            # Some model templates reject the system role (e.g. older Gemma variants).
+            # Retry without the leading system message so the user turn is still formatted
+            # correctly rather than falling all the way back to the plain-text renderer.
+            msgs_no_sys = [m for m in messages if m.get("role") != "system"]
+            ids = tok.apply_chat_template(
+                msgs_no_sys,
+                tokenize=True,
+                add_generation_prompt=True,
+                **kwargs,
+            )
     else:
         prompt = "\n".join(f"{m.get('role', 'user')}: {m.get('content', '')}" for m in messages) + "\nassistant:"
         ids = tok.encode(prompt, add_special_tokens=False)
@@ -1005,13 +1018,16 @@ fn strip_generation_artifacts(text: &str, model_dir: &str) -> String {
     let family = detect_prompt_family("", Some(model_dir));
     let cleaned = match family {
         "gemma" => {
-            // skip_special_tokens removes <start_of_turn> and <end_of_turn> but leaves
-            // the plain-text role prefix "model\n".  Strip leading copies and truncate
-            // at the first next-turn boundary.
-            let t = text.trim_start_matches('\n');
-            let mut t = t;
+            // When the decode fallback fires without skip_special_tokens, special token
+            // strings appear literally.  Strip them first.
+            let t = text.replace("<start_of_turn>", "").replace("<end_of_turn>", "");
+            // skip_special_tokens decode removes <start_of_turn>/<end_of_turn> but
+            // leaves the plain-text role prefix "model\n".  Strip leading copies and
+            // truncate at the first next-turn boundary.
+            let t = t.trim_start_matches('\n').to_string();
+            let mut t: &str = t.trim_start();
             while let Some(rest) = t.strip_prefix("model\n") {
-                t = rest;
+                t = rest.trim_start();
             }
             if let Some(idx) = t.find("\nmodel\n") {
                 t[..idx].trim_end().to_string()
@@ -1034,8 +1050,11 @@ fn strip_generation_artifacts(text: &str, model_dir: &str) -> String {
     strip_runaway_repetition(&cleaned)
 }
 
-/// Detect and remove a repetitively-looping suffix (e.g. "5555…" or "model\nmodel\n…").
-/// Checks pattern lengths 1–16; requires ≥ 10 consecutive repetitions to trigger.
+/// Detect and remove a repetitively-looping suffix (e.g. "5555…" or "9, 9, 9.").
+///
+/// Tries pattern lengths 1–16 and end-alignments 0..pat_len so that a trailing
+/// punctuation character (e.g. the final "." in "9, 9, 9.") doesn't prevent the
+/// "9, " pattern from being recognised.  Requires ≥ 10 consecutive repetitions.
 fn strip_runaway_repetition(text: &str) -> String {
     let bytes = text.as_bytes();
     let n = bytes.len();
@@ -1043,25 +1062,36 @@ fn strip_runaway_repetition(text: &str) -> String {
         if n < pat_len * 10 {
             continue;
         }
-        let pat = &bytes[n - pat_len..];
-        let mut count = 0usize;
-        let mut pos = n;
-        loop {
-            if pos < pat_len {
-                break;
+        // Try all end-offsets 0..pat_len so the pattern doesn't have to align
+        // perfectly with the very last byte (handles trailing "." etc.).
+        for end_offset in 0..pat_len {
+            let effective_end = match n.checked_sub(end_offset) {
+                Some(e) if e >= pat_len * 2 => e,
+                _ => continue,
+            };
+            if !text.is_char_boundary(effective_end) {
+                continue;
             }
-            if &bytes[pos - pat_len..pos] == pat {
-                count += 1;
-                pos -= pat_len;
-            } else {
-                break;
+            let pat = &bytes[effective_end - pat_len..effective_end];
+            let mut count = 0usize;
+            let mut pos = effective_end;
+            loop {
+                if pos < pat_len {
+                    break;
+                }
+                if &bytes[pos - pat_len..pos] == pat {
+                    count += 1;
+                    pos -= pat_len;
+                } else {
+                    break;
+                }
             }
-        }
-        if count >= 10 {
-            if !text.is_char_boundary(pos) {
-                continue 'outer;
+            if count >= 10 {
+                if !text.is_char_boundary(pos) {
+                    continue 'outer;
+                }
+                return text[..pos].trim_end().to_string();
             }
-            return text[..pos].trim_end().to_string();
         }
     }
     text.to_string()
@@ -1087,7 +1117,7 @@ except Exception:
     from tokenizers import Tokenizer
     t = Tokenizer.from_file(model_dir + '/tokenizer.json')
     t.no_truncation()
-    text = t.decode(ids)
+    text = t.decode(ids, skip_special_tokens=True)
 print(text, end='')
 "#;
     run_python_text_script(vec![
