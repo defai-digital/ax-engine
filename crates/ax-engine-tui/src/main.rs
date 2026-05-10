@@ -354,8 +354,40 @@ struct ManagedServer {
     repo_id: String,
     model_id: String,
     model_dir: String,
+    engine: ManagerEngine,
     ready: bool,
     stderr_file: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ManagerEngine {
+    AxEngine,
+    AxEngineNgram,
+}
+
+impl ManagerEngine {
+    fn parse(value: Option<&str>) -> Result<Self, ManagerError> {
+        match value.unwrap_or("ax-engine") {
+            "ax-engine" => Ok(Self::AxEngine),
+            "ax-engine-ngram" => Ok(Self::AxEngineNgram),
+            "mlx-lm" => Err(ManagerError::Message(
+                "manager engine mlx-lm is not startable yet; start mlx_lm.server separately and use ax-engine-server delegated mode".to_string(),
+            )),
+            "mlx-swift" => Err(ManagerError::Message(
+                "manager engine mlx-swift is not startable yet; use the benchmark adapter outside the manager for now".to_string(),
+            )),
+            other => Err(ManagerError::Message(format!(
+                "unknown manager engine: {other}"
+            ))),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AxEngine => "ax-engine",
+            Self::AxEngineNgram => "ax-engine-ngram",
+        }
+    }
 }
 
 struct WebRuntime {
@@ -1565,6 +1597,7 @@ fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
             "model_id": runtime.server.as_ref().map(|server| server.model_id.clone()),
             "repo_id": runtime.server.as_ref().map(|server| server.repo_id.clone()),
             "model_dir": runtime.server.as_ref().map(|server| server.model_dir.clone()),
+            "engine": runtime.server.as_ref().map(|server| server.engine.as_str()),
             "endpoints": web::server_endpoints(&base_url),
         },
         "jobs": runtime.download_jobs.iter().map(download_job_value).collect::<Vec<_>>(),
@@ -1678,6 +1711,7 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         .get("manual_model_dir")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let engine = ManagerEngine::parse(payload.get("engine").and_then(Value::as_str))?;
 
     // Phase 1: resolve model dir and stop any running server (requires lock).
     let (repo_id, model_dir) = {
@@ -1713,7 +1747,7 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
     let server_bin = which_server_binary();
     let stderr_path = std::env::temp_dir().join(format!("ax-engine-server-{port}.log"));
     let stderr_file = std::fs::File::create(&stderr_path).ok();
-    let launch = server_launch_plan(&repo_id, &model_dir, port as u16);
+    let launch = server_launch_plan(&repo_id, &model_dir, port as u16, engine);
 
     let child = Command::new(&server_bin)
         .args(&launch.args)
@@ -1739,6 +1773,7 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
             repo_id: repo_id.clone(),
             model_id: launch.model_id.clone(),
             model_dir: model_dir.clone(),
+            engine,
             ready: false,
             stderr_file: Some(stderr_path),
         });
@@ -1752,7 +1787,8 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
             "port": port,
             "repo_id": repo_id,
             "model_id": launch.model_id,
-            "model_dir": model_dir
+            "model_dir": model_dir,
+            "engine": engine.as_str()
         })
     }; // lock released before spawning the poll thread
 
@@ -1837,33 +1873,47 @@ struct ServerLaunchPlan {
     model_id: String,
 }
 
-fn server_launch_plan(repo_id: &str, model_dir: &str, port: u16) -> ServerLaunchPlan {
+fn server_launch_plan(
+    repo_id: &str,
+    model_dir: &str,
+    port: u16,
+    engine: ManagerEngine,
+) -> ServerLaunchPlan {
     let port_arg = port.to_string();
     let repo_lower = repo_id.to_ascii_lowercase();
     if let Some((preset, model_id)) = server_preset_for_repo(&repo_lower) {
+        let mut args = vec![
+            "--preset".to_string(),
+            preset.to_string(),
+            "--mlx-model-artifacts-dir".to_string(),
+            model_dir.to_string(),
+            "--port".to_string(),
+            port_arg,
+        ];
+        if engine == ManagerEngine::AxEngine {
+            args.push("--disable-ngram-acceleration".to_string());
+        }
         return ServerLaunchPlan {
-            args: vec![
-                "--preset".to_string(),
-                preset.to_string(),
-                "--mlx-model-artifacts-dir".to_string(),
-                model_dir.to_string(),
-                "--port".to_string(),
-                port_arg,
-            ],
+            args,
             model_id: model_id.to_string(),
         };
     }
 
+    let mut args = vec![
+        "--mlx".to_string(),
+        "--mlx-model-artifacts-dir".to_string(),
+        model_dir.to_string(),
+        "--model-id".to_string(),
+        repo_id.to_string(),
+        "--port".to_string(),
+        port_arg,
+    ];
+    if engine == ManagerEngine::AxEngine {
+        args.push("--disable-ngram-acceleration".to_string());
+    }
+
     ServerLaunchPlan {
-        args: vec![
-            "--mlx".to_string(),
-            "--mlx-model-artifacts-dir".to_string(),
-            model_dir.to_string(),
-            "--model-id".to_string(),
-            repo_id.to_string(),
-            "--port".to_string(),
-            port_arg,
-        ],
+        args,
         model_id: repo_id.to_string(),
     }
 }
@@ -2684,7 +2734,12 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
 
     #[test]
     fn server_launch_plan_uses_glm_preset() {
-        let plan = server_launch_plan("mlx-community/GLM-4.7-Flash-4bit", "/models/glm", 9090);
+        let plan = server_launch_plan(
+            "mlx-community/GLM-4.7-Flash-4bit",
+            "/models/glm",
+            9090,
+            ManagerEngine::AxEngineNgram,
+        );
 
         assert_eq!(plan.model_id, "glm4_moe_lite");
         assert_eq!(
@@ -2703,7 +2758,12 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
 
     #[test]
     fn server_launch_plan_uses_gemma_preset() {
-        let plan = server_launch_plan("mlx-community/gemma-4-e2b-it-4bit", "/models/gemma", 8081);
+        let plan = server_launch_plan(
+            "mlx-community/gemma-4-e2b-it-4bit",
+            "/models/gemma",
+            8081,
+            ManagerEngine::AxEngineNgram,
+        );
 
         assert_eq!(plan.model_id, "gemma4-e2b");
         assert_eq!(plan.args[0], "--preset");
@@ -2714,7 +2774,7 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     #[test]
     fn server_launch_plan_keeps_generic_mlx_model_id_for_qwen() {
         let repo = "mlx-community/Qwen3-4B-4bit";
-        let plan = server_launch_plan(repo, "/models/qwen", 8080);
+        let plan = server_launch_plan(repo, "/models/qwen", 8080, ManagerEngine::AxEngineNgram);
 
         assert_eq!(plan.model_id, repo);
         assert!(plan.args.iter().any(|arg| arg == "--mlx"));
@@ -2723,6 +2783,40 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
                 .windows(2)
                 .any(|pair| pair == ["--model-id", repo])
         );
+    }
+
+    #[test]
+    fn server_launch_plan_respects_direct_ax_engine_selection() {
+        let repo = "mlx-community/Qwen3-4B-4bit";
+        let plan = server_launch_plan(repo, "/models/qwen", 8080, ManagerEngine::AxEngine);
+
+        assert!(
+            plan.args
+                .iter()
+                .any(|arg| arg == "--disable-ngram-acceleration"),
+            "plain ax-engine selection should disable the accelerated n-gram path"
+        );
+    }
+
+    #[test]
+    fn server_launch_plan_respects_ngram_engine_selection() {
+        let repo = "mlx-community/Qwen3-4B-4bit";
+        let plan = server_launch_plan(repo, "/models/qwen", 8080, ManagerEngine::AxEngineNgram);
+
+        assert!(
+            !plan
+                .args
+                .iter()
+                .any(|arg| arg == "--disable-ngram-acceleration"),
+            "ax-engine-ngram selection should leave n-gram acceleration enabled"
+        );
+    }
+
+    #[test]
+    fn manager_engine_rejects_unmanaged_launcher_choices() {
+        let error = ManagerEngine::parse(Some("mlx-lm")).expect_err("mlx-lm should fail closed");
+
+        assert!(error.to_string().contains("not startable yet"));
     }
 
     #[test]
