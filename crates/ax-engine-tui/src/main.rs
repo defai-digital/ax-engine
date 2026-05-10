@@ -1216,25 +1216,41 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let mut runtime = runtime
-        .lock()
-        .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
-    stop_server_locked(&mut runtime);
-    let repo_id = requested_repo_id.unwrap_or_else(|| "local".to_string());
-    let model_dir = resolve_start_model_dir(
-        &runtime,
-        if repo_id == "local" {
-            None
-        } else {
-            Some(repo_id.as_str())
-        },
-        requested_model_dir.as_deref(),
-        manual_model_dir,
-    )?;
-    // Resolve binary at call-time; background threads may not inherit the user's full PATH.
-    let server_bin = which_server_binary();
+    // Phase 1: resolve model dir and stop any running server (requires lock).
+    let (repo_id, model_dir) = {
+        let mut rt = runtime
+            .lock()
+            .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
+        stop_server_locked(&mut rt);
+        let repo_id = requested_repo_id.unwrap_or_else(|| "local".to_string());
+        let model_dir = resolve_start_model_dir(
+            &rt,
+            if repo_id == "local" {
+                None
+            } else {
+                Some(repo_id.as_str())
+            },
+            requested_model_dir.as_deref(),
+            manual_model_dir,
+        )?;
+        rt.status_message = format!("Preparing {}…", short_model_label(&repo_id));
+        (repo_id, model_dir)
+    }; // lock released
 
-    // Capture stderr to a temp file so crash messages are visible in the UI.
+    // Phase 2: generate model-manifest.json if it is missing (outside the lock).
+    let manifest_path = Path::new(&model_dir).join("model-manifest.json");
+    if !manifest_path.is_file() {
+        if let Ok(mut rt) = runtime.lock() {
+            rt.status_message = format!(
+                "Generating manifest for {}…",
+                short_model_label(&repo_id)
+            );
+        }
+        generate_model_manifest(&model_dir)?;
+    }
+
+    // Phase 3: spawn the server (re-acquire lock).
+    let server_bin = which_server_binary();
     let stderr_path = std::env::temp_dir().join(format!("ax-engine-server-{port}.log"));
     let stderr_file = std::fs::File::create(&stderr_path).ok();
     let launch = server_launch_plan(&repo_id, &model_dir, port as u16);
@@ -1252,7 +1268,11 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
                 "failed to launch ax-engine-server ({server_bin}): {e}"
             ))
         })?;
-    runtime.server = Some(ManagedServer {
+
+    let mut rt = runtime
+        .lock()
+        .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
+    rt.server = Some(ManagedServer {
         child,
         port: port as u16,
         repo_id: repo_id.clone(),
@@ -1261,8 +1281,8 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         ready: false,
         stderr_file: Some(stderr_path),
     });
-    runtime.state.server_control.port = port as u16;
-    runtime.status_message = format!(
+    rt.state.server_control.port = port as u16;
+    rt.status_message = format!(
         "Server starting on port {port} with {}",
         short_model_label(&repo_id)
     );
@@ -1273,6 +1293,43 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         "model_id": launch.model_id,
         "model_dir": model_dir
     }))
+}
+
+/// Run `ax-engine-bench generate-manifest <model_dir>` to produce model-manifest.json.
+fn generate_model_manifest(model_dir: &str) -> Result<(), ManagerError> {
+    let bench_bin = which_bench_binary();
+    let output = Command::new(&bench_bin)
+        .args(["generate-manifest", model_dir])
+        .output()
+        .map_err(|e| {
+            ManagerError::Message(format!(
+                "failed to run ax-engine-bench generate-manifest ({bench_bin}): {e}"
+            ))
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ManagerError::Message(format!(
+            "generate-manifest failed: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
+fn which_bench_binary() -> String {
+    if let Ok(exe) = std::env::current_exe() {
+        let candidate = exe.with_file_name("ax-engine-bench");
+        if candidate.is_file() {
+            return candidate.display().to_string();
+        }
+    }
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+        let candidate = Path::new(dir).join("ax-engine-bench");
+        if candidate.is_file() {
+            return candidate.display().to_string();
+        }
+    }
+    "ax-engine-bench".to_string()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
