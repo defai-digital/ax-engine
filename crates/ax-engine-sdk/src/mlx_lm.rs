@@ -375,23 +375,17 @@ fn run_mlx_lm_server_completion_generate(
     let response: MlxLmCompletionResponse = parse_mlx_lm_json_response(response, &endpoint)?;
     let choice = first_choice_for_completion(&endpoint, response.choices)?;
 
-    Ok(GenerateResponse {
+    Ok(build_mlx_lm_delegated_response(
         request_id,
-        model_id: request.model_id.clone(),
-        prompt_tokens: Vec::new(),
-        prompt_text: Some(prompt),
-        output_tokens: Vec::new(),
-        output_token_logprobs: Vec::new(),
-        output_text: Some(choice.text),
-        prompt_token_count: response.usage.as_ref().map(|usage| usage.prompt_tokens),
-        output_token_count: response.usage.as_ref().map(|usage| usage.completion_tokens),
-        status: GenerateStatus::Finished,
-        finish_reason: finish_reason_from_mlx_lm(choice.finish_reason.as_deref()),
-        step_count: 0,
-        ttft_step: None,
-        route: GenerateRouteReport::with_execution_plan("mlx_lm_delegated.server_completion"),
-        runtime: runtime.clone(),
-    })
+        &request.model_id,
+        runtime,
+        Some(prompt),
+        choice.text,
+        response.usage.as_ref().map(|usage| usage.prompt_tokens),
+        response.usage.as_ref().map(|usage| usage.completion_tokens),
+        finish_reason_from_mlx_lm(choice.finish_reason.as_deref()),
+        "mlx_lm_delegated.server_completion",
+    ))
 }
 
 fn run_mlx_lm_server_chat_completion_generate(
@@ -407,23 +401,47 @@ fn run_mlx_lm_server_chat_completion_generate(
     let response: MlxLmChatCompletionResponse = parse_mlx_lm_json_response(response, &endpoint)?;
     let choice = first_choice_for_completion(&endpoint, response.choices)?;
 
-    Ok(GenerateResponse {
+    Ok(build_mlx_lm_delegated_response(
         request_id,
-        model_id: request.model_id.clone(),
+        &request.model_id,
+        runtime,
+        None,
+        choice.message.content,
+        response.usage.as_ref().map(|usage| usage.prompt_tokens),
+        response.usage.as_ref().map(|usage| usage.completion_tokens),
+        finish_reason_from_mlx_lm(choice.finish_reason.as_deref()),
+        "mlx_lm_delegated.server_chat_completion",
+    ))
+}
+
+fn build_mlx_lm_delegated_response(
+    request_id: u64,
+    model_id: &str,
+    runtime: &RuntimeReport,
+    prompt_text: Option<String>,
+    output_text: String,
+    prompt_token_count: Option<u32>,
+    output_token_count: Option<u32>,
+    finish_reason: Option<GenerateFinishReason>,
+    execution_plan: &str,
+) -> GenerateResponse {
+    GenerateResponse {
+        request_id,
+        model_id: model_id.to_string(),
         prompt_tokens: Vec::new(),
-        prompt_text: None,
+        prompt_text,
         output_tokens: Vec::new(),
         output_token_logprobs: Vec::new(),
-        output_text: Some(choice.message.content),
-        prompt_token_count: response.usage.as_ref().map(|usage| usage.prompt_tokens),
-        output_token_count: response.usage.as_ref().map(|usage| usage.completion_tokens),
+        output_text: Some(output_text),
+        prompt_token_count,
+        output_token_count,
         status: GenerateStatus::Finished,
-        finish_reason: finish_reason_from_mlx_lm(choice.finish_reason.as_deref()),
+        finish_reason,
         step_count: 0,
         ttft_step: None,
-        route: GenerateRouteReport::with_execution_plan("mlx_lm_delegated.server_chat_completion"),
+        route: GenerateRouteReport::with_execution_plan(execution_plan),
         runtime: runtime.clone(),
-    })
+    }
 }
 
 fn build_mlx_lm_completion_request<'a>(
