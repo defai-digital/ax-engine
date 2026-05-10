@@ -6,9 +6,13 @@ use crate::scheduler::{
 };
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+mod fixtures;
+
+use fixtures::*;
 
 struct Phase1Fixture {
     root: PathBuf,
@@ -484,11 +488,9 @@ fn optional_kernel_feedback_success_resets_consecutive_failures() {
         &feedback,
         &kernel_name
     ));
-    assert!(
-        !feedback
-            .consecutive_failures_by_kernel
-            .contains_key(&kernel_name)
-    );
+    assert!(!feedback
+        .consecutive_failures_by_kernel
+        .contains_key(&kernel_name));
     assert!(!feedback.disabled_kernels.contains(&kernel_name));
 }
 
@@ -1424,1654 +1426,6 @@ fn grouped_sampler_results_recursively_preserve_batched_subgroups() {
     );
 }
 
-#[allow(dead_code)]
-fn write_valid_native_model_fixture() -> PathBuf {
-    let root_dir = unique_test_dir("native-model-fixture");
-    fs::create_dir_all(&root_dir).expect("native model fixture directory should create");
-    fs::write(root_dir.join("model.safetensors"), vec![0_u8; 4096])
-        .expect("native model weights should write");
-
-    // Dimensions are deliberately tiny so that every tensor fits within the
-    // 32-byte (= 16 × f16) limit imposed by `native_model_tensor`.
-    //
-    // hidden_size=2, vocab=4, q_heads=1, kv_heads=1, head_dim=2 gives:
-    //   embed_tokens  [4, 2]  =  8 f16 = 16 B
-    //   qkv_proj      [6, 2]  = 12 f16 = 24 B  (packed: (q+2k) heads × head_dim rows)
-    //   gate_up_proj  [4, 2]  =  8 f16 = 16 B  (intermediate_size=2, gate+up packed)
-    //   all 1-D norms  [2]    =  2 f16 =  4 B
-    //   all 2-D mats  [2, 2] =  4 f16 =  8 B
-    // Token IDs 1–4 map to rows 1, 2, 3, 0 (mod 4) — all within the 4-row embedding.
-    let manifest = crate::model::NativeModelManifest {
-        schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-        model_family: "qwen3_dense".to_string(),
-        tensor_format: crate::model::NativeTensorFormat::Safetensors,
-        source_quantization: None,
-        runtime_status: crate::model::NativeRuntimeStatus::default(),
-        layer_count: 1,
-        hidden_size: 2,
-        intermediate_size: 0,
-        attention_head_count: 1,
-        attention_head_dim: 2,
-        kv_head_count: 1,
-        vocab_size: 4,
-        tie_word_embeddings: false,
-        rope_theta: None,
-        rope_theta_swa: None,
-        query_pre_attn_scalar: None,
-        attention_logit_softcap: None,
-        attn_output_gate: false,
-        partial_rotary_factor: None,
-        rms_norm_eps: None,
-        attention_value_from_key_layers: Vec::new(),
-        attention_v_norm_no_scale_layers: Vec::new(),
-        global_head_dim: None,
-        sliding_window_size: None,
-        layer_types: Vec::new(),
-        kv_shared_source_layers: Default::default(),
-        final_logit_softcapping: None,
-        hidden_states_scale: None,
-        moe_norm_topk_prob: false,
-        hidden_size_per_layer_input: 0,
-        vocab_size_per_layer_input: None,
-        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
-        mla_attention: Default::default(),
-        moe: crate::model::NativeMoeConfig::default(),
-        glm_router: Default::default(),
-        tensors: vec![
-            native_model_tensor(
-                "model.embed_tokens.weight",
-                NativeTensorRole::TokenEmbedding,
-                None,
-                vec![4, 2],
-            ),
-            native_model_tensor(
-                "model.norm.weight",
-                NativeTensorRole::FinalNorm,
-                None,
-                vec![2],
-            ),
-            native_model_tensor("lm_head.weight", NativeTensorRole::LmHead, None, vec![4, 2]),
-            native_model_tensor(
-                "model.layers.0.input_layernorm.weight",
-                NativeTensorRole::AttentionNorm,
-                Some(0),
-                vec![2],
-            ),
-            native_model_tensor(
-                "model.layers.0.self_attn.qkv_proj.weight",
-                NativeTensorRole::AttentionQkvPacked,
-                Some(0),
-                // (q_heads + 2 * kv_heads) * head_dim = (1 + 2) * 2 = 6 rows
-                vec![6, 2],
-            ),
-            native_model_tensor(
-                "model.layers.0.self_attn.o_proj.weight",
-                NativeTensorRole::AttentionO,
-                Some(0),
-                vec![2, 2],
-            ),
-            native_model_tensor(
-                "model.layers.0.post_attention_layernorm.weight",
-                NativeTensorRole::FfnNorm,
-                Some(0),
-                vec![2],
-            ),
-            native_model_tensor(
-                "model.layers.0.mlp.gate_up_proj.weight",
-                NativeTensorRole::FfnGateUpPacked,
-                Some(0),
-                // 2 * intermediate_size = 2 * 2 = 4 rows
-                vec![4, 2],
-            ),
-            native_model_tensor(
-                "model.layers.0.mlp.down_proj.weight",
-                NativeTensorRole::FfnDown,
-                Some(0),
-                vec![2, 2],
-            ),
-        ],
-    };
-
-    fs::write(
-        root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE),
-        serde_json::to_vec_pretty(&manifest).expect("native model manifest should serialize"),
-    )
-    .expect("native model manifest should write");
-
-    root_dir
-}
-
-#[allow(dead_code)]
-fn native_model_tensor(
-    name: &str,
-    role: NativeTensorRole,
-    layer_index: Option<u32>,
-    shape: Vec<u64>,
-) -> crate::model::NativeTensorSpec {
-    crate::model::NativeTensorSpec {
-        name: name.to_string(),
-        role,
-        layer_index,
-        dtype: crate::model::NativeTensorDataType::F16,
-        source_tensor_type: None,
-        source_quantized: false,
-        quantization: None,
-        quantized_source: None,
-        shape,
-        file: PathBuf::from("model.safetensors"),
-        offset_bytes: 0,
-        length_bytes: 32,
-    }
-}
-
-fn native_model_tensor_with_file(
-    name: &str,
-    role: NativeTensorRole,
-    layer_index: Option<u32>,
-    shape: &[u64],
-    file: &str,
-    length_bytes: u64,
-) -> crate::model::NativeTensorSpec {
-    crate::model::NativeTensorSpec {
-        name: name.to_string(),
-        role,
-        layer_index,
-        dtype: crate::model::NativeTensorDataType::F32,
-        source_tensor_type: None,
-        source_quantized: false,
-        quantization: None,
-        quantized_source: None,
-        shape: shape.to_vec(),
-        file: PathBuf::from(file),
-        offset_bytes: 0,
-        length_bytes,
-    }
-}
-
-fn write_f32_tensor_file(root_dir: &Path, file_name: &str, values: &[f32]) {
-    let bytes = values
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect::<Vec<_>>();
-    fs::write(root_dir.join(file_name), bytes).expect("tensor bytes should write");
-}
-
-#[cfg(target_os = "macos")]
-fn write_projection_native_model_fixture() -> PathBuf {
-    let root_dir = unique_test_dir("native-model-projection");
-    fs::create_dir_all(&root_dir).expect("projection fixture directory should create");
-
-    let embedding = vec![
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, //
-        2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, //
-        3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, //
-        4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0,
-    ];
-    let ones = vec![1.0_f32; 8];
-    let identity = [
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
-    let double_identity = identity.iter().map(|value| value * 2.0).collect::<Vec<_>>();
-    let triple_identity = identity.iter().map(|value| value * 3.0).collect::<Vec<_>>();
-    let zero_matrix = vec![0.0_f32; 64];
-
-    write_f32_tensor_file(&root_dir, "embed.bin", &embedding);
-    write_f32_tensor_file(&root_dir, "final_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "lm_head.bin", &zero_matrix);
-    write_f32_tensor_file(&root_dir, "attn_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "attn_q.bin", &identity);
-    write_f32_tensor_file(&root_dir, "attn_k.bin", &double_identity);
-    write_f32_tensor_file(&root_dir, "attn_v.bin", &triple_identity);
-    write_f32_tensor_file(&root_dir, "attn_o.bin", &zero_matrix);
-    write_f32_tensor_file(&root_dir, "ffn_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "ffn_gate.bin", &zero_matrix);
-    write_f32_tensor_file(&root_dir, "ffn_up.bin", &zero_matrix);
-    write_f32_tensor_file(&root_dir, "ffn_down.bin", &zero_matrix);
-
-    let matrix_bytes = (64 * size_of::<f32>()) as u64;
-    let vector_bytes = (8 * size_of::<f32>()) as u64;
-    let embedding_bytes = (embedding.len() * size_of::<f32>()) as u64;
-    let manifest = crate::model::NativeModelManifest {
-        schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-        model_family: "qwen3_dense".to_string(),
-        tensor_format: crate::model::NativeTensorFormat::Safetensors,
-        source_quantization: None,
-        runtime_status: crate::model::NativeRuntimeStatus::default(),
-        layer_count: 1,
-        hidden_size: 8,
-        intermediate_size: 0,
-        attention_head_count: 2,
-        attention_head_dim: 4,
-        kv_head_count: 2,
-        vocab_size: 5,
-        tie_word_embeddings: false,
-        rope_theta: None,
-        rope_theta_swa: None,
-        query_pre_attn_scalar: None,
-        attention_logit_softcap: None,
-        attn_output_gate: false,
-        partial_rotary_factor: None,
-        rms_norm_eps: None,
-        attention_value_from_key_layers: Vec::new(),
-        attention_v_norm_no_scale_layers: Vec::new(),
-        global_head_dim: None,
-        sliding_window_size: None,
-        layer_types: Vec::new(),
-        kv_shared_source_layers: Default::default(),
-        final_logit_softcapping: None,
-        hidden_states_scale: None,
-        moe_norm_topk_prob: false,
-        hidden_size_per_layer_input: 0,
-        vocab_size_per_layer_input: None,
-        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
-        mla_attention: Default::default(),
-        moe: crate::model::NativeMoeConfig::default(),
-        glm_router: Default::default(),
-        tensors: vec![
-            native_model_tensor_with_file(
-                "model.embed_tokens.weight",
-                NativeTensorRole::TokenEmbedding,
-                None,
-                &[5, 8],
-                "embed.bin",
-                embedding_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.norm.weight",
-                NativeTensorRole::FinalNorm,
-                None,
-                &[8],
-                "final_norm.bin",
-                vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "lm_head.weight",
-                NativeTensorRole::LmHead,
-                None,
-                &[5, 8],
-                "lm_head.bin",
-                matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.input_layernorm.weight",
-                NativeTensorRole::AttentionNorm,
-                Some(0),
-                &[8],
-                "attn_norm.bin",
-                vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.q_proj.weight",
-                NativeTensorRole::AttentionQ,
-                Some(0),
-                &[8, 8],
-                "attn_q.bin",
-                matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.k_proj.weight",
-                NativeTensorRole::AttentionK,
-                Some(0),
-                &[8, 8],
-                "attn_k.bin",
-                matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.v_proj.weight",
-                NativeTensorRole::AttentionV,
-                Some(0),
-                &[8, 8],
-                "attn_v.bin",
-                matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.o_proj.weight",
-                NativeTensorRole::AttentionO,
-                Some(0),
-                &[8, 8],
-                "attn_o.bin",
-                matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.post_attention_layernorm.weight",
-                NativeTensorRole::FfnNorm,
-                Some(0),
-                &[8],
-                "ffn_norm.bin",
-                vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.gate_proj.weight",
-                NativeTensorRole::FfnGate,
-                Some(0),
-                &[8, 8],
-                "ffn_gate.bin",
-                matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.up_proj.weight",
-                NativeTensorRole::FfnUp,
-                Some(0),
-                &[8, 8],
-                "ffn_up.bin",
-                matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.down_proj.weight",
-                NativeTensorRole::FfnDown,
-                Some(0),
-                &[8, 8],
-                "ffn_down.bin",
-                matrix_bytes,
-            ),
-        ],
-    };
-
-    fs::write(
-        root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE),
-        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
-    )
-    .expect("projection manifest should write");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_projection_qk_norm_native_model_fixture() -> PathBuf {
-    let root_dir = write_projection_native_model_fixture();
-    let q_norm = vec![2.0_f32, 1.0, 1.0, 1.0];
-    let k_norm = vec![3.0_f32, 1.0, 1.0, 1.0];
-    let norm_bytes = (q_norm.len() * size_of::<f32>()) as u64;
-    write_f32_tensor_file(&root_dir, "attn_q_norm.bin", &q_norm);
-    write_f32_tensor_file(&root_dir, "attn_k_norm.bin", &k_norm);
-
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("projection manifest should parse");
-    manifest.tensors.push(native_model_tensor_with_file(
-        "model.layers.0.self_attn.q_norm.weight",
-        NativeTensorRole::AttentionQNorm,
-        Some(0),
-        &[4],
-        "attn_q_norm.bin",
-        norm_bytes,
-    ));
-    manifest.tensors.push(native_model_tensor_with_file(
-        "model.layers.0.self_attn.k_norm.weight",
-        NativeTensorRole::AttentionKNorm,
-        Some(0),
-        &[4],
-        "attn_k_norm.bin",
-        norm_bytes,
-    ));
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
-    )
-    .expect("projection manifest should rewrite");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_projection_moe_native_model_fixture() -> PathBuf {
-    let root_dir = write_projection_native_model_fixture();
-    let router = vec![
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    ];
-    let packed_gate_up = vec![
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    ];
-    let down_experts = vec![
-        1.0, //
-        0.0, //
-        0.0, //
-        0.0, //
-        0.0, //
-        0.0, //
-        0.0, //
-        0.0, //
-        0.0, //
-        1.0, //
-        0.0, //
-        0.0, //
-        0.0, //
-        0.0, //
-        0.0, //
-        0.0,
-    ];
-    write_f32_tensor_file(&root_dir, "ffn_gate_inp.bin", &router);
-    write_f32_tensor_file(&root_dir, "ffn_gate_up_exps.bin", &packed_gate_up);
-    write_f32_tensor_file(&root_dir, "ffn_down_exps.bin", &down_experts);
-
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("projection manifest should deserialize");
-    manifest.moe = crate::model::NativeMoeConfig {
-        expert_count: Some(2),
-        experts_per_token: Some(1),
-        expert_intermediate_size: Some(1),
-    };
-    manifest.tensors.extend([
-        native_model_tensor_with_file(
-            "model.layers.0.mlp.router.weight",
-            NativeTensorRole::FfnGateInp,
-            Some(0),
-            &[2, 8],
-            "ffn_gate_inp.bin",
-            (router.len() * size_of::<f32>()) as u64,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.0.mlp.experts.gate_up_proj.weight",
-            NativeTensorRole::FfnGateUpExpsPacked,
-            Some(0),
-            &[2, 2, 8],
-            "ffn_gate_up_exps.bin",
-            (packed_gate_up.len() * size_of::<f32>()) as u64,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.0.mlp.experts.down_proj.weight",
-            NativeTensorRole::FfnDownExps,
-            Some(0),
-            &[2, 8, 1],
-            "ffn_down_exps.bin",
-            (down_experts.len() * size_of::<f32>()) as u64,
-        ),
-    ]);
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
-    )
-    .expect("projection manifest should write");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_projection_value_from_key_native_model_fixture(apply_v_norm_no_scale: bool) -> PathBuf {
-    let root_dir = write_projection_qk_norm_native_model_fixture();
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("projection manifest should parse");
-    manifest.model_family = "llama3_dense".to_string();
-    manifest.attention_value_from_key_layers = vec![0];
-    manifest.attention_v_norm_no_scale_layers = if apply_v_norm_no_scale {
-        vec![0]
-    } else {
-        Vec::new()
-    };
-    manifest.tensors.retain(|tensor| {
-        !(tensor.layer_index == Some(0) && tensor.role == NativeTensorRole::AttentionV)
-    });
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
-    )
-    .expect("projection manifest should write");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_projection_custom_rope_native_model_fixture(rope_theta: u32) -> PathBuf {
-    let root_dir = write_projection_native_model_fixture();
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("projection manifest should parse");
-    manifest.rope_theta = Some(rope_theta);
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
-    )
-    .expect("projection manifest should rewrite");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_projection_partial_rotary_native_model_fixture(partial_rotary_factor: f32) -> PathBuf {
-    let root_dir = write_projection_native_model_fixture();
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("projection manifest should parse");
-    manifest.partial_rotary_factor = Some(partial_rotary_factor);
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
-    )
-    .expect("projection manifest should rewrite");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_gemma_projection_native_model_fixture() -> PathBuf {
-    let root_dir = write_projection_native_model_fixture();
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("projection manifest should parse");
-    manifest.model_family = "gemma2_dense".to_string();
-    fs::write(
-        root_dir.join("attn_norm.bin"),
-        vec![0_u8; 8 * size_of::<f32>()],
-    )
-    .expect("gemma attention norm should write");
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
-    )
-    .expect("projection manifest should rewrite");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_qwen35_projection_native_model_fixture() -> PathBuf {
-    let root_dir = write_projection_native_model_fixture();
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("projection manifest should parse");
-    manifest.model_family = "qwen35_dense".to_string();
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
-    )
-    .expect("projection manifest should rewrite");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_gemma_projection_custom_rope_native_model_fixture(rope_theta: u32) -> PathBuf {
-    let root_dir = write_gemma_projection_native_model_fixture();
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("gemma projection manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("gemma projection manifest should parse");
-    manifest.rope_theta = Some(rope_theta);
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("gemma projection manifest should serialize"),
-    )
-    .expect("gemma projection manifest should rewrite");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_gemma_projection_attention_config_native_model_fixture(
-    query_pre_attn_scalar: u32,
-    attention_logit_softcap: u32,
-) -> PathBuf {
-    let root_dir = write_gemma_projection_native_model_fixture();
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("gemma projection manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("gemma projection manifest should parse");
-    manifest.query_pre_attn_scalar = Some(query_pre_attn_scalar);
-    manifest.attention_logit_softcap = Some(attention_logit_softcap);
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("gemma projection manifest should serialize"),
-    )
-    .expect("gemma projection manifest should rewrite");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_grouped_projection_native_model_fixture() -> PathBuf {
-    let root_dir = unique_test_dir("native-model-grouped-projection");
-    fs::create_dir_all(&root_dir).expect("grouped projection fixture directory should create");
-
-    let embedding = vec![
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, //
-        2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, //
-        3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, //
-        4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0,
-    ];
-    let ones = vec![1.0_f32; 8];
-    let identity = [
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
-    let grouped_k = [
-        2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0,
-    ];
-    let grouped_v = [
-        3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0,
-    ];
-    let zero_matrix = vec![0.0_f32; 64];
-
-    write_f32_tensor_file(&root_dir, "embed.bin", &embedding);
-    write_f32_tensor_file(&root_dir, "final_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "lm_head.bin", &zero_matrix);
-    write_f32_tensor_file(&root_dir, "attn_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "attn_q.bin", &identity);
-    write_f32_tensor_file(&root_dir, "attn_k.bin", &grouped_k);
-    write_f32_tensor_file(&root_dir, "attn_v.bin", &grouped_v);
-    write_f32_tensor_file(&root_dir, "attn_o.bin", &zero_matrix);
-    write_f32_tensor_file(&root_dir, "ffn_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "ffn_gate.bin", &zero_matrix);
-    write_f32_tensor_file(&root_dir, "ffn_up.bin", &zero_matrix);
-    write_f32_tensor_file(&root_dir, "ffn_down.bin", &zero_matrix);
-
-    let full_matrix_bytes = (64 * size_of::<f32>()) as u64;
-    let grouped_matrix_bytes = (32 * size_of::<f32>()) as u64;
-    let vector_bytes = (8 * size_of::<f32>()) as u64;
-    let embedding_bytes = (embedding.len() * size_of::<f32>()) as u64;
-    let manifest = crate::model::NativeModelManifest {
-        schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-        model_family: "qwen3_dense".to_string(),
-        tensor_format: crate::model::NativeTensorFormat::Safetensors,
-        source_quantization: None,
-        runtime_status: crate::model::NativeRuntimeStatus::default(),
-        layer_count: 1,
-        hidden_size: 8,
-        intermediate_size: 0,
-        attention_head_count: 4,
-        attention_head_dim: 2,
-        kv_head_count: 2,
-        vocab_size: 5,
-        tie_word_embeddings: false,
-        rope_theta: None,
-        rope_theta_swa: None,
-        query_pre_attn_scalar: None,
-        attention_logit_softcap: None,
-        attn_output_gate: false,
-        partial_rotary_factor: None,
-        rms_norm_eps: None,
-        attention_value_from_key_layers: Vec::new(),
-        attention_v_norm_no_scale_layers: Vec::new(),
-        global_head_dim: None,
-        sliding_window_size: None,
-        layer_types: Vec::new(),
-        kv_shared_source_layers: Default::default(),
-        final_logit_softcapping: None,
-        hidden_states_scale: None,
-        moe_norm_topk_prob: false,
-        hidden_size_per_layer_input: 0,
-        vocab_size_per_layer_input: None,
-        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
-        mla_attention: Default::default(),
-        moe: crate::model::NativeMoeConfig::default(),
-        glm_router: Default::default(),
-        tensors: vec![
-            native_model_tensor_with_file(
-                "model.embed_tokens.weight",
-                NativeTensorRole::TokenEmbedding,
-                None,
-                &[5, 8],
-                "embed.bin",
-                embedding_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.norm.weight",
-                NativeTensorRole::FinalNorm,
-                None,
-                &[8],
-                "final_norm.bin",
-                vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "lm_head.weight",
-                NativeTensorRole::LmHead,
-                None,
-                &[5, 8],
-                "lm_head.bin",
-                full_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.input_layernorm.weight",
-                NativeTensorRole::AttentionNorm,
-                Some(0),
-                &[8],
-                "attn_norm.bin",
-                vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.q_proj.weight",
-                NativeTensorRole::AttentionQ,
-                Some(0),
-                &[8, 8],
-                "attn_q.bin",
-                full_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.k_proj.weight",
-                NativeTensorRole::AttentionK,
-                Some(0),
-                &[4, 8],
-                "attn_k.bin",
-                grouped_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.v_proj.weight",
-                NativeTensorRole::AttentionV,
-                Some(0),
-                &[4, 8],
-                "attn_v.bin",
-                grouped_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.o_proj.weight",
-                NativeTensorRole::AttentionO,
-                Some(0),
-                &[8, 8],
-                "attn_o.bin",
-                full_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.post_attention_layernorm.weight",
-                NativeTensorRole::FfnNorm,
-                Some(0),
-                &[8],
-                "ffn_norm.bin",
-                vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.gate_proj.weight",
-                NativeTensorRole::FfnGate,
-                Some(0),
-                &[8, 8],
-                "ffn_gate.bin",
-                full_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.up_proj.weight",
-                NativeTensorRole::FfnUp,
-                Some(0),
-                &[8, 8],
-                "ffn_up.bin",
-                full_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.down_proj.weight",
-                NativeTensorRole::FfnDown,
-                Some(0),
-                &[8, 8],
-                "ffn_down.bin",
-                full_matrix_bytes,
-            ),
-        ],
-    };
-
-    fs::write(
-        root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE),
-        serde_json::to_vec_pretty(&manifest).expect("grouped projection manifest should serialize"),
-    )
-    .expect("grouped projection manifest should write");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_multilayer_projection_native_model_fixture() -> PathBuf {
-    let root_dir = write_projection_native_model_fixture();
-    let zero_matrix = vec![0.0_f32; 64];
-    write_f32_tensor_file(&root_dir, "attn_q_l1.bin", &zero_matrix);
-    write_f32_tensor_file(&root_dir, "attn_k_l1.bin", &zero_matrix);
-    write_f32_tensor_file(&root_dir, "attn_v_l1.bin", &zero_matrix);
-
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("projection manifest should parse");
-    let vector_bytes = (8 * size_of::<f32>()) as u64;
-    let matrix_bytes = (64 * size_of::<f32>()) as u64;
-    manifest.layer_count = 2;
-    manifest.tensors.extend([
-        native_model_tensor_with_file(
-            "model.layers.1.input_layernorm.weight",
-            NativeTensorRole::AttentionNorm,
-            Some(1),
-            &[8],
-            "attn_norm.bin",
-            vector_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.1.self_attn.q_proj.weight",
-            NativeTensorRole::AttentionQ,
-            Some(1),
-            &[8, 8],
-            "attn_q_l1.bin",
-            matrix_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.1.self_attn.k_proj.weight",
-            NativeTensorRole::AttentionK,
-            Some(1),
-            &[8, 8],
-            "attn_k_l1.bin",
-            matrix_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.1.self_attn.v_proj.weight",
-            NativeTensorRole::AttentionV,
-            Some(1),
-            &[8, 8],
-            "attn_v_l1.bin",
-            matrix_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.1.self_attn.o_proj.weight",
-            NativeTensorRole::AttentionO,
-            Some(1),
-            &[8, 8],
-            "attn_o.bin",
-            matrix_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.1.post_attention_layernorm.weight",
-            NativeTensorRole::FfnNorm,
-            Some(1),
-            &[8],
-            "ffn_norm.bin",
-            vector_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.1.mlp.gate_proj.weight",
-            NativeTensorRole::FfnGate,
-            Some(1),
-            &[8, 8],
-            "ffn_gate.bin",
-            matrix_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.1.mlp.up_proj.weight",
-            NativeTensorRole::FfnUp,
-            Some(1),
-            &[8, 8],
-            "ffn_up.bin",
-            matrix_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.1.mlp.down_proj.weight",
-            NativeTensorRole::FfnDown,
-            Some(1),
-            &[8, 8],
-            "ffn_down.bin",
-            matrix_bytes,
-        ),
-    ]);
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
-    )
-    .expect("projection manifest should write");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn tail_projector_matrix(
-    output_rows: usize,
-    hidden_size: usize,
-    tail_size: usize,
-    scale: f32,
-) -> Vec<f32> {
-    let mut matrix = vec![0.0_f32; output_rows * hidden_size];
-    let tail_start = hidden_size.saturating_sub(tail_size);
-    for row in 0..output_rows.min(tail_size) {
-        matrix[row * hidden_size + tail_start + row] = scale;
-    }
-    matrix
-}
-
-#[cfg(target_os = "macos")]
-fn write_wide_projection_native_model_fixture() -> PathBuf {
-    let root_dir = unique_test_dir("native-model-wide-projection");
-    fs::create_dir_all(&root_dir).expect("wide projection fixture directory should create");
-
-    let hidden_size = 40_usize;
-    let head_width = 8_usize;
-    let vocab_size = 5_usize;
-    let tail_size = 8_usize;
-    let mut embedding = vec![0.0_f32; vocab_size * hidden_size];
-    for token in 1..vocab_size {
-        let base = token * hidden_size + (hidden_size - tail_size);
-        for lane in 0..tail_size {
-            embedding[base + lane] = token as f32 + lane as f32;
-        }
-    }
-    let ones = vec![1.0_f32; hidden_size];
-    let q_proj = tail_projector_matrix(head_width, hidden_size, tail_size, 1.0);
-    let k_proj = tail_projector_matrix(head_width, hidden_size, tail_size, 2.0);
-    let v_proj = tail_projector_matrix(head_width, hidden_size, tail_size, 3.0);
-    let attention_o = vec![0.0_f32; hidden_size * head_width];
-    let zero_square = vec![0.0_f32; hidden_size * hidden_size];
-    let zero_lm_head = vec![0.0_f32; vocab_size * hidden_size];
-
-    write_f32_tensor_file(&root_dir, "embed.bin", &embedding);
-    write_f32_tensor_file(&root_dir, "final_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "lm_head.bin", &zero_lm_head);
-    write_f32_tensor_file(&root_dir, "attn_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "attn_q.bin", &q_proj);
-    write_f32_tensor_file(&root_dir, "attn_k.bin", &k_proj);
-    write_f32_tensor_file(&root_dir, "attn_v.bin", &v_proj);
-    write_f32_tensor_file(&root_dir, "attn_o.bin", &attention_o);
-    write_f32_tensor_file(&root_dir, "ffn_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "ffn_gate.bin", &zero_square);
-    write_f32_tensor_file(&root_dir, "ffn_up.bin", &zero_square);
-    write_f32_tensor_file(&root_dir, "ffn_down.bin", &zero_square);
-
-    let hidden_vector_bytes = (hidden_size * size_of::<f32>()) as u64;
-    let qkv_matrix_bytes = (head_width * hidden_size * size_of::<f32>()) as u64;
-    let attention_o_bytes = (hidden_size * head_width * size_of::<f32>()) as u64;
-    let square_matrix_bytes = (hidden_size * hidden_size * size_of::<f32>()) as u64;
-    let embedding_bytes = (embedding.len() * size_of::<f32>()) as u64;
-    let lm_head_bytes = (zero_lm_head.len() * size_of::<f32>()) as u64;
-
-    let manifest = crate::model::NativeModelManifest {
-        schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-        model_family: "qwen3_dense".to_string(),
-        tensor_format: crate::model::NativeTensorFormat::Safetensors,
-        source_quantization: None,
-        runtime_status: crate::model::NativeRuntimeStatus::default(),
-        layer_count: 1,
-        hidden_size: hidden_size as u32,
-        intermediate_size: 0,
-        attention_head_count: 2,
-        attention_head_dim: 4,
-        kv_head_count: 2,
-        vocab_size: vocab_size as u32,
-        tie_word_embeddings: false,
-        rope_theta: None,
-        rope_theta_swa: None,
-        query_pre_attn_scalar: None,
-        attention_logit_softcap: None,
-        attn_output_gate: false,
-        partial_rotary_factor: None,
-        rms_norm_eps: None,
-        attention_value_from_key_layers: Vec::new(),
-        attention_v_norm_no_scale_layers: Vec::new(),
-        global_head_dim: None,
-        sliding_window_size: None,
-        layer_types: Vec::new(),
-        kv_shared_source_layers: Default::default(),
-        final_logit_softcapping: None,
-        hidden_states_scale: None,
-        moe_norm_topk_prob: false,
-        hidden_size_per_layer_input: 0,
-        vocab_size_per_layer_input: None,
-        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
-        mla_attention: Default::default(),
-        moe: crate::model::NativeMoeConfig::default(),
-        glm_router: Default::default(),
-        tensors: vec![
-            native_model_tensor_with_file(
-                "model.embed_tokens.weight",
-                NativeTensorRole::TokenEmbedding,
-                None,
-                &[vocab_size as u64, hidden_size as u64],
-                "embed.bin",
-                embedding_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.norm.weight",
-                NativeTensorRole::FinalNorm,
-                None,
-                &[hidden_size as u64],
-                "final_norm.bin",
-                hidden_vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "lm_head.weight",
-                NativeTensorRole::LmHead,
-                None,
-                &[vocab_size as u64, hidden_size as u64],
-                "lm_head.bin",
-                lm_head_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.input_layernorm.weight",
-                NativeTensorRole::AttentionNorm,
-                Some(0),
-                &[hidden_size as u64],
-                "attn_norm.bin",
-                hidden_vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.q_proj.weight",
-                NativeTensorRole::AttentionQ,
-                Some(0),
-                &[head_width as u64, hidden_size as u64],
-                "attn_q.bin",
-                qkv_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.k_proj.weight",
-                NativeTensorRole::AttentionK,
-                Some(0),
-                &[head_width as u64, hidden_size as u64],
-                "attn_k.bin",
-                qkv_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.v_proj.weight",
-                NativeTensorRole::AttentionV,
-                Some(0),
-                &[head_width as u64, hidden_size as u64],
-                "attn_v.bin",
-                qkv_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.o_proj.weight",
-                NativeTensorRole::AttentionO,
-                Some(0),
-                &[hidden_size as u64, head_width as u64],
-                "attn_o.bin",
-                attention_o_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.post_attention_layernorm.weight",
-                NativeTensorRole::FfnNorm,
-                Some(0),
-                &[hidden_size as u64],
-                "ffn_norm.bin",
-                hidden_vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.gate_proj.weight",
-                NativeTensorRole::FfnGate,
-                Some(0),
-                &[hidden_size as u64, hidden_size as u64],
-                "ffn_gate.bin",
-                square_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.up_proj.weight",
-                NativeTensorRole::FfnUp,
-                Some(0),
-                &[hidden_size as u64, hidden_size as u64],
-                "ffn_up.bin",
-                square_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.down_proj.weight",
-                NativeTensorRole::FfnDown,
-                Some(0),
-                &[hidden_size as u64, hidden_size as u64],
-                "ffn_down.bin",
-                square_matrix_bytes,
-            ),
-        ],
-    };
-
-    fs::write(
-        root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE),
-        serde_json::to_vec_pretty(&manifest).expect("wide projection manifest should serialize"),
-    )
-    .expect("wide projection manifest should write");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_wide_direct_decode_native_model_fixture() -> PathBuf {
-    let root_dir = unique_test_dir("native-model-wide-direct-decode");
-    fs::create_dir_all(&root_dir).expect("wide direct decode fixture directory should create");
-
-    let hidden_size = 40_usize;
-    let head_width = 8_usize;
-    let vocab_size = 5_usize;
-    let tail_size = 8_usize;
-    let mut embedding = vec![0.0_f32; vocab_size * hidden_size];
-    let token_four_base = 4 * hidden_size + (hidden_size - tail_size);
-    for lane in 0..tail_size {
-        embedding[token_four_base + lane] = (lane + 1) as f32;
-    }
-    let ones = vec![1.0_f32; hidden_size];
-    let zero_qkv = vec![0.0_f32; head_width * hidden_size];
-    let zero_attention_o = vec![0.0_f32; hidden_size * head_width];
-    let zero_square = vec![0.0_f32; hidden_size * hidden_size];
-    let mut lm_head = vec![0.0_f32; vocab_size * hidden_size];
-    let lm_head_token_two_base = 2 * hidden_size + (hidden_size - tail_size);
-    for lane in 0..tail_size {
-        lm_head[lm_head_token_two_base + lane] = 1.0;
-    }
-
-    write_f32_tensor_file(&root_dir, "embed.bin", &embedding);
-    write_f32_tensor_file(&root_dir, "final_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "lm_head.bin", &lm_head);
-    write_f32_tensor_file(&root_dir, "attn_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "attn_q.bin", &zero_qkv);
-    write_f32_tensor_file(&root_dir, "attn_k.bin", &zero_qkv);
-    write_f32_tensor_file(&root_dir, "attn_v.bin", &zero_qkv);
-    write_f32_tensor_file(&root_dir, "attn_o.bin", &zero_attention_o);
-    write_f32_tensor_file(&root_dir, "ffn_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "ffn_gate.bin", &zero_square);
-    write_f32_tensor_file(&root_dir, "ffn_up.bin", &zero_square);
-    write_f32_tensor_file(&root_dir, "ffn_down.bin", &zero_square);
-
-    let hidden_vector_bytes = (hidden_size * size_of::<f32>()) as u64;
-    let qkv_matrix_bytes = (head_width * hidden_size * size_of::<f32>()) as u64;
-    let attention_o_bytes = (hidden_size * head_width * size_of::<f32>()) as u64;
-    let square_matrix_bytes = (hidden_size * hidden_size * size_of::<f32>()) as u64;
-    let embedding_bytes = (embedding.len() * size_of::<f32>()) as u64;
-    let lm_head_bytes = (lm_head.len() * size_of::<f32>()) as u64;
-
-    let manifest = crate::model::NativeModelManifest {
-        schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-        model_family: "qwen3_dense".to_string(),
-        tensor_format: crate::model::NativeTensorFormat::Safetensors,
-        source_quantization: None,
-        runtime_status: crate::model::NativeRuntimeStatus::default(),
-        layer_count: 1,
-        hidden_size: hidden_size as u32,
-        intermediate_size: 0,
-        attention_head_count: 2,
-        attention_head_dim: 4,
-        kv_head_count: 2,
-        vocab_size: vocab_size as u32,
-        tie_word_embeddings: false,
-        rope_theta: None,
-        rope_theta_swa: None,
-        query_pre_attn_scalar: None,
-        attention_logit_softcap: None,
-        attn_output_gate: false,
-        partial_rotary_factor: None,
-        rms_norm_eps: None,
-        attention_value_from_key_layers: Vec::new(),
-        attention_v_norm_no_scale_layers: Vec::new(),
-        global_head_dim: None,
-        sliding_window_size: None,
-        layer_types: Vec::new(),
-        kv_shared_source_layers: Default::default(),
-        final_logit_softcapping: None,
-        hidden_states_scale: None,
-        moe_norm_topk_prob: false,
-        hidden_size_per_layer_input: 0,
-        vocab_size_per_layer_input: None,
-        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
-        mla_attention: Default::default(),
-        moe: crate::model::NativeMoeConfig::default(),
-        glm_router: Default::default(),
-        tensors: vec![
-            native_model_tensor_with_file(
-                "model.embed_tokens.weight",
-                NativeTensorRole::TokenEmbedding,
-                None,
-                &[vocab_size as u64, hidden_size as u64],
-                "embed.bin",
-                embedding_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.norm.weight",
-                NativeTensorRole::FinalNorm,
-                None,
-                &[hidden_size as u64],
-                "final_norm.bin",
-                hidden_vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "lm_head.weight",
-                NativeTensorRole::LmHead,
-                None,
-                &[vocab_size as u64, hidden_size as u64],
-                "lm_head.bin",
-                lm_head_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.input_layernorm.weight",
-                NativeTensorRole::AttentionNorm,
-                Some(0),
-                &[hidden_size as u64],
-                "attn_norm.bin",
-                hidden_vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.q_proj.weight",
-                NativeTensorRole::AttentionQ,
-                Some(0),
-                &[head_width as u64, hidden_size as u64],
-                "attn_q.bin",
-                qkv_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.k_proj.weight",
-                NativeTensorRole::AttentionK,
-                Some(0),
-                &[head_width as u64, hidden_size as u64],
-                "attn_k.bin",
-                qkv_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.v_proj.weight",
-                NativeTensorRole::AttentionV,
-                Some(0),
-                &[head_width as u64, hidden_size as u64],
-                "attn_v.bin",
-                qkv_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.self_attn.o_proj.weight",
-                NativeTensorRole::AttentionO,
-                Some(0),
-                &[hidden_size as u64, head_width as u64],
-                "attn_o.bin",
-                attention_o_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.post_attention_layernorm.weight",
-                NativeTensorRole::FfnNorm,
-                Some(0),
-                &[hidden_size as u64],
-                "ffn_norm.bin",
-                hidden_vector_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.gate_proj.weight",
-                NativeTensorRole::FfnGate,
-                Some(0),
-                &[hidden_size as u64, hidden_size as u64],
-                "ffn_gate.bin",
-                square_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.up_proj.weight",
-                NativeTensorRole::FfnUp,
-                Some(0),
-                &[hidden_size as u64, hidden_size as u64],
-                "ffn_up.bin",
-                square_matrix_bytes,
-            ),
-            native_model_tensor_with_file(
-                "model.layers.0.mlp.down_proj.weight",
-                NativeTensorRole::FfnDown,
-                Some(0),
-                &[hidden_size as u64, hidden_size as u64],
-                "ffn_down.bin",
-                square_matrix_bytes,
-            ),
-        ],
-    };
-
-    fs::write(
-        root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE),
-        serde_json::to_vec_pretty(&manifest).expect("wide direct decode manifest should serialize"),
-    )
-    .expect("wide direct decode manifest should write");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DirectDecodeFixtureGateUpLayout {
-    Split,
-    Packed,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DirectDecodeFixtureVariant {
-    ProjectionOnly,
-    FfnContinuation,
-}
-
-#[cfg(target_os = "macos")]
-fn write_direct_decode_native_model_fixture_with_variant(
-    tie_word_embeddings: bool,
-    gate_up_layout: DirectDecodeFixtureGateUpLayout,
-    variant: DirectDecodeFixtureVariant,
-) -> PathBuf {
-    let root_dir = unique_test_dir("native-model-direct-decode");
-    fs::create_dir_all(&root_dir).expect("decode fixture directory should create");
-
-    let embedding = vec![
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, //
-        2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, //
-        3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, //
-        4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0,
-    ];
-    let ones = vec![1.0_f32; 8];
-    let identity = [
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
-    let double_identity = identity.iter().map(|value| value * 2.0).collect::<Vec<_>>();
-    let triple_identity = identity.iter().map(|value| value * 3.0).collect::<Vec<_>>();
-    let zero_matrix = vec![0.0_f32; 64];
-    let projection_lm_head = embedding.clone();
-    let continuation_lm_head = vec![
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
-    ];
-    let (ffn_gate, ffn_up, ffn_down, lm_head) = match variant {
-        DirectDecodeFixtureVariant::ProjectionOnly => (
-            zero_matrix.clone(),
-            zero_matrix.clone(),
-            zero_matrix.clone(),
-            projection_lm_head,
-        ),
-        DirectDecodeFixtureVariant::FfnContinuation => {
-            let mut gate = zero_matrix.clone();
-            let mut up = zero_matrix.clone();
-            let mut down = zero_matrix.clone();
-            gate[0] = 1.0;
-            up[0] = 0.5;
-            down[2 * 8] = 3.0;
-            (gate, up, down, continuation_lm_head)
-        }
-    };
-    let packed_gate_up = ffn_gate
-        .iter()
-        .chain(ffn_up.iter())
-        .copied()
-        .collect::<Vec<_>>();
-
-    write_f32_tensor_file(&root_dir, "embed.bin", &embedding);
-    write_f32_tensor_file(&root_dir, "final_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "attn_norm.bin", &ones);
-    write_f32_tensor_file(&root_dir, "attn_q.bin", &identity);
-    write_f32_tensor_file(&root_dir, "attn_k.bin", &double_identity);
-    write_f32_tensor_file(&root_dir, "attn_v.bin", &triple_identity);
-    write_f32_tensor_file(&root_dir, "attn_o.bin", &identity);
-    write_f32_tensor_file(&root_dir, "ffn_norm.bin", &ones);
-    match gate_up_layout {
-        DirectDecodeFixtureGateUpLayout::Split => {
-            write_f32_tensor_file(&root_dir, "ffn_gate.bin", &ffn_gate);
-            write_f32_tensor_file(&root_dir, "ffn_up.bin", &ffn_up);
-        }
-        DirectDecodeFixtureGateUpLayout::Packed => {
-            write_f32_tensor_file(&root_dir, "ffn_gate_up.bin", &packed_gate_up);
-        }
-    }
-    write_f32_tensor_file(&root_dir, "ffn_down.bin", &ffn_down);
-    if !tie_word_embeddings {
-        write_f32_tensor_file(&root_dir, "lm_head.bin", &lm_head);
-    }
-
-    let matrix_bytes = (64 * size_of::<f32>()) as u64;
-    let packed_matrix_bytes = (128 * size_of::<f32>()) as u64;
-    let vector_bytes = (8 * size_of::<f32>()) as u64;
-    let embedding_bytes = (embedding.len() * size_of::<f32>()) as u64;
-    let mut tensors = vec![
-        native_model_tensor_with_file(
-            "model.embed_tokens.weight",
-            NativeTensorRole::TokenEmbedding,
-            None,
-            &[5, 8],
-            "embed.bin",
-            embedding_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.norm.weight",
-            NativeTensorRole::FinalNorm,
-            None,
-            &[8],
-            "final_norm.bin",
-            vector_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.0.input_layernorm.weight",
-            NativeTensorRole::AttentionNorm,
-            Some(0),
-            &[8],
-            "attn_norm.bin",
-            vector_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.0.self_attn.q_proj.weight",
-            NativeTensorRole::AttentionQ,
-            Some(0),
-            &[8, 8],
-            "attn_q.bin",
-            matrix_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.0.self_attn.k_proj.weight",
-            NativeTensorRole::AttentionK,
-            Some(0),
-            &[8, 8],
-            "attn_k.bin",
-            matrix_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.0.self_attn.v_proj.weight",
-            NativeTensorRole::AttentionV,
-            Some(0),
-            &[8, 8],
-            "attn_v.bin",
-            matrix_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.0.self_attn.o_proj.weight",
-            NativeTensorRole::AttentionO,
-            Some(0),
-            &[8, 8],
-            "attn_o.bin",
-            matrix_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.0.post_attention_layernorm.weight",
-            NativeTensorRole::FfnNorm,
-            Some(0),
-            &[8],
-            "ffn_norm.bin",
-            vector_bytes,
-        ),
-        native_model_tensor_with_file(
-            "model.layers.0.mlp.down_proj.weight",
-            NativeTensorRole::FfnDown,
-            Some(0),
-            &[8, 8],
-            "ffn_down.bin",
-            matrix_bytes,
-        ),
-    ];
-    match gate_up_layout {
-        DirectDecodeFixtureGateUpLayout::Split => {
-            tensors.push(native_model_tensor_with_file(
-                "model.layers.0.mlp.gate_proj.weight",
-                NativeTensorRole::FfnGate,
-                Some(0),
-                &[8, 8],
-                "ffn_gate.bin",
-                matrix_bytes,
-            ));
-            tensors.push(native_model_tensor_with_file(
-                "model.layers.0.mlp.up_proj.weight",
-                NativeTensorRole::FfnUp,
-                Some(0),
-                &[8, 8],
-                "ffn_up.bin",
-                matrix_bytes,
-            ));
-        }
-        DirectDecodeFixtureGateUpLayout::Packed => {
-            tensors.push(native_model_tensor_with_file(
-                "model.layers.0.mlp.gate_up_proj.weight",
-                NativeTensorRole::FfnGateUpPacked,
-                Some(0),
-                &[16, 8],
-                "ffn_gate_up.bin",
-                packed_matrix_bytes,
-            ));
-        }
-    }
-    if !tie_word_embeddings {
-        tensors.insert(
-            2,
-            native_model_tensor_with_file(
-                "lm_head.weight",
-                NativeTensorRole::LmHead,
-                None,
-                &[5, 8],
-                "lm_head.bin",
-                embedding_bytes,
-            ),
-        );
-    }
-
-    let manifest = crate::model::NativeModelManifest {
-        schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-        model_family: "qwen3_dense".to_string(),
-        tensor_format: crate::model::NativeTensorFormat::Safetensors,
-        source_quantization: None,
-        runtime_status: crate::model::NativeRuntimeStatus::default(),
-        layer_count: 1,
-        hidden_size: 8,
-        intermediate_size: 0,
-        attention_head_count: 2,
-        attention_head_dim: 4,
-        kv_head_count: 2,
-        vocab_size: 5,
-        tie_word_embeddings,
-        rope_theta: None,
-        rope_theta_swa: None,
-        query_pre_attn_scalar: None,
-        attention_logit_softcap: None,
-        attn_output_gate: false,
-        partial_rotary_factor: None,
-        rms_norm_eps: None,
-        attention_value_from_key_layers: Vec::new(),
-        attention_v_norm_no_scale_layers: Vec::new(),
-        global_head_dim: None,
-        sliding_window_size: None,
-        layer_types: Vec::new(),
-        kv_shared_source_layers: Default::default(),
-        final_logit_softcapping: None,
-        hidden_states_scale: None,
-        moe_norm_topk_prob: false,
-        hidden_size_per_layer_input: 0,
-        vocab_size_per_layer_input: None,
-        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
-        mla_attention: Default::default(),
-        moe: crate::model::NativeMoeConfig::default(),
-        glm_router: Default::default(),
-        tensors,
-    };
-
-    fs::write(
-        root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE),
-        serde_json::to_vec_pretty(&manifest).expect("decode manifest should serialize"),
-    )
-    .expect("decode manifest should write");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_direct_decode_native_model_fixture(tie_word_embeddings: bool) -> PathBuf {
-    write_direct_decode_native_model_fixture_with_variant(
-        tie_word_embeddings,
-        DirectDecodeFixtureGateUpLayout::Split,
-        DirectDecodeFixtureVariant::ProjectionOnly,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn write_gemma_direct_decode_native_model_fixture(tie_word_embeddings: bool) -> PathBuf {
-    let root_dir = write_direct_decode_native_model_fixture(tie_word_embeddings);
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("decode manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("decode manifest should parse");
-    manifest.model_family = "gemma2_dense".to_string();
-    fs::write(
-        root_dir.join("final_norm.bin"),
-        vec![0_u8; 8 * size_of::<f32>()],
-    )
-    .expect("gemma final norm should write");
-    fs::write(
-        root_dir.join("ffn_norm.bin"),
-        vec![0_u8; 8 * size_of::<f32>()],
-    )
-    .expect("gemma ffn norm should write");
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("decode manifest should serialize"),
-    )
-    .expect("decode manifest should rewrite");
-
-    root_dir
-}
-
-#[cfg(target_os = "macos")]
-fn write_ffn_decode_native_model_fixture(
-    gate_up_layout: DirectDecodeFixtureGateUpLayout,
-) -> PathBuf {
-    write_direct_decode_native_model_fixture_with_variant(
-        false,
-        gate_up_layout,
-        DirectDecodeFixtureVariant::FfnContinuation,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn write_multilayer_direct_decode_native_model_fixture() -> PathBuf {
-    let root_dir = write_direct_decode_native_model_fixture(false);
-    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path).expect("manifest should read");
-    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
-        .expect("manifest should parse");
-    let layer_zero_tensors = manifest
-        .tensors
-        .iter()
-        .filter(|tensor| tensor.layer_index == Some(0))
-        .cloned()
-        .collect::<Vec<_>>();
-
-    for mut tensor in layer_zero_tensors {
-        tensor.layer_index = Some(1);
-        tensor.name = tensor.name.replace("layers.0", "layers.1");
-        manifest.tensors.push(tensor);
-    }
-    manifest.layer_count = 2;
-
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("manifest should serialize"),
-    )
-    .expect("manifest should write");
-
-    root_dir
-}
-
 #[cfg(target_os = "macos")]
 fn assert_f32_slice_close(actual: &[f32], expected: &[f32], epsilon: f32) {
     assert_eq!(actual.len(), expected.len());
@@ -3383,12 +1737,10 @@ fn metal_assets_load_compiled_build_and_resolve_required_kernels() {
         Some(MetalKernelTier::Deferred)
     );
     assert!(assets.compiled_metallib_path().is_some());
-    assert!(
-        !assets
-            .compiled_metallib_bytes()
-            .expect("compiled metallib should load")
-            .is_empty()
-    );
+    assert!(!assets
+        .compiled_metallib_bytes()
+        .expect("compiled metallib should load")
+        .is_empty());
 
     fixture.cleanup();
 }
@@ -3627,73 +1979,57 @@ fn metal_bringup_runner_executes_single_layer_fixture_with_real_build_artifacts(
         ExecutionStatus::Success,
         "{output:?}"
     );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_runtime_real_model_tensor_inputs"
-                    && *value > 0
-            )
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
-                    && *value > 0
-            )
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0)
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_direct_decode_native_logits_projection"
-                    && *value > 0
-            )
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_direct_decode_native_projection_row_count"
-                    && *value > 0
-            )
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_native_projection_f32_binding_count"
-                    && *value > 0
-            )
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_native_rms_norm_f32_binding_count"
-                    && *value > 0
-            )
-    );
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_runtime_real_model_tensor_inputs" && *value > 0
+        ));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
+                && *value > 0
+        ));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_direct_decode_native_logits_projection"
+                && *value > 0
+        ));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_direct_decode_native_projection_row_count"
+                && *value > 0
+        ));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_native_projection_f32_binding_count"
+                && *value > 0
+        ));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_native_rms_norm_f32_binding_count" && *value > 0
+        ));
     let dispatch = runner
         .last_dispatch()
         .expect("successful real-build run should retain last dispatch");
@@ -3711,16 +2047,14 @@ fn metal_bringup_runner_executes_single_layer_fixture_with_real_build_artifacts(
             .rms_norm_f32_binding_count
             > 0
     );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
-                    && *value == 0
-            )
-    );
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
+                && *value == 0
+        ));
 
     let _ = fs::remove_dir_all(model_dir);
 }
@@ -3743,35 +2077,27 @@ fn metal_bringup_runner_reuses_multilayer_prefix_cache_for_native_decode_continu
         ExecutionStatus::Success,
         "{prefill_output:?}"
     );
-    assert!(
-        prefill_output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_prefix_layers_native_attention" && *value > 0
-            )
-    );
-    assert!(
-        prefill_output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_prefix_cpu_reference_dispatch_count"
-                    && *value == 0
-            )
-    );
-    assert!(
-        prefill_output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
-                    && *value > 0
-            )
-    );
+    assert!(prefill_output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(|(key, value)| key == "metal_dispatch_prefix_layers_native_attention" && *value > 0));
+    assert!(prefill_output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_prefix_cpu_reference_dispatch_count"
+                && *value == 0
+        ));
+    assert!(prefill_output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
+                && *value > 0
+        ));
 
     let continuation_output = runner.run(sample_decode_continuation_runner_input());
 
@@ -3780,68 +2106,52 @@ fn metal_bringup_runner_reuses_multilayer_prefix_cache_for_native_decode_continu
         ExecutionStatus::Success,
         "{continuation_output:?}"
     );
-    assert!(
-        continuation_output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_prefix_layers_native_attention" && *value > 0
-            )
-    );
-    assert!(
-        continuation_output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_prefix_cpu_reference_dispatch_count"
-                    && *value == 0
-            )
-    );
-    assert!(
-        continuation_output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
-                    && *value > 0
-            )
-    );
-    assert!(
-        continuation_output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0)
-    );
-    assert!(
-        continuation_output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_direct_decode_native_logits_projection"
-                    && *value > 0
-            )
-    );
-    assert!(
-        continuation_output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
-                    && *value == 0
-            )
-    );
-    assert!(
-        continuation_output
-            .logits_outputs
-            .iter()
-            .any(|output| output.request_id == RequestId(17) && !output.logits.is_empty())
-    );
+    assert!(continuation_output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(|(key, value)| key == "metal_dispatch_prefix_layers_native_attention" && *value > 0));
+    assert!(continuation_output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_prefix_cpu_reference_dispatch_count"
+                && *value == 0
+        ));
+    assert!(continuation_output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
+                && *value > 0
+        ));
+    assert!(continuation_output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0));
+    assert!(continuation_output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_direct_decode_native_logits_projection"
+                && *value > 0
+        ));
+    assert!(continuation_output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
+                && *value == 0
+        ));
+    assert!(continuation_output
+        .logits_outputs
+        .iter()
+        .any(|output| output.request_id == RequestId(17) && !output.logits.is_empty()));
 
     let _ = fs::remove_dir_all(model_dir);
 }
@@ -3864,43 +2174,35 @@ fn metal_bringup_runner_batches_direct_decode_logits_for_multiple_requests() {
         ExecutionStatus::Success,
         "{output:?}"
     );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0)
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_direct_decode_batched_logits_group_count"
-                    && *value > 0
-            )
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_direct_decode_batched_logits_token_count"
-                    && *value >= 2
-            )
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .any(
-                |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
-                    && *value == 0
-            )
-    );
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_direct_decode_batched_logits_group_count"
+                && *value > 0
+        ));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_direct_decode_batched_logits_token_count"
+                && *value >= 2
+        ));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
+                && *value == 0
+        ));
     assert_eq!(output.logits_outputs.len(), 2);
 
     let _ = fs::remove_dir_all(model_dir);
@@ -5219,11 +3521,9 @@ fn grouped_direct_decode_results_fall_back_to_singletons_when_group_processing_f
         });
     assert_eq!(merged_tally.batched_group_fallback_count, 1);
     assert_eq!(merged_tally.batched_group_fallback_token_count, 2);
-    assert!(
-        collected
-            .iter()
-            .all(|result| result.native_logits_projection_decode)
-    );
+    assert!(collected
+        .iter()
+        .all(|result| result.native_logits_projection_decode));
 }
 
 #[cfg(target_os = "macos")]
@@ -5480,11 +3780,9 @@ fn model_bound_decode_tokens_use_lm_head_projection_for_decode_items() {
                 .map(|(index, _)| index as u32)
         })
         .expect("prefill-completion logits should remain sampleable");
-    assert!(
-        direct_decode
-            .tokens
-            .contains(&(RequestId(7), expected_prefill_token))
-    );
+    assert!(direct_decode
+        .tokens
+        .contains(&(RequestId(7), expected_prefill_token)));
     assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
     assert_eq!(direct_decode.logits_outputs.len(), 2);
     let decode_logits = direct_decode
@@ -5542,19 +3840,15 @@ fn deterministic_model_bound_direct_decode_omits_decode_logits_payload() {
         None,
     );
 
-    assert!(
-        direct_decode
-            .tokens
-            .iter()
-            .any(|(request_id, token_id)| { *request_id == RequestId(9) && *token_id == 4 })
-    );
+    assert!(direct_decode
+        .tokens
+        .iter()
+        .any(|(request_id, token_id)| { *request_id == RequestId(9) && *token_id == 4 }));
     assert_eq!(direct_decode.logits_outputs.len(), 1);
-    assert!(
-        direct_decode
-            .logits_outputs
-            .iter()
-            .all(|output| output.request_id != RequestId(9))
-    );
+    assert!(direct_decode
+        .logits_outputs
+        .iter()
+        .all(|output| output.request_id != RequestId(9)));
 
     let _ = fs::remove_dir_all(model_dir);
 }
@@ -5619,17 +3913,13 @@ fn deterministic_model_bound_prefill_completion_omits_bridge_logits_payload() {
         None,
     );
 
-    assert!(
-        direct_decode
-            .tokens
-            .contains(&(RequestId(7), expected_bridge_token))
-    );
-    assert!(
-        direct_decode
-            .logits_outputs
-            .iter()
-            .all(|output| output.request_id != RequestId(7))
-    );
+    assert!(direct_decode
+        .tokens
+        .contains(&(RequestId(7), expected_bridge_token)));
+    assert!(direct_decode
+        .logits_outputs
+        .iter()
+        .all(|output| output.request_id != RequestId(7)));
 
     let _ = fs::remove_dir_all(model_dir);
 }
@@ -5726,11 +4016,9 @@ fn deterministic_model_bound_sampleable_items_omit_all_logits_payloads() {
         None,
     );
 
-    assert!(
-        direct_decode
-            .tokens
-            .contains(&(RequestId(7), expected_prefill_token))
-    );
+    assert!(direct_decode
+        .tokens
+        .contains(&(RequestId(7), expected_prefill_token)));
     assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
     assert!(direct_decode.logits_outputs.is_empty());
     assert_eq!(
@@ -5968,12 +4256,10 @@ fn model_bound_decode_tokens_apply_split_ffn_continuation_before_projection() {
 
     assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
     assert_eq!(direct_decode.logits_outputs.len(), 2);
-    assert!(
-        direct_decode
-            .logits_outputs
-            .iter()
-            .any(|output| output.request_id == RequestId(9))
-    );
+    assert!(direct_decode
+        .logits_outputs
+        .iter()
+        .any(|output| output.request_id == RequestId(9)));
     assert!(direct_decode.model_bound_ffn_decode);
 
     let _ = fs::remove_dir_all(model_dir);
@@ -6008,12 +4294,10 @@ fn model_bound_decode_tokens_apply_packed_ffn_continuation_before_projection() {
 
     assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
     assert_eq!(direct_decode.logits_outputs.len(), 2);
-    assert!(
-        direct_decode
-            .logits_outputs
-            .iter()
-            .any(|output| output.request_id == RequestId(9))
-    );
+    assert!(direct_decode
+        .logits_outputs
+        .iter()
+        .any(|output| output.request_id == RequestId(9)));
     assert!(direct_decode.model_bound_ffn_decode);
 
     let _ = fs::remove_dir_all(model_dir);
@@ -6322,31 +4606,23 @@ fn annotate_staged_input_source_marks_model_conditioned_inputs() {
         MetalStagedInputSource::ModelConditionedMiniProjection,
     );
 
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,))
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_token_only_inputs".to_string(), 0,))
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,)));
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_token_only_inputs".to_string(), 0,)));
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_prefix_layers_native_attention".to_string(),
         0,
     )));
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 0,))
-    );
-    assert!(
-        !route_metadata
-            .crossover_decisions
-            .iter()
-            .any(|(key, _)| key == "metal_dispatch_real_model_tensor_inputs")
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 0,)));
+    assert!(!route_metadata
+        .crossover_decisions
+        .iter()
+        .any(|(key, _)| key == "metal_dispatch_real_model_tensor_inputs"));
 }
 
 #[test]
@@ -6362,16 +4638,12 @@ fn annotate_staged_input_source_marks_cpu_prefix_attention() {
         "metal_dispatch_prefix_layers_native_attention".to_string(),
         0,
     )));
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 1,))
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,))
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 1,)));
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,)));
 }
 
 #[test]
@@ -6387,16 +4659,12 @@ fn annotate_staged_input_source_marks_native_prefix_attention() {
         "metal_dispatch_prefix_layers_native_attention".to_string(),
         1,
     )));
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 0,))
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,))
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 0,)));
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,)));
 }
 
 #[test]
@@ -6412,16 +4680,12 @@ fn annotate_staged_input_source_marks_mixed_prefix_attention() {
         "metal_dispatch_prefix_layers_native_attention".to_string(),
         1,
     )));
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 1,))
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,))
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 1,)));
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,)));
 }
 
 #[test]
@@ -7266,51 +5530,37 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
         },
     );
 
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_numeric_scaffold_only".to_string(), 0,))
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_numeric_scaffold_only".to_string(), 0,)));
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_complete_model_forward_supported".to_string(),
         1,
     )));
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_real_model_forward".to_string(), 0,))
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_direct_decode_tokens".to_string(), 1,))
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .iter()
-            .any(|(key, value)| {
-                key == "metal_dispatch_direct_decode_checksum_lo" && *value > 0
-            })
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_real_model_forward".to_string(), 0,)));
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_direct_decode_tokens".to_string(), 1,)));
+    assert!(route_metadata
+        .crossover_decisions
+        .iter()
+        .any(|(key, value)| { key == "metal_dispatch_direct_decode_checksum_lo" && *value > 0 }));
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_direct_decode_model_bound_ffn".to_string(),
         0,
     )));
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_prefix_native_dispatch_count".to_string(), 1,))
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_prefix_native_dispatch_count".to_string(), 1,)));
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_prefix_cpu_reference_dispatch_count".to_string(),
         0,
     )));
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_qkv_projection_token_count".to_string(), 3,))
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_qkv_projection_token_count".to_string(), 3,)));
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_layer_continuation_token_count".to_string(),
         2,
@@ -7319,11 +5569,9 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
         "metal_dispatch_logits_projection_token_count".to_string(),
         1,
     )));
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_logits_vocab_scan_row_count".to_string(), 5,))
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_logits_vocab_scan_row_count".to_string(), 5,)));
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_prefix_native_projection_row_count".to_string(),
         31,
@@ -7515,16 +5763,14 @@ fn completed_real_model_forward_step_marks_pure_decode_batch_with_no_remaining_l
             direct_decode_native_dense_tally: DirectDecodeNativeDenseTally::default(),
         },
     );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_real_model_forward".to_string(), 1,))
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_real_model_forward".to_string(), 1,)));
 }
 
 #[test]
-fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_prefill_completion_and_decode_items_resolve()
- {
+fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_prefill_completion_and_decode_items_resolve(
+) {
     let mut input = sample_runner_input();
     input.request_contexts[0].deterministic_argmax_sampling = true;
     let runtime = MetalDispatchRuntimeInfo {
@@ -7762,8 +6008,8 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
 }
 
 #[test]
-fn completed_real_model_forward_step_rejects_multilayer_runtime_when_prefix_attention_is_cpu_reference()
- {
+fn completed_real_model_forward_step_rejects_multilayer_runtime_when_prefix_attention_is_cpu_reference(
+) {
     let input = sample_decode_only_runner_input();
     let runtime = MetalDispatchRuntimeInfo {
         device_name: "Apple M4 Max".to_string(),
@@ -8253,32 +6499,24 @@ fn failed_metal_runner_output_marks_all_requests_as_errors() {
     assert!(output.logits_outputs.is_empty());
     assert_eq!(output.kv_write_summary.tokens_written, 0);
     assert_eq!(output.kv_write_summary.blocks_touched, 0);
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_failed".to_string(), 1))
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_runtime_required_pipelines".to_string(), 4))
-    );
-    assert!(
-        output
-            .route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_binary_archive_state".to_string(), 2))
-    );
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_failed".to_string(), 1)));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_runtime_required_pipelines".to_string(), 4)));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_binary_archive_state".to_string(), 2)));
     assert_eq!(output.request_updates.len(), 2);
-    assert!(
-        output
-            .request_updates
-            .iter()
-            .all(|update| update.stop_reason == Some(StopReason::Error)
-                && update.error.as_deref() == Some("metal dispatch exploded"))
-    );
+    assert!(output
+        .request_updates
+        .iter()
+        .all(|update| update.stop_reason == Some(StopReason::Error)
+            && update.error.as_deref() == Some("metal dispatch exploded")));
 }
 
 #[test]
@@ -8518,21 +6756,15 @@ fn staged_numeric_values_follow_scheduled_token_ids() {
     assert_eq!(staged_query.len(), 32);
     assert_eq!(
         &staged_key[..8],
-        &[
-            0.5, 0.53125, 0.5625, 0.59375, 0.75, 0.78125, 0.8125, 0.84375
-        ]
+        &[0.5, 0.53125, 0.5625, 0.59375, 0.75, 0.78125, 0.8125, 0.84375]
     );
     assert_eq!(
         &staged_value[8..16],
-        &[
-            2.0, 2.015625, 2.03125, 2.046875, 2.0625, 2.078125, 2.09375, 2.109375,
-        ]
+        &[2.0, 2.015625, 2.03125, 2.046875, 2.0625, 2.078125, 2.09375, 2.109375,]
     );
     assert_eq!(
         &staged_query[24..32],
-        &[
-            2.015625, 2.046875, 2.078125, 2.109375, 2.265625, 2.296875, 2.328125, 2.359375,
-        ]
+        &[2.015625, 2.046875, 2.078125, 2.109375, 2.265625, 2.296875, 2.328125, 2.359375,]
     );
 }
 
@@ -8545,19 +6777,15 @@ fn simulated_numeric_path_keeps_vectorized_kv_and_decode_contract() {
     let decode_slot_base = 35 * PHASE1_NUMERIC_HEAD_SIZE as usize;
     assert_eq!(
         &simulated.key_cache[decode_slot_base..decode_slot_base + 8],
-        &[
-            2.0, 2.03125, 2.0625, 2.09375, 2.25, 2.28125, 2.3125, 2.34375
-        ]
+        &[2.0, 2.03125, 2.0625, 2.09375, 2.25, 2.28125, 2.3125, 2.34375]
     );
     assert_eq!(simulated.gather_key.len(), 56);
     assert_eq!(simulated.gather_value.len(), 56);
     assert_eq!(simulated.attention_output.len(), 32);
-    assert!(
-        simulated
-            .attention_output
-            .iter()
-            .all(|value| value.is_finite() && *value >= 0.0)
-    );
+    assert!(simulated
+        .attention_output
+        .iter()
+        .all(|value| value.is_finite() && *value >= 0.0));
     let decode_output_base = 3 * PHASE1_NUMERIC_HEAD_SIZE as usize;
     assert_eq!(
         decode_token_from_attention_bits(
@@ -8581,11 +6809,9 @@ fn simulated_numeric_path_keeps_vectorized_kv_and_decode_contract() {
     );
     // Remaining slots in copy buffers should be zero (no other blocks were copied).
     assert!(simulated.copy_key[block_width..].iter().all(|v| *v == 0.0));
-    assert!(
-        simulated.copy_value[block_width..]
-            .iter()
-            .all(|v| *v == 0.0)
-    );
+    assert!(simulated.copy_value[block_width..]
+        .iter()
+        .all(|v| *v == 0.0));
 }
 
 #[cfg(target_os = "macos")]
@@ -8713,43 +6939,31 @@ fn annotate_successful_dispatch_surfaces_validation_summary_metrics() {
         },
     );
 
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_numeric_reference_validated".to_string(), 1,))
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_runtime_required_pipelines".to_string(), 4,))
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_binary_archive_state".to_string(), 2,))
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .contains(&("metal_dispatch_binary_archive_serialized".to_string(), 1,))
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .iter()
-            .any(|(key, value)| {
-                key == "metal_dispatch_copy_workload_elements"
-                    && *value == expected_copy_workload_elements
-            })
-    );
-    assert!(
-        route_metadata
-            .crossover_decisions
-            .iter()
-            .any(|(key, value)| {
-                key == "metal_dispatch_attention_max_abs_diff_microunits" && *value == 0
-            })
-    );
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_numeric_reference_validated".to_string(), 1,)));
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_runtime_required_pipelines".to_string(), 4,)));
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_binary_archive_state".to_string(), 2,)));
+    assert!(route_metadata
+        .crossover_decisions
+        .contains(&("metal_dispatch_binary_archive_serialized".to_string(), 1,)));
+    assert!(route_metadata
+        .crossover_decisions
+        .iter()
+        .any(|(key, value)| {
+            key == "metal_dispatch_copy_workload_elements"
+                && *value == expected_copy_workload_elements
+        }));
+    assert!(route_metadata
+        .crossover_decisions
+        .iter()
+        .any(|(key, value)| {
+            key == "metal_dispatch_attention_max_abs_diff_microunits" && *value == 0
+        }));
 }
 
 #[test]
@@ -8858,13 +7072,11 @@ kernel void swap_blocks() {}
 
     assert_eq!(artifacts.build_status(), MetalBuildStatus::FailedCompile);
     assert!(artifacts.build_report.compile_commands.is_empty());
-    assert!(
-        artifacts
-            .build_report
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("kv_scale_update"))
-    );
+    assert!(artifacts
+        .build_report
+        .reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("kv_scale_update")));
     assert!(artifacts.build_report.outputs.metallib.is_none());
 
     fixture.cleanup();
@@ -8899,30 +7111,24 @@ fn metal_kernel_builder_compiles_with_fake_xcrun_toolchain() {
     assert_eq!(artifacts.build_status(), MetalBuildStatus::Compiled);
     assert!(!artifacts.reused_existing_artifacts());
     assert_eq!(artifacts.build_report.compile_commands.len(), 3);
-    assert!(
-        artifacts
-            .build_report
-            .outputs
-            .air
-            .as_deref()
-            .is_some_and(Path::is_file)
-    );
-    assert!(
-        artifacts
-            .build_report
-            .outputs
-            .metalar
-            .as_deref()
-            .is_some_and(Path::is_file)
-    );
-    assert!(
-        artifacts
-            .build_report
-            .outputs
-            .metallib
-            .as_deref()
-            .is_some_and(Path::is_file)
-    );
+    assert!(artifacts
+        .build_report
+        .outputs
+        .air
+        .as_deref()
+        .is_some_and(Path::is_file));
+    assert!(artifacts
+        .build_report
+        .outputs
+        .metalar
+        .as_deref()
+        .is_some_and(Path::is_file));
+    assert!(artifacts
+        .build_report
+        .outputs
+        .metallib
+        .as_deref()
+        .is_some_and(Path::is_file));
     assert_eq!(
         artifacts
             .build_report
@@ -8969,14 +7175,12 @@ fn metal_kernel_builder_compiles_without_metal_ar() {
     assert_eq!(artifacts.build_report.compile_commands.len(), 2);
     assert!(artifacts.build_report.outputs.metalar.is_none());
     assert!(artifacts.build_report.outputs.metalar_sha256.is_none());
-    assert!(
-        artifacts
-            .build_report
-            .outputs
-            .metallib
-            .as_deref()
-            .is_some_and(Path::is_file)
-    );
+    assert!(artifacts
+        .build_report
+        .outputs
+        .metallib
+        .as_deref()
+        .is_some_and(Path::is_file));
 
     fixture.cleanup();
 }
@@ -9013,14 +7217,12 @@ fn metal_kernel_builder_reuses_valid_compiled_artifacts_without_recompiling() {
     assert_eq!(artifacts.build_status(), MetalBuildStatus::Compiled);
     assert!(artifacts.reused_existing_artifacts());
     assert_eq!(artifacts.build_report.doctor, doctor);
-    assert!(
-        artifacts
-            .build_report
-            .outputs
-            .metallib
-            .as_deref()
-            .is_some_and(Path::is_file)
-    );
+    assert!(artifacts
+        .build_report
+        .outputs
+        .metallib
+        .as_deref()
+        .is_some_and(Path::is_file));
 
     fixture.cleanup();
 }
@@ -11257,11 +9459,9 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                     items: vec![ExecutionItem {
                         request_id,
                         mode: ExecutionMode::Decode,
-                        input_token_slice: vec![
-                            *generated_tokens
-                                .last()
-                                .expect("generated tokens should contain the previous token"),
-                        ],
+                        input_token_slice: vec![*generated_tokens
+                            .last()
+                            .expect("generated tokens should contain the previous token")],
                         reused_prefix_token_slice: warmup_tokens,
                         position_range: PositionRange {
                             start: decode_position,
