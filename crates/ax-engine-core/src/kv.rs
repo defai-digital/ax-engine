@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ids::{BlockId, CacheGroupId, RequestId};
 use thiserror::Error;
@@ -130,6 +130,7 @@ pub struct KvManager {
     prompt_tokens: BTreeMap<RequestId, Vec<u32>>,
     block_ref_counts: BTreeMap<BlockId, u32>,
     cached_blocks: BTreeMap<CachedBlockKey, CachedBlockEntry>,
+    cached_children_by_parent: BTreeMap<CachedBlockKey, BTreeSet<CachedBlockKey>>,
     next_cache_tick: u64,
     recent_evictions: u32,
 }
@@ -144,6 +145,7 @@ impl KvManager {
             prompt_tokens: BTreeMap::new(),
             block_ref_counts: BTreeMap::new(),
             cached_blocks: BTreeMap::new(),
+            cached_children_by_parent: BTreeMap::new(),
             next_cache_tick: 0,
             recent_evictions: 0,
         }
@@ -619,7 +621,7 @@ impl KvManager {
             )?;
             *ref_count += 1;
 
-            self.cached_blocks.insert(
+            self.insert_cached_block(
                 cache_key,
                 CachedBlockEntry {
                     block_id,
@@ -646,37 +648,43 @@ impl KvManager {
     }
 
     fn select_cached_block_eviction_candidate(&self) -> Option<CachedBlockKey> {
-        let mut has_cached_descendant = BTreeMap::new();
-        for entry in self.cached_blocks.values() {
-            if let Some(parent_block_hash) = entry.parent_block_hash {
-                has_cached_descendant.insert(parent_block_hash, true);
+        let mut oldest_leaf_releasable = None;
+        let mut oldest_releasable = None;
+        let mut oldest_leaf = None;
+        let mut oldest_any = None;
+
+        for (cache_key, entry) in &self.cached_blocks {
+            let has_cached_descendant = self
+                .cached_children_by_parent
+                .get(cache_key)
+                .is_some_and(|children| !children.is_empty());
+            let releases_block = self.cached_entry_releases_block(entry);
+
+            remember_oldest_cached_block(&mut oldest_any, *cache_key, entry.last_touch_tick);
+            if !has_cached_descendant {
+                remember_oldest_cached_block(&mut oldest_leaf, *cache_key, entry.last_touch_tick);
+            }
+            if releases_block {
+                remember_oldest_cached_block(
+                    &mut oldest_releasable,
+                    *cache_key,
+                    entry.last_touch_tick,
+                );
+            }
+            if !has_cached_descendant && releases_block {
+                remember_oldest_cached_block(
+                    &mut oldest_leaf_releasable,
+                    *cache_key,
+                    entry.last_touch_tick,
+                );
             }
         }
 
-        self.oldest_cached_block_matching(|cache_key, entry| {
-            !has_cached_descendant.contains_key(&cache_key.block_hash)
-                && self.cached_entry_releases_block(entry)
-        })
-        .or_else(|| {
-            self.oldest_cached_block_matching(|_, entry| self.cached_entry_releases_block(entry))
-        })
-        .or_else(|| {
-            self.oldest_cached_block_matching(|cache_key, _| {
-                !has_cached_descendant.contains_key(&cache_key.block_hash)
-            })
-        })
-        .or_else(|| self.oldest_cached_block_matching(|_, _| true))
-    }
-
-    fn oldest_cached_block_matching(
-        &self,
-        predicate: impl Fn(&CachedBlockKey, &CachedBlockEntry) -> bool,
-    ) -> Option<CachedBlockKey> {
-        self.cached_blocks
-            .iter()
-            .filter(|(cache_key, entry)| predicate(cache_key, entry))
-            .min_by_key(|(_, entry)| entry.last_touch_tick)
-            .map(|(cache_key, _)| *cache_key)
+        oldest_leaf_releasable
+            .or(oldest_releasable)
+            .or(oldest_leaf)
+            .or(oldest_any)
+            .map(|(cache_key, _)| cache_key)
     }
 
     fn cached_entry_releases_block(&self, entry: &CachedBlockEntry) -> bool {
@@ -692,33 +700,54 @@ impl KvManager {
             ));
         }
 
-        let mut descendants_by_parent: BTreeMap<u64, Vec<CachedBlockKey>> = BTreeMap::new();
-        for (key, entry) in &self.cached_blocks {
-            if let Some(parent_block_hash) = entry.parent_block_hash {
-                descendants_by_parent
-                    .entry(parent_block_hash)
-                    .or_default()
-                    .push(*key);
-            }
-        }
-
         let mut pending = vec![*cache_key];
         let mut eviction_order = Vec::new();
         while let Some(current) = pending.pop() {
             eviction_order.push(current);
-            if let Some(children) = descendants_by_parent.remove(&current.block_hash) {
-                pending.extend(children);
+            if let Some(children) = self.cached_children_by_parent.get(&current) {
+                pending.extend(children.iter().copied());
             }
         }
 
         for key in eviction_order {
-            if let Some(entry) = self.cached_blocks.remove(&key) {
+            if let Some(entry) = self.remove_cached_block(&key) {
                 self.release_cached_block_entry(entry)?;
                 self.recent_evictions = self.recent_evictions.saturating_add(1);
             }
         }
 
         Ok(())
+    }
+
+    fn insert_cached_block(&mut self, cache_key: CachedBlockKey, entry: CachedBlockEntry) {
+        debug_assert!(
+            !self.cached_blocks.contains_key(&cache_key),
+            "cached block insertion must not replace an existing entry"
+        );
+        if let Some(parent_key) =
+            parent_cache_key(cache_key.cache_group_id, entry.parent_block_hash)
+        {
+            self.cached_children_by_parent
+                .entry(parent_key)
+                .or_default()
+                .insert(cache_key);
+        }
+        self.cached_blocks.insert(cache_key, entry);
+    }
+
+    fn remove_cached_block(&mut self, cache_key: &CachedBlockKey) -> Option<CachedBlockEntry> {
+        let entry = self.cached_blocks.remove(cache_key)?;
+        if let Some(parent_key) =
+            parent_cache_key(cache_key.cache_group_id, entry.parent_block_hash)
+        {
+            if let Some(children) = self.cached_children_by_parent.get_mut(&parent_key) {
+                children.remove(cache_key);
+                if children.is_empty() {
+                    self.cached_children_by_parent.remove(&parent_key);
+                }
+            }
+        }
+        Some(entry)
     }
 
     fn release_cached_block_entry(
@@ -841,6 +870,26 @@ fn common_prefix_block_count(left: &[CachedBlockKey], right: &[CachedBlockKey]) 
         .zip(right.iter())
         .take_while(|(left, right)| left == right)
         .count()
+}
+
+fn parent_cache_key(
+    cache_group_id: CacheGroupId,
+    parent_block_hash: Option<u64>,
+) -> Option<CachedBlockKey> {
+    parent_block_hash.map(|block_hash| CachedBlockKey {
+        cache_group_id,
+        block_hash,
+    })
+}
+
+fn remember_oldest_cached_block(
+    oldest: &mut Option<(CachedBlockKey, u64)>,
+    cache_key: CachedBlockKey,
+    last_touch_tick: u64,
+) {
+    if oldest.is_none_or(|(_, oldest_tick)| last_touch_tick < oldest_tick) {
+        *oldest = Some((cache_key, last_touch_tick));
+    }
 }
 
 fn prompt_full_block_count(prompt_tokens: &[u32], block_size_tokens: u32) -> usize {
@@ -1246,6 +1295,7 @@ mod tests {
 
         assert_eq!(manager.available_block_count(), 3);
         assert_eq!(manager.used_block_count(), 0);
+        assert!(manager.cached_children_by_parent.is_empty());
     }
 
     #[test]
@@ -1267,6 +1317,11 @@ mod tests {
 
         assert_eq!(allocation.allocation_status, AllocationStatus::Allocated);
         assert_eq!(manager.take_recent_evictions(), 1);
+        assert!(
+            !manager
+                .cached_children_by_parent
+                .contains_key(&manager.full_block_key_sequence(&[1, 2, 3, 4], 1).unwrap()[0])
+        );
         let lookup = manager
             .lookup_prefix(RequestId(3), &[1, 2, 3, 4, 99])
             .unwrap();
