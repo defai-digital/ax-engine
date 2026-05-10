@@ -2636,6 +2636,26 @@ fn moe_expert_gate_up_projection_bindings<'a>(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn moe_expert_gate_up_projection_dims(
+    expert_gate_up: MoeExpertGateUpProjectionBindings<'_>,
+) -> Option<(usize, usize, usize)> {
+    if expert_gate_up.is_packed {
+        let (expert_count, rows, cols) = tensor_3d_dimensions(&expert_gate_up.gate.meta.spec)?;
+        Some((expert_count, rows / 2, cols))
+    } else {
+        let (gate_expert_count, gate_rows, gate_cols) =
+            tensor_3d_dimensions(&expert_gate_up.gate.meta.spec)?;
+        let (up_expert_count, up_rows, up_cols) =
+            tensor_3d_dimensions(&expert_gate_up.up.meta.spec)?;
+        Some((
+            gate_expert_count.min(up_expert_count),
+            gate_rows.min(up_rows),
+            gate_cols.min(up_cols),
+        ))
+    }
+}
+
 #[derive(Clone, Copy)]
 enum NativeDenseKernelCoverageBucket {
     F32,
@@ -6943,22 +6963,8 @@ fn resolved_layer_moe_dims(
     }
 
     let expert_gate_up = moe_expert_gate_up_projection_bindings(&moe.expert_gate_up, buffers, 0)?;
-    let expert_gate_up_count = if expert_gate_up.is_packed {
-        tensor_3d_dimensions(&expert_gate_up.gate.meta.spec)?.0
-    } else {
-        tensor_3d_dimensions(&expert_gate_up.gate.meta.spec)?
-            .0
-            .min(tensor_3d_dimensions(&expert_gate_up.up.meta.spec)?.0)
-    };
-    let (expert_rows, expert_input_dim) = if expert_gate_up.is_packed {
-        let (_count, rows, cols) = tensor_3d_dimensions(&expert_gate_up.gate.meta.spec)?;
-        (rows / 2, cols)
-    } else {
-        let (_gate_count, gate_rows, gate_cols) =
-            tensor_3d_dimensions(&expert_gate_up.gate.meta.spec)?;
-        let (_, up_rows, up_cols) = tensor_3d_dimensions(&expert_gate_up.up.meta.spec)?;
-        (gate_rows.min(up_rows), gate_cols.min(up_cols))
-    };
+    let (expert_gate_up_count, expert_rows, expert_input_dim) =
+        moe_expert_gate_up_projection_dims(expert_gate_up)?;
     let expert_down = buffers.binding_for(&moe.expert_down)?;
     let (expert_down_count, expert_down_hidden_dim, expert_down_cols) =
         tensor_3d_dimensions(&expert_down.meta.spec)?;
