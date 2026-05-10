@@ -4559,11 +4559,7 @@ fn run_llama_cpp_scenario_workload(
         ..RuntimeObservation::default()
     };
     let request_ids = specs.iter().map(|spec| spec.request_id).collect::<Vec<_>>();
-    let max_steps = specs
-        .iter()
-        .map(|spec| u64::from(spec.max_output_tokens).saturating_add(256))
-        .sum::<u64>()
-        .max(256);
+    let max_steps = workload_step_guard_from_specs(&specs);
     let mut session = build_session(&runtime, &specs)?;
     observation.runtime_report = Some(session.runtime_report());
 
@@ -4770,11 +4766,7 @@ fn run_llama_cpp_replay_workload(
     let mut cancelled_requests = BTreeSet::new();
     let mut event_index = 0usize;
     let mut current_time_ms = 0u64;
-    let max_steps = specs
-        .iter()
-        .map(|spec| u64::from(spec.max_output_tokens).saturating_add(256))
-        .sum::<u64>()
-        .max(256);
+    let max_steps = replay_step_guard(&events);
 
     while event_index < events.len()
         || llama_cpp_session_has_live_requests(&session, &submitted_request_ids)?
@@ -5098,33 +5090,30 @@ fn run_replay_workload(
     Ok(observation)
 }
 
+const WORKLOAD_STEP_GUARD_MIN: u64 = 256;
+const WORKLOAD_STEP_GUARD_SLACK: u64 = 512;
+
 fn workload_step_guard_from_specs(specs: &[SyntheticRequestSpec]) -> u64 {
-    specs
-        .iter()
-        .map(|spec| u64::from(spec.max_output_tokens).saturating_add(256))
-        .sum::<u64>()
-        .max(256)
+    output_step_guard(specs.iter().map(|spec| spec.max_output_tokens))
+}
+
+fn output_step_guard(max_output_tokens: impl Iterator<Item = u32>) -> u64 {
+    max_output_tokens
+        .map(u64::from)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(WORKLOAD_STEP_GUARD_SLACK)
+        .max(WORKLOAD_STEP_GUARD_MIN)
 }
 
 fn replay_step_guard(events: &[ReplayEvent]) -> u64 {
-    let output_budget = events
-        .iter()
-        .filter_map(|event| match event {
-            ReplayEvent::Submit { spec, .. } => {
-                Some(u64::from(spec.max_output_tokens).saturating_add(256))
-            }
-            ReplayEvent::Cancel { .. } => None,
-        })
-        .sum::<u64>()
-        .max(256);
-    let timeline_budget = events
-        .iter()
-        .map(ReplayEvent::t_ms)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(output_budget);
+    let latest_event_time = events.iter().map(ReplayEvent::t_ms).max().unwrap_or(0);
+    let output_guard = output_step_guard(events.iter().filter_map(|event| match event {
+        ReplayEvent::Submit { spec, .. } => Some(spec.max_output_tokens),
+        ReplayEvent::Cancel { .. } => None,
+    }));
 
-    output_budget.max(timeline_budget)
+    latest_event_time.saturating_add(output_guard)
 }
 
 fn session_config_from_runtime(
@@ -11263,8 +11252,12 @@ fn unique_run_suffix(attempt: u32) -> Result<String, CliError> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .map_err(|error| CliError::Runtime(format!("system clock error: {error}")))?;
-    let mixed = (nanos as u64) ^ u64::from(std::process::id()) ^ u64::from(attempt);
-    Ok(format!("{:06x}", mixed & 0xFF_FFFF))
+    let pid = u64::from(std::process::id());
+    let mixed = (nanos as u64)
+        ^ pid.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        ^ u64::from(attempt).rotate_left(17)
+        ^ ((nanos >> 64) as u64);
+    Ok(format!("{:012x}", mixed & 0xFFFF_FFFF_FFFF))
 }
 
 fn unix_timestamp_secs() -> Result<u64, CliError> {
@@ -13518,6 +13511,56 @@ mod tests {
         ))
     }
 
+    fn test_request_spec(request_id: u64, max_output_tokens: u32) -> SyntheticRequestSpec {
+        SyntheticRequestSpec {
+            external_id: format!("req-{request_id}"),
+            request_id: RequestId(request_id),
+            arrival_sequence: SequenceNo(request_id),
+            model_family: "qwen3_5".to_string(),
+            prompt_token_target: 8,
+            input_tokens: vec![1, 2, 3, 4],
+            input_text: None,
+            max_output_tokens,
+            sampling_params: SamplingParams::default(),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn workload_step_guard_uses_longest_single_request_budget() {
+        let specs = (1..=8)
+            .map(|request_id| test_request_spec(request_id, 512))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            workload_step_guard_from_specs(&specs),
+            512 + WORKLOAD_STEP_GUARD_SLACK
+        );
+    }
+
+    #[test]
+    fn replay_step_guard_preserves_timeline_offset_without_summing_batch_budget() {
+        let events = vec![
+            ReplayEvent::Submit {
+                t_ms: 10,
+                spec: test_request_spec(1, 128),
+            },
+            ReplayEvent::Submit {
+                t_ms: 10,
+                spec: test_request_spec(2, 512),
+            },
+            ReplayEvent::Cancel {
+                t_ms: 100,
+                request_id: RequestId(1),
+            },
+        ];
+
+        assert_eq!(
+            replay_step_guard(&events),
+            100 + 512 + WORKLOAD_STEP_GUARD_SLACK
+        );
+    }
+
     #[test]
     fn create_unique_result_dir_does_not_reuse_same_component_directory() {
         let root = unique_test_dir("unique-result-dir");
@@ -13534,6 +13577,18 @@ mod tests {
         assert!(second_dir.is_dir());
 
         fs::remove_dir_all(root).expect("test directory should clean up");
+    }
+
+    #[test]
+    fn unique_run_suffix_uses_twelve_hex_digits() {
+        let suffix = unique_run_suffix(0).expect("suffix should generate");
+
+        assert_eq!(suffix.len(), 12);
+        assert!(
+            suffix
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        );
     }
 
     #[test]
