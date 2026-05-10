@@ -1,0 +1,15 @@
+{
+  "schema_version": "ax.mlx_inference_stack_failure.v1",
+  "model": "qwen3-coder-next-4bit",
+  "model_dir": ".internal/models/Qwen3-Coder-Next-4bit",
+  "artifact_dir": "benchmarks/results/mlx-inference/2026-05-10-full-readme-refresh",
+  "failed_stage": "ax_engine_direct_startup",
+  "fresh_reference_rows_completed": [
+    "mlx_lm",
+    "mlx_swift_lm"
+  ],
+  "ax_engine_rows_completed": [],
+  "error_summary": "ax-engine rejected the local artifact as an unsanitized Qwen3-Next checkpoint.",
+  "error_detail": "weight loading failed: unsanitized checkpoint detected: linear_attention norm mean absolute value is 0.0113 (expected ~1.0 for sanitized mlx-community weights). This checkpoint appears to store norm weights as zero-centered deltas, a raw HuggingFace format that ax-engine does not transform on load.",
+  "remediation": "Convert with mlx_lm.convert --hf-path <org/model> --mlx-path <dest> -q --q-bits 4, or use a pre-sanitized mlx-community artifact before publishing fresh AX rows."
+}

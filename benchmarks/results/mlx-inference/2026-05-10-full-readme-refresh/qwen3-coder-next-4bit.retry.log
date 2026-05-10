@@ -1,0 +1,11 @@
+=== AX Engine MLX inference stack retry ===
+model: .internal/models/Qwen3-Coder-Next-4bit
+prompt_tokens: [128, 512]
+generation_tokens: 128
+repetitions: 3
+cooldown: 5
+
+[result] Failed during ax_engine_direct_startup after fresh mlx_lm and mlx_swift_lm reference rows completed.
+
+RuntimeError: ax-engine-server did not become ready:
+Error: MetalRuntime(Generic("weight loading failed: unsanitized checkpoint detected: linear_attention norm mean absolute value is 0.0113 (expected ~1.0 for sanitized mlx-community weights). This checkpoint appears to store norm weights as zero-centered deltas — a raw HuggingFace format that ax-engine does not transform on load. To fix:\n  pip install mlx-lm\n  mlx_lm.convert --hf-path <org/model> --mlx-path <dest> -q --q-bits 4\n  Or download a pre-sanitized artifact from mlx-community on Hugging Face."))

@@ -440,9 +440,15 @@ MLX_TRIAL_RE = re.compile(
     r"total_time=(?P<total>[0-9.]+)"
 )
 
-def wait_for_server(url: str, timeout: float = 600.0) -> bool:
+def wait_for_server(
+    url: str,
+    timeout: float = 600.0,
+    proc: subprocess.Popen[Any] | None = None,
+) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
                 if response.status < 500:
@@ -451,6 +457,20 @@ def wait_for_server(url: str, timeout: float = 600.0) -> bool:
             pass
         time.sleep(0.5)
     return False
+
+
+def process_stderr_snapshot(proc: subprocess.Popen[Any], limit: int = 2000) -> str:
+    if proc.stderr is None:
+        return ""
+    if proc.poll() is None:
+        return "<process still running; stderr is unavailable until process exit>"
+    try:
+        _stdout, stderr = proc.communicate(timeout=1)
+    except subprocess.TimeoutExpired:
+        return "<timed out while reading process stderr>"
+    if not stderr:
+        return ""
+    return stderr.decode(errors="replace")[:limit]
 
 
 def kill_proc(proc: subprocess.Popen[Any]) -> None:
@@ -1931,8 +1951,11 @@ def main() -> None:
                     linear_attention_profile=args.gateddelta_prefill_profile,
                 )
                 procs.append(proc)
-                if not wait_for_server(f"http://127.0.0.1:{args.axengine_port}/health"):
-                    stderr = proc.stderr.read(2000).decode(errors="replace") if proc.stderr else ""
+                if not wait_for_server(
+                    f"http://127.0.0.1:{args.axengine_port}/health",
+                    proc=proc,
+                ):
+                    stderr = process_stderr_snapshot(proc)
                     raise RuntimeError(f"ax-engine-server did not become ready:\n{stderr}")
                 for prompt_doc in prompts:
                     validate_prompt_doc(

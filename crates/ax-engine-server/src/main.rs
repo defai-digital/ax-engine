@@ -427,6 +427,7 @@ enum ChatPromptTemplate {
     QwenChatMl,
     Llama3,
     Gemma4,
+    Glm47,
     PlainRolePrefix,
 }
 
@@ -437,6 +438,8 @@ impl ChatPromptTemplate {
             Self::QwenChatMl
         } else if normalized.contains("gemma-4") || normalized.contains("gemma4") {
             Self::Gemma4
+        } else if normalized.contains("glm") {
+            Self::Glm47
         } else if normalized.contains("llama-3")
             || normalized.contains("llama3")
             || normalized.contains("llama_3")
@@ -1655,7 +1658,7 @@ fn build_openai_mlx_lm_chat_request(
             sampling,
             stop_sequences,
             metadata: request.metadata,
-            chat_template_kwargs: qwen_chat_template_kwargs(state.model_id.as_ref()),
+            chat_template_kwargs: chat_template_kwargs_for_model_id(state.model_id.as_ref()),
         },
         stream: request.stream,
     })
@@ -1771,9 +1774,12 @@ fn build_mlx_lm_chat_messages(
         .collect()
 }
 
-fn qwen_chat_template_kwargs(model_id: &str) -> Option<serde_json::Value> {
-    (ChatPromptTemplate::for_model_id(model_id) == ChatPromptTemplate::QwenChatMl)
-        .then(|| json!({"enable_thinking": false}))
+fn chat_template_kwargs_for_model_id(model_id: &str) -> Option<serde_json::Value> {
+    matches!(
+        ChatPromptTemplate::for_model_id(model_id),
+        ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Glm47
+    )
+    .then(|| json!({"enable_thinking": false}))
 }
 
 fn openai_chat_stop_sequences(model_id: &str, stop: Option<OpenAiStopInput>) -> Vec<String> {
@@ -1788,6 +1794,11 @@ fn default_chat_stop_sequences(template: ChatPromptTemplate) -> Vec<String> {
         ChatPromptTemplate::QwenChatMl => vec!["<|im_end|>".to_string()],
         ChatPromptTemplate::Llama3 => vec!["<|eot_id|>".to_string()],
         ChatPromptTemplate::Gemma4 => vec!["<turn|>".to_string()],
+        ChatPromptTemplate::Glm47 => vec![
+            "<|endoftext|>".to_string(),
+            "<|user|>".to_string(),
+            "<|observation|>".to_string(),
+        ],
         ChatPromptTemplate::PlainRolePrefix => Vec::new(),
     }
 }
@@ -1800,6 +1811,7 @@ fn render_openai_chat_prompt_with_template(
     match template {
         ChatPromptTemplate::Llama3 => prompt.push_str("<|begin_of_text|>"),
         ChatPromptTemplate::Gemma4 => prompt.push_str("<bos>"),
+        ChatPromptTemplate::Glm47 => prompt.push_str("[gMASK]<sop>"),
         ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
     }
     for message in messages {
@@ -1828,6 +1840,26 @@ fn render_openai_chat_prompt_with_template(
                 prompt.push_str(&content);
                 prompt.push_str("<turn|>\n");
             }
+            ChatPromptTemplate::Glm47 => {
+                if matches!(role, "tool" | "function") {
+                    prompt.push_str("<|observation|><tool_response>");
+                    prompt.push_str(&content);
+                    prompt.push_str("</tool_response>");
+                } else {
+                    let tag = match role {
+                        "assistant" => "<|assistant|>",
+                        "system" => "<|system|>",
+                        _ => "<|user|>",
+                    };
+                    prompt.push_str(tag);
+                    if role == "assistant" {
+                        prompt.push_str("</think>");
+                        prompt.push_str(content.trim());
+                    } else {
+                        prompt.push_str(&content);
+                    }
+                }
+            }
             ChatPromptTemplate::PlainRolePrefix => {
                 prompt.push_str(role);
                 prompt.push_str(": ");
@@ -1842,6 +1874,7 @@ fn render_openai_chat_prompt_with_template(
             prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
         }
         ChatPromptTemplate::Gemma4 => prompt.push_str("<|turn>model\n"),
+        ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|></think>"),
         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
     }
     Ok(prompt)
@@ -3003,6 +3036,10 @@ sys.stdout.write(f"server::{prompt}")
             "<bos><|turn>system\nBe concise.<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n"
         );
         assert_eq!(
+            render_openai_chat_prompt("glm4_moe_lite", &messages).expect("glm prompt"),
+            "[gMASK]<sop><|system|>Be concise.<|user|>Hello<|assistant|></think>"
+        );
+        assert_eq!(
             render_openai_chat_prompt("unknown-local-model", &messages).expect("plain prompt"),
             "system: Be concise.\nuser: Hello\nassistant:"
         );
@@ -3023,11 +3060,49 @@ sys.stdout.write(f"server::{prompt}")
             vec!["<turn|>".to_string()]
         );
         assert_eq!(
+            openai_chat_stop_sequences("mlx-community/GLM-4.7-Flash-4bit", None),
+            vec![
+                "<|endoftext|>".to_string(),
+                "<|user|>".to_string(),
+                "<|observation|>".to_string()
+            ]
+        );
+        assert_eq!(
             openai_chat_stop_sequences(
                 "gemma4-e2b",
                 Some(OpenAiStopInput::Multiple(vec!["custom".to_string()]))
             ),
             vec!["custom".to_string()]
+        );
+    }
+
+    #[test]
+    fn openai_chat_template_kwargs_disable_thinking_for_qwen_and_glm() {
+        assert_eq!(
+            chat_template_kwargs_for_model_id("qwen3_dense"),
+            Some(json!({"enable_thinking": false}))
+        );
+        assert_eq!(
+            chat_template_kwargs_for_model_id("mlx-community/GLM-4.7-Flash-4bit"),
+            Some(json!({"enable_thinking": false}))
+        );
+        assert_eq!(chat_template_kwargs_for_model_id("gemma4-e2b"), None);
+    }
+
+    #[test]
+    fn openai_glm_prompt_renderer_preserves_tool_observation_shape() {
+        let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+            {"role": "user", "content": "call tool"},
+            {"role": "assistant", "content": "<tool_call>x</tool_call>"},
+            {"role": "tool", "content": "tool result"},
+            {"role": "user", "content": "continue"}
+        ]))
+        .expect("sample messages should deserialize");
+
+        assert_eq!(
+            render_openai_chat_prompt("mlx-community/GLM-4.7-Flash-4bit", &messages)
+                .expect("glm prompt"),
+            "[gMASK]<sop><|user|>call tool<|assistant|></think><tool_call>x</tool_call><|observation|><tool_response>tool result</tool_response><|user|>continue<|assistant|></think>"
         );
     }
 

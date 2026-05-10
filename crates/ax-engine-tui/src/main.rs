@@ -12,7 +12,7 @@ use ax_engine_tui::support::write_support_bundle;
 use ax_engine_tui::web;
 use serde_json::{Value, json};
 use std::env;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -346,6 +346,7 @@ struct DownloadJobSnapshot {
     status: String,
     model_dir: Option<String>,
     message: Option<String>,
+    progress: u8,
 }
 
 struct ManagedServer {
@@ -628,6 +629,9 @@ fn proxy_chat_blocking(
         native_body.len(),
         native_body
     );
+    // Time from when the server starts working to when we have the full body.
+    // Measured before write so network latency to localhost is included but negligible.
+    let server_start = std::time::Instant::now();
     upstream.write_all(forward.as_bytes())?;
 
     // Read the full response (headers + body).
@@ -642,6 +646,8 @@ fn proxy_chat_blocking(
             break;
         }
     }
+    // Capture server time before the Python tokenizer subprocess.
+    let server_elapsed = server_start.elapsed();
 
     let header_end = find_header_end(&buf).unwrap_or(0);
     let header_str = String::from_utf8_lossy(&buf[..header_end]);
@@ -671,18 +677,40 @@ fn proxy_chat_blocking(
         return write_json_error(client, "502 Bad Gateway", &msg);
     }
 
-    // Extract output_tokens from the response JSON.
-    let output_tokens: Vec<u32> = serde_json::from_slice::<serde_json::Value>(body_bytes)
-        .ok()
+    // Parse response JSON once; extract all needed fields.
+    let response_json = serde_json::from_slice::<serde_json::Value>(body_bytes).ok();
+
+    let output_tokens: Vec<u32> = response_json
+        .as_ref()
         .and_then(|v| v["output_tokens"].as_array().cloned())
         .unwrap_or_default()
         .iter()
         .filter_map(|v| v.as_u64().map(|n| n as u32))
         .collect();
 
+    // Token counts for performance stats.  output_token_count / prompt_token_count are
+    // populated by from_snapshot() in the SDK; fall back to measured lengths if absent.
+    let prompt_token_count = response_json
+        .as_ref()
+        .and_then(|v| v["prompt_token_count"].as_u64())
+        .unwrap_or(0) as u32;
+    let output_token_count = response_json
+        .as_ref()
+        .and_then(|v| v["output_token_count"].as_u64())
+        .map(|n| n as u32)
+        .unwrap_or(output_tokens.len() as u32);
+
     // Decode token IDs to text using the model's tokenizer.
     let raw_text = decode_tokens(model_dir, &output_tokens)?;
     let text = strip_generation_artifacts(&raw_text, model_id, model_dir);
+
+    // generation_tps = output tokens / server time (prefill + decode combined).
+    // For typical chat responses decode dominates, so this approximates decode throughput.
+    let generation_tps = if output_token_count > 0 && server_elapsed.as_millis() > 0 {
+        output_token_count as f64 / server_elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
 
     // Write OpenAI-format SSE to the JS client.
     client.write_all(
@@ -695,9 +723,15 @@ fn proxy_chat_blocking(
         );
         let _ = client.write_all(delta.as_bytes());
     }
-    let _ = client.write_all(
-        b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}]}\n\ndata: [DONE]\n\n",
+    // Final chunk: finish_reason + usage stats so the client can display perf metrics.
+    let finish_chunk = format!(
+        "data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\",\"index\":0}}],\
+         \"usage\":{{\"prompt_tokens\":{prompt_token_count},\
+         \"completion_tokens\":{output_token_count},\
+         \"generation_tps\":{:.1}}}}}\n\ndata: [DONE]\n\n",
+        generation_tps
     );
+    let _ = client.write_all(finish_chunk.as_bytes());
     client.flush().ok();
     Ok(())
 }
@@ -915,11 +949,16 @@ fn normalize_chat_messages(messages: &[Value]) -> Result<Vec<Value>, ManagerErro
     messages
         .iter()
         .map(|message| {
-            let role = message
+            let raw_role = message
                 .get("role")
                 .and_then(Value::as_str)
                 .unwrap_or("user")
                 .trim();
+            let role = if raw_role == "function" {
+                "tool"
+            } else {
+                raw_role
+            };
             let content = render_chat_content(message.get("content").unwrap_or(&Value::Null))?;
             Ok(json!({
                 "role": role,
@@ -958,6 +997,7 @@ fn tokenize_chat_messages(
 ) -> Result<Vec<u32>, ManagerError> {
     let normalized = normalize_chat_messages(messages)?;
     let messages_json = serde_json::to_string(&normalized)?;
+    let disable_thinking = disables_thinking_chat_template(model_id, model_dir);
     let script = r#"
 import json
 import sys
@@ -965,6 +1005,7 @@ import sys
 model_dir = sys.argv[1]
 model_id = sys.argv[2].lower()
 messages = json.loads(sys.argv[3])
+disable_thinking = sys.argv[4] == "1"
 
 try:
     from transformers import AutoTokenizer
@@ -974,7 +1015,7 @@ try:
         trust_remote_code=True,
     )
     kwargs = {}
-    if "qwen" in model_id or "qwen" in model_dir.lower():
+    if disable_thinking:
         kwargs["enable_thinking"] = False
     if getattr(tok, "chat_template", None) is not None:
         try:
@@ -1011,6 +1052,7 @@ except Exception as exc:
         model_dir.to_string(),
         model_id.to_string(),
         messages_json,
+        if disable_thinking { "1" } else { "0" }.to_string(),
     ])
     .or_else(|template_error| {
         let prompt = render_fallback_chat_prompt(model_id, Some(model_dir), &normalized);
@@ -1020,6 +1062,15 @@ except Exception as exc:
             ))
         })
     })
+}
+
+fn disables_thinking_chat_template(model_id: &str, model_dir: &str) -> bool {
+    let model_id = model_id.to_ascii_lowercase();
+    let model_dir = model_dir.to_ascii_lowercase();
+    model_id.contains("qwen")
+        || model_dir.contains("qwen")
+        || model_id.contains("glm")
+        || model_dir.contains("glm")
 }
 
 /// Tokenize `text` using the model's tokenizer.json via the Python `tokenizers` package.
@@ -1073,10 +1124,7 @@ fn strip_gemma_turn_artifacts(text: &str, tokens: &[&str]) -> String {
     }
 
     let mut t = cleaned.trim_start_matches('\n').trim_start();
-    loop {
-        let Some(rest) = strip_leading_gemma_role(t) else {
-            break;
-        };
+    while let Some(rest) = strip_leading_gemma_role(t) {
         t = rest.trim_start();
     }
 
@@ -1273,14 +1321,26 @@ fn render_fallback_chat_prompt(
             for msg in messages {
                 let role = msg["role"].as_str().unwrap_or("user");
                 let content = msg["content"].as_str().unwrap_or("");
-                let tag = match role {
-                    "assistant" => "<|assistant|>",
-                    "system" => "<|system|>",
-                    _ => "<|user|>",
-                };
-                prompt.push_str(&format!("{tag}\n{content}"));
+                if matches!(role, "tool" | "function") {
+                    prompt.push_str("<|observation|><tool_response>");
+                    prompt.push_str(content);
+                    prompt.push_str("</tool_response>");
+                } else {
+                    let tag = match role {
+                        "assistant" => "<|assistant|>",
+                        "system" => "<|system|>",
+                        _ => "<|user|>",
+                    };
+                    prompt.push_str(tag);
+                    if role == "assistant" {
+                        prompt.push_str("</think>");
+                        prompt.push_str(content.trim());
+                    } else {
+                        prompt.push_str(content);
+                    }
+                }
             }
-            prompt.push_str("<|assistant|>\n");
+            prompt.push_str("<|assistant|></think>");
         }
         _ => {
             for msg in messages {
@@ -1361,7 +1421,8 @@ fn stream_native_as_openai<W: Write, R: Read>(
                                 if !missing.is_empty() {
                                     let chunk = format!(
                                         "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":null,\"index\":0}}]}}\n\n",
-                                        serde_json::to_string(missing).unwrap_or_else(|_| "\"\"".to_string())
+                                        serde_json::to_string(missing)
+                                            .unwrap_or_else(|_| "\"\"".to_string())
                                     );
                                     if client.write_all(chunk.as_bytes()).is_err() {
                                         return Ok(());
@@ -1497,8 +1558,14 @@ fn hf_cache_path(repo_id: &str) -> Option<String> {
     }
 
     let snapshot = model_cache.join("snapshots").join(hash);
-    // Require config.json as a minimal validity check.
-    if snapshot.join("config.json").is_file() {
+    // Require config.json AND at least one .safetensors weight file.
+    // A directory with only config files is an incomplete download.
+    if snapshot.join("config.json").is_file()
+        && std::fs::read_dir(&snapshot)
+            .ok()?
+            .flatten()
+            .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("safetensors"))
+    {
         Some(snapshot.display().to_string())
     } else {
         None
@@ -1625,6 +1692,7 @@ fn start_download_job(runtime: &SharedRuntime, body: &str) -> Result<Value, Mana
             status: "running".to_string(),
             model_dir: None,
             message: None,
+            progress: 0,
         });
         runtime.status_message = format!("Downloading {repo_id}");
         (job_id, invocation)
@@ -1633,8 +1701,7 @@ fn start_download_job(runtime: &SharedRuntime, body: &str) -> Result<Value, Mana
     let runtime_for_job = Arc::clone(runtime);
     let job_id_for_thread = job_id.clone();
     std::thread::spawn(move || {
-        let result = run_download_invocation(&invocation);
-        finish_download_job(&runtime_for_job, &job_id_for_thread, result);
+        run_download_with_progress(&runtime_for_job, &job_id_for_thread, &invocation);
     });
 
     Ok(json!({"id": job_id, "status": "running"}))
@@ -1798,31 +1865,33 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         let rt = Arc::clone(runtime);
         let port_u16 = port as u16;
         let repo = repo_id.clone();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(500));
-            if server_health_ok(port_u16) {
-                if let Ok(mut guard) = rt.lock()
-                    && let Some(server) = guard.server.as_mut()
-                    && server.port == port_u16
-                    && !server.ready
-                {
-                    server.ready = true;
-                    guard.status_message = format!(
-                        "Server ready on port {} with {}",
-                        port_u16,
-                        short_model_label(&repo)
-                    );
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+                if server_health_ok(port_u16) {
+                    if let Ok(mut guard) = rt.lock()
+                        && let Some(server) = guard.server.as_mut()
+                        && server.port == port_u16
+                        && !server.ready
+                    {
+                        server.ready = true;
+                        guard.status_message = format!(
+                            "Server ready on port {} with {}",
+                            port_u16,
+                            short_model_label(&repo)
+                        );
+                    }
+                    break;
                 }
-                break;
-            }
-            // Stop polling if the server was stopped or replaced.
-            let still_ours = rt
-                .lock()
-                .ok()
-                .and_then(|g| g.server.as_ref().map(|s| s.port == port_u16))
-                .unwrap_or(false);
-            if !still_ours {
-                break;
+                // Stop polling if the server was stopped or replaced.
+                let still_ours = rt
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.server.as_ref().map(|s| s.port == port_u16))
+                    .unwrap_or(false);
+                if !still_ours {
+                    break;
+                }
             }
         });
     }
@@ -2071,6 +2140,7 @@ fn download_job_value(job: &DownloadJobSnapshot) -> Value {
         "status": job.status,
         "model_dir": job.model_dir,
         "message": job.message,
+        "progress": job.progress,
     })
 }
 
@@ -2163,15 +2233,17 @@ fn installed_bench_program() -> String {
 }
 
 const INSTALLED_DOWNLOAD_PYTHON: &str = r#"
-import json
-import subprocess
-import sys
+import fnmatch, json, subprocess, sys, threading, time
 from pathlib import Path
 
 IGNORE_PATTERNS = ["*.bin", "*.pt", "*.gguf", "*.msgpack", "flax_model*"]
 MANIFEST = "model-manifest.json"
 repo_id = sys.argv[1]
 bench = sys.argv[2] if len(sys.argv) > 2 else "ax-engine-bench"
+cache_base = Path.home() / ".cache" / "huggingface" / "hub" / ("models--" + repo_id.replace("/", "--"))
+
+def emit_progress(done, total, file=""):
+    print(json.dumps({"event": "progress", "done": done, "total": total, "file": file}), flush=True)
 
 def summary(dest, status, errors=None):
     dest = Path(dest)
@@ -2186,43 +2258,66 @@ def summary(dest, status, errors=None):
         "config_present": (dest / "config.json").exists(),
         "status": status,
         "errors": errors or [],
-        "server_command": [
-            "ax-engine-server",
-            "--mlx",
-            "--mlx-model-artifacts-dir",
-            str(dest),
-            "--port",
-            "8080",
-        ],
+        "server_command": ["ax-engine-server", "--mlx", "--mlx-model-artifacts-dir", str(dest), "--port", "8080"],
     }
 
 def print_summary(dest, status, errors=None):
     print(json.dumps(summary(dest, status, errors), sort_keys=True))
 
 try:
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import HfApi, snapshot_download
     try:
         from huggingface_hub.utils import disable_progress_bars
         disable_progress_bars()
     except Exception:
         pass
 except Exception as exc:
-    print_summary(
-        Path.home() / ".cache" / "huggingface" / "hub" / ("models--" + repo_id.replace("/", "--")),
-        "download_failed",
-        ["huggingface_hub is required for installed manager downloads. Run: python3 -m pip install huggingface_hub", str(exc)],
-    )
+    print_summary(cache_base, "download_failed",
+        ["huggingface_hub is required. Run: python3 -m pip install huggingface_hub", str(exc)])
     raise SystemExit(1)
+
+# Step 1: list files to know how many weights to expect.
+emit_progress(0, 1, "Fetching file list…")
+try:
+    all_files = list(HfApi().list_repo_files(repo_id=repo_id, repo_type="model"))
+    expected = [f for f in all_files if not any(fnmatch.fnmatch(f, p) for p in IGNORE_PATTERNS)]
+    total = max(len(expected), 1)
+except Exception:
+    total = 1
+emit_progress(0, total, "Starting download…")
+
+# Step 2: watch the blob cache directory while snapshot_download runs.
+blobs_dir = cache_base / "blobs"
+done_event = threading.Event()
+
+def watcher():
+    last = 0
+    while not done_event.is_set():
+        done_event.wait(timeout=2)
+        if blobs_dir.exists():
+            try:
+                count = sum(
+                    1 for p in blobs_dir.iterdir()
+                    if not p.name.startswith(".") and p.stat().st_size > 0
+                )
+                count = min(count, total)
+                if count != last:
+                    last = count
+                    emit_progress(count, total, f"Downloading… ({count}/{total} files)")
+            except Exception:
+                pass
+
+t = threading.Thread(target=watcher, daemon=True)
+t.start()
 
 try:
     dest = Path(snapshot_download(repo_id=repo_id, ignore_patterns=IGNORE_PATTERNS))
 except Exception as exc:
-    print_summary(
-        Path.home() / ".cache" / "huggingface" / "hub" / ("models--" + repo_id.replace("/", "--")),
-        "download_failed",
-        [str(exc)],
-    )
+    done_event.set(); t.join(timeout=3)
+    print_summary(cache_base, "download_failed", [str(exc)])
     raise SystemExit(1)
+finally:
+    done_event.set(); t.join(timeout=3)
 
 errors = []
 if not list(dest.glob("*.safetensors")):
@@ -2233,12 +2328,9 @@ if errors:
     print_summary(dest, "invalid", errors)
     raise SystemExit(1)
 
+emit_progress(total, total, "Generating manifest…")
 if not (dest / MANIFEST).exists():
-    result = subprocess.run(
-        [bench, "generate-manifest", str(dest), "--json"],
-        capture_output=True,
-        text=True,
-    )
+    result = subprocess.run([bench, "generate-manifest", str(dest), "--json"], capture_output=True, text=True)
     if result.returncode != 0:
         error = result.stderr.strip() or result.stdout.strip() or f"{bench} exited with {result.returncode}"
         print_summary(dest, "manifest_missing", [error])
@@ -2247,14 +2339,139 @@ if not (dest / MANIFEST).exists():
 print_summary(dest, "ready")
 "#;
 
-fn run_download_invocation(invocation: &CommandInvocation) -> Result<String, DownloadRunError> {
+fn run_download_with_progress(
+    runtime: &SharedRuntime,
+    job_id: &str,
+    invocation: &CommandInvocation,
+) {
     let mut command = Command::new(&invocation.program);
     command.args(&invocation.args);
     if let Some(cwd) = invocation.cwd.as_deref() {
         command.current_dir(cwd);
     }
-    let output = command.output().map_err(DownloadRunError::Io)?;
-    parse_download_output(output)
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            finish_download_job(runtime, job_id, Err(DownloadRunError::Io(e)));
+            return;
+        }
+    };
+
+    // Drain stderr in a background thread so a full pipe never blocks the child.
+    let stderr_thread = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = std::io::BufReader::new(stderr).read_to_string(&mut buf);
+            buf.trim().to_string()
+        })
+    });
+
+    // Stream stdout: progress events update the job snapshot; the final summary
+    // JSON (no "event" key) is kept as the last line to parse at the end.
+    let mut last_summary = String::new();
+    if let Some(stdout) = child.stdout.take() {
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            let trimmed = line.trim().to_string();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(json) = serde_json::from_str::<Value>(&trimmed) {
+                if json.get("event").and_then(Value::as_str) == Some("progress") {
+                    let done = json.get("done").and_then(Value::as_u64).unwrap_or(0);
+                    let total = json
+                        .get("total")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(1)
+                        .max(1);
+                    let file = json
+                        .get("file")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let pct = ((done as f64 / total as f64) * 100.0).min(99.0) as u8;
+                    update_download_progress(runtime, job_id, pct, &file);
+                } else {
+                    last_summary = trimmed;
+                }
+            }
+        }
+    }
+
+    let exit_ok = child.wait().is_ok_and(|s| s.success());
+    let stderr = stderr_thread
+        .and_then(|t| t.join().ok())
+        .unwrap_or_default();
+
+    let result = if last_summary.is_empty() {
+        Err(DownloadRunError::Failed(if stderr.is_empty() {
+            "download process produced no output".to_string()
+        } else {
+            stderr
+        }))
+    } else {
+        parse_download_summary(&last_summary, exit_ok, &stderr)
+    };
+    finish_download_job(runtime, job_id, result);
+}
+
+fn update_download_progress(runtime: &SharedRuntime, job_id: &str, pct: u8, file: &str) {
+    if let Ok(mut rt) = runtime.lock()
+        && let Some(job) = rt.download_jobs.iter_mut().find(|j| j.id == job_id)
+    {
+        job.progress = pct;
+        if !file.is_empty() {
+            job.message = Some(format!("{file}  {pct}%"));
+        }
+    }
+}
+
+fn parse_download_summary(
+    line: &str,
+    exit_ok: bool,
+    stderr: &str,
+) -> Result<String, DownloadRunError> {
+    let summary: Value = serde_json::from_str(line).map_err(|e| {
+        if exit_ok || stderr.is_empty() {
+            DownloadRunError::InvalidSummary(e.to_string())
+        } else {
+            DownloadRunError::Failed(stderr.to_string())
+        }
+    })?;
+    let status = summary
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let dest = summary
+        .get("dest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DownloadRunError::InvalidSummary("missing dest".to_string()))?;
+    if exit_ok && status == "ready" {
+        return Ok(dest.to_string());
+    }
+    let errors = summary
+        .get("errors")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .filter(|m| !m.is_empty())
+        .or_else(|| {
+            if stderr.is_empty() {
+                None
+            } else {
+                Some(stderr.to_string())
+            }
+        })
+        .unwrap_or_else(|| format!("status={status}"));
+    Err(DownloadRunError::Failed(errors))
 }
 
 #[derive(Debug, Error)]
@@ -2267,6 +2484,7 @@ enum DownloadRunError {
     InvalidSummary(String),
 }
 
+#[allow(dead_code)] // used in tests
 fn parse_download_output(output: Output) -> Result<String, DownloadRunError> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -2502,6 +2720,83 @@ mod tests {
     }
 
     #[test]
+    fn fallback_glm_prompt_matches_tokenizer_template_shape() {
+        let messages = vec![
+            json!({"role":"system","content":"Be concise."}),
+            json!({"role":"user","content":"hello"}),
+        ];
+
+        let prompt =
+            render_fallback_chat_prompt("mlx-community/GLM-4.7-Flash-4bit", None, &messages);
+
+        assert_eq!(
+            prompt,
+            "[gMASK]<sop><|system|>Be concise.<|user|>hello<|assistant|></think>"
+        );
+    }
+
+    #[test]
+    fn fallback_glm_prompt_preserves_assistant_history_shape() {
+        let messages = vec![
+            json!({"role":"user","content":"hello"}),
+            json!({"role":"assistant","content":"hi there"}),
+            json!({"role":"user","content":"next?"}),
+        ];
+
+        let prompt =
+            render_fallback_chat_prompt("mlx-community/GLM-4.7-Flash-4bit", None, &messages);
+
+        assert_eq!(
+            prompt,
+            "[gMASK]<sop><|user|>hello<|assistant|></think>hi there<|user|>next?<|assistant|></think>"
+        );
+    }
+
+    #[test]
+    fn fallback_glm_prompt_preserves_tool_observation_shape() {
+        let messages = vec![
+            json!({"role":"user","content":"call tool"}),
+            json!({"role":"assistant","content":"<tool_call>x</tool_call>"}),
+            json!({"role":"tool","content":"tool result"}),
+            json!({"role":"user","content":"continue"}),
+        ];
+
+        let prompt =
+            render_fallback_chat_prompt("mlx-community/GLM-4.7-Flash-4bit", None, &messages);
+
+        assert_eq!(
+            prompt,
+            "[gMASK]<sop><|user|>call tool<|assistant|></think><tool_call>x</tool_call><|observation|><tool_response>tool result</tool_response><|user|>continue<|assistant|></think>"
+        );
+    }
+
+    #[test]
+    fn manager_tokenizer_kwargs_disable_thinking_for_qwen_and_glm() {
+        assert!(disables_thinking_chat_template(
+            "mlx-community/Qwen3-4B-4bit",
+            "/models/qwen"
+        ));
+        assert!(disables_thinking_chat_template(
+            "mlx-community/GLM-4.7-Flash-4bit",
+            "/models/glm"
+        ));
+        assert!(!disables_thinking_chat_template(
+            "mlx-community/gemma-4-e2b-it-4bit",
+            "/models/gemma"
+        ));
+    }
+
+    #[test]
+    fn normalize_chat_messages_maps_legacy_function_role_to_tool() {
+        let messages = vec![json!({"role":"function","content":"tool result"})];
+
+        let normalized = normalize_chat_messages(&messages).expect("messages should normalize");
+
+        assert_eq!(normalized[0]["role"], "tool");
+        assert_eq!(normalized[0]["content"], "tool result");
+    }
+
+    #[test]
     fn strip_gemma4_turn_artifacts_truncates_next_turn_loop() {
         let text = "model\nhello there<turn|>\n<|turn>user\nrepeat?<turn|>\n<|turn>model\n";
 
@@ -2688,6 +2983,7 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
             status: "succeeded".to_string(),
             model_dir: Some("/models/gemma".to_string()),
             message: None,
+            progress: 0,
         });
 
         let resolved = resolve_start_model_dir(

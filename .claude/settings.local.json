@@ -155,7 +155,9 @@
       "Bash(swift build *)",
       "Bash(awk '/^#\\\\[cfg\\\\\\(test\\\\\\)\\\\]/,/^}/ {next} /\\\\.unwrap\\\\\\(\\\\\\)|\\\\.expect\\\\\\(/ {print NR\": \"$0}' /Users/akiralam/code/ax-engine-v4/crates/ax-engine-sdk/src/session.rs)",
       "Bash(swift test *)",
-      "Bash(cargo update *)"
+      "Bash(cargo update *)",
+      "Bash(shasum *)",
+      "Bash(ln -sf \"$\\(pwd\\)/target/release/ax-engine-manager\" /opt/homebrew/bin/ax-engine-manager)"
     ]
   }
 }

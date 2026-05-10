@@ -66,13 +66,6 @@ pub const MODEL_CATALOG: &[ModelCatalogEntry] = &[
     ModelCatalogEntry {
         kind: ModelKind::Text,
         family: ModelFamily::Qwen,
-        label: "Qwen3.6-35B-A3B-UD-MLX-4bit",
-        repo_id: "mlx-community/Qwen3.6-35B-A3B-UD-MLX-4bit",
-        note: "large MoE, 4-bit",
-    },
-    ModelCatalogEntry {
-        kind: ModelKind::Text,
-        family: ModelFamily::Qwen,
         label: "Qwen3.6-35B-A3B-5bit",
         repo_id: "mlx-community/Qwen3.6-35B-A3B-5bit",
         note: "large MoE, 5-bit",

@@ -18,6 +18,8 @@ cd "$ROOT_DIR"
 
 bash -n scripts/*.sh scripts/lib/common.sh
 "$PYTHON_BIN" -m py_compile \
+  scripts/bench_ax_serving.py \
+  scripts/test_bench_ax_serving.py \
   scripts/bench_mlx_inference_stack.py \
   scripts/test_bench_mlx_inference_stack.py \
   scripts/build_mlx_prefill_scaling_artifact.py \
@@ -57,6 +59,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/probe_mlx_model_support.py \
   scripts/test_probe_mlx_model_support.py \
   scripts/diagnose_server_rss.py
+"$PYTHON_BIN" -m unittest scripts/test_bench_ax_serving.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-turboquant-quality-gate.sh
 bash scripts/check-turboquant-microbench-gate.sh
