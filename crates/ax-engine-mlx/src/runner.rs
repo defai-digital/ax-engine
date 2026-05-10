@@ -236,10 +236,14 @@ impl MlxPrefixCache {
             return None;
         }
         let touch_tick = self.allocate_touch_tick();
-        let entry = self.entries.get_mut(key)?;
-        entry.touch_tick = touch_tick;
+        let snapshot = {
+            let entry = self.entries.get_mut(key)?;
+            entry.touch_tick = touch_tick;
+            Arc::clone(&entry.snapshot)
+        };
         self.lru.push_back((key.clone(), touch_tick));
-        Some(Arc::clone(&entry.snapshot))
+        self.compact_stale_lru_if_needed();
+        Some(snapshot)
     }
 
     fn insert(
@@ -265,6 +269,7 @@ impl MlxPrefixCache {
             },
         );
         self.lru.push_back((key.clone(), touch_tick));
+        self.compact_stale_lru_if_needed();
 
         let evictions = self.evict_until_within_policy();
         MlxPrefixCacheInsertOutcome {
@@ -288,6 +293,27 @@ impl MlxPrefixCache {
         let tick = self.next_touch_tick;
         self.next_touch_tick = self.next_touch_tick.wrapping_add(1);
         tick
+    }
+
+    fn stale_lru_compaction_limit(&self) -> usize {
+        self.entries
+            .len()
+            .max(self.policy.max_entries)
+            .max(1)
+            .saturating_mul(4)
+    }
+
+    fn compact_stale_lru_if_needed(&mut self) {
+        if self.lru.len() <= self.stale_lru_compaction_limit() {
+            return;
+        }
+
+        let entries = &self.entries;
+        self.lru.retain(|(key, touch_tick)| {
+            entries
+                .get(key)
+                .is_some_and(|entry| entry.touch_tick == *touch_tick)
+        });
     }
 
     fn evict_until_within_policy(&mut self) -> u32 {
@@ -369,7 +395,7 @@ impl MlxPrefixCacheTelemetry {
         self.bytes = self.bytes.max(other.bytes);
     }
 
-    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
         if *self == Self::default() {
             return;
         }
@@ -408,7 +434,7 @@ impl MlxPrefixCacheTelemetry {
         ];
 
         for (key, value) in entries {
-            upsert_route_decision(decisions, key, value);
+            decisions.upsert_route_decision(key, value);
         }
     }
 
@@ -570,7 +596,7 @@ impl NgramAccelerationTelemetry {
             .saturating_add(other.adaptive_draft_len_total);
     }
 
-    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
         let entries = [
             ("ax_ngram_draft_attempts", self.draft_attempts),
             ("ax_ngram_draft_tokens", self.draft_tokens),
@@ -622,7 +648,7 @@ impl NgramAccelerationTelemetry {
         ];
 
         for (key, value) in entries {
-            upsert_route_decision(decisions, key, value);
+            decisions.upsert_route_decision(key, value);
         }
     }
 }
@@ -689,6 +715,52 @@ fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, value: u
 
     if !updated {
         decisions.push((key.to_string(), value));
+    }
+}
+
+trait RouteDecisionSink {
+    fn upsert_route_decision(&mut self, key: &str, value: u32);
+}
+
+impl RouteDecisionSink for Vec<(String, u32)> {
+    fn upsert_route_decision(&mut self, key: &str, value: u32) {
+        upsert_route_decision(self, key, value);
+    }
+}
+
+struct IndexedRouteDecisions<'a> {
+    decisions: &'a mut Vec<(String, u32)>,
+    index: HashMap<String, usize>,
+}
+
+impl<'a> IndexedRouteDecisions<'a> {
+    fn new(decisions: &'a mut Vec<(String, u32)>) -> Self {
+        let mut compacted = Vec::with_capacity(decisions.len());
+        let mut index = HashMap::with_capacity(decisions.len());
+        for (key, value) in decisions.drain(..) {
+            if index.contains_key(&key) {
+                continue;
+            }
+            let position = compacted.len();
+            index.insert(key.clone(), position);
+            compacted.push((key, value));
+        }
+        *decisions = compacted;
+
+        Self { decisions, index }
+    }
+}
+
+impl RouteDecisionSink for IndexedRouteDecisions<'_> {
+    fn upsert_route_decision(&mut self, key: &str, value: u32) {
+        if let Some(position) = self.index.get(key).copied() {
+            self.decisions[position].1 = value;
+            return;
+        }
+
+        let position = self.decisions.len();
+        self.decisions.push((key.to_string(), value));
+        self.index.insert(key.to_string(), position);
     }
 }
 
@@ -811,7 +883,7 @@ impl DecodeTelemetry {
             .saturating_add(other.prefill_drain_async_evals);
     }
 
-    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
         let entries = [
             ("ax_mlx_prefill_steps", self.prefill_steps),
             ("ax_mlx_prefill_wall_us", self.prefill_wall_us),
@@ -844,7 +916,7 @@ impl DecodeTelemetry {
         ];
 
         for (key, value) in entries {
-            upsert_route_decision(decisions, key, value);
+            decisions.upsert_route_decision(key, value);
         }
     }
 }
@@ -869,7 +941,7 @@ impl Gemma4MoeProfileSnapshot {
         self.post_wall_us = self.post_wall_us.saturating_add(other.post_wall_us);
     }
 
-    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
         if self.enabled == 0 {
             return;
         }
@@ -912,7 +984,7 @@ impl Gemma4MoeProfileSnapshot {
         ];
 
         for (key, value) in entries {
-            upsert_route_decision(decisions, key, value);
+            decisions.upsert_route_decision(key, value);
         }
     }
 }
@@ -933,7 +1005,7 @@ impl LinearAttentionProfileSnapshot {
         self.output_wall_us = self.output_wall_us.saturating_add(other.output_wall_us);
     }
 
-    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
         if self.enabled == 0 {
             return;
         }
@@ -965,7 +1037,7 @@ impl LinearAttentionProfileSnapshot {
         ];
 
         for (key, value) in entries {
-            upsert_route_decision(decisions, key, value);
+            decisions.upsert_route_decision(key, value);
         }
     }
 }
@@ -1211,7 +1283,7 @@ impl KvCacheTelemetry {
         }
     }
 
-    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
         if self.request_snapshots == 0 {
             return;
         }
@@ -1272,7 +1344,7 @@ impl KvCacheTelemetry {
         ];
 
         for (key, value) in entries {
-            upsert_route_decision(decisions, key, value);
+            decisions.upsert_route_decision(key, value);
         }
 
         if self.compression_request_snapshots > 0 {
@@ -1424,7 +1496,7 @@ impl KvCacheTelemetry {
             ];
 
             for (key, value) in compression_entries {
-                upsert_route_decision(decisions, key, value);
+                decisions.upsert_route_decision(key, value);
             }
         }
     }
@@ -1701,12 +1773,16 @@ impl ExecutionRunner for MlxRunner {
             }
             request_updates.push(result.update);
         }
-        ngram_acceleration.append_route_decisions(&mut route_metadata.crossover_decisions);
-        decode_telemetry.append_route_decisions(&mut route_metadata.crossover_decisions);
-        gemma4_moe_profile.append_route_decisions(&mut route_metadata.crossover_decisions);
-        linear_attention_profile.append_route_decisions(&mut route_metadata.crossover_decisions);
-        kv_cache.append_route_decisions(&mut route_metadata.crossover_decisions);
-        prefix_cache.append_route_decisions(&mut route_metadata.crossover_decisions);
+        {
+            let mut route_decisions =
+                IndexedRouteDecisions::new(&mut route_metadata.crossover_decisions);
+            ngram_acceleration.append_route_decisions(&mut route_decisions);
+            decode_telemetry.append_route_decisions(&mut route_decisions);
+            gemma4_moe_profile.append_route_decisions(&mut route_decisions);
+            linear_attention_profile.append_route_decisions(&mut route_decisions);
+            kv_cache.append_route_decisions(&mut route_decisions);
+            prefix_cache.append_route_decisions(&mut route_decisions);
+        }
 
         let tokens_written: u32 = input
             .execution_batch
@@ -3393,6 +3469,26 @@ mod tests {
     }
 
     #[test]
+    fn prefix_cache_hits_do_not_grow_lru_without_bound() {
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 4,
+        });
+        let key = test_prefix_key(1);
+        cache.insert(key.clone(), test_prefix_snapshot(4, 128));
+
+        for _ in 0..10_000 {
+            assert!(cache.get(&key).is_some());
+        }
+
+        assert_eq!(cache.stats().entries, 1);
+        assert!(
+            cache.lru.len() <= cache.stale_lru_compaction_limit(),
+            "stale LRU ticks should be compacted under repeated hits"
+        );
+    }
+
+    #[test]
     fn prefix_cache_eviction_is_lru_and_visible() {
         let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
             max_bytes: 256,
@@ -4403,6 +4499,30 @@ mod tests {
                 .filter(|(key, _)| key == "ax_ngram_draft_tokens")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn indexed_route_decisions_update_in_place_and_remove_initial_duplicates() {
+        let mut decisions = vec![
+            ("other".to_string(), 7),
+            ("ax_ngram_draft_tokens".to_string(), 1),
+            ("ax_ngram_draft_tokens".to_string(), 2),
+        ];
+
+        {
+            let mut indexed = IndexedRouteDecisions::new(&mut decisions);
+            indexed.upsert_route_decision("ax_ngram_draft_tokens", 9);
+            indexed.upsert_route_decision("new_counter", 3);
+        }
+
+        assert_eq!(
+            decisions,
+            vec![
+                ("other".to_string(), 7),
+                ("ax_ngram_draft_tokens".to_string(), 9),
+                ("new_counter".to_string(), 3),
+            ]
         );
     }
 

@@ -2566,6 +2566,16 @@ struct FfnGateUpProjectionBindings<'a> {
 }
 
 #[derive(Clone, Copy)]
+struct FusedFfnProjectionBindings<'a> {
+    gate_weight: &'a MetalNativeTensorBufferBinding,
+    gate_row_byte_offset: u64,
+    gate_cols: usize,
+    up_weight: &'a MetalNativeTensorBufferBinding,
+    up_row_byte_offset: u64,
+    up_cols: usize,
+}
+
+#[derive(Clone, Copy)]
 struct MoeExpertGateUpProjectionBindings<'a> {
     gate: &'a MetalNativeTensorBufferBinding,
     gate_row_offset: usize,
@@ -2603,6 +2613,30 @@ fn ffn_gate_up_projection_bindings<'a>(
             })
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn fused_ffn_projection_bindings<'a>(
+    ffn_gate_up: &'a MetalFfnGateUpBindings,
+    buffers: &'a MetalNativeModelBufferBindings,
+    intermediate_dim: usize,
+    weight_dtype: NativeTensorDataType,
+) -> Option<FusedFfnProjectionBindings<'a>> {
+    let projections = ffn_gate_up_projection_bindings(ffn_gate_up, buffers, intermediate_dim)?;
+    let (_, gate_cols) = tensor_matrix_dimensions(&projections.gate.meta.spec)?;
+    let (_, up_cols) = tensor_matrix_dimensions(&projections.up.meta.spec)?;
+    let gate_row_byte_offset =
+        fused_weight_byte_offset(projections.gate_row_offset, gate_cols, weight_dtype)? as u64;
+    let up_row_byte_offset =
+        fused_weight_byte_offset(projections.up_row_offset, up_cols, weight_dtype)? as u64;
+    Some(FusedFfnProjectionBindings {
+        gate_weight: projections.gate,
+        gate_row_byte_offset,
+        gate_cols,
+        up_weight: projections.up,
+        up_row_byte_offset,
+        up_cols,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -15037,14 +15071,6 @@ fn fused_layer_continuation_on_gpu(
     )
     .ok()?;
 
-    // Resolve FFN gate/up weight bindings.
-    let ffn_gate_up_weights =
-        ffn_gate_up_projection_bindings(&layer.ffn_gate_up, buffers, intermediate_dim)?;
-    let gate_weight = ffn_gate_up_weights.gate;
-    let up_weight = ffn_gate_up_weights.up;
-    let gate_row_offset = ffn_gate_up_weights.gate_row_offset;
-    let up_row_offset = ffn_gate_up_weights.up_row_offset;
-
     let hidden_dim_u32 = saturating_usize_to_u32(hidden_dim);
     let intermediate_dim_u32 = saturating_usize_to_u32(intermediate_dim);
     let epsilon = native_model_rms_norm_epsilon(artifacts);
@@ -15055,21 +15081,18 @@ fn fused_layer_continuation_on_gpu(
     if dims.input_width > attn_o_cols || hidden_dim > attn_o_rows {
         return None;
     }
-    let (_, gate_cols) = tensor_matrix_dimensions(&gate_weight.meta.spec)?;
-    if hidden_dim > gate_cols {
+    let ffn_projection =
+        fused_ffn_projection_bindings(&layer.ffn_gate_up, buffers, intermediate_dim, weight_dtype)?;
+    if hidden_dim > ffn_projection.gate_cols {
         return None;
     }
-    let (_, up_cols) = tensor_matrix_dimensions(&up_weight.meta.spec)?;
-    if hidden_dim > up_cols {
+    if hidden_dim > ffn_projection.up_cols {
         return None;
     }
     let (_, down_cols) = tensor_matrix_dimensions(&ffn_down.meta.spec)?;
     if intermediate_dim > down_cols {
         return None;
     }
-
-    let gate_row_byte_offset = fused_weight_byte_offset(gate_row_offset, gate_cols, weight_dtype)?;
-    let up_row_byte_offset = fused_weight_byte_offset(up_row_offset, up_cols, weight_dtype)?;
 
     // Ensure arena is allocated and large enough.
     let mut arena_guard = bringup
@@ -15152,12 +15175,12 @@ fn fused_layer_continuation_on_gpu(
             encoder,
             proj_pipeline,
             &arena.normed,
-            &gate_weight.native_buffer,
-            gate_row_byte_offset as u64,
+            &ffn_projection.gate_weight.native_buffer,
+            ffn_projection.gate_row_byte_offset,
             &arena.gate,
             weight_dtype,
             intermediate_dim_u32,
-            saturating_usize_to_u32(gate_cols),
+            saturating_usize_to_u32(ffn_projection.gate_cols),
             hidden_dim_u32,
         );
 
@@ -15166,12 +15189,12 @@ fn fused_layer_continuation_on_gpu(
             encoder,
             proj_pipeline,
             &arena.normed,
-            &up_weight.native_buffer,
-            up_row_byte_offset as u64,
+            &ffn_projection.up_weight.native_buffer,
+            ffn_projection.up_row_byte_offset,
             &arena.up,
             weight_dtype,
             intermediate_dim_u32,
-            saturating_usize_to_u32(up_cols),
+            saturating_usize_to_u32(ffn_projection.up_cols),
             hidden_dim_u32,
         );
 
@@ -15321,33 +15344,23 @@ fn fused_ffn_only_on_gpu(
     )
     .ok()?;
 
-    let ffn_gate_up_weights =
-        ffn_gate_up_projection_bindings(&layer.ffn_gate_up, buffers, intermediate_dim)?;
-    let gate_weight = ffn_gate_up_weights.gate;
-    let up_weight = ffn_gate_up_weights.up;
-    let gate_row_offset = ffn_gate_up_weights.gate_row_offset;
-    let up_row_offset = ffn_gate_up_weights.up_row_offset;
-
     let hidden_dim_u32 = saturating_usize_to_u32(hidden_dim);
     let intermediate_dim_u32 = saturating_usize_to_u32(intermediate_dim);
     let epsilon = native_model_rms_norm_epsilon(artifacts);
     let weight_offset = native_model_rms_norm_weight_offset(artifacts);
 
-    let (_, gate_cols) = tensor_matrix_dimensions(&gate_weight.meta.spec)?;
-    if hidden_dim > gate_cols {
+    let ffn_projection =
+        fused_ffn_projection_bindings(&layer.ffn_gate_up, buffers, intermediate_dim, weight_dtype)?;
+    if hidden_dim > ffn_projection.gate_cols {
         return None;
     }
-    let (_, up_cols) = tensor_matrix_dimensions(&up_weight.meta.spec)?;
-    if hidden_dim > up_cols {
+    if hidden_dim > ffn_projection.up_cols {
         return None;
     }
     let (_, down_cols) = tensor_matrix_dimensions(&ffn_down.meta.spec)?;
     if intermediate_dim > down_cols {
         return None;
     }
-
-    let gate_row_byte_offset = fused_weight_byte_offset(gate_row_offset, gate_cols, weight_dtype)?;
-    let up_row_byte_offset = fused_weight_byte_offset(up_row_offset, up_cols, weight_dtype)?;
 
     let mut arena_guard = bringup
         .state
@@ -15391,12 +15404,12 @@ fn fused_ffn_only_on_gpu(
             encoder,
             proj_pipeline,
             &arena.normed,
-            &gate_weight.native_buffer,
-            gate_row_byte_offset as u64,
+            &ffn_projection.gate_weight.native_buffer,
+            ffn_projection.gate_row_byte_offset,
             &arena.gate,
             weight_dtype,
             intermediate_dim_u32,
-            saturating_usize_to_u32(gate_cols),
+            saturating_usize_to_u32(ffn_projection.gate_cols),
             hidden_dim_u32,
         );
 
@@ -15405,12 +15418,12 @@ fn fused_ffn_only_on_gpu(
             encoder,
             proj_pipeline,
             &arena.normed,
-            &up_weight.native_buffer,
-            up_row_byte_offset as u64,
+            &ffn_projection.up_weight.native_buffer,
+            ffn_projection.up_row_byte_offset,
             &arena.up,
             weight_dtype,
             intermediate_dim_u32,
-            saturating_usize_to_u32(up_cols),
+            saturating_usize_to_u32(ffn_projection.up_cols),
             hidden_dim_u32,
         );
 
