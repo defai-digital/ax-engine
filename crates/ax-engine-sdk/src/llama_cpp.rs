@@ -397,23 +397,19 @@ fn run_llama_cpp_cli_generate(
         })?;
     let output_text = extract_cli_response(output_text);
 
-    Ok(GenerateResponse {
+    Ok(build_llama_cpp_blocking_response(
         request_id,
-        model_id: request.model_id.clone(),
-        prompt_tokens: Vec::new(),
-        prompt_text: Some(prompt_text),
-        output_tokens: Vec::new(),
-        output_token_logprobs: Vec::new(),
-        output_text: Some(output_text),
-        prompt_token_count: None,
-        output_token_count: None,
-        status: GenerateStatus::Finished,
-        finish_reason: None,
-        step_count: 0,
-        ttft_step: None,
-        route: GenerateRouteReport::with_execution_plan("llama_cpp.blocking_cli"),
-        runtime: runtime.clone(),
-    })
+        &request.model_id,
+        runtime,
+        Vec::new(),
+        Some(prompt_text),
+        Vec::new(),
+        Vec::new(),
+        output_text,
+        None,
+        None,
+        GenerateRouteReport::with_execution_plan("llama_cpp.blocking_cli"),
+    ))
 }
 
 fn run_llama_cpp_server_completion_generate(
@@ -437,26 +433,51 @@ fn run_llama_cpp_server_completion_generate(
         None
     };
 
-    Ok(GenerateResponse {
+    Ok(build_llama_cpp_blocking_response(
         request_id,
-        model_id: request.model_id.clone(),
-        prompt_tokens: request.input_tokens.clone(),
-        prompt_text: request.input_text.clone(),
+        &request.model_id,
+        runtime,
+        request.input_tokens.clone(),
+        request.input_text.clone(),
         output_tokens,
         output_token_logprobs,
-        output_text: Some(strip_bos_leading_space(response.content)),
+        strip_bos_leading_space(response.content),
+        prompt_token_count,
+        finish_reason_from_stop_type(response.stop, response.stop_type.as_deref()),
+        llama_cpp_server_completion_route("llama_cpp.server_completion", response.tokens_cached),
+    ))
+}
+
+fn build_llama_cpp_blocking_response(
+    request_id: u64,
+    model_id: &str,
+    runtime: &RuntimeReport,
+    prompt_tokens: Vec<u32>,
+    prompt_text: Option<String>,
+    output_tokens: Vec<u32>,
+    output_token_logprobs: Vec<Option<f32>>,
+    output_text: String,
+    prompt_token_count: Option<u32>,
+    finish_reason: Option<GenerateFinishReason>,
+    route: GenerateRouteReport,
+) -> GenerateResponse {
+    GenerateResponse {
+        request_id,
+        model_id: model_id.to_string(),
+        prompt_tokens,
+        prompt_text,
+        output_tokens,
+        output_token_logprobs,
+        output_text: Some(output_text),
         prompt_token_count,
         output_token_count: None,
         status: GenerateStatus::Finished,
-        finish_reason: finish_reason_from_stop_type(response.stop, response.stop_type.as_deref()),
+        finish_reason,
         step_count: 0,
         ttft_step: None,
-        route: llama_cpp_server_completion_route(
-            "llama_cpp.server_completion",
-            response.tokens_cached,
-        ),
+        route,
         runtime: runtime.clone(),
-    })
+    }
 }
 
 fn start_llama_cpp_server_completion_stream(
