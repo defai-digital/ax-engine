@@ -163,8 +163,8 @@ def start_direct_server(model_dir: Path, port: int) -> tuple[subprocess.Popen[An
         direct_mode=True,
     )
     process_spawn_ms = (time.perf_counter() - started) * 1000.0
-    if not bench.wait_for_server(f"http://127.0.0.1:{port}/health"):
-        stderr = proc.stderr.read(2000).decode(errors="replace") if proc.stderr else ""
+    if not bench.wait_for_server(f"http://127.0.0.1:{port}/health", proc=proc):
+        stderr = bench.process_stderr_snapshot(proc)
         bench.kill_proc(proc)
         raise RuntimeError(f"ax-engine-server did not become ready:\n{stderr}")
     server_ready_ms = (time.perf_counter() - started) * 1000.0

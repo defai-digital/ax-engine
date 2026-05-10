@@ -25,6 +25,12 @@ checks, and readiness. `check-bench-inference-stack.sh` is the exception in
 that family: it validates the MLX inference-stack harness contract without
 running `ax-engine-bench` or loading a model.
 
+Use `bench_ax_serving.py` for online serving benchmarks through
+`/v1/generate/stream`. That harness measures client-observed TTFT, TPOT,
+streaming step intervals, E2E latency, request throughput, output-token
+throughput, queue delay, and SLO goodput over a JSONL prompt corpus. It is
+serving evidence, not a raw model-runtime throughput baseline.
+
 Do not use ad hoc server timing or llama.cpp route checks as AX-owned MLX
 throughput baselines.
 
@@ -82,6 +88,13 @@ throughput baselines.
   reason labels, when the runtime emits them.
 - `test_bench_mlx_inference_stack.py`: unit tests for the MLX benchmark
   contract, parser, prompt artifact hash checks, and secondary adapter shape.
+- `bench_ax_serving.py`: online serving benchmark against
+  `/v1/generate/stream`. It reads a JSONL prompt corpus, runs closed-loop
+  concurrency or open-loop request-rate sweeps, and writes
+  `ax.serving_benchmark.v1` artifacts with TTFT, TPOT, E2E, queue-delay,
+  throughput, category, and goodput summaries.
+- `test_bench_ax_serving.py`: unit tests for the serving benchmark SSE parser,
+  latency accounting, percentile/goodput summary, and artifact writer.
 - `check_gateddelta_prefill_profile_artifact.py`: fail-closed validator for
   `--gateddelta-prefill-profile` artifacts. It requires Qwen-style
   linear-attention metadata, the 512/2048/8192/32768 prompt matrix, direct AX

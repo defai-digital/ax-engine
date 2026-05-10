@@ -106,6 +106,21 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(row["ttft_source"], "derived_from_mlx_lm_prefill_tok_s")
         self.assertEqual(row["ttft_ms"]["median"], 300.0)
 
+    def test_wait_for_server_returns_when_process_exits(self) -> None:
+        class ExitedProcess:
+            def poll(self) -> int:
+                return 1
+
+        with patch.object(bench.urllib.request, "urlopen") as urlopen:
+            ready = bench.wait_for_server(
+                "http://127.0.0.1:1/health",
+                timeout=60.0,
+                proc=ExitedProcess(),
+            )
+
+        self.assertFalse(ready)
+        urlopen.assert_not_called()
+
     def test_prompt_artifact_records_hash_and_validates_inline_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prompt = bench.write_prompt_tokens(

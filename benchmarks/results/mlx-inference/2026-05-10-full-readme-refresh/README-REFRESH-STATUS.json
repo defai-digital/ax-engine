@@ -1,0 +1,31 @@
+{
+  "schema_version": "ax.readme_refresh_status.v1",
+  "artifact_dir": "benchmarks/results/mlx-inference/2026-05-10-full-readme-refresh",
+  "completed": [
+    "gemma-4-e2b-it-4bit",
+    "gemma-4-e2b-it-5bit",
+    "gemma-4-e2b-it-6bit",
+    "gemma-4-e2b-it-8bit",
+    "gemma-4-e4b-it-4bit",
+    "gemma-4-26b-a4b-it-4bit",
+    "gemma-4-31b-it-4bit",
+    "qwen3_5-9b-mlx-4bit",
+    "qwen3_6-35b-a3b-ud-mlx-4bit",
+    "qwen3_6-35b-a3b-5bit",
+    "qwen3_6-35b-a3b-6bit",
+    "qwen3_6-35b-a3b-8bit",
+    "glm-4.7-flash-4bit"
+  ],
+  "failed": [
+    {
+      "model": "qwen3-coder-next-4bit",
+      "stage": "ax_engine_direct_startup",
+      "reason": "ax-engine rejected the local artifact as an unsanitized Qwen3-Next checkpoint: linear_attention norm mean absolute value is 0.0113, expected approximately 1.0 for sanitized mlx-community weights.",
+      "retry_log": "benchmarks/results/mlx-inference/2026-05-10-full-readme-refresh/qwen3-coder-next-4bit.retry.log"
+    }
+  ],
+  "total": 14,
+  "note": "Fresh rerun completed for 13 models. qwen3-coder-next-4bit is blocked by the local unsanitized checkpoint and remains seeded from 2026-05-09 until a sanitized artifact is available.",
+  "last_completed": "glm-4.7-flash-4bit",
+  "updated_at": "2026-05-10T07:18:22+00:00"
+}

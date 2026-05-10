@@ -5,6 +5,7 @@ outputs for AX Engine v4.
 
 ```text
 benchmarks/
+  corpora/
   manifests/
     matrix/
     replay/
@@ -14,6 +15,10 @@ benchmarks/
 
 The manifests are workload contracts. They are not the MLX reference-inference
 comparison harness. Use `docs/BENCHMARKS.md` for the full benchmarking model.
+
+Prompt corpora under `benchmarks/corpora/` are inputs for serving-oriented
+benchmarks. They are deliberately separate from scenario/replay manifests
+because they model user request mixes rather than engine contract gates.
 
 ## Manifest Families
 
@@ -139,6 +144,28 @@ Validate the harness contract without loading a model:
 ```text
 bash scripts/check-bench-inference-stack.sh
 ```
+
+## Online Serving Benchmarks
+
+For user-visible serving latency and request-mix evidence, use:
+
+```text
+python3 scripts/bench_ax_serving.py \
+  --base-url http://127.0.0.1:8080 \
+  --model-id qwen3_dense \
+  --corpus benchmarks/corpora/serving/smoke.jsonl \
+  --input-kind tokens \
+  --requests 12 \
+  --warmup-requests 2 \
+  --concurrency 2 \
+  --output benchmarks/results/serving/$(date +%F)-qwen3-dense-smoke.json
+```
+
+This writes `ax.serving_benchmark.v1` artifacts with TTFT, client TPOT,
+streaming step intervals, E2E latency, request throughput, output-token
+throughput, queue delay, category summaries, and SLO goodput. Serving artifacts
+are not model-inference throughput baselines and should not be merged into the
+MLX inference-stack table.
 
 ## Generated Outputs
 

@@ -23,6 +23,9 @@ Start here:
 - `MANAGER.md`: `ax-engine-manager` web quick start, support bundles, and
   release gate
 - `BENCHMARKS.md`: how to interpret performance and workload-contract evidence
+- `SERVING-BENCHMARKS.md`: online serving benchmark contract for prompt-mix,
+  concurrency, request-rate, latency percentile, throughput, and SLO-goodput
+  evidence
 - `PYTHON.md`: Python binding scope, examples, and LangChain integration
 - `JAVASCRIPT.md`: TypeScript/JS SDK usage and LangChain integration
 - `GO.md`: Go SDK usage and examples
@@ -31,12 +34,15 @@ Start here:
 - `ARCHITECTURE.md`: crate boundaries and dependency rules
 
 Start with `PERFORMANCE.md` for the current public result-table context, then
-use `BENCHMARKS.md` for the benchmark evidence taxonomy. `BENCHMARKS.md`
-defines the project split between `ax-engine-bench` workload-contract artifacts,
+use `BENCHMARKS.md` for the benchmark evidence taxonomy. Use
+`SERVING-BENCHMARKS.md` when the claim is market-style online serving behavior
+over a prompt mix. `BENCHMARKS.md` defines the project split between
+`ax-engine-bench` workload-contract artifacts,
 `scripts/bench_mlx_inference_stack.py` repo-owned MLX model-inference
-comparisons with a required matching `mlx_lm.benchmark` primary baseline, optional
-`mlx-swift-lm` secondary baseline adapter rows, delegated `mlx_lm_delegated`
-compatibility checks, and delegated non-MLX route checks.
+comparisons with a required matching `mlx_lm.benchmark` primary baseline,
+optional `mlx-swift-lm` secondary baseline adapter rows, delegated
+`mlx_lm_delegated` compatibility checks, delegated non-MLX route checks, and
+serving latency artifacts.
 
 Experimental MLX KV compression, including `turboquant-shadow` and
 `turboquant-fused-experimental`, is off by default and is not a production

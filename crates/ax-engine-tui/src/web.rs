@@ -59,6 +59,9 @@ pub fn index_html() -> String {
         <div id="model-status" class="model-status"></div>
 
         <button id="download" type="button" class="btn btn-accent full-width">DOWNLOAD</button>
+        <div id="dl-progress-wrap" class="dl-progress-wrap" hidden>
+          <div id="dl-progress-fill" class="dl-progress-fill"></div>
+        </div>
         <p id="download-status" class="status-text"></p>
 
         <div id="downloaded-list"></div>
@@ -80,6 +83,15 @@ pub fn index_html() -> String {
           <label class="field-label">PORT</label>
           <input id="port" class="field-input field-input-sm" type="number"
             min="1" max="65535" value="8080">
+        </div>
+        <div class="field-group">
+          <label class="field-label">ENGINE</label>
+          <select id="engine" class="field-select">
+            <option value="ax-engine">ax-engine</option>
+            <option value="ax-engine-ngram">ax-engine n-gram</option>
+            <option value="mlx-lm">mlx-lm</option>
+            <option value="mlx-swift">mlx-swift</option>
+          </select>
         </div>
 
         <div class="server-controls">
@@ -333,6 +345,23 @@ body::after {
 }
 .endpoint-list a:hover { color:var(--accent); }
 
+/* ── Download progress bar ───────────────────────────────── */
+.dl-progress-wrap {
+  height:5px;background:var(--border-hi);border-radius:3px;margin-top:8px;overflow:hidden;
+}
+.dl-progress-fill {
+  height:100%;background:var(--accent);border-radius:3px;
+  width:0%;transition:width 1.2s linear;
+  box-shadow:0 0 6px rgba(0,212,255,0.5);
+}
+.dl-progress-wrap.indeterminate .dl-progress-fill {
+  width:40% !important;animation:dl-scan 1.4s ease-in-out infinite;
+}
+@keyframes dl-scan {
+  0%   { transform:translateX(-120%); }
+  100% { transform:translateX(300%); }
+}
+
 /* ── Downloaded quick-pick ───────────────────────────────── */
 .dl-section-label {
   font-family:var(--mono);font-size:9px;letter-spacing:1px;
@@ -458,6 +487,12 @@ body::after {
   font-family:var(--mono);font-size:9px;color:var(--text-dim);letter-spacing:.5px;
 }
 
+/* ── Perf stats line ─────────────────────────────────────── */
+.msg-stats {
+  font-family:var(--mono);font-size:10px;color:var(--accent-d);
+  margin-top:8px;letter-spacing:0.5px;border-top:1px solid var(--border);padding-top:5px;
+}
+
 /* ── Mobile ──────────────────────────────────────────────── */
 @media (max-width:760px) {
   .workspace { grid-template-columns:1fr;grid-template-rows:auto 1fr; }
@@ -503,6 +538,7 @@ const app = {
   serverStarting:   false,
   serverPort:       8080,
   serverModelDir:   null,
+  serverModelId:    null,
   downloadedModels: [],
   streaming:        false,
 };
@@ -524,6 +560,7 @@ function applyState(data) {
     clearChat();
   }
   if (newModelDir) app.serverModelDir = newModelDir;
+  app.serverModelId = (data.server && data.server.model_id) || null;
 
   $('sys-status').textContent = data.status || '';
 
@@ -539,6 +576,9 @@ function applyState(data) {
 
   $('server-status').textContent = (data.server && data.server.status) || '';
   renderEndpoints((data.server && data.server.endpoints) || []);
+  if (data.server && data.server.engine) {
+    $('engine').value = data.server.engine;
+  }
 
   fillModelSelectors(data);
   renderDownloaded(app.downloadedModels);
@@ -701,6 +741,7 @@ function serverPayload() {
     repo_id:   entry ? entry.repo_id : '',
     model_dir: $('model-dir').value.trim(),
     manual_model_dir: $('model-dir').dataset.userEdited === '1',
+    engine:    $('engine').value,
   });
 }
 
@@ -763,6 +804,9 @@ async function startDownload() {
 
   $('download').disabled = true;
   $('download-status').textContent = `Downloading ${entry.repo_id}…`;
+  $('dl-progress-wrap').hidden = false;
+  $('dl-progress-wrap').classList.add('indeterminate');
+  $('dl-progress-fill').style.width = '0%';
 
   try {
     const job = await api('/api/download', {
@@ -771,6 +815,7 @@ async function startDownload() {
     });
     pollDownload(job.id, entry.repo_id);
   } catch (err) {
+    $('dl-progress-wrap').hidden = true;
     $('download-status').textContent = err.message;
     $('download').disabled = false;
   }
@@ -781,13 +826,24 @@ async function pollDownload(jobId, repoId) {
     const job = await api(`/api/jobs/${jobId}`);
     await loadState(); // refreshes downloadedModels → updateModelStatus auto-fills model-dir
     if (job.status === 'running') {
+      const pct = Math.min(job.progress || 0, 99);
+      if (pct > 0) {
+        $('dl-progress-wrap').classList.remove('indeterminate');
+        $('dl-progress-fill').style.width = pct + '%';
+      }
+      $('download-status').textContent = job.message || `Downloading ${repoId}…`;
       setTimeout(() => pollDownload(jobId, repoId), 1500);
     } else {
+      $('dl-progress-wrap').classList.remove('indeterminate');
+      $('dl-progress-fill').style.width = job.status === 'succeeded' ? '100%' : $('dl-progress-fill').style.width;
+      setTimeout(() => { $('dl-progress-wrap').hidden = true; }, 800);
       $('download').disabled = false;
       $('download-status').textContent =
         job.status === 'succeeded' ? `✓ ${repoId} ready — start the server` : `✗ ${job.message || 'download failed'}`;
     }
   } catch (err) {
+    $('dl-progress-wrap').classList.remove('indeterminate');
+    $('dl-progress-wrap').hidden = true;
     $('download').disabled = false;
     $('download-status').textContent = err.message;
   }
@@ -884,6 +940,7 @@ async function sendMessage() {
 
   let accumulated = '';
   let streamError = false;
+  let perfStats = null;
 
   try {
     const msgsToSend = [
@@ -927,6 +984,9 @@ async function sendMessage() {
         try { chunk = JSON.parse(payload); } catch { continue; }
         const delta = (chunk.choices?.[0]?.delta?.content) || '';
         if (delta) { accumulated += delta; appendToken(bodyEl, delta); }
+        if (chunk.usage && chunk.choices?.[0]?.finish_reason) {
+          perfStats = chunk.usage;
+        }
       }
     }
   } catch (err) {
@@ -935,6 +995,18 @@ async function sendMessage() {
   }
 
   finalizeBody(bodyEl, accumulated || '(empty response)');
+  if (perfStats && perfStats.generation_tps > 0) {
+    const statsEl = document.createElement('div');
+    statsEl.className = 'msg-stats';
+    const prompt = perfStats.prompt_tokens || 0;
+    const output = perfStats.completion_tokens || 0;
+    const tps = Number(perfStats.generation_tps).toFixed(1);
+    const engineLabel = $('engine').options[$('engine').selectedIndex]?.text || '';
+    const modelLabel = app.serverModelId ? shortModelName(app.serverModelId) : '';
+    const prefix = [engineLabel, modelLabel].filter(Boolean).join(' · ');
+    statsEl.textContent = `⚡ ${prefix} · ${prompt} prompt · ${output} output · ${tps} tok/s`;
+    bodyEl.appendChild(statsEl);
+  }
   // Only add real content to history — empty or error responses would appear
   // as the assistant's previous turn and confuse the model on the next request.
   if (accumulated && !streamError) {

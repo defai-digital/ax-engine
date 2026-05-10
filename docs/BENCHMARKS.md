@@ -21,6 +21,7 @@ reference-only fail-closed check.
 |---|---|---|
 | How fast is the repo-owned MLX runtime against upstream MLX? | `scripts/bench_mlx_inference_stack.py` | Required `mlx_lm.benchmark` primary baseline rows, AX direct and n-gram acceleration rows, optional `mlx-swift-lm` secondary baseline adapter rows, canonical prompt-token artifacts, and ratio-to-baseline fields |
 | Did a checked-in workload still pass route, correctness, determinism, replay, or regression gates? | `ax-engine-bench` | Workload-contract artifacts under `benchmarks/results` |
+| How does AX behave as an online serving endpoint over a prompt mix? | `scripts/bench_ax_serving.py` | `ax.serving_benchmark.v1` artifacts with client-observed TTFT, TPOT, streaming step intervals, E2E latency, queue delay, throughput, category summaries, and SLO goodput |
 | Is the local host ready for repo-owned MLX benchmarking? | `ax-engine-bench doctor` | Human or JSON readiness report |
 | Did a bounded runtime knob improve a frozen workload? | `ax-engine-bench autotune` | Autotune trial artifacts and warm-start history |
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
@@ -34,6 +35,38 @@ prompt/decode shape, with prompt-token provenance recorded in the artifact.
 `ax-engine-bench` owns workload contracts. llama.cpp manifests and
 `mlx_lm_delegated` checks validate delegation behavior, not repo-owned MLX runtime
 speed.
+
+## Online Serving Benchmark
+
+Use the serving harness when the question is market-style endpoint behavior
+over different question types, short and long prompts, concurrency, request
+arrival rate, and latency percentiles:
+
+```text
+python3 scripts/bench_ax_serving.py \
+  --base-url http://127.0.0.1:8080 \
+  --model-id qwen3_dense \
+  --corpus benchmarks/corpora/serving/smoke.jsonl \
+  --input-kind tokens \
+  --requests 12 \
+  --warmup-requests 2 \
+  --concurrency 2 \
+  --slo-ttft-ms 2000 \
+  --slo-tpot-ms 100 \
+  --slo-e2e-ms 15000 \
+  --output benchmarks/results/serving/$(date +%F)-qwen3-dense-smoke.json
+```
+
+Saved artifacts use schema `ax.serving_benchmark.v1`. They report
+client-observed streaming TTFT, client TPOT, streaming step intervals, E2E
+latency, queue delay, request throughput, output-token throughput, prompt
+category summaries, and SLO goodput. Use `--request-rate-rps` for open-loop
+arrival testing; otherwise the harness runs closed-loop concurrency.
+
+The checked-in smoke corpus at `benchmarks/corpora/serving/smoke.jsonl` is a
+harness validation corpus, not a production claim. Public serving claims should
+use a larger corpus with a published prompt-mix table. See
+`docs/SERVING-BENCHMARKS.md` for the full contract and rollout plan.
 
 ## AX Runtime-Mode Comparison
 
