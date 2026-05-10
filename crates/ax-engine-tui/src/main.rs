@@ -593,6 +593,35 @@ fn route_request(request: HttpRequest, runtime: SharedRuntime) -> Result<String,
     })
 }
 
+/// Return the local snapshot path for a HuggingFace model if it is already
+/// in the default HF hub cache (~/.cache/huggingface/hub/).
+///
+/// Layout: models--{org}--{repo}/refs/main  →  commit hash
+///         models--{org}--{repo}/snapshots/{hash}/
+fn hf_cache_path(repo_id: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let dashed = repo_id.replace('/', "--");
+    let model_cache = std::path::Path::new(&home)
+        .join(".cache/huggingface/hub")
+        .join(format!("models--{dashed}"));
+
+    // Read the commit hash from refs/main.
+    let refs_main = model_cache.join("refs/main");
+    let hash = std::fs::read_to_string(&refs_main).ok()?;
+    let hash = hash.trim();
+    if hash.is_empty() {
+        return None;
+    }
+
+    let snapshot = model_cache.join("snapshots").join(hash);
+    // Require config.json as a minimal validity check.
+    if snapshot.join("config.json").is_file() {
+        Some(snapshot.display().to_string())
+    } else {
+        None
+    }
+}
+
 fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
     let mut runtime = runtime
         .lock()
@@ -613,7 +642,7 @@ fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
     let downloaded_models: Vec<Value> = {
         let mut seen = std::collections::HashSet::new();
         let mut models: Vec<Value> = Vec::new();
-        // From successful download jobs this session.
+        // 1. Successful download jobs from this session.
         for job in runtime.download_jobs.iter().rev() {
             if job.status == "succeeded" {
                 if let Some(ref path) = job.model_dir {
@@ -623,17 +652,26 @@ fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
                 }
             }
         }
-        // From the doctor report (pre-existing model).
+        // 2. Doctor-reported pre-existing model (if not already listed).
         if let Some(path) = web::current_model_dir(&runtime.state) {
-            if let Some(repo) = &runtime
+            let already = runtime
                 .download_jobs
                 .iter()
-                .find(|j| j.model_dir.as_deref() == Some(path.as_str()))
-                .map(|j| j.repo_id.clone())
-            {
-                let _ = repo; // already covered above
-            } else {
+                .any(|j| j.model_dir.as_deref() == Some(path.as_str()));
+            if !already && seen.insert("__doctor__".to_string()) {
                 models.push(json!({ "repo_id": "local", "path": path }));
+            }
+        }
+        // 3. HuggingFace cache scan for catalog models (pre-downloaded outside manager).
+        use ax_engine_tui::app::MODEL_CATALOG;
+        for entry in MODEL_CATALOG.iter() {
+            if seen.contains(entry.repo_id) {
+                continue;
+            }
+            if let Some(path) = hf_cache_path(entry.repo_id) {
+                if seen.insert(entry.repo_id.to_string()) {
+                    models.push(json!({ "repo_id": entry.repo_id, "path": path }));
+                }
             }
         }
         models
