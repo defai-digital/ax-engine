@@ -530,6 +530,10 @@ function selectedCatalogEntry() {
   return app.catalog.find(e => e.repo_id === $('model').value) || null;
 }
 
+function clearManualModelDirOrigin() {
+  delete $('model-dir').dataset.repoId;
+}
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
 const app = {
@@ -698,13 +702,15 @@ function renderDownloaded(models) {
     models.map(m => {
       const active = m.repo_id === activeRepo ? ' dl-item-active' : '';
       const name   = shortModelName(m.repo_id);
+      const manual = app.catalog.some(e => e.repo_id === m.repo_id) ? '0' : '1';
       return `
       <div class="dl-item${active}" data-repo="${m.repo_id}">
         <span class="dl-check">✓</span>
         <span class="dl-repo" title="${m.path || ''}">${name}</span>
         <button class="btn btn-ghost btn-xs dl-use"
           data-path="${m.path || ''}"
-          data-repo="${m.repo_id}">USE</button>
+          data-repo="${m.repo_id}"
+          data-manual="${manual}">USE</button>
       </div>`;
     }).join('') +
     `</div>`;
@@ -713,15 +719,23 @@ function renderDownloaded(models) {
     btn.addEventListener('click', () => {
       const repo = btn.dataset.repo;
       const entry = app.catalog.find(e => e.repo_id === repo);
+      const manual = btn.dataset.manual === '1' || !entry;
       if (entry) {
         delete $('model-dir').dataset.userEdited;
+        clearManualModelDirOrigin();
         $('model-kind').value = entry.kind;
         $('family').innerHTML = familiesOf(entry.kind).map(f => `<option value="${f}">${f}</option>`).join('');
         $('family').value = entry.family;
         fillSizes(entry.kind, entry.family, repo);
       }
       $('model-dir').value = btn.dataset.path;
-      delete $('model-dir').dataset.userEdited;
+      if (manual) {
+        $('model-dir').dataset.userEdited = '1';
+        $('model-dir').dataset.repoId = repo || 'local';
+      } else {
+        delete $('model-dir').dataset.userEdited;
+        clearManualModelDirOrigin();
+      }
 
       // Highlight this row, remove highlight from others
       el.querySelectorAll('.dl-item').forEach(row => row.classList.remove('dl-item-active'));
@@ -736,11 +750,13 @@ function renderDownloaded(models) {
 
 function serverPayload() {
   const entry = selectedCatalogEntry();
+  const manual = $('model-dir').dataset.userEdited === '1';
+  const manualRepo = $('model-dir').dataset.repoId || '';
   return JSON.stringify({
     port:      Number($('port').value || 8080),
-    repo_id:   entry ? entry.repo_id : '',
+    repo_id:   manual && manualRepo ? manualRepo : (entry ? entry.repo_id : ''),
     model_dir: $('model-dir').value.trim(),
-    manual_model_dir: $('model-dir').dataset.userEdited === '1',
+    manual_model_dir: manual,
     engine:    $('engine').value,
   });
 }
@@ -1077,6 +1093,7 @@ function cancelServerPoll() {
 $('model-kind').addEventListener('change', () => {
   // User explicitly changed the model — let model-dir follow the new selection.
   delete $('model-dir').dataset.userEdited;
+  clearManualModelDirOrigin();
   const kind = $('model-kind').value;
   const fams = familiesOf(kind);
   $('family').innerHTML = fams.map(f => `<option value="${f}">${f}</option>`).join('');
@@ -1085,17 +1102,20 @@ $('model-kind').addEventListener('change', () => {
 
 $('family').addEventListener('change', () => {
   delete $('model-dir').dataset.userEdited;
+  clearManualModelDirOrigin();
   fillSizes($('model-kind').value, $('family').value, null);
 });
 
 $('model').addEventListener('change', () => {
   delete $('model-dir').dataset.userEdited;
+  clearManualModelDirOrigin();
   updateModelStatus();
 });
 
 // Mark model-dir as user-edited when typed manually
 $('model-dir').addEventListener('input', () => {
   $('model-dir').dataset.userEdited = '1';
+  clearManualModelDirOrigin();
   if (!$('model-dir').value) delete $('model-dir').dataset.userEdited;
 });
 
@@ -1193,6 +1213,15 @@ mod tests {
         assert!(index_html().contains("AX ENGINE"));
         assert!(manager_js().contains("/api/download"));
         assert!(manager_css().contains(".chat-area"));
+    }
+
+    #[test]
+    fn manager_js_preserves_local_quick_pick_as_manual_model_dir() {
+        let js = manager_js();
+
+        assert!(js.contains("data-manual"));
+        assert!(js.contains("dataset.repoId"));
+        assert!(js.contains("manual && manualRepo ? manualRepo"));
     }
 
     #[test]

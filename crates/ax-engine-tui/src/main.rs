@@ -1780,12 +1780,11 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         .unwrap_or(false);
     let engine = ManagerEngine::parse(payload.get("engine").and_then(Value::as_str))?;
 
-    // Phase 1: resolve model dir and stop any running server (requires lock).
+    // Phase 1: resolve model dir before touching any currently running server.
     let (repo_id, model_dir) = {
         let mut rt = runtime
             .lock()
             .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
-        stop_server_locked(&mut rt);
         let repo_id = requested_repo_id.unwrap_or_else(|| "local".to_string());
         let model_dir = resolve_start_model_dir(
             &rt,
@@ -1815,6 +1814,17 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
     let stderr_path = std::env::temp_dir().join(format!("ax-engine-server-{port}.log"));
     let stderr_file = std::fs::File::create(&stderr_path).ok();
     let launch = server_launch_plan(&repo_id, &model_dir, port as u16, engine);
+
+    {
+        let mut rt = runtime
+            .lock()
+            .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
+        stop_server_locked(&mut rt);
+        rt.status_message = format!(
+            "Launching server on port {port} with {}",
+            short_model_label(&repo_id)
+        );
+    }
 
     let child = Command::new(&server_bin)
         .args(&launch.args)
@@ -2574,7 +2584,7 @@ fn request_complete(bytes: &[u8]) -> bool {
     };
     let headers = String::from_utf8_lossy(&bytes[..header_end]);
     let content_length = content_length(&headers).unwrap_or(0);
-    bytes.len() >= header_end + 4 + content_length
+    request_body_end(header_end, content_length).is_some_and(|end| bytes.len() >= end)
 }
 
 fn parse_http_request_bytes(bytes: &[u8]) -> Result<HttpRequest, ManagerError> {
@@ -2594,12 +2604,24 @@ fn parse_http_request_bytes(bytes: &[u8]) -> Result<HttpRequest, ManagerError> {
         .ok_or_else(|| ManagerError::Message("missing path".to_string()))?;
     let body_start = header_end + 4;
     let length = content_length(&headers).unwrap_or(0);
-    let body = String::from_utf8_lossy(&bytes[body_start..body_start + length]).to_string();
+    let body_end = request_body_end(header_end, length)
+        .ok_or_else(|| ManagerError::Message("content-length is too large".to_string()))?;
+    if bytes.len() < body_end {
+        return Err(ManagerError::Message(format!(
+            "incomplete HTTP request body: expected {length} bytes, got {}",
+            bytes.len().saturating_sub(body_start)
+        )));
+    }
+    let body = String::from_utf8_lossy(&bytes[body_start..body_end]).to_string();
     Ok(HttpRequest {
         method: method.to_string(),
         path: path.to_string(),
         body,
     })
+}
+
+fn request_body_end(header_end: usize, content_length: usize) -> Option<usize> {
+    header_end.checked_add(4)?.checked_add(content_length)
 }
 
 fn find_header_end(bytes: &[u8]) -> Option<usize> {
@@ -3029,6 +3051,53 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     }
 
     #[test]
+    fn start_server_keeps_running_server_when_model_resolution_fails() {
+        let child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("fake server should start");
+        let runtime = Arc::new(Mutex::new(WebRuntime::new(AppState::empty())));
+        {
+            let mut guard = runtime.lock().expect("runtime lock should work");
+            guard.server = Some(ManagedServer {
+                child,
+                port: 32123,
+                repo_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+                model_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+                model_dir: "/models/qwen".to_string(),
+                engine: ManagerEngine::AxEngineNgram,
+                ready: true,
+                stderr_file: None,
+            });
+        }
+
+        let error = start_server(
+            &runtime,
+            r#"{"repo_id":"local-test/missing-selected-model","model_dir":"/stale/model","manual_model_dir":false,"port":32124}"#,
+        )
+        .expect_err("missing selected model should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "selected model is not downloaded: local-test/missing-selected-model"
+        );
+        let mut guard = runtime.lock().expect("runtime lock should work");
+        let still_running = guard
+            .server
+            .as_mut()
+            .expect("old server should still be tracked")
+            .child
+            .try_wait()
+            .expect("fake server status should be readable")
+            .is_none();
+        assert!(
+            still_running,
+            "old server should not be killed by validation failure"
+        );
+        stop_server_locked(&mut guard);
+    }
+
+    #[test]
     fn server_launch_plan_uses_glm_preset() {
         let plan = server_launch_plan(
             "mlx-community/GLM-4.7-Flash-4bit",
@@ -3124,6 +3193,25 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
         assert_eq!(request.method, "POST");
         assert_eq!(request.path, "/api/download");
         assert_eq!(request.body, "{\"repo_id\":\"qwen\"}");
+    }
+
+    #[test]
+    fn parse_http_request_rejects_incomplete_body_without_panicking() {
+        let bytes = b"POST /api/download HTTP/1.1\r\ncontent-length: 18\r\n\r\n{\"repo_id\"";
+
+        let error = parse_http_request_bytes(bytes).expect_err("body is incomplete");
+
+        assert!(error.to_string().contains("incomplete HTTP request body"));
+    }
+
+    #[test]
+    fn request_complete_rejects_overflowing_content_length() {
+        let bytes =
+            b"POST /api/download HTTP/1.1\r\ncontent-length: 18446744073709551615\r\n\r\n{}";
+
+        assert!(!request_complete(bytes));
+        let error = parse_http_request_bytes(bytes).expect_err("content length should overflow");
+        assert_eq!(error.to_string(), "content-length is too large");
     }
 
     #[test]

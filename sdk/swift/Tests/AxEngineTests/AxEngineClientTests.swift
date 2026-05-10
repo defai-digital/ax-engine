@@ -1,4 +1,4 @@
-import XCTest
+import Testing
 import Foundation
 @testable import AxEngine
 
@@ -33,8 +33,7 @@ final class MockURLProtocol: URLProtocol {
 private func makeClient() -> AxEngineClient {
     let config = URLSessionConfiguration.ephemeral
     config.protocolClasses = [MockURLProtocol.self]
-    let session = URLSession(configuration: config)
-    return AxEngineClient(session: session)
+    return AxEngineClient(session: URLSession(configuration: config))
 }
 
 private func jsonResponse(_ object: Any, statusCode: Int = 200) -> (HTTPURLResponse, Data) {
@@ -60,120 +59,130 @@ private func sseResponse(_ text: String) -> (HTTPURLResponse, Data) {
 
 // MARK: - Tests
 
-final class AxEngineClientTests: XCTestCase {
+@Suite("AxEngineClient")
+struct AxEngineClientTests {
 
     // MARK: health
 
-    func testHealth() async throws {
+    @Test func health() async throws {
         MockURLProtocol.handler = { req in
-            XCTAssertEqual(req.httpMethod, "GET")
-            XCTAssertTrue(req.url?.path == "/health")
+            #expect(req.httpMethod == "GET")
+            #expect(req.url?.path == "/health")
             return jsonResponse(["status": "ok", "service": "ax-engine-server", "model_id": "qwen3_dense"])
         }
         let resp = try await makeClient().health()
-        XCTAssertEqual(resp.status, "ok")
-        XCTAssertEqual(resp.modelId, "qwen3_dense")
+        #expect(resp.status == "ok")
+        #expect(resp.modelId == "qwen3_dense")
     }
 
     // MARK: chatCompletion
 
-    func testChatCompletion() async throws {
+    @Test func chatCompletion() async throws {
         MockURLProtocol.handler = { req in
-            XCTAssertEqual(req.httpMethod, "POST")
-            XCTAssertEqual(req.url?.path, "/v1/chat/completions")
+            #expect(req.httpMethod == "POST")
+            #expect(req.url?.path == "/v1/chat/completions")
             return jsonResponse([
                 "id": "chatcmpl-1", "object": "chat.completion", "created": 1_234_567_890,
                 "model": "qwen3_dense",
                 "choices": [[
                     "index": 0,
                     "message": ["role": "assistant", "content": "Hi there!"],
-                    "finish_reason": "stop"
+                    "finish_reason": "stop",
                 ]],
-                "usage": ["prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8]
+                "usage": ["prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8],
             ])
         }
         let resp = try await makeClient().chatCompletion(.init(
             messages: [.init(role: "user", content: "Hello!")], maxTokens: 32
         ))
-        XCTAssertEqual(resp.object, "chat.completion")
-        XCTAssertEqual(resp.choices.first?.message.content, "Hi there!")
-        XCTAssertEqual(resp.usage?.totalTokens, 8)
+        #expect(resp.object == "chat.completion")
+        #expect(resp.choices.first?.message.content == "Hi there!")
+        #expect(resp.usage?.totalTokens == 8)
     }
 
-    func testChatCompletionEncodesMessages() async throws {
-        var capturedBody: [String: Any] = [:]
+    @Test func chatCompletionEncodesBody() async throws {
+        var captured: [String: Any] = [:]
         MockURLProtocol.handler = { req in
-            capturedBody = try! JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            captured = (try? JSONSerialization.jsonObject(with: req.httpBody!) as? [String: Any]) ?? [:]
             return jsonResponse([
                 "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
-                "choices": [["index": 0, "message": ["role": "assistant", "content": "ok"], "finish_reason": "stop"]]
+                "choices": [["index": 0, "message": ["role": "assistant", "content": "ok"], "finish_reason": "stop"]],
             ])
         }
         try await makeClient().chatCompletion(.init(
             messages: [
                 .init(role: "system", content: "You are AX."),
-                .init(role: "user", content: "Hello"),
+                .init(role: "user",   content: "Hello"),
             ],
             maxTokens: 64, temperature: 0.7, seed: 42
         ))
-        let msgs = capturedBody["messages"] as! [[String: Any]]
-        XCTAssertEqual(msgs.count, 2)
-        XCTAssertEqual(msgs[0]["role"] as? String, "system")
-        XCTAssertEqual(msgs[1]["role"] as? String, "user")
-        XCTAssertEqual(capturedBody["max_tokens"] as? Int, 64)
-        XCTAssertEqual(capturedBody["seed"] as? Int, 42)
+        let msgs = captured["messages"] as! [[String: Any]]
+        #expect(msgs.count == 2)
+        #expect(msgs[0]["role"] as? String == "system")
+        #expect(msgs[1]["role"] as? String == "user")
+        #expect(captured["max_tokens"] as? Int == 64)
+        #expect(captured["seed"] as? Int == 42)
     }
 
     // MARK: completion
 
-    func testCompletion() async throws {
+    @Test func completion() async throws {
         MockURLProtocol.handler = { _ in
             jsonResponse([
                 "id": "cmpl-1", "object": "text_completion", "created": 0, "model": "qwen3_dense",
                 "choices": [["index": 0, "text": "Hello world", "finish_reason": "stop"]],
-                "usage": ["prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5]
+                "usage": ["prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5],
             ])
         }
         let resp = try await makeClient().completion(.init(prompt: "Hello", maxTokens: 32))
-        XCTAssertEqual(resp.object, "text_completion")
-        XCTAssertEqual(resp.choices.first?.text, "Hello world")
-        XCTAssertEqual(resp.usage?.totalTokens, 5)
+        #expect(resp.object == "text_completion")
+        #expect(resp.choices.first?.text == "Hello world")
+        #expect(resp.usage?.totalTokens == 5)
     }
 
     // MARK: embeddings
 
-    func testEmbeddings() async throws {
+    @Test func embeddings() async throws {
         MockURLProtocol.handler = { _ in
             jsonResponse([
                 "object": "list",
                 "data": [["object": "embedding", "embedding": [0.1, 0.2, 0.3], "index": 0]],
                 "model": "qwen3_embedding",
-                "usage": ["prompt_tokens": 3, "total_tokens": 3]
+                "usage": ["prompt_tokens": 3, "total_tokens": 3],
             ])
         }
         let resp = try await makeClient().embeddings(.init(input: [1, 2, 3], pooling: "last", normalize: true))
-        XCTAssertEqual(resp.data.first?.embedding, [0.1, 0.2, 0.3])
-        XCTAssertEqual(resp.usage.totalTokens, 3)
+        #expect(resp.data.first?.embedding == [0.1, 0.2, 0.3])
+        #expect(resp.usage.totalTokens == 3)
     }
 
     // MARK: HTTP errors
 
-    func testHTTPErrorThrown() async throws {
+    @Test func httpErrorThrown() async throws {
+        MockURLProtocol.handler = { _ in
+            jsonResponse(["error": ["message": "bad request"]], statusCode: 400)
+        }
+        await #expect(throws: AxEngineHTTPError.self) {
+            try await makeClient().completion(.init(prompt: "x"))
+        }
+    }
+
+    @Test func httpErrorCarriesStatusAndMessage() async throws {
         MockURLProtocol.handler = { _ in
             jsonResponse(["error": ["message": "bad request"]], statusCode: 400)
         }
         do {
             try await makeClient().completion(.init(prompt: "x"))
-            XCTFail("Expected error")
+            Issue.record("Expected AxEngineHTTPError to be thrown")
         } catch let err as AxEngineHTTPError {
-            XCTAssertEqual(err.statusCode, 400)
-            XCTAssertEqual(err.message, "bad request")
+            #expect(err.statusCode == 400)
+            #expect(err.message == "bad request")
         }
     }
 
     // MARK: streaming chat
 
-    func testStreamChatCompletion() async throws {
+    @Test func streamChatCompletion() async throws {
         let sse = """
         data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3_dense","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
 
@@ -190,28 +199,27 @@ final class AxEngineClientTests: XCTestCase {
         )) {
             chunks.append(chunk)
         }
-        XCTAssertEqual(chunks.count, 2)
-        XCTAssertEqual(chunks[0].choices.first?.delta.content, "Hello")
-        XCTAssertEqual(chunks[1].choices.first?.delta.content, " world")
-        XCTAssertEqual(chunks[1].choices.first?.finishReason, "stop")
+        #expect(chunks.count == 2)
+        #expect(chunks[0].choices.first?.delta.content == "Hello")
+        #expect(chunks[1].choices.first?.delta.content == " world")
+        #expect(chunks[1].choices.first?.finishReason == "stop")
     }
 
-    func testStreamChatCompletionSetsStreamTrue() async throws {
-        var capturedBody: [String: Any] = [:]
-        let sse = "data: [DONE]\n\n"
+    @Test func streamChatCompletionSetsStreamTrue() async throws {
+        var captured: [String: Any] = [:]
         MockURLProtocol.handler = { req in
-            capturedBody = (try? JSONSerialization.jsonObject(with: req.httpBody!) as? [String: Any]) ?? [:]
-            return sseResponse(sse)
+            captured = (try? JSONSerialization.jsonObject(with: req.httpBody!) as? [String: Any]) ?? [:]
+            return sseResponse("data: [DONE]\n\n")
         }
         for try await _ in makeClient().streamChatCompletion(.init(
             messages: [.init(role: "user", content: "x")]
         )) {}
-        XCTAssertEqual(capturedBody["stream"] as? Bool, true)
+        #expect(captured["stream"] as? Bool == true)
     }
 
     // MARK: streaming completion
 
-    func testStreamCompletion() async throws {
+    @Test func streamCompletion() async throws {
         let sse = """
         data: {"id":"cmpl-1","object":"text_completion.chunk","created":0,"model":"qwen3_dense","choices":[{"index":0,"text":"Once","finish_reason":null}]}
 
@@ -224,12 +232,12 @@ final class AxEngineClientTests: XCTestCase {
         for try await chunk in makeClient().streamCompletion(.init(prompt: "Once upon")) {
             texts.append(contentsOf: chunk.choices.map(\.text))
         }
-        XCTAssertEqual(texts, ["Once"])
+        #expect(texts == ["Once"])
     }
 
     // MARK: streamGenerate
 
-    func testStreamGenerate() async throws {
+    @Test func streamGenerate() async throws {
         let sse = """
         event: request
         data: {"request":{"request_id":1,"model_id":"qwen3_dense","state":"active","prompt_tokens":[1,2,3],"processed_prompt_tokens":3,"output_tokens":[],"prompt_len":3,"output_len":0,"max_output_tokens":4,"cancel_requested":false,"route":{}}}
@@ -248,13 +256,13 @@ final class AxEngineClientTests: XCTestCase {
             events.append(event)
         }
 
-        XCTAssertEqual(events.count, 3)
-        XCTAssertEqual(events[0].event, "request")
-        XCTAssertNotNil(events[0].request)
-        XCTAssertEqual(events[1].event, "step")
-        XCTAssertEqual(events[1].step?.deltaTokens, [42])
-        XCTAssertEqual(events[1].step?.deltaText, "hello")
-        XCTAssertEqual(events[2].event, "response")
-        XCTAssertEqual(events[2].response?.response.finishReason, "stop")
+        #expect(events.count == 3)
+        #expect(events[0].event == "request")
+        #expect(events[0].request != nil)
+        #expect(events[1].event == "step")
+        #expect(events[1].step?.deltaTokens == [42])
+        #expect(events[1].step?.deltaText == "hello")
+        #expect(events[2].event == "response")
+        #expect(events[2].response?.response.finishReason == "stop")
     }
 }
