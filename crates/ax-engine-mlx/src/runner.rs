@@ -2489,6 +2489,10 @@ impl MlxRunner {
         // harness green on every model in the supported tier.
         let linear_attention = self.cfg.linear_attention.is_some();
         if linear_attention && full_block_tokens != available_tokens {
+            // Surface this as trim_failure rather than silently skipping —
+            // semantically we know `trim_to` would corrupt linear state for
+            // this prompt length, so we choose not to attempt the store.
+            telemetry.record_blocked_trim_failure();
             return telemetry;
         }
         let snapshot_start_tokens = if linear_attention {
