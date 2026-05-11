@@ -2,7 +2,7 @@
 
 **PRD**: `.internal/planning/KV-SCHEDULER-REVAMP-PRD.md` §W1
 **ADR**: 0018 KV/Scheduler Revamp
-**Status**: Slice 4 complete (2026-05-11). MLX physical prefix cache is unreachable for every model in the supported native tier (`prefix_cache_supported()` returns false for linear/sliding/MLA architectures). Confirmed bottleneck is architectural, not bookkeeping.
+**Status**: Slice 5 complete (2026-05-11). Strategy 1 shipped: Qwen-class linear-attention models now get physical prefix cache hits. warm_repeat TTFT 3247× speedup on Qwen3.5-9B; correctness harness 5/5 PASS on both models.
 **Author**: AX Engine work session
 
 ## TL;DR
@@ -584,6 +584,130 @@ tokens token-by-token when seeded identically, and fail-closed on drift.
 Both now include the `ax_mlx_prefix_cache_*` series and show
 `blocked_unsupported_layout` non-zero with `warmup_tokens` matching the
 full matched-prefix length — the conclusive runtime signal.
+
+## Slice 5 Findings (2026-05-11) — Strategy 1 Shipped (Linear Attention)
+
+### Correctness harness built first
+
+Before touching `prefix_cache_supported()`, slice 5 built
+`scripts/verify_prefix_reuse_equivalence.py` (`ax.prefix_reuse_equivalence.v1`):
+5-prompt corpus, fail-closed on any token drift between cold and
+warm_repeat under identical seed/temperature=0. Baseline run on both
+Gemma 4 E2B and Qwen3.5-9B passed 5/5 (the warmup-without-cache path
+deterministically reproduces cold output).
+
+### First attempt caught a real correctness bug
+
+Loosening `prefix_cache_supported()` to allow linear-attention without
+further constraint produced a FAIL (2/5) on Qwen3.5-9B —
+`p2_medium_explain` diverged at token 28, `p4_code_request` diverged
+at token 1. The harness paid for itself on the very first iteration.
+
+Root cause: `MlxKVCache::trim_to(prefix_len)` adjusts only `seq_len`;
+it does NOT roll back the per-layer recurrent state in
+`linear_layers`. Linear-attention recurrent state at an intermediate
+prefix cannot be re-derived from the end-of-prefill state, so a
+snapshot stored at any block-aligned prefix length less than the actual
+processed length carries a `(seq_len, recurrent_state)` pair that is
+inconsistent with what a fresh prefill would produce at that prefix
+length. p1/p3/p5 happened to align in ways the divergence didn't
+surface; p2/p4 didn't.
+
+### Sound constraint
+
+For linear-attention models, the snapshot is only stored when:
+
+1. The prompt is exactly block-aligned (`full_block_tokens == available_tokens`),
+   AND
+2. Only the single full-prefix snapshot is created (no intermediate-block
+   snapshots).
+
+Both conditions together guarantee `trim_to` is a no-op and the stored
+`recurrent_state` matches `seq_len`. After this tightening, the harness
+goes to 5/5 PASS on both Qwen3.5-9B and Gemma 4 E2B.
+
+### Code change (single file)
+
+`crates/ax-engine-mlx/src/runner.rs`:
+
+- `prefix_cache_supported()` — drop the `linear_attention.is_none()`
+  term. (MLA + sliding-window terms preserved — they require their own
+  strategy slices.)
+- `store_prompt_prefix_snapshots()` — when `cfg.linear_attention.is_some()`,
+  early-return if `full_block_tokens != available_tokens`; otherwise
+  store only the full prefix.
+
+Roughly 15 lines net change. The cache's existing
+`MlxPrefixCache::get`'s token-equality check already handles the
+lookup-side exact-match invariant — no changes needed there.
+
+### Runtime impact (Qwen3.5-9B, 2048-token prompt)
+
+| scenario      | before TTFT | after TTFT | speedup    |
+|---------------|-------------|------------|------------|
+| cold          | 0.706 s     | 0.650 s    | (within noise) |
+| warm_repeat   | 0.665 s     | **0.0002 s** | **3247×** |
+| warm_extend   | 0.767 s     | 0.101 s    | **~7×**   |
+
+`warm_extend` improvement (256 net-new tokens out of 2304) means the
+runner now skips the 2048-token prefill of the matched prefix and only
+prefills the 256 new suffix tokens. 0.101 s ≈ 256/2048 × cold-TTFT —
+the geometric speedup the prefix cache promised.
+
+MLX prefix cache telemetry on warm_repeat:
+
+- `ax_mlx_prefix_cache_hits = 1` (was 0)
+- `ax_mlx_prefix_cache_reused_tokens = 2048` (was 0)
+- `ax_mlx_prefix_cache_warmup_tokens = 0` (was 2048)
+
+The entire matched prefix is now restored from the physical KV
+snapshot — zero re-prefill compute.
+
+### Gemma 4 unchanged (as designed)
+
+Gemma 4 E2B has sliding-window attention (`kv_layer_windows` non-empty),
+which still gates `prefix_cache_supported()` to false. The W1 evidence
+script still reports 1.08× TTFT speedup (within noise) on Gemma's
+warm_repeat — confirming Strategy 1 is correctly scoped to linear
+attention only and didn't accidentally break Gemma. Gemma equivalence
+harness also 5/5 PASS (no regression). Sliding-window support is
+Strategy 2.
+
+### Tests + lint
+
+- ax-engine-mlx lib: 310/310 PASS
+- ax-engine-core lib: 400/400 PASS
+- ax-engine-sdk lib: 72/72 PASS
+- clippy `--all-targets -- -D warnings`: clean
+
+### What this closes
+
+Slice 5 ships the §W1-final structural change ADR 0018 was protecting.
+The full chain is now closed:
+
+- Slice 1: identified retained-cache hits not visible in telemetry.
+- Slice 2: isolated the bug to SDK route-aggregation overwrite.
+- Slice 3: fixed the SDK telemetry merge; revealed engine-level reuse
+  was logical-only, no physical KV restore.
+- Slice 4: confirmed `prefix_cache_supported()` excluded every model
+  in the supported tier; identified linear-attention as the highest
+  leverage unblock.
+- Slice 5: shipped Strategy 1, gated by a correctness harness that
+  caught the first attempt's bug before merge.
+
+### Slice 5 Artifacts
+
+- `benchmarks/results/prefix-reuse-equivalence/qwen3-5-9b-baseline-2026-05-11.json`
+  (5/5 PASS baseline)
+- `benchmarks/results/prefix-reuse-equivalence/qwen3-5-9b-strategy1-2026-05-11.json`
+  (2/5 FAIL — first attempt, caught bug)
+- `benchmarks/results/prefix-reuse-equivalence/qwen3-5-9b-strategy1-v2-2026-05-11.json`
+  (5/5 PASS — tightened constraint)
+- `benchmarks/results/prefix-reuse-equivalence/gemma4-baseline-2026-05-11.json`
+- `benchmarks/results/prefix-reuse-equivalence/gemma4-strategy1-2026-05-11.json`
+  (5/5 PASS — no regression on a non-linear model)
+- `benchmarks/results/kv-long-context/qwen3-5-9b-strategy1-2026-05-11.json`
+- `benchmarks/results/kv-long-context/gemma4-strategy1-2026-05-11.json`
 
 ## Artifacts
 

@@ -70,9 +70,10 @@ use crate::model::{
     take_linear_attention_profile_snapshot,
 };
 use crate::ngram_accel::{
-    DEFAULT_DRAFT_LEN, DRAFT_CONFIDENCE_THRESHOLD, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN,
-    NgramDraftOutcome, NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
-    ngram_accel_decode_step, single_decode_with_turboquant_context,
+    DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
+    NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
+    classify_prompt_class, effective_draft_confidence_threshold, ngram_accel_decode_step,
+    single_decode_with_turboquant_context,
 };
 use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64};
 use crate::turboquant::{
@@ -484,6 +485,7 @@ struct NgramAccelerationTelemetry {
     policy_variant_code: u32,
     adaptive_draft_len_steps: u32,
     adaptive_draft_len_total: u32,
+    prompt_class_code: u32,
 }
 
 impl NgramAccelerationTelemetry {
@@ -563,6 +565,10 @@ impl NgramAccelerationTelemetry {
             .saturating_add(saturating_u32(requested_draft_len));
     }
 
+    fn record_prompt_class(&mut self, class_code: u32) {
+        self.prompt_class_code = self.prompt_class_code.max(class_code);
+    }
+
     fn merge_from(&mut self, other: Self) {
         self.draft_attempts = self.draft_attempts.saturating_add(other.draft_attempts);
         self.draft_tokens = self.draft_tokens.saturating_add(other.draft_tokens);
@@ -602,6 +608,7 @@ impl NgramAccelerationTelemetry {
         self.adaptive_draft_len_total = self
             .adaptive_draft_len_total
             .saturating_add(other.adaptive_draft_len_total);
+        self.prompt_class_code = self.prompt_class_code.max(other.prompt_class_code);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -653,6 +660,7 @@ impl NgramAccelerationTelemetry {
                 "ax_ngram_adaptive_draft_len_total",
                 self.adaptive_draft_len_total,
             ),
+            ("ax_prompt_class_code", self.prompt_class_code),
         ];
 
         for (key, value) in entries {
@@ -2274,8 +2282,14 @@ impl MlxRunner {
     }
 
     fn prefix_cache_supported(&self) -> bool {
-        self.cfg.linear_attention.is_none()
-            && self.cfg.glm_mla_attention.is_none()
+        // Linear-attention models are supported with an additional store-side
+        // restriction (see `store_prompt_prefix_snapshots`): only the full
+        // prompt prefix snapshot is sound, because `MlxKVCache::trim_to` does
+        // not roll back the per-layer recurrent state. Lookups are already
+        // exact-match-safe via `MlxPrefixCache::get`'s token-equality check.
+        // MLA and sliding-window remain unsupported pending a separate
+        // strategy slice.
+        self.cfg.glm_mla_attention.is_none()
             && self.kv_layer_windows.iter().all(Option::is_none)
     }
 
@@ -2462,8 +2476,29 @@ impl MlxRunner {
             return telemetry;
         }
 
+        // Linear-attention models cannot tolerate ANY trim that does not match
+        // the actual processed length: `MlxKVCache::trim_to` only adjusts
+        // `seq_len`, leaving the per-layer recurrent state at end-of-prefill.
+        // The recurrent state at an earlier prefix cannot be re-derived from
+        // the final state, so a snapshot whose `prefix_len < available_tokens`
+        // captures inconsistent (seq_len, recurrent_state). Only store when
+        // the prompt is exactly block-aligned, AND only the single full
+        // snapshot — never partial prefixes. The
+        // `verify_prefix_reuse_equivalence.py` harness fails-closed on any
+        // resulting token drift; any future change here must keep that
+        // harness green on every model in the supported tier.
+        let linear_attention = self.cfg.linear_attention.is_some();
+        if linear_attention && full_block_tokens != available_tokens {
+            return telemetry;
+        }
+        let snapshot_start_tokens = if linear_attention {
+            full_block_tokens
+        } else {
+            block_size
+        };
+
         let mut cache = self.prefix_cache.lock().unwrap();
-        for prefix_len in (block_size..=full_block_tokens).step_by(block_size) {
+        for prefix_len in (snapshot_start_tokens..=full_block_tokens).step_by(block_size) {
             let tokens = &state.prompt_prefix_tokens[..prefix_len];
             let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
             let mut snapshot_cache = state.cache.clone();
@@ -2753,6 +2788,13 @@ impl MlxRunner {
         let feed_start = token_ids.len().saturating_sub(NGRAM_PROMPT_FEED_MAX);
         state.ngram.feed(&token_ids[feed_start..]);
 
+        // Classify the full prompt once per generation. record_prompt_class is
+        // max-merge friendly so re-entry from an unusual code path cannot
+        // downgrade an already-set class.
+        state
+            .ngram_acceleration
+            .record_prompt_class(classify_prompt_class(&state.prompt_prefix_tokens));
+
         // Reset per-generation state.
         state.bonus_queue.clear();
         state.next_model_last_token = None;
@@ -3037,6 +3079,7 @@ fn ngram_acceleration_draft(
     variant: NgramPolicyVariant,
 ) -> NgramDraftOutcome {
     let max_len = adaptive_ngram_draft_len(has_linear_attention, posterior_mean);
+    let confidence_threshold = effective_draft_confidence_threshold();
     let policy = if has_linear_attention {
         // Dense rollback is O(1); linear-attention partial-reject pays
         // branch/recompute, so cap at DEFAULT_DRAFT_LEN to bound recompute cost.
@@ -3044,7 +3087,7 @@ fn ngram_acceleration_draft(
             variant,
             max_len,
             min_support: LINEAR_MIN_NGRAM_SUPPORT,
-            confidence_threshold: DRAFT_CONFIDENCE_THRESHOLD,
+            confidence_threshold,
         }
     } else {
         // Dense models extend up to MAX_DRAFT_LEN when the posterior and n-gram
@@ -3053,7 +3096,7 @@ fn ngram_acceleration_draft(
             variant,
             max_len,
             min_support: 1,
-            confidence_threshold: DRAFT_CONFIDENCE_THRESHOLD,
+            confidence_threshold,
         }
     };
     ngram.predict_with_policy(policy)
@@ -4399,6 +4442,7 @@ mod tests {
         telemetry.record_no_draft_reason(Some(NgramDraftRejection::NoCandidate));
         telemetry.record_no_draft_reason(Some(NgramDraftRejection::ConfidenceFiltered));
         telemetry.record_policy(NgramPolicyVariant::SharedPoolMajority, MAX_DRAFT_LEN);
+        telemetry.record_prompt_class(crate::ngram_accel::PROMPT_CLASS_REPEATING);
 
         let mut decisions = Vec::new();
         telemetry.append_route_decisions(&mut decisions);
@@ -4446,6 +4490,10 @@ mod tests {
             decisions.get("ax_ngram_adaptive_draft_len_total"),
             Some(&(MAX_DRAFT_LEN as u32))
         );
+        assert_eq!(
+            decisions.get("ax_prompt_class_code"),
+            Some(&crate::ngram_accel::PROMPT_CLASS_REPEATING)
+        );
 
         let mut zero_decisions = Vec::new();
         NgramAccelerationTelemetry::default().append_route_decisions(&mut zero_decisions);
@@ -4458,6 +4506,10 @@ mod tests {
         assert_eq!(
             zero_decisions.get("ax_ngram_request_disable_events"),
             Some(&0)
+        );
+        assert_eq!(
+            zero_decisions.get("ax_prompt_class_code"),
+            Some(&crate::ngram_accel::PROMPT_CLASS_UNSET)
         );
     }
 
