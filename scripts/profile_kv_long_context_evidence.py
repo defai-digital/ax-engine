@@ -102,7 +102,7 @@ TELEMETRY_KEYS = [
     "ax_mlx_kv_growth_count",
     "ax_mlx_kv_sliding_reclaimable_capacity_tokens",
     "ax_mlx_kv_sliding_retained_tokens",
-    # Prefix reuse
+    # Engine-level prefix reuse (logical)
     "prefix_reused_blocks",
     "prefix_reused_tokens",
     "prefix_reused_requests",
@@ -112,6 +112,19 @@ TELEMETRY_KEYS = [
     "blocked_prefix_reuse_blocks",
     "blocked_prefix_reuse_tokens",
     "blocked_prefix_reuse_requests",
+    # MLX-runner physical prefix cache (KV snapshot store + restore)
+    "ax_mlx_prefix_cache_hits",
+    "ax_mlx_prefix_cache_misses",
+    "ax_mlx_prefix_cache_blocked",
+    "ax_mlx_prefix_cache_blocked_policy_disabled",
+    "ax_mlx_prefix_cache_blocked_unsupported_layout",
+    "ax_mlx_prefix_cache_blocked_trim_failure",
+    "ax_mlx_prefix_cache_stores",
+    "ax_mlx_prefix_cache_evictions",
+    "ax_mlx_prefix_cache_reused_tokens",
+    "ax_mlx_prefix_cache_warmup_tokens",
+    "ax_mlx_prefix_cache_entries",
+    "ax_mlx_prefix_cache_bytes_kib",
     # Decode / prefill timing
     "ax_mlx_decode_steps",
     "ax_mlx_decode_wall_us",

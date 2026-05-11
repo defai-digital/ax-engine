@@ -2,7 +2,7 @@
 
 **PRD**: `.internal/planning/KV-SCHEDULER-REVAMP-PRD.md` §W1
 **ADR**: 0018 KV/Scheduler Revamp
-**Status**: Slice 3 complete (2026-05-11). Telemetry merge fix shipped. New downstream bottleneck identified: prefix reuse fires at engine level but does not translate to TTFT improvement.
+**Status**: Slice 4 complete (2026-05-11). MLX physical prefix cache is unreachable for every model in the supported native tier (`prefix_cache_supported()` returns false for linear/sliding/MLA architectures). Confirmed bottleneck is architectural, not bookkeeping.
 **Author**: AX Engine work session
 
 ## TL;DR
@@ -431,6 +431,160 @@ Investigate the MLX runner's warmup path:
 the §W1 evidence gate was protecting. ADR 0018 should adopt slice 3 +
 slice 4 evidence together as its decision predicate.
 
+## Slice 4 Findings (2026-05-11) — MLX Physical Cache Is Dead Code in Supported Tier
+
+### Method
+
+Slice 3 left two hypotheses for the TTFT-flat-despite-128-blocks-reused
+puzzle:
+
+- (A) MLX runner ignores the matched-prefix annotation and re-prefills anyway.
+- (B) `native_prefix_warmup_token_slice` returns the matched tokens and the
+  runner is asked to re-process them.
+
+Both turn out to be true, and there is a third one — the actual physical
+prefix cache machinery in `crates/ax-engine-mlx/src/runner.rs` is
+guarded by a `prefix_cache_supported()` predicate that **excludes every
+model in our supported native tier**. The script's TELEMETRY_KEYS list
+in slice 3 was missing the `ax_mlx_prefix_cache_*` keys, which hid this
+signal; slice 4 adds them and re-runs.
+
+### Source-level evidence
+
+`crates/ax-engine-mlx/src/runner.rs` already implements a full
+physical KV snapshot store-and-restore (`MlxPrefixSnapshot`,
+`MlxPrefixCache`, `prefix_cache_key`, `restore_reused_prefix_state`,
+`store_prompt_prefix_snapshots`). On a hit it does:
+
+```rust
+state.cache = snapshot.cache.clone();
+state.prompt_prefix_tokens = reused_tokens.to_vec();
+state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
+```
+
+i.e. a real `MlxKVCache` restore — exactly what we want. The bug is
+upstream: that path is gated by
+
+```rust
+fn prefix_cache_supported(&self) -> bool {
+    self.cfg.linear_attention.is_none()
+        && self.cfg.glm_mla_attention.is_none()
+        && self.kv_layer_windows.iter().all(Option::is_none)
+}
+```
+
+Our entire supported native tier triggers at least one branch:
+
+| Model              | linear_attention | glm_mla_attention | sliding windows | `prefix_cache_supported` |
+|--------------------|------------------|-------------------|-----------------|---------------------------|
+| Qwen3.5-9B         | Yes (GatedDeltaNet) | No             | No              | **false**                 |
+| Qwen3.6-35B-A3B    | Yes (GatedDeltaNet) | No             | No              | **false**                 |
+| Gemma 4 E2B        | No               | No                | Yes (alt local/global) | **false**                 |
+| GLM-4.7-Flash      | No               | Yes (MLA)         | No              | **false**                 |
+
+When `prefix_cache_supported()` is false, `restore_reused_prefix_state`
+hits the first early-return branch (runner.rs:2342) and calls
+`warm_reused_prefix_without_cache` instead — which re-runs `chunked_prefill`
+on the full matched-prefix token slice. That is identical work to a cold
+prefill: same kernel dispatches, same KV writes, same Metal cost.
+
+### Runtime confirmation
+
+With `ax_mlx_prefix_cache_*` keys now captured, post-slice-3 telemetry
+on warm_repeat (2048-token full-prefix match):
+
+| model            | ax_mlx_prefix_cache_blocked_unsupported_layout | warmup_tokens | hits | stores |
+|------------------|------------------------------------------------|---------------|------|--------|
+| Gemma 4 E2B      | 1                                              | 2048          | 0    | 0      |
+| Qwen3.5-9B       | 1                                              | 2048          | 0    | 0      |
+
+`warmup_tokens=2048` is the smoking gun: every single matched-prefix
+token gets re-fed through the model. The TTFT speedup of 0.99–1.06×
+visible in slice 3 is just CPU/allocator warmup noise — not real
+compute saving.
+
+### Verdict — MLX physical cache is dead code in production
+
+The `MlxPrefixCache` / `MlxPrefixSnapshot` infrastructure is well-built
+but is gated out of every code path we exercise. There is no model in
+the supported tier for which the MLX-side snapshot ever stores anything
+or ever hits. The logical reuse counters from the engine
+(`retained_cache_hits`, `prefix_reused_blocks`) are accurate at the
+scheduler/accounting level — but the runner doesn't honour them with
+physical KV reuse, by design of the `prefix_cache_supported` predicate.
+
+This is the §W1-final bottleneck. ADR 0018's structural decision has a
+concrete predicate to act on:
+
+> Make the MLX physical prefix cache reachable for at least one model
+> in the supported native tier without compromising correctness for
+> hybrid (linear + full attention) or sliding-window architectures.
+
+### Slice 5 — Three Implementation Strategies, Ranked
+
+**Strategy 1 (lowest cost, highest leverage on Qwen): exact-full-prefix
+restore for linear-attention models.**
+
+Linear-attention (`GatedDeltaNet`) layers carry a recurrent state that
+can't be partially restored — but for an *exact full prefix* match the
+end-of-prefix recurrent state IS a valid snapshot. Loosen
+`prefix_cache_supported()` to allow linear-attention models when the
+matched prefix is exactly the whole stored prompt. Keep current
+sliding-window and MLA exclusion. Estimated: 3-5 days incl. a
+correctness harness that compares warm_repeat decode output token-by-token
+to cold.
+
+Wins: Qwen3.5-9B and Qwen3.6-35B both unlock. TTFT speedup for full-prefix
+repeat should approach the prefill duration (`ax_mlx_prefill_wall_us` at
+the cold scenario).
+
+**Strategy 2 (medium cost, helps Gemma): sliding-window snapshot support.**
+
+For sliding-window models like Gemma 4, the KV state for layers with
+window W is bounded to the last W tokens. A snapshot at end-of-prefix
+captures the window state at that point. Restoring is valid as long as
+the new prompt is exactly the snapshot's prefix (so the window hasn't
+been corrupted by interleaved out-of-window writes). Tightening:
+require `matched_token_count >= max(kv_layer_windows)` for the snapshot
+key to be eligible. Estimated: 5-7 days.
+
+Wins: Gemma 4 E2B and any future sliding-window model unlock.
+
+**Strategy 3 (highest cost, full coverage): MLA-aware snapshot.**
+
+MLA's compressed latent KV requires storing the compressed
+representation (much smaller than full KV) alongside the rotary cache.
+The structure is straightforward but needs careful audit of
+`GlmMlaAttention` state to confirm the entire state is captured.
+Estimated: 7-10 days incl. MLA-specific correctness harness.
+
+Wins: GLM-4.7-Flash unlocks.
+
+### Recommended Path
+
+Ship Strategy 1 first (Qwen3.5 + Qwen3.6 are our most-used native
+models), measure TTFT improvement on `profile_kv_long_context_evidence.py`,
+land that evidence, then decide on Strategy 2 vs other priorities.
+Strategy 3 stays under deferred-DS4 policy bracket (low-priority
+until GLM usage grows).
+
+DO NOT loosen `prefix_cache_supported()` without a per-architecture
+correctness harness — the snapshot/restore is non-trivial for hybrid
+architectures and silent token-drift would be the worst possible
+failure mode. The existing
+`scripts/profile_kv_long_context_evidence.py` already runs warm_repeat;
+extend it to assert that warm_repeat output tokens equal cold output
+tokens token-by-token when seeded identically, and fail-closed on drift.
+
+### Slice 4 Artifacts
+
+- `benchmarks/results/kv-long-context/gemma4-slice4-2026-05-11.json`
+- `benchmarks/results/kv-long-context/qwen3-5-9b-slice4-2026-05-11.json`
+
+Both now include the `ax_mlx_prefix_cache_*` series and show
+`blocked_unsupported_layout` non-zero with `warmup_tokens` matching the
+full matched-prefix length — the conclusive runtime signal.
+
 ## Artifacts
 
 Pre-fix (slice 1 evidence — telemetry was zero):
@@ -442,6 +596,11 @@ Post-fix (slice 3 evidence — telemetry reflects engine reality):
 
 - `benchmarks/results/kv-long-context/gemma4-post-fix-2026-05-11.json`
 - `benchmarks/results/kv-long-context/qwen3-5-9b-post-fix-2026-05-11.json`
+
+Slice 4 (MLX prefix cache telemetry exposed — confirmed dead code):
+
+- `benchmarks/results/kv-long-context/gemma4-slice4-2026-05-11.json`
+- `benchmarks/results/kv-long-context/qwen3-5-9b-slice4-2026-05-11.json`
 
 Harness:
 
