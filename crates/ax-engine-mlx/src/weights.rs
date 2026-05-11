@@ -959,22 +959,34 @@ fn load_linear_attention_weights(
             layer_index,
             "linear_attention_conv1d",
         )?,
-        dt_bias: take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::LinearAttentionDtBias,
-            layer_index,
-            "linear_attention_dt_bias",
-        )?
-        .weight,
-        a_log: take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::LinearAttentionALog,
-            layer_index,
-            "linear_attention_a_log",
-        )?
-        .weight,
+        // Cast at load time so the per-step linear_attention_forward does not
+        // pay an astype dispatch for each layer. `gated_delta_kernel` expects
+        // both as f32, matching mlx_lm's reference behaviour. For a 12-layer
+        // hybrid model this removes ~24 small astype ops per decode step.
+        dt_bias: astype(
+            &take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::LinearAttentionDtBias,
+                layer_index,
+                "linear_attention_dt_bias",
+            )?
+            .weight,
+            MlxDtype::Float32,
+            None,
+        ),
+        a_log: astype(
+            &take_weight(
+                specs,
+                name_map,
+                NativeTensorRole::LinearAttentionALog,
+                layer_index,
+                "linear_attention_a_log",
+            )?
+            .weight,
+            MlxDtype::Float32,
+            None,
+        ),
         norm: take_weight(
             specs,
             name_map,
