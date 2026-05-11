@@ -936,6 +936,117 @@ unconditionally — architecture-specific safety constraints live in
   - Gemma 4 E2B `warm_repeat`: 5/5 PASS
   - GLM-4.7-Flash `warm_repeat`: 5/5 PASS
 
+## Slice 8 Findings (2026-05-11) — MLA snapshot+extend bug fix + CI gate extension
+
+### Bug surfaced when extending CI to `warm_extend`
+
+The plan for slice 8 was to add `verify_prefix_reuse_equivalence.py
+--mode warm_extend` to the CI gate after cee4227e fixed the
+warmup-path fp drift. Pre-flight verification across the three
+architectures with `--pad-to-block-size 16`:
+
+| Architecture | Model | warm_extend padded result |
+|--------------|-------|---------------------------|
+| Linear | Qwen3.5-9B | 5/5 PASS |
+| Sliding window | Gemma 4 E2B | 5/5 PASS |
+| MLA | GLM-4.7-Flash | **4/5 FAIL** — p2 diverges at idx=13 |
+
+The single GLM failure was the only prompt where the **snapshot path
+actually fired** during warm_extend (`hits=1, warmup_tokens=0`). Other
+GLM prompts in the corpus fell through to cee4227e's full-recompute
+path and passed. So this was a new, MLA-specific snapshot+restore bug
+exposed by Strategy 3 — not a residual of the warmup-path bug.
+
+### Root cause
+
+After Strategy 3 restored an MLA snapshot for a Prefill-mode item
+(`warm_extend` where matched_prefix < prompt_len), the runner called
+`chunked_prefill` on the suffix tokens with `state.cache.seq_len ==
+base_len`. The forward pass through MLA layers, computing query
+projections against a `kv_latent`/`k_pe` buffer that was clone-restored
+rather than freshly built by chunked prefill, accumulates fp drift
+across chunk boundaries that a cold `chunked_prefill(base + suffix)`
+from seq_len=0 does not. The drift surfaces as an argmax flip at a
+marginal-confidence position downstream in decode.
+
+Same-prompt warm_repeat (Decode-mode item, full match) is unaffected:
+the entire forward pass runs against the restored cache and the next
+forward call is a single-token decode, never crossing a chunk boundary
+of the snapshot+extend kind.
+
+### Fix
+
+`crates/ax-engine-mlx/src/runner.rs::restore_reused_prefix_state`:
+gate the MLA snapshot restore so it only fires on Decode-mode items.
+For MLA + Prefill, record `blocked_unsupported_layout` and let
+cee4227e's `full_prefill_recompute_tokens_for_warmup_fallback` path
+take over (warmup_tokens > 0 && seq_len == 0 → full-prompt recompute
+from scratch, bit-exact with cold).
+
+Tradeoff: MLA `warm_extend` loses its ~6× TTFT speedup (now ~1× cold
+since full recompute = cold work). MLA `warm_repeat` keeps the 4313×
+speedup — that path is unaffected. The other two architectures are
+unaffected.
+
+### Verification
+
+All three architectures, both modes, `--pad-to-block-size 16`:
+
+| Architecture | warm_repeat | warm_extend |
+|--------------|-------------|-------------|
+| Qwen3.5-9B   | 5/5 PASS    | 5/5 PASS    |
+| Gemma 4 E2B  | 5/5 PASS    | 5/5 PASS    |
+| GLM-4.7-Flash | 5/5 PASS   | 5/5 PASS    |
+
+GLM W1 evidence post-fix:
+
+| scenario      | TTFT     | speedup vs cold | note |
+|---------------|----------|-----------------|------|
+| cold          | 0.772 s  | —               | |
+| warm_repeat   | 0.0002 s | **4313×**       | snapshot path |
+| warm_extend   | 0.935 s  | ~1× (slower)    | full-recompute fallback (correctness over speed) |
+
+`warm_extend` slowdown vs cold (0.935 vs 0.772) is the cost of
+re-prefilling the matched prefix as new work — an honest cost of the
+correctness gate. Reclaiming that speedup is a future MLA-specific
+investigation (likely needs to land at the model-forward level, where
+MLA's `chunked_prefill` extension produces the same lazy-graph output
+shape as a cold full prefill).
+
+### Telemetry signal for the new path
+
+GLM warm_extend now reports:
+- `ax_mlx_prefix_cache_blocked = 1`
+- `ax_mlx_prefix_cache_blocked_unsupported_layout = 1`
+- `ax_mlx_prefix_cache_warmup_tokens = 2048`
+- `ax_mlx_prefix_cache_hits = 0`
+
+Operators see clearly that the snapshot existed (`stores > 0` in cold)
+but the warm_extend chose to block it as unsupported layout — a clean
+on-the-wire signal for the policy.
+
+### Slice 8 Artifacts
+
+- `benchmarks/results/prefix-reuse-equivalence/glm-warm-extend-post-cee4227e-2026-05-11.json`
+  (4/5 FAIL — documents the bug before fix)
+- `benchmarks/results/prefix-reuse-equivalence/glm-warm-extend-mla-fixed-2026-05-11.json`
+  (5/5 PASS — post-fix)
+- `benchmarks/results/prefix-reuse-equivalence/glm-strategy3-mla-fixed-warm-repeat-2026-05-11.json`
+  (5/5 PASS — warm_repeat regression check)
+- `benchmarks/results/prefix-reuse-equivalence/qwen3-5-9b-warm-extend-mla-fixed-2026-05-11.json`
+  (5/5 PASS — Qwen regression check)
+- `benchmarks/results/prefix-reuse-equivalence/gemma4-warm-extend-mla-fixed-2026-05-11.json`
+  (5/5 PASS — Gemma regression check)
+- `benchmarks/results/kv-long-context/glm-strategy3-mla-fixed-2026-05-11.json`
+
+### CI gate now covers both modes
+
+With all 5/5 PASS achieved across the matrix, `scripts/check-prefix-reuse-equivalence.sh`
+was extended to run both `--mode warm_repeat` AND `--mode warm_extend`
+with `--pad-to-block-size 16`. Each mode writes to its own subdirectory
+inside the output dir so a failure report makes the mode obvious. Both
+must PASS for the gate to exit 0.
+
 ### CI regression gate landed (slice 7 follow-up)
 
 - `scripts/check-prefix-reuse-equivalence.sh` — bash wrapper that creates

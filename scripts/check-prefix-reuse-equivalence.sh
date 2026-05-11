@@ -68,14 +68,34 @@ cd "$ROOT_DIR"
 
 python -m maturin develop --quiet
 
-# warm_repeat with --pad-to-block-size 16 deterministically exercises the
-# snapshot path for every prompt in the corpus regardless of natural
-# tokenized length. Exit code 0 => 5/5 PASS, exit code 3 => any divergence.
+# Run both modes; both must PASS for the gate to exit 0. Output artifacts
+# go to separate files inside the output dir (the harness names them by
+# model_id + UTC date, so we pass distinct output dirs per mode).
+#   warm_repeat: same-prompt full-prefix snapshot path. Verifies Strategies
+#       1/2/3 do bit-exact restore (Decode-mode item, snapshot HIT).
+#   warm_extend: cold(P+suffix) vs warm(P then P+suffix). Verifies both the
+#       cee4227e full-recompute fallback path AND, for non-MLA architectures,
+#       the snapshot+chunked_prefill extension path. MLA's Prefill-mode
+#       snapshot path is intentionally gated to fall through to full
+#       recompute (the snapshot+extend math drifts on MLA layers).
+WARM_REPEAT_DIR="$AX_PREFIX_REUSE_OUTPUT_DIR/warm_repeat"
+WARM_EXTEND_DIR="$AX_PREFIX_REUSE_OUTPUT_DIR/warm_extend"
+mkdir -p "$WARM_REPEAT_DIR" "$WARM_EXTEND_DIR"
+
+echo "--- warm_repeat ---"
 python scripts/verify_prefix_reuse_equivalence.py \
     --model-id "$MODEL_ID" \
     --mlx-artifacts-dir "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" \
     --mode warm_repeat \
     --pad-to-block-size 16 \
-    --output "$AX_PREFIX_REUSE_OUTPUT_DIR"
+    --output "$WARM_REPEAT_DIR"
 
-echo "prefix-reuse equivalence regression gate: PASS"
+echo "--- warm_extend ---"
+python scripts/verify_prefix_reuse_equivalence.py \
+    --model-id "$MODEL_ID" \
+    --mlx-artifacts-dir "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" \
+    --mode warm_extend \
+    --pad-to-block-size 16 \
+    --output "$WARM_EXTEND_DIR"
+
+echo "prefix-reuse equivalence regression gate: PASS (warm_repeat + warm_extend)"

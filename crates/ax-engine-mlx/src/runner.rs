@@ -2409,14 +2409,39 @@ impl MlxRunner {
             hit
         };
 
+        // MLA's compressed-latent KV survives a snapshot+restore cleanly for the
+        // same-prompt (warm_repeat / Decode-mode) case — the entire forward pass
+        // runs against a restored cache and never crosses a non-zero-seq_len
+        // chunk boundary. But for warm_extend (Prefill-mode with a suffix), the
+        // post-restore `chunked_prefill` must process the suffix starting from
+        // `seq_len == base_len`, and the resulting forward+attention math drifts
+        // fp-wise against a cold `chunked_prefill` over `base + suffix` from
+        // seq_len=0. This was reproduced on GLM-4.7-Flash via the equivalence
+        // harness (`verify_prefix_reuse_equivalence.py --mode warm_extend
+        // --pad-to-block-size 16`): p2_medium_explain diverges at decode token
+        // idx=13 with `ax_mlx_prefix_cache_hits=1` and `warmup_tokens=0`. The
+        // safe behavior is to treat the snapshot as unusable for MLA + Prefill,
+        // surfacing it as `blocked_unsupported_layout` so cee4227e's full-prompt
+        // recompute path (`full_prefill_recompute_tokens_for_warmup_fallback`)
+        // takes over. warm_repeat hits remain unaffected.
+        let mla_extend_unsafe =
+            self.cfg.glm_mla_attention.is_some() && item.mode == ExecutionMode::Prefill;
+
         if let Some(snapshot) = hit {
-            state.cache = snapshot.cache.clone();
-            state.prompt_prefix_tokens = reused_tokens.to_vec();
-            state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
-            telemetry.hits = telemetry.hits.saturating_add(1);
-            telemetry.reused_tokens = telemetry
-                .reused_tokens
-                .saturating_add(saturating_u32(snapshot.token_count));
+            if !mla_extend_unsafe {
+                state.cache = snapshot.cache.clone();
+                state.prompt_prefix_tokens = reused_tokens.to_vec();
+                state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
+                telemetry.hits = telemetry.hits.saturating_add(1);
+                telemetry.reused_tokens = telemetry
+                    .reused_tokens
+                    .saturating_add(saturating_u32(snapshot.token_count));
+                return telemetry;
+            }
+            telemetry.record_blocked_unsupported_layout();
+            telemetry.warmup_tokens = telemetry
+                .warmup_tokens
+                .saturating_add(saturating_u32(reused_tokens.len()));
             return telemetry;
         }
 
@@ -3809,9 +3834,11 @@ mod tests {
             prefix_blocks_reused: 1,
         };
         let state = RequestState::new(2, RequestId(21));
-        let mut telemetry = MlxPrefixCacheTelemetry::default();
-        telemetry.misses = 1;
-        telemetry.warmup_tokens = 4;
+        let telemetry = MlxPrefixCacheTelemetry {
+            misses: 1,
+            warmup_tokens: 4,
+            ..MlxPrefixCacheTelemetry::default()
+        };
 
         let tokens = full_prefill_recompute_tokens_for_warmup_fallback(
             &item,
@@ -3841,9 +3868,11 @@ mod tests {
             prefix_blocks_reused: 1,
         };
         let state = RequestState::new(2, RequestId(22));
-        let mut hit_telemetry = MlxPrefixCacheTelemetry::default();
-        hit_telemetry.hits = 1;
-        hit_telemetry.reused_tokens = 4;
+        let hit_telemetry = MlxPrefixCacheTelemetry {
+            hits: 1,
+            reused_tokens: 4,
+            ..MlxPrefixCacheTelemetry::default()
+        };
 
         assert!(
             full_prefill_recompute_tokens_for_warmup_fallback(
@@ -3857,9 +3886,11 @@ mod tests {
         );
 
         item.mode = ExecutionMode::Decode;
-        let mut warmup_telemetry = MlxPrefixCacheTelemetry::default();
-        warmup_telemetry.misses = 1;
-        warmup_telemetry.warmup_tokens = 4;
+        let warmup_telemetry = MlxPrefixCacheTelemetry {
+            misses: 1,
+            warmup_tokens: 4,
+            ..MlxPrefixCacheTelemetry::default()
+        };
         assert!(
             full_prefill_recompute_tokens_for_warmup_fallback(
                 &item,
