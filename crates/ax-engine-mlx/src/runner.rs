@@ -1648,6 +1648,14 @@ fn append_tail(target: &mut Vec<u32>, source: &[u32], skip: &mut usize) {
     *skip = 0;
 }
 
+fn seed_generation_ngram_from_prompt(state: &mut RequestState) {
+    let feed_start = state
+        .prompt_prefix_tokens
+        .len()
+        .saturating_sub(NGRAM_PROMPT_FEED_MAX);
+    state.ngram.feed(&state.prompt_prefix_tokens[feed_start..]);
+}
+
 /// ExecutionRunner backed by the MLX inference path.
 pub struct MlxRunner {
     cfg: ModelConfig,
@@ -2164,7 +2172,6 @@ impl MlxRunner {
                 if prefill_completes_prompt {
                     kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
                         &mut state,
-                        token_ids,
                         tok,
                         max_output,
                         is_greedy,
@@ -2189,10 +2196,8 @@ impl MlxRunner {
                 let decode_started = Instant::now();
                 let tok = if generated_len == 0 {
                     if let Some(tok) = state.cached_prefill_output_token.take() {
-                        let prompt_prefix_tokens = state.prompt_prefix_tokens.clone();
                         kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
                             &mut state,
-                            &prompt_prefix_tokens,
                             tok,
                             max_output,
                             is_greedy,
@@ -2282,15 +2287,16 @@ impl MlxRunner {
     }
 
     fn prefix_cache_supported(&self) -> bool {
-        // Linear-attention models are supported with an additional store-side
-        // restriction (see `store_prompt_prefix_snapshots`): only the full
-        // prompt prefix snapshot is sound, because `MlxKVCache::trim_to` does
-        // not roll back the per-layer recurrent state. Lookups are already
-        // exact-match-safe via `MlxPrefixCache::get`'s token-equality check.
-        // MLA and sliding-window remain unsupported pending a separate
-        // strategy slice.
+        // Linear-attention and sliding-window models are both supported via
+        // store-side restrictions in `store_prompt_prefix_snapshots`: only
+        // the full-prompt snapshot is stored, and only when the prompt is
+        // exactly block-aligned. Sliding-window: `MlxKVCache::trim_to`
+        // returns false once any rotating-window layer has rotated past
+        // `prefix_len`, so non-aligned attempts naturally fail. Linear:
+        // `trim_to` does not roll back recurrent state, so we skip
+        // explicitly. MLA still requires a separate snapshot path for its
+        // compressed latent state and remains gated out here.
         self.cfg.glm_mla_attention.is_none()
-            && self.kv_layer_windows.iter().all(Option::is_none)
     }
 
     fn prefix_cache_route_policy(&self) -> String {
@@ -2476,26 +2482,26 @@ impl MlxRunner {
             return telemetry;
         }
 
-        // Linear-attention models cannot tolerate ANY trim that does not match
-        // the actual processed length: `MlxKVCache::trim_to` only adjusts
-        // `seq_len`, leaving the per-layer recurrent state at end-of-prefill.
-        // The recurrent state at an earlier prefix cannot be re-derived from
-        // the final state, so a snapshot whose `prefix_len < available_tokens`
-        // captures inconsistent (seq_len, recurrent_state). Only store when
-        // the prompt is exactly block-aligned, AND only the single full
-        // snapshot — never partial prefixes. The
-        // `verify_prefix_reuse_equivalence.py` harness fails-closed on any
-        // resulting token drift; any future change here must keep that
+        // Linear-attention AND sliding-window models share the same constraint:
+        // only the full-prompt snapshot is sound, and only when the prompt is
+        // exactly block-aligned (so `trim_to(full_block_tokens) == seq_len` is
+        // a no-op). For linear attention, `trim_to` does not roll back
+        // recurrent state. For sliding-window, `trim_to` returns false once
+        // any rotating-window layer has rotated past `prefix_len`, which the
+        // existing loop would already surface as `blocked_trim_failure` — but
+        // we short-circuit here to avoid the cosmetic per-block-iteration
+        // failure noise in route telemetry and to make the policy explicit.
+        // The `verify_prefix_reuse_equivalence.py` harness fails-closed on
+        // any resulting token drift; any future change here must keep that
         // harness green on every model in the supported tier.
         let linear_attention = self.cfg.linear_attention.is_some();
-        if linear_attention && full_block_tokens != available_tokens {
-            // Surface this as trim_failure rather than silently skipping —
-            // semantically we know `trim_to` would corrupt linear state for
-            // this prompt length, so we choose not to attempt the store.
+        let sliding_window = self.kv_layer_windows.iter().any(Option::is_some);
+        let alignment_restricted = linear_attention || sliding_window;
+        if alignment_restricted && full_block_tokens != available_tokens {
             telemetry.record_blocked_trim_failure();
             return telemetry;
         }
-        let snapshot_start_tokens = if linear_attention {
+        let snapshot_start_tokens = if alignment_restricted {
             full_block_tokens
         } else {
             block_size
@@ -2777,7 +2783,6 @@ impl MlxRunner {
     fn initialize_generation_state(
         &self,
         state: &mut RequestState,
-        token_ids: &[u32],
         bootstrap_token: u32,
         max_output: u32,
         is_greedy: bool,
@@ -2789,8 +2794,7 @@ impl MlxRunner {
         // hundreds of useless bigrams, causing a false-positive spec attempt on
         // the first decode step and disabling n-gram acceleration for
         // LINEAR_NGRAM_RETRY_INTERVAL steps — wiping out most of the generation.
-        let feed_start = token_ids.len().saturating_sub(NGRAM_PROMPT_FEED_MAX);
-        state.ngram.feed(&token_ids[feed_start..]);
+        seed_generation_ngram_from_prompt(state);
 
         // Classify the full prompt once per generation. record_prompt_class is
         // max-merge friendly so re-entry from an unusual code path cannot
@@ -3765,6 +3769,29 @@ mod tests {
         assert_eq!(state.ngram_disabled_steps, 0);
         assert_eq!(state.linear_ngram_no_draft_streak, 0);
         assert!(!state.ngram_acceleration_disabled_for_request);
+    }
+
+    #[test]
+    fn generation_ngram_seed_uses_reconstructed_prompt_after_prefix_warmup() {
+        let mut warm = RequestState::new(2, RequestId(11));
+        warm.prompt_prefix_tokens = vec![10, 11, 12, 13, 10, 11, 12];
+
+        seed_generation_ngram_from_prompt(&mut warm);
+
+        assert_eq!(
+            warm.ngram.predict(1),
+            vec![13],
+            "warm prefix+suffix prefill must seed n-grams from the reconstructed full prompt",
+        );
+
+        let mut suffix_only = RequestState::new(2, RequestId(12));
+        suffix_only.prompt_prefix_tokens = vec![10, 11, 12];
+        seed_generation_ngram_from_prompt(&mut suffix_only);
+
+        assert!(
+            suffix_only.ngram.predict(1).is_empty(),
+            "feeding only the final prefill item loses the prompt context needed for deterministic warm_extend",
+        );
     }
 
     #[test]
