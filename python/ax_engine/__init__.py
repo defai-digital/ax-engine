@@ -1080,7 +1080,100 @@ def _normalize_chat_message(message: ChatMessage | dict[str, str]) -> ChatMessag
 
 
 _MODEL_MANIFEST_FILE = "model-manifest.json"
-_IGNORE_PATTERNS = ["*.bin", "*.pt", "*.gguf", "*.msgpack", "flax_model*"]
+
+
+def _slug_repo_id(repo_id: str) -> str:
+    return repo_id.replace("/", "--")
+
+
+def _reject_non_llm_repo(repo_id: str) -> None:
+    lowered = repo_id.lower()
+    if "embedding" in lowered or "embed" in lowered:
+        raise RuntimeError(
+            "embedding model downloads are not managed by ax-engine. "
+            "Download embedding model artifacts manually and pass the local model directory."
+        )
+
+
+def _default_mlx_lm_cache_root() -> Path:
+    import os
+
+    if hf_hub_cache := os.environ.get("HF_HUB_CACHE"):
+        return Path(hf_hub_cache).expanduser()
+    if hf_home := os.environ.get("HF_HOME"):
+        return Path(hf_home).expanduser() / "hub"
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
+    return cache_home / "huggingface" / "hub"
+
+
+def _latest_mlx_lm_snapshot(repo_id: str) -> Path | None:
+    repo_cache = _default_mlx_lm_cache_root() / f"models--{_slug_repo_id(repo_id)}"
+    refs_main = repo_cache / "refs" / "main"
+    if refs_main.is_file():
+        revision = refs_main.read_text().strip()
+        if revision:
+            snapshot = repo_cache / "snapshots" / revision
+            if snapshot.is_dir():
+                return snapshot
+    snapshots = repo_cache / "snapshots"
+    if not snapshots.is_dir():
+        return None
+    candidates = [path for path in snapshots.iterdir() if path.is_dir()]
+    return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
+
+
+def _run_mlx_lm_download(repo_id: str) -> None:
+    import os
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    command = [
+        sys.executable,
+        "-m",
+        "mlx_lm",
+        "generate",
+        "--model",
+        repo_id,
+        "--prompt",
+        "x",
+        "--max-tokens",
+        "1",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, env=env)
+    if result.returncode != 0:
+        output = "\n".join(part for part in [result.stderr.strip(), result.stdout.strip()] if part)
+        raise RuntimeError(
+            "mlx-lm is required for download_model(). Install it with:\n"
+            "  pip install mlx-lm\n"
+            f"Command failed: {' '.join(command)}\n"
+            f"{output}".rstrip()
+        )
+
+
+def _copy_mlx_lm_snapshot(snapshot: Path, dest: Path) -> None:
+    import shutil
+
+    dest.mkdir(parents=True, exist_ok=True)
+    for path in snapshot.iterdir():
+        target = dest / path.name
+        if path.is_dir():
+            shutil.copytree(path, target, dirs_exist_ok=True)
+        elif path.is_symlink():
+            shutil.copy2(path.resolve(), target)
+        else:
+            shutil.copy2(path, target)
+
+
+def _validate_downloaded_model_dir(dest: Path) -> None:
+    errors = []
+    if not list(dest.glob("*.safetensors")):
+        errors.append(f"no .safetensors files found in {dest}")
+    if not (dest / "config.json").exists():
+        errors.append(f"config.json missing in {dest}")
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
 
 def download_model(
@@ -1089,33 +1182,33 @@ def download_model(
     *,
     force: bool = False,
 ) -> Path:
-    """Download an MLX model from Hugging Face Hub and generate its ax-engine manifest.
+    """Download an MLX model through mlx-lm and generate its ax-engine manifest.
 
     Downloads the model, then automatically tries to generate ``model-manifest.json``
     via ``ax-engine-bench generate-manifest`` (installed) or ``cargo run`` (dev).
     Prints a manual command if neither is available.
 
     Args:
-        repo_id: HuggingFace repo id, e.g. ``"mlx-community/Qwen3-4B-4bit"``.
-        dest: Destination directory. Defaults to the Hugging Face Hub snapshot cache.
-        force: Re-download even if already present.
+        repo_id: MLX LLM repo id, e.g. ``"mlx-community/Qwen3-4B-4bit"``.
+        dest: Destination directory. Defaults to the mlx-lm cache snapshot.
+        force: Re-download the default mlx-lm cache entry before resolving the snapshot.
     """
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError as exc:
-        raise ImportError(
-            "huggingface_hub is required for download_model(). Install it with:\n"
-            "  pip install huggingface_hub"
-        ) from exc
+    _reject_non_llm_repo(repo_id)
+
+    if force:
+        import shutil
+
+        shutil.rmtree(
+            _default_mlx_lm_cache_root() / f"models--{_slug_repo_id(repo_id)}",
+            ignore_errors=True,
+        )
 
     if dest is None:
-        dest = Path(
-            snapshot_download(
-                repo_id=repo_id,
-                ignore_patterns=_IGNORE_PATTERNS,
-                force_download=force,
-            )
-        )
+        _run_mlx_lm_download(repo_id)
+        dest = _latest_mlx_lm_snapshot(repo_id)
+        if dest is None:
+            raise RuntimeError(f"mlx-lm completed but no cache snapshot was found for {repo_id}")
+        _validate_downloaded_model_dir(dest)
         if not (dest / _MODEL_MANIFEST_FILE).exists():
             if not _try_generate_manifest(dest):
                 _print_manifest_reminder(dest)
@@ -1125,19 +1218,20 @@ def download_model(
     if dest.exists() and not force:
         safetensors = list(dest.glob("*.safetensors"))
         if safetensors and (dest / _MODEL_MANIFEST_FILE).exists():
+            _validate_downloaded_model_dir(dest)
             return dest
         if safetensors:
+            _validate_downloaded_model_dir(dest)
             if not _try_generate_manifest(dest):
                 _print_manifest_reminder(dest)
             return dest
 
-    dest.mkdir(parents=True, exist_ok=True)
-    snapshot_download(
-        repo_id=repo_id,
-        local_dir=str(dest),
-        ignore_patterns=_IGNORE_PATTERNS,
-        force_download=force,
-    )
+    _run_mlx_lm_download(repo_id)
+    snapshot = _latest_mlx_lm_snapshot(repo_id)
+    if snapshot is None:
+        raise RuntimeError(f"mlx-lm completed but no cache snapshot was found for {repo_id}")
+    _copy_mlx_lm_snapshot(snapshot, dest)
+    _validate_downloaded_model_dir(dest)
 
     if not (dest / _MODEL_MANIFEST_FILE).exists():
         if not _try_generate_manifest(dest):

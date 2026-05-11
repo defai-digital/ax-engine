@@ -10,6 +10,9 @@ requires-python = ">=3.10"
 readme = "crates/ax-engine-py/README.md"
 
 [project.optional-dependencies]
+download = [
+    "mlx-lm>=0.31",
+]
 openai = [
     "fastapi>=0.110",
     "tokenizers>=0.15",

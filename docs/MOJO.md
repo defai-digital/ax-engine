@@ -89,7 +89,8 @@ fn main() raises:
     print(path)
 ```
 
-Requires `pip install huggingface_hub`. The returned string is the local
+Requires `pip install mlx-lm`. This helper is for LLM models only; embedding
+model artifacts must be downloaded manually. The returned string is the local
 directory path, ready to pass to `Session(mlx_model_artifacts_dir=path)`.
 
 ## Design Notes

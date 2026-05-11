@@ -790,6 +790,23 @@ class WrapperContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mlx=True requires mlx_model_artifacts_dir"):
             self.ax_engine.Session(model_id="qwen3_dense", mlx=True)
 
+    def test_download_model_rejects_embedding_repos(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "embedding model downloads are not managed"):
+            self.ax_engine.download_model("mlx-community/Qwen3-Embedding-0.6B-8bit")
+
+    def test_download_model_rejects_incomplete_existing_dest(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "model.safetensors").write_bytes(b"placeholder")
+
+            with self.assertRaisesRegex(RuntimeError, "config.json missing"):
+                self.ax_engine.download_model(
+                    "mlx-community/Qwen3-4B-4bit",
+                    dest=model_dir,
+                )
+
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 

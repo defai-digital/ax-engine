@@ -1,4 +1,4 @@
-# HuggingFace Integration PRD
+# MLX-LM Model Acquisition PRD
 
 ## Background
 
@@ -11,7 +11,7 @@ current developer experience has three compounding problems:
    output with no error. This is the most dangerous issue.
 2. **No download path**: there is no SDK function, CLI helper, or script for obtaining a model
    artifact that ax-engine can use. Users must manually discover mlx-community, run
-   `huggingface_hub.snapshot_download`, and then invoke a Rust binary to generate the manifest.
+   `mlx-lm`, and then invoke a Rust binary to generate the manifest.
 3. **Hostile error messages**: when something does go wrong the errors either reference a Rust
    build command unfamiliar to Python users, or omit the next-step hint entirely.
 
@@ -19,8 +19,8 @@ current developer experience has three compounding problems:
 
 - **G1** Detect and hard-fail on unsanitized checkpoints before they silently corrupt output.
 - **G2** Give every user a single Python call or script invocation to get from "nothing" to a
-  loadable model artifact.
-- **G3** Every error on the HF model-loading path ends with a concrete remediation step.
+  loadable LLM model artifact.
+- **G3** Every error on the MLX LLM model-loading path ends with a concrete remediation step.
 
 ## Non-goals
 
@@ -38,7 +38,7 @@ under 5 minutes with no Rust toolchain knowledge.
 **US-2** As a developer who downloaded a raw HuggingFace checkpoint by mistake, I expect a
 clear error explaining exactly what's wrong and how to fix it — not silent garbage output.
 
-**US-3** As a CLI user who just ran `huggingface-cli download mlx-community/Qwen3-4B-4bit`, I
+**US-3** As a CLI user who just ran `python -m mlx_lm generate --model mlx-community/Qwen3-4B-4bit`, I
 expect `ax-engine-server --resolve-model-artifacts hf-cache --preset qwen3_dense` to either
 work or tell me the exact next command to run.
 
@@ -93,13 +93,15 @@ standalone `generate-manifest` binary.
 
 ### 2b. `scripts/download_model.py`
 
-General-purpose MLX model download script. Accepts a positional `repo_id` argument plus
+MLX LLM model download script. Accepts a positional `repo_id` argument plus
 `--dest` and `--force`. Performs:
 
-1. `huggingface_hub.snapshot_download()` with ax-engine's ignore patterns
+1. `python -m mlx_lm generate --model <repo-id> --prompt x --max-tokens 1`
+   to let `mlx-lm` acquire and validate the MLX LLM model
 2. Post-download validation (safetensors present, config.json present)
 3. Auto-runs manifest generation: tries `ax-engine-bench generate-manifest` first,
    falls back to `cargo run`, falls back to hint
+4. Rejects embedding repo IDs; embedding artifacts are downloaded manually.
 
 ### 2c. `ax_engine.download_model()` (`python/ax_engine/__init__.py`)
 
@@ -112,12 +114,12 @@ def download_model(
 ) -> Path
 ```
 
-Wraps `huggingface_hub.snapshot_download`. After download, calls `_try_generate_manifest()`
+Runs `mlx-lm` to download the model. After download, calls `_try_generate_manifest()`
 which tries `ax-engine-bench generate-manifest` (installed) then `cargo run` (dev repo).
 Returns the local directory `Path` with manifest generated when possible.
 
-`huggingface_hub` is an optional dependency; import inside the function body and raise
-`ImportError` with `pip install huggingface_hub` if missing.
+`mlx-lm` is the model acquisition dependency; raise a Python-friendly error with
+`pip install mlx-lm` if missing.
 
 ---
 

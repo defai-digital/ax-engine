@@ -49,8 +49,8 @@ The current preview package does not yet provide:
 
 ## Getting a Model
 
-`download_model()` is the fastest path from nothing to a running session.
-It downloads weights into the standard Hugging Face Hub snapshot cache and
+`download_model()` is the fastest path from nothing to a running LLM session.
+It downloads LLM weights through `mlx-lm`, resolves the MLX-LM cache snapshot, and
 auto-generates the required `model-manifest.json` via
 `ax-engine-bench generate-manifest` (if installed) or `cargo run` (dev build):
 
@@ -61,12 +61,18 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 # path is ready to pass directly to Session(mlx_model_artifacts_dir=...)
 ```
 
-The source-tree script uses the same Hugging Face default cache and can emit a
+Install `mlx-lm` first, or install the Python package with the download extra:
+`pip install "ax-engine[download]"`.
+
+The source-tree script uses the same `mlx-lm` download path and can emit a
 machine-readable summary for automation:
 
 ```text
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json
 ```
+
+Embedding model downloads are intentionally outside ax-engine. Download
+embedding artifacts manually and pass the local model directory.
 
 For raw HuggingFace checkpoints (not from mlx-community), convert with
 `mlx_lm.convert` first — ax-engine detects unsanitized hybrid-model weights at
