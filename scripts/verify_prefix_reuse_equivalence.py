@@ -129,6 +129,18 @@ def parse_args() -> argparse.Namespace:
         ),
         help="Suffix appended to each corpus prompt for warm_extend mode.",
     )
+    p.add_argument(
+        "--pad-to-block-size",
+        type=int,
+        default=None,
+        help=(
+            "If set, right-pads each tokenized prompt up to the next multiple of "
+            "this block size by repeating tokens from the prompt's tail. Use this "
+            "to exercise the architecture-restricted snapshot path (linear / "
+            "sliding-window / MLA all require exactly block-aligned prompts to "
+            "hit the physical prefix cache). 16 is the typical block_size_tokens."
+        ),
+    )
     return p.parse_args()
 
 
@@ -234,6 +246,18 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
         )
         return s
 
+    def pad_to_block(tokens: list[int]) -> list[int]:
+        if args.pad_to_block_size is None or args.pad_to_block_size <= 0:
+            return tokens
+        remainder = len(tokens) % args.pad_to_block_size
+        if remainder == 0:
+            return tokens
+        need = args.pad_to_block_size - remainder
+        if not tokens:
+            return tokens
+        padding = (tokens * ((need // len(tokens)) + 1))[:need]
+        return tokens + padding
+
     per_prompt = []
     total_pass = 0
     if args.mode == "warm_repeat":
@@ -243,7 +267,7 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
         print("running warm_repeat mode on shared Session")
         for item in corpus:
             prompt_id = item["id"]
-            tokens = tokenizer.encode(item["text"]).ids
+            tokens = pad_to_block(tokenizer.encode(item["text"]).ids)
             if not tokens:
                 raise SystemExit(f"prompt '{prompt_id}' tokenized to empty list")
             print(f"  {prompt_id}: cold ... ", end="", flush=True)
@@ -281,8 +305,8 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
             prompt_id = item["id"]
             base_text = item["text"]
             extended_text = base_text + args.extend_suffix
-            base_tokens = tokenizer.encode(base_text).ids
-            extended_tokens = tokenizer.encode(extended_text).ids
+            base_tokens = pad_to_block(tokenizer.encode(base_text).ids)
+            extended_tokens = pad_to_block(tokenizer.encode(extended_text).ids)
             if not extended_tokens:
                 raise SystemExit(f"prompt '{prompt_id}' extended-tokenized to empty")
             print(f"  {prompt_id}: cold(extended) ... ", end="", flush=True)
@@ -336,6 +360,7 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
         "config": {
             "mode": args.mode,
             "extend_suffix": args.extend_suffix if args.mode == "warm_extend" else None,
+            "pad_to_block_size": args.pad_to_block_size,
             "max_output_tokens": args.max_output_tokens,
             "seed": args.seed,
             "prompt_count": len(corpus),
