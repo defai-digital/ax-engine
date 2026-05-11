@@ -21,3 +21,7 @@ path = "src/bin/turboquant_microbench.rs"
 [[bin]]
 name = "mlx-bench"
 path = "src/bench_main.rs"
+
+[[bin]]
+name = "rmsnorm-fused-probe"
+path = "src/bin/rmsnorm_fused_probe.rs"
