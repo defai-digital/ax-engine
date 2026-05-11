@@ -2,7 +2,7 @@
 
 **PRD**: `.internal/planning/KV-SCHEDULER-REVAMP-PRD.md` §W1
 **ADR**: 0018 KV/Scheduler Revamp
-**Status**: First slice complete (2026-05-11). Bottleneck identified.
+**Status**: Slice 2 complete (2026-05-11). Root cause isolated to telemetry-aggregation overwrite in `EngineSession::step()` — the prefix cache itself works correctly.
 **Author**: AX Engine work session
 
 ## TL;DR
@@ -167,6 +167,131 @@ being called between sequential `Session.generate()` calls.
 this script, compare. The next structural decision (eviction policy,
 KV-low scheduling, snapshot retention) is gated on knowing which side of
 the boundary the bug lives on.
+
+## Slice 2 Findings (2026-05-11) — ALL FOUR HYPOTHESES WRONG
+
+The slice-1 hypothesis catalog (h1: free not called, h2: full_block_count
+stays 0, h3: cache_group_id mismatch, h4: token-hash mismatch) was
+**all wrong**. Slice 2 added `AX_KV_DIAG`-gated diagnostics to `KvManager`
+(`crates/ax-engine-core/src/kv.rs`) covering `lookup_prefix`, `free`, and
+`promote_prompt_prefix_to_cache`, plus a temporary trace inside
+`engine.rs::apply_prefix_reuse` (since reverted). Trace on Gemma 4 E2B,
+3 sequential calls × 512-token prompt:
+
+```
+[KV_DIAG] free(request=2): table.full_block_count=32 logical_token_count=519
+[KV_DIAG] promote: COMPLETE newly_inserted=28 touched_existing=4 total_cached_blocks_now=32
+[KV_DIAG] lookup_prefix(request=3): cached_blocks_total=32
+[KV_DIAG] lookup_prefix result: cached_matched_tokens=512
+[KV_DIAG] apply_prefix_reuse: lookup.hit=true matched_tokens=512 matched_blocks=32 retained=true
+```
+
+The prefix cache:
+- **Is** populated by `free()` → `promote_prompt_prefix_to_cache` (32 blocks
+  cached after first 512-token prompt completes).
+- **Is** consulted by `lookup_prefix` on the second-call prefill (all 32
+  blocks match, 512 matched tokens).
+- **Reaches** `apply_prefix_reuse` with `lookup.hit=true` and `retained=true`.
+- The `prefix_reuse` map IS populated and passed to
+  `rebuild_execution_batch`, which writes `retained_cache_hits=1`,
+  `prefix_reused_blocks=32`, `prefix_reused_tokens=512` into
+  `execution_batch.route_metadata.crossover_decisions`.
+
+### Slice 2 Root Cause — Telemetry Overwrite in Per-Step Aggregation
+
+Bug location: `crates/ax-engine-sdk/src/session.rs:748` —
+`store_native_request_route(request_id, route)` is a **plain `insert`**,
+not a merge:
+
+```rust
+fn store_native_request_route(&mut self, request_id: u64, route: GenerateRouteReport) {
+    if !self.native_request_routes.contains_key(&request_id) {
+        self.native_route_report_order.push_back(request_id);
+    }
+    self.native_request_routes.insert(request_id, route);   // <-- overwrites every step
+    ...
+}
+```
+
+A `Session.generate()` call produces N engine steps:
+- Step 1 = Prefill (where `apply_prefix_reuse` runs and writes counters).
+- Steps 2..N = Decode (where `apply_prefix_reuse` returns early; the
+  decode-step route metadata contains **zero** prefix-reuse counters).
+
+Each step's route metadata is stored with `insert(request_id, route)`,
+so by the time `Session.generate()` returns, the stored route for that
+request is the LAST step's metadata — i.e. a decode step with zero
+prefix-reuse counters. The prefill-step route (with the real
+`retained_cache_hits=1`, `prefix_reused_blocks=32`, etc.) is silently
+overwritten on step 2.
+
+**This explains every observation in slice 1**: the `crossover_decisions`
+the Python artifact reads are from the final decode step, and the engine's
+real prefix-reuse work is invisible. `blocked_prefix_reuse_*` is zero too
+because that path also only fires on prefill — it's overwritten the same
+way.
+
+### Verdict — Bug Is in the SDK, Not the Cache or Scheduler
+
+The retained prefix cache, the cache-promote-on-free path, the lookup
+machinery, and the per-step prefix-reuse plumbing in
+`ax-engine-core::engine` all work correctly. The bug is a one-line
+aggregation defect in `ax-engine-sdk::session::store_native_request_route`.
+
+**Recommended fix** (≤1 day, owned by SDK, not core):
+
+Replace the `insert` with a merge that preserves monotonically-meaningful
+counters. Concretely, when a step has zero `prefix_reused_blocks` /
+`retained_cache_hits` / `live_share_hits` / `blocked_prefix_reuse_*` but
+the existing stored route has non-zero values for those keys, keep the
+stored values. Cleanest implementation: a small `merge_route_for_request`
+that, for each key in a fixed allow-list, keeps `max(stored, new)`. Keys:
+
+```
+prefix_reused_requests, live_share_hits, retained_cache_hits,
+prefix_reused_blocks, prefix_reused_tokens,
+blocked_prefix_reuse_requests, blocked_prefix_reuse_blocks,
+blocked_prefix_reuse_tokens, max_prefix_blocks_reused_per_request,
+branch_prefill_requests, branch_decode_requests,
+branch_prefill_tail_tokens, branch_decode_tokens
+```
+
+Non-monotonic keys (`ax_mlx_kv_logical_tokens`, `ax_mlx_kv_capacity_tokens`,
+etc.) should keep the LAST value, matching current behaviour.
+
+**Once the fix lands**, re-run `scripts/profile_kv_long_context_evidence.py`
+on both Gemma and Qwen. Expected outcome: warm_repeat shows
+`retained_cache_hits=1`, `prefix_reused_blocks≈prompt_tokens/block_size`,
+and warm_extend shows the same plus a partial-match. TTFT speedup will
+become measurable (the prefill compute really is skipped — the
+SDK was just lying about it in telemetry).
+
+### Slice 2 Coverage Update vs §W1 PRD
+
+Coverage in the §W1 exit-criteria sense (now grounded in real engine
+behaviour rather than telemetry-only data):
+
+- ✅ retained prompt-prefix cache reuse — works at engine level; telemetry
+  fix needed to confirm runtime TTFT improvement.
+- ✅ MLX physical prefix snapshot hit — engine-level prefix matching
+  confirmed working; whether MLX backend honours it as a physical-snapshot
+  restore (vs. recompute) requires the telemetry fix to measure.
+- ✅ MLX physical prefix snapshot miss with warmup — warm_extend already
+  exercises this path (extension tokens require warmup); cannot quantify
+  warmup cost until telemetry fix lands.
+- ⚠ prefix-cache unsupported layout — still untested (slice 3).
+- ⚠ KV-low and KV-exhausted scheduling paths — still untested (slice 3).
+
+### Diagnostics Left in Tree
+
+The `AX_KV_DIAG=1`-gated eprintlns in
+`crates/ax-engine-core/src/kv.rs` remain (zero cost when the env var is
+not set). They are useful for ongoing KV/prefix investigation and can
+be removed later as a separate cleanup commit once the telemetry-merge
+fix is shipped and proves the cache is fully working.
+
+The engine-side trace inside `apply_prefix_reuse` was reverted —
+slice-specific, no ongoing value.
 
 ## Artifacts
 
