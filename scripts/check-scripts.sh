@@ -58,7 +58,9 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_turboquant_microbench_artifact.py \
   scripts/probe_mlx_model_support.py \
   scripts/test_probe_mlx_model_support.py \
-  scripts/diagnose_server_rss.py
+  scripts/diagnose_server_rss.py \
+  scripts/verify_prefix_reuse_equivalence.py \
+  scripts/profile_kv_long_context_evidence.py
 "$PYTHON_BIN" -m unittest scripts/test_bench_ax_serving.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-turboquant-quality-gate.sh

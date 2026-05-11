@@ -936,6 +936,37 @@ unconditionally — architecture-specific safety constraints live in
   - Gemma 4 E2B `warm_repeat`: 5/5 PASS
   - GLM-4.7-Flash `warm_repeat`: 5/5 PASS
 
+### CI regression gate landed (slice 7 follow-up)
+
+- `scripts/check-prefix-reuse-equivalence.sh` — bash wrapper that creates
+  an isolated venv, builds the Python extension via `maturin develop`,
+  and runs `scripts/verify_prefix_reuse_equivalence.py --mode warm_repeat
+  --pad-to-block-size 16` against `$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`.
+  Exit code 0 on 5/5 PASS; non-zero on any divergence.
+- Wired into `.github/workflows/python-preview.yml` as
+  `Run prefix-reuse equivalence regression gate`, gated on
+  `steps.mlx-artifacts.outputs.available == 'true'` (same pattern as the
+  existing benchmark smoke checks).
+- The CI runs against whichever model the workflow mounts via
+  `vars.AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`. Whoever rotates that model
+  inherits the regression-gate coverage automatically.
+- `scripts/check-scripts.sh` hygiene now also `py_compile`s
+  `verify_prefix_reuse_equivalence.py` and
+  `profile_kv_long_context_evidence.py`.
+
+Local smoke-test (Qwen3.5-9B 4-bit):
+
+```
+$ AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR=...Qwen3.5-9B-MLX-4bit \
+    AX_PREFIX_REUSE_MODEL_ID=qwen3-5-9b \
+    bash scripts/check-prefix-reuse-equivalence.sh
+[fresh venv, maturin develop, harness 5/5 PASS, cleanup]
+prefix-reuse equivalence regression gate: PASS
+```
+
+Failure path (missing model dir) exits 2 cleanly. Harness FAIL (any
+prompt divergence) exits 3. Both bubble up to the workflow.
+
 ### Known issues (out of scope for slice 7)
 
 - Pre-existing `warm_reused_prefix_without_cache` fp-drift bug:
