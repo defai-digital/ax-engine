@@ -695,6 +695,60 @@ The full chain is now closed:
 - Slice 5: shipped Strategy 1, gated by a correctness harness that
   caught the first attempt's bug before merge.
 
+### Slice 5b Bug Audit — Pre-existing warmup-path bug surfaced
+
+After Strategy 1 shipped, a bug audit added a `--mode warm_extend` flag to
+`verify_prefix_reuse_equivalence.py` (uses two `Session` instances to
+compare a cold-baseline run of `base + suffix` against a warm run that
+first generates `base` to populate the cache, then issues `base + suffix`).
+
+Findings:
+
+- Qwen3.5-9B warm_extend on the 5-prompt corpus: **4/5 PASS** —
+  `p3_long_story` diverges at token 30.
+- Gemma 4 E2B warm_extend: **3/5 PASS** — `p2_medium_explain` diverges
+  at token 0, `p5_repetition_safe` at token 14.
+
+Critical context for scope analysis:
+
+- Strategy 1's snapshot store path only fires when the base prompt is
+  exactly block-aligned. The harness's natural prompts (40–70 tokens
+  each) are NOT block-aligned (block size = 16). So on those prompts,
+  Strategy 1's snapshot store skips (records `blocked_trim_failure`),
+  and the warm path falls through to `warm_reused_prefix_without_cache`.
+- Gemma still has `prefix_cache_supported() == false`, so EVERY warm
+  path on Gemma uses `warm_reused_prefix_without_cache` regardless of
+  prompt alignment.
+- Both models' failures cluster in this single function. Conclusion: the
+  bug pre-dates Strategy 1 — it's in the `warm_reused_prefix_without_cache`
+  re-prefill path's correctness for partial-prefix matches, NOT in the
+  snapshot/restore machinery Strategy 1 enabled.
+
+Strategy 1's actual claimed scope (block-aligned warm_repeat, block-aligned
+warm_extend on long prompts like the W1 evidence script's 2048-token case)
+hits the SNAPSHOT path, not the warmup path. The W1 evidence's 3247×
+warm_repeat speedup and 7× warm_extend speedup correspond to snapshot
+hits and are correct.
+
+This bug is filed as a known issue for a separate slice (likely Slice 6 or
+Strategy 2 follow-up). It does not affect Strategy 1's correctness, but it
+does mean any `warm_extend` value on non-block-aligned prompts has silent
+token drift today.
+
+Additional fix landed in the bug audit:
+
+- Surface the "linear-attention + non-block-aligned, skipping snapshot
+  store" case as `ax_mlx_prefix_cache_blocked_trim_failure` rather than
+  a silent skip. Operators can now see the alignment-related reason in
+  route metadata.
+
+Bug-audit artifacts:
+
+- `benchmarks/results/prefix-reuse-equivalence/qwen3-5-9b-warm-extend-2026-05-11.json`
+  (4/5 PASS — documents the pre-existing warmup-path bug)
+- `benchmarks/results/prefix-reuse-equivalence/gemma4-warm-extend-2026-05-11.json`
+  (3/5 PASS — same bug, no Strategy 1 surface area on Gemma)
+
 ### Slice 5 Artifacts
 
 - `benchmarks/results/prefix-reuse-equivalence/qwen3-5-9b-baseline-2026-05-11.json`

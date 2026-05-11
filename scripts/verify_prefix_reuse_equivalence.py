@@ -108,6 +108,27 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional JSON list of {id, text}. Defaults to the built-in 5-prompt corpus.",
     )
+    p.add_argument(
+        "--mode",
+        choices=["warm_repeat", "warm_extend"],
+        default="warm_repeat",
+        help=(
+            "warm_repeat: same prompt issued twice in a single Session — verifies "
+            "full-prefix snapshot/restore. warm_extend: prompt P warms cache, then "
+            "P+suffix is issued; compared against a cold-baseline run of P+suffix "
+            "in a separate Session. Verifies partial-prefix restore + extension "
+            "prefill correctness."
+        ),
+    )
+    p.add_argument(
+        "--extend-suffix",
+        type=str,
+        default=(
+            " Now continue with a second paragraph that introduces a new character "
+            "and a small twist. Keep the same tone."
+        ),
+        help="Suffix appended to each corpus prompt for warm_extend mode.",
+    )
     return p.parse_args()
 
 
@@ -196,48 +217,110 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
     corpus = load_corpus(args)
     print(f"corpus: {len(corpus)} prompts; max_output_tokens={args.max_output_tokens}")
 
-    session = Session(
-        model_id=args.model_id,
-        mlx=True,
-        mlx_model_artifacts_dir=str(args.mlx_artifacts_dir),
-        deterministic=True,
-    )
-    print("warmup (small generate to settle allocator) ...")
-    _ = session.generate(
-        input_tokens=tokenizer.encode("hello").ids,
-        max_output_tokens=4,
-        temperature=0.0,
-        seed=args.seed,
-    )
+    def new_session() -> "Session":
+        s = Session(
+            model_id=args.model_id,
+            mlx=True,
+            mlx_model_artifacts_dir=str(args.mlx_artifacts_dir),
+            deterministic=True,
+        )
+        # Allocator/code-cache warmup — does NOT seed the prefix cache with
+        # any prompt that appears in the corpus.
+        _ = s.generate(
+            input_tokens=tokenizer.encode("hello").ids,
+            max_output_tokens=4,
+            temperature=0.0,
+            seed=args.seed,
+        )
+        return s
 
     per_prompt = []
     total_pass = 0
-    for item in corpus:
-        prompt_id = item["id"]
-        tokens = tokenizer.encode(item["text"]).ids
-        if not tokens:
-            raise SystemExit(f"prompt '{prompt_id}' tokenized to empty list")
-        print(f"  {prompt_id}: cold ... ", end="", flush=True)
-        cold = run_generate(session, tokens, args.max_output_tokens, args.seed)
-        print("warm ... ", end="", flush=True)
-        warm = run_generate(session, tokens, args.max_output_tokens, args.seed)
-        cmp_result = compare_token_lists(cold["output_tokens"], warm["output_tokens"])
-        passed = cmp_result["tokens_match"]
-        if passed:
-            total_pass += 1
-        print("PASS" if passed else "FAIL")
-        per_prompt.append(
-            {
-                "id": prompt_id,
-                "prompt_preview": item["text"][:100],
-                "prompt_token_count": len(tokens),
-                "cold_output_token_count": len(cold["output_tokens"]),
-                "warm_output_token_count": len(warm["output_tokens"]),
-                **cmp_result,
-                "cold_telemetry": cold["telemetry"],
-                "warm_telemetry": warm["telemetry"],
-            }
-        )
+    if args.mode == "warm_repeat":
+        # Single Session: cold then warm using the same prompt. The warm call
+        # exercises the same-prompt snapshot path.
+        session = new_session()
+        print("running warm_repeat mode on shared Session")
+        for item in corpus:
+            prompt_id = item["id"]
+            tokens = tokenizer.encode(item["text"]).ids
+            if not tokens:
+                raise SystemExit(f"prompt '{prompt_id}' tokenized to empty list")
+            print(f"  {prompt_id}: cold ... ", end="", flush=True)
+            cold = run_generate(session, tokens, args.max_output_tokens, args.seed)
+            print("warm ... ", end="", flush=True)
+            warm = run_generate(session, tokens, args.max_output_tokens, args.seed)
+            cmp_result = compare_token_lists(
+                cold["output_tokens"], warm["output_tokens"]
+            )
+            passed = cmp_result["tokens_match"]
+            if passed:
+                total_pass += 1
+            print("PASS" if passed else "FAIL")
+            per_prompt.append(
+                {
+                    "id": prompt_id,
+                    "prompt_preview": item["text"][:100],
+                    "prompt_token_count": len(tokens),
+                    "cold_output_token_count": len(cold["output_tokens"]),
+                    "warm_output_token_count": len(warm["output_tokens"]),
+                    **cmp_result,
+                    "cold_telemetry": cold["telemetry"],
+                    "warm_telemetry": warm["telemetry"],
+                }
+            )
+    else:
+        # warm_extend: cold baseline runs in a fresh Session A (no cache hits
+        # possible — Session is fresh, only the allocator-warmup "hello" call
+        # touched the cache). Warm path uses Session B where prompt P is run
+        # first to populate cache, then P+suffix is run. The warm-extend call
+        # SHOULD hit the snapshot for P and only need to prefill the suffix.
+        # Both produce output that must be token-exact equal.
+        print("running warm_extend mode (two Sessions per prompt)")
+        for item in corpus:
+            prompt_id = item["id"]
+            base_text = item["text"]
+            extended_text = base_text + args.extend_suffix
+            base_tokens = tokenizer.encode(base_text).ids
+            extended_tokens = tokenizer.encode(extended_text).ids
+            if not extended_tokens:
+                raise SystemExit(f"prompt '{prompt_id}' extended-tokenized to empty")
+            print(f"  {prompt_id}: cold(extended) ... ", end="", flush=True)
+            session_a = new_session()
+            cold = run_generate(
+                session_a, extended_tokens, args.max_output_tokens, args.seed
+            )
+            del session_a
+            print("warm(base then extended) ... ", end="", flush=True)
+            session_b = new_session()
+            # Warm the cache with the base prompt. Output discarded.
+            _ = run_generate(
+                session_b, base_tokens, args.max_output_tokens, args.seed
+            )
+            warm = run_generate(
+                session_b, extended_tokens, args.max_output_tokens, args.seed
+            )
+            del session_b
+            cmp_result = compare_token_lists(
+                cold["output_tokens"], warm["output_tokens"]
+            )
+            passed = cmp_result["tokens_match"]
+            if passed:
+                total_pass += 1
+            print("PASS" if passed else "FAIL")
+            per_prompt.append(
+                {
+                    "id": prompt_id,
+                    "prompt_preview": extended_text[:100],
+                    "base_prompt_token_count": len(base_tokens),
+                    "extended_prompt_token_count": len(extended_tokens),
+                    "cold_output_token_count": len(cold["output_tokens"]),
+                    "warm_output_token_count": len(warm["output_tokens"]),
+                    **cmp_result,
+                    "cold_telemetry": cold["telemetry"],
+                    "warm_telemetry": warm["telemetry"],
+                }
+            )
 
     all_pass = total_pass == len(corpus)
     verdict = "PASS" if all_pass else "FAIL"
@@ -251,6 +334,8 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
             "artifacts_dir": str(args.mlx_artifacts_dir),
         },
         "config": {
+            "mode": args.mode,
+            "extend_suffix": args.extend_suffix if args.mode == "warm_extend" else None,
             "max_output_tokens": args.max_output_tokens,
             "seed": args.seed,
             "prompt_count": len(corpus),
