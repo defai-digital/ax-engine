@@ -2,7 +2,7 @@
 
 **PRD**: `.internal/planning/KV-SCHEDULER-REVAMP-PRD.md` §W1
 **ADR**: 0018 KV/Scheduler Revamp
-**Status**: Slice 2 complete (2026-05-11). Root cause isolated to telemetry-aggregation overwrite in `EngineSession::step()` — the prefix cache itself works correctly.
+**Status**: Slice 3 complete (2026-05-11). Telemetry merge fix shipped. New downstream bottleneck identified: prefix reuse fires at engine level but does not translate to TTFT improvement.
 **Author**: AX Engine work session
 
 ## TL;DR
@@ -293,10 +293,158 @@ fix is shipped and proves the cache is fully working.
 The engine-side trace inside `apply_prefix_reuse` was reverted —
 slice-specific, no ongoing value.
 
+## Slice 3 Findings (2026-05-11) — Telemetry Fix Shipped, New Downstream Bottleneck
+
+### Fix landed
+
+Two overwrite sites were responsible for the telemetry zero-out, not one:
+
+1. `store_native_request_route` (session.rs:748) — plain `insert` into
+   `native_request_routes`. Replaced with a merge that uses
+   `merge_native_route_into`.
+2. `apply_native_step_route_to_report` (session.rs:1933) — `report.route =
+   route.clone()`. Also replaced with `merge_native_route_into`. This
+   second site explains why fixing only the first didn't change the
+   Python artifact: every streaming step's route was clobbering the
+   per-request stored route via this path too.
+
+`merge_native_route_into` (session.rs ~58 lines) does:
+
+- String fields: last-wins, except `prefix_cache_path` keeps a more
+  informative stored value rather than being clobbered by the decode-step
+  default `"metadata_lookup"`.
+- `crossover_decisions`: monotonic `max()` merge for the 13 prefix-reuse
+  and branching counters declared in `MONOTONIC_CROSSOVER_DECISION_KEYS`;
+  last-wins for all others (preserves current behaviour for `ax_mlx_kv_*`
+  capacity/logical-tokens counters etc.).
+
+Three unit tests cover the cases that mattered (full SDK lib suite is 72
+tests, all green; ax-engine-core 400 tests still green).
+
+### Post-fix evidence
+
+Re-ran the same `profile_kv_long_context_evidence.py` on both models.
+Selected post-fix artifacts:
+
+- `benchmarks/results/kv-long-context/gemma4-post-fix-2026-05-11.json`
+- `benchmarks/results/kv-long-context/qwen3-5-9b-post-fix-2026-05-11.json`
+
+Qwen3.5-9B post-fix:
+
+| scenario      | TTFT (s) | decode tok/s | prefix_reused_blocks | retained_hits |
+|---------------|----------|--------------|----------------------|---------------|
+| cold          | 0.704    | 156.1        | 4                    | 1             |
+| warm_repeat   | 0.665    | 155.5        | 128                  | 1             |
+| warm_extend   | 0.766    | 154.6        | 128                  | 1             |
+
+Gemma 4 E2B post-fix:
+
+| scenario      | TTFT (s) | decode tok/s | prefix_reused_blocks | retained_hits |
+|---------------|----------|--------------|----------------------|---------------|
+| cold          | 0.257    | 366.3        | 4                    | 1             |
+| warm_repeat   | 0.259    | 367.8        | 128                  | 1             |
+| warm_extend   | 0.284    | 369.3        | 128                  | 1             |
+
+Notes on the values:
+
+- `cold` shows 4 blocks reused because the `warmup ...` step in the
+  harness (a tiny 64-token prefill before scenario 1) seeded 4 blocks
+  that then matched the cold scenario's first 64 tokens. This is real
+  prefix reuse the script accidentally exercises; the artifact's
+  bottleneck-classifier already handles it.
+- `warm_repeat` shows 128 blocks reused = 2048 tokens / 16 tokens-per-block,
+  i.e. the full prompt prefix matched as designed.
+- `warm_extend` shows 128 blocks reused = the cold prompt's full prefix
+  before the new suffix begins. Matches expectation.
+
+### New bottleneck — engine-level prefix reuse does not move TTFT
+
+This is the surprise. With telemetry now accurate, the script's verdict
+flipped from `prefix_reuse_not_firing` to `prefix_reuse_low_value`:
+
+- Qwen3.5-9B: warm_repeat TTFT speedup = **1.06×** vs cold (0.665 / 0.704 s)
+- Gemma 4 E2B: warm_repeat TTFT speedup = **0.99×** vs cold (0.259 / 0.257 s)
+
+Both models report 128 blocks reused (≈ full 2048-token prompt) but
+neither delivers meaningful TTFT improvement. Hypotheses for slice 4:
+
+1. **MLX runner ignores the matched-prefix annotation.** Even though core
+   marks `prefix_tokens_reused = 2048`, the MLX runner may still execute
+   the full prompt prefill on the GPU because the physical KV state was
+   evicted/dropped between calls or never persisted past `free()`. The
+   scheduler-level reuse is a logical accounting, not a physical KV
+   restore. This is consistent with the existing model docs:
+   "After each decode step, all KV backing buffers are evaluated …" —
+   they live in MLX lazy-eval space and may be freed when the request is
+   freed, regardless of what core's block table records.
+2. **Warmup token slice cancels out the saving.** `native_prefix_warmup_token_slice`
+   (engine.rs:1118) returns the full matched-prefix slice on warm prefill,
+   meaning the runner is *asked* to re-process exactly those tokens
+   anyway, defeating the point.
+3. **MLX backend has its own snapshot cache that isn't being keyed on the
+   same hash.** The MLX-side prefix snapshot machinery may exist but use a
+   different cache key (e.g. block-id-based rather than token-hash-based).
+   Telemetry counters like `ax_mlx_kv_request_snapshots` are still 1 in
+   warm_repeat, so the snapshot store path isn't being hit.
+
+Hypothesis 2 is the most checkable. Reading
+`native_prefix_warmup_token_slice` (engine.rs:1118):
+
+```rust
+if let Some(lookup) = lookup {
+    return snapshot
+        .prompt_tokens
+        .get(..lookup.matched_token_count as usize)
+        .unwrap_or(snapshot.prompt_tokens.as_slice())
+        .to_vec();
+}
+```
+
+This returns the matched-prefix tokens. They get attached to the
+execution item as `reused_prefix_token_slice` and the runner
+re-processes them as a "warmup" to rebuild the KV state. **So the
+matched-prefix is being re-prefilled, not skipped.** This is precisely
+the "warmup" path mentioned in §W1 — but for the same-prompt repeat case
+where a cached MLX snapshot could in theory skip warmup, the runner has
+no mechanism to honour the snapshot and re-runs the prefill anyway.
+
+This is consistent with both observations (telemetry says "reused 128
+blocks" — true at the bookkeeping level — but TTFT is unchanged because
+the runner re-executes everything).
+
+### Recommended slice 4
+
+Investigate the MLX runner's warmup path:
+
+- Source: `crates/ax-engine-mlx/src/runner.rs` — find where
+  `reused_prefix_token_slice` is consumed.
+- Question: is there an MLX-side KV snapshot persisted across `free()`,
+  and does the runner consult it when `prefix_tokens_reused > 0`?
+- If snapshot exists: why isn't it being matched? (Likely cache-key
+  mismatch.)
+- If snapshot does not exist: this is the structural change ADR 0018
+  contemplates — adding a physical-KV-snapshot retention layer to MLX
+  backend that survives `free()` and is keyed compatibly with
+  `KvManager`'s retained prefix cache.
+
+**Estimated work**: 2-3 days. This is finally the structural change
+the §W1 evidence gate was protecting. ADR 0018 should adopt slice 3 +
+slice 4 evidence together as its decision predicate.
+
 ## Artifacts
+
+Pre-fix (slice 1 evidence — telemetry was zero):
 
 - `benchmarks/results/kv-long-context/gemma4-2026-05-11.json`
 - `benchmarks/results/kv-long-context/qwen3-5-9b-2026-05-11.json`
+
+Post-fix (slice 3 evidence — telemetry reflects engine reality):
+
+- `benchmarks/results/kv-long-context/gemma4-post-fix-2026-05-11.json`
+- `benchmarks/results/kv-long-context/qwen3-5-9b-post-fix-2026-05-11.json`
+
+Harness:
+
 - `scripts/profile_kv_long_context_evidence.py`
 
 ## ADR/PRD Cross-References
