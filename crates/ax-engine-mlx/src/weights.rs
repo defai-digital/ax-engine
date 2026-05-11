@@ -702,7 +702,13 @@ fn apply_hf_sanitize_transforms(
             | NativeTensorRole::PerLayerInputPostNorm
             | NativeTensorRole::FinalNorm => {
                 let tensor = name_map.get(&spec.name).expect("checked via contains_key");
-                Some(add(tensor, &one, None))
+                // MLX promotes (bf16/f16 + f32) to f32, which would silently
+                // change the stored dtype of the norm weight. Cast back to the
+                // original dtype so downstream consumers see the same shape
+                // and dtype they would have for an already-sanitized
+                // mlx-community weight.
+                let original_dtype = tensor.dtype();
+                Some(astype(&add(tensor, &one, None), original_dtype, None))
             }
             NativeTensorRole::LinearAttentionConv1d => {
                 let tensor = name_map.get(&spec.name).expect("checked via contains_key");
@@ -1423,6 +1429,59 @@ mod tests {
                 "q_proj must be untouched: got {got}, want {want}"
             );
         }
+    }
+
+    #[test]
+    fn apply_hf_sanitize_transforms_preserves_norm_dtype() {
+        // Raw HF norm weights are typically bf16. MLX's `add(bf16, f32)` would
+        // promote the result to f32 without preservation, silently doubling
+        // the stored norm-weight footprint. The sanitizer must cast back to
+        // the original dtype so callers see a bf16 weight, matching what
+        // mlx-community pre-sanitized weights look like.
+        let delta_f32 = [-0.1_f32, 0.2, 0.05, 0.0];
+        let mut delta_bf16_bytes = Vec::with_capacity(delta_f32.len() * 2);
+        for v in &delta_f32 {
+            // Round-to-nearest cast f32 -> bf16 by chopping the low 16 bits
+            // of the f32 representation (sufficient for this small test).
+            let bits = v.to_bits();
+            delta_bf16_bytes.extend_from_slice(&(bits >> 16).to_le_bytes()[..2]);
+        }
+        let norm_bf16 = MlxArray::from_raw_data(
+            delta_bf16_bytes.as_ptr(),
+            delta_bf16_bytes.len(),
+            &[delta_f32.len() as i32],
+            MlxDtype::Bfloat16,
+        );
+        assert_eq!(norm_bf16.dtype(), MlxDtype::Bfloat16);
+
+        let mut name_map: HashMap<String, MlxArray> = HashMap::new();
+        name_map.insert("layers.0.attn_norm".to_string(), norm_bf16);
+
+        let specs = vec![NativeTensorSpec {
+            name: "layers.0.attn_norm".to_string(),
+            role: NativeTensorRole::AttentionNorm,
+            layer_index: Some(0),
+            dtype: NativeTensorDataType::Bf16,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantization: None,
+            quantized_source: None,
+            shape: vec![1],
+            file: PathBuf::from("model.safetensors"),
+            offset_bytes: 0,
+            length_bytes: 2,
+        }];
+
+        apply_hf_sanitize_transforms(&specs, &mut name_map);
+
+        let sanitized = name_map
+            .get("layers.0.attn_norm")
+            .expect("norm tensor present");
+        assert_eq!(
+            sanitized.dtype(),
+            MlxDtype::Bfloat16,
+            "sanitize must preserve bf16 dtype, not silently upcast to f32"
+        );
     }
 
     #[test]
