@@ -17,3 +17,7 @@ tracing.workspace = true
 [[bin]]
 name = "turboquant-microbench"
 path = "src/bin/turboquant_microbench.rs"
+
+[[bin]]
+name = "mlx-bench"
+path = "src/bench_main.rs"
