@@ -1,0 +1,50 @@
+{
+  "schema_version": "ax.ngram_overhead_profile.v1",
+  "generated_at_utc": "2026-05-11T05:00:00Z",
+  "host": "M5 Max 128 GB",
+  "tool": "macOS sample(1) CPU sampler, 1ms interval, 8s window",
+  "tool_limitations": "CPU sampling only; no GPU dispatch-level timing. Sufficient for resolving CPU/Rust-side hotspot questions but does not replace Metal System Trace for GPU-side dispatch analysis.",
+  "workload": {
+    "model": "qwen3_dense / Qwen3.5-9B-MLX-4bit",
+    "prompt_tokens": 2048,
+    "decode_tokens": 256,
+    "seed": 1234,
+    "deterministic": true,
+    "decode_wall_s": 1.874
+  },
+  "decode_regime_breakdown_samples": {
+    "ngram_decode": {
+      "ngram_accel_decode_step_samples": 774,
+      "verify_draft_samples": 747,
+      "verify_draft_share_of_step_pct": 96.5,
+      "mlx_eval_share_of_verify_pct": 100.0,
+      "cpu_wait_for_gpu_share_of_eval_pct": 37.5,
+      "gpu_dispatch_share_of_eval_pct": 16.2,
+      "eval_setup_share_of_eval_pct": 46.3,
+      "estimated_steps": 37,
+      "samples_per_step": 20.9
+    },
+    "single_decode": {
+      "run_single_decode_samples": 103,
+      "single_decode_with_turboquant_context_samples": 97,
+      "mlx_eval_share_pct": 94.2,
+      "estimated_steps": 8,
+      "samples_per_step": 12.9
+    },
+    "per_step_sample_ratio_ngram_over_single": 1.62
+  },
+  "hot_phase": "mlx_eval (GPU forward pass execution + sync wait)",
+  "phase_share_pct": 96.5,
+  "outcome": "B",
+  "outcome_explanation": "No CPU-side or Rust-side hot spot exists to fuse. Both single_decode and verify_draft spend ~94-97% of wall time in mlx_eval, which is the GPU forward-pass execution + condition_variable::wait synchronization. The 6 ms/step gap between regimes (single 6.7 ms vs verify 12.7 ms on Gemma; analogous ratio for Qwen) is the cost of running forward on N=4 drafted tokens instead of N=1, not Rust verification logic. The N-token forward pass takes ~1.7x the time of the 1-token forward pass — sub-linear scaling consistent with weight-fetch-dominated GPU kernels.",
+  "candidate_intervention": "ADR 0022 D2 weight quantization (rotation/sub-4-bit). Reducing per-FP weight fetch time improves BOTH single-decode and verify_draft proportionally, since the GPU eval phase dominates both regimes' wall time. Kernel fusion (Track K) is NOT productive against this workload because the CPU/Rust path is already minimal — there is nothing to fuse away.",
+  "expected_speedup_if_fixed_pct": "Same 1.3-1.4x upper bound predicted from the W1 single-decode 0.68 bandwidth utilization on Qwen3.5-9B; weight quant attacks the dominant phase across both regimes.",
+  "rejected_hypotheses": [
+    "H1 (CPU verification logic dominates): rejected. n-gram table feed, KV trim, bonus queue manipulation register zero samples in this trace; all are sub-millisecond compared to mlx_eval.",
+    "H2 (Excess Metal dispatches in verify_draft vs single_decode): rejected at the CPU-sampler level. Both paths funnel into a single mlx_eval call; the GPU work differs but the dispatch entry pattern is structurally the same. Would need Metal System Trace to disprove definitively at the GPU dispatch granularity, but the CPU sampler shows no Rust-side dispatch loop that could be batched.",
+    "H3 (Sync barrier count differs between regimes): partially rejected. Both regimes show ~94-97% of time in mlx_eval, suggesting one sync barrier per regime step. The single sync-per-step in verify_draft is unavoidable (needs logits to accept/reject). No batching opportunity visible without restructuring the speculation algorithm itself."
+  ],
+  "raw_sample_file": "/tmp/qwen_ngram_sample.txt",
+  "raw_sample_file_size_bytes": 302489,
+  "next_step_recommendation": "Open ADR 0022 D2 weight quant prototype track. Start with Hadamard rotation pre-load on Qwen3.5-9B as the cleanest signal model (W1 single-decode 0.68 util, n-gram step structurally similar). Expected 1.3-1.4x single-decode forward-pass speedup translates to ~1.2-1.3x effective decode tok/s after accounting for speculation regime mix."
+}

@@ -1,0 +1,70 @@
+{
+  "schema_version": "ax.gemma_direct_decode_profile.v1",
+  "generated_at_utc": "2026-05-11T14:55:00Z",
+  "host": "M5 Max 128 GB, macOS 26.4.1",
+  "prd": "GEMMA-QWEN-MLX-PERFORMANCE-PRD.md §G1",
+  "adr": "0024-gemma-qwen-mlx-performance-strategy.md §D2",
+  "tool": "macOS sample(1), 1ms interval, 10s window",
+  "tool_notes": "CPU-side stack sampling. `mlx.metal.start_capture()` was also tried for kernel-level breakdown but the .gputrace bundle was too large to fully parse (4.2 GB AX, 3.2 GB mlx_lm). The MetalLib was inspected for kernel inventory; sample(1) gives the actionable CPU-side comparison.",
+  "workload": {
+    "model": "gemma-4-e2b-it-4bit (Gemma 4 E2B, 4-bit affine, group_size=64)",
+    "prompt_tokens": 512,
+    "decode_tokens_per_call": 32,
+    "calls_in_sample_window": "~40 iterations (looped to extend window)",
+    "seed_baseline": "seed varies per AX call (1234..1273); mlx_lm uses default",
+    "ngram_policy": "AX: max_output=32 < NGRAM_MIN_OUTPUT_FOR_ACCELERATION(64) → n-gram skipped (direct same-policy)"
+  },
+  "absolute_speed_caveat": "AX measured 131.8 tok/s vs mlx_lm 108 tok/s in this specific harness, opposite to ADR 0024's framing. This is NOT a clean A/B because (a) different seeds per iteration on AX (b) mlx_lm uses generate() which re-encodes the prompt each call. The README artifacts cited in ADR 0024 use a different methodology. **Do not cite this absolute number** as direct-decode performance evidence — the structural overhead finding below is the relevant signal.",
+  "structural_overhead_finding": {
+    "summary": "AX's forward pass creates roughly 2× more mlx::core intermediate objects than mlx_lm for the same Gemma 4 E2B forward pass, and emits 1.67× more `gpu::eval` barriers. The extra work is CPU-side graph bookkeeping + sync barriers, not GPU compute.",
+    "per_primitive_sample_counts": {
+      "mlx::core::array (constructor)": {"ax": 1376, "mlx_lm": 610, "ratio_ax_over_mlx_lm": 2.26},
+      "mlx::core::SmallVector<int>": {"ax": 557, "mlx_lm": 151, "ratio_ax_over_mlx_lm": 3.69},
+      "mlx::core::Stream": {"ax": 288, "mlx_lm": 113, "ratio_ax_over_mlx_lm": 2.55},
+      "mlx::core::Dtype": {"ax": 155, "mlx_lm": 33, "ratio_ax_over_mlx_lm": 4.70},
+      "mlx::core::metal::MetalAllocator::malloc": {"ax": 123, "mlx_lm": 56, "ratio_ax_over_mlx_lm": 2.20},
+      "mlx::core::gpu::eval": {"ax": 82, "mlx_lm": 49, "ratio_ax_over_mlx_lm": 1.67},
+      "mlx::core::metal::CommandEncoder::dispatch": {"ax": 65, "mlx_lm": 59, "ratio_ax_over_mlx_lm": 1.10},
+      "mlx::core::scheduler::Scheduler::wait_for_one (sync barrier)": {"ax": 3, "mlx_lm": 0, "delta": "AX-only barriers"}
+    },
+    "interpretation": [
+      "Dispatch count is only 10% higher (65 vs 59) — the per-token Metal pipeline calls are roughly the same.",
+      "But array/SmallVector/Dtype counts are 2–4.7× higher — AX creates many more short-lived intermediate tensors per forward pass.",
+      "gpu::eval count is 1.67× higher — AX flushes more often, meaning more small batches of GPU work instead of larger fused ones.",
+      "AX has 3 wait_for_one sync barriers in the window; mlx_lm has 0. Each barrier is a CPU stall waiting for GPU.",
+      "Pattern: AX is more imperative/eager in the forward path; mlx_lm batches more work between eval points."
+    ]
+  },
+  "kernel_inventory_diff": {
+    "ax_only_kernels_in_metallib": [
+      "affine_qmm_t_splitk_{float,float16,bfloat16}_gs_{32,64,128}_b_{2..8}",
+      "(split-K decomposition variants compiled into AX's MLX path but not mlx_lm's)"
+    ],
+    "note": "Both Metal libraries contain affine_qmv_*, gemv_bfloat16_*, etc. The split-K variant presence in AX is interesting but may not be hit in the actual dispatch — that requires deeper command-buffer parsing not done here."
+  },
+  "track_k_target": {
+    "primary": "Reduce per-forward-pass mlx::core::array allocation count + gpu::eval count in the Gemma 4 path. The 1.67× eval ratio + 2.26× array ratio is the lever.",
+    "candidate_interventions": [
+      {
+        "intervention": "Audit Gemma forward path in `crates/ax-engine-mlx/src/model.rs` for unnecessary intermediate allocations. Each MlxArray construction is one ref-counted handle + one MLX graph node; fewer is faster on small models like E2B.",
+        "scope": "Code review + targeted refactor",
+        "effort": "1-2 weeks"
+      },
+      {
+        "intervention": "Reduce eval-barrier count: identify where AX calls mx.eval() (or implicit eval via .item() / .shape() inspection) more often than mlx_lm. Each extra eval is a GPU sync stall.",
+        "scope": "Eval-barrier audit per ADR 0017 W1",
+        "effort": "3-5 days (instrumentation already exists per ADR 0017)"
+      },
+      {
+        "intervention": "Check Gemma4 per-layer-input gating path (the `per_layer_embed` / `per_layer_proj_w` pieces unique to Gemma4 2B/4B). If those add extra intermediates, that's the source.",
+        "scope": "Targeted forward-path audit",
+        "effort": "2-3 days"
+      }
+    ]
+  },
+  "decision_gate_status": "G1 evidence collected. Per ADR 0024 D2 and PRD G1, no eval-boundary / KV-layout / kernel change should commit before this artifact justifies it. With this artifact in place, an eval-barrier-reduction or array-count-reduction track is now evidence-backed.",
+  "raw_sample_files": {
+    "ax": "/tmp/gemma_ax_sample.txt",
+    "mlx_lm": "/tmp/gemma_mlxlm_sample.txt"
+  }
+}

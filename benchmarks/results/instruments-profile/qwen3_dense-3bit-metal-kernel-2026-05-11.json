@@ -1,0 +1,54 @@
+{
+  "schema_version": "ax.metal_kernel_profile.v1",
+  "generated_at_utc": "2026-05-11T13:40:00Z",
+  "host": "M5 Max 128 GB, macOS 26.4.1",
+  "tool": "mlx.metal.start_capture() → .gputrace bundle + binary inspection of embedded MetalLib (strings + disassembly fingerprinting)",
+  "tool_notes": "Earlier characterisation of Track K as 'needs Xcode Instruments' was wrong. `mlx.metal.start_capture(path)` produces a .gputrace bundle from Python without Xcode being installed. The bundle includes a MetalLib executable from which we can extract every kernel name, its disassembly, and per-bit-width code-path differences. Full kernel timing still benefits from Instruments, but the structural root cause is observable here.",
+  "workload": {
+    "model": "qwen3_dense / Qwen3.5-9B-MLX-4bit with model.rotated.safetensors (64 ffn_gate/ffn_up re-quantised to 3-bit affine after Hadamard rotation)",
+    "prompt_tokens": 512,
+    "decode_tokens": 32,
+    "trace_path": "/tmp/qwen_3bit_decode.gputrace",
+    "trace_size_gb": 13.6
+  },
+  "kernel_inventory": {
+    "qmv_variants_present": ["fast", "quad", "n"],
+    "bits_compiled_per_variant": [2, 3, 4, 5, 6, 8],
+    "group_sizes_compiled": [32, 64, 128],
+    "dtypes_compiled": ["bfloat16_t", "float16_t", "float"]
+  },
+  "root_cause_finding": {
+    "summary": "MLX's affine_qmv_{fast,quad} kernels at bits=3 (and bits=5) call a helper function `qdot<...>` per element, while the bits=2/4/6/8 variants inline the dequantisation directly. The qdot call adds per-element overhead that dominates when the model spends most decode wall time in qmv (which Qwen3.5-9B 4096-dim FFN does).",
+    "evidence_from_disassembly": [
+      "affine_qmv_fast_bfloat16_t_gs_64_b_3 contains symbol `_Z4qdotIfLi16ELi3EE` (qdot<float, 16, 3>)",
+      "affine_qmv_fast_bfloat16_t_gs_64_b_4 does NOT call qdot; uses inline llvm.fmuladd.f32 + air.simd_sum.f32",
+      "affine_qmv_fast_bfloat16_t_gs_64_b_5 also calls qdot<float, 16, 5> — bits=5 has same handicap",
+      "affine_qmv_fast_bfloat16_t_gs_64_b_6 inlines (bits=6 uses different packing)",
+      "Pattern: bits ∈ {3, 5} ⇒ qdot call; bits ∈ {2, 4, 6, 8} ⇒ inline. Likely because 32 / bits is non-integer for 3 and 5, forcing a non-aligned u32 unpacking helper."
+    ],
+    "hypothesis": "A 3-bit qmv kernel that handles the non-aligned packing inline (e.g. via 96-bit-aligned reads — three u32 words = 32 3-bit values) should match or beat the 4-bit kernel on per-byte throughput. The kernel author opportunity is precisely this re-pack-aware inline path."
+  },
+  "track_k_target": {
+    "kernel": "affine_qmv_fast_bfloat16_t_gs_64_b_3 (also _quad and _n variants)",
+    "intervention_options": [
+      {
+        "option": "Upstream MLX patch",
+        "scope": "Patch the qdot helper or the qmv_impl<bits=3> path to inline the 96-bit-aligned unpacking. Most efficient long-term; benefits every MLX consumer.",
+        "estimated_effort": "1-2 weeks Metal C++ + MLX PR cycle"
+      },
+      {
+        "option": "AX-owned custom qmv kernel",
+        "scope": "Compile a custom `ax_qmv_b3_gs64_bfloat16` Metal kernel in `metal/`, register it as a Track-K kernel under ADR 0020, route 3-bit ffn_gate/ffn_up matmuls to it.",
+        "estimated_effort": "2-3 weeks Metal author work + integration"
+      },
+      {
+        "option": "Avoid 3-bit, use 4-bit + better calibration",
+        "scope": "Accept that 3-bit is structurally slower on MLX and switch the calibration spike to improving 4-bit re-quant quality (currently 0.73 ratio). No kernel work needed.",
+        "estimated_effort": "3-5 days Python calibration spike"
+      }
+    ]
+  },
+  "decision_gate_status": "Gate from previous artifact resolved: the 3-bit qmv kernel is NOT bandwidth-bound — it is dispatch/compute-bound on the qdot helper call. Per the decision gate, this means '3-bit as bandwidth-win is the wrong attack' UNLESS the kernel itself is rewritten. The two viable forward paths are (a) kernel rewrite or (b) abandon 3-bit and improve 4-bit calibration. Choosing one is a planning decision, not an evidence decision.",
+  "raw_gputrace": "/tmp/qwen_3bit_decode.gputrace (13.6 GB, not committed)",
+  "raw_metallib": "/tmp/qwen_3bit_decode.gputrace/231131F2A31A0D0D (158 MB MetalLib executable)"
+}

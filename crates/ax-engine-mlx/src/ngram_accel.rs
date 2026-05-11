@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use mlx_sys::{MlxArray, argmax, eval};
 
@@ -14,6 +14,39 @@ use crate::weights::ModelWeights;
 /// Default number of draft tokens to attempt per n-gram acceleration step.
 pub const DEFAULT_DRAFT_LEN: usize = 4;
 
+/// Prompt class route codes. Stored as u32 because the route decision sink is
+/// `BTreeMap<String, u32>`. Ordered so `max()` merge promotes the louder signal:
+/// `UNSET < NON_REPEATING < REPEATING`.
+pub const PROMPT_CLASS_UNSET: u32 = 0;
+pub const PROMPT_CLASS_NON_REPEATING: u32 = 1;
+pub const PROMPT_CLASS_REPEATING: u32 = 2;
+
+/// Classify a prompt by structural repetition.
+///
+/// Returns one of `PROMPT_CLASS_NON_REPEATING` or `PROMPT_CLASS_REPEATING`.
+/// Heuristic: if at most half of the 4-grams in the prompt are unique, the
+/// prompt is classified as repeating. This is the regime where the shipped
+/// n-gram speculative path excels; non-repeating prompts are where MTP-style
+/// speculation (ADR 0022 D3) would plausibly help.
+///
+/// Prompts with fewer than 4 tokens are classified as non-repeating (no
+/// 4-gram structure to measure).
+pub fn classify_prompt_class(tokens: &[u32]) -> u32 {
+    if tokens.len() < 4 {
+        return PROMPT_CLASS_NON_REPEATING;
+    }
+    let total = tokens.len() - 3;
+    let mut seen: HashSet<(u32, u32, u32, u32)> = HashSet::with_capacity(total);
+    for w in tokens.windows(4) {
+        seen.insert((w[0], w[1], w[2], w[3]));
+    }
+    if seen.len().saturating_mul(2) <= total {
+        PROMPT_CLASS_REPEATING
+    } else {
+        PROMPT_CLASS_NON_REPEATING
+    }
+}
+
 /// Extended draft ceiling for dense models when confidence is high.
 ///
 /// Dense models pay O(1) rollback (just a seq_len pointer move), so longer
@@ -27,6 +60,44 @@ pub const MAX_DRAFT_LEN: usize = 6;
 /// Calibration: conf=0.4 filters contexts where at most 2 out of 5 observed
 /// continuations matched the current best — reliable enough to attempt.
 pub const DRAFT_CONFIDENCE_THRESHOLD: f32 = 0.4;
+
+/// Environment variable that overrides `DRAFT_CONFIDENCE_THRESHOLD` at runtime.
+/// Defined by DS4-REFERENCE-LEARNINGS-PRD REQ-6 to let per-family tuning
+/// be observed against `ax.bw_profile.v1` artifacts without recompilation.
+pub const DRAFT_CONFIDENCE_THRESHOLD_ENV: &str = "AX_NGRAM_CONFIDENCE_THRESHOLD";
+
+/// Parse a candidate confidence threshold. Returns the default when `raw` is
+/// `None`; panics on invalid syntax or out-of-range values. Split out from
+/// the env-reading wrapper so the validation logic can be unit-tested without
+/// process-global env state.
+pub fn parse_confidence_threshold(raw: Option<&str>) -> f32 {
+    let Some(value) = raw else {
+        return DRAFT_CONFIDENCE_THRESHOLD;
+    };
+    let parsed: f32 = value.parse().unwrap_or_else(|_| {
+        panic!("{DRAFT_CONFIDENCE_THRESHOLD_ENV} must be a float in [0.0, 1.0]; got {value:?}")
+    });
+    if parsed.is_nan() || !(0.0..=1.0).contains(&parsed) {
+        panic!("{DRAFT_CONFIDENCE_THRESHOLD_ENV} must be in [0.0, 1.0]; got {parsed}");
+    }
+    parsed
+}
+
+/// Resolve the effective draft confidence threshold for the current process.
+/// Reads `AX_NGRAM_CONFIDENCE_THRESHOLD` once and caches the result. Invalid
+/// values fail fast on first call rather than silently clamping; this is the
+/// fail-closed contract in DS4-REFERENCE-LEARNINGS-PRD REQ-6.
+pub fn effective_draft_confidence_threshold() -> f32 {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_confidence_threshold(
+            std::env::var(DRAFT_CONFIDENCE_THRESHOLD_ENV)
+                .ok()
+                .as_deref(),
+        )
+    })
+}
 
 /// Linear-attention draft verification is expensive on partial reject
 /// because recurrent state is not O(1)-trimmable. Require repeated n-gram
@@ -1118,6 +1189,95 @@ mod tests {
             .continuations
             .iter()
             .any(|stats| stats.token == token)
+    }
+
+    #[test]
+    fn parse_confidence_threshold_default_when_unset() {
+        assert_eq!(parse_confidence_threshold(None), DRAFT_CONFIDENCE_THRESHOLD);
+    }
+
+    #[test]
+    fn parse_confidence_threshold_accepts_valid_values() {
+        assert_eq!(parse_confidence_threshold(Some("0.0")), 0.0);
+        assert_eq!(parse_confidence_threshold(Some("0.5")), 0.5);
+        assert_eq!(parse_confidence_threshold(Some("1.0")), 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "AX_NGRAM_CONFIDENCE_THRESHOLD")]
+    fn parse_confidence_threshold_rejects_above_one() {
+        let _ = parse_confidence_threshold(Some("1.5"));
+    }
+
+    #[test]
+    #[should_panic(expected = "AX_NGRAM_CONFIDENCE_THRESHOLD")]
+    fn parse_confidence_threshold_rejects_negative() {
+        let _ = parse_confidence_threshold(Some("-0.1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "AX_NGRAM_CONFIDENCE_THRESHOLD")]
+    fn parse_confidence_threshold_rejects_nonsense() {
+        let _ = parse_confidence_threshold(Some("not-a-number"));
+    }
+
+    #[test]
+    #[should_panic(expected = "AX_NGRAM_CONFIDENCE_THRESHOLD")]
+    fn parse_confidence_threshold_rejects_nan() {
+        let _ = parse_confidence_threshold(Some("NaN"));
+    }
+
+    #[test]
+    fn classify_prompt_class_short_prompt_is_non_repeating() {
+        assert_eq!(classify_prompt_class(&[]), PROMPT_CLASS_NON_REPEATING);
+        assert_eq!(
+            classify_prompt_class(&[1, 2, 3]),
+            PROMPT_CLASS_NON_REPEATING
+        );
+    }
+
+    #[test]
+    fn classify_prompt_class_linear_sequence_is_non_repeating() {
+        let tokens: Vec<u32> = (0..32).collect();
+        assert_eq!(
+            classify_prompt_class(&tokens),
+            PROMPT_CLASS_NON_REPEATING,
+            "all-unique 4-grams must classify as non-repeating"
+        );
+    }
+
+    #[test]
+    fn classify_prompt_class_short_cycle_is_repeating() {
+        // Cycle of period 3 over 12 tokens: 4-grams overlap heavily.
+        let tokens = vec![1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3];
+        assert_eq!(
+            classify_prompt_class(&tokens),
+            PROMPT_CLASS_REPEATING,
+            "short-cycle repetition must classify as repeating"
+        );
+    }
+
+    #[test]
+    fn classify_prompt_class_single_repeat_block_is_non_repeating() {
+        // Two copies of a 4-token block — only one repeated 4-gram, ratio > 0.5.
+        let tokens = vec![1, 2, 3, 4, 1, 2, 3, 4];
+        assert_eq!(
+            classify_prompt_class(&tokens),
+            PROMPT_CLASS_NON_REPEATING,
+            "a single 4-gram repeat is below the repeating threshold"
+        );
+    }
+
+    #[test]
+    fn classify_prompt_class_boundary_at_half_ratio_is_repeating() {
+        // Cycle [1,2,3,4] over 8 tokens: 4-grams are (1234),(2341),(3412),(4123),(1234)
+        // → 4 unique out of 5 total → 4/5 = 0.8 → non-repeating.
+        let tokens = vec![1, 2, 3, 4, 1, 2, 3, 4];
+        assert_eq!(classify_prompt_class(&tokens), PROMPT_CLASS_NON_REPEATING);
+
+        // Extend to 16 tokens of the same cycle: 13 total 4-grams, 4 unique → 4/13 ≈ 0.31 → repeating.
+        let tokens: Vec<u32> = std::iter::repeat_n([1u32, 2, 3, 4], 4).flatten().collect();
+        assert_eq!(classify_prompt_class(&tokens), PROMPT_CLASS_REPEATING);
     }
 
     #[test]

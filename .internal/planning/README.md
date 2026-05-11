@@ -12,8 +12,14 @@ the first reading path.
 
 - `../product/PRD.md` — product-level PRD and product boundary.
 - `MLX-RUNTIME-PERFORMANCE-PRD.md` — repo-owned MLX runtime performance plan.
+- `GEMMA-QWEN-MLX-PERFORMANCE-PRD.md` — Gemma/Qwen MLX direct-decode, n-gram fallback, and memory-attribution execution plan (under ADR 0024).
 - `KV-SCHEDULER-REVAMP-PRD.md` — bounded KV cache and scheduler revamp plan.
 - `TURBOQUANT-PROMOTION-PRD.md` — TurboQuant experiment-to-promotion plan.
+- `WEIGHT-QUANT-AND-SPECULATION-PRD.md` — weight-side quant, MTP, FlashDecoding boundary (under ADR 0022).
+- `DS4-REFERENCE-LEARNINGS-PRD.md` — ds4 reference-only learnings (under ADR 0023); REQ-6 ngram observability shipped 2026-05-11.
+- `INSTRUMENTS-PROFILING-RUNBOOK.md` — Phase 2 dispatch profiling runbook under DS4-LEARNINGS PRD.
+- `WEIGHT-ROTATION-IMPLEMENTATION-PLAN.md` — ADR 0022 D2 implementation plan, **Closed 2026-05-11** (see retrospective).
+- `WEIGHT-ROTATION-RETROSPECTIVE.md` — closes WEIGHT-QUANT-AND-SPECULATION-PRD §W2; five negative-result findings + re-open conditions.
 - `CLI-TUI-PRD.md` — local CLI TUI workflow cockpit plan.
 - `../benchmark/BENCHMARK-LAB-PRD.md` — benchmark product/system plan.
 

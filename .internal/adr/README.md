@@ -28,6 +28,12 @@ should follow the active ADR chain first.
 ## Proposed ADRs
 
 - `0019-cli-tui-workflow-cockpit.md` — proposed local CLI TUI workflow cockpit boundary.
+- `0022-decode-bandwidth-weight-quant-and-speculation-boundary.md` — weight-side quantization, MTP, and FlashDecoding boundary.
+- `0024-gemma-qwen-mlx-performance-strategy.md` — Gemma/Qwen MLX performance interpretation, profiling, and memory-attribution strategy.
+
+## Recently Accepted (move into Active on next index sweep)
+
+- `0023-deepseek-v4-delegated-ds4-route.md` — native family scope (Qwen / Gemma / GLM); DeepSeek V4 fail-closed; no delegated `ds4` route.
 
 ## Superseded ADRs
 
@@ -49,6 +55,7 @@ into ADR 0017. They are archived under:
 2. `0012-retire-ax-native-and-route-mlx-or-llama.md`
 3. `0014-mlx-lm-delegated-compatibility-backend.md`
 4. `0017-mlx-runtime-optimization-governance.md`
-5. `0018-kv-cache-and-scheduler-revamp-strategy.md` when working on KV, prefix reuse, or scheduler policy
-6. `0016-experimental-turboquant-kv-compression.md` when working on TurboQuant
-7. `0019-cli-tui-workflow-cockpit.md` when working on CLI TUI or local workflow orchestration
+5. `0024-gemma-qwen-mlx-performance-strategy.md` when working on Gemma/Qwen MLX performance gaps
+6. `0018-kv-cache-and-scheduler-revamp-strategy.md` when working on KV, prefix reuse, or scheduler policy
+7. `0016-experimental-turboquant-kv-compression.md` when working on TurboQuant
+8. `0019-cli-tui-workflow-cockpit.md` when working on CLI TUI or local workflow orchestration

@@ -204,7 +204,7 @@ impl fmt::Debug for MlxArray {
 }
 
 /// MLX element dtype, mirroring `mlx_dtype_`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum MlxDtype {
     Bool,
     Uint8,

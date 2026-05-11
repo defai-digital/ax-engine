@@ -2392,9 +2392,18 @@ mod tests {
             Some("retained_prompt_prefix_cache"),
             "decode-step default should not clobber a real prefix_cache_path"
         );
-        assert_eq!(stored.crossover_decisions.get("retained_cache_hits"), Some(&1));
-        assert_eq!(stored.crossover_decisions.get("prefix_reused_blocks"), Some(&32));
-        assert_eq!(stored.crossover_decisions.get("prefix_reused_tokens"), Some(&512));
+        assert_eq!(
+            stored.crossover_decisions.get("retained_cache_hits"),
+            Some(&1)
+        );
+        assert_eq!(
+            stored.crossover_decisions.get("prefix_reused_blocks"),
+            Some(&32)
+        );
+        assert_eq!(
+            stored.crossover_decisions.get("prefix_reused_tokens"),
+            Some(&512)
+        );
         assert_eq!(
             stored.crossover_decisions.get("ax_mlx_kv_logical_tokens"),
             Some(&520),
@@ -2417,7 +2426,10 @@ mod tests {
             ..Default::default()
         };
         merge_native_route_into(&mut stored, new);
-        assert_eq!(stored.crossover_decisions.get("prefix_reused_blocks"), Some(&32));
+        assert_eq!(
+            stored.crossover_decisions.get("prefix_reused_blocks"),
+            Some(&32)
+        );
 
         let smaller = GenerateRouteReport {
             crossover_decisions: [("prefix_reused_blocks".to_string(), 1u32)]

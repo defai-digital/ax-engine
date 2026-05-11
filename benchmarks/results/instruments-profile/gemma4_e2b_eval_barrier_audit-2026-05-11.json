@@ -1,0 +1,111 @@
+{
+  "schema_version": "ax.gemma_eval_barrier_audit.v1",
+  "generated_at_utc": "2026-05-11T15:30:00Z",
+  "host": "M5 Max 128 GB, macOS 26.4.1",
+  "prd": "GEMMA-QWEN-MLX-PERFORMANCE-PRD.md §G1",
+  "adr": "0017 W1 instrumentation governance, 0024 D2",
+  "follows": "ax.gemma_direct_decode_profile.v1 (G1 evidence artifact)",
+  "audit_scope": "Identify whether eval-barrier reduction is the right intervention for the AX-vs-mlx_lm Gemma 4 direct-decode gap, per the G1 artifact's primary recommendation.",
+  "method": [
+    "Enumerated explicit `mlx_sys::eval(...)` callsites in ax-engine-mlx hot path (not test code, not embedding-only paths).",
+    "Cross-referenced with sample profile counts from `gemma_ax_sample.txt` and `gemma_mlxlm_sample.txt`.",
+    "Checked `.shape()` / `.data_f32()` / `.item()` call sites — these are the implicit-eval triggers."
+  ],
+  "explicit_eval_callsites_in_hot_path": [
+    {
+      "file_line": "ngram_accel.rs:1163-1171",
+      "function": "single_decode_with_turboquant_context",
+      "purpose": "Single decode step. ONE eval per token bundling logits + collect_eval_refs (KV cache backing buffers). Comment in source notes this is intentionally batched.",
+      "per_step_count": 1,
+      "already_optimised": true
+    },
+    {
+      "file_line": "ngram_accel.rs:1010-1020",
+      "function": "verify_draft (ngram path only)",
+      "purpose": "N-gram speculative decode verification. Bundles predicted_arr + KV refs.",
+      "per_step_count": "0 in direct-decode workload (n-gram off when max_output<64)",
+      "relevant_to_audit": false
+    },
+    {
+      "file_line": "ngram_accel.rs:1080-1087",
+      "function": "ngram_accel_decode_step_linear_safe commit",
+      "purpose": "Linear-attention n-gram commit. Bundles logits + KV refs.",
+      "relevant_to_audit": false,
+      "note": "Gemma 4 E2B does not use linear attention"
+    },
+    {
+      "file_line": "model.rs:1805",
+      "function": "turboquant_decode_attention_experimental",
+      "purpose": "Forces evaluation of q_f32 before CPU-side data_f32() access. Inside TurboQuant decode path.",
+      "relevant_to_audit": false,
+      "note": "Not hit by Gemma 4 baseline (TurboQuant gated)"
+    }
+  ],
+  "implicit_eval_triggers_in_forward_path": {
+    "shape_calls_in_model_rs": 80,
+    "note": "`MlxArray::shape()` does NOT trigger evaluation — confirmed by inline comment at model.rs:1094 (`shape metadata is available without eval`). All 80 `.shape()` calls are eval-free.",
+    "data_f32_calls_in_forward_path": 0,
+    "item_calls_in_forward_path": 0,
+    "verdict": "No implicit-eval triggers in the per-token forward path on the Gemma 4 baseline."
+  },
+  "sample_profile_finding": {
+    "gpu_eval_samples_ax": 82,
+    "gpu_eval_samples_mlx_lm": 49,
+    "delta_samples_in_10s": 33,
+    "delta_ms_in_10s_window": 33,
+    "delta_per_decode_token": "0.026 ms (33 ms / 1280 tokens)",
+    "interpretation": "The 33-sample gap represents ~0.026 ms per decode token in extra `mlx::core::gpu::eval` time. This is small (~3% of the ~0.8 ms per-token wall in AX). Eval barriers are NOT the primary bottleneck."
+  },
+  "real_gap_location": {
+    "primary_finding": "The structural gap is in MlxArray wrapper construction, not eval barriers.",
+    "evidence": {
+      "mlx_core_array_constructor_ratio": "1376 / 610 = 2.26×",
+      "SmallVector_int_ratio": "557 / 151 = 3.69×",
+      "Dtype_ratio": "155 / 33 = 4.70×",
+      "MetalAllocator_malloc_ratio": "123 / 56 = 2.20×",
+      "gpu_eval_ratio": "82 / 49 = 1.67× (smallest gap of the bunch)"
+    },
+    "interpretation": [
+      "Every intermediate tensor in AX's Rust forward path constructs an `MlxArray` wrapper. mlx_lm's Python forward composes through nn.Module which probably allocates fewer transient wrappers.",
+      "Each MlxArray destructor + reconstruction triggers allocator activity (`MetalAllocator::malloc`).",
+      "Gemma 4-specific architecture adds many transient ops per layer (per_layer_input gating: 6 ops × 32 layers = 192/forward; layer_scalar multiply: 32/forward; q_norm + k_norm + attn_post_norm: ~3 ops × 32 layers = 96/forward).",
+      "Combined: AX's Rust forward creates ~300+ extra transient MlxArray objects per Gemma 4 forward pass that mlx_lm's Python forward does not."
+    ]
+  },
+  "audit_conclusion": "Eval-barrier reduction (Intervention B from G1 artifact) is the WRONG primary intervention. The eval count is already minimal (1 per single_decode step, already batched with KV refs) and the gap to mlx_lm is small (~3% of decode wall). The actual lever is Intervention A (forward-path allocation audit) — specifically targeting Gemma 4's per-layer-input gating, layer_scalar, and the q_norm/k_norm/attn_post_norm operations which collectively account for ~300 extra MlxArray instances per forward pass.",
+  "revised_recommendation": {
+    "primary": "Intervention A: forward-path allocation audit, targeted at Gemma 4 per-layer operations",
+    "candidate_changes_to_investigate": [
+      {
+        "site": "model.rs:1067-1071 (Gemma 4 per_layer_input gating)",
+        "current_ops": 6,
+        "current_arrays_per_layer": 6,
+        "potential": "Check if gate * pli + multiply + qw + rms_norm + add can be folded into fewer MLX ops. mlx_lm's gemma3n.py uses an `altup`/`laurel` module structure that may compose into fewer underlying ops via mlx.nn module fusion."
+      },
+      {
+        "site": "model.rs:1076 (layer_scalar multiply)",
+        "current_ops": 1,
+        "potential": "Could be folded into an adjacent operation (e.g. multiply by layer_scalar inside the rms_norm scale combination, or fused with the post-FFN add). One MLX op per layer × 32 layers = 32 fewer ops per forward pass if eliminated."
+      },
+      {
+        "site": "Attention norm chain (attn_norm + attn_post_norm + q_norm + k_norm)",
+        "current_ops_per_layer": "3-4 separate norm ops",
+        "potential": "RMSNorm has known fusion patterns with adjacent matmuls. mlx_lm may emit fewer norm-related transient arrays through nn.RMSNorm reuse."
+      },
+      {
+        "site": "Cross-cutting: Rust wrapper overhead vs Python nn.Module",
+        "scope": "Investigate whether mlx_sys::MlxArray Rust wrapper has higher per-instance overhead than Python mlx.core.array — e.g. extra ref-count manipulation, extra Dtype copies.",
+        "potential": "If yes, a wrapper-level optimisation (move semantics, shared dtype constants) would benefit ALL model families, not just Gemma 4."
+      }
+    ],
+    "non_goal_in_intervention_A": [
+      "Do not change eval-barrier policy — the audit shows current batching at single_decode_with_turboquant_context is already optimal.",
+      "Do not change KV cache layout — the per-decode-step eval already bundles KV refs."
+    ]
+  },
+  "next_step": "Open Intervention A: forward-path allocation audit. Estimated 1-2 weeks. First concrete deliverable: per-callsite MlxArray construction count for one Gemma 4 forward pass, comparing against the same instrumented counters added to mlx_lm.",
+  "raw_sample_files": {
+    "ax": "/tmp/gemma_ax_sample.txt (cleaned)",
+    "mlx_lm": "/tmp/gemma_mlxlm_sample.txt (cleaned)"
+  }
+}

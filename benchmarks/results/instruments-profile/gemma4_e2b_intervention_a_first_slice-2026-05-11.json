@@ -1,0 +1,88 @@
+{
+  "schema_version": "ax.gemma_intervention_a_first_slice.v1",
+  "generated_at_utc": "2026-05-11T15:55:00Z",
+  "host": "M5 Max 128 GB, macOS 26.4.1",
+  "prd": "GEMMA-QWEN-MLX-PERFORMANCE-PRD.md §G1",
+  "follows": "ax.gemma_eval_barrier_audit.v1",
+  "audit_scope": "First slice of Intervention A: identify the biggest per-callsite MlxArray allocator in the Gemma 4 forward path, fix one concrete instance, measure impact.",
+  "method": [
+    "Stack-walked the AX sample profile to attribute mlx::core::array constructor samples to immediate-child operations within ax_engine_mlx::model::layer_forward_with_turboquant_context.",
+    "Identified `gelu_approx` as the largest non-matmul allocator (94 samples direct + transitive via mk_scalar pattern).",
+    "Implemented scalar caching in `mlx-sys::ops::cached_scalar` so `gelu`/`gelu_approx` reuse the (value, dtype) pair across all calls.",
+    "Re-ran sample profile under identical workload, compared before vs after."
+  ],
+  "hot_callsite_breakdown_before_fix": {
+    "scope": "Immediate-child function attribution within layer_forward_with_turboquant_context, 10s sample window, 40 iterations × 32 decode tokens",
+    "top_allocators": {
+      "fast (mlx_sys::fast::* — rope / sdpa)": 124,
+      "gelu_approx": 94,
+      "ffn_swiglu": 91,
+      "add (residual + intermediate adds)": 42,
+      "MlxKVCache::append_with_retained_window": 23,
+      "qw (quantized_matmul wrapper)": 22,
+      "multiply (SwiGLU + layer_scalar + per_layer_input mul)": 20,
+      "qkv_project": 17,
+      "prepare_value_bhsd (reshape helper)": 15,
+      "transpose": 14,
+      "reshape": 14,
+      "qk_norm_bshd": 11
+    }
+  },
+  "fix_landed": {
+    "scope": "Cache scalar constants in `gelu` / `gelu_approx` so the 4 constants per call (sqrt(2/π), 0.044715, 1.0, 0.5) are materialised once per (value, dtype) pair process-wide, not per call.",
+    "files_changed": [
+      "crates/mlx-sys/src/array.rs (add `Hash` derive to MlxDtype)",
+      "crates/mlx-sys/src/ops.rs (new `cached_scalar(value, dtype) -> MlxArray`; refactor gelu/gelu_approx mk_scalar)"
+    ],
+    "expected_savings_per_forward_pass": "Gemma 4 has ~64 gelu_approx calls per forward (32 layers × 2 sites — FFN SwiGLU + per_layer_input gating). Each previously built 4 from_raw_data + 4 astype + intermediate ops = 8 transient MlxArray instances. Theoretical saving: ~500 MlxArrays per forward pass (cache hits after first call).",
+    "tests": "Existing 310 ax-engine-mlx unit tests pass; clippy clean."
+  },
+  "measured_impact": {
+    "sample_window_seconds": 12,
+    "iterations": 50,
+    "decode_tokens_per_call": 32,
+    "primitive_sample_counts": {
+      "mlx::core::array (constructor)": {"before": 1569, "after": 1479, "delta_pct": "-5.7%"},
+      "mlx::core::array>": {"before": 725, "after": 815, "delta_pct": "+12.4%"},
+      "SmallVector<int>": {"before": 594, "after": 599, "delta_pct": "+0.8%"},
+      "Stream": {"before": 557, "after": 576, "delta_pct": "+3.4%"},
+      "Dtype": {"before": 182, "after": 186, "delta_pct": "+2.2%"}
+    },
+    "decode_throughput": {
+      "before_tok_s": 131.8,
+      "after_tok_s": 130.3,
+      "delta_pct": "-1.1% (within run-to-run noise)"
+    },
+    "verdict": "Below sample noise floor."
+  },
+  "honest_interpretation": "The scalar cache fix is technically correct and removes a real source of redundant allocation, but the per-call constant reconstruction was happening on the CPU side fast enough that sample(1) at 1ms granularity does not detect it. The 5.7% drop in `mlx::core::array` constructor samples is within the noise of consecutive sample runs (we observed ~3-5% drift between identical re-runs prior to this fix). Decode tok/s is unchanged. The scalar cache stays — it's a correct optimisation with zero downside — but it does NOT close the AX-vs-mlx_lm allocation gap.",
+  "what_this_rules_out": [
+    "Cached-constant reconstruction is NOT the primary contributor to AX's 2.26× array-allocation ratio versus mlx_lm.",
+    "Per-call activation-function overhead (gelu_approx, silu) is NOT in the actionable hot path.",
+    "The 1.67× gpu::eval ratio (the only barrier-related signal) does not move when allocation patterns change — confirming eval barriers aren't the lever (already concluded in eval_barrier_audit.v1)."
+  ],
+  "remaining_intervention_A_candidates": [
+    {
+      "candidate": "Audit `fast` module (rope + scaled_dot_product_attention) for allocation amplification",
+      "size": "124 samples in layer_forward, largest single child",
+      "feasibility": "Medium — mlx-sys::fast wrappers may have a similar mk_scalar-style pattern; same fix recipe would apply. But the mlx-c bindings themselves may be the source of intermediate arrays, in which case AX cannot fix from outside."
+    },
+    {
+      "candidate": "Audit `MlxKVCache::append_with_retained_window` for transient allocations",
+      "size": "23 samples per layer × 32 layers = 736 forward-path samples",
+      "feasibility": "Medium — this is AX-owned code in kv_cache.rs. Likely allocates intermediate MlxArrays for sliding-window trimming."
+    },
+    {
+      "candidate": "Compare mlx_lm gemma3n.py forward against ax model.rs forward op-by-op",
+      "size": "Cross-cutting investigation",
+      "feasibility": "High effort, uncertain payoff. mlx_lm's nn.Module composes through Python which may have similar wrapping overhead — the 2.26× ratio may reflect Rust wrapper structural overhead that no per-callsite fix addresses."
+    },
+    {
+      "candidate": "Stop investing in CPU-side allocation reduction; the gap may be in the Rust ↔ mlx-c FFI binding cost, not in AX code.",
+      "size": "Negative recommendation",
+      "feasibility": "If true, the actionable lever is upstream mlx-c API improvement or a different optimisation entirely (KV scheduler revamp, larger-model evidence)."
+    }
+  ],
+  "decision_gate_status": "First slice of Intervention A complete. Scalar cache shipped (correct, no regression, no measurable speedup). Remaining candidates require either more invasive code changes (option 2 — kv_cache audit, 3-5 days) or pivot to a different workstream (option 4 — accept that AX's 2× allocation ratio may be structural).",
+  "next_step_recommendation": "STOP this slice. The cheapest hypothesis (scalar reconstruction) was tested and failed to deliver measurable improvement. Continuing Intervention A in the same vein (per-callsite micro-optimisations) has diminishing returns based on the sample data. Pivot decision needed: (a) deeper kv_cache audit, (b) FFI-layer investigation, or (c) move attention to a different workstream entirely. ADR 0024 D2 still requires evidence before any change — this artifact IS that evidence for the negative-result direction."
+}
