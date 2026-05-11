@@ -84,5 +84,9 @@ jobs:
         if: steps.mlx-artifacts.outputs.available == 'true'
         run: bash scripts/check-bench-replay.sh
 
+      - name: Run prefix-reuse equivalence regression gate
+        if: steps.mlx-artifacts.outputs.available == 'true'
+        run: bash scripts/check-prefix-reuse-equivalence.sh
+
       - name: Run Python preview packaging smoke check
         run: bash scripts/check-python-preview.sh
