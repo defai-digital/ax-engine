@@ -160,10 +160,10 @@ ax-engine requires pre-sanitized MLX weights. The safest source is
 checkpoints are already converted and ready to use. Raw HuggingFace checkpoints
 need `mlx_lm.convert` first.
 
-### Path A — mlx-community model (recommended)
+### Path A — mlx-community LLM (recommended)
 
-`download_model()` downloads weights into the standard Hugging Face Hub snapshot
-cache and auto-generates the manifest in one call:
+`download_model()` downloads LLM weights through `mlx-lm`, resolves the MLX-LM
+cache snapshot, and auto-generates the manifest in one call:
 
 ```python
 from ax_engine import download_model
@@ -171,21 +171,22 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 # Session is ready once this returns
 ```
 
-Or via the script (generates manifest automatically too):
+Install `mlx-lm` first, or install the Python package with
+`pip install "ax-engine[download]"`.
+
+Or via the script (also uses `mlx-lm` and generates the manifest automatically):
 
 ```text
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json  # machine-readable summary
 ```
 
-If you already have `mlx_lm` installed, you can also trigger a download through
-it — the model lands in the standard HF cache that ax-engine already scans:
+The model still lands in the cache layout used by `mlx-lm`/Hugging Face Hub, so
+`ax-engine-server --resolve-model-artifacts hf-cache ...` can resolve a model
+that was downloaded outside ax-engine by `python -m mlx_lm generate ...`.
 
-```text
-python -m mlx_lm.generate --model mlx-community/Qwen3-4B-4bit --prompt "x" --max-tokens 1
-ax-engine-bench generate-manifest ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
-ax-engine-server --mlx --resolve-model-artifacts hf-cache --preset qwen3_dense --port 8080
-```
+Embedding models are not downloaded by ax-engine. Download embedding model
+artifacts manually and pass the local model directory.
 
 ### Path B — raw HuggingFace checkpoint
 

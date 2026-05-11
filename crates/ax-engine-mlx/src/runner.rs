@@ -173,6 +173,7 @@ struct MlxPrefixCacheKey {
 #[derive(Clone)]
 struct MlxPrefixSnapshot {
     cache: MlxKVCache,
+    tokens: Vec<u32>,
     token_count: usize,
     bytes: u64,
     greedy_prefill_output_token: Option<u32>,
@@ -231,13 +232,20 @@ impl MlxPrefixCache {
         }
     }
 
-    fn get(&mut self, key: &MlxPrefixCacheKey) -> Option<Arc<MlxPrefixSnapshot>> {
+    fn get(
+        &mut self,
+        key: &MlxPrefixCacheKey,
+        requested_tokens: &[u32],
+    ) -> Option<Arc<MlxPrefixSnapshot>> {
         if !self.policy.enabled() {
             return None;
         }
         let touch_tick = self.allocate_touch_tick();
         let snapshot = {
             let entry = self.entries.get_mut(key)?;
+            if entry.snapshot.tokens.as_slice() != requested_tokens {
+                return None;
+            }
             entry.touch_tick = touch_tick;
             Arc::clone(&entry.snapshot)
         };
@@ -2356,7 +2364,7 @@ impl MlxRunner {
         let key = self.prefix_cache_key(model_id, block_size_tokens, reused_tokens);
         let hit = {
             let mut cache = self.prefix_cache.lock().unwrap();
-            let hit = cache.get(&key);
+            let hit = cache.get(&key, reused_tokens);
             telemetry.record_stats(cache.stats());
             hit
         };
@@ -2468,6 +2476,7 @@ impl MlxRunner {
                 key,
                 MlxPrefixSnapshot {
                     cache: snapshot_cache,
+                    tokens: tokens.to_vec(),
                     token_count: prefix_len,
                     bytes: usage.logical_bytes,
                     greedy_prefill_output_token: (prefix_len == available_tokens)
@@ -3503,9 +3512,10 @@ mod tests {
         }
     }
 
-    fn test_prefix_snapshot(token_count: usize, bytes: u64) -> MlxPrefixSnapshot {
+    fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefixSnapshot {
         MlxPrefixSnapshot {
             cache: MlxKVCache::new(2),
+            tokens: vec![token; token_count],
             token_count,
             bytes,
             greedy_prefill_output_token: Some(7),
@@ -3520,11 +3530,13 @@ mod tests {
         });
         let key = test_prefix_key(1);
 
-        let outcome = cache.insert(key.clone(), test_prefix_snapshot(4, 128));
+        let outcome = cache.insert(key.clone(), test_prefix_snapshot(1, 4, 128));
         assert!(outcome.stored);
         assert_eq!(outcome.evictions, 0);
 
-        let hit = cache.get(&key).expect("prefix snapshot should hit");
+        let hit = cache
+            .get(&key, &[1; 4])
+            .expect("prefix snapshot should hit");
         assert_eq!(hit.token_count, 4);
         assert_eq!(hit.greedy_prefill_output_token, Some(7));
         assert_eq!(
@@ -3543,10 +3555,10 @@ mod tests {
             max_entries: 4,
         });
         let key = test_prefix_key(1);
-        cache.insert(key.clone(), test_prefix_snapshot(4, 128));
+        cache.insert(key.clone(), test_prefix_snapshot(1, 4, 128));
 
         for _ in 0..10_000 {
-            assert!(cache.get(&key).is_some());
+            assert!(cache.get(&key, &[1; 4]).is_some());
         }
 
         assert_eq!(cache.stats().entries, 1);
@@ -3568,22 +3580,25 @@ mod tests {
 
         assert!(
             cache
-                .insert(key1.clone(), test_prefix_snapshot(4, 100))
+                .insert(key1.clone(), test_prefix_snapshot(1, 4, 100))
                 .stored
         );
         assert!(
             cache
-                .insert(key2.clone(), test_prefix_snapshot(4, 100))
+                .insert(key2.clone(), test_prefix_snapshot(2, 4, 100))
                 .stored
         );
-        assert!(cache.get(&key1).is_some(), "key1 should become most recent");
-        let outcome = cache.insert(key3.clone(), test_prefix_snapshot(4, 100));
+        assert!(
+            cache.get(&key1, &[1; 4]).is_some(),
+            "key1 should become most recent"
+        );
+        let outcome = cache.insert(key3.clone(), test_prefix_snapshot(3, 4, 100));
 
         assert!(outcome.stored);
         assert_eq!(outcome.evictions, 1);
-        assert!(cache.get(&key1).is_some());
-        assert!(cache.get(&key2).is_none());
-        assert!(cache.get(&key3).is_some());
+        assert!(cache.get(&key1, &[1; 4]).is_some());
+        assert!(cache.get(&key2, &[2; 4]).is_none());
+        assert!(cache.get(&key3, &[3; 4]).is_some());
     }
 
     #[test]
@@ -3594,12 +3609,12 @@ mod tests {
         });
         let key = test_prefix_key(1);
 
-        let outcome = cache.insert(key.clone(), test_prefix_snapshot(4, 128));
+        let outcome = cache.insert(key.clone(), test_prefix_snapshot(1, 4, 128));
 
         assert!(!cache.enabled());
         assert!(!outcome.stored);
         assert_eq!(outcome.evictions, 0);
-        assert!(cache.get(&key).is_none());
+        assert!(cache.get(&key, &[1; 4]).is_none());
         assert_eq!(
             cache.stats(),
             MlxPrefixCacheStats {
@@ -3607,6 +3622,25 @@ mod tests {
                 bytes: 0,
             }
         );
+    }
+
+    #[test]
+    fn prefix_cache_hash_collision_misses_without_reusing_snapshot() {
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 4,
+        });
+        let key = test_prefix_key(1);
+
+        let outcome = cache.insert(key.clone(), test_prefix_snapshot(1, 4, 128));
+        assert!(outcome.stored);
+
+        assert!(
+            cache.get(&key, &[9; 4]).is_none(),
+            "same hash key must still require exact prefix tokens"
+        );
+        assert_eq!(cache.stats().entries, 1);
+        assert!(cache.get(&key, &[1; 4]).is_some());
     }
 
     #[test]
