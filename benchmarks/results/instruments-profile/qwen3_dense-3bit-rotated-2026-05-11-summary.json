@@ -1,0 +1,45 @@
+{
+  "schema_version": "ax.ngram_overhead_profile.v1",
+  "generated_at_utc": "2026-05-11T12:10:00Z",
+  "host": "M5 Max 128 GB",
+  "tool": "macOS sample(1) CPU sampler, 1ms interval, 12s window",
+  "tool_limitations": "CPU-side sampling only. Cannot attribute time to specific Metal kernels (qmm_q3_K vs qmm_q4_K etc.) — needs Xcode Instruments Metal System Trace for the kernel-level breakdown.",
+  "workload": {
+    "model": "qwen3_dense / Qwen3.5-9B-MLX-4bit with model.rotated.safetensors (64 ffn_gate/ffn_up re-quantised to 3-bit affine after Hadamard rotation)",
+    "prompt_tokens": 2048,
+    "decode_tokens": 256,
+    "seed": 1234,
+    "deterministic": true,
+    "decode_wall_s": 2.688,
+    "decode_tok_s_observed": 95.2
+  },
+  "baseline_comparison": {
+    "config": "Qwen3.5-9B-MLX-4bit, no rotation, identical workload",
+    "decode_wall_s_baseline": 1.874,
+    "decode_tok_s_baseline": 218.7,
+    "slowdown_factor": 1.43,
+    "bandwidth_util_baseline": 0.679,
+    "bandwidth_util_3bit_rotated": 0.200,
+    "util_drop": 0.479
+  },
+  "cpu_attribution_samples": {
+    "mlx_eval_total_under_decode": 1112,
+    "pthread_cond_wait_total": 583,
+    "cond_wait_share_of_eval_pct": 52.4,
+    "QuantizedMatmul_eval_gpu_dispatch": 24,
+    "qmv_function_visible": true,
+    "interpretation": "CPU is largely sitting in pthread_cond_wait inside mlx_eval — i.e. blocked on the GPU finishing the dispatched work. The slowdown is GPU-side, not CPU-side."
+  },
+  "hot_phase": "GPU execution of quantized matrix-vector kernel (qmv) at bits=3",
+  "phase_share_pct": 52.4,
+  "outcome": "Track-K-target",
+  "outcome_explanation": "The 3-bit rotated configuration is 1.43x slower than the 4-bit baseline despite touching ~25% fewer weight bytes per forward pass. The CPU sampler confirms the slowdown lives in GPU execution time (pthread_cond_wait dominates inside mlx_eval). MLX's qmv quantized matrix-vector function is the visible hot op; the specific Metal kernel (likely qmm_q3_K_K or equivalent) is slower per-byte than its 4-bit counterpart. This is precisely the kernel-level bottleneck that ADR 0020 Track K is designed to attack.",
+  "recommended_next_step": {
+    "track": "ADR 0020 Track K",
+    "first_action": "Run Metal System Trace (Xcode Instruments) on the same 3-bit rotated workload. Identify the exact Metal pipeline name corresponding to qmv at bits=3, measure its threadgroup occupancy + memory throughput against the 4-bit equivalent. Compare bytes-fetched-per-dispatch ratio.",
+    "expected_artifact": "ax.metal_kernel_profile.v1 with: kernel_name, threads_per_threadgroup, registers_per_thread, memory_read_GBps, gpu_time_us_per_call, comparison_vs_4bit",
+    "decision_gate": "If 3-bit qmv kernel uses < 50% of theoretical peak bandwidth AND has substantial dispatch overhead (small grid, low occupancy), a custom Metal kernel is the right Track-K target. If it already saturates bandwidth, the slowdown is fundamental and 3-bit-as-bandwidth-win is the wrong attack — switch focus to ADR 0022 D2 calibration improvements (input-aware quant) instead."
+  },
+  "raw_sample_file": "/tmp/qwen_3bit_rotated_sample.txt",
+  "raw_sample_file_size_bytes": 395376
+}

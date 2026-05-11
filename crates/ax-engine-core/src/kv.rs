@@ -503,10 +503,7 @@ impl KvManager {
     }
 
     pub fn free(&mut self, request_id: RequestId) -> Result<FreeResult, KvManagerError> {
-        kv_diag!(
-            "free(request={}) called",
-            request_id.0
-        );
+        kv_diag!("free(request={}) called", request_id.0);
         let table = self
             .block_tables
             .get(&request_id)

@@ -134,6 +134,7 @@ class ReadmeMetric:
     model: str
     quantization: str
     prompt_tokens: int
+    generation_tokens: int | None
     column: str
     engine: str
     displayed_value: float
@@ -196,6 +197,20 @@ def extract_table_lines(readme_text: str, heading_prefix: str) -> list[str]:
     return table_lines
 
 
+def parse_heading_generation_tokens(heading: str) -> int | None:
+    match = re.search(r"generation\s*=\s*(\d+)\s*tokens", heading)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def find_heading_line(readme_text: str, heading_prefix: str) -> str:
+    for line in readme_text.splitlines():
+        if line.startswith(heading_prefix):
+            return line
+    raise ArtifactCheckError(f"missing README section: {heading_prefix}")
+
+
 def parse_readme_table(
     readme_text: str,
     *,
@@ -203,6 +218,8 @@ def parse_readme_table(
     table_name: str,
     column_map: dict[str, str],
 ) -> list[ReadmeMetric]:
+    heading = find_heading_line(readme_text, heading_prefix)
+    generation_tokens = parse_heading_generation_tokens(heading)
     table_lines = extract_table_lines(readme_text, heading_prefix)
     headers = split_markdown_row(table_lines[0])
     normalized_headers = [header.lower() for header in headers]
@@ -233,6 +250,7 @@ def parse_readme_table(
                     model=current_model,
                     quantization=current_quantization,
                     prompt_tokens=prompt_tokens,
+                    generation_tokens=generation_tokens,
                     column=headers[normalized_headers.index(header)],
                     engine=engine,
                     displayed_value=parse_numeric_cell(cell),
@@ -736,10 +754,12 @@ def row_uses_reused_reference_source(
     )
 
 
-def collect_artifact_rows(repo_root: Path, artifact_dir: Path) -> dict[tuple[str, str, int, str], ArtifactRow]:
+def collect_artifact_rows(
+    repo_root: Path, artifact_dir: Path
+) -> dict[tuple[str, str, int, int, str], ArtifactRow]:
     if not artifact_dir.exists():
         raise ArtifactCheckError(f"artifact directory does not exist: {artifact_dir}")
-    rows: dict[tuple[str, str, int, str], ArtifactRow] = {}
+    rows: dict[tuple[str, str, int, int, str], ArtifactRow] = {}
     json_paths = sorted(artifact_dir.glob("*.json"))
     if not json_paths:
         raise ArtifactCheckError(f"artifact directory has no JSON artifacts: {artifact_dir}")
@@ -786,7 +806,12 @@ def collect_artifact_rows(repo_root: Path, artifact_dir: Path) -> dict[tuple[str
             generation_tokens = int(row["generation_tokens"])
             if engine == "mlx_lm":
                 seen_reference_shapes.add((prompt_tokens, generation_tokens))
-            rows[(model, quantization, prompt_tokens, str(engine))] = ArtifactRow(
+            key = (model, quantization, prompt_tokens, generation_tokens, str(engine))
+            if key in rows:
+                raise ArtifactCheckError(
+                    f"{path} has duplicate artifact row for {key}"
+                )
+            rows[key] = ArtifactRow(
                 artifact_path=path,
                 model=model,
                 quantization=quantization,
@@ -799,6 +824,47 @@ def collect_artifact_rows(repo_root: Path, artifact_dir: Path) -> dict[tuple[str
         if missing_references:
             raise ArtifactCheckError(f"{path} lacks mlx_lm rows for {sorted(missing_references)}")
     return rows
+
+
+def find_artifact_row_for_metric(
+    artifact_rows: dict[tuple[str, str, int, int, str], ArtifactRow],
+    metric: ReadmeMetric,
+) -> ArtifactRow | None:
+    if metric.generation_tokens is not None:
+        return artifact_rows.get(
+            (
+                metric.model,
+                metric.quantization,
+                metric.prompt_tokens,
+                metric.generation_tokens,
+                metric.engine,
+            )
+        )
+    candidates = [
+        row
+        for (
+            model,
+            quantization,
+            prompt_tokens,
+            _generation_tokens,
+            engine,
+        ),
+        row in artifact_rows.items()
+        if (
+            model == metric.model
+            and quantization == metric.quantization
+            and prompt_tokens == metric.prompt_tokens
+            and engine == metric.engine
+        )
+    ]
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    generation_values = sorted({row.generation_tokens for row in candidates})
+    raise ArtifactCheckError(
+        f"README {metric.table} row is ambiguous for {metric.model} "
+        f"{metric.quantization} prompt={metric.prompt_tokens} engine={metric.engine}; "
+        f"artifact has generation tokens {generation_values}"
+    )
 
 
 def check_readme_performance(
@@ -815,13 +881,12 @@ def check_readme_performance(
     checked: list[str] = []
 
     for metric in metrics:
-        key = (metric.model, metric.quantization, metric.prompt_tokens, metric.engine)
-        artifact_row = artifact_rows.get(key)
+        artifact_row = find_artifact_row_for_metric(artifact_rows, metric)
         if artifact_row is None:
             raise ArtifactCheckError(
                 f"README {metric.table} row has no artifact: "
                 f"{metric.model} {metric.quantization} prompt={metric.prompt_tokens} "
-                f"engine={metric.engine}"
+                f"generation_tokens={metric.generation_tokens} engine={metric.engine}"
             )
         assert_display_matches(metric, artifact_row)
         checked.append(

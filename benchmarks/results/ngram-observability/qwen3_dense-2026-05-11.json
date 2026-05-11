@@ -1,0 +1,56 @@
+{
+  "by_prompt_class": {
+    "non_repeating": {
+      "accept_rate": 0.86,
+      "confidence_filtered_fallback_steps": 12,
+      "cooldown_steps": 148,
+      "no_candidate_fallback_steps": 23,
+      "request_count": 4,
+      "short_output_fallback_steps": 0,
+      "total_accepted_tokens": 43,
+      "total_draft_attempts": 13,
+      "total_draft_tokens": 50,
+      "total_output_tokens": 512
+    },
+    "repeating": {
+      "accept_rate": 0.9216,
+      "confidence_filtered_fallback_steps": 1,
+      "cooldown_steps": 89,
+      "no_candidate_fallback_steps": 10,
+      "request_count": 4,
+      "short_output_fallback_steps": 0,
+      "total_accepted_tokens": 188,
+      "total_draft_attempts": 51,
+      "total_draft_tokens": 204,
+      "total_output_tokens": 340
+    },
+    "unset": {
+      "accept_rate": null,
+      "confidence_filtered_fallback_steps": 0,
+      "cooldown_steps": 0,
+      "no_candidate_fallback_steps": 0,
+      "request_count": 0,
+      "short_output_fallback_steps": 0,
+      "total_accepted_tokens": 0,
+      "total_draft_attempts": 0,
+      "total_draft_tokens": 0,
+      "total_output_tokens": 0
+    }
+  },
+  "config": {
+    "confidence_threshold_env": null,
+    "confidence_threshold_resolved": null,
+    "max_output_tokens": 128,
+    "requests_per_class": 4,
+    "seed": 1234
+  },
+  "generated_at_utc": "2026-05-11T05:09:12Z",
+  "host": {
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O"
+  },
+  "model": {
+    "artifacts_dir": ".internal/models/Qwen3.5-9B-MLX-4bit",
+    "model_id": "qwen3_dense"
+  },
+  "schema_version": "ax.ngram_observability.v1"
+}

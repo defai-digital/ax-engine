@@ -4,6 +4,13 @@
 This is a support-contract probe, not an inference benchmark. It reads the
 model's config and safetensors index, then cross-checks local reference
 implementations so unsupported architectures fail closed with named blockers.
+
+Native-family policy is governed by ADR 0023
+(`.internal/adr/0023-deepseek-v4-delegated-ds4-route.md`). The Qwen / Gemma
+`REPO_OWNED_TYPES` allowlist below plus the dedicated `probe_glm4_moe_lite`
+path implement D1 of that ADR; `deepseek_v4` is rejected per D4. Models
+outside the native list are expected to route through `mlx_lm_delegated`
+(ADR 0014, ADR 0023 D2) at the SDK layer, not promoted here.
 """
 
 from __future__ import annotations

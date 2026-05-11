@@ -2555,6 +2555,21 @@ fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
 }
 
 fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
+    // Insert the rotation per `AX_MLX_EXPERIMENTAL_WEIGHT_ROTATION` mode:
+    //   Enable mode (P1):  R(R(x)) ≈ x (identity sandwich)
+    //   Apply  mode (P2a): R(x), expects offline-rotated weights to cancel
+    // When Apply mode is paired with the AWQ-lite smoothing vector from
+    // `--smoothing weight_mag` (P2b §3a), the per-input-channel multiplication
+    // by `1/s` runs AFTER the rotation. The offline tool baked `* s` into
+    // both gate_proj and up_proj rotated weights, so `R(x) * (1/s)` against
+    // `(W @ R) * s` matmuls cancels back to W @ x.
+    let rotated = crate::weight_rotation::maybe_apply_rotation_identity(x);
+    let smoothed = if let Some(smoothing_inv) = w.rotation_smoothing_inverse.as_ref() {
+        mlx_sys::ops::multiply(&rotated, smoothing_inv, None)
+    } else {
+        rotated
+    };
+    let x = &smoothed;
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_packed {
         let out = qw(x, packed);
         let packed_dim = out
@@ -3606,6 +3621,7 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
+            rotation_smoothing_inverse: None,
         }
     }
 
@@ -3671,6 +3687,7 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
+            rotation_smoothing_inverse: None,
         }
     }
 
@@ -3838,6 +3855,7 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
+            rotation_smoothing_inverse: None,
         }
     }
 
@@ -3936,6 +3954,7 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
+            rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
 
@@ -4663,6 +4682,7 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: Some(dense_weight(&[2, 4, 3])),
+            rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
         let indices_data = [0_u32, 1_u32];
@@ -4755,6 +4775,7 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: Some(dense_weight(&[2, 4, 3])),
+            rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
         let indices_data = [0_u32, 1_u32, 1_u32, 0_u32];
@@ -4823,6 +4844,7 @@ mod tests {
             gate_exps: Some(dense_weight(&[2, 3, 4])),
             up_exps: Some(dense_weight(&[2, 3, 4])),
             down_exps: Some(dense_weight(&[2, 4, 3])),
+            rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
         let indices_data = [0_u32, 1_u32, 1_u32, 0_u32];
@@ -4891,6 +4913,7 @@ mod tests {
             gate_exps: Some(dense_weight(&[4, 3, 4])),
             up_exps: Some(dense_weight(&[4, 3, 4])),
             down_exps: Some(dense_weight(&[4, 4, 3])),
+            rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
         let indices_data = [0_u32, 1_u32, 2_u32, 2_u32, 1_u32, 0_u32];
@@ -4959,6 +4982,7 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: Some(dense_weight(&[4, 4, 3])),
+            rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 16, 4], MlxDtype::Float32, None);
         let indices_data = (0..64).map(|i| (3 - (i % 4)) as u32).collect::<Vec<_>>();
@@ -5070,6 +5094,7 @@ mod tests {
             gate_exps: Some(dense_weight(&[4, 3, 4])),
             up_exps: Some(dense_weight(&[4, 3, 4])),
             down_exps: Some(dense_weight(&[4, 4, 3])),
+            rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 1, 4], MlxDtype::Float32, None);
         let indices_data = [0_u32, 1_u32, 2_u32];

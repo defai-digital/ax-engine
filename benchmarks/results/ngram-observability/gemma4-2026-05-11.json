@@ -1,0 +1,56 @@
+{
+  "by_prompt_class": {
+    "non_repeating": {
+      "accept_rate": 0.9048,
+      "confidence_filtered_fallback_steps": 0,
+      "cooldown_steps": 8,
+      "no_candidate_fallback_steps": 7,
+      "request_count": 4,
+      "short_output_fallback_steps": 0,
+      "total_accepted_tokens": 152,
+      "total_draft_attempts": 28,
+      "total_draft_tokens": 168,
+      "total_output_tokens": 196
+    },
+    "repeating": {
+      "accept_rate": null,
+      "confidence_filtered_fallback_steps": 0,
+      "cooldown_steps": 0,
+      "no_candidate_fallback_steps": 0,
+      "request_count": 4,
+      "short_output_fallback_steps": 0,
+      "total_accepted_tokens": 0,
+      "total_draft_attempts": 0,
+      "total_draft_tokens": 0,
+      "total_output_tokens": 4
+    },
+    "unset": {
+      "accept_rate": null,
+      "confidence_filtered_fallback_steps": 0,
+      "cooldown_steps": 0,
+      "no_candidate_fallback_steps": 0,
+      "request_count": 0,
+      "short_output_fallback_steps": 0,
+      "total_accepted_tokens": 0,
+      "total_draft_attempts": 0,
+      "total_draft_tokens": 0,
+      "total_output_tokens": 0
+    }
+  },
+  "config": {
+    "confidence_threshold_env": null,
+    "confidence_threshold_resolved": null,
+    "max_output_tokens": 128,
+    "requests_per_class": 4,
+    "seed": 1234
+  },
+  "generated_at_utc": "2026-05-11T04:58:30Z",
+  "host": {
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O"
+  },
+  "model": {
+    "artifacts_dir": ".internal/models/gemma-4-e2b-it-4bit",
+    "model_id": "gemma4"
+  },
+  "schema_version": "ax.ngram_observability.v1"
+}

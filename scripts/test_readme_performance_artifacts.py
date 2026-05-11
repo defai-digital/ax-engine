@@ -252,6 +252,28 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=7,
                 )
 
+    def test_decode_table_generation_heading_must_match_artifact_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            readme_path = root / "README.md"
+            readme_path.write_text(
+                readme_path.read_text().replace(
+                    "generation=2 tokens",
+                    "generation=64 tokens",
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "generation_tokens=64",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=readme_path,
+                    expected_metric_count=7,
+                )
+
     def test_reused_reference_rows_may_have_source_repetition_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

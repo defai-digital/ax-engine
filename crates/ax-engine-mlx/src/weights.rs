@@ -82,6 +82,12 @@ pub struct LayerWeights {
     pub gate_exps: Option<QuantizedWeight>,
     pub up_exps: Option<QuantizedWeight>,
     pub down_exps: Option<QuantizedWeight>,
+    /// Per-layer AWQ-lite smoothing reciprocal `1/s` of shape `[hidden_size]`.
+    /// Populated by `apply_rotated_checkpoint` when the rotated checkpoint was
+    /// generated with `--smoothing weight_mag`. The forward path multiplies
+    /// the rotated activation by this vector before the gate/up matmul so
+    /// the per-channel scaling baked into the rotated weights cancels.
+    pub rotation_smoothing_inverse: Option<MlxArray>,
 }
 
 /// Weights for a GLM4MoELite MLA attention layer.
@@ -638,6 +644,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             gate_exps,
             up_exps,
             down_exps,
+            rotation_smoothing_inverse: None,
         });
     }
 
@@ -650,7 +657,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         }
     }
 
-    Ok(ModelWeights {
+    crate::weight_rotation::shadow_log_rotation_candidates(specs);
+
+    let mut model = ModelWeights {
         token_embedding,
         final_norm,
         lm_head,
@@ -658,7 +667,155 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         per_layer_embed,
         per_layer_model_proj,
         per_layer_proj_norm,
-    })
+    };
+
+    apply_rotated_checkpoint(&mut model, artifacts)?;
+
+    Ok(model)
+}
+
+/// Detect a sibling `model.rotated.safetensors` and, when the runtime is in
+/// `WeightRotationMode::Apply`, replace each layer's `gate_proj` / `up_proj`
+/// with the rotated f32 version produced offline by
+/// `scripts/quantize_rotated_weights.py --apply`. Fail-closed: if Apply mode
+/// is selected but the rotated checkpoint is missing / incomplete / not
+/// applicable, return an error rather than silently running with broken math.
+fn apply_rotated_checkpoint(
+    model: &mut ModelWeights,
+    artifacts: &NativeModelArtifacts,
+) -> Result<(), WeightLoadError> {
+    use crate::weight_rotation::{WeightRotationMode, weight_rotation_mode};
+    if weight_rotation_mode() != WeightRotationMode::Apply {
+        return Ok(());
+    }
+    let rotated_path = artifacts.root_dir().join("model.rotated.safetensors");
+    if !rotated_path.is_file() {
+        return Err(WeightLoadError::RotatedCheckpointInvalid(format!(
+            "AX_MLX_EXPERIMENTAL_WEIGHT_ROTATION=apply requires {} (run scripts/quantize_rotated_weights.py --apply first)",
+            rotated_path.display()
+        )));
+    }
+    let rotated = load_safetensors(&rotated_path, None).map_err(|e| {
+        WeightLoadError::RotatedCheckpointInvalid(format!("{}: {}", rotated_path.display(), e))
+    })?;
+    if rotated.is_empty() {
+        return Err(WeightLoadError::RotatedCheckpointInvalid(format!(
+            "{} is empty",
+            rotated_path.display()
+        )));
+    }
+
+    let mut replaced = 0usize;
+    let mut smoothing_loaded = 0usize;
+    let mut missing_layers: Vec<usize> = Vec::new();
+    for (layer_idx, layer) in model.layers.iter_mut().enumerate() {
+        // Per-layer AWQ-lite smoothing vector, if the offline tool produced
+        // one. Stored as `ax_smoothing.layers.{idx}` of shape [hidden_size]
+        // holding 1/s already (so the forward path multiplies, not divides).
+        let smoothing_key = format!("ax_smoothing.layers.{}", layer_idx);
+        if let Some(smoothing) = rotated.get(&smoothing_key) {
+            layer.rotation_smoothing_inverse = Some(smoothing.clone());
+            smoothing_loaded += 1;
+        }
+        for (suffix, slot) in [
+            ("gate_proj", &mut layer.gate_proj),
+            ("up_proj", &mut layer.up_proj),
+        ] {
+            let Some(target) = slot.as_mut() else {
+                continue;
+            };
+            // Standard MLX-community Qwen naming. Other families would need
+            // alternative key probes added here as P2a expands beyond Qwen.
+            let key = format!(
+                "language_model.model.layers.{}.mlp.{}.weight",
+                layer_idx, suffix
+            );
+            let Some(rotated_w) = rotated.get(&key) else {
+                if layer.gate_up_packed.is_none() {
+                    missing_layers.push(layer_idx);
+                }
+                continue;
+            };
+            // Rotated tensors are EITHER stored as f32 (P2a baseline) or
+            // re-quantized as u32-packed plus sibling .scales / .biases (P2b).
+            // Detect by weight dtype: u32 => quantized path; anything else
+            // => plain f32 path with cast to bf16.
+            let stem = format!("language_model.model.layers.{}.mlp.{}", layer_idx, suffix);
+            let scales_key = format!("{stem}.scales");
+            let biases_key = format!("{stem}.biases");
+            if rotated_w.dtype() == MlxDtype::Uint32 {
+                let scales = rotated.get(&scales_key).ok_or_else(|| {
+                    WeightLoadError::RotatedCheckpointInvalid(format!(
+                        "missing {scales_key} for u32-packed rotated weight"
+                    ))
+                })?;
+                let biases = rotated.get(&biases_key).ok_or_else(|| {
+                    WeightLoadError::RotatedCheckpointInvalid(format!(
+                        "missing {biases_key} for u32-packed rotated weight"
+                    ))
+                })?;
+                // Infer bits from packed shape vs logical dim. For u32 packing
+                // with `bits` bits per element: packed_inner = logical_inner * bits / 32.
+                // logical_inner is the dim the activation rotation acts on; we
+                // know the original weight's logical inner was rotation_dim,
+                // which equals `original.weight` last-axis * 8 (4-bit packed)
+                // or equivalent. Compute from this checkpoint's shape directly.
+                let packed_shape = rotated_w.shape();
+                let scales_shape = scales.shape();
+                // logical_inner = group_size * groups_per_row, with groups_per_row
+                // = scales last axis. Hardcoded group_size 64 (matches script).
+                let groups_per_row = *scales_shape.last().unwrap_or(&0) as i64;
+                let logical_inner = groups_per_row * 64;
+                let packed_inner = *packed_shape.last().unwrap_or(&0) as i64;
+                if logical_inner <= 0 || packed_inner <= 0 {
+                    return Err(WeightLoadError::RotatedCheckpointInvalid(format!(
+                        "{key}: cannot infer bits from shapes packed={packed_shape:?} scales={scales_shape:?}"
+                    )));
+                }
+                let bits_calc = packed_inner * 32 / logical_inner;
+                if !(2..=8).contains(&bits_calc) {
+                    return Err(WeightLoadError::RotatedCheckpointInvalid(format!(
+                        "{key}: inferred bits={bits_calc} outside 2..=8"
+                    )));
+                }
+                target.weight = rotated_w.clone();
+                target.scales = Some(scales.clone());
+                target.biases = Some(biases.clone());
+                target.bits = bits_calc as i32;
+                target.group_size = 64;
+            } else {
+                // f32 path: cast to bf16, drop scales/biases, forward picks
+                // the plain matmul branch.
+                let cast = astype(rotated_w, MlxDtype::Bfloat16, None);
+                target.weight = cast;
+                target.scales = None;
+                target.biases = None;
+            }
+            replaced += 1;
+        }
+    }
+
+    if replaced == 0 {
+        return Err(WeightLoadError::RotatedCheckpointInvalid(format!(
+            "{} contained 0 matching tensors for this model (key format mismatch?)",
+            rotated_path.display()
+        )));
+    }
+
+    tracing::info!(
+        target: "ax_mlx::weight_rotation",
+        replaced_tensor_count = replaced,
+        smoothing_loaded = smoothing_loaded,
+        rotated_checkpoint = %rotated_path.display(),
+        "loaded rotated checkpoint"
+    );
+    eprintln!(
+        "[ax_mlx::weight_rotation apply] loaded {}: {} tensors replaced, {} layers with smoothing",
+        rotated_path.display(),
+        replaced,
+        smoothing_loaded,
+    );
+    Ok(())
 }
 
 /// Apply the `hf_to_mlx` weight transforms in place on a freshly loaded
@@ -1213,6 +1370,8 @@ pub enum WeightLoadError {
     InvalidLayer(String),
     #[error("unsanitized weights: {0}")]
     UnsanitizedWeights(String),
+    #[error("rotated checkpoint required but invalid: {0}")]
+    RotatedCheckpointInvalid(String),
 }
 
 #[cfg(test)]

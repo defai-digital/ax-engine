@@ -1,0 +1,286 @@
+{
+  "advisory": {
+    "high_variance_metrics": [
+      "median_step_event_us"
+    ],
+    "max_cv_pct": 11.709,
+    "verdict": "loose",
+    "verdict_explanation": "CV between 5.0% and 25% on some metrics. Acceptable for first-pass evidence but tighter measurement preferred before ADR-grade claims."
+  },
+  "generated_at_utc": "2026-05-11T05:27:02Z",
+  "host": {
+    "peak_bandwidth_gbps": 800.0,
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O"
+  },
+  "input_artifacts": [
+    "benchmarks/results/bw-profile-variance/qwen3_dense-2026-05-11-run1.json",
+    "benchmarks/results/bw-profile-variance/qwen3_dense-2026-05-11-run2.json",
+    "benchmarks/results/bw-profile-variance/qwen3_dense-2026-05-11-run3.json"
+  ],
+  "model": {
+    "model_id": "qwen3_dense",
+    "weight_bytes_on_disk": 5950221072
+  },
+  "n_runs": 3,
+  "regime_summary": {
+    "ngram_decode": {
+      "effective_bandwidth_gbps": {
+        "cv_pct": 0.444,
+        "max": 308.156,
+        "mean": 306.586333,
+        "min": 305.723,
+        "stddev": 1.361636,
+        "values": [
+          305.88,
+          308.156,
+          305.723
+        ]
+      },
+      "steps": {
+        "cv_pct": 0.0,
+        "max": 50.0,
+        "mean": 50.0,
+        "min": 50.0,
+        "stddev": 0.0,
+        "values": [
+          50.0,
+          50.0,
+          50.0
+        ]
+      },
+      "us_per_step": {
+        "cv_pct": 0.443,
+        "max": 19462.8,
+        "mean": 19408.233333,
+        "min": 19309.1,
+        "stddev": 85.997461,
+        "values": [
+          19452.8,
+          19309.1,
+          19462.8
+        ]
+      },
+      "utilization_ratio": {
+        "cv_pct": 0.438,
+        "max": 0.3852,
+        "mean": 0.383267,
+        "min": 0.3822,
+        "stddev": 0.001677,
+        "values": [
+          0.3824,
+          0.3852,
+          0.3822
+        ]
+      },
+      "wall_us": {
+        "cv_pct": 0.443,
+        "max": 973140.0,
+        "mean": 970412.0,
+        "min": 965457.0,
+        "stddev": 4298.461236,
+        "values": [
+          972639.0,
+          965457.0,
+          973140.0
+        ]
+      }
+    },
+    "single_decode": {
+      "effective_bandwidth_gbps": {
+        "cv_pct": 0.59,
+        "max": 546.512,
+        "mean": 542.952,
+        "min": 540.309,
+        "stddev": 3.201557,
+        "values": [
+          546.512,
+          542.035,
+          540.309
+        ]
+      },
+      "steps": {
+        "cv_pct": 0.0,
+        "max": 16.0,
+        "mean": 16.0,
+        "min": 16.0,
+        "stddev": 0.0,
+        "values": [
+          16.0,
+          16.0,
+          16.0
+        ]
+      },
+      "us_per_step": {
+        "cv_pct": 0.588,
+        "max": 11012.6,
+        "mean": 10959.266667,
+        "min": 10887.6,
+        "stddev": 64.48514,
+        "values": [
+          10887.6,
+          10977.6,
+          11012.6
+        ]
+      },
+      "utilization_ratio": {
+        "cv_pct": 0.586,
+        "max": 0.6831,
+        "mean": 0.678667,
+        "min": 0.6754,
+        "stddev": 0.00398,
+        "values": [
+          0.6831,
+          0.6775,
+          0.6754
+        ]
+      },
+      "wall_us": {
+        "cv_pct": 0.588,
+        "max": 176202.0,
+        "mean": 175348.333333,
+        "min": 174202.0,
+        "stddev": 1031.620247,
+        "values": [
+          174202.0,
+          175641.0,
+          176202.0
+        ]
+      }
+    }
+  },
+  "schema_version": "ax.bw_profile_variance.v1",
+  "summary": {
+    "bandwidth_utilization_ratio": {
+      "cv_pct": 0.509,
+      "max": 0.4291,
+      "mean": 0.426633,
+      "min": 0.425,
+      "stddev": 0.002173,
+      "values": [
+        0.4258,
+        0.4291,
+        0.425
+      ]
+    },
+    "decode_tok_s": {
+      "cv_pct": 0.511,
+      "max": 220.443,
+      "mean": 219.175667,
+      "min": 218.319,
+      "stddev": 1.119968,
+      "values": [
+        218.765,
+        220.443,
+        218.319
+      ]
+    },
+    "decode_tokens_observed": {
+      "cv_pct": 0.0,
+      "max": 256.0,
+      "mean": 256.0,
+      "min": 256.0,
+      "stddev": 0.0,
+      "values": [
+        256.0,
+        256.0,
+        256.0
+      ]
+    },
+    "decode_wall_time_s": {
+      "cv_pct": 0.51,
+      "max": 1.172599,
+      "mean": 1.168034,
+      "min": 1.161297,
+      "stddev": 0.005956,
+      "values": [
+        1.170207,
+        1.161297,
+        1.172599
+      ]
+    },
+    "estimated_effective_bandwidth_gbps": {
+      "cv_pct": 0.511,
+      "max": 343.293,
+      "mean": 341.318667,
+      "min": 339.984,
+      "stddev": 1.744778,
+      "values": [
+        340.679,
+        343.293,
+        339.984
+      ]
+    },
+    "forward_pass_count": {
+      "cv_pct": 0.0,
+      "max": 67.0,
+      "mean": 67.0,
+      "min": 67.0,
+      "stddev": 0.0,
+      "values": [
+        67.0,
+        67.0,
+        67.0
+      ]
+    },
+    "forward_pass_per_s": {
+      "cv_pct": 0.511,
+      "max": 57.694,
+      "mean": 57.362333,
+      "min": 57.138,
+      "stddev": 0.293129,
+      "values": [
+        57.255,
+        57.694,
+        57.138
+      ]
+    },
+    "mean_forward_pass_us": {
+      "cv_pct": 0.51,
+      "max": 17501.47,
+      "mean": 17433.346667,
+      "min": 17332.797,
+      "stddev": 88.888951,
+      "values": [
+        17465.773,
+        17332.797,
+        17501.47
+      ]
+    },
+    "median_step_event_us": {
+      "cv_pct": 11.709,
+      "max": 70.0,
+      "mean": 64.666667,
+      "min": 56.0,
+      "stddev": 7.571878,
+      "values": [
+        70.0,
+        56.0,
+        68.0
+      ]
+    },
+    "p95_step_event_us": {
+      "cv_pct": 0.862,
+      "max": 20063.0,
+      "mean": 19888.6,
+      "min": 19720.4,
+      "stddev": 171.38413,
+      "values": [
+        20063.0,
+        19720.4,
+        19882.4
+      ]
+    },
+    "speculation_bonus_tokens": {
+      "cv_pct": 0.0,
+      "max": 189.0,
+      "mean": 189.0,
+      "min": 189.0,
+      "stddev": 0.0,
+      "values": [
+        189.0,
+        189.0,
+        189.0
+      ]
+    }
+  }
+}

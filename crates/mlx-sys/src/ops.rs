@@ -57,15 +57,7 @@ pub fn silu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
 /// gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))  — exact GELU used for GEGLU activations.
 pub fn gelu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     let dtype = x.dtype();
-    let mk_scalar = |v: f32| {
-        let a = MlxArray::from_raw_data(
-            &v as *const f32 as *const u8,
-            std::mem::size_of::<f32>(),
-            &[1_i32],
-            MlxDtype::Float32,
-        );
-        astype(&a, dtype, s)
-    };
+    let mk_scalar = |v: f32| cached_scalar(v, dtype);
     let inv_sqrt2 = mk_scalar(std::f32::consts::FRAC_1_SQRT_2);
     let scaled = multiply(x, &inv_sqrt2, s);
     let erf_val = erf(&scaled, s);
@@ -79,15 +71,7 @@ pub fn gelu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
 /// Matches mlx-lm's `nn.gelu_approx`. Used by Gemma4 per-layer input gate.
 pub fn gelu_approx(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     let dtype = x.dtype();
-    let mk_scalar = |v: f32| {
-        let a = MlxArray::from_raw_data(
-            &v as *const f32 as *const u8,
-            std::mem::size_of::<f32>(),
-            &[1_i32],
-            MlxDtype::Float32,
-        );
-        astype(&a, dtype, s)
-    };
+    let mk_scalar = |v: f32| cached_scalar(v, dtype);
     // sqrt(2/π)
     let sqrt_2_over_pi: f32 = 0.797_884_6;
     let coeff: f32 = 0.044_715;
@@ -680,6 +664,41 @@ pub fn quantized_matmul(
         );
         res
     }
+}
+
+/// Return a cached scalar `MlxArray` of `value` materialised in `dtype`.
+///
+/// Functions like `gelu` and `gelu_approx` previously built four short-lived
+/// scalar arrays per call (each call to `from_raw_data` + `astype`), which
+/// allocated 8 `MlxArray` wrappers per activation invocation. On Gemma 4
+/// E2B decode that contributed ~500 transient MlxArray instances per
+/// forward pass (~30% of the AX-vs-mlx_lm gap surfaced in
+/// `gemma4_e2b_eval_barrier_audit.v1`). Caching scalars by
+/// `(value_bits, dtype)` collapses those allocations to one per unique
+/// (constant, dtype) pair across the entire process lifetime.
+pub fn cached_scalar(value: f32, dtype: MlxDtype) -> MlxArray {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<(u32, MlxDtype), MlxArray>>> = OnceLock::new();
+    let key = (value.to_bits(), dtype);
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = cache.lock().expect("cached_scalar cache poisoned");
+    if let Some(arr) = map.get(&key) {
+        return arr.clone();
+    }
+    let f32_arr = MlxArray::from_raw_data(
+        &value as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[1_i32],
+        MlxDtype::Float32,
+    );
+    let out = if dtype == MlxDtype::Float32 {
+        f32_arr
+    } else {
+        astype(&f32_arr, dtype, None)
+    };
+    map.insert(key, out.clone());
+    out
 }
 
 #[cfg(test)]

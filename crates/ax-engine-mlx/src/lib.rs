@@ -8,6 +8,7 @@ pub mod runner;
 pub mod sampling;
 pub mod turboquant;
 pub mod turboquant_metal;
+pub mod weight_rotation;
 pub mod weights;
 
 pub use runner::MlxRunner;

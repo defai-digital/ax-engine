@@ -1,0 +1,71 @@
+{
+  "aggregate": {
+    "pass_threshold": 0.9,
+    "prompts_matching_exactly": 3,
+    "prompts_total": 5,
+    "shared_prefix_ratio": 0.731034,
+    "shared_prefix_total_tokens": 106,
+    "tested_total_tokens": 145,
+    "verdict": "FAIL"
+  },
+  "config": {
+    "corpus_source": "default",
+    "max_output_tokens": 32,
+    "prompt_count": 5,
+    "seed": 1234,
+    "tested_mode": "apply"
+  },
+  "generated_at_utc": "2026-05-11T18:28:09Z",
+  "model": {
+    "artifacts_dir": ".internal/models/Qwen3.5-9B-MLX-4bit",
+    "model_id": "qwen3_dense"
+  },
+  "per_prompt": [
+    {
+      "baseline_token_count": 32,
+      "first_divergence_index": 25,
+      "id": "english_continuation",
+      "prompt_preview": "The quick brown fox jumps over the lazy dog while the engine",
+      "shared_prefix_len": 25,
+      "tested_token_count": 32,
+      "tokens_match": false
+    },
+    {
+      "baseline_token_count": 32,
+      "first_divergence_index": null,
+      "id": "instruction_short",
+      "prompt_preview": "Write one sentence about the moon.",
+      "shared_prefix_len": 32,
+      "tested_token_count": 32,
+      "tokens_match": true
+    },
+    {
+      "baseline_token_count": 32,
+      "first_divergence_index": null,
+      "id": "code_continuation",
+      "prompt_preview": "def factorial(n):\n    if n <= 1:\n        return 1\n    return",
+      "shared_prefix_len": 32,
+      "tested_token_count": 32,
+      "tokens_match": true
+    },
+    {
+      "baseline_token_count": 17,
+      "first_divergence_index": null,
+      "id": "repetitive_list",
+      "prompt_preview": "List five fruits separated by commas: apple, banana, cherry,",
+      "shared_prefix_len": 17,
+      "tested_token_count": 17,
+      "tokens_match": true
+    },
+    {
+      "baseline_token_count": 32,
+      "first_divergence_index": 0,
+      "id": "long_narrative",
+      "prompt_preview": "Margaret turned the brass key with steady fingers and pushed",
+      "shared_prefix_len": 0,
+      "tested_token_count": 32,
+      "tokens_match": false
+    }
+  ],
+  "schema_version": "ax.rotation_equivalence.v2"
+}
