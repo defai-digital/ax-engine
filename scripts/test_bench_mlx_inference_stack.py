@@ -1250,6 +1250,55 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             decode_route,
         )
 
+    def test_step_local_route_decisions_are_merged_into_selected_decode_route(self) -> None:
+        step_local: dict[str, int] = {}
+        bench.merge_step_local_route_decisions(
+            step_local,
+            {
+                "crossover_decisions": {
+                    "ax_scheduler_scheduled_prefill_tokens": 512,
+                    "ax_mlx_prefix_cache_misses": 1,
+                    "ax_mlx_prefix_cache_warmup_tokens": 128,
+                    "ax_mlx_prefix_cache_entries": 2,
+                    "ax_mlx_prefix_cache_bytes_kib": 64,
+                    "ax_ngram_draft_attempts": 99,
+                }
+            },
+        )
+        bench.merge_step_local_route_decisions(
+            step_local,
+            {
+                "crossover_decisions": {
+                    "ax_scheduler_scheduled_decode_tokens": 8,
+                    "ax_mlx_prefix_cache_hits": 1,
+                    "ax_mlx_prefix_cache_entries": 1,
+                    "ax_mlx_prefix_cache_bytes_kib": 32,
+                }
+            },
+        )
+        selected = bench.route_with_step_local_decisions(
+            {
+                "attention_route": "qwen_paged_decode",
+                "crossover_decisions": {
+                    "ax_ngram_draft_attempts": 18,
+                    "ax_ngram_accepted_tokens": 108,
+                    "ax_mlx_prefix_cache_misses": 0,
+                },
+            },
+            step_local,
+        )
+
+        decisions = selected["crossover_decisions"]
+        self.assertEqual(decisions["ax_ngram_draft_attempts"], 18)
+        self.assertEqual(decisions["ax_ngram_accepted_tokens"], 108)
+        self.assertEqual(decisions["ax_scheduler_scheduled_prefill_tokens"], 512)
+        self.assertEqual(decisions["ax_scheduler_scheduled_decode_tokens"], 8)
+        self.assertEqual(decisions["ax_mlx_prefix_cache_misses"], 1)
+        self.assertEqual(decisions["ax_mlx_prefix_cache_hits"], 1)
+        self.assertEqual(decisions["ax_mlx_prefix_cache_warmup_tokens"], 128)
+        self.assertEqual(decisions["ax_mlx_prefix_cache_entries"], 2)
+        self.assertEqual(decisions["ax_mlx_prefix_cache_bytes_kib"], 64)
+
     def test_attach_baseline_requires_matching_mlx_lm_row(self) -> None:
         results = [
             {

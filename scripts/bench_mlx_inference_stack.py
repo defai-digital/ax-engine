@@ -162,6 +162,16 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_prefix_cache_bytes_kib",
 ]
 
+AX_MLX_PREFIX_CACHE_MAX_KEYS = {
+    "ax_mlx_prefix_cache_entries",
+    "ax_mlx_prefix_cache_bytes_kib",
+}
+AX_MLX_PREFIX_CACHE_SUM_KEYS = {
+    key
+    for key in AX_MLX_TELEMETRY_KEYS
+    if key.startswith("ax_mlx_prefix_cache_") and key not in AX_MLX_PREFIX_CACHE_MAX_KEYS
+}
+
 AX_SCHEDULER_TELEMETRY_KEYS = [
     "ax_scheduler_scheduled_prefill_tokens",
     "ax_scheduler_scheduled_decode_tokens",
@@ -978,6 +988,34 @@ def route_with_more_decisions(
     return current
 
 
+def merge_step_local_route_decisions(
+    totals: dict[str, int],
+    route: dict[str, Any] | None,
+) -> None:
+    if not route:
+        return
+    decisions = route.get("crossover_decisions") or {}
+    for key in AX_MLX_PREFIX_CACHE_SUM_KEYS:
+        totals[key] = totals.get(key, 0) + int(decisions.get(key, 0))
+    for key in AX_SCHEDULER_TELEMETRY_KEYS:
+        totals[key] = totals.get(key, 0) + int(decisions.get(key, 0))
+    for key in AX_MLX_PREFIX_CACHE_MAX_KEYS:
+        totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
+
+
+def route_with_step_local_decisions(
+    route: dict[str, Any] | None,
+    step_local_decisions: dict[str, int],
+) -> dict[str, Any] | None:
+    if not step_local_decisions:
+        return route
+    merged = copy.deepcopy(route) if route else {}
+    decisions = dict(merged.get("crossover_decisions") or {})
+    decisions.update(step_local_decisions)
+    merged["crossover_decisions"] = decisions
+    return merged
+
+
 def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for run in runs:
@@ -1224,6 +1262,7 @@ def axengine_one_run(
     output_token_ids: list[int] = []
     current_event = ""
     final_route: dict[str, Any] | None = None
+    step_local_decisions: dict[str, int] = {}
 
     for raw in response:
         line = raw.decode("utf-8", errors="replace").strip()
@@ -1240,9 +1279,10 @@ def axengine_one_run(
             step = obj.get("step", {})
             runner_us = int(step.get("runner_time_us", 0))
             output_tokens = int(obj.get("request", {}).get("output_len", output_tokens))
+            step_route = step.get("route") or obj.get("request", {}).get("route")
+            merge_step_local_route_decisions(step_local_decisions, step_route)
             final_route = route_with_more_decisions(
-                step.get("route")
-                or obj.get("request", {}).get("route"),
+                step_route,
                 final_route,
             )
             if is_ax_prefill_step(step, seen_prefill=seen_prefill):
@@ -1261,6 +1301,7 @@ def axengine_one_run(
             )
 
     conn.close()
+    final_route = route_with_step_local_decisions(final_route, step_local_decisions)
     prompt_tokens = len(tokens)
     prefill_s = prefill_us / 1_000_000
     decode_s = decode_us / 1_000_000
