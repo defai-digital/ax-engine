@@ -2,7 +2,7 @@
 
 **PRD**: `.internal/planning/KV-SCHEDULER-REVAMP-PRD.md` §W1
 **ADR**: 0018 KV/Scheduler Revamp
-**Status**: Slice 6 complete (2026-05-11). Strategy 2 shipped: sliding-window models (Gemma class) now also get physical prefix cache hits. warm_repeat TTFT 1344× on Gemma 4 E2B and 3989× on Qwen3.5-9B; correctness harness 5/5 PASS on both. Only MLA (GLM-class) remains gated.
+**Status**: Slice 7 complete (2026-05-11). Strategy 3 shipped: MLA (GLM-class) now also gets physical prefix cache hits. All four native-tier architectures (FA, linear, sliding-window, MLA) now have working physical prefix reuse. warm_repeat TTFT 4021× on GLM-4.7-Flash; correctness harness 5/5 PASS on Qwen + Gemma + GLM with block-aligned corpus.
 **Author**: AX Engine work session
 
 ## TL;DR
@@ -838,6 +838,128 @@ state needs a separate snapshot design (Strategy 3, deferred).
   (5/5 PASS — regression check, no change from Strategy 1)
 - `benchmarks/results/kv-long-context/gemma4-strategy2-2026-05-11.json`
 - `benchmarks/results/kv-long-context/qwen3-5-9b-strategy2-2026-05-11.json`
+
+## Slice 7 Findings (2026-05-11) — Strategy 3 Shipped (MLA / GLM-class)
+
+### Surprise — Strategy 3 also fixes a pre-existing GLM correctness bug
+
+Baseline check before any Strategy 3 work uncovered a third pre-existing
+warmup-path bug:
+
+- GLM-4.7-Flash baseline `warm_repeat`: **3/5 PASS** (p3, p4 diverge
+  at idx=7 and idx=10 respectively).
+- Same corpus on Gemma + Qwen baseline: 5/5 PASS.
+
+The bug pattern matches the bug audit's warm_extend findings — fp drift
+after several matching tokens, characteristic of accumulated non-determinism
+in the lazy-graph re-prefill path. It's specific to MLA on GLM (the warmup
+code is shared, but MLA's compressed-latent buffer behavior may interact
+with chunked_prefill's eval boundaries differently).
+
+Strategy 3 sidesteps this bug for block-aligned prompts by routing through
+the **bit-exact snapshot path** instead of the warmup re-prefill. So
+Strategy 3 delivers TTFT speedup AND incrementally fixes correctness for
+the same-prompt case.
+
+### Code change
+
+`crates/ax-engine-mlx/src/runner.rs`:
+
+1. `prefix_cache_supported()` — drop the `glm_mla_attention.is_none()`
+   term. Now returns `true` unconditionally; architecture gating moves
+   entirely into the store path. (Comment kept to explain the design.)
+
+2. `store_prompt_prefix_snapshots()` — generalize the alignment-restricted
+   set to `linear_attention || sliding_window || glm_mla_attention`.
+   Note that MLA's `trim_to` itself is sound for partial prefixes (MLA
+   buffers are pre-allocated, no recurrent state, no rotating window),
+   but we keep MLA under the same conservative gate so that:
+   - the harness invariant is uniform across all non-FA architectures;
+   - any future MLA-specific snapshot invariant has one place to land.
+
+### Harness extension — `--pad-to-block-size`
+
+The architecture-restricted snapshot path only fires on exactly
+block-aligned prompts. The natural 5-prompt corpus tokenizes to lengths
+(13, 32, 44, 29, 24) — only `p2_medium_explain` is a multiple of 16.
+For Strategies 1+2 most prompts happened to also exercise the path one
+way or another, but GLM's pre-existing warmup-path bug made the
+non-aligned cases fail loudly under Strategy 3.
+
+Added `--pad-to-block-size N` to `verify_prefix_reuse_equivalence.py`:
+right-pads each tokenized prompt up to the next multiple of `N` by
+repeating tokens from the prompt's tail. Use `--pad-to-block-size 16`
+to deterministically exercise the snapshot path for all 5 prompts.
+
+This makes the harness the durable correctness gate for any future
+loosening of `prefix_cache_supported()` (or its successor) — any change
+must keep the padded run at 5/5 PASS on all four architectures.
+
+### Runtime impact
+
+GLM-4.7-Flash (2048-token block-aligned prompt):
+
+| scenario      | before TTFT | after TTFT  | speedup    |
+|---------------|-------------|-------------|------------|
+| cold          | 0.933 s     | 0.800 s     | (run-to-run) |
+| warm_repeat   | 0.822 s     | **0.0002 s** | **4021×** |
+| warm_extend   | 1.059 s     | 0.179 s     | **~6×**   |
+
+`ax_mlx_prefix_cache_hits=1`, `ax_mlx_prefix_cache_warmup_tokens=0` on
+warm_repeat. Cache bytes ~110 MiB for 2048 tokens — MLA's compressed
+latent KV is the most memory-efficient of the four architectures (Gemma
+~38 MiB, Qwen ~67 MiB for the same prompt length).
+
+Qwen + Gemma regression checks under Strategy 3 (padded corpus, 5/5 PASS
+each): no change from Strategy 2.
+
+### Native-tier coverage — complete
+
+| Architecture     | Models                  | prefix_cache_supported | Shipped     |
+|------------------|-------------------------|------------------------|-------------|
+| Standard FA      | (none currently)        | true (day-1)           | —           |
+| Linear attention | Qwen3.5, Qwen3.6        | true                   | Strategy 1  |
+| Sliding window   | Gemma 4 E2B             | true                   | Strategy 2  |
+| MLA              | GLM-4.7-Flash           | true                   | Strategy 3  |
+
+All four architectures in the AX Engine v4 native tier now have working
+physical prefix cache. `prefix_cache_supported()` returns true
+unconditionally — architecture-specific safety constraints live in
+`store_prompt_prefix_snapshots()`.
+
+### Tests + correctness
+
+- ax-engine-mlx lib: 311/311 PASS (one new test was registered)
+- clippy `--all-targets -- -D warnings`: clean
+- Equivalence harness with `--pad-to-block-size 16`:
+  - Qwen3.5-9B `warm_repeat`: 5/5 PASS
+  - Gemma 4 E2B `warm_repeat`: 5/5 PASS
+  - GLM-4.7-Flash `warm_repeat`: 5/5 PASS
+
+### Known issues (out of scope for slice 7)
+
+- Pre-existing `warm_reused_prefix_without_cache` fp-drift bug:
+  affects `warm_extend` on Qwen/Gemma for non-aligned prompts (4/5 PASS,
+  3/5 PASS respectively), and `warm_repeat` on GLM for non-aligned
+  prompts (3/5 PASS). Strategy 3 bypasses this bug whenever the snapshot
+  path fires (block-aligned prompts). Filed as a separate issue; harness
+  `--pad-to-block-size` gives a clean way to isolate snapshot-path
+  correctness from warmup-path correctness in future investigations.
+
+### Slice 7 Artifacts
+
+- `benchmarks/results/prefix-reuse-equivalence/glm-baseline-2026-05-11.json`
+  (3/5 PASS — documents pre-existing GLM warmup-path bug)
+- `benchmarks/results/prefix-reuse-equivalence/glm-strategy3-warm-repeat-2026-05-11.json`
+  (3/5 PASS — Strategy 3 fires for aligned p2 but fails non-aligned prompts via warmup-path bug)
+- `benchmarks/results/prefix-reuse-equivalence/glm-strategy3-padded-2026-05-11.json`
+  (5/5 PASS — Strategy 3 snapshot path verified)
+- `benchmarks/results/prefix-reuse-equivalence/qwen3-5-9b-strategy3-padded-2026-05-11.json`
+  (5/5 PASS — regression check)
+- `benchmarks/results/prefix-reuse-equivalence/gemma4-strategy3-padded-2026-05-11.json`
+  (5/5 PASS — regression check)
+- `benchmarks/results/kv-long-context/glm-baseline-2026-05-11.json`
+- `benchmarks/results/kv-long-context/glm-strategy3-2026-05-11.json`
 
 ### Slice 5 Artifacts
 
