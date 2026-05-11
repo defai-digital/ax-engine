@@ -14,7 +14,7 @@ use thiserror::Error;
 use crate::model::{
     AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeLinearAttentionConfig, NativeModelArtifacts,
     NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
-    NativeTensorFormat, NativeTensorRole, NativeTensorSpec,
+    NativeTensorFormat, NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 
 // ---------------------------------------------------------------------------
@@ -822,6 +822,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         mla_attention: Default::default(),
         moe: NativeMoeConfig::default(),
         glm_router: Default::default(),
+        weight_sanitize: WeightSanitize::default(),
         tensors,
     };
 

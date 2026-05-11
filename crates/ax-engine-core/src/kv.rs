@@ -548,6 +548,13 @@ impl KvManager {
         self.config.total_blocks - self.available_block_count()
     }
 
+    pub fn block_count_for(&self, request_id: RequestId) -> u32 {
+        self.block_tables
+            .get(&request_id)
+            .map(|table| table.block_ids.len() as u32)
+            .unwrap_or(0)
+    }
+
     pub fn available_block_count(&self) -> u32 {
         self.free_block_ids.len() as u32
     }
@@ -1040,6 +1047,23 @@ mod tests {
         assert_eq!(reuse.append_mode, AppendMode::ReuseCurrentPartialBlock);
         assert!(reuse.new_block_ids.is_empty());
         assert_eq!(manager.used_block_count(), 1);
+    }
+
+    #[test]
+    fn block_count_for_reports_request_block_ownership() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+
+        assert_eq!(manager.block_count_for(RequestId(1)), 0);
+        assert_eq!(manager.block_count_for(RequestId(99)), 0);
+
+        manager.allocate(RequestId(1), 8).unwrap();
+        assert_eq!(manager.block_count_for(RequestId(1)), 2);
+
+        manager.free(RequestId(1)).unwrap();
+        assert_eq!(manager.block_count_for(RequestId(1)), 0);
     }
 
     #[test]

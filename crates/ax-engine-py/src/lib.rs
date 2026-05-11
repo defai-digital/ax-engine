@@ -1008,6 +1008,10 @@ fn step_report_dict<'py>(py: Python<'py>, report: &EngineStepReport) -> Py<PyDic
         .expect("kv_usage_blocks should serialize");
     dict.set_item("evictions", report.evictions)
         .expect("evictions should serialize");
+    dict.set_item("preempted_requests", report.preempted_requests)
+        .expect("preempted_requests should serialize");
+    dict.set_item("preempted_tokens", report.preempted_tokens)
+        .expect("preempted_tokens should serialize");
     dict.set_item("cpu_time_us", report.cpu_time_us)
         .expect("cpu_time_us should serialize");
     dict.set_item("runner_time_us", report.runner_time_us)

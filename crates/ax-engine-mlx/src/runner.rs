@@ -3891,6 +3891,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            weight_sanitize: ax_engine_core::WeightSanitize::None,
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

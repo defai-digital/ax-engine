@@ -11849,6 +11849,8 @@ struct RuntimeObservation {
     kv_peak_blocks: u32,
     memory_peak_mb: f64,
     evictions: u64,
+    preempted_requests: u64,
+    preempted_tokens: u64,
     cleanup_count: usize,
     llama_cpp_processing_request_events: u64,
     llama_cpp_deferred_request_events: u64,
@@ -11911,6 +11913,12 @@ impl RuntimeObservation {
         self.evictions = self
             .evictions
             .saturating_add(u64::from(outcome.metrics.evictions));
+        self.preempted_requests = self
+            .preempted_requests
+            .saturating_add(u64::from(outcome.metrics.preempted_requests));
+        self.preempted_tokens = self
+            .preempted_tokens
+            .saturating_add(u64::from(outcome.metrics.preempted_tokens));
         self.kv_peak_blocks = self
             .kv_peak_blocks
             .max(engine.kv_manager().used_block_count());
@@ -11992,6 +12000,12 @@ impl RuntimeObservation {
         self.total_cpu_time_us += step.cpu_time_us;
         self.total_runner_time_us += step.runner_time_us;
         self.evictions = self.evictions.saturating_add(u64::from(step.evictions));
+        self.preempted_requests = self
+            .preempted_requests
+            .saturating_add(u64::from(step.preempted_requests));
+        self.preempted_tokens = self
+            .preempted_tokens
+            .saturating_add(u64::from(step.preempted_tokens));
         self.kv_peak_blocks = self.kv_peak_blocks.max(step.kv_usage_blocks);
 
         if self.ttft_ms.is_none() && step.ttft_events > 0 {
@@ -12112,6 +12126,8 @@ impl RuntimeObservation {
             "prefill_tokens": self.prefill_tokens,
             "decode_tokens": self.decode_tokens,
             "prefix_hits": self.prefix_hits,
+            "preempted_requests": self.preempted_requests,
+            "preempted_tokens": self.preempted_tokens,
             "memory_blocked_steps": self.memory_blocked_steps,
             "memory_blocked_request_events": self.memory_blocked_request_events,
             "cleanup_count": self.cleanup_count,
@@ -12169,6 +12185,8 @@ impl RuntimeObservation {
             "prefill_tokens": self.prefill_tokens,
             "decode_tokens": self.decode_tokens,
             "prefix_hits": self.prefix_hits,
+            "preempted_requests": self.preempted_requests,
+            "preempted_tokens": self.preempted_tokens,
             "memory_blocked_steps": self.memory_blocked_steps,
             "memory_blocked_request_events": self.memory_blocked_request_events,
             "cleanup_count": self.cleanup_count,
@@ -12406,6 +12424,8 @@ impl Default for RuntimeObservation {
             kv_peak_blocks: 0,
             memory_peak_mb: 0.0,
             evictions: 0,
+            preempted_requests: 0,
+            preempted_tokens: 0,
             cleanup_count: 0,
             llama_cpp_processing_request_events: 0,
             llama_cpp_deferred_request_events: 0,
@@ -12783,6 +12803,8 @@ struct StepTraceEntry {
     runner_time_us: u64,
     kv_usage_blocks: u32,
     evictions: u32,
+    preempted_requests: u32,
+    preempted_tokens: u32,
     runner_executed: bool,
     route_metadata: RouteMetadata,
     metal_dispatch: Option<MetalDispatchStepTrace>,
@@ -12822,6 +12844,8 @@ impl StepTraceEntry {
             runner_time_us: outcome.metrics.runner_time_us,
             kv_usage_blocks: engine.kv_manager().used_block_count(),
             evictions: outcome.metrics.evictions,
+            preempted_requests: outcome.metrics.preempted_requests,
+            preempted_tokens: outcome.metrics.preempted_tokens,
             runner_executed: outcome.runner_output.is_some(),
             route_metadata,
             metal_dispatch: outcome
@@ -12848,6 +12872,8 @@ impl StepTraceEntry {
             "runner_time_us": self.runner_time_us,
             "kv_usage_blocks": self.kv_usage_blocks,
             "evictions": self.evictions,
+            "preempted_requests": self.preempted_requests,
+            "preempted_tokens": self.preempted_tokens,
             "runner_executed": self.runner_executed,
             "route": serialize_route_metadata(&self.route_metadata),
             "items": self.items.iter().map(StepTraceItem::json).collect::<Vec<_>>()
@@ -12887,6 +12913,8 @@ impl StepTraceEntry {
             runner_time_us: step.runner_time_us,
             kv_usage_blocks: step.kv_usage_blocks,
             evictions: step.evictions,
+            preempted_requests: step.preempted_requests,
+            preempted_tokens: step.preempted_tokens,
             runner_executed: false,
             route_metadata,
             metal_dispatch: None,
@@ -13193,6 +13221,8 @@ mod tests {
             runner_time_us: 45,
             kv_usage_blocks: 1,
             evictions: 2,
+            preempted_requests: 0,
+            preempted_tokens: 0,
             runner_executed: true,
             route_metadata: RouteMetadata::empty(),
             metal_dispatch: Some(MetalDispatchStepTrace::from_trace(
@@ -13915,6 +13945,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
             glm_router: Default::default(),
+            weight_sanitize: ax_engine_core::WeightSanitize::None,
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",
@@ -14098,6 +14129,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
             glm_router: Default::default(),
+            weight_sanitize: ax_engine_core::WeightSanitize::None,
             tensors: vec![
                 native_model_tensor_with_file(
                     "model.embed_tokens.weight",
@@ -19021,6 +19053,8 @@ mod tests {
             runner_time_us: 0,
             kv_usage_blocks: 0,
             evictions: 0,
+            preempted_requests: 0,
+            preempted_tokens: 0,
             runner_executed: true,
             route_metadata: RouteMetadata::empty(),
             metal_dispatch: None,

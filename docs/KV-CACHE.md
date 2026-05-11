@@ -58,6 +58,17 @@ The promotion step runs inside `free()` before the block table is removed.
 Order is critical: `lookup_prefix` walks the live block table to check for
 concurrent sharing; running promotion after removal would miss active refs.
 
+The same `free()` primitive is used by the scheduler's preempt-and-recompute
+path (see `docs/SCHEDULER.md` § Preempt-and-recompute). Preemption frees a
+newer in-flight prefill request to make room for an older stalled allocation;
+because `free()` promotes the freed prompt prefix into the retained cache,
+the preempted request hits its own cached prefix when it is re-admitted, so
+recompute is largely refcount bookkeeping rather than re-running the prefill.
+
+`KvManager::block_count_for(request_id)` is a small read-only accessor used
+by the scheduler's preemption selector to identify candidates that actually
+hold KV blocks. It returns 0 for unknown requests rather than erroring.
+
 ### Prefix hash chain
 
 Block hashes use an FNV-1a-like chain:

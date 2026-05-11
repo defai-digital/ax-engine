@@ -383,6 +383,32 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// Identifies the on-disk weight convention. `mlx-community` checkpoints come
+/// pre-sanitized; raw HuggingFace checkpoints need two transforms (norm delta
+/// +1.0, conv1d axis swap) that the weight loader applies at load time when
+/// this field is set to `HfToMlx`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeightSanitize {
+    /// Weights are already in MLX layout (the mlx-community convention).
+    /// No transforms are applied at load time. This is the default to keep
+    /// existing manifests backward-compatible.
+    #[default]
+    None,
+    /// Weights are in the raw HuggingFace convention. The loader will:
+    /// - add 1.0 to every RMSNorm-variant norm weight (these are stored as
+    ///   zero-centered deltas in HF format)
+    /// - swap axes (2, 1) on conv1d projection weights (HF stores them in
+    ///   a different axis order than MLX expects)
+    HfToMlx,
+}
+
+impl WeightSanitize {
+    pub fn is_none(&self) -> bool {
+        matches!(self, WeightSanitize::None)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct NativeModelManifest {
     pub schema_version: String,
@@ -468,6 +494,12 @@ pub struct NativeModelManifest {
     pub moe: NativeMoeConfig,
     #[serde(default, skip_serializing_if = "NativeGlmRouterConfig::is_disabled")]
     pub glm_router: NativeGlmRouterConfig,
+    /// Weight on-disk convention. Defaults to `None` (mlx-community
+    /// pre-sanitized layout) so existing manifests deserialize unchanged.
+    /// Set to `hf_to_mlx` in raw HuggingFace checkpoints' manifests to
+    /// have the loader apply the norm-delta and conv1d-axis transforms.
+    #[serde(default, skip_serializing_if = "WeightSanitize::is_none")]
+    pub weight_sanitize: WeightSanitize,
     pub tensors: Vec<NativeTensorSpec>,
 }
 
@@ -3172,6 +3204,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            weight_sanitize: WeightSanitize::default(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

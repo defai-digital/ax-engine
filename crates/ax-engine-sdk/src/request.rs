@@ -93,6 +93,10 @@ pub struct EngineStepReport {
     pub prefix_hits: u32,
     pub kv_usage_blocks: u32,
     pub evictions: u32,
+    #[serde(default)]
+    pub preempted_requests: u32,
+    #[serde(default)]
+    pub preempted_tokens: u32,
     pub cpu_time_us: u64,
     pub runner_time_us: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,6 +210,8 @@ impl EngineStepReport {
             prefix_hits: metrics.prefix_hits,
             kv_usage_blocks: metrics.kv_usage_blocks,
             evictions: metrics.evictions,
+            preempted_requests: metrics.preempted_requests,
+            preempted_tokens: metrics.preempted_tokens,
             cpu_time_us: metrics.cpu_time_us,
             runner_time_us: metrics.runner_time_us,
             route,
@@ -229,6 +235,8 @@ impl EngineStepReport {
         self.prefix_hits += other.prefix_hits;
         self.kv_usage_blocks = self.kv_usage_blocks.max(other.kv_usage_blocks);
         self.evictions += other.evictions;
+        self.preempted_requests += other.preempted_requests;
+        self.preempted_tokens += other.preempted_tokens;
         self.cpu_time_us += other.cpu_time_us;
         self.runner_time_us += other.runner_time_us;
     }

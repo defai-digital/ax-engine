@@ -148,6 +148,40 @@ impl RequestManager {
         Ok(())
     }
 
+    /// Reset a prefill-stage request so its prompt is replayed from scratch on the
+    /// next admission. The prompt token history and arrival sequence are preserved.
+    ///
+    /// Returns the number of prompt tokens that were forfeited (the
+    /// `processed_prompt_tokens` value prior to reset), useful for surfacing the
+    /// preempt cost in `StepMetrics`.
+    pub fn preempt_for_recompute(
+        &mut self,
+        request_id: RequestId,
+    ) -> Result<u32, RequestManagerError> {
+        let record = self
+            .records
+            .get_mut(&request_id)
+            .ok_or(RequestManagerError::UnknownRequest(request_id))?;
+        if !record.generated_tokens.is_empty() {
+            return Err(RequestManagerError::PreemptDecodeStage(request_id));
+        }
+        match record.state {
+            RequestState::Runnable => {}
+            RequestState::BlockedOnMemory => {
+                record.unblock_memory().map_err(|source| {
+                    RequestManagerError::InvalidStateTransition { request_id, source }
+                })?;
+            }
+            state => {
+                return Err(RequestManagerError::PreemptInvalidState { request_id, state });
+            }
+        }
+        let forfeited = record.processed_prompt_tokens;
+        record.processed_prompt_tokens = 0;
+        record.block_table = BlockTable::empty(self.cache_group_id);
+        Ok(forfeited)
+    }
+
     pub fn validate_prefix_reuse(
         &self,
         request_id: RequestId,
@@ -505,6 +539,15 @@ pub enum RequestManagerError {
         request_id: RequestId,
         #[source]
         source: StateTransitionError,
+    },
+    #[error(
+        "request {0:?} cannot be preempted for recompute while decode tokens have been generated"
+    )]
+    PreemptDecodeStage(RequestId),
+    #[error("request {request_id:?} cannot be preempted from state {state:?}")]
+    PreemptInvalidState {
+        request_id: RequestId,
+        state: RequestState,
     },
 }
 
@@ -884,6 +927,111 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn preempt_for_recompute_resets_runnable_prefill_progress() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+        manager.apply_prefix_reuse(RequestId(1), 2).unwrap();
+
+        let forfeited = manager.preempt_for_recompute(RequestId(1)).unwrap();
+
+        assert_eq!(forfeited, 2);
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.state, RequestState::Runnable);
+        assert_eq!(snapshot.processed_prompt_tokens, 0);
+        assert_eq!(snapshot.prompt_tokens, vec![10, 11, 12]);
+        assert_eq!(snapshot.arrival_sequence, SequenceNo(1));
+    }
+
+    #[test]
+    fn preempt_for_recompute_unblocks_blocked_on_memory_request() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+        manager.apply_prefix_reuse(RequestId(1), 2).unwrap();
+        manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(1),
+                selected_requests: vec![],
+                deferred_requests: vec![],
+                memory_blocked_requests: vec![RequestId(1)],
+                execution_batch: None,
+            })
+            .unwrap();
+
+        let forfeited = manager.preempt_for_recompute(RequestId(1)).unwrap();
+
+        assert_eq!(forfeited, 2);
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.state, RequestState::Runnable);
+        assert_eq!(snapshot.processed_prompt_tokens, 0);
+    }
+
+    #[test]
+    fn preempt_for_recompute_rejects_decode_stage_request() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+        manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(1),
+                selected_requests: vec![RequestId(1)],
+                deferred_requests: vec![],
+                memory_blocked_requests: vec![],
+                execution_batch: None,
+            })
+            .unwrap();
+        manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(1),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 3,
+                        output_token: None,
+                        stop_reason: None,
+                        error: None,
+                    }],
+                    logits_handles: vec![RequestId(1)],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 3,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: crate::scheduler::RouteMetadata::empty(),
+                    execution_status: ExecutionStatus::Success,
+                },
+                &[crate::sampling::SampledToken {
+                    request_id: RequestId(1),
+                    token_id: 99,
+                    stop_reason: None,
+                    logprob: None,
+                }],
+                &[RequestId(1)],
+            )
+            .unwrap();
+
+        let error = manager.preempt_for_recompute(RequestId(1)).unwrap_err();
+
+        assert_eq!(error, RequestManagerError::PreemptDecodeStage(RequestId(1)));
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.generated_tokens, vec![99]);
+        assert_eq!(snapshot.processed_prompt_tokens, 3);
+    }
+
+    #[test]
+    fn preempt_for_recompute_rejects_unknown_request() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        let error = manager.preempt_for_recompute(RequestId(7)).unwrap_err();
+
+        assert_eq!(error, RequestManagerError::UnknownRequest(RequestId(7)));
     }
 
     #[test]

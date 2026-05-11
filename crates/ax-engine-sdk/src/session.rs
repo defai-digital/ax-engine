@@ -1648,6 +1648,8 @@ impl MlxLmGenerateStreamState {
                 prefix_hits: 0,
                 kv_usage_blocks: 0,
                 evictions: 0,
+                preempted_requests: 0,
+                preempted_tokens: 0,
                 cpu_time_us: 0,
                 runner_time_us: 0,
                 route: None,
@@ -1817,6 +1819,8 @@ fn apply_llama_cpp_stream_chunk(
             prefix_hits,
             kv_usage_blocks: 0,
             evictions: 0,
+            preempted_requests: 0,
+            preempted_tokens: 0,
             cpu_time_us: 0,
             runner_time_us: 0,
             route: Some(report.route.clone()),
@@ -2889,6 +2893,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
             glm_router: Default::default(),
+            weight_sanitize: ax_engine_core::WeightSanitize::None,
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",

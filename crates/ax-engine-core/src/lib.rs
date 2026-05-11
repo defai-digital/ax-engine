@@ -41,7 +41,7 @@ pub use model::{
     NativeLinearAttentionConfig, NativeModelArtifacts, NativeModelArtifactsSummary,
     NativeModelError, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
     NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization, NativeTensorRole,
-    NativeTensorSpec,
+    NativeTensorSpec, WeightSanitize,
 };
 pub use request::{
     RequestRecord, RequestSnapshot, RequestState, RequestSubmission, StateTransitionError,

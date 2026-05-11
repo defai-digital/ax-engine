@@ -42,8 +42,27 @@ pub struct StepMetrics {
     pub prefix_hits: u32,
     pub kv_usage_blocks: u32,
     pub evictions: u32,
+    pub preempted_requests: u32,
+    pub preempted_tokens: u32,
     pub cpu_time_us: u64,
     pub runner_time_us: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PreemptionMetrics {
+    preempted_requests: u32,
+    preempted_tokens: u32,
+}
+
+impl PreemptionMetrics {
+    fn merge(self, other: Self) -> Self {
+        Self {
+            preempted_requests: self
+                .preempted_requests
+                .saturating_add(other.preempted_requests),
+            preempted_tokens: self.preempted_tokens.saturating_add(other.preempted_tokens),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -223,7 +242,7 @@ impl EngineCore {
             has_execution_batch = schedule_plan.execution_batch.is_some(),
             "scheduler produced initial plan"
         );
-        let (mut schedule_plan, prefix_hits) =
+        let (mut schedule_plan, prefix_hits, preemption_metrics) =
             self.resolve_kv_schedule_plan(schedule_plan, global_token_budget)?;
         trace!(
             scheduled_requests = schedule_plan.selected_requests.len(),
@@ -231,6 +250,8 @@ impl EngineCore {
             memory_blocked_requests = schedule_plan.memory_blocked_requests.len(),
             has_execution_batch = schedule_plan.execution_batch.is_some(),
             prefix_hits,
+            preempted_requests = preemption_metrics.preempted_requests,
+            preempted_tokens = preemption_metrics.preempted_tokens,
             "resolved schedule plan against KV state"
         );
         self.request_manager.apply_schedule_plan(&schedule_plan)?;
@@ -254,6 +275,8 @@ impl EngineCore {
             prefix_hits,
             kv_usage_blocks: self.kv_manager.used_block_count(),
             evictions: self.kv_manager.take_recent_evictions(),
+            preempted_requests: preemption_metrics.preempted_requests,
+            preempted_tokens: preemption_metrics.preempted_tokens,
             cpu_time_us,
             runner_time_us,
         };
@@ -264,6 +287,8 @@ impl EngineCore {
             prefix_hits = metrics.prefix_hits,
             kv_usage_blocks = metrics.kv_usage_blocks,
             evictions = metrics.evictions,
+            preempted_requests = metrics.preempted_requests,
+            preempted_tokens = metrics.preempted_tokens,
             cpu_time_us = metrics.cpu_time_us,
             runner_time_us = metrics.runner_time_us,
             cleanup_results = cleanup_results.len(),
@@ -294,28 +319,72 @@ impl EngineCore {
         &mut self,
         schedule_plan: SchedulePlan,
         global_token_budget: u32,
-    ) -> Result<(SchedulePlan, u32), EngineCoreError> {
+    ) -> Result<(SchedulePlan, u32, PreemptionMetrics), EngineCoreError> {
         let (prefix_reuse, schedule_plan) =
             self.apply_prefix_reuse(schedule_plan, global_token_budget)?;
         let prefix_hits = prefix_reuse.len() as u32;
         let Some(mut execution_batch) = schedule_plan.execution_batch else {
-            return Ok((schedule_plan, prefix_hits));
+            return Ok((schedule_plan, prefix_hits, PreemptionMetrics::default()));
         };
 
         let mut selected_requests = Vec::new();
+        let mut deferred_requests = schedule_plan.deferred_requests;
         let mut memory_blocked_requests = schedule_plan.memory_blocked_requests;
-        let mut allocated_items = Vec::new();
+        let mut allocated_items: Vec<ExecutionItem> = Vec::new();
+        let mut preempted: BTreeSet<RequestId> = BTreeSet::new();
+        let mut preemption_metrics = PreemptionMetrics::default();
         let batch_items = std::mem::take(&mut execution_batch.items);
+        let preempt_attempt_ceiling = self.request_manager.snapshots().len() as u32 + 1;
 
         for item in batch_items {
             let rid = item.request_id;
-            let allocation_plan = self.kv_manager.allocate(rid, item.scheduled_token_count)?;
+            if preempted.contains(&rid) {
+                if !memory_blocked_requests.contains(&rid) {
+                    memory_blocked_requests.push(rid);
+                }
+                continue;
+            }
+            let mut allocation_plan = self.kv_manager.allocate(rid, item.scheduled_token_count)?;
             trace!(
                 request_id = rid.0,
                 scheduled_token_count = item.scheduled_token_count,
                 allocation_status = ?allocation_plan.allocation_status,
                 "resolved KV allocation for scheduled request"
             );
+
+            let mut attempts = 0u32;
+            while attempts < preempt_attempt_ceiling
+                && matches!(
+                    allocation_plan.allocation_status,
+                    AllocationStatus::InsufficientCapacity | AllocationStatus::Deferred,
+                )
+            {
+                attempts += 1;
+                let Some(candidate) = self.find_preemption_candidate(rid, &preempted) else {
+                    break;
+                };
+                self.preempt_request(candidate, &mut preemption_metrics)?;
+                preempted.insert(candidate);
+                if let Some(pos) = selected_requests.iter().position(|r| *r == candidate) {
+                    selected_requests.remove(pos);
+                }
+                allocated_items.retain(|allocated| allocated.request_id != candidate);
+                if let Some(pos) = deferred_requests.iter().position(|r| *r == candidate) {
+                    deferred_requests.remove(pos);
+                }
+                if !memory_blocked_requests.contains(&candidate) {
+                    memory_blocked_requests.push(candidate);
+                }
+                allocation_plan = self.kv_manager.allocate(rid, item.scheduled_token_count)?;
+                debug!(
+                    step_id = schedule_plan.step_id.0,
+                    preempted_request_id = candidate.0,
+                    blocked_request_id = rid.0,
+                    retry_status = ?allocation_plan.allocation_status,
+                    "preempted active prefill to free KV capacity"
+                );
+            }
+
             match allocation_plan.allocation_status {
                 AllocationStatus::Allocated => {
                     self.sync_request_block_table(rid)?;
@@ -345,7 +414,7 @@ impl EngineCore {
         let resolved_plan = SchedulePlan {
             step_id: schedule_plan.step_id,
             selected_requests,
-            deferred_requests: schedule_plan.deferred_requests,
+            deferred_requests,
             memory_blocked_requests,
             execution_batch,
         };
@@ -376,7 +445,7 @@ impl EngineCore {
                 memory_pressure: self.kv_manager.memory_pressure(),
                 global_token_budget,
             });
-            let (fallback_plan, fallback_prefix_hits) =
+            let (fallback_plan, fallback_prefix_hits, fallback_preemption_metrics) =
                 self.resolve_kv_schedule_plan(fallback_schedule_plan, global_token_budget)?;
 
             let selected_requests = fallback_plan.selected_requests;
@@ -406,10 +475,90 @@ impl EngineCore {
                     execution_batch: fallback_plan.execution_batch,
                 },
                 prefix_hits + fallback_prefix_hits,
+                preemption_metrics.merge(fallback_preemption_metrics),
             ));
         }
 
-        Ok((resolved_plan, prefix_hits))
+        Ok((resolved_plan, prefix_hits, preemption_metrics))
+    }
+
+    /// Find the lowest-priority active prefill request whose KV blocks can be
+    /// reclaimed to make room for a stalled allocation.
+    ///
+    /// Candidates must:
+    /// - hold KV blocks
+    /// - be in prefill stage (no decoded tokens)
+    /// - have a *strictly higher* arrival sequence than the stalled request
+    ///   (preemption only flows from newer requests to older ones; older
+    ///   requests are never sacrificed for newer ones)
+    /// - not be the stalled request itself or already preempted this step
+    ///
+    /// Ranking among eligible candidates is by arrival sequence (newest first),
+    /// with request id as a deterministic tiebreaker.
+    fn find_preemption_candidate(
+        &self,
+        requester: RequestId,
+        already_preempted: &BTreeSet<RequestId>,
+    ) -> Option<RequestId> {
+        let requester_arrival = self
+            .request_manager
+            .record(requester)
+            .map(|record| record.arrival_sequence)?;
+        let mut best: Option<(crate::ids::SequenceNo, RequestId)> = None;
+        for snapshot in self.request_manager.snapshots() {
+            let rid = snapshot.request_id;
+            if rid == requester || already_preempted.contains(&rid) {
+                continue;
+            }
+            if snapshot.arrival_sequence <= requester_arrival {
+                continue;
+            }
+            if !snapshot.generated_tokens.is_empty() {
+                continue;
+            }
+            if snapshot.processed_prompt_tokens == 0 {
+                continue;
+            }
+            if self.kv_manager.block_count_for(rid) == 0 {
+                continue;
+            }
+            match best {
+                None => best = Some((snapshot.arrival_sequence, rid)),
+                Some((current_seq, current_rid))
+                    if snapshot.arrival_sequence > current_seq
+                        || (snapshot.arrival_sequence == current_seq && rid > current_rid) =>
+                {
+                    best = Some((snapshot.arrival_sequence, rid));
+                }
+                _ => {}
+            }
+        }
+        best.map(|(_, rid)| rid)
+    }
+
+    /// Release a preempted request's KV blocks (promoting any full prompt
+    /// prefix blocks into the retained cache for cheap recompute) and reset
+    /// its `RequestManager` progress so it can be replayed on a later step.
+    fn preempt_request(
+        &mut self,
+        request_id: RequestId,
+        metrics: &mut PreemptionMetrics,
+    ) -> Result<(), EngineCoreError> {
+        let prompt_tokens = self
+            .request_manager
+            .record(request_id)
+            .map(|record| record.prompt_tokens.clone())
+            .ok_or(EngineCoreError::RequestManager(
+                RequestManagerError::UnknownRequest(request_id),
+            ))?;
+        self.kv_manager.free(request_id)?;
+        self.kv_manager
+            .register_request(request_id, prompt_tokens)?;
+        let forfeited = self.request_manager.preempt_for_recompute(request_id)?;
+        self.sync_request_block_table(request_id)?;
+        metrics.preempted_requests = metrics.preempted_requests.saturating_add(1);
+        metrics.preempted_tokens = metrics.preempted_tokens.saturating_add(forfeited);
+        Ok(())
     }
 
     fn apply_prefix_reuse(
@@ -1931,6 +2080,123 @@ mod tests {
         let error = engine.step(1, true).unwrap_err();
 
         assert_eq!(error, EngineCoreError::StepIdOverflow);
+    }
+
+    #[test]
+    fn step_preempts_newer_in_flight_prefill_when_older_decode_needs_kv() {
+        // Setup: 4 blocks of 4 tokens each. Three requests of progressively
+        // newer arrival_sequence. After step 1 all three have invested some
+        // prefill into KV (req 3's prompt is long enough to require chunked
+        // prefill, leaving it mid-prefill at end of step 1). In step 2 the
+        // two older requests decode (each needing a new block), KV exhausts,
+        // and req 3's in-flight prefill is preempted so the older decode can
+        // proceed. This is the REQ-P6 scenario from PRD-GROWTH §5.3.
+        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 4));
+
+        engine
+            .submit(make_submission_with_prompt(1, 1, vec![1, 2, 3, 4], 4))
+            .unwrap();
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![5, 6, 7, 8], 4))
+            .unwrap();
+        engine
+            .submit(make_submission_with_prompt(
+                3,
+                3,
+                vec![9, 10, 11, 12, 13, 14, 15, 16],
+                1,
+            ))
+            .unwrap();
+
+        // Step 1: prefill all three. Req 3 is chunked, so it ends mid-prompt.
+        let step1 = engine.step(12, true).unwrap();
+        assert_eq!(step1.metrics.preempted_requests, 0);
+        let req3_after_step1 = engine.request_manager().snapshot(RequestId(3)).unwrap();
+        assert!(req3_after_step1.processed_prompt_tokens > 0);
+        assert!(req3_after_step1.processed_prompt_tokens < req3_after_step1.prompt_len);
+        assert!(req3_after_step1.generated_tokens.is_empty());
+
+        // Step 2: req 1 and req 2 each need a new block to decode. KV is
+        // exhausted after req 1's allocation, so req 2 stalls and triggers
+        // preemption of req 3 (newest, prefill-stage, holds KV).
+        let step2 = engine.step(12, true).unwrap();
+        assert_eq!(
+            step2.metrics.preempted_requests, 1,
+            "expected one preemption when older decode starves for KV",
+        );
+        assert!(
+            step2.metrics.preempted_tokens >= 4,
+            "expected at least one block worth of forfeited prompt tokens, got {}",
+            step2.metrics.preempted_tokens,
+        );
+        assert_eq!(
+            step2.schedule_plan.selected_requests,
+            vec![RequestId(1), RequestId(2)],
+        );
+        assert!(
+            step2
+                .schedule_plan
+                .memory_blocked_requests
+                .contains(&RequestId(3)),
+            "preempted req 3 should land in memory_blocked_requests, got {:?}",
+            step2.schedule_plan.memory_blocked_requests,
+        );
+
+        // Req 3 retained its prompt and arrival_sequence; only its in-flight
+        // progress was reset. State transitioned to BlockedOnMemory via
+        // apply_schedule_plan so the next step will retry it.
+        let req3_after_step2 = engine.request_manager().snapshot(RequestId(3)).unwrap();
+        assert_eq!(req3_after_step2.state, RequestState::BlockedOnMemory);
+        assert_eq!(req3_after_step2.processed_prompt_tokens, 0);
+        assert_eq!(req3_after_step2.prompt_tokens.len(), 8);
+        assert_eq!(req3_after_step2.arrival_sequence, SequenceNo(3));
+        assert!(req3_after_step2.generated_tokens.is_empty());
+
+        // Step 3: req 3 should return to Runnable via retry_memory_blocked.
+        // (KV is still full from req 1/2 decode progress, so req 3 cannot
+        // re-acquire blocks yet, but the state transition is observable.)
+        let step3 = engine.step(12, true).unwrap();
+        let req3_after_step3 = engine.request_manager().snapshot(RequestId(3)).unwrap();
+        assert!(
+            matches!(
+                req3_after_step3.state,
+                RequestState::Runnable | RequestState::BlockedOnMemory,
+            ),
+            "req 3 should be eligible for re-admission, got {:?}",
+            req3_after_step3.state,
+        );
+        // Older requests continue to make progress while req 3 waits.
+        assert!(
+            step3
+                .schedule_plan
+                .selected_requests
+                .contains(&RequestId(1))
+        );
+        assert!(
+            step3
+                .schedule_plan
+                .selected_requests
+                .contains(&RequestId(2))
+        );
+    }
+
+    #[test]
+    fn preemption_does_not_fire_when_only_oldest_request_stalls() {
+        // Two requests; older one's prefill stalls because KV is full.
+        // No newer prefill is available to preempt, so the existing
+        // "mark memory_blocked" fallback must remain in effect.
+        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 1));
+
+        engine.submit(make_submission(1, 1, 2)).unwrap();
+        engine.submit(make_submission(2, 2, 2)).unwrap();
+
+        let step1 = engine.step(8, true).unwrap();
+        assert_eq!(step1.metrics.preempted_requests, 0);
+        assert_eq!(step1.schedule_plan.selected_requests, vec![RequestId(1)]);
+        assert_eq!(
+            step1.schedule_plan.memory_blocked_requests,
+            vec![RequestId(2)],
+        );
     }
 
     #[test]
