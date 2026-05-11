@@ -2330,11 +2330,14 @@ fn linear_attention_forward(
         profile_started,
         &[&q, &k],
     );
-    // Cast a_log and dt_bias to float32: mlx_lm preserves A_log as float32 and
-    // computes g in float32 precision.  dt_bias may be BF16 in quantized models.
+    // `a_log` and `dt_bias` are pre-cast to f32 at weight-load time (see
+    // `load_linear_attention_weights` in `weights.rs`). mlx_lm preserves A_log
+    // as float32 and computes g in float32 precision; doing the cast per
+    // forward-pass-per-layer was ~24 wasted astype dispatches per decode step
+    // on a 12-layer hybrid model.
     let profile_started = Instant::now();
-    let a_log_f32 = astype(&linear_w.a_log, MlxDtype::Float32, None);
-    let dt_bias_f32 = astype(&linear_w.dt_bias, MlxDtype::Float32, None);
+    let a_log_f32 = linear_w.a_log.clone();
+    let dt_bias_f32 = linear_w.dt_bias.clone();
     // State is always float32: mlx_lm initialises state as mx.zeros(..., dtype=mx.float32).
     let state = recurrent_state.cloned().unwrap_or_else(|| {
         zeros(
