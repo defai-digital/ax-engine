@@ -1108,6 +1108,26 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             bench.is_ax_prefill_step({"scheduled_tokens": 1}, seen_prefill=True)
         )
 
+    def test_ax_step_timing_prefers_route_metadata_over_token_heuristic(self) -> None:
+        self.assertTrue(
+            bench.is_ax_prefill_step(
+                {
+                    "scheduled_tokens": 1,
+                    "route": {"execution_plan": "phase1.qwen3.dense_prefill"},
+                },
+                seen_prefill=True,
+            )
+        )
+        self.assertFalse(
+            bench.is_ax_prefill_step(
+                {
+                    "scheduled_tokens": 2048,
+                    "route": {"attention_route": "qwen3_paged_decode"},
+                },
+                seen_prefill=False,
+            )
+        )
+
     def test_axengine_command_can_enable_experimental_kv_compression(self) -> None:
         with patch.object(bench.subprocess, "Popen") as popen:
             bench.start_axengine(

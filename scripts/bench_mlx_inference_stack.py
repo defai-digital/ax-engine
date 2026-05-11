@@ -1176,6 +1176,16 @@ def kv_compression_fused_decode_fallback_reason_label(
 
 
 def is_ax_prefill_step(step: dict[str, Any], *, seen_prefill: bool) -> bool:
+    route = step.get("route") or {}
+    route_labels = [
+        str(route.get("execution_plan") or "").lower(),
+        str(route.get("attention_route") or "").lower(),
+    ]
+    if any("prefill" in label for label in route_labels):
+        return True
+    if any("decode" in label for label in route_labels):
+        return False
+
     scheduled_tokens = int(step.get("scheduled_tokens") or 0)
     return not seen_prefill or scheduled_tokens > 1
 
