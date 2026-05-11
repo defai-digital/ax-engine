@@ -251,6 +251,81 @@ MLX runner route metadata keeps that distinction visible:
 | `ax_mlx_prefix_cache_entries` | Current runner prefix snapshot entries |
 | `ax_mlx_prefix_cache_bytes_kib` | Current runner prefix snapshot footprint |
 
+### Snapshot path support matrix
+
+`restore_reused_prefix_state` and `store_prompt_prefix_snapshots` gate the
+physical snapshot path by architecture and request mode. Coverage as of
+ADR 0018 Strategies 1–3 + the slice 8 MLA fix:
+
+| Architecture        | Models                  | warm_repeat (Decode)        | warm_extend (Prefill)                      | store constraint           |
+|---------------------|-------------------------|-----------------------------|--------------------------------------------|----------------------------|
+| Standard FA         | (none in current tier)  | snapshot path               | snapshot path                              | every block boundary       |
+| Linear attention    | Qwen3.5, Qwen3.6        | snapshot path               | snapshot path                              | full prefix, block-aligned |
+| Sliding window      | Gemma 4 E2B             | snapshot path               | snapshot path                              | full prefix, block-aligned |
+| MLA                 | GLM-4.7-Flash           | snapshot path               | **blocked → full recompute fallback**      | full prefix, block-aligned |
+
+Two store-side constraints apply to all non-FA architectures:
+
+- **Full prefix only.** Intermediate-block snapshots are unsound because
+  `MlxKVCache::trim_to` cannot roll back per-layer recurrent state
+  (linear), nor a rotated sliding window (sliding-window). Stores fall
+  back to `record_blocked_trim_failure` when these are attempted.
+- **Block-aligned prompts only.** When `available_tokens %
+  block_size_tokens != 0`, the store is skipped (also as
+  `blocked_trim_failure`) because `trim_to(full_block_tokens)` would
+  otherwise leave `(seq_len, recurrent_state)` inconsistent.
+
+The MLA + Prefill block is a different constraint: the snapshot CAN be
+stored and the lookup CAN match, but the runner refuses the restore
+because `chunked_prefill` extending from `seq_len > 0` produces fp drift
+across chunk boundaries on MLA's compressed-latent forward. The
+`full_prefill_recompute_tokens_for_warmup_fallback` path bit-exactly
+re-prefills the matched prefix as new work. warm_repeat (Decode-mode,
+zero suffix tokens) is unaffected on MLA.
+
+### Reading the telemetry — operator cheat sheet
+
+For a single request, the (hits, misses, warmup_tokens,
+blocked_*) tuple identifies which code path served the warm reuse:
+
+| Observed                                                                 | Path taken                                                | Action |
+|--------------------------------------------------------------------------|-----------------------------------------------------------|--------|
+| `hits ≥ 1, misses = 0, warmup_tokens = 0, blocked = 0`                   | Snapshot restored (best case)                             | none — working as designed |
+| `hits = 0, misses ≥ 1, warmup_tokens > 0, blocked = 0`                   | Snapshot was eligible but absent (LRU evicted or first encounter); warmup path replayed | normal in cold starts; investigate if persistent on hot prompts (cache may be undersized) |
+| `hits = 0, blocked ≥ 1, blocked_unsupported_layout ≥ 1, warmup_tokens > 0` | Architecture-restricted: MLA + Prefill, or model not yet supported. cee4227e's full-recompute path took over | expected on MLA `warm_extend`; otherwise look for an architecture-specific snapshot strategy |
+| `hits = 0, blocked ≥ 1, blocked_policy_disabled ≥ 1`                     | Prefix cache disabled by size/count policy                | check policy config; either intentional or undersized cache |
+| `hits = 0, blocked ≥ 1, blocked_trim_failure ≥ 1, stores = 0`             | Linear / sliding / MLA + prompt not block-aligned; store skipped | normal — block-aligned prompts are the only safe path here |
+| `hits = 0, misses = 0, warmup_tokens = 0, blocked = 0`                   | KvManager did not signal a logical prefix hit — engine had no matched prefix to forward to the runner | check `prefix_reused_blocks` (engine-level) — likely first encounter, or prompt is shorter than `block_size_tokens` (16) |
+
+`prefix_cache_path` in route metadata mirrors the same outcome with a
+single string: `retained_prompt_prefix_cache` for snapshot hits,
+`metadata_lookup` for everything else. Most operators only need the
+string; the cheat sheet is for triaging unexpected `metadata_lookup`
+results when a hit was expected.
+
+### Correctness regression gate
+
+Any change that loosens `prefix_cache_supported()`, modifies
+`store_prompt_prefix_snapshots`, or alters `restore_reused_prefix_state`
+must keep this gate green:
+
+```
+AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR=<model> \
+  bash scripts/check-prefix-reuse-equivalence.sh
+```
+
+The wrapper builds a fresh `maturin develop` venv and runs
+`scripts/verify_prefix_reuse_equivalence.py` in BOTH `--mode warm_repeat`
+AND `--mode warm_extend` with `--pad-to-block-size 16`. Both must
+produce 5/5 token-exact matches between a cold baseline and the warm
+path. Exit 0 on full PASS, exit 3 on any divergence.
+
+The gate is wired into `.github/workflows/python-preview.yml` as
+`Run prefix-reuse equivalence regression gate`, gated on the same MLX
+artifacts availability step as the other model-dependent smoke checks.
+Rotating the mounted model across Qwen / Gemma / GLM rotates the
+covered architecture (linear / sliding-window / MLA) automatically.
+
 ---
 
 ## Model-Specific Cache Variants
