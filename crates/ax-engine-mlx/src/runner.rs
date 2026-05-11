@@ -71,8 +71,8 @@ use crate::model::{
 };
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
-    NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
-    classify_prompt_class, effective_draft_confidence_threshold, ngram_accel_decode_step,
+    NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable, classify_prompt_class,
+    effective_draft_confidence_threshold, ngram_accel_decode_step,
     single_decode_with_turboquant_context,
 };
 use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64};
@@ -2148,17 +2148,34 @@ impl MlxRunner {
         let sampled_token = match item.mode {
             ExecutionMode::Prefill => {
                 let prefill_started = Instant::now();
-                let repetition_history = state.repetition_history(token_ids, sampling);
+                let full_recompute_tokens = full_prefill_recompute_tokens_for_warmup_fallback(
+                    item,
+                    token_ids,
+                    &prefix_cache,
+                    &state,
+                );
+                let prefill_tokens = full_recompute_tokens.as_deref().unwrap_or(token_ids);
+                if full_recompute_tokens.is_some() {
+                    state.cache.reset();
+                    state.prompt_prefix_tokens.clear();
+                    state.cached_prefill_output_token = None;
+                }
+                let repetition_history = state.repetition_history(prefill_tokens, sampling);
                 let tok = chunked_prefill(
                     &self.cfg,
                     &self.weights,
-                    token_ids,
+                    prefill_tokens,
                     &mut state.cache,
                     self.prefill_chunk,
                     MlxSamplingRequest::new(sampling, &repetition_history),
                     &mut state.rng,
                 );
-                extend_prompt_prefix_tokens(&mut state, item, token_ids);
+                let prefill_token_count = prefill_tokens.len();
+                if let Some(tokens) = full_recompute_tokens {
+                    state.prompt_prefix_tokens = tokens;
+                } else {
+                    extend_prompt_prefix_tokens(&mut state, item, token_ids);
+                }
                 prefix_cache.merge_from(
                     self.store_prompt_prefix_snapshots(
                         model_id,
@@ -2182,7 +2199,7 @@ impl MlxRunner {
                 // Each non-final chunk in chunked_prefill calls async_eval; only the
                 // last chunk calls a blocking eval.  Compute counts from prompt length.
                 let drain_count =
-                    token_ids.len().saturating_sub(1) as u32 / self.prefill_chunk as u32;
+                    prefill_token_count.saturating_sub(1) as u32 / self.prefill_chunk as u32;
                 state
                     .decode_telemetry
                     .record_prefill_drain_async_evals(drain_count);
@@ -2348,16 +2365,19 @@ impl MlxRunner {
         }
         let capture_prefill_output =
             item.mode == ExecutionMode::Decode && ctx.is_some_and(|ctx| ctx.generated_len == 0);
+        let defer_prefill_warmup = item.mode == ExecutionMode::Prefill;
 
         if !self.prefix_cache_supported() {
             telemetry.record_blocked_unsupported_layout();
-            self.warm_reused_prefix_without_cache(
-                state,
-                item.request_id,
-                reused_tokens,
-                sampling,
-                capture_prefill_output,
-            );
+            if !defer_prefill_warmup {
+                self.warm_reused_prefix_without_cache(
+                    state,
+                    item.request_id,
+                    reused_tokens,
+                    sampling,
+                    capture_prefill_output,
+                );
+            }
             telemetry.warmup_tokens = telemetry
                 .warmup_tokens
                 .saturating_add(saturating_u32(reused_tokens.len()));
@@ -2366,13 +2386,15 @@ impl MlxRunner {
 
         if !self.prefix_cache.lock().unwrap().enabled() {
             telemetry.record_blocked_policy_disabled();
-            self.warm_reused_prefix_without_cache(
-                state,
-                item.request_id,
-                reused_tokens,
-                sampling,
-                capture_prefill_output,
-            );
+            if !defer_prefill_warmup {
+                self.warm_reused_prefix_without_cache(
+                    state,
+                    item.request_id,
+                    reused_tokens,
+                    sampling,
+                    capture_prefill_output,
+                );
+            }
             telemetry.warmup_tokens = telemetry
                 .warmup_tokens
                 .saturating_add(saturating_u32(reused_tokens.len()));
@@ -2399,13 +2421,15 @@ impl MlxRunner {
         }
 
         telemetry.misses = telemetry.misses.saturating_add(1);
-        self.warm_reused_prefix_without_cache(
-            state,
-            item.request_id,
-            reused_tokens,
-            sampling,
-            capture_prefill_output,
-        );
+        if !defer_prefill_warmup {
+            self.warm_reused_prefix_without_cache(
+                state,
+                item.request_id,
+                reused_tokens,
+                sampling,
+                capture_prefill_output,
+            );
+        }
         telemetry.warmup_tokens = telemetry
             .warmup_tokens
             .saturating_add(saturating_u32(reused_tokens.len()));
@@ -3025,6 +3049,30 @@ fn extend_prompt_prefix_tokens(
         state.prompt_prefix_tokens = item.reused_prefix_token_slice.clone();
     }
     state.prompt_prefix_tokens.extend_from_slice(token_ids);
+}
+
+fn full_prefill_recompute_tokens_for_warmup_fallback(
+    item: &ax_engine_core::ExecutionItem,
+    token_ids: &[u32],
+    prefix_cache: &MlxPrefixCacheTelemetry,
+    state: &RequestState,
+) -> Option<Vec<u32>> {
+    if item.mode != ExecutionMode::Prefill
+        || item.reused_prefix_token_slice.is_empty()
+        || prefix_cache.warmup_tokens == 0
+        || state.cache.seq_len != 0
+    {
+        return None;
+    }
+
+    let mut tokens = Vec::with_capacity(
+        item.reused_prefix_token_slice
+            .len()
+            .saturating_add(token_ids.len()),
+    );
+    tokens.extend_from_slice(&item.reused_prefix_token_slice);
+    tokens.extend_from_slice(token_ids);
+    Some(tokens)
 }
 
 struct MlxItemRun {
@@ -3742,6 +3790,86 @@ mod tests {
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_trim_failure".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_evictions".into(), 5)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_bytes_kib".into(), 4)));
+    }
+
+    #[test]
+    fn prefill_warmup_fallback_recomputes_full_prompt_once() {
+        let item = ax_engine_core::ExecutionItem {
+            request_id: RequestId(21),
+            mode: ExecutionMode::Prefill,
+            input_token_slice: vec![5, 6],
+            reused_prefix_token_slice: vec![1, 2, 3, 4],
+            position_range: PositionRange {
+                start: 4,
+                end_exclusive: 6,
+            },
+            scheduled_token_count: 2,
+            block_table_ref: RequestId(21),
+            prefix_tokens_reused: 4,
+            prefix_blocks_reused: 1,
+        };
+        let state = RequestState::new(2, RequestId(21));
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        telemetry.misses = 1;
+        telemetry.warmup_tokens = 4;
+
+        let tokens = full_prefill_recompute_tokens_for_warmup_fallback(
+            &item,
+            &item.input_token_slice,
+            &telemetry,
+            &state,
+        )
+        .expect("warmup fallback prefill should run prefix+suffix together");
+
+        assert_eq!(tokens, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn prefill_warmup_fallback_does_not_recompute_cache_hits_or_decode() {
+        let mut item = ax_engine_core::ExecutionItem {
+            request_id: RequestId(22),
+            mode: ExecutionMode::Prefill,
+            input_token_slice: vec![5, 6],
+            reused_prefix_token_slice: vec![1, 2, 3, 4],
+            position_range: PositionRange {
+                start: 4,
+                end_exclusive: 6,
+            },
+            scheduled_token_count: 2,
+            block_table_ref: RequestId(22),
+            prefix_tokens_reused: 4,
+            prefix_blocks_reused: 1,
+        };
+        let state = RequestState::new(2, RequestId(22));
+        let mut hit_telemetry = MlxPrefixCacheTelemetry::default();
+        hit_telemetry.hits = 1;
+        hit_telemetry.reused_tokens = 4;
+
+        assert!(
+            full_prefill_recompute_tokens_for_warmup_fallback(
+                &item,
+                &item.input_token_slice,
+                &hit_telemetry,
+                &state,
+            )
+            .is_none(),
+            "snapshot hits already restored prefix KV and must prefill only the suffix",
+        );
+
+        item.mode = ExecutionMode::Decode;
+        let mut warmup_telemetry = MlxPrefixCacheTelemetry::default();
+        warmup_telemetry.misses = 1;
+        warmup_telemetry.warmup_tokens = 4;
+        assert!(
+            full_prefill_recompute_tokens_for_warmup_fallback(
+                &item,
+                &item.input_token_slice,
+                &warmup_telemetry,
+                &state,
+            )
+            .is_none(),
+            "decode still needs a warmed prefix KV and optional prefill output token",
+        );
     }
 
     #[test]
