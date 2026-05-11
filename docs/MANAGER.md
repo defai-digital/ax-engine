@@ -13,7 +13,7 @@ and benchmark artifacts.
 The manager can:
 
 - run doctor and show model-artifact readiness;
-- select a model type, family, and size, then run the existing guarded download
+- select a text model family and size, then run the existing guarded download
   helper for the resolved `mlx-community` repo id;
 - start and stop an owned local `ax-engine-server` process for a selected model
   directory and port;
@@ -62,15 +62,22 @@ Use `--no-open` if you want the URL printed without opening the browser:
 ax-engine-manager --no-open
 ```
 
-The Models panel lets you choose `Text` or `Embedding`, then family and size
-from browser-native dropdowns. Clicking `[Download]` runs:
+The Models panel lets you choose a text model family and size from
+browser-native dropdowns. Clicking `[Download]` runs:
 
 ```bash
 python scripts/download_model.py <repo-id> --json
 ```
 
-When the helper reports a destination path, the manager refreshes doctor state
-against that downloaded model directory.
+The helper uses `mlx-lm` for model acquisition, resolves the resulting cache
+snapshot, and reports a destination path. The manager then refreshes doctor
+state against that downloaded model directory.
+
+`Qwen3-Coder-Next-4bit` is intentionally not exposed in the manager catalog
+yet. AX Engine can run validated Qwen3 Next artifacts, but public cache
+snapshots may fail the linear-attention sanitized-weight check at startup. If
+you need that model, convert and validate the artifact manually with
+`mlx_lm.convert` before using it outside the manager quick-pick flow.
 
 ## Start With A Server
 
@@ -86,6 +93,13 @@ In the web page, set the port and click `Start`. The manager starts:
 ```bash
 ax-engine-server --mlx --mlx-model-artifacts-dir "$MODEL_DIR" --port 8080
 ```
+
+The manager-owned launcher currently supports only the repo-owned AX Engine
+runtime modes: `ax-engine` and `ax-engine n-gram`. `mlx-lm` is a delegated
+backend that requires a separate `mlx_lm.server` plus
+`ax-engine-server --support-tier mlx_lm_delegated --mlx-lm-server-url ...`.
+`mlx-swift-lm` is treated as a benchmark reference adapter, not a
+manager-startable server runtime.
 
 Click `Stop` to kill the owned server process.
 

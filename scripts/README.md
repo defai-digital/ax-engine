@@ -61,12 +61,12 @@ throughput baselines.
   `ax-engine-server`, `ax-engine-bench`, and `ax-engine-manager`; with
   `--sign-identity`, it codesigns and notarizes all packaged binaries before
   upload. Without `--sign-identity`, binaries are intentionally left unsigned.
-- `download_model.py`: general-purpose MLX model download helper. It downloads a
-  Hugging Face snapshot to the standard Hugging Face Hub cache by default,
-  validates local model files, and generates the AX model manifest when
-  `ax-engine-bench` or Cargo is available. Use `--dest` only when you want a
-  custom local directory. Use `--json` for automation and manager workflow
-  integration.
+- `download_model.py`: MLX LLM download helper. It delegates acquisition to
+  `mlx-lm`, resolves the resulting cache snapshot, validates local model files,
+  and generates the AX model manifest when `ax-engine-bench` or Cargo is
+  available. It rejects embedding repo IDs; embedding artifacts are manual.
+  Use `--dest` only when you want a custom local directory. Use `--json` for
+  automation and manager workflow integration.
 - `ax-engine-bench generate-manifest <model-dir> --json`: stable
   `ax.generate_manifest.v1` summary for manager and automation callers that need to
   distinguish newly written manifests from already-ready model directories.

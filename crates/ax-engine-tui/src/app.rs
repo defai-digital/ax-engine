@@ -6,16 +6,14 @@ use crate::contracts::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelKind {
     Text,
-    Embedding,
 }
 
 impl ModelKind {
-    pub const ALL: [Self; 2] = [Self::Text, Self::Embedding];
+    pub const ALL: [Self; 1] = [Self::Text];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Text => "Text",
-            Self::Embedding => "Embedding",
         }
     }
 }
@@ -86,13 +84,6 @@ pub const MODEL_CATALOG: &[ModelCatalogEntry] = &[
     },
     ModelCatalogEntry {
         kind: ModelKind::Text,
-        family: ModelFamily::Qwen,
-        label: "Qwen3-Coder-Next-4bit",
-        repo_id: "mlx-community/Qwen3-Coder-Next-4bit",
-        note: "coder next preview",
-    },
-    ModelCatalogEntry {
-        kind: ModelKind::Text,
         family: ModelFamily::Gemma,
         label: "gemma-4-e2b-it-4bit",
         repo_id: "mlx-community/gemma-4-e2b-it-4bit",
@@ -146,20 +137,6 @@ pub const MODEL_CATALOG: &[ModelCatalogEntry] = &[
         label: "GLM-4.7-Flash-4bit",
         repo_id: "mlx-community/GLM-4.7-Flash-4bit",
         note: "GLM runtime-ready preview",
-    },
-    ModelCatalogEntry {
-        kind: ModelKind::Embedding,
-        family: ModelFamily::Qwen,
-        label: "Qwen3-Embedding-0.6B-8bit",
-        repo_id: "mlx-community/Qwen3-Embedding-0.6B-8bit",
-        note: "small embedding model",
-    },
-    ModelCatalogEntry {
-        kind: ModelKind::Embedding,
-        family: ModelFamily::Qwen,
-        label: "Qwen3-Embedding-4B-4bit-DWQ",
-        repo_id: "mlx-community/Qwen3-Embedding-4B-4bit-DWQ",
-        note: "balanced embedding model",
     },
 ];
 
@@ -241,7 +218,6 @@ pub enum ServerUrlKind {
     Health,
     Runtime,
     Models,
-    Embeddings,
     Generate,
     GenerateStream,
     ChatCompletions,
@@ -249,11 +225,10 @@ pub enum ServerUrlKind {
 }
 
 impl ServerUrlKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 7] = [
         Self::Health,
         Self::Runtime,
         Self::Models,
-        Self::Embeddings,
         Self::Generate,
         Self::GenerateStream,
         Self::ChatCompletions,
@@ -265,7 +240,6 @@ impl ServerUrlKind {
             Self::Health => "Health",
             Self::Runtime => "Runtime",
             Self::Models => "Models",
-            Self::Embeddings => "Embeddings",
             Self::Generate => "Generate",
             Self::GenerateStream => "Generate stream",
             Self::ChatCompletions => "Chat completions",
@@ -278,7 +252,6 @@ impl ServerUrlKind {
             Self::Health => "/health",
             Self::Runtime => "/v1/runtime",
             Self::Models => "/v1/models",
-            Self::Embeddings => "/v1/embeddings",
             Self::Generate => "/v1/generate",
             Self::GenerateStream => "/v1/generate/stream",
             Self::ChatCompletions => "/v1/chat/completions",

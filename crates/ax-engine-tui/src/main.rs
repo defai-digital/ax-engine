@@ -17,7 +17,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -149,7 +149,7 @@ fn print_help() {
         "AX Engine Manager\n\n\
          Usage: ax-engine-manager [--check] [--phase2-check] [--doctor-json <path>] [--model-dir <path>] \\\n           [--server-url <url>] [--benchmark-json <path>] [--artifact-root <path>] [--profile-dir <path>] \\\n           [--support-bundle <dir>] [--web-host <host>] [--web-port <port>] [--no-open]\n\n\
          Interactive mode starts a local web manager at http://127.0.0.1:8765 by default.\n\
-         The web manager provides model type/family/size selection, guarded downloads, server port controls,\n\
+         The web manager provides text model family/size selection, guarded downloads, server port controls,\n\
          endpoint URLs, readiness state, and job status in a browser UI.\n\
          Check mode is read-only and does not start downloads, benchmarks, or servers.\n\
          Support bundles write redacted diagnostics without model weights or secrets."
@@ -732,11 +732,17 @@ fn proxy_chat_blocking(
         let _ = client.write_all(delta.as_bytes());
     }
     // Final chunk: finish_reason + usage stats so the client can display perf metrics.
+    let finish_reason = response_json
+        .as_ref()
+        .and_then(|v| v["finish_reason"].as_str())
+        .map(openai_finish_reason)
+        .unwrap_or("stop");
     let finish_chunk = format!(
-        "data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\",\"index\":0}}],\
+        "data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":{},\"index\":0}}],\
          \"usage\":{{\"prompt_tokens\":{prompt_token_count},\
          \"completion_tokens\":{output_token_count},\
          \"generation_tps\":{:.1}}}}}\n\ndata: [DONE]\n\n",
+        serde_json::to_string(finish_reason).unwrap_or_else(|_| "\"stop\"".to_string()),
         generation_tps
     );
     let _ = client.write_all(finish_chunk.as_bytes());
@@ -928,8 +934,8 @@ fn openai_to_generate_request(
         .as_array()
         .ok_or_else(|| ManagerError::Message("messages field required".to_string()))?;
 
-    let max_tokens = v["max_tokens"].as_u64().unwrap_or(2048) as u32;
-    let temperature = v["temperature"].as_f64().unwrap_or(0.7) as f32;
+    let max_tokens = v["max_tokens"].as_u64().unwrap_or(128) as u32;
+    let temperature = v["temperature"].as_f64().unwrap_or(0.0) as f32;
 
     // Native MLX backend requires pre-tokenized input_tokens.
     let input_tokens = model_dir
@@ -947,10 +953,24 @@ fn openai_to_generate_request(
             "top_k": 0,
             "seed": 0,
             "repetition_penalty": 1.15
-        }
+        },
+        "stop_sequences": manager_chat_stop_sequences(model_id, model_dir)
     });
 
     Ok(native.to_string())
+}
+
+fn manager_chat_stop_sequences(model_id: &str, model_dir: Option<&str>) -> Vec<String> {
+    match detect_prompt_family(model_id, model_dir) {
+        "glm" => vec![
+            "<|endoftext|>".to_string(),
+            "<|user|>".to_string(),
+            "<|observation|>".to_string(),
+        ],
+        "gemma4" => vec!["<turn|>".to_string()],
+        "gemma" => vec!["<end_of_turn>".to_string()],
+        _ => vec!["<|im_end|>".to_string()],
+    }
 }
 
 fn normalize_chat_messages(messages: &[Value]) -> Result<Vec<Value>, ManagerError> {
@@ -1553,6 +1573,7 @@ fn route_request(request: HttpRequest, runtime: SharedRuntime) -> Result<String,
             let value = runtime_state_json(&runtime)?;
             json_response("200 OK", &value)?
         }
+        ("GET", "/api/system") => json_response("200 OK", &system_metrics_json())?,
         ("POST", "/api/download") => {
             let value = start_download_job(&runtime, &request.body)?;
             json_response("202 Accepted", &value)?
@@ -1578,17 +1599,186 @@ fn route_request(request: HttpRequest, runtime: SharedRuntime) -> Result<String,
     })
 }
 
+fn system_metrics_json() -> Value {
+    json!({
+        "timestamp_ms": SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0),
+        "refresh_interval_ms": 3000,
+        "cpu": metric_json(cpu_utilization_percent(), "ps"),
+        "gpu": metric_json(gpu_utilization_percent(), "ioreg"),
+        "ram": metric_json(ram_utilization_percent(), "vm_stat"),
+    })
+}
+
+fn metric_json(percent: Option<f64>, source: &str) -> Value {
+    match percent {
+        Some(value) => json!({
+            "percent": round_percent(value),
+            "available": true,
+            "source": source,
+        }),
+        None => json!({
+            "percent": Value::Null,
+            "available": false,
+            "source": source,
+        }),
+    }
+}
+
+fn cpu_utilization_percent() -> Option<f64> {
+    let ps = command_stdout("ps", &["-A", "-o", "%cpu="], Duration::from_secs(2))?;
+    let logical_cpu = command_stdout("sysctl", &["-n", "hw.logicalcpu"], Duration::from_secs(2))?
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    let total_cpu = ps
+        .lines()
+        .filter_map(|line| line.trim().parse::<f64>().ok())
+        .sum::<f64>();
+    if logical_cpu <= 0.0 {
+        return None;
+    }
+    Some(clamp_percent(total_cpu / logical_cpu))
+}
+
+fn ram_utilization_percent() -> Option<f64> {
+    let total_bytes = command_stdout("sysctl", &["-n", "hw.memsize"], Duration::from_secs(2))?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    let vm_stat = command_stdout("vm_stat", &[], Duration::from_secs(2))?;
+    ram_utilization_percent_from_vm_stat(&vm_stat, total_bytes)
+}
+
+fn gpu_utilization_percent() -> Option<f64> {
+    const AGX_CLASSES: &[&str] = &[
+        "AGXAcceleratorG17X",
+        "AGXAcceleratorG16X",
+        "AGXAcceleratorG16G",
+        "AGXAcceleratorG15X",
+        "AGXAcceleratorG15G",
+        "AGXAcceleratorG14X",
+        "AGXAcceleratorG14S",
+        "AGXAcceleratorG14G",
+        "AGXAcceleratorG13X",
+        "AGXAcceleratorG13G",
+    ];
+    for class_name in AGX_CLASSES {
+        if let Some(output) = command_stdout(
+            "ioreg",
+            &["-r", "-c", class_name, "-d", "1"],
+            Duration::from_secs(2),
+        ) && let Some(percent) = gpu_utilization_percent_from_ioreg(&output)
+        {
+            return Some(percent);
+        }
+    }
+    None
+}
+
+fn command_stdout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    let output = run_subprocess_output_with_timeout(
+        program,
+        args.iter().map(|arg| (*arg).to_string()).collect(),
+        timeout,
+        program,
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn ram_utilization_percent_from_vm_stat(vm_stat: &str, total_bytes: u64) -> Option<f64> {
+    if total_bytes == 0 {
+        return None;
+    }
+    let page_size = parse_page_size(vm_stat)?;
+    let active_pages = parse_vm_stat_pages(vm_stat, "Pages active:");
+    let wired_pages = parse_vm_stat_pages(vm_stat, "Pages wired down:");
+    let compressed_pages = parse_vm_stat_pages(vm_stat, "Pages occupied by compressor:");
+    if active_pages.is_some() || wired_pages.is_some() || compressed_pages.is_some() {
+        let used_pages = active_pages
+            .unwrap_or(0)
+            .saturating_add(wired_pages.unwrap_or(0))
+            .saturating_add(compressed_pages.unwrap_or(0));
+        let used_bytes = used_pages.saturating_mul(page_size);
+        return Some(clamp_percent(
+            used_bytes as f64 * 100.0 / total_bytes as f64,
+        ));
+    }
+
+    // Fallback for shortened or older vm_stat output. This includes inactive
+    // cache pages, so it is less useful for spotting model process release.
+    let free_pages = parse_vm_stat_pages(vm_stat, "Pages free:").unwrap_or(0);
+    let speculative_pages = parse_vm_stat_pages(vm_stat, "Pages speculative:").unwrap_or(0);
+    let available_bytes = free_pages
+        .saturating_add(speculative_pages)
+        .saturating_mul(page_size);
+    let used_bytes = total_bytes.saturating_sub(available_bytes);
+    Some(clamp_percent(
+        used_bytes as f64 * 100.0 / total_bytes as f64,
+    ))
+}
+
+fn gpu_utilization_percent_from_ioreg(output: &str) -> Option<f64> {
+    parse_number_after_marker(output, "\"Device Utilization %\"")
+        .or_else(|| parse_number_after_marker(output, "\"Renderer Utilization %\""))
+        .map(clamp_percent)
+}
+
+fn parse_page_size(vm_stat: &str) -> Option<u64> {
+    let start = vm_stat.find("(page size of ")? + "(page size of ".len();
+    let rest = &vm_stat[start..];
+    let end = rest.find(" bytes)")?;
+    rest[..end].trim().parse::<u64>().ok()
+}
+
+fn parse_vm_stat_pages(vm_stat: &str, label: &str) -> Option<u64> {
+    vm_stat.lines().find_map(|line| {
+        let value = line
+            .trim()
+            .strip_prefix(label)?
+            .trim()
+            .trim_end_matches('.');
+        value.parse::<u64>().ok()
+    })
+}
+
+fn parse_number_after_marker(output: &str, marker: &str) -> Option<f64> {
+    let start = output.find(marker)? + marker.len();
+    let rest = &output[start..];
+    let equals = rest.find('=')? + 1;
+    let value = rest[equals..].trim_start();
+    let end = value
+        .find(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+        .unwrap_or(value.len());
+    value[..end].parse::<f64>().ok()
+}
+
+fn clamp_percent(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 100.0)
+    } else {
+        0.0
+    }
+}
+
+fn round_percent(value: f64) -> f64 {
+    (clamp_percent(value) * 10.0).round() / 10.0
+}
+
 /// Return the local snapshot path for a HuggingFace model if it is already
-/// in the default HF hub cache (~/.cache/huggingface/hub/).
+/// in the Hub cache used by mlx-lm / huggingface_hub.
 ///
 /// Layout: models--{org}--{repo}/refs/main  →  commit hash
 ///         models--{org}--{repo}/snapshots/{hash}/
 fn hf_cache_path(repo_id: &str) -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
     let dashed = repo_id.replace('/', "--");
-    let model_cache = std::path::Path::new(&home)
-        .join(".cache/huggingface/hub")
-        .join(format!("models--{dashed}"));
+    let model_cache = hf_hub_cache_root()?.join(format!("models--{dashed}"));
 
     // Read the commit hash from refs/main.
     let refs_main = model_cache.join("refs/main");
@@ -1611,6 +1801,40 @@ fn hf_cache_path(repo_id: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn hf_hub_cache_root() -> Option<PathBuf> {
+    if let Ok(path) = env::var("HF_HUB_CACHE")
+        && !path.trim().is_empty()
+    {
+        return Some(expand_home_path(&path));
+    }
+    if let Ok(path) = env::var("HF_HOME")
+        && !path.trim().is_empty()
+    {
+        return Some(expand_home_path(&path).join("hub"));
+    }
+    if let Ok(path) = env::var("XDG_CACHE_HOME")
+        && !path.trim().is_empty()
+    {
+        return Some(expand_home_path(&path).join("huggingface/hub"));
+    }
+    let home = env::var("HOME").ok()?;
+    Some(PathBuf::from(home).join(".cache/huggingface/hub"))
+}
+
+fn expand_home_path(path: &str) -> PathBuf {
+    if path == "~" {
+        return env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(path));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return env::var("HOME")
+            .map(|home| PathBuf::from(home).join(rest))
+            .unwrap_or_else(|_| PathBuf::from(path));
+    }
+    PathBuf::from(path)
 }
 
 fn scan_hf_cache_models() -> Vec<CachedModelSnapshot> {
@@ -1669,32 +1893,31 @@ fn runtime_state_json(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
         .unwrap_or_else(|| "Idle".to_string());
     let downloaded_models: Vec<Value> = {
         let mut seen = std::collections::HashSet::new();
+        let mut seen_paths = std::collections::HashSet::new();
         let mut models: Vec<Value> = Vec::new();
         // 1. Successful download jobs from this session.
         for job in runtime.download_jobs.iter().rev() {
             if job.status == "succeeded"
                 && let Some(ref path) = job.model_dir
                 && seen.insert(job.repo_id.clone())
+                && seen_paths.insert(path.clone())
             {
                 models.push(json!({ "repo_id": job.repo_id, "path": path }));
             }
         }
         // 2. Doctor-reported pre-existing model (if not already listed).
-        if let Some(path) = web::current_model_dir(&runtime.state) {
-            let already = runtime
-                .download_jobs
-                .iter()
-                .any(|j| j.model_dir.as_deref() == Some(path.as_str()));
-            if !already && seen.insert("__doctor__".to_string()) {
-                models.push(json!({ "repo_id": "local", "path": path }));
-            }
+        if let Some(path) = web::current_model_dir(&runtime.state)
+            && seen_paths.insert(path.clone())
+            && seen.insert("__doctor__".to_string())
+        {
+            models.push(json!({ "repo_id": "local", "path": path }));
         }
         // 3. Cached HuggingFace cache scan for catalog models (pre-downloaded outside manager).
         for model in hf_cache_models.iter() {
             if seen.contains(model.repo_id.as_str()) {
                 continue;
             }
-            if seen.insert(model.repo_id.clone()) {
+            if seen_paths.insert(model.path.clone()) && seen.insert(model.repo_id.clone()) {
                 models
                     .push(json!({ "repo_id": model.repo_id.clone(), "path": model.path.clone() }));
             }
@@ -1749,8 +1972,8 @@ fn start_download_job(runtime: &SharedRuntime, body: &str) -> Result<Value, Mana
             repo_id: repo_id.clone(),
             status: "running".to_string(),
             model_dir: None,
-            message: None,
-            progress: 0,
+            message: Some("Starting mlx-lm download...".to_string()),
+            progress: 1,
         });
         runtime.status_message = format!("Downloading {repo_id}");
         (job_id, invocation)
@@ -1808,17 +2031,19 @@ fn finish_download_job(
                 runtime.download_jobs[index].status = "succeeded".to_string();
                 runtime.download_jobs[index].model_dir = Some(model_dir.clone());
                 runtime.download_jobs[index].message = None;
+                runtime.download_jobs[index].progress = 100;
                 runtime.hf_cache_models = None;
                 runtime.status_message =
                     format!("Downloaded {}", runtime.download_jobs[index].repo_id);
                 Some(model_dir)
             }
             Err(error) => {
+                let error_text = error.to_string();
                 runtime.download_jobs[index].status = "failed".to_string();
-                runtime.download_jobs[index].message = Some(error.to_string());
+                runtime.download_jobs[index].message = Some(error_text.clone());
                 runtime.status_message = format!(
-                    "Download failed for {}",
-                    runtime.download_jobs[index].repo_id
+                    "Download failed for {}: {}",
+                    runtime.download_jobs[index].repo_id, error_text
                 );
                 None
             }
@@ -1879,7 +2104,12 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         (repo_id, model_dir)
     }; // lock released
 
-    // Phase 2: generate model-manifest.json if it is missing (outside the lock).
+    // Phase 2: validate the launch plan before doing manifest work. Unsupported
+    // manager models should fail closed without running expensive converters or
+    // touching an existing server.
+    let launch = server_launch_plan(&repo_id, &model_dir, port as u16, engine)?;
+
+    // Phase 3: generate model-manifest.json if it is missing (outside the lock).
     let manifest_path = Path::new(&model_dir).join("model-manifest.json");
     if !manifest_path.is_file() {
         if let Ok(mut rt) = runtime.lock() {
@@ -1888,11 +2118,10 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
         generate_model_manifest(&model_dir)?;
     }
 
-    // Phase 3: spawn the server (re-acquire lock).
+    // Phase 4: spawn the server (re-acquire lock).
     let server_bin = which_server_binary();
     let stderr_path = std::env::temp_dir().join(format!("ax-engine-server-{port}.log"));
     let stderr_file = std::fs::File::create(&stderr_path).ok();
-    let launch = server_launch_plan(&repo_id, &model_dir, port as u16, engine)?;
 
     let stopped_existing = {
         let mut rt = runtime
@@ -1989,7 +2218,8 @@ fn start_server(runtime: &SharedRuntime, body: &str) -> Result<Value, ManagerErr
                 let still_ours = rt
                     .lock()
                     .ok()
-                    .and_then(|g| {
+                    .and_then(|mut g| {
+                        g.cleanup_server();
                         g.server.as_ref().map(|server| {
                             server_matches_launch(
                                 server,
@@ -2078,6 +2308,11 @@ fn server_launch_plan(
 ) -> Result<ServerLaunchPlan, ManagerError> {
     let port_arg = port.to_string();
     let repo_lower = repo_id.to_ascii_lowercase();
+    if qwen3_coder_next_requires_sanitized_artifacts(&repo_lower, model_dir) {
+        return Err(ManagerError::Message(format!(
+            "manager cannot start {repo_id}: Qwen3-Coder-Next requires sanitized Qwen3 Next linear-attention weights. Public cache snapshots can fail the AX sanitized-weight check; convert or validate the artifact first, for example: pip install mlx-lm && mlx_lm.convert --hf-path <source> --mlx-path <dest>."
+        )));
+    }
     if let Some((preset, model_id)) = server_preset_for_repo(&repo_lower) {
         let mut args = vec![
             "--preset".to_string(),
@@ -2118,6 +2353,14 @@ fn server_launch_plan(
         args,
         model_id: repo_id.to_string(),
     })
+}
+
+fn qwen3_coder_next_requires_sanitized_artifacts(repo_lower: &str, model_dir: &str) -> bool {
+    let dir_lower = model_dir.to_ascii_lowercase();
+    repo_lower.contains("qwen3-coder-next")
+        || repo_lower.contains("qwen3_coder_next")
+        || dir_lower.contains("qwen3-coder-next")
+        || dir_lower.contains("qwen3_coder_next")
 }
 
 fn server_preset_for_repo(repo_lower: &str) -> Option<(&'static str, &'static str)> {
@@ -2187,6 +2430,10 @@ fn stop_server(runtime: &SharedRuntime) -> Result<Value, ManagerError> {
     let mut runtime = runtime
         .lock()
         .map_err(|_| ManagerError::Message("web runtime lock poisoned".to_string()))?;
+    runtime.cleanup_server();
+    if runtime.server.is_none() && runtime.status_message.starts_with("Server exited") {
+        return Ok(json!({"status": runtime.status_message}));
+    }
     let stopped = stop_server_locked(&mut runtime);
     runtime.status_message = if stopped {
         "Server stopped".to_string()
@@ -2290,6 +2537,7 @@ fn model_download_invocation_for_cwd(
                 "scripts/download_model.py".to_string(),
                 repo_id.to_string(),
                 "--json".to_string(),
+                "--progress-json".to_string(),
             ],
             Some(root),
         ));
@@ -2307,17 +2555,27 @@ fn download_invocation_from_workflow(
             "download_model workflow command is empty".to_string(),
         ));
     };
+    let mut resolved_args = args
+        .iter()
+        .map(|arg| {
+            if arg == "<repo-id>" {
+                repo_id.to_string()
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    if resolved_args.iter().any(|arg| arg == "--json")
+        && resolved_args
+            .iter()
+            .any(|arg| arg.ends_with("scripts/download_model.py") || arg == "download_model.py")
+        && !resolved_args.iter().any(|arg| arg == "--progress-json")
+    {
+        resolved_args.push("--progress-json".to_string());
+    }
     Ok(CommandInvocation::new(
         program.clone(),
-        args.iter()
-            .map(|arg| {
-                if arg == "<repo-id>" {
-                    repo_id.to_string()
-                } else {
-                    arg.clone()
-                }
-            })
-            .collect(),
+        resolved_args,
         command.cwd.as_ref().map(PathBuf::from),
     ))
 }
@@ -2353,14 +2611,19 @@ fn installed_bench_program() -> String {
 }
 
 const INSTALLED_DOWNLOAD_PYTHON: &str = r#"
-import fnmatch, json, subprocess, sys, threading, time
+import json, os, subprocess, sys, threading, time
 from pathlib import Path
 
-IGNORE_PATTERNS = ["*.bin", "*.pt", "*.gguf", "*.msgpack", "flax_model*"]
 MANIFEST = "model-manifest.json"
 repo_id = sys.argv[1]
 bench = sys.argv[2] if len(sys.argv) > 2 else "ax-engine-bench"
 cache_base = Path.home() / ".cache" / "huggingface" / "hub" / ("models--" + repo_id.replace("/", "--"))
+if os.environ.get("HF_HUB_CACHE"):
+    cache_base = Path(os.environ["HF_HUB_CACHE"]).expanduser() / ("models--" + repo_id.replace("/", "--"))
+elif os.environ.get("HF_HOME"):
+    cache_base = Path(os.environ["HF_HOME"]).expanduser() / "hub" / ("models--" + repo_id.replace("/", "--"))
+elif os.environ.get("XDG_CACHE_HOME"):
+    cache_base = Path(os.environ["XDG_CACHE_HOME"]).expanduser() / "huggingface" / "hub" / ("models--" + repo_id.replace("/", "--"))
 
 def emit_progress(done, total, file=""):
     print(json.dumps({"event": "progress", "done": done, "total": total, "file": file}), flush=True)
@@ -2384,60 +2647,130 @@ def summary(dest, status, errors=None):
 def print_summary(dest, status, errors=None):
     print(json.dumps(summary(dest, status, errors), sort_keys=True))
 
-try:
-    from huggingface_hub import HfApi, snapshot_download
-    try:
-        from huggingface_hub.utils import disable_progress_bars
-        disable_progress_bars()
-    except Exception:
-        pass
-except Exception as exc:
-    print_summary(cache_base, "download_failed",
-        ["huggingface_hub is required. Run: python3 -m pip install huggingface_hub", str(exc)])
-    raise SystemExit(1)
+def latest_snapshot():
+    refs_main = cache_base / "refs" / "main"
+    if refs_main.is_file():
+        revision = refs_main.read_text().strip()
+        if revision:
+            snapshot = cache_base / "snapshots" / revision
+            if snapshot.is_dir():
+                return snapshot
+    snapshots = cache_base / "snapshots"
+    if not snapshots.is_dir():
+        return None
+    candidates = [path for path in snapshots.iterdir() if path.is_dir()]
+    return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
 
-# Step 1: list files to know how many weights to expect.
-emit_progress(0, 1, "Fetching file list…")
+def format_duration(seconds):
+    if seconds is None or seconds < 0:
+        return "estimating"
+    seconds = int(seconds)
+    minutes, secs = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+def snapshot_weight_progress(snapshot):
+    index_path = snapshot / "model.safetensors.index.json"
+    total = 0
+    if index_path.is_file():
+        try:
+            index = json.loads(index_path.read_text())
+            total = int(index.get("metadata", {}).get("total_size") or 0)
+        except Exception:
+            total = 0
+    downloaded = 0
+    for path in snapshot.glob("*.safetensors"):
+        try:
+            downloaded += path.stat().st_size
+        except OSError:
+            pass
+    if total <= 0 and downloaded > 0:
+        total = downloaded
+    if total <= 0:
+        return None
+    return min(downloaded, total), total
+
+def download_progress_message(started_at):
+    elapsed = time.monotonic() - started_at
+    snapshot = latest_snapshot()
+    if snapshot is not None:
+        progress = snapshot_weight_progress(snapshot)
+        if progress is not None:
+            downloaded, total = progress
+            ratio = 0.0 if total == 0 else downloaded / total
+            eta = elapsed * (1.0 - ratio) / ratio if ratio > 0 else None
+            gib = 1024 ** 3
+            return (
+                5 + int(min(ratio, 1.0) * 80),
+                f"Downloading weights ({downloaded / gib:.1f}/{total / gib:.1f} GiB, "
+                f"elapsed {format_duration(elapsed)}, ETA {format_duration(eta)})",
+            )
+    synthetic = min(25, 5 + int(elapsed // 20))
+    return synthetic, f"Downloading with mlx-lm (elapsed {format_duration(elapsed)}, ETA estimating)"
+
+def run_mlx_lm_generate(command, env):
+    started_at = time.monotonic()
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    output_parts = []
+
+    def drain(stream):
+        if stream is None:
+            return
+        for line in stream:
+            output_parts.append(line)
+
+    stdout_thread = threading.Thread(target=drain, args=(proc.stdout,), daemon=True)
+    stderr_thread = threading.Thread(target=drain, args=(proc.stderr,), daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    while proc.poll() is None:
+        done, message = download_progress_message(started_at)
+        emit_progress(done, 100, message)
+        time.sleep(2)
+    stdout_thread.join(timeout=1)
+    stderr_thread.join(timeout=1)
+    return subprocess.CompletedProcess(command, proc.returncode, "".join(output_parts), "")
+
+emit_progress(0, 3, "Starting mlx-lm download…")
 try:
-    all_files = list(HfApi().list_repo_files(repo_id=repo_id, repo_type="model"))
-    expected = [f for f in all_files if not any(fnmatch.fnmatch(f, p) for p in IGNORE_PATTERNS)]
-    total = max(len(expected), 1)
+    dest = latest_snapshot()
+    if dest is not None and list(dest.glob("*.safetensors")) and (dest / "config.json").exists():
+        emit_progress(1, 3, "Using existing mlx-lm cache snapshot…")
+    else:
+        dest = None
 except Exception:
-    total = 1
-emit_progress(0, total, "Starting download…")
-
-# Step 2: watch the blob cache directory while snapshot_download runs.
-blobs_dir = cache_base / "blobs"
-done_event = threading.Event()
-
-def watcher():
-    last = 0
-    while not done_event.is_set():
-        done_event.wait(timeout=2)
-        if blobs_dir.exists():
-            try:
-                count = sum(
-                    1 for p in blobs_dir.iterdir()
-                    if not p.name.startswith(".") and p.stat().st_size > 0
-                )
-                count = min(count, total)
-                if count != last:
-                    last = count
-                    emit_progress(count, total, f"Downloading… ({count}/{total} files)")
-            except Exception:
-                pass
-
-t = threading.Thread(target=watcher, daemon=True)
-t.start()
+    dest = None
 
 try:
-    dest = Path(snapshot_download(repo_id=repo_id, ignore_patterns=IGNORE_PATTERNS))
+    env = os.environ.copy()
+    env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    if dest is None:
+        command = [
+            sys.executable, "-m", "mlx_lm", "generate",
+            "--model", repo_id,
+            "--prompt", "x",
+            "--max-tokens", "1",
+        ]
+        result = run_mlx_lm_generate(command, env)
+        if result.returncode != 0:
+            output = "\n".join(part for part in [result.stderr.strip(), result.stdout.strip()] if part)
+            print_summary(cache_base, "download_failed",
+                ["mlx-lm is required. Run: python3 -m pip install mlx-lm", output])
+            raise SystemExit(1)
+        emit_progress(1, 3, "Resolving mlx-lm cache snapshot…")
+        dest = latest_snapshot()
+    if dest is None:
+        print_summary(cache_base, "download_failed",
+            [f"mlx-lm completed but no cache snapshot was found for {repo_id}"])
+        raise SystemExit(1)
+    dest = Path(dest)
 except Exception as exc:
-    done_event.set(); t.join(timeout=3)
     print_summary(cache_base, "download_failed", [str(exc)])
     raise SystemExit(1)
-finally:
-    done_event.set(); t.join(timeout=3)
 
 errors = []
 if not list(dest.glob("*.safetensors")):
@@ -2448,7 +2781,7 @@ if errors:
     print_summary(dest, "invalid", errors)
     raise SystemExit(1)
 
-emit_progress(total, total, "Generating manifest…")
+emit_progress(2, 3, "Generating manifest…")
 if not (dest / MANIFEST).exists():
     result = subprocess.run([bench, "generate-manifest", str(dest), "--json"], capture_output=True, text=True)
     if result.returncode != 0:
@@ -2456,6 +2789,7 @@ if not (dest / MANIFEST).exists():
         print_summary(dest, "manifest_missing", [error])
         raise SystemExit(1)
 
+emit_progress(3, 3, "Ready")
 print_summary(dest, "ready")
 "#;
 
@@ -2489,12 +2823,16 @@ fn run_download_with_progress(
         })
     });
 
-    // Stream stdout: progress events update the job snapshot; the final summary
-    // JSON (no "event" key) is kept as the last line to parse at the end.
+    // Stream stdout: progress events update the job snapshot; final summaries
+    // may be newline-delimited JSON or pretty multi-line JSON, depending on
+    // whether the workflow command includes --progress-json.
+    let mut stdout_text = String::new();
     let mut last_summary = String::new();
     if let Some(stdout) = child.stdout.take() {
         for line in std::io::BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
+            stdout_text.push_str(&line);
+            stdout_text.push('\n');
             let trimmed = line.trim().to_string();
             if trimmed.is_empty() {
                 continue;
@@ -2514,7 +2852,7 @@ fn run_download_with_progress(
                         .to_string();
                     let pct = ((done as f64 / total as f64) * 100.0).min(99.0) as u8;
                     update_download_progress(runtime, job_id, pct, &file);
-                } else {
+                } else if is_download_summary_json(&json) {
                     last_summary = trimmed;
                 }
             }
@@ -2527,11 +2865,7 @@ fn run_download_with_progress(
         .unwrap_or_default();
 
     let result = if last_summary.is_empty() {
-        Err(DownloadRunError::Failed(if stderr.is_empty() {
-            "download process produced no output".to_string()
-        } else {
-            stderr
-        }))
+        parse_download_stdout(&stdout_text, exit_ok, &stderr)
     } else {
         parse_download_summary(&last_summary, exit_ok, &stderr)
     };
@@ -2592,6 +2926,58 @@ fn parse_download_summary(
         })
         .unwrap_or_else(|| format!("status={status}"));
     Err(DownloadRunError::Failed(errors))
+}
+
+fn parse_download_stdout(
+    stdout: &str,
+    exit_ok: bool,
+    stderr: &str,
+) -> Result<String, DownloadRunError> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Err(DownloadRunError::Failed(if stderr.is_empty() {
+            "download process produced no output".to_string()
+        } else {
+            stderr.to_string()
+        }));
+    }
+
+    let mut last_summary = None;
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(json) = serde_json::from_str::<Value>(line)
+            && is_download_summary_json(&json)
+        {
+            last_summary = Some(line.to_string());
+        }
+    }
+    if let Some(summary) = last_summary {
+        return parse_download_summary(&summary, exit_ok, stderr);
+    }
+
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(json) if is_download_summary_json(&json) => {
+            parse_download_summary(trimmed, exit_ok, stderr)
+        }
+        Ok(_) if !stderr.is_empty() && !exit_ok => {
+            Err(DownloadRunError::Failed(stderr.to_string()))
+        }
+        Ok(_) => Err(DownloadRunError::InvalidSummary(
+            "missing download summary".to_string(),
+        )),
+        Err(error) if exit_ok || stderr.is_empty() => {
+            Err(DownloadRunError::InvalidSummary(error.to_string()))
+        }
+        Err(_) => Err(DownloadRunError::Failed(stderr.to_string())),
+    }
+}
+
+fn is_download_summary_json(json: &Value) -> bool {
+    json.get("schema_version").and_then(Value::as_str) == Some("ax.download_model.v1")
+        || (json.get("status").is_some() && json.get("dest").is_some())
 }
 
 #[derive(Debug, Error)]
@@ -2963,6 +3349,42 @@ mod tests {
     }
 
     #[test]
+    fn manager_chat_request_uses_bounded_deterministic_defaults_and_family_stops() {
+        let body = json!({
+            "messages": [{"role": "user", "content": "hello"}]
+        })
+        .to_string();
+
+        let cases = [
+            ("qwen3_dense", None, json!(["<|im_end|>"])),
+            ("gemma4-e2b", None, json!(["<turn|>"])),
+            (
+                "glm4_moe_lite",
+                None,
+                json!(["<|endoftext|>", "<|user|>", "<|observation|>"]),
+            ),
+        ];
+
+        for (model_id, model_dir, expected_stops) in cases {
+            let native = openai_to_generate_request(&body, model_id, model_dir)
+                .expect("request should convert");
+            let value: Value = serde_json::from_str(&native).expect("native body should be json");
+
+            assert_eq!(value["max_output_tokens"], 128);
+            assert_eq!(value["sampling"]["temperature"], 0.0);
+            assert_eq!(value["stop_sequences"], expected_stops);
+        }
+
+        assert_eq!(
+            manager_chat_stop_sequences(
+                "local",
+                Some("/models/mlx-community--gemma-4-e2b-it-4bit")
+            ),
+            vec!["<turn|>".to_string()]
+        );
+    }
+
+    #[test]
     fn native_sse_proxy_emits_final_response_output_text_when_steps_are_empty() {
         let initial = br#"event: response
 data: {"response":{"output_text":"hello final","finish_reason":"max_output_tokens"}}
@@ -3020,7 +3442,8 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
             vec![
                 "scripts/download_model.py",
                 "mlx-community/Qwen3-4B-4bit",
-                "--json"
+                "--json",
+                "--progress-json"
             ]
         );
         assert_eq!(invocation.cwd, Some(PathBuf::from("/repo")));
@@ -3051,7 +3474,8 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
             vec![
                 "scripts/download_model.py",
                 "mlx-community/Qwen3-4B-4bit",
-                "--json"
+                "--json",
+                "--progress-json",
             ]
         );
         assert_eq!(invocation.cwd, Some(root.path().to_path_buf()));
@@ -3069,7 +3493,11 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
 
         assert_eq!(invocation.program, "python3");
         assert_eq!(invocation.args[0], "-c");
-        assert!(invocation.args[1].contains("snapshot_download"));
+        assert!(invocation.args[1].contains("\"mlx_lm\", \"generate\""));
+        assert!(invocation.args[1].contains("Downloading weights"));
+        assert!(invocation.args[1].contains("ETA"));
+        assert!(invocation.args[1].contains("XDG_CACHE_HOME"));
+        assert!(invocation.args[1].contains("Using existing mlx-lm cache snapshot"));
         assert_eq!(invocation.args[2], "mlx-community/Qwen3-4B-4bit");
         assert!(invocation.args[3].contains("ax-engine-bench"));
         assert_eq!(invocation.cwd, None);
@@ -3123,13 +3551,55 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     fn parses_ready_download_output() {
         let output = Output {
             status: std::process::ExitStatus::from_raw(0),
-            stdout: br#"{"status":"ready","dest":"/models/qwen","errors":[]}"#.to_vec(),
+            stdout: br#"{"schema_version":"ax.download_model.v1","status":"ready","dest":"/models/qwen","errors":[]}"#.to_vec(),
             stderr: Vec::new(),
         };
 
         assert_eq!(
             parse_download_output(output).expect("download should parse"),
             "/models/qwen"
+        );
+    }
+
+    #[test]
+    fn parses_progress_json_download_stdout_without_treating_events_as_summary() {
+        let stdout = r#"
+{"event":"progress","done":0,"total":100,"file":"Starting mlx-lm download"}
+{"event":"progress","done":85,"total":100,"file":"Using existing mlx-lm cache snapshot"}
+{"schema_version":"ax.download_model.v1","status":"ready","dest":"/models/glm","errors":[]}
+"#;
+
+        assert_eq!(
+            parse_download_stdout(stdout, true, "").expect("download should parse"),
+            "/models/glm"
+        );
+    }
+
+    #[test]
+    fn parses_pretty_json_download_stdout_from_workflow_command() {
+        let stdout = r#"{
+  "schema_version": "ax.download_model.v1",
+  "status": "ready",
+  "dest": "/models/glm",
+  "errors": []
+}"#;
+
+        assert_eq!(
+            parse_download_stdout(stdout, true, "").expect("download should parse"),
+            "/models/glm"
+        );
+    }
+
+    #[test]
+    fn ignores_progress_only_json_when_reporting_failed_download() {
+        let stdout = r#"{"event":"progress","done":5,"total":100,"file":"Downloading"}"#;
+
+        let error = parse_download_stdout(stdout, false, "mlx-lm failed")
+            .expect_err("progress-only output should not be treated as a summary");
+
+        assert_eq!(
+            error.to_string(),
+            "download command exited unsuccessfully: mlx-lm failed"
         );
     }
 
@@ -3200,6 +3670,90 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
         .expect("manual path should be accepted");
 
         assert_eq!(resolved, "/manual/model");
+    }
+
+    #[test]
+    fn cleanup_server_removes_exited_child_and_reports_stderr_hint() {
+        let stderr_path = tempfile::NamedTempFile::new()
+            .expect("stderr tempfile should create")
+            .into_temp_path();
+        let stderr_file = std::fs::File::create(&stderr_path).expect("stderr file should open");
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("echo startup failed >&2; exit 7")
+            .stderr(Stdio::from(stderr_file))
+            .spawn()
+            .expect("exiting child should start");
+        let mut runtime = WebRuntime::new(AppState::empty());
+        runtime.server = Some(ManagedServer {
+            child,
+            port: 32130,
+            repo_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+            model_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+            model_dir: "/models/qwen".to_string(),
+            engine: ManagerEngine::AxEngineNgram,
+            ready: false,
+            stderr_file: Some(stderr_path.to_path_buf()),
+        });
+
+        for _ in 0..20 {
+            runtime.cleanup_server();
+            if runtime.server.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(runtime.server.is_none());
+        assert!(runtime.status_message.contains("Server exited"));
+        assert!(runtime.status_message.contains("startup failed"));
+    }
+
+    #[test]
+    fn stop_server_preserves_crash_hint_for_exited_child() {
+        let stderr_path = tempfile::NamedTempFile::new()
+            .expect("stderr tempfile should create")
+            .into_temp_path();
+        let stderr_file = std::fs::File::create(&stderr_path).expect("stderr file should open");
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("echo launch failed >&2; exit 9")
+            .stderr(Stdio::from(stderr_file))
+            .spawn()
+            .expect("exiting child should start");
+        let runtime = Arc::new(Mutex::new(WebRuntime::new(AppState::empty())));
+        {
+            let mut guard = runtime.lock().expect("runtime lock should work");
+            guard.server = Some(ManagedServer {
+                child,
+                port: 32131,
+                repo_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+                model_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+                model_dir: "/models/qwen".to_string(),
+                engine: ManagerEngine::AxEngineNgram,
+                ready: false,
+                stderr_file: Some(stderr_path.to_path_buf()),
+            });
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+        let response = stop_server(&runtime).expect("stop should return status");
+        let status = response["status"]
+            .as_str()
+            .expect("stop response should include status");
+        assert!(
+            status.starts_with("Server exited"),
+            "stop should preserve the crash status instead of reporting a clean stop: {status}"
+        );
+        assert!(
+            status.contains("launch failed"),
+            "stop should preserve the stderr crash hint: {status}"
+        );
+        let guard = runtime.lock().expect("runtime lock should work");
+        assert!(
+            guard.server.is_none(),
+            "exited server should be removed after stop"
+        );
     }
 
     #[test]
@@ -3292,6 +3846,71 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
         assert!(
             still_running,
             "old server should not be killed by restart validation failure"
+        );
+        stop_server_locked(&mut guard);
+    }
+
+    #[test]
+    fn start_server_rejects_unsupported_model_before_manifest_generation() {
+        let child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("fake server should start");
+        let model_dir = tempfile::tempdir().expect("model dir should create");
+        let runtime = Arc::new(Mutex::new(WebRuntime::new(AppState::empty())));
+        {
+            let mut guard = runtime.lock().expect("runtime lock should work");
+            guard.download_jobs.push(DownloadJobSnapshot {
+                id: "download-unsupported".to_string(),
+                repo_id: "mlx-community/gemma-4-e4b-it-4bit".to_string(),
+                status: "succeeded".to_string(),
+                model_dir: Some(model_dir.path().display().to_string()),
+                message: None,
+                progress: 100,
+            });
+            guard.server = Some(ManagedServer {
+                child,
+                port: 32128,
+                repo_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+                model_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+                model_dir: "/models/qwen".to_string(),
+                engine: ManagerEngine::AxEngineNgram,
+                ready: true,
+                stderr_file: None,
+            });
+        }
+
+        let body = json!({
+            "repo_id": "mlx-community/gemma-4-e4b-it-4bit",
+            "model_dir": "/stale/model",
+            "manual_model_dir": false,
+            "port": 32129,
+            "engine": "ax-engine-ngram"
+        })
+        .to_string();
+        let error = start_server(&runtime, &body)
+            .expect_err("unsupported model should fail before manifest generation");
+
+        assert_eq!(
+            error.to_string(),
+            "manager cannot start mlx-community/gemma-4-e4b-it-4bit: no ax-engine-server preset is available yet"
+        );
+        assert!(
+            !model_dir.path().join("model-manifest.json").exists(),
+            "unsupported launch should not generate a manifest"
+        );
+        let mut guard = runtime.lock().expect("runtime lock should work");
+        let still_running = guard
+            .server
+            .as_mut()
+            .expect("old server should still be tracked")
+            .child
+            .try_wait()
+            .expect("fake server status should be readable")
+            .is_none();
+        assert!(
+            still_running,
+            "old server should not be killed by unsupported launch validation"
         );
         stop_server_locked(&mut guard);
     }
@@ -3407,6 +4026,44 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     }
 
     #[test]
+    fn manager_catalog_omits_qwen3_coder_next_until_sanitized_download_exists() {
+        assert!(
+            !MODEL_CATALOG
+                .iter()
+                .any(|entry| entry.repo_id == "mlx-community/Qwen3-Coder-Next-4bit"),
+            "manager catalog should contain only directly downloadable and startable models"
+        );
+    }
+
+    #[test]
+    fn server_launch_plan_rejects_qwen3_coder_next_public_snapshot() {
+        let error = server_launch_plan(
+            "mlx-community/Qwen3-Coder-Next-4bit",
+            "/models/qwen3-coder-next",
+            8080,
+            ManagerEngine::AxEngineNgram,
+        )
+        .expect_err("public qwen3 coder next snapshot should fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("sanitized Qwen3 Next"));
+        assert!(message.contains("mlx_lm.convert"));
+    }
+
+    #[test]
+    fn server_launch_plan_rejects_qwen3_coder_next_manual_path() {
+        let error = server_launch_plan(
+            "local",
+            "/models/Qwen3_Coder_Next_4bit",
+            8080,
+            ManagerEngine::AxEngine,
+        )
+        .expect_err("manual qwen3 coder next paths should fail closed");
+
+        assert!(error.to_string().contains("sanitized Qwen3 Next"));
+    }
+
+    #[test]
     fn server_launch_plan_respects_direct_ax_engine_selection() {
         let repo = "mlx-community/Qwen3-4B-4bit";
         let plan = server_launch_plan(repo, "/models/qwen", 8080, ManagerEngine::AxEngine)
@@ -3473,6 +4130,38 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     }
 
     #[test]
+    fn parses_system_metric_sources() {
+        let vm_stat = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
+            Pages free: 100.\n\
+            Pages speculative: 50.\n\
+            Pages active: 20.\n\
+            Pages wired down: 10.\n\
+            Pages occupied by compressor: 5.\n";
+        let ram = ram_utilization_percent_from_vm_stat(vm_stat, 1_638_400)
+            .expect("ram percent should parse");
+        assert_eq!(ram, 35.0);
+
+        let ioreg =
+            r#""PerformanceStatistics" = {"Device Utilization %"=45,"Renderer Utilization %"=44}"#;
+        assert_eq!(gpu_utilization_percent_from_ioreg(ioreg), Some(45.0));
+        assert_eq!(
+            parse_number_after_marker("\"Device Utilization %\" = 12", "\"Device Utilization %\""),
+            Some(12.0)
+        );
+    }
+
+    #[test]
+    fn system_metrics_json_has_cpu_gpu_ram_shape() {
+        let metrics = system_metrics_json();
+
+        assert!(metrics["timestamp_ms"].as_u64().is_some());
+        assert_eq!(metrics["refresh_interval_ms"], 3000);
+        assert!(metrics["cpu"].get("available").is_some());
+        assert!(metrics["gpu"].get("available").is_some());
+        assert!(metrics["ram"].get("available").is_some());
+    }
+
+    #[test]
     fn state_json_uses_cached_hf_cache_models() {
         let runtime = Arc::new(Mutex::new(WebRuntime::new(AppState::empty())));
         {
@@ -3494,18 +4183,93 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
     }
 
     #[test]
+    fn state_json_deduplicates_downloaded_models_by_path() {
+        let mut app_state = AppState::empty();
+        app_state.doctor = LoadState::Ready(doctor_with_model_path("/cached/qwen"));
+        let runtime = Arc::new(Mutex::new(WebRuntime::new(app_state)));
+        {
+            let mut guard = runtime.lock().expect("runtime lock should work");
+            guard.hf_cache_models = Some(vec![CachedModelSnapshot {
+                repo_id: "mlx-community/Qwen3-4B-4bit".to_string(),
+                path: "/cached/qwen".to_string(),
+            }]);
+        }
+
+        let state = runtime_state_json(&runtime).expect("state should render");
+        let downloaded = state["downloaded_models"]
+            .as_array()
+            .expect("downloaded models should be an array");
+
+        assert_eq!(
+            downloaded
+                .iter()
+                .filter(|model| model["path"] == "/cached/qwen")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn state_json_includes_catalog_and_endpoints() {
         let runtime = Arc::new(Mutex::new(WebRuntime::new(AppState::empty())));
         let state = runtime_state_json(&runtime).expect("state should render");
+        let endpoints = state["server"]["endpoints"]
+            .as_array()
+            .expect("endpoints array");
 
         assert!(state["catalog"].as_array().expect("catalog array").len() > 3);
         assert_eq!(state["server"]["port"], 8080);
         assert!(
-            state["server"]["endpoints"]
-                .as_array()
-                .expect("endpoints array")
+            endpoints
                 .iter()
                 .any(|endpoint| endpoint["url"] == "http://127.0.0.1:8080/health")
         );
+        assert!(
+            endpoints
+                .iter()
+                .any(|endpoint| endpoint["url"] == "http://127.0.0.1:8080/v1/chat/completions")
+        );
+        assert!(
+            !endpoints
+                .iter()
+                .any(|endpoint| endpoint["url"] == "http://127.0.0.1:8080/v1/embeddings"),
+            "manager should not advertise embedding endpoints in the text LLM workflow"
+        );
+    }
+
+    fn doctor_with_model_path(path: &str) -> DoctorReport {
+        serde_json::from_value(json!({
+            "schema_version": "ax.engine_bench.doctor.v1",
+            "status": "ready",
+            "mlx_runtime_ready": true,
+            "bringup_allowed": true,
+            "workflow": {
+                "mode": "source_checkout",
+                "cwd": "/repo",
+                "source_root": "/repo",
+                "doctor": {"argv": ["doctor"], "cwd": null},
+                "server": {"argv": ["server"], "cwd": null},
+                "generate_manifest": {"argv": ["generate-manifest"], "cwd": null},
+                "benchmark": {"argv": ["scenario"], "cwd": null},
+                "download_model": {"argv": ["python3", "scripts/download_model.py", "<repo-id>", "--json"], "cwd": "/repo"}
+            },
+            "model_artifacts": {
+                "selected": true,
+                "status": "ready",
+                "path": path,
+                "exists": true,
+                "is_dir": true,
+                "config_present": true,
+                "manifest_present": true,
+                "safetensors_present": true,
+                "model_type": "qwen3",
+                "quantization": null,
+                "issues": []
+            },
+            "issues": [],
+            "notes": [],
+            "performance_advice": []
+        }))
+        .expect("doctor report should deserialize")
     }
 }

@@ -44,10 +44,6 @@ pub fn index_html() -> String {
         </div>
 
         <div class="field-group">
-          <label class="field-label">TYPE</label>
-          <select id="model-kind" class="field-select"></select>
-        </div>
-        <div class="field-group">
           <label class="field-label">FAMILY</label>
           <select id="family" class="field-select"></select>
         </div>
@@ -89,8 +85,6 @@ pub fn index_html() -> String {
           <select id="engine" class="field-select">
             <option value="ax-engine">ax-engine</option>
             <option value="ax-engine-ngram">ax-engine n-gram</option>
-            <option value="mlx-lm">mlx-lm</option>
-            <option value="mlx-swift">mlx-swift</option>
           </select>
         </div>
 
@@ -108,6 +102,26 @@ pub fn index_html() -> String {
 
     <!-- STEP 3: CHAT -->
     <section class="chat-area">
+      <div class="system-strip">
+        <div class="system-heading">
+          <span class="panel-title">SYSTEM</span>
+          <span id="system-refresh" class="panel-note">3s refresh</span>
+        </div>
+        <div class="system-meters">
+          <div class="system-meter" data-metric="cpu">
+            <span class="system-label">CPU</span>
+            <span id="sys-cpu" class="system-value">--</span>
+          </div>
+          <div class="system-meter" data-metric="gpu">
+            <span class="system-label">GPU</span>
+            <span id="sys-gpu" class="system-value">--</span>
+          </div>
+          <div class="system-meter" data-metric="ram">
+            <span class="system-label">RAM</span>
+            <span id="sys-ram" class="system-value">--</span>
+          </div>
+        </div>
+      </div>
       <div class="chat-header">
         <span class="step-badge">3</span>
         <span class="panel-title">CHAT</span>
@@ -126,6 +140,10 @@ pub fn index_html() -> String {
             <li>Start the server</li>
             <li>Chat here</li>
           </ol>
+          <p class="chat-empty-purpose">
+            This is for testing downloaded LLM models and confirming AX Engine is functional.
+            It demonstrates the full chatbot feature set.
+          </p>
         </div>
       </div>
 
@@ -187,7 +205,7 @@ body {
   background-size: 32px 32px;
   color: var(--text);
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 12.5px;
   height: 100vh;
   display: grid;
   grid-template-rows: 52px 1fr;
@@ -241,7 +259,7 @@ body::after {
 .btn {
   background:transparent;border:1px solid var(--border);border-radius:var(--r);
   color:var(--text);cursor:pointer;
-  font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:1px;
+  font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:1px;
   padding:7px 12px;text-align:center;transition:all .15s;white-space:nowrap;
 }
 .btn:hover:not(:disabled) { border-color:var(--accent);color:var(--accent); }
@@ -263,7 +281,7 @@ body::after {
 .btn-red:hover:not(:disabled) { background:rgba(255,51,85,.10); }
 
 .btn-ghost { border-color:var(--border);color:var(--text); }
-.btn-xs    { font-size:9px;padding:2px 6px;letter-spacing:0;flex-shrink:0; }
+.btn-xs    { font-size:8.5px;padding:2px 6px;letter-spacing:0;flex-shrink:0; }
 .full-width { width:100%;margin-top:6px; }
 
 /* ── Layout ──────────────────────────────────────────────── */
@@ -286,6 +304,7 @@ body::after {
 }
 .panel-header { display:flex;align-items:center;gap:8px;margin-bottom:13px; }
 .panel-title  { font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:2px;color:var(--accent); }
+.panel-note   { margin-left:auto;font-family:var(--mono);font-size:8.5px;color:var(--text-dim);letter-spacing:.5px;text-transform:uppercase; }
 
 /* step badge circles */
 .step-badge {
@@ -305,7 +324,7 @@ body::after {
 .field-input,.field-select {
   width:100%;background:var(--panel-alt);border:1px solid var(--border);
   border-radius:var(--r);color:var(--text-hi);
-  font-family:var(--mono);font-size:12px;padding:6px 8px;outline:none;
+  font-family:var(--mono);font-size:11.5px;padding:6px 8px;outline:none;
   transition:border-color .15s;appearance:none;-webkit-appearance:none;
 }
 .field-input:focus,.field-select:focus { border-color:var(--accent-d); }
@@ -337,6 +356,7 @@ body::after {
   font-family:var(--mono);font-size:10px;color:var(--text-dim);
   margin:7px 0 4px;min-height:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
+.status-text:empty { margin:0;min-height:0; }
 
 .endpoint-list { list-style:none;margin-top:6px;display:flex;flex-direction:column;gap:3px; }
 .endpoint-list a {
@@ -365,10 +385,10 @@ body::after {
 /* ── Downloaded quick-pick ───────────────────────────────── */
 .dl-section-label {
   font-family:var(--mono);font-size:9px;letter-spacing:1px;
-  color:var(--text-dim);text-transform:uppercase;margin:12px 0 5px;
+  color:var(--text-dim);text-transform:uppercase;margin:7px 0 5px;
 }
 .dl-scroll {
-  max-height:120px;overflow-y:auto;
+  max-height:160px;overflow-y:auto;
   scrollbar-width:thin;scrollbar-color:var(--border-hi) transparent;
 }
 .dl-scroll::-webkit-scrollbar { width:4px; }
@@ -388,8 +408,33 @@ body::after {
 .dl-check { color:var(--green);font-size:11px;flex-shrink:0; }
 .dl-repo  { font-family:var(--mono);font-size:9px;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 
+/* ── System utilization ──────────────────────────────────── */
+.system-strip {
+  display:grid;grid-template-columns:auto minmax(260px,420px);
+  align-items:center;gap:12px;padding:10px 18px;
+  border-bottom:1px solid var(--border);background:rgba(12,17,33,.55);
+}
+.system-heading {
+  display:flex;align-items:baseline;gap:8px;white-space:nowrap;
+}
+.system-meters {
+  display:grid;grid-template-columns:repeat(3,minmax(64px,1fr));gap:6px;margin-bottom:0;
+}
+.system-meter {
+  background:var(--panel-alt);border:1px solid var(--border);
+  border-radius:var(--r);padding:5px 6px;text-align:left;
+  display:flex;align-items:center;justify-content:space-between;gap:6px;
+}
+.system-label {
+  display:inline;font-family:var(--mono);font-size:8px;letter-spacing:1px;
+  color:var(--text-dim);margin-bottom:0;
+}
+.system-value {
+  font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--text-hi);
+}
+
 /* ── Chat area ───────────────────────────────────────────── */
-.chat-area { display:grid;grid-template-rows:44px 1fr auto;overflow:hidden; }
+.chat-area { display:grid;grid-template-rows:50px 44px 1fr auto;overflow:hidden; }
 .chat-header {
   display:flex;align-items:center;gap:8px;padding:0 18px;
   border-bottom:1px solid var(--border);background:rgba(12,17,33,.7);
@@ -435,6 +480,12 @@ body::after {
 .flow-steps li { counter-increment:step; }
 .flow-steps li::before { content:counter(step); }
 
+.chat-empty-purpose {
+  max-width:420px;margin-top:12px;text-align:center;
+  font-family:var(--mono);font-size:10.5px;line-height:1.6;letter-spacing:.3px;
+  color:var(--text);
+}
+
 .chat-msg { display:flex;gap:14px;animation:msg-in .18s ease-out; }
 @keyframes msg-in { from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)} }
 
@@ -446,20 +497,20 @@ body::after {
 .chat-msg-assistant .msg-role { color:var(--green); }
 
 .msg-body {
-  font-size:14px;line-height:1.65;color:var(--text-hi);
+  font-size:13.5px;line-height:1.65;color:var(--text-hi);
   white-space:pre-wrap;word-break:break-word;flex:1;
 }
 .chat-msg-user .msg-body { color:var(--text); }
 
 .msg-body code {
-  font-family:var(--mono);font-size:12px;
+  font-family:var(--mono);font-size:11.5px;
   background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.14);
   border-radius:3px;padding:1px 5px;color:var(--accent);
 }
 .msg-body pre {
   background:rgba(0,0,0,.4);border:1px solid var(--border);
   border-radius:5px;padding:10px 12px;margin:8px 0;
-  overflow-x:auto;font-family:var(--mono);font-size:12px;
+  overflow-x:auto;font-family:var(--mono);font-size:11.5px;
   color:var(--text-hi);line-height:1.5;
 }
 .msg-body pre code { background:none;border:none;padding:0;color:inherit; }
@@ -477,7 +528,7 @@ body::after {
 .chat-input {
   flex:1;background:var(--panel-alt);border:1px solid var(--border);
   border-radius:var(--r);color:var(--text-hi);font-family:var(--sans);
-  font-size:14px;line-height:1.5;padding:8px 11px;resize:none;outline:none;
+  font-size:13.5px;line-height:1.5;padding:8px 11px;resize:none;outline:none;
   transition:border-color .15s;min-height:38px;max-height:140px;overflow-y:auto;
 }
 .chat-input:focus { border-color:var(--accent-d); }
@@ -497,6 +548,9 @@ body::after {
 @media (max-width:760px) {
   .workspace { grid-template-columns:1fr;grid-template-rows:auto 1fr; }
   .sidebar   { border-right:none;border-bottom:1px solid var(--border);max-height:45vh; }
+  .system-strip { grid-template-columns:1fr;align-items:stretch;gap:8px;padding:9px 12px; }
+  .system-meters { grid-template-columns:repeat(3,1fr); }
+  .chat-area { grid-template-rows:auto 44px 1fr auto; }
   body       { overflow:auto; }
 }
 "##
@@ -616,20 +670,15 @@ function applyState(data) {
 
 // ── Model selectors ───────────────────────────────────────────────────────────
 
-function kinds()           { return [...new Set(app.catalog.map(e => e.kind))]; }
+function currentKind()     { return app.catalog[0] ? app.catalog[0].kind : 'Text'; }
 function familiesOf(kind)  { return [...new Set(app.catalog.filter(e => e.kind === kind).map(e => e.family))]; }
 function modelsOf(k, fam)  { return app.catalog.filter(e => e.kind === k && e.family === fam); }
 
 function fillModelSelectors(data) {
-  const prevKind = $('model-kind').value;
   const prevFam  = $('family').value;
   const prevRepo = $('model').value;
 
-  const ks = kinds();
-  $('model-kind').innerHTML = ks.map(k => `<option value="${k}">${k}</option>`).join('');
-  const kind = ks.includes(prevKind) ? prevKind : ks[0];
-  $('model-kind').value = kind;
-
+  const kind = currentKind();
   const fams = familiesOf(kind);
   $('family').innerHTML = fams.map(f => `<option value="${f}">${f}</option>`).join('');
   const fam = fams.includes(prevFam) ? prevFam : fams[0];
@@ -687,7 +736,7 @@ function updateModelStatus() {
 // ── Endpoints ─────────────────────────────────────────────────────────────────
 
 function renderEndpoints(eps) {
-  $('endpoint-list').innerHTML = eps.slice(0, 4).map(ep =>
+  $('endpoint-list').innerHTML = eps.map(ep =>
     `<li><a href="${escapeHtml(ep.url)}" target="_blank" rel="noopener">${escapeHtml(ep.label)}</a></li>`
   ).join('');
 }
@@ -734,7 +783,6 @@ function renderDownloaded(models) {
       if (entry) {
         delete $('model-dir').dataset.userEdited;
         clearManualModelDirOrigin();
-        $('model-kind').value = entry.kind;
         $('family').innerHTML = familiesOf(entry.kind).map(f => `<option value="${f}">${f}</option>`).join('');
         $('family').value = entry.family;
         fillSizes(entry.kind, entry.family, repo);
@@ -755,6 +803,35 @@ function renderDownloaded(models) {
       updateModelStatus();
     });
   });
+}
+
+// ── System utilization ───────────────────────────────────────────────────────
+
+const SYSTEM_REFRESH_MS = 3000;
+
+function metricPercent(metric) {
+  return metric && typeof metric.percent === 'number' ? metric.percent : null;
+}
+
+function metricText(metric) {
+  const percent = metricPercent(metric);
+  return percent === null ? 'N/A' : `${Math.round(percent)}%`;
+}
+
+function renderSystem(data) {
+  $('sys-cpu').textContent = metricText(data.cpu);
+  $('sys-gpu').textContent = metricText(data.gpu);
+  $('sys-ram').textContent = metricText(data.ram);
+}
+
+async function loadSystem() {
+  try {
+    renderSystem(await api('/api/system'));
+  } catch {
+    $('sys-cpu').textContent = 'N/A';
+    $('sys-gpu').textContent = 'N/A';
+    $('sys-ram').textContent = 'N/A';
+  }
 }
 
 // ── Server controls ───────────────────────────────────────────────────────────
@@ -880,6 +957,7 @@ async function pollDownload(jobId, repoId) {
 
 const MAX_CHAT_HISTORY_TURNS = 20;
 const MAX_CHAT_HISTORY_MESSAGES = MAX_CHAT_HISTORY_TURNS * 2;
+const MANAGER_CHAT_MAX_TOKENS = 128;
 const history = [];
 
 function ensureChatOpen() {
@@ -981,6 +1059,7 @@ async function sendMessage() {
   let accumulated = '';
   let streamError = false;
   let perfStats = null;
+  let finishReason = '';
 
   try {
     const msgsToSend = [
@@ -990,7 +1069,12 @@ async function sendMessage() {
     const res = await fetch('/api/proxy/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ messages: msgsToSend, stream: true, max_tokens: 2048 }),
+      body: JSON.stringify({
+        messages: msgsToSend,
+        stream: true,
+        max_tokens: MANAGER_CHAT_MAX_TOKENS,
+        temperature: 0,
+      }),
     });
 
     if (!res.ok) {
@@ -1026,6 +1110,7 @@ async function sendMessage() {
         if (delta) { accumulated += delta; appendToken(bodyEl, delta); }
         if (chunk.usage && chunk.choices?.[0]?.finish_reason) {
           perfStats = chunk.usage;
+          finishReason = chunk.choices[0].finish_reason;
         }
       }
     }
@@ -1044,7 +1129,8 @@ async function sendMessage() {
     const engineLabel = $('engine').options[$('engine').selectedIndex]?.text || '';
     const modelLabel = app.serverModelId ? shortModelName(app.serverModelId) : '';
     const prefix = [engineLabel, modelLabel].filter(Boolean).join(' · ');
-    statsEl.textContent = `⚡ ${prefix} · ${prompt} prompt · ${output} output · ${tps} tok/s`;
+    const finish = finishReason === 'length' ? ' · length limit' : '';
+    statsEl.textContent = `⚡ ${prefix} · ${prompt} prompt · ${output} output · ${tps} tok/s${finish}`;
     bodyEl.appendChild(statsEl);
   }
   // Only add real content to history — empty or error responses would appear
@@ -1067,7 +1153,8 @@ function clearChat() {
   const logoSrc = document.querySelector('.brand-logo')?.src || '';
   empty.innerHTML =
     '<img src="' + logoSrc + '" class="chat-empty-logo" alt="AX Engine">' +
-    '<ol class="flow-steps"><li>Select a model above</li><li>Download it if needed</li><li>Start the server</li><li>Chat here</li></ol>';
+    '<ol class="flow-steps"><li>Select a model above</li><li>Download it if needed</li><li>Start the server</li><li>Chat here</li></ol>' +
+    '<p class="chat-empty-purpose">This is for testing downloaded LLM models and confirming AX Engine is functional. It demonstrates the full chatbot feature set.</p>';
   msgs.appendChild(empty);
 }
 
@@ -1115,20 +1202,10 @@ function cancelServerPoll() {
 
 // ── Wire events ───────────────────────────────────────────────────────────────
 
-$('model-kind').addEventListener('change', () => {
-  // User explicitly changed the model — let model-dir follow the new selection.
-  delete $('model-dir').dataset.userEdited;
-  clearManualModelDirOrigin();
-  const kind = $('model-kind').value;
-  const fams = familiesOf(kind);
-  $('family').innerHTML = fams.map(f => `<option value="${f}">${f}</option>`).join('');
-  fillSizes(kind, fams[0], null);
-});
-
 $('family').addEventListener('change', () => {
   delete $('model-dir').dataset.userEdited;
   clearManualModelDirOrigin();
-  fillSizes($('model-kind').value, $('family').value, null);
+  fillSizes(currentKind(), $('family').value, null);
 });
 
 $('model').addEventListener('change', () => {
@@ -1160,6 +1237,8 @@ $('chat-input').addEventListener('input', function() { autoResize(this); });
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 loadState().catch(err => { $('sys-status').textContent = String(err.message || err); });
+loadSystem();
+setInterval(loadSystem, SYSTEM_REFRESH_MS);
 "##
 }
 
@@ -1238,6 +1317,81 @@ mod tests {
         assert!(index_html().contains("AX ENGINE"));
         assert!(manager_js().contains("/api/download"));
         assert!(manager_css().contains(".chat-area"));
+    }
+
+    #[test]
+    fn endpoint_renderer_does_not_hide_chatbot_routes() {
+        let js = manager_js();
+
+        assert!(js.contains("function renderEndpoints(eps)"));
+        assert!(!js.contains("eps.slice(0, 4)"));
+        assert!(js.contains("${escapeHtml(ep.label)}"));
+    }
+
+    #[test]
+    fn chat_empty_state_explains_chatbot_demo_purpose() {
+        let purpose =
+            "This is for testing downloaded LLM models and confirming AX Engine is functional.";
+
+        assert!(index_html().contains(purpose));
+        assert!(manager_js().contains(purpose));
+    }
+
+    #[test]
+    fn downloaded_model_quick_pick_has_room_for_more_rows() {
+        assert!(manager_css().contains("max-height:160px;overflow-y:auto;"));
+    }
+
+    #[test]
+    fn empty_status_text_does_not_consume_model_picker_space() {
+        let css = manager_css();
+
+        assert!(css.contains(".status-text:empty { margin:0;min-height:0; }"));
+        assert!(css.contains("text-transform:uppercase;margin:7px 0 5px;"));
+    }
+
+    #[test]
+    fn system_panel_assets_include_text_metrics() {
+        let html = index_html();
+        let css = manager_css();
+        let js = manager_js();
+
+        assert!(html.contains("SYSTEM"));
+        assert!(html.contains("<section class=\"chat-area\">\n      <div class=\"system-strip\">"));
+        assert!(html.contains("3s refresh"));
+        assert!(!html.contains("id=\"system-chart\""));
+        assert!(css.contains(".system-strip"));
+        assert!(css.contains("grid-template-rows:50px 44px 1fr auto;"));
+        assert!(!css.contains(".system-chart"));
+        assert!(!css.contains(".system-bar.cpu"));
+        assert!(js.contains("SYSTEM_REFRESH_MS = 3000"));
+        assert!(js.contains("/api/system"));
+    }
+
+    #[test]
+    fn select_model_panel_omits_fixed_text_model_kind_control() {
+        let html = index_html();
+        let js = manager_js();
+
+        assert!(!html.contains("model-kind"));
+        assert!(!html.contains("<label class=\"field-label\">TYPE</label>"));
+        assert!(!js.contains("model-kind"));
+    }
+
+    #[test]
+    fn launch_engine_selector_lists_only_manager_startable_engines() {
+        let html = index_html();
+
+        assert!(html.contains(r#"<option value="ax-engine">ax-engine</option>"#));
+        assert!(html.contains(r#"<option value="ax-engine-ngram">ax-engine n-gram</option>"#));
+        assert!(
+            !html.contains(r#"<option value="mlx-lm">"#),
+            "mlx-lm is a delegated backend and requires a separate mlx_lm.server"
+        );
+        assert!(
+            !html.contains(r#"<option value="mlx-swift">"#),
+            "mlx-swift-lm is a benchmark adapter, not a manager-startable server"
+        );
     }
 
     #[test]
