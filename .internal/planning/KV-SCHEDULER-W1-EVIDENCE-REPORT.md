@@ -2,7 +2,7 @@
 
 **PRD**: `.internal/planning/KV-SCHEDULER-REVAMP-PRD.md` §W1
 **ADR**: 0018 KV/Scheduler Revamp
-**Status**: Slice 5 complete (2026-05-11). Strategy 1 shipped: Qwen-class linear-attention models now get physical prefix cache hits. warm_repeat TTFT 3247× speedup on Qwen3.5-9B; correctness harness 5/5 PASS on both models.
+**Status**: Slice 6 complete (2026-05-11). Strategy 2 shipped: sliding-window models (Gemma class) now also get physical prefix cache hits. warm_repeat TTFT 1344× on Gemma 4 E2B and 3989× on Qwen3.5-9B; correctness harness 5/5 PASS on both. Only MLA (GLM-class) remains gated.
 **Author**: AX Engine work session
 
 ## TL;DR
@@ -748,6 +748,96 @@ Bug-audit artifacts:
   (4/5 PASS — documents the pre-existing warmup-path bug)
 - `benchmarks/results/prefix-reuse-equivalence/gemma4-warm-extend-2026-05-11.json`
   (3/5 PASS — same bug, no Strategy 1 surface area on Gemma)
+
+## Slice 6 Findings (2026-05-11) — Strategy 2 Shipped (Sliding-Window)
+
+### Design
+
+Strategy 2 turned out to be a near-trivial extension of Strategy 1 once
+the underlying invariant was clear. Both linear-attention and sliding-
+window architectures share the same fundamental snapshot constraint:
+
+- `MlxKVCache::trim_to(prefix_len)` cannot make the cache consistent
+  with what a fresh prefill of `prefix_len` tokens would produce when
+  the live cache has progressed past `prefix_len`.
+- For linear attention: `trim_to` doesn't touch the per-layer recurrent
+  state (which already integrates all processed tokens).
+- For sliding window: `trim_to` explicitly returns `false` once any
+  rotating-window layer has rotated past `prefix_len` (kv_cache.rs:991).
+
+The sound store policy is identical: only store the full-prompt
+snapshot, and only when the prompt is exactly block-aligned (so
+`trim_to(full_block_tokens) == seq_len` is a no-op).
+
+### Code change
+
+`crates/ax-engine-mlx/src/runner.rs`:
+
+1. `prefix_cache_supported()` — drop the
+   `kv_layer_windows.iter().all(Option::is_none)` term. Now MLA is the
+   only architecture-level gate left.
+
+2. `store_prompt_prefix_snapshots()` — generalize the
+   `linear_attention`-only check to `linear_attention || sliding_window`.
+   Skip the store with `record_blocked_trim_failure` when the prompt is
+   non-aligned, and start the snapshot loop at `full_block_tokens`
+   (single full-prefix snapshot) when either architecture is present.
+
+The existing `MlxPrefixCache::get` token-equality check continues to
+guarantee exact-match-only lookups for both architectures.
+
+### Runtime impact
+
+Gemma 4 E2B (2048-token block-aligned prompt):
+
+| scenario      | before TTFT | after TTFT  | speedup    |
+|---------------|-------------|-------------|------------|
+| cold          | 0.256 s     | 0.249 s     | (noise)    |
+| warm_repeat   | 0.236 s     | **0.0002 s** | **1344×** |
+| warm_extend   | 0.277 s     | 0.045 s     | **~6×**   |
+
+`warm_extend` improvement on Gemma is 256/2048 ≈ 12.5% of cold-TTFT,
+matching the geometric speedup the cache promises.
+
+Qwen3.5-9B post-Strategy 2 (regression check, unchanged from Strategy 1
+modulo run-to-run noise):
+
+| scenario      | TTFT     | speedup vs cold |
+|---------------|----------|-----------------|
+| cold          | 0.694 s  | —               |
+| warm_repeat   | 0.0002 s | **3989×**       |
+| warm_extend   | 0.104 s  | **~7×**         |
+
+### Tests + correctness
+
+- ax-engine-mlx lib: 310/310 PASS
+- clippy `--all-targets -- -D warnings`: clean
+- Equivalence harness warm_repeat: **5/5 PASS on both Qwen and Gemma**
+- Bug audit's warm_extend pre-existing bug is unchanged (still 4/5
+  Qwen, 3/5 Gemma) — Strategy 2 doesn't fix that warmup-path bug; it
+  enables the SNAPSHOT path which doesn't go through the buggy code.
+
+### Architecture-tier status
+
+| Architecture      | Models       | prefix_cache_supported | Strategy   |
+|-------------------|--------------|------------------------|------------|
+| Standard FA       | (none currently in native tier) | true | Day 1 |
+| Linear attention  | Qwen3.5, Qwen3.6 | true               | Strategy 1 (2026-05-11) |
+| Sliding window    | Gemma 4 E2B      | true               | Strategy 2 (2026-05-11) |
+| MLA               | GLM-4.7-Flash    | **false**          | Strategy 3 (deferred per DS4 policy) |
+
+Three of four supported native architectures now have working physical
+prefix cache. Only GLM-class MLA remains, and its MLA compressed-latent
+state needs a separate snapshot design (Strategy 3, deferred).
+
+### Slice 6 Artifacts
+
+- `benchmarks/results/prefix-reuse-equivalence/gemma4-strategy2-warm-repeat-2026-05-11.json`
+  (5/5 PASS)
+- `benchmarks/results/prefix-reuse-equivalence/qwen3-5-9b-strategy2-warm-repeat-2026-05-11.json`
+  (5/5 PASS — regression check, no change from Strategy 1)
+- `benchmarks/results/kv-long-context/gemma4-strategy2-2026-05-11.json`
+- `benchmarks/results/kv-long-context/qwen3-5-9b-strategy2-2026-05-11.json`
 
 ### Slice 5 Artifacts
 
