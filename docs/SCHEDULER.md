@@ -78,6 +78,51 @@ reuse existing partial block capacity or finish and free memory. Concrete KV
 allocation remains the final authority; if decode cannot allocate, the engine
 marks that request `BlockedOnMemory` and retries without it.
 
+### Preempt-and-recompute
+
+When a step's allocation for a request returns `InsufficientCapacity` (KV is
+full **and** the retained-prefix cache has nothing evictable), the engine looks
+for an in-flight prefill request to preempt and re-attempts the allocation.
+
+A candidate request must:
+
+- hold KV blocks (`KvManager::block_count_for(rid) > 0`);
+- be in prefill stage — `generated_tokens.is_empty()`. Decode-stage requests
+  are **never** preempted in this phase; reconstructing partial decode state
+  is out of scope;
+- have a **strictly higher** `arrival_sequence` than the stalled request.
+  Preemption only flows from newer requests to older ones. The oldest active
+  request is never sacrificed.
+
+Among eligible candidates the newest (highest `arrival_sequence`, then highest
+`RequestId` as deterministic tiebreaker) is selected. Preemption:
+
+1. calls `KvManager::free()` — the prompt prefix is promoted into the retained
+   cache for cheap recompute (zero-copy refcount bookkeeping, no data motion);
+2. re-registers the request with the same `prompt_tokens` so it can be
+   re-scheduled later;
+3. resets `processed_prompt_tokens` to 0 and clears `block_table`;
+4. moves the preempted request into `memory_blocked_requests` so the next
+   `step()` returns it to `Runnable` via `retry_memory_blocked()`.
+
+When the preempted request is later re-admitted, `lookup_prefix()` will hit
+the retained cache (keyed by content hash) for its full prompt prefix, so the
+prefill rework is largely free. The metric cost of preemption is therefore
+bounded even under tight memory.
+
+Preemption is observed via `StepMetrics`:
+
+| Field | Meaning |
+|---|---|
+| `preempted_requests` | Count of requests preempted in this step |
+| `preempted_tokens` | Sum of `processed_prompt_tokens` forfeited (re-runnable from retained cache when present) |
+
+These mirror through `EngineStepReport` (SDK), `RuntimeObservation` and
+`StepTraceEntry` (bench), and the Python step dict.
+
+Reference test:
+`engine::tests::step_preempts_newer_in_flight_prefill_when_older_decode_needs_kv`.
+
 ---
 
 ## Batch Routing and Route Compatibility
@@ -159,14 +204,17 @@ Phase 2 — Prefix reuse re-plan (if any prefix hits found)
 
 Phase 3 — KV fallback re-plan (if KV allocation fails)
   resolve_kv_schedule_plan() fails to allocate blocks for some requests
-  → marks them BlockedOnMemory
+  → attempts preempt-and-recompute on a newer in-flight prefill request
+    (see "Preempt-and-recompute" above); retries the failed allocation
+  → if still failing, marks the requester BlockedOnMemory
   → if all candidates blocked: scheduler.plan(excluding blocked requests)
   → SchedulePlan without the memory-blocked set
 ```
 
 Phase 3 only fires when `InsufficientCapacity` is returned during KV block
-allocation and the engine cannot proceed with any of the initially selected
-requests. In practice, Phase 3 is rare under normal working-set sizes.
+allocation. Within Phase 3 the engine first tries preemption (cheap on Apple
+UMA — no copy, only refcount bookkeeping). The fallback `scheduler.plan()`
+re-plan runs only when preemption has no eligible candidate.
 
 ---
 

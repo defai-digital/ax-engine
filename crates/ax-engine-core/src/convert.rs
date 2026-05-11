@@ -16,7 +16,7 @@ use crate::model::{
     AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeGlmRouterConfig, NativeLinearAttentionConfig,
     NativeMlaAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
     NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization, NativeTensorRole,
-    NativeTensorSpec,
+    NativeTensorSpec, WeightSanitize,
 };
 
 // ---------------------------------------------------------------------------
@@ -176,6 +176,10 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         mla_attention,
         moe: moe_config(&config, &model_type),
         glm_router,
+        // Converter assumes the on-disk weights are mlx-community pre-sanitized;
+        // raw HuggingFace checkpoints need this set to `HfToMlx` by hand (or via
+        // the doctor command when REQ-L4 lands).
+        weight_sanitize: WeightSanitize::None,
         tensors: mapped_tensors,
     };
 

@@ -3409,6 +3409,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            weight_sanitize: ax_engine_core::WeightSanitize::None,
             tensors: Vec::new(),
         }
     }
@@ -3457,6 +3458,7 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            weight_sanitize: ax_engine_core::WeightSanitize::None,
             tensors: Vec::new(),
         }
     }
@@ -3520,6 +3522,7 @@ mod tests {
                 topk_group: Some(1),
                 has_shared_experts: true,
             },
+            weight_sanitize: ax_engine_core::WeightSanitize::None,
             tensors: Vec::new(),
         }
     }

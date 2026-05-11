@@ -59,6 +59,7 @@ pub(super) fn write_valid_native_model_fixture() -> PathBuf {
         mla_attention: Default::default(),
         moe: crate::model::NativeMoeConfig::default(),
         glm_router: Default::default(),
+        weight_sanitize: crate::model::WeightSanitize::None,
         tensors: vec![
             native_model_tensor(
                 "model.embed_tokens.weight",
@@ -257,6 +258,7 @@ pub(super) fn write_projection_native_model_fixture() -> PathBuf {
         mla_attention: Default::default(),
         moe: crate::model::NativeMoeConfig::default(),
         glm_router: Default::default(),
+        weight_sanitize: crate::model::WeightSanitize::None,
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -714,6 +716,7 @@ pub(super) fn write_grouped_projection_native_model_fixture() -> PathBuf {
         mla_attention: Default::default(),
         moe: crate::model::NativeMoeConfig::default(),
         glm_router: Default::default(),
+        weight_sanitize: crate::model::WeightSanitize::None,
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -1016,6 +1019,7 @@ pub(super) fn write_wide_projection_native_model_fixture() -> PathBuf {
         mla_attention: Default::default(),
         moe: crate::model::NativeMoeConfig::default(),
         glm_router: Default::default(),
+        weight_sanitize: crate::model::WeightSanitize::None,
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -1205,6 +1209,7 @@ pub(super) fn write_wide_direct_decode_native_model_fixture() -> PathBuf {
         mla_attention: Default::default(),
         moe: crate::model::NativeMoeConfig::default(),
         glm_router: Default::default(),
+        weight_sanitize: crate::model::WeightSanitize::None,
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -1569,6 +1574,7 @@ pub(super) fn write_direct_decode_native_model_fixture_with_variant(
         mla_attention: Default::default(),
         moe: crate::model::NativeMoeConfig::default(),
         glm_router: Default::default(),
+        weight_sanitize: crate::model::WeightSanitize::None,
         tensors,
     };
 

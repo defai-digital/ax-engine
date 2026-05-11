@@ -2,10 +2,14 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
-use mlx_sys::{MlxArray, MlxDtype, astype, concatenate, eval, load_safetensors, multiply};
+use mlx_sys::{
+    MlxArray, MlxDtype, add, astype, concatenate, contiguous, eval, load_safetensors, multiply,
+    transpose,
+};
 
 use ax_engine_core::{
     NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
+    WeightSanitize,
 };
 
 /// All weight arrays for one model.
@@ -170,6 +174,14 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
 
     let specs = artifacts.tensor_specs();
     let layer_count = artifacts.manifest().layer_count as usize;
+
+    // Raw HuggingFace checkpoints store RMSNorm weights as zero-centered deltas
+    // and conv1d weights in a different axis order than MLX expects. The MLX
+    // community fork pre-applies these transforms; raw HF checkpoints need them
+    // applied here. The manifest's `weight_sanitize` field selects the path.
+    if artifacts.manifest().weight_sanitize == WeightSanitize::HfToMlx {
+        apply_hf_sanitize_transforms(specs, &mut name_map);
+    }
 
     let token_embedding = take_weight(
         specs,
@@ -647,6 +659,69 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         per_layer_model_proj,
         per_layer_proj_norm,
     })
+}
+
+/// Apply the `hf_to_mlx` weight transforms in place on a freshly loaded
+/// safetensors `name_map`.
+///
+/// Raw HuggingFace checkpoints store RMSNorm weights as zero-centered deltas
+/// (the "+1.0" is folded into the model's runtime forward pass). MLX expects
+/// the weight to already be the multiplier. We add 1.0 to every norm-role
+/// tensor here so downstream `rms_norm()` calls produce identical results.
+///
+/// HF also stores conv1d projection weights with axes (out, in, kernel)
+/// while MLX expects (out, kernel, in). The `transpose(_, [0, 2, 1])` swap
+/// brings them into MLX layout.
+///
+/// The companion `ensure_sanitized_linear_attention_norm` check downstream
+/// validates these transforms succeeded; it remains as the safety net for
+/// the `WeightSanitize::None` path where a manifest mis-declares its layout.
+fn apply_hf_sanitize_transforms(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+) {
+    let one = MlxArray::from_f32_slice(&[1.0_f32]);
+    for spec in specs {
+        if !name_map.contains_key(&spec.name) {
+            continue;
+        }
+        let transformed = match spec.role {
+            NativeTensorRole::AttentionNorm
+            | NativeTensorRole::AttentionPostNorm
+            | NativeTensorRole::AttentionQNorm
+            | NativeTensorRole::AttentionKNorm
+            | NativeTensorRole::AttentionQaNorm
+            | NativeTensorRole::AttentionKvANorm
+            | NativeTensorRole::LinearAttentionNorm
+            | NativeTensorRole::FfnNorm
+            | NativeTensorRole::FfnNorm2
+            | NativeTensorRole::FfnPostNorm
+            | NativeTensorRole::FfnPostNorm1
+            | NativeTensorRole::FfnPostNorm2
+            | NativeTensorRole::PerLayerProjectionNorm
+            | NativeTensorRole::PerLayerInputPostNorm
+            | NativeTensorRole::FinalNorm => {
+                let tensor = name_map.get(&spec.name).expect("checked via contains_key");
+                Some(add(tensor, &one, None))
+            }
+            NativeTensorRole::LinearAttentionConv1d => {
+                let tensor = name_map.get(&spec.name).expect("checked via contains_key");
+                // `transpose` returns a stride-only view; consumers that read
+                // the raw buffer (e.g. the conv1d kernel) need a contiguous
+                // layout, so materialize here.
+                Some(contiguous(&transpose(tensor, &[0, 2, 1], None), None))
+            }
+            _ => None,
+        };
+        if let Some(new_tensor) = transformed {
+            name_map.insert(spec.name.clone(), new_tensor);
+        }
+    }
+    // Force evaluation so subsequent inspection (e.g.
+    // ensure_sanitized_linear_attention_norm) sees materialised values rather
+    // than the lazy MLX op graph.
+    let refs: Vec<&MlxArray> = name_map.values().collect();
+    eval(&refs);
 }
 
 fn ensure_sanitized_linear_attention_norm(
@@ -1204,6 +1279,150 @@ mod tests {
 
         ensure_sanitized_linear_attention_norm(0, &norm)
             .expect("mlx_lm-sanitized norm should load");
+    }
+
+    #[test]
+    fn apply_hf_sanitize_transforms_lifts_norm_deltas_and_swaps_conv1d_axes() {
+        // A raw HuggingFace checkpoint stores norm weights as zero-centered
+        // deltas (so the "weight = 1.0 + delta" multiplier is materialised
+        // by the runtime forward path). The sanitizer must restore the +1.0
+        // baseline before loading.
+        let delta = [-0.1_f32, 0.2, 0.05, 0.0];
+        let norm_delta = MlxArray::from_raw_data(
+            delta.as_ptr().cast(),
+            std::mem::size_of_val(&delta),
+            &[delta.len() as i32],
+            MlxDtype::Float32,
+        );
+
+        // Conv1d weight in HF axis order (out, in, kernel) = (2, 3, 4).
+        // Encode coordinates into values: data[o, i, k] = 100*o + 10*i + k.
+        // After moveaxis(2, 1) MLX expects (out, kernel, in) = (2, 4, 3),
+        // and the value at new[o, k, i] must equal 100*o + 10*i + k.
+        const OUT_DIM: usize = 2;
+        const IN_DIM: usize = 3;
+        const KERNEL_DIM: usize = 4;
+        let mut conv = [0.0_f32; OUT_DIM * IN_DIM * KERNEL_DIM];
+        for o in 0..OUT_DIM {
+            for i in 0..IN_DIM {
+                for k in 0..KERNEL_DIM {
+                    conv[o * IN_DIM * KERNEL_DIM + i * KERNEL_DIM + k] =
+                        (100 * o + 10 * i + k) as f32;
+                }
+            }
+        }
+        let conv1d_hf = MlxArray::from_raw_data(
+            conv.as_ptr().cast(),
+            std::mem::size_of_val(&conv),
+            &[OUT_DIM as i32, IN_DIM as i32, KERNEL_DIM as i32],
+            MlxDtype::Float32,
+        );
+
+        let mut name_map: HashMap<String, MlxArray> = HashMap::new();
+        name_map.insert("layers.0.attn_norm".to_string(), norm_delta);
+        name_map.insert("layers.0.conv1d".to_string(), conv1d_hf);
+
+        fn make_spec(name: &str, role: NativeTensorRole) -> NativeTensorSpec {
+            NativeTensorSpec {
+                name: name.to_string(),
+                role,
+                layer_index: Some(0),
+                dtype: NativeTensorDataType::F32,
+                source_tensor_type: None,
+                source_quantized: false,
+                quantization: None,
+                quantized_source: None,
+                shape: vec![1],
+                file: PathBuf::from("model.safetensors"),
+                offset_bytes: 0,
+                length_bytes: 4,
+            }
+        }
+        let specs = vec![
+            make_spec("layers.0.attn_norm", NativeTensorRole::AttentionNorm),
+            make_spec("layers.0.conv1d", NativeTensorRole::LinearAttentionConv1d),
+        ];
+
+        apply_hf_sanitize_transforms(&specs, &mut name_map);
+
+        let sanitized_norm = name_map
+            .get("layers.0.attn_norm")
+            .expect("norm tensor must still be present");
+        let norm_values = sanitized_norm.data_f32();
+        for (got, want) in norm_values.iter().zip([0.9_f32, 1.2, 1.05, 1.0].iter()) {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "norm sanitize: got {got}, want {want}"
+            );
+        }
+
+        let sanitized_conv = name_map
+            .get("layers.0.conv1d")
+            .expect("conv1d tensor must still be present");
+        assert_eq!(
+            sanitized_conv.shape(),
+            vec![OUT_DIM as i32, KERNEL_DIM as i32, IN_DIM as i32],
+            "conv1d axes should swap from (out, in, kernel) to (out, kernel, in)"
+        );
+        // Verify every coordinate: new[o, k, i] must equal the encoded
+        // coordinate 100*o + 10*i + k (note: encoding uses original axis
+        // assignments, so the value identifies the source element).
+        let conv_values = sanitized_conv.data_f32();
+        for o in 0..OUT_DIM {
+            for k in 0..KERNEL_DIM {
+                for i in 0..IN_DIM {
+                    let flat = o * KERNEL_DIM * IN_DIM + k * IN_DIM + i;
+                    let want = (100 * o + 10 * i + k) as f32;
+                    let got = conv_values[flat];
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "transposed conv[o={o}, k={k}, i={i}] at flat[{flat}]: got {got}, want {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn apply_hf_sanitize_transforms_skips_non_norm_non_conv1d_roles() {
+        // The sanitizer must leave projection weights, embeddings, and
+        // other non-norm tensors untouched. Otherwise it would corrupt
+        // the layout of every weight matrix in the model.
+        let data = [3.0_f32, 4.0, 5.0, 6.0];
+        let proj = MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(&data),
+            &[data.len() as i32],
+            MlxDtype::Float32,
+        );
+        let mut name_map: HashMap<String, MlxArray> = HashMap::new();
+        name_map.insert("q_proj".to_string(), proj);
+
+        let specs = vec![NativeTensorSpec {
+            name: "q_proj".to_string(),
+            role: NativeTensorRole::AttentionQ,
+            layer_index: Some(0),
+            dtype: NativeTensorDataType::F32,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantization: None,
+            quantized_source: None,
+            shape: vec![1],
+            file: PathBuf::from("model.safetensors"),
+            offset_bytes: 0,
+            length_bytes: 4,
+        }];
+
+        apply_hf_sanitize_transforms(&specs, &mut name_map);
+
+        let preserved = name_map.get("q_proj").expect("q_proj tensor still present");
+        let values = preserved.data_f32();
+        for (got, want) in values.iter().zip([3.0_f32, 4.0, 5.0, 6.0].iter()) {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "q_proj must be untouched: got {got}, want {want}"
+            );
+        }
     }
 
     #[test]
