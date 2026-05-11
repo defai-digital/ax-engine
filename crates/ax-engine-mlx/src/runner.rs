@@ -2287,16 +2287,14 @@ impl MlxRunner {
     }
 
     fn prefix_cache_supported(&self) -> bool {
-        // Linear-attention and sliding-window models are both supported via
-        // store-side restrictions in `store_prompt_prefix_snapshots`: only
-        // the full-prompt snapshot is stored, and only when the prompt is
-        // exactly block-aligned. Sliding-window: `MlxKVCache::trim_to`
-        // returns false once any rotating-window layer has rotated past
-        // `prefix_len`, so non-aligned attempts naturally fail. Linear:
-        // `trim_to` does not roll back recurrent state, so we skip
-        // explicitly. MLA still requires a separate snapshot path for its
-        // compressed latent state and remains gated out here.
-        self.cfg.glm_mla_attention.is_none()
+        // Every native-tier architecture (standard FA, linear, sliding-window,
+        // MLA) is now supported via the unified store-side restriction in
+        // `store_prompt_prefix_snapshots`: non-FA architectures store only
+        // the full-prompt snapshot when the prompt is exactly block-aligned.
+        // Lookups remain exact-match-safe via `MlxPrefixCache::get`'s
+        // token-equality check.
+        let _ = self; // architecture gating now happens inside the store path.
+        true
     }
 
     fn prefix_cache_route_policy(&self) -> String {
@@ -2482,21 +2480,26 @@ impl MlxRunner {
             return telemetry;
         }
 
-        // Linear-attention AND sliding-window models share the same constraint:
-        // only the full-prompt snapshot is sound, and only when the prompt is
-        // exactly block-aligned (so `trim_to(full_block_tokens) == seq_len` is
-        // a no-op). For linear attention, `trim_to` does not roll back
-        // recurrent state. For sliding-window, `trim_to` returns false once
-        // any rotating-window layer has rotated past `prefix_len`, which the
-        // existing loop would already surface as `blocked_trim_failure` — but
-        // we short-circuit here to avoid the cosmetic per-block-iteration
-        // failure noise in route telemetry and to make the policy explicit.
+        // Non-standard-FA architectures (linear attention, sliding window, MLA)
+        // share the same store constraint: only the full-prompt snapshot is
+        // sound, and only when the prompt is exactly block-aligned (so
+        // `trim_to(full_block_tokens) == seq_len` is a no-op).
+        //   - Linear: `trim_to` does not roll back recurrent state.
+        //   - Sliding-window: `trim_to` returns false once any rotating-window
+        //     layer has rotated past `prefix_len`.
+        //   - MLA: trim_to itself is sound for MLA buffers, but the warmup
+        //     re-prefill path has observed fp-drift on this architecture
+        //     (slice 6 baseline harness: GLM-4.7 warm_repeat 3/5 PASS through
+        //     warmup), so routing through the bit-exact snapshot path for
+        //     aligned prompts both delivers TTFT speedup AND sidesteps that
+        //     pre-existing warmup correctness issue for the same-prompt case.
         // The `verify_prefix_reuse_equivalence.py` harness fails-closed on
         // any resulting token drift; any future change here must keep that
         // harness green on every model in the supported tier.
         let linear_attention = self.cfg.linear_attention.is_some();
         let sliding_window = self.kv_layer_windows.iter().any(Option::is_some);
-        let alignment_restricted = linear_attention || sliding_window;
+        let glm_mla_attention = self.cfg.glm_mla_attention.is_some();
+        let alignment_restricted = linear_attention || sliding_window || glm_mla_attention;
         if alignment_restricted && full_block_tokens != available_tokens {
             telemetry.record_blocked_trim_failure();
             return telemetry;
