@@ -1914,7 +1914,7 @@ fn build_layer_masks(
             && cfg
                 .layer_configs
                 .iter()
-                .all(|lc| lc.sliding_window.map_or(true, |w| seq <= w))
+                .all(|lc| lc.sliding_window.is_none_or(|w| seq <= w))
         {
             return vec![None; n_layers];
         }
