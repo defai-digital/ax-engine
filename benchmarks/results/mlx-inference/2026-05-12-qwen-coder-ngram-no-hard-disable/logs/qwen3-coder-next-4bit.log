@@ -1,0 +1,13 @@
+
+=== AX Engine MLX inference stack ===
+  model: .internal/models/Qwen3-Coder-Next-4bit
+  model_dir: .internal/models/Qwen3-Coder-Next-4bit
+  prompt_tokens: [128, 512]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-12-qwen-coder-ngram-no-hard-disable/qwen3-coder-next-4bit-prompts
+  [prompt] prompt_tokens=128 sha256=3b05f6bc7d91 path=benchmarks/results/mlx-inference/2026-05-12-qwen-coder-ngram-no-hard-disable/qwen3-coder-next-4bit-prompts/prompt-128-gen-128-3b05f6bc7d91.json
+  [prompt] prompt_tokens=512 sha256=e46d8899eb1d path=benchmarks/results/mlx-inference/2026-05-12-qwen-coder-ngram-no-hard-disable/qwen3-coder-next-4bit-prompts/prompt-512-gen-128-e46d8899eb1d.json
+  [mlx_lm] python3 -m mlx_lm.benchmark --model .internal/models/Qwen3-Coder-Next-4bit --batch-size 1 --prompt-tokens 128 --generation-tokens 128 --num-trials 5 --delay 10 --prefill-step-size 2048
+  [mlx_lm] python3 -m mlx_lm.benchmark --model .internal/models/Qwen3-Coder-Next-4bit --batch-size 1 --prompt-tokens 512 --generation-tokens 128 --num-trials 5 --delay 10 --prefill-step-size 2048
+  [mlx-swift-lm] scripts/mlx-swift-bench/.build/release/mlx-swift-bench --model .internal/models/Qwen3-Coder-Next-4bit --prompt-token-ids benchmarks/results/mlx-inference/2026-05-12-qwen-coder-ngram-no-hard-disable/qwen3-coder-next-4bit-prompts/prompt-128-gen-128-3b05f6bc7d91.json --generation-tokens 128 --trials 5 --delay 10.0 --prefill-step-size 2048

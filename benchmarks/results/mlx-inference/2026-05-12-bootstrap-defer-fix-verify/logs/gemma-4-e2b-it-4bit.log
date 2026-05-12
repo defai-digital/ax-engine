@@ -1,0 +1,37 @@
+
+=== AX Engine MLX inference stack ===
+  model: .internal/models/gemma-4-e2b-it-4bit
+  model_dir: .internal/models/gemma-4-e2b-it-4bit
+  prompt_tokens: [128, 512]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-12-bootstrap-defer-fix-verify/gemma-4-e2b-it-4bit-prompts
+  [build] cargo build -p ax-engine-server --release
+warning: function `render_grpc_chat_prompt` is never used
+    --> crates/ax-engine-server/src/main.rs:1805:15
+     |
+1805 | pub(crate) fn render_grpc_chat_prompt(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `grpc_chat_stop_sequences` is never used
+    --> crates/ax-engine-server/src/main.rs:1876:15
+     |
+1876 | pub(crate) fn grpc_chat_stop_sequences(model_id: &str, stop: Vec<String>) -> Vec<String> {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `ax-engine-server` (bin "ax-engine-server") generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 0.08s
+  [prompt] prompt_tokens=128 sha256=4ebdfdf02961 path=benchmarks/results/mlx-inference/2026-05-12-bootstrap-defer-fix-verify/gemma-4-e2b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json
+  [prompt] prompt_tokens=512 sha256=846109be82df path=benchmarks/results/mlx-inference/2026-05-12-bootstrap-defer-fix-verify/gemma-4-e2b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json
+  [reference] reused 4 mlx_lm/mlx_swift_lm rows from benchmarks/results/mlx-inference/2026-05-12-sliding-window-fix-verify/gemma-4-e2b-it-4bit.json
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/gemma-4-e2b-it-4bit --port 8091 --disable-ngram-acceleration
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 2211, in <module>
+    main()
+    ~~~~^^
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 2039, in main
+    raise RuntimeError(f"ax-engine-server did not become ready:\n{stderr}")
+RuntimeError: ax-engine-server did not become ready:
+

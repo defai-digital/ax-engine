@@ -454,6 +454,8 @@ def ax_decode_claim_status(direct_mode: bool, telemetry: dict[str, int]) -> str:
         or int(telemetry.get("ax_ngram_request_disabled_steps", 0)) > 0
     ):
         return "ngram_no_draft_direct_fallback"
+    if int(telemetry.get("ax_ngram_accepted_tokens", 0)) == 0:
+        return "ngram_no_accept_fallback"
     return "ngram_acceleration_effective_throughput"
 
 
@@ -1766,8 +1768,8 @@ def main() -> None:
         dest="ax_direct",
         action="store_true",
         help=(
-            "Run only the direct same-policy AX row. This is the default "
-            "apple-to-apple AX comparison."
+            "Run only the direct same-policy AX row. This is the harness "
+            "baseline for apple-to-apple AX comparisons."
         ),
     )
     parser.add_argument(
@@ -2098,9 +2100,9 @@ def main() -> None:
             "comparison_policy": (
                 "Every non-baseline row is compared against the matching "
                 "mlx_lm.benchmark row for the same random-token prompt and "
-                "generation shape. ax_engine_mlx is the default direct "
-                "same-policy comparison; ax_engine_mlx_ngram_accel rows are "
-                "AX default n-gram policy rows whose ax_decode_claim_status "
+                "generation shape. ax_engine_mlx is the direct same-policy "
+                "comparison baseline; ax_engine_mlx_ngram_accel rows are AX "
+                "default n-gram policy rows whose ax_decode_claim_status "
                 "distinguishes effective acceleration from no-draft fallback."
             ),
             "secondary_reference_policy": (

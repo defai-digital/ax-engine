@@ -2189,9 +2189,7 @@ impl MlxRunner {
                 if prefill_completes_prompt {
                     kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
                         &mut state,
-                        tok,
                         max_output,
-                        is_greedy,
                         kv_compression_layer_eligible,
                     );
                 }
@@ -2215,9 +2213,7 @@ impl MlxRunner {
                     if let Some(tok) = state.cached_prefill_output_token.take() {
                         kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
                             &mut state,
-                            tok,
                             max_output,
-                            is_greedy,
                             kv_compression_layer_eligible,
                         );
                         tok
@@ -2615,8 +2611,20 @@ impl MlxRunner {
         // simultaneously submitting the next step to the GPU.  This mirrors
         // mlx_lm's `_step(y)` → `async_eval(next_y)` → `eval(y)` loop and
         // eliminates the GPU idle gap between consecutive direct decode steps.
-        if self.disable_ngram_acceleration && is_greedy && state.pending_direct.is_some() {
-            return self.run_direct_pipeline_continue(state);
+        //
+        // The pipeline is bootstrapped lazily on the first decode call rather
+        // than inside initialize_generation_state, so that the prefill runner
+        // step returns (and the first SSE event fires) without waiting for the
+        // decode graph construction.
+        if self.disable_ngram_acceleration && is_greedy {
+            if state.pending_direct.is_some() {
+                return self.run_direct_pipeline_continue(state);
+            }
+            let last_token = state
+                .next_model_last_token
+                .or_else(|| input_tokens.last().copied())
+                .unwrap_or(0);
+            return self.run_direct_pipeline_bootstrap(state, last_token);
         }
 
         let last_token = state
@@ -2654,6 +2662,7 @@ impl MlxRunner {
     }
 
     fn run_direct_pipeline_bootstrap(&self, state: &mut RequestState, last_token: u32) -> u32 {
+        let bootstrap_started = Instant::now();
         let turboquant_context = self.turboquant_model_decode_context();
         let bootstrap_token = start_direct_pipeline_with_turboquant_context(
             &self.cfg,
@@ -2662,6 +2671,9 @@ impl MlxRunner {
             &mut state.cache,
             turboquant_context.as_ref(),
         );
+        state
+            .decode_telemetry
+            .record_direct_bootstrap(elapsed_us(bootstrap_started));
         self.run_direct_pipeline_once(state, bootstrap_token)
     }
 
@@ -2835,9 +2847,7 @@ impl MlxRunner {
     fn initialize_generation_state(
         &self,
         state: &mut RequestState,
-        bootstrap_token: u32,
         max_output: u32,
-        is_greedy: bool,
         layer_eligible: Option<&[bool]>,
     ) -> Option<u32> {
         // Seed the n-gram table with the tail of the prompt.
@@ -2851,9 +2861,8 @@ impl MlxRunner {
         // Classify the full prompt once per generation. record_prompt_class is
         // max-merge friendly so re-entry from an unusual code path cannot
         // downgrade an already-set class.
-        state
-            .ngram_acceleration
-            .record_prompt_class(classify_prompt_class(&state.prompt_prefix_tokens));
+        let prompt_class = classify_prompt_class(&state.prompt_prefix_tokens);
+        state.ngram_acceleration.record_prompt_class(prompt_class);
 
         // Reset per-generation state.
         state.bonus_queue.clear();
@@ -2876,24 +2885,10 @@ impl MlxRunner {
         let kv_compression_shadow_sync_wall_us =
             self.sync_turboquant_shadow_storage_if_needed(state, true, layer_eligible);
 
-        // Bootstrap the double-buffer direct pipeline: submit the second token's
-        // forward pass to the GPU asynchronously so the first decode step can
-        // materialise it while the GPU is already computing the third token.
-        // Only for direct same-policy greedy runs.
-        if self.disable_ngram_acceleration && is_greedy {
-            let bootstrap_started = Instant::now();
-            let turboquant_context = self.turboquant_model_decode_context();
-            state.pending_direct = Some(start_direct_pipeline_with_turboquant_context(
-                &self.cfg,
-                &self.weights,
-                bootstrap_token,
-                &mut state.cache,
-                turboquant_context.as_ref(),
-            ));
-            state
-                .decode_telemetry
-                .record_direct_bootstrap(elapsed_us(bootstrap_started));
-        }
+        // The direct pipeline bootstrap (start_direct_pipeline_with_turboquant_context)
+        // is deferred to the first decode call in decode_one, so that prefill runner
+        // steps return before the decode graph is constructed.  This keeps the
+        // bootstrap's CPU graph-build time out of the TTFT measurement.
 
         kv_compression_shadow_sync_wall_us
     }

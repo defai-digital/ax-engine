@@ -83,8 +83,8 @@ pub fn index_html() -> String {
         <div class="field-group">
           <label class="field-label">ENGINE</label>
           <select id="engine" class="field-select">
-            <option value="ax-engine">ax-engine</option>
             <option value="ax-engine-ngram">ax-engine n-gram</option>
+            <option value="ax-engine">ax-engine direct</option>
           </select>
         </div>
 
@@ -1382,8 +1382,16 @@ mod tests {
     fn launch_engine_selector_lists_only_manager_startable_engines() {
         let html = index_html();
 
-        assert!(html.contains(r#"<option value="ax-engine">ax-engine</option>"#));
         assert!(html.contains(r#"<option value="ax-engine-ngram">ax-engine n-gram</option>"#));
+        assert!(html.contains(r#"<option value="ax-engine">ax-engine direct</option>"#));
+        assert!(
+            html.find(r#"<option value="ax-engine-ngram">"#)
+                .expect("n-gram option should exist")
+                < html
+                    .find(r#"<option value="ax-engine">"#)
+                    .expect("direct option should exist"),
+            "n-gram should be the manager's default engine selection"
+        );
         assert!(
             !html.contains(r#"<option value="mlx-lm">"#),
             "mlx-lm is a delegated backend and requires a separate mlx_lm.server"

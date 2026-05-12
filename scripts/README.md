@@ -88,6 +88,11 @@ throughput baselines.
   reason labels, when the runtime emits them.
 - `test_bench_mlx_inference_stack.py`: unit tests for the MLX benchmark
   contract, parser, prompt artifact hash checks, and secondary adapter shape.
+- `render_readme_performance_charts.py`: renders the README prefill, decode,
+  and TTFT box-and-whisker SVG charts from the completed MLX inference-stack
+  artifact directory. By default it reads the current README artifact directory
+  line and writes `docs/assets/perf-*-box-whisker.svg`; use `--check` to fail
+  if the checked-in charts are stale.
 - `bench_ax_serving.py`: online serving benchmark against
   `/v1/generate/stream`. It reads a JSONL prompt corpus, runs closed-loop
   concurrency or open-loop request-rate sweeps, and writes

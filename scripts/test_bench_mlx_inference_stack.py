@@ -680,6 +680,17 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 {
                     "ax_ngram_draft_attempts": 3,
                     "ax_ngram_draft_tokens": 12,
+                    "ax_ngram_accepted_tokens": 0,
+                },
+            ),
+            "ngram_no_accept_fallback",
+        )
+        self.assertEqual(
+            bench.ax_decode_claim_status(
+                False,
+                {
+                    "ax_ngram_draft_attempts": 3,
+                    "ax_ngram_draft_tokens": 12,
                     "ax_ngram_accepted_tokens": 12,
                 },
             ),

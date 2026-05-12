@@ -374,7 +374,7 @@ enum ManagerEngine {
 
 impl ManagerEngine {
     fn parse(value: Option<&str>) -> Result<Self, ManagerError> {
-        match value.unwrap_or("ax-engine") {
+        match value.unwrap_or("ax-engine-ngram") {
             "ax-engine" => Ok(Self::AxEngine),
             "ax-engine-ngram" => Ok(Self::AxEngineNgram),
             "mlx-lm" => Err(ManagerError::Message(
@@ -4089,6 +4089,14 @@ data: {"response":{"output_text":"hello world","finish_reason":"stop"}}
                 .iter()
                 .any(|arg| arg == "--disable-ngram-acceleration"),
             "ax-engine-ngram selection should leave n-gram acceleration enabled"
+        );
+    }
+
+    #[test]
+    fn manager_engine_defaults_to_ngram_selection() {
+        assert_eq!(
+            ManagerEngine::parse(None).expect("default engine should parse"),
+            ManagerEngine::AxEngineNgram
         );
     }
 

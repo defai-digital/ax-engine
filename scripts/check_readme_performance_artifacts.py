@@ -567,6 +567,10 @@ def validate_ngram_claim_telemetry(
         raise ArtifactCheckError(
             f"{artifact_path} claims n-gram fallback without fallback telemetry"
         )
+    if status == "ngram_no_accept_fallback" and (attempts <= 0 or accepted != 0):
+        raise ArtifactCheckError(
+            f"{artifact_path} claims n-gram no-accept fallback with inconsistent telemetry"
+        )
 
 
 def validate_delegated_metrics_if_present(
@@ -715,6 +719,7 @@ def validate_artifact_row(
         if row.get("ax_decode_claim_status") not in {
             "ngram_acceleration_effective_throughput",
             "ngram_no_draft_direct_fallback",
+            "ngram_no_accept_fallback",
         }:
             raise ArtifactCheckError(f"{artifact_path} n-gram row lacks claim status")
         validate_ax_prefill_decode_split(

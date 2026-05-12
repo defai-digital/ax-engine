@@ -28,3 +28,9 @@ wait-timeout = "0.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"          # cross-crate inlining without full fat-LTO compile penalty
+codegen-units = 1     # single codegen unit lets the optimizer see the full crate graph
+panic = "abort"       # omit unwinding tables; saves binary size and a branch per call-site
+strip = "debuginfo"   # strip DWARF; keep symbol table for Instruments / cargo-flamegraph

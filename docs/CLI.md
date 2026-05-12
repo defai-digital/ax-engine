@@ -132,12 +132,13 @@ baseline cannot be produced, and every AX or `mlx-swift-lm` row carries
 ratio-to-`mlx_lm.benchmark` fields for the same random-token prompt/decode
 shape. The harness mirrors the upstream prompt standard (`mx.random.seed(0)`
 plus random token IDs from the model vocabulary) and writes the prompt token
-JSON path and hash into the artifact. AX direct decode is the default direct
-comparison; use `--ax-compare-policies` to also emit `ax_engine_mlx_ngram_accel`
-feature-speedup rows. `mlx-swift-lm` is accepted only as a secondary baseline
-through an explicit `BenchmarkHelpers` / `MLXLMCommon` generation adapter that
-reads the emitted prompt token JSON. The older SwiftLM application-server
-benchmark is retired.
+JSON path and hash into the artifact. AX n-gram decode acceleration is the
+server/user default; benchmark artifacts keep the direct AX row as the
+same-policy baseline and use `--ax-compare-policies` to also emit the
+`ax_engine_mlx_ngram_accel` default-policy row. `mlx-swift-lm` is accepted only
+as a secondary baseline through an explicit `BenchmarkHelpers` / `MLXLMCommon`
+generation adapter that reads the emitted prompt token JSON. The older SwiftLM
+application-server benchmark is retired.
 
 For TurboQuant evidence collection, the MLX inference-stack harness can pass
 through the server's experimental shadow policy:

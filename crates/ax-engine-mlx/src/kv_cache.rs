@@ -713,6 +713,52 @@ impl MlxKVCache {
         match entry {
             None => {
                 let capacity = chunk_ceiling(write_end);
+                // Fresh-layer fast path: when the prompt is chunk-aligned
+                // (capacity == new_tokens), skip zeros+slice_update by storing
+                // new_k/new_v directly.  Capacity stays correct for usage_snapshot;
+                // the first decode step grows to chunk_ceiling(new_tokens + 1) as
+                // normal.  Saves ~6 MLX graph nodes per layer per chunk-aligned prefill
+                // (e.g. 512-token prompt → 210 fewer nodes for a 35-layer model).
+                if write_start == 0 && capacity == new_tokens {
+                    let view_start = window
+                        .filter(|&w| w > 0 && w < new_tokens)
+                        .map(|w| new_tokens - w)
+                        .unwrap_or(0);
+                    let (k_view, v_view) = if view_start > 0 {
+                        let s = view_start as i32;
+                        let e = new_tokens as i32;
+                        let kv = slice(
+                            &new_k,
+                            &[0, 0, s, 0],
+                            &[1, n_kv_heads, e, head_dim],
+                            &[1, 1, 1, 1],
+                            None,
+                        );
+                        let vv = slice(
+                            &new_v,
+                            &[0, 0, s, 0],
+                            &[1, n_kv_heads, e, head_dim],
+                            &[1, 1, 1, 1],
+                            None,
+                        );
+                        (kv, vv)
+                    } else {
+                        (new_k.clone(), new_v.clone())
+                    };
+                    self.growth_count = self.growth_count.saturating_add(1);
+                    *entry = Some(LayerKV {
+                        k: new_k,
+                        v: new_v,
+                        last_k_view: Some(k_view.clone()),
+                        last_v_view: Some(v_view.clone()),
+                        n_kv_heads,
+                        head_dim,
+                        capacity,
+                        rotating_window: None,
+                        dtype,
+                    });
+                    return (k_view, v_view);
+                }
                 let buf_shape = [1i32, n_kv_heads, capacity as i32, head_dim];
                 let k_buf = zeros(&buf_shape, dtype, None);
                 let v_buf = zeros(&buf_shape, dtype, None);
@@ -873,6 +919,18 @@ impl MlxKVCache {
         match entry {
             None => {
                 let capacity = chunk_ceiling(write_end);
+                if write_start == 0 && capacity == new_tokens {
+                    self.growth_count = self.growth_count.saturating_add(1);
+                    *entry = Some(GlmMlaLayerCache {
+                        kv_latent: new_kv_latent.clone(),
+                        k_pe: new_k_pe.clone(),
+                        latent_dim,
+                        rope_dim,
+                        capacity,
+                        dtype,
+                    });
+                    return (new_kv_latent, new_k_pe);
+                }
                 let latent_shape = [1i32, 1, capacity as i32, latent_dim];
                 let rope_shape = [1i32, 1, capacity as i32, rope_dim];
                 let latent_buf = zeros(&latent_shape, dtype, None);

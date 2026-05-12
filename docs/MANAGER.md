@@ -95,8 +95,11 @@ ax-engine-server --mlx --mlx-model-artifacts-dir "$MODEL_DIR" --port 8080
 ```
 
 The manager-owned launcher currently supports only the repo-owned AX Engine
-runtime modes: `ax-engine` and `ax-engine n-gram`. `mlx-lm` is a delegated
-backend that requires a separate `mlx_lm.server` plus
+runtime modes: `ax-engine n-gram` and `ax-engine direct`. `ax-engine n-gram`
+is the default manager selection and leaves the server's default n-gram decode
+acceleration enabled. `ax-engine direct` starts the same repo-owned MLX runtime
+with `--disable-ngram-acceleration` for baseline/debug comparisons.
+`mlx-lm` is a delegated backend that requires a separate `mlx_lm.server` plus
 `ax-engine-server --support-tier mlx_lm_delegated --mlx-lm-server-url ...`.
 `mlx-swift-lm` is treated as a benchmark reference adapter, not a
 manager-startable server runtime.

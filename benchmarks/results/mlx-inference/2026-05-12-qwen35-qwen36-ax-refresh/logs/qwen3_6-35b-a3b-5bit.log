@@ -1,0 +1,22 @@
+
+=== AX Engine MLX inference stack ===
+  model: .internal/models/Qwen3.6-35B-A3B-5bit
+  model_dir: .internal/models/Qwen3.6-35B-A3B-5bit
+  prompt_tokens: [128, 512]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-12-qwen35-qwen36-ax-refresh/qwen3_6-35b-a3b-5bit-prompts
+  [prompt] prompt_tokens=128 sha256=a03e5d1e2a75 path=benchmarks/results/mlx-inference/2026-05-12-qwen35-qwen36-ax-refresh/qwen3_6-35b-a3b-5bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json
+  [prompt] prompt_tokens=512 sha256=b1c0bcb994aa path=benchmarks/results/mlx-inference/2026-05-12-qwen35-qwen36-ax-refresh/qwen3_6-35b-a3b-5bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json
+  [reference] reused 4 mlx_lm/mlx_swift_lm rows from benchmarks/results/mlx-inference/2026-05-11-full-readme-refresh/qwen3_6-35b-a3b-5bit.json
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/Qwen3.6-35B-A3B-5bit --port 8091 --disable-ngram-acceleration
+  [ax-engine/ax_engine_mlx] prompt=128 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=1005.8 tok/s decode=134.3 tok/s out=128
+    rep 2: prefill=1018.2 tok/s decode=136.1 tok/s out=128
+    rep 3: prefill=997.6 tok/s decode=136.5 tok/s out=128
+    rep 4: prefill=980.0 tok/s decode=136.1 tok/s out=128
+    rep 5: prefill=1030.5 tok/s decode=135.5 tok/s out=128
+  [ax-engine/ax_engine_mlx] prompt=512 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=2586.8 tok/s decode=121.9 tok/s out=128
+    rep 2: prefill=2573.3 tok/s decode=133.6 tok/s out=128
+    rep 3: prefill=2597.6 tok/s decode=128.0 tok/s out=128
