@@ -1151,7 +1151,15 @@ pub fn forward_with_turboquant_context(
     token_offset: usize,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
-    let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
+    // Build ids_1d once; reused for both embedding and per-layer-input projection
+    // (Gemma4 2B/4B), avoiding a duplicate CPU→GPU token-ID upload.
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
@@ -1159,7 +1167,7 @@ pub fn forward_with_turboquant_context(
 
     let seq = token_ids.len();
     let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
-    let per_layer_inputs = compute_per_layer_inputs(cfg, weights, token_ids, &hidden);
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward_with_turboquant_context(
@@ -1176,15 +1184,11 @@ pub fn forward_with_turboquant_context(
     }
 
     // Slice to last token only: [1, seq, hidden] → [1, 1, hidden].
+    // slice() is a zero-copy strided view; cheaper than take() (gather) here.
     let last_hidden = if token_ids.len() > 1 {
-        let last_idx: u32 = (token_ids.len() - 1) as u32;
-        let idx_arr = MlxArray::from_raw_data(
-            &last_idx as *const u32 as *const u8,
-            std::mem::size_of_val(&last_idx),
-            &[1_i32],
-            MlxDtype::Uint32,
-        );
-        take(&hidden, &idx_arr, 1, None)
+        let last = (token_ids.len() - 1) as i32;
+        let hs = cfg.hidden_size as i32;
+        slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None)
     } else {
         hidden
     };
@@ -1229,7 +1233,13 @@ pub fn forward_all_positions_with_turboquant_context(
     token_offset: usize,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
-    let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
@@ -1237,7 +1247,7 @@ pub fn forward_all_positions_with_turboquant_context(
 
     let seq = token_ids.len();
     let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
-    let per_layer_inputs = compute_per_layer_inputs(cfg, weights, token_ids, &hidden);
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward_with_turboquant_context(
@@ -1659,20 +1669,6 @@ fn compute_per_layer_inputs_arr(
     Some(per_layer)
 }
 
-fn compute_per_layer_inputs(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    token_ids: &[u32],
-    hidden: &MlxArray,
-) -> Option<Vec<MlxArray>> {
-    let ids_1d = MlxArray::from_raw_data(
-        token_ids.as_ptr() as *const u8,
-        std::mem::size_of_val(token_ids),
-        &[token_ids.len() as i32],
-        MlxDtype::Uint32,
-    );
-    compute_per_layer_inputs_arr(cfg, weights, &ids_1d, hidden)
-}
 
 /// Apply optional per-head RMS norm in BSHD [1, seq, n_heads, head_dim] space.
 fn qk_norm_bshd(
@@ -1911,6 +1907,26 @@ fn build_layer_masks(
         }
         (0..n_layers).map(|_| m.clone()).collect()
     } else {
+        // Fast path: fresh single-chunk prefill (offset==0) where every layer's
+        // sliding window contains all prompt tokens → all masks are None.
+        // Avoids HashMap allocation + per-layer mask computation for this common case.
+        let offset = key_len.saturating_sub(seq);
+        if offset == 0
+            && cfg
+                .layer_configs
+                .iter()
+                .all(|lc| lc.sliding_window.map_or(true, |w| seq <= w))
+        {
+            return vec![None; n_layers];
+        }
+        // Fast path: single-token decode — all masks are None.
+        // Global layers: attention_mask_array(1, key_len, None) returns None because
+        // the `offset > 0 && seq_len > 1` condition is false when seq_len == 1.
+        // Sliding-window layers: KV is pre-truncated to window size; single query
+        // attends all retained keys without masking.
+        if seq == 1 {
+            return vec![None; n_layers];
+        }
         let mut memo: std::collections::HashMap<(Option<usize>, usize), Option<MlxArray>> =
             std::collections::HashMap::with_capacity(cfg.layer_configs.len());
         cfg.layer_configs
