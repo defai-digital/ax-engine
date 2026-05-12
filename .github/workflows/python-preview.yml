@@ -45,8 +45,8 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Install MLX C library
-        run: brew install mlx-c
+      - name: Install native build dependencies
+        run: brew install mlx-c protobuf
 
       - name: Check formatting
         run: cargo fmt --check
