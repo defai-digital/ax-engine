@@ -1801,6 +1801,86 @@ fn openai_chat_stop_sequences(model_id: &str, stop: Option<OpenAiStopInput>) -> 
     }
 }
 
+/// Render a chat prompt from plain (role, content) pairs — used by the gRPC service.
+pub(crate) fn render_grpc_chat_prompt(
+    model_id: &str,
+    messages: &[(String, String)],
+) -> Result<String, String> {
+    if messages.is_empty() {
+        return Err("chat.completions requires at least one message".to_string());
+    }
+    let template = ChatPromptTemplate::for_model_id(model_id);
+    let mut prompt = String::new();
+    match template {
+        ChatPromptTemplate::Llama3 => prompt.push_str("<|begin_of_text|>"),
+        ChatPromptTemplate::Gemma4 => prompt.push_str("<bos>"),
+        ChatPromptTemplate::Glm47 => prompt.push_str("[gMASK]<sop>"),
+        ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
+    }
+    for (role, content) in messages {
+        let role = match role.trim() {
+            "system" | "user" | "assistant" | "tool" | "function" => role.trim(),
+            _ => return Err(format!("unsupported chat role: {role}")),
+        };
+        match template {
+            ChatPromptTemplate::QwenChatMl => {
+                prompt.push_str("<|im_start|>");
+                prompt.push_str(role);
+                prompt.push('\n');
+                prompt.push_str(content);
+                prompt.push_str("<|im_end|>\n");
+            }
+            ChatPromptTemplate::Llama3 => {
+                prompt.push_str("<|start_header_id|>");
+                prompt.push_str(role);
+                prompt.push_str("<|end_header_id|>\n\n");
+                prompt.push_str(content);
+                prompt.push_str("<|eot_id|>");
+            }
+            ChatPromptTemplate::Gemma4 => {
+                let turn = if role == "assistant" { "model" } else { role };
+                prompt.push_str("<|turn>");
+                prompt.push_str(turn);
+                prompt.push('\n');
+                prompt.push_str(content);
+            }
+            ChatPromptTemplate::Glm47 => {
+                prompt.push('<');
+                prompt.push('|');
+                prompt.push_str(role);
+                prompt.push('|');
+                prompt.push('>');
+                prompt.push_str(content);
+            }
+            ChatPromptTemplate::PlainRolePrefix => {
+                prompt.push_str(role);
+                prompt.push_str(": ");
+                prompt.push_str(content);
+                prompt.push('\n');
+            }
+        }
+    }
+    match template {
+        ChatPromptTemplate::QwenChatMl => prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT),
+        ChatPromptTemplate::Llama3 => {
+            prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
+        }
+        ChatPromptTemplate::Gemma4 => prompt.push_str("<|turn>model\n"),
+        ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|></think>"),
+        ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
+    }
+    Ok(prompt)
+}
+
+/// Chat stop sequences for the gRPC service (uses caller-supplied list or model defaults).
+pub(crate) fn grpc_chat_stop_sequences(model_id: &str, stop: Vec<String>) -> Vec<String> {
+    if stop.is_empty() {
+        default_chat_stop_sequences(ChatPromptTemplate::for_model_id(model_id))
+    } else {
+        stop
+    }
+}
+
 fn default_chat_stop_sequences(template: ChatPromptTemplate) -> Vec<String> {
     match template {
         ChatPromptTemplate::QwenChatMl => vec!["<|im_end|>".to_string()],
