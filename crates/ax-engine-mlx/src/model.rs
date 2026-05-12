@@ -1417,16 +1417,19 @@ pub fn forward_for_embedding(
     }
     // For Last/Cls pooling the caller knows which position it needs. Extract it
     // before the final norm so we norm [1, 1, H] instead of [1, seq, H].
+    // slice() is a zero-copy strided view; cheaper than take() (gather) for a
+    // single deterministic index. Matches the pattern in forward().
     let to_norm = match target_position {
         Some(pos) => {
-            let pos_u32 = pos as u32;
-            let idx = MlxArray::from_raw_data(
-                &pos_u32 as *const u32 as *const u8,
-                std::mem::size_of::<u32>(),
-                &[1_i32],
-                MlxDtype::Uint32,
-            );
-            take(&hidden, &idx, 1, None)
+            let pos_i32 = pos as i32;
+            let hs = cfg.hidden_size as i32;
+            slice(
+                &hidden,
+                &[0, pos_i32, 0],
+                &[1, pos_i32 + 1, hs],
+                &[1, 1, 1],
+                None,
+            )
         }
         None => hidden,
     };
@@ -1505,17 +1508,37 @@ pub fn forward_for_embedding_batch(
         Some(positions) => {
             let batch_size = batch as i32;
             let hidden_size = hidden.shape()[2] as usize;
-            let pos_u32: Vec<u32> = positions.iter().map(|&p| p as u32).collect();
-            let idx_b11 = MlxArray::from_raw_data(
-                pos_u32.as_ptr() as *const u8,
-                pos_u32.len() * std::mem::size_of::<u32>(),
-                &[batch_size, 1_i32, 1_i32],
-                MlxDtype::Uint32,
-            );
-            let idx_broadcast =
-                broadcast_to(&idx_b11, &[batch_size, 1_i32, hidden_size as i32], None);
-            let gathered = take_along_axis(&hidden, &idx_broadcast, 1, None); // [B, 1, H]
-            reshape(&gathered, &[batch_size, hidden_size as i32], None) // [B, H]
+            // Fast path: when all sequences extract at the same position
+            // (e.g. Cls pooling at index 0, or Last pooling on equal-length
+            // batches) we can replace the gather with a zero-copy strided
+            // slice — cheaper than take_along_axis(broadcast(...)).
+            let common_pos = positions
+                .first()
+                .copied()
+                .filter(|&first| positions.iter().all(|&p| p == first));
+            if let Some(pos) = common_pos {
+                let pos_i32 = pos as i32;
+                let sliced = slice(
+                    &hidden,
+                    &[0, pos_i32, 0],
+                    &[batch_size, pos_i32 + 1, hidden_size as i32],
+                    &[1, 1, 1],
+                    None,
+                );
+                reshape(&sliced, &[batch_size, hidden_size as i32], None) // [B, H]
+            } else {
+                let pos_u32: Vec<u32> = positions.iter().map(|&p| p as u32).collect();
+                let idx_b11 = MlxArray::from_raw_data(
+                    pos_u32.as_ptr() as *const u8,
+                    pos_u32.len() * std::mem::size_of::<u32>(),
+                    &[batch_size, 1_i32, 1_i32],
+                    MlxDtype::Uint32,
+                );
+                let idx_broadcast =
+                    broadcast_to(&idx_b11, &[batch_size, 1_i32, hidden_size as i32], None);
+                let gathered = take_along_axis(&hidden, &idx_broadcast, 1, None); // [B, 1, H]
+                reshape(&gathered, &[batch_size, hidden_size as i32], None) // [B, H]
+            }
         }
         None => hidden,
     };
@@ -5192,5 +5215,25 @@ mod tests {
         assert_eq!(attention_mask_key_len(1, 6, Some(4)), 4);
         assert_eq!(attention_mask_key_len(1, 6, None), 6);
         assert_eq!(attention_mask_key_len(2, 6, Some(4)), 6);
+    }
+
+    #[test]
+    fn build_layer_masks_returns_all_none_for_decode_with_layer_configs() {
+        // For models with per-layer configs (e.g. Gemma 4), seq==1 decode must
+        // return all-None masks without allocating a HashMap. Both sliding-window
+        // and global-attention layer types must resolve to None.
+        let cfg = gemma4_kv_shared_config();
+        assert!(
+            !cfg.layer_configs.is_empty(),
+            "fixture must have layer_configs"
+        );
+        let n_layers = cfg.layer_configs.len();
+        // key_len > seq simulates a decode step after a non-empty prefill.
+        let masks = build_layer_masks(&cfg, n_layers, 1, 10);
+        assert_eq!(masks.len(), n_layers);
+        assert!(
+            masks.iter().all(|m| m.is_none()),
+            "all decode masks must be None for seq==1"
+        );
     }
 }

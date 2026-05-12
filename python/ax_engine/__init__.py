@@ -643,6 +643,34 @@ class Session:
         """
         return self._inner.embed(token_ids, pooling=pooling, normalize=normalize)
 
+    def embed_bytes(
+        self,
+        token_ids: list[int],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ) -> bytes:
+        """Like :meth:`embed` but returns the embedding as raw f32 bytes.
+
+        The byte buffer is little-endian ``hidden_size * 4`` bytes long.
+        Avoids the per-element ``PyFloat`` allocation that ``list[float]``
+        incurs, which is significant for larger models.  Typical use:
+
+        .. code-block:: python
+
+            import numpy as np
+            buf = session.embed_bytes(ids)
+            vec = np.frombuffer(buf, dtype=np.float32)   # zero-copy view
+
+        Or without numpy:
+
+        .. code-block:: python
+
+            import array
+            vec = array.array("f", session.embed_bytes(ids))
+        """
+        return self._inner.embed_bytes(token_ids, pooling=pooling, normalize=normalize)
+
     def embed_batch(
         self,
         batch_token_ids: list[list[int]],
@@ -672,6 +700,20 @@ class Session:
             One embedding vector per input sequence, in the same order.
         """
         return self._inner.embed_batch(batch_token_ids, pooling=pooling, normalize=normalize)
+
+    def embed_batch_bytes(
+        self,
+        batch_token_ids: list[list[int]],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ) -> list[bytes]:
+        """Like :meth:`embed_batch` but returns one raw f32-bytes blob per
+        sequence.  See :meth:`embed_bytes` for the rationale and usage.
+        """
+        return self._inner.embed_batch_bytes(
+            batch_token_ids, pooling=pooling, normalize=normalize
+        )
 
     def __enter__(self) -> Session:
         return self
