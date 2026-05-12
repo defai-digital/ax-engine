@@ -1,0 +1,250 @@
+syntax = "proto3";
+
+package ax_engine.v1;
+
+option go_package = "github.com/ax-engine/sdk/go/grpc/ax_engine_v1;ax_engine_v1";
+
+// ─── Health ─────────────────────────────────────────────────────────────────
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status   = 1;
+  string service  = 2;
+  string model_id = 3;
+}
+
+// ─── Models ─────────────────────────────────────────────────────────────────
+
+message ModelsRequest {}
+
+message ModelCard {
+  string id       = 1;
+  string object   = 2;
+  string owned_by = 3;
+}
+
+message ModelsResponse {
+  string            object = 1;
+  repeated ModelCard data  = 2;
+}
+
+// ─── Sampling ────────────────────────────────────────────────────────────────
+
+message GenerateSampling {
+  float  temperature        = 1;
+  float  top_p              = 2;
+  uint32 top_k              = 3;
+  float  repetition_penalty = 4;
+  uint64 seed               = 5;
+}
+
+// ─── Generate (native) ───────────────────────────────────────────────────────
+
+message GenerateRequest {
+  string           model             = 1;
+  repeated uint32  input_tokens      = 2;
+  string           input_text        = 3;
+  uint32           max_output_tokens = 4;
+  GenerateSampling sampling          = 5;
+  string           metadata          = 6;
+}
+
+message GenerateResponse {
+  uint64          request_id    = 1;
+  string          model_id      = 2;
+  repeated uint32 prompt_tokens = 3;
+  repeated uint32 output_tokens = 4;
+  string          output_text   = 5;
+  string          status        = 6;
+  string          finish_reason = 7;
+  uint64          step_count    = 8;
+}
+
+// ─── Generate stream events ──────────────────────────────────────────────────
+
+message RequestReport {
+  uint64          request_id                = 1;
+  string          model_id                  = 2;
+  string          state                     = 3;
+  repeated uint32 prompt_tokens             = 4;
+  uint32          processed_prompt_tokens   = 5;
+  repeated uint32 output_tokens             = 6;
+  uint32          prompt_len                = 7;
+  uint32          output_len                = 8;
+  uint32          max_output_tokens         = 9;
+  bool            cancel_requested          = 10;
+}
+
+message StepReport {
+  uint32 scheduled_requests = 1;
+  uint32 scheduled_tokens   = 2;
+  uint32 ttft_events        = 3;
+  uint32 prefix_hits        = 4;
+  uint32 kv_usage_blocks    = 5;
+  uint32 evictions          = 6;
+  uint64 cpu_time_us        = 7;
+  uint64 runner_time_us     = 8;
+}
+
+message GenerateStepEvent {
+  RequestReport   request      = 1;
+  StepReport      step         = 2;
+  repeated uint32 delta_tokens = 3;
+  string          delta_text   = 4;
+}
+
+message GenerateStreamEvent {
+  // event name: "request" | "step" | "response"
+  string event = 1;
+
+  // exactly one of the following is set based on event
+  RequestReport   request  = 2;
+  GenerateStepEvent  step  = 3;
+  GenerateResponse response = 4;
+}
+
+// ─── Chat completion ─────────────────────────────────────────────────────────
+
+message ChatMessage {
+  string role    = 1;
+  string content = 2;
+}
+
+message ChatCompletionRequest {
+  string             model       = 1;
+  repeated ChatMessage messages  = 2;
+  uint32             max_tokens  = 3;
+  float              temperature = 4;
+  uint64             seed        = 5;
+  repeated string    stop        = 6;
+}
+
+message TokenUsage {
+  uint32 prompt_tokens     = 1;
+  uint32 completion_tokens = 2;
+  uint32 total_tokens      = 3;
+}
+
+message ChatCompletionChoice {
+  uint32      index         = 1;
+  ChatMessage message       = 2;
+  string      finish_reason = 3;
+}
+
+message ChatCompletionResponse {
+  string                     id      = 1;
+  string                     object  = 2;
+  int64                      created = 3;
+  string                     model   = 4;
+  repeated ChatCompletionChoice choices = 5;
+  TokenUsage                 usage   = 6;
+}
+
+message ChatDelta {
+  string role    = 1;
+  string content = 2;
+}
+
+message ChatCompletionChunkChoice {
+  uint32    index         = 1;
+  ChatDelta delta         = 2;
+  string    finish_reason = 3;
+}
+
+message ChatCompletionChunk {
+  string                          id      = 1;
+  string                          object  = 2;
+  int64                           created = 3;
+  string                          model   = 4;
+  repeated ChatCompletionChunkChoice choices = 5;
+}
+
+// ─── Text completion ─────────────────────────────────────────────────────────
+
+message CompletionRequest {
+  string          model       = 1;
+  string          prompt      = 2;
+  uint32          max_tokens  = 3;
+  float           temperature = 4;
+  uint64          seed        = 5;
+  repeated string stop        = 6;
+}
+
+message CompletionChoice {
+  uint32 index         = 1;
+  string text          = 2;
+  string finish_reason = 3;
+}
+
+message CompletionChunkChoice {
+  uint32 index         = 1;
+  string text          = 2;
+  string finish_reason = 3;
+}
+
+message CompletionResponse {
+  string                   id      = 1;
+  string                   object  = 2;
+  int64                    created = 3;
+  string                   model   = 4;
+  repeated CompletionChoice choices = 5;
+  TokenUsage               usage   = 6;
+}
+
+message CompletionChunk {
+  string                        id      = 1;
+  string                        object  = 2;
+  int64                         created = 3;
+  string                        model   = 4;
+  repeated CompletionChunkChoice choices = 5;
+}
+
+// ─── Embeddings ──────────────────────────────────────────────────────────────
+
+message EmbeddingsRequest {
+  string          model     = 1;
+  repeated uint32 input     = 2;
+  string          pooling   = 3;
+  bool            normalize = 4;
+}
+
+message EmbeddingData {
+  string          object    = 1;
+  repeated float  embedding = 2;
+  uint32          index     = 3;
+}
+
+message EmbeddingUsage {
+  uint32 prompt_tokens = 1;
+  uint32 total_tokens  = 2;
+}
+
+message EmbeddingsResponse {
+  string                object = 1;
+  repeated EmbeddingData data  = 2;
+  string                model  = 3;
+  EmbeddingUsage        usage  = 4;
+}
+
+// ─── Service ─────────────────────────────────────────────────────────────────
+
+service AxEngine {
+  rpc Health(HealthRequest)   returns (HealthResponse);
+  rpc Models(ModelsRequest)   returns (ModelsResponse);
+
+  // Native generate: unary and server-streaming
+  rpc Generate(GenerateRequest)       returns (GenerateResponse);
+  rpc StreamGenerate(GenerateRequest) returns (stream GenerateStreamEvent);
+
+  // OpenAI-compatible chat: unary and server-streaming
+  rpc ChatCompletion(ChatCompletionRequest)       returns (ChatCompletionResponse);
+  rpc StreamChatCompletion(ChatCompletionRequest) returns (stream ChatCompletionChunk);
+
+  // OpenAI-compatible text completion: unary and server-streaming
+  rpc Completion(CompletionRequest)       returns (CompletionResponse);
+  rpc StreamCompletion(CompletionRequest) returns (stream CompletionChunk);
+
+  // Embeddings (unary only)
+  rpc Embeddings(EmbeddingsRequest) returns (EmbeddingsResponse);
+}
