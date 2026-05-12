@@ -40,6 +40,15 @@ or:
   {"prefill_tok_s": 123.4, "decode_tok_s": 56.7, "peak_memory_gb": 12.3}
 or trial rows:
   {"trials": [{"prefill_tok_s": 123.4, "decode_tok_s": 56.7}]}
+
+Optional llama.cpp Metal baseline:
+  python3 scripts/bench_mlx_inference_stack.py \
+    --llama-cpp-bench .internal/reference/llama.cpp/build/bin/llama-bench \
+    --llama-cpp-gguf /path/to/model.gguf
+
+The llama.cpp row is a shape-compatible external GGUF baseline. `llama-bench`
+does not consume the MLX random-token prompt JSON, so it is not a prompt-hash
+parity baseline and must not be used as repo-owned MLX throughput evidence.
 """
 from __future__ import annotations
 
@@ -82,6 +91,13 @@ AX_MLX_RUNTIME_IDENTITY = {
     "route_identity": "repo_owned_mlx",
     "resolution_policy": "mlx_only",
     "benchmark_surface": "mlx_inference_stack",
+}
+
+LLAMA_CPP_METAL_RUNTIME_IDENTITY = {
+    "selected_backend": "llama_cpp",
+    "route_identity": "external_llama_cpp_metal",
+    "resolution_policy": "external_gguf_baseline",
+    "benchmark_surface": "llama_cpp_bench",
 }
 
 
@@ -1491,6 +1507,222 @@ def parse_swift_adapter_json(stdout: str) -> dict[str, Any]:
     return parsed
 
 
+def _llama_cpp_metric_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    samples = row.get("samples_ts")
+    if isinstance(samples, list) and samples:
+        values = [float(value) for value in samples]
+        metric = summarize_values(values)
+        stddev = row.get("stddev_ts")
+        if stddev is not None:
+            metric["stddev"] = float(stddev)
+        avg = row.get("avg_ts")
+        if avg is not None:
+            metric["reported_mean"] = float(avg)
+        return metric
+    avg = row.get("avg_ts")
+    if avg is None:
+        raise RuntimeError("llama-bench JSON row missing avg_ts/samples_ts")
+    return {"mean": float(avg), "median": float(avg)}
+
+
+def _llama_cpp_trial_rows(row: dict[str, Any], metric_name: str) -> list[dict[str, Any]]:
+    samples = row.get("samples_ts")
+    if not isinstance(samples, list):
+        return []
+    return [
+        {
+            "trial": index + 1,
+            metric_name: float(value),
+            "sample_ns": int(row.get("samples_ns", [None] * len(samples))[index])
+            if isinstance(row.get("samples_ns"), list)
+            and index < len(row.get("samples_ns"))
+            and row.get("samples_ns")[index] is not None
+            else None,
+        }
+        for index, value in enumerate(samples)
+    ]
+
+
+def parse_llama_cpp_bench_json(
+    stdout: str,
+    *,
+    prompt_tokens: int,
+    generation_tokens: int,
+    require_metal: bool = True,
+) -> dict[str, Any]:
+    try:
+        rows = json.loads(stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("llama-bench output was not valid JSON") from error
+    if not isinstance(rows, list):
+        raise RuntimeError("llama-bench JSON output must be a list")
+
+    prefill_row = None
+    decode_row = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        n_prompt = int(row.get("n_prompt", 0))
+        n_gen = int(row.get("n_gen", 0))
+        if n_prompt == prompt_tokens and n_gen == 0:
+            prefill_row = row
+        elif n_prompt == 0 and n_gen == generation_tokens:
+            decode_row = row
+
+    if prefill_row is None:
+        raise RuntimeError(f"llama-bench JSON missing pp row for n_prompt={prompt_tokens}")
+    if decode_row is None:
+        raise RuntimeError(f"llama-bench JSON missing tg row for n_gen={generation_tokens}")
+
+    backends = str(prefill_row.get("backends") or decode_row.get("backends") or "")
+    if require_metal and "metal" not in backends.lower():
+        raise RuntimeError(f"llama-bench row did not report Metal backend: {backends!r}")
+
+    prefill_trials = _llama_cpp_trial_rows(prefill_row, "prefill_tok_s")
+    decode_trials = _llama_cpp_trial_rows(decode_row, "decode_tok_s")
+    trial_count = max(len(prefill_trials), len(decode_trials))
+    trials = []
+    for index in range(trial_count):
+        trial: dict[str, Any] = {"trial": index + 1}
+        if index < len(prefill_trials):
+            trial["prefill_tok_s"] = prefill_trials[index]["prefill_tok_s"]
+            trial["prefill_sample_ns"] = prefill_trials[index]["sample_ns"]
+        if index < len(decode_trials):
+            trial["decode_tok_s"] = decode_trials[index]["decode_tok_s"]
+            trial["decode_sample_ns"] = decode_trials[index]["sample_ns"]
+        trials.append(trial)
+
+    return {
+        "prefill_tok_s": _llama_cpp_metric_from_row(prefill_row),
+        "decode_tok_s": _llama_cpp_metric_from_row(decode_row),
+        "trials": trials,
+        "llama_cpp": {
+            "build_commit": prefill_row.get("build_commit"),
+            "build_number": prefill_row.get("build_number"),
+            "backends": backends,
+            "gpu_info": prefill_row.get("gpu_info"),
+            "cpu_info": prefill_row.get("cpu_info"),
+            "model_filename": prefill_row.get("model_filename"),
+            "model_type": prefill_row.get("model_type"),
+            "model_size": prefill_row.get("model_size"),
+            "model_n_params": prefill_row.get("model_n_params"),
+            "n_gpu_layers": prefill_row.get("n_gpu_layers"),
+            "n_batch": prefill_row.get("n_batch"),
+            "n_ubatch": prefill_row.get("n_ubatch"),
+            "type_k": prefill_row.get("type_k"),
+            "type_v": prefill_row.get("type_v"),
+            "flash_attn": prefill_row.get("flash_attn"),
+            "devices": prefill_row.get("devices"),
+        },
+        "raw_rows": rows,
+    }
+
+
+def collect_llama_cpp_device_evidence(binary: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            [str(binary), "--list-devices"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    output = (result.stdout + result.stderr).strip()
+    return output or None
+
+
+def run_llama_cpp_metal_benchmark(
+    binary: Path,
+    gguf: Path,
+    *,
+    prompt_tokens: int,
+    generation_tokens: int,
+    repetitions: int,
+    cooldown: float,
+    n_gpu_layers: int,
+    prompt_doc: dict[str, Any],
+    extra_args: str | None = None,
+) -> dict[str, Any]:
+    validate_prompt_doc(
+        prompt_doc,
+        prompt_tokens=prompt_tokens,
+        generation_tokens=generation_tokens,
+    )
+    if not binary.exists():
+        raise RuntimeError(f"llama.cpp benchmark binary not found: {binary}")
+    if not gguf.exists():
+        raise RuntimeError(f"llama.cpp GGUF model not found: {gguf}")
+
+    cmd = [
+        str(binary),
+        "-m",
+        str(gguf),
+        "-p",
+        str(prompt_tokens),
+        "-n",
+        str(generation_tokens),
+        "-r",
+        str(repetitions),
+        "--delay",
+        str(int(cooldown)),
+        "-ngl",
+        str(n_gpu_layers),
+        "-o",
+        "json",
+    ]
+    if extra_args:
+        cmd.extend(shlex.split(extra_args))
+    print(f"  [llama.cpp/metal] {' '.join(cmd)}", file=sys.stderr)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"llama-bench failed with exit={result.returncode}:\n"
+            f"{result.stdout}{result.stderr}"
+        )
+
+    metrics = parse_llama_cpp_bench_json(
+        result.stdout,
+        prompt_tokens=prompt_tokens,
+        generation_tokens=generation_tokens,
+        require_metal=True,
+    )
+    cell: dict[str, Any] = {
+        "engine": "llama_cpp_metal",
+        "method": "llama-bench",
+        "timing_scope": "external_llama_cpp_kernel_benchmark",
+        "runtime_identity": dict(LLAMA_CPP_METAL_RUNTIME_IDENTITY),
+        "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
+        "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
+        "prompt_token_ids_path": prompt_doc["token_ids_path"],
+        "prompt_token_ids_sha256": prompt_doc["token_ids_sha256"],
+        "prompt_tokens": prompt_tokens,
+        "generation_tokens": generation_tokens,
+        "batch_size": 1,
+        "gguf_model": str(gguf),
+        "n_gpu_layers": n_gpu_layers,
+        "prefill_tok_s": metrics["prefill_tok_s"],
+        "decode_tok_s": metrics["decode_tok_s"],
+        "trials": metrics["trials"],
+        "llama_cpp": metrics["llama_cpp"],
+        "external_baseline_role": "gguf_non_mlx_metal_reference",
+        "claim_boundary": (
+            "Shape-compatible external GGUF baseline. llama-bench does not consume "
+            "the harness prompt-token JSON, so this row is not prompt-hash parity "
+            "evidence for repo-owned MLX throughput."
+        ),
+    }
+    device_evidence = collect_llama_cpp_device_evidence(binary)
+    if device_evidence:
+        cell["llama_cpp_device_evidence"] = device_evidence
+    attach_derived_ttft_ms(
+        cell,
+        prompt_tokens=prompt_tokens,
+        source="derived_from_llama_cpp_pp_tok_s",
+    )
+    return cell
+
+
 def run_mlx_swift_lm_adapter(
     command_template: str,
     model: str,
@@ -1856,6 +2088,33 @@ def main() -> None:
             "adapter command template that returns benchmark JSON"
         ),
     )
+    parser.add_argument(
+        "--llama-cpp-bench",
+        type=Path,
+        help=(
+            "Optional path to a Metal-enabled llama.cpp llama-bench binary. "
+            "Requires --llama-cpp-gguf and emits shape-compatible external "
+            "GGUF baseline rows."
+        ),
+    )
+    parser.add_argument(
+        "--llama-cpp-gguf",
+        type=Path,
+        help="GGUF model path for the optional llama.cpp Metal benchmark baseline.",
+    )
+    parser.add_argument(
+        "--llama-cpp-n-gpu-layers",
+        type=int,
+        default=99,
+        help="Value passed to llama-bench -ngl/--n-gpu-layers for Metal offload.",
+    )
+    parser.add_argument(
+        "--llama-cpp-extra-args",
+        help=(
+            "Extra arguments appended to llama-bench, for example "
+            "'--device Metal'. Keep empty for the default Metal-enabled build behavior."
+        ),
+    )
     args = parser.parse_args()
     if args.model == DEFAULT_MODEL_ID and args.model_dir != DEFAULT_MODEL_DIR:
         args.model = str(args.model_dir)
@@ -1865,6 +2124,8 @@ def main() -> None:
         parser.error("--ax-ngram-accel conflicts with --ax-compare-policies")
     if args.reuse_reference_results_from and args.mlx_swift_lm_command:
         parser.error("--reuse-reference-results-from conflicts with --mlx-swift-lm-command")
+    if bool(args.llama_cpp_bench) != bool(args.llama_cpp_gguf):
+        parser.error("--llama-cpp-bench and --llama-cpp-gguf must be provided together")
     if args.prefill_scaling_output and not args.output:
         parser.error("--prefill-scaling-output requires --output")
     if args.gateddelta_prefill_profile_report_output and not args.output:
@@ -1941,6 +2202,9 @@ def main() -> None:
     print(f"  prompt_artifact_root: {prompt_artifact_root}", file=sys.stderr)
     if gateddelta_prefill_profile_contract:
         print("  profile: gateddelta_prefill", file=sys.stderr)
+    if args.llama_cpp_bench:
+        print(f"  llama_cpp_bench: {args.llama_cpp_bench}", file=sys.stderr)
+        print(f"  llama_cpp_gguf: {args.llama_cpp_gguf}", file=sys.stderr)
 
     if not args.skip_ax_engine:
         try:
@@ -2002,6 +2266,23 @@ def main() -> None:
                         args.cooldown,
                         args.prefill_step_size,
                         prompt_doc,
+                    )
+                )
+
+        if args.llama_cpp_bench and args.llama_cpp_gguf:
+            for prompt_doc in prompts:
+                prompt_tokens = int(prompt_doc["prompt_tokens"])
+                results.append(
+                    run_llama_cpp_metal_benchmark(
+                        args.llama_cpp_bench,
+                        args.llama_cpp_gguf,
+                        prompt_tokens=prompt_tokens,
+                        generation_tokens=args.generation_tokens,
+                        repetitions=args.repetitions,
+                        cooldown=args.cooldown,
+                        n_gpu_layers=args.llama_cpp_n_gpu_layers,
+                        prompt_doc=prompt_doc,
+                        extra_args=args.llama_cpp_extra_args,
                     )
                 )
 
@@ -2073,6 +2354,9 @@ def main() -> None:
     secondary_reference_present = bool(args.mlx_swift_lm_command) or any(
         cell.get("engine") == "mlx_swift_lm" for cell in results
     )
+    llama_cpp_metal_present = bool(args.llama_cpp_bench) or any(
+        cell.get("engine") == "llama_cpp_metal" for cell in results
+    )
 
     doc = {
         "schema_version": "ax.mlx_inference_stack.v2",
@@ -2080,6 +2364,8 @@ def main() -> None:
             "schema_version": PHASE0_CLAIM_GATE_SCHEMA_VERSION,
             "scope": "mlx_inference_stack_public_readme",
             "requires_prompt_hash_parity": True,
+            "prompt_hash_parity_scope": "mlx_lm_ax_engine_and_mlx_swift_lm_rows",
+            "shape_only_external_rows": ["llama_cpp_metal"],
             "requires_runtime_identity": True,
             "requires_decode_policy_identity": True,
             "requires_prefill_decode_split": True,
@@ -2096,6 +2382,9 @@ def main() -> None:
             "secondary_reference": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
             "secondary_reference_present": secondary_reference_present,
             "secondary_reference_required": False,
+            "external_gguf_reference": "llama.cpp Metal llama-bench",
+            "external_gguf_reference_present": llama_cpp_metal_present,
+            "external_gguf_reference_required": False,
             "retired_reference": "SwiftLM application server",
             "comparison_policy": (
                 "Every non-baseline row is compared against the matching "
@@ -2103,7 +2392,9 @@ def main() -> None:
                 "generation shape. ax_engine_mlx is the direct same-policy "
                 "comparison baseline; ax_engine_mlx_ngram_accel rows are AX "
                 "default n-gram policy rows whose ax_decode_claim_status "
-                "distinguishes effective acceleration from no-draft fallback."
+                "distinguishes effective acceleration from no-draft fallback. "
+                "llama_cpp_metal rows are shape-compatible external GGUF rows, "
+                "not prompt-hash parity or repo-owned MLX throughput evidence."
             ),
             "secondary_reference_policy": (
                 "mlx-swift-lm rows are admitted only through an explicit "
@@ -2118,7 +2409,11 @@ def main() -> None:
                 "batch_size": 1,
                 "artifacts": [without_inline_tokens(prompt) for prompt in prompts],
             },
-            "strictness": "same_prompt_tokens_for_ax_and_swift_adapter; mlx_lm_prompt_algorithm_reproduced",
+            "strictness": (
+                "same_prompt_tokens_for_ax_and_swift_adapter; "
+                "mlx_lm_prompt_algorithm_reproduced; "
+                "llama_cpp_metal_shape_compatible_only"
+            ),
         },
         "prompt_tokens": prompt_lengths,
         "generation_tokens": args.generation_tokens,
