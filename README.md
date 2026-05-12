@@ -126,6 +126,33 @@ tokens are speculated, how requests are scheduled, and how KV state is
 materialized. That runtime layer is what produces higher effective throughput
 on supported workloads.
 
+## v4.8.0 Serving Roadmap
+
+AX Engine v4.8.0 moves more serving-oriented runtime work into the open source
+engine and adopts the Apache License, Version 2.0 for that next phase. The
+focus is better local serving ability on Apple Silicon while keeping benchmark
+claims evidence-backed and route-specific.
+
+The next optimization tracks are:
+
+- **KV cache memory layout**: paged or block-aligned KV storage, better
+  per-layer locality, fewer KV copies or transposes, and cache reuse between
+  speculative draft and target verification paths.
+- **Apple unified memory advantage**: zero-copy weight mapping,
+  memory-mapped quantized weights, direct Metal buffer reuse, fewer temporary
+  tensor materializations, and persistent request buffers to improve cold
+  start, TTFT, and memory pressure.
+- **MoE expert locality optimization**: expert-weight cache scheduling, token
+  grouping by expert, lower dispatch overhead, likely-expert prefetching,
+  router/dispatch fusion, and top-k routing memory-pattern tuning.
+- **Speculative decoding software tuning**: adaptive n-gram length, dynamic
+  draft windows, acceptance-rate prediction, fallback thresholds,
+  prompt-pattern-aware speculation, and better cache sharing between draft and
+  verify paths.
+- **Kernel fusion and quantization path**: fused RMSNorm/matmul, attention
+  projection fusion, fused dequant/matmul, group-wise quantization kernels,
+  Apple AMX/Metal mixed paths, and prepacked weight layouts.
+
 ## Runtime Paths
 
 | Path | Use it for | Current scope |
@@ -812,6 +839,6 @@ result guidelines.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
 
 Copyright (c) 2026 [DEFAI Private Limited](https://defai.digital)

@@ -105,8 +105,8 @@ bash scripts/check-python-preview.sh
 
 By submitting issues, benchmark artifacts, reproduction details, documentation
 suggestions, or invited changes, you agree that maintainers may use that material
-in AX Engine documentation, tests, benchmarks, and project work under the MIT
-License unless you clearly state otherwise.
+in AX Engine documentation, tests, benchmarks, and project work under the
+Apache License, Version 2.0 unless you clearly state otherwise.
 
 ## Contact
 

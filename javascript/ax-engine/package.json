@@ -1,6 +1,6 @@
 {
   "name": "@ax-engine/sdk",
-  "version": "0.4.0",
+  "version": "4.8.0",
   "description": "JavaScript / TypeScript SDK for AX Engine v4 — local HTTP inference server",
   "type": "module",
   "main": "./index.js",
@@ -37,5 +37,5 @@
     }
   },
   "keywords": ["llm", "inference", "mlx", "apple-silicon", "langchain"],
-  "license": "MIT"
+  "license": "Apache-2.0"
 }
