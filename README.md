@@ -792,8 +792,17 @@ Public documentation is in `docs/`. Canonical benchmark manifests are in
 
 ## Contributing
 
-AX Engine welcomes public contributions. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for guidelines.
+AX Engine welcomes community input through issue tickets, wishlist requests,
+reproducible benchmark results, and documentation feedback. We generally do not
+accept unsolicited code PRs, especially for runtime, model, kernel, scheduler,
+cache, n-gram, or performance-tuning changes.
+
+Performance tuning is tightly coupled: a local speedup can regress correctness,
+TTFT, memory pressure, direct-vs-n-gram behavior, long-context behavior, serving
+stability, or another model family. Please open an issue first with the problem,
+target workload, and evidence so maintainers can choose the right validation
+path. See [CONTRIBUTING.md](CONTRIBUTING.md) for issue, wishlist, and benchmark
+result guidelines.
 
 ## Community
 
