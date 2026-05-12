@@ -236,19 +236,19 @@ and runtime path are all present.
 
 ## Performance ([methodology](docs/PERFORMANCE.md))
 
-The full README generation-model benchmark refresh ran on 2026-05-12. Raw
-artifacts are in
-`benchmarks/results/mlx-inference/2026-05-12-production-build-readme-refresh/`.
-Fresh AX rows completed for all 14 README generation models using a
-production-build binary (`[profile.release]`: LTO thin, `codegen-units=1`,
-`panic=abort`, stripped debuginfo). The `mlx_lm` and `mlx_swift_lm` reference
-rows were reused from the 2026-05-11 full refresh under the same prompt
-contract. Each row has 5 repetitions, a 15-second cooldown between trials, and
-a 45-second pause between models.
+The full README generation-model benchmark refresh ran on 2026-05-12. All rows
+in the tables below are from
+`benchmarks/results/mlx-inference/2026-05-12-production-build-readme-refresh/`
+(production-build binary: LTO thin, `codegen-units=1`, `panic=abort`, stripped
+debuginfo). The `mlx_lm` and `mlx_swift_lm` reference rows were reused from the
+2026-05-11 full refresh under the same prompt contract. Each row has 5
+repetitions, a 15-second cooldown between trials, and a 45-second pause between
+models. Later fast-path verification artifacts are tracked separately and are
+not mixed into these public tables.
 
 **Prefill** — Across the current table, AX engine prefill is -14% to +174% vs mlx_lm. The weakest current row is Gemma 4 E4B at 512 tokens, while the strongest current row is Qwen Coder Next at 128 tokens.
 
-**Decode** — Direct decode (n-gram disabled) spans -19% to +26% vs mlx_lm across the current table. With n-gram acceleration (the default), current rows span +11% to +207% vs mlx_lm.
+**Decode** — Direct decode (n-gram disabled) spans -14% to +26% vs mlx_lm across the current table. With n-gram acceleration (the default), current rows span +11% to +207% vs mlx_lm.
 
 **TTFT** — AX TTFT is lower than mlx_lm on 24/28 rows in the current table. The
 4 slower rows are Gemma sliding-window models at 512 prompt tokens, and this
@@ -351,8 +351,8 @@ Lower is better. `mlx_lm` and `mlx_swift_lm` values are derived from reported
 prefill throughput (`prompt_tokens / prefill_tok_s × 1000 ms`). AX values are
 measured directly from per-step runner timing in the SSE event stream. Source:
 `benchmarks/results/mlx-inference/2026-05-12-production-build-readme-refresh/`
-for all rows. These numbers predate the sliding-window mask fix, so Gemma 512
-prompt-token TTFT should improve in the next benchmark run.
+for all rows. Later fast-path verification artifacts are tracked separately and
+are not mixed into this table.
 
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |
 |---|---|---:|---:|---:|---:|

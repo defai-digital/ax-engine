@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use mlx_sys::{MlxArray, argmax, eval};
+use mlx_sys::{MlxArray, argmax, eval, slice};
 
 use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical};
 
@@ -1019,18 +1019,14 @@ fn verify_draft(
     // now materialised. KV backing buffers are also flat — no separate
     // materialize_cache call is needed in the caller.
     //
-    // For temperature > 0, read all verify-step logits to CPU once so we can
-    // sample the correction / bonus token from the full distribution.
-    // Draft acceptance always uses argmax comparison (n-gram drafts are
-    // deterministic, so there is no draft distribution to resample from).
-    let cpu_logits: Vec<f32> = if sampling.temperature > 0.0 {
-        logits_all.data_f32().to_vec()
-    } else {
-        Vec::new()
-    };
+    // Draft acceptance uses argmax comparison only; n-gram drafts are
+    // deterministic so there is no draft distribution to resample from.
+    // Sampling (correction / bonus) copies only the one needed logit row from
+    // the already-materialised logits_all, avoiding a full (1+draft_len)×vocab
+    // CPU copy when temperature > 0.
     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
 
-    let vocab = cfg.vocab_size;
+    let vocab = cfg.vocab_size as i32;
 
     // Accept/reject.
     // predicted[i] = model's argmax prediction for the token AFTER verify_input[i].
@@ -1043,8 +1039,9 @@ fn verify_draft(
             result.push(draft[i]);
             accept_count += 1;
         } else {
-            // Correction token: sample at position i with temperature.
-            let tok = sample_pos(&cpu_logits, predicted[i], i, vocab, sampling, rng);
+            // Correction token: sample at position i.  Slice one logit row to
+            // avoid copying the full (1+draft_len)×vocab tensor to CPU.
+            let tok = sample_logit_row(&logits_all, predicted[i], i, vocab, sampling, rng);
             result.push(tok);
             break;
         }
@@ -1053,7 +1050,7 @@ fn verify_draft(
     // Bonus: if ALL draft tokens were accepted, sample the next token for free.
     if accept_count == draft.len() {
         let pos = draft.len();
-        let tok = sample_pos(&cpu_logits, predicted[pos], pos, vocab, sampling, rng);
+        let tok = sample_logit_row(&logits_all, predicted[pos], pos, vocab, sampling, rng);
         result.push(tok);
     }
 
@@ -1087,23 +1084,25 @@ fn recompute_committed_prefix(
 
 /// Sample token at `pos` in the flattened `[verify_len, vocab]` logit buffer.
 /// Falls back to `argmax_tok` when temperature is 0 or the buffer is empty.
-fn sample_pos(
-    cpu_logits: &[f32],
+/// Sample one token from `logits_all` at sequence position `pos`.
+///
+/// `logits_all` has shape `[1, verify_len, vocab]` and is already materialised.
+/// Slices one `[1, 1, vocab]` row — avoids copying the full multi-position
+/// tensor to CPU when temperature > 0.
+fn sample_logit_row(
+    logits_all: &MlxArray,
     argmax_tok: u32,
     pos: usize,
-    vocab: usize,
+    vocab: i32,
     sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> u32 {
-    if sampling.temperature <= 0.0 || cpu_logits.is_empty() {
+    if sampling.temperature <= 0.0 {
         return argmax_tok;
     }
-    let start = pos * vocab;
-    let end = start + vocab;
-    if end > cpu_logits.len() {
-        return argmax_tok;
-    }
-    sample_categorical(&cpu_logits[start..end], sampling, &[], rng)
+    let p = pos as i32;
+    let row = slice(logits_all, &[0, p, 0], &[1, p + 1, vocab], &[1, 1, 1], None);
+    sample_categorical(row.data_f32(), sampling, &[], rng)
 }
 
 /// Single-token decode fallback (used when n-gram table has no prediction).
