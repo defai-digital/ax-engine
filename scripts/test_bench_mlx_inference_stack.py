@@ -249,6 +249,137 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             self.assertEqual(row["method"], "mlx_swift_lm_benchmark_adapter")
             self.assertEqual(row["prompt_token_ids_sha256"], prompt["token_ids_sha256"])
 
+    def test_parse_llama_cpp_bench_json_combines_pp_and_tg_rows(self) -> None:
+        parsed = bench.parse_llama_cpp_bench_json(
+            json.dumps(
+                [
+                    {
+                        "build_commit": "abc123",
+                        "build_number": 6000,
+                        "cpu_info": "Apple M5",
+                        "gpu_info": "Apple M5 Max",
+                        "backends": "Metal",
+                        "model_filename": "/models/qwen.gguf",
+                        "model_type": "qwen",
+                        "model_size": 123,
+                        "model_n_params": 456,
+                        "n_batch": 2048,
+                        "n_ubatch": 512,
+                        "type_k": "f16",
+                        "type_v": "f16",
+                        "n_gpu_layers": 99,
+                        "flash_attn": False,
+                        "devices": "Metal",
+                        "n_prompt": 512,
+                        "n_gen": 0,
+                        "avg_ts": 1100.0,
+                        "stddev_ts": 10.0,
+                        "samples_ns": [100, 200],
+                        "samples_ts": [1000.0, 1200.0],
+                    },
+                    {
+                        "backends": "Metal",
+                        "n_prompt": 0,
+                        "n_gen": 128,
+                        "avg_ts": 55.0,
+                        "stddev_ts": 5.0,
+                        "samples_ns": [300, 400],
+                        "samples_ts": [50.0, 60.0],
+                    },
+                ]
+            ),
+            prompt_tokens=512,
+            generation_tokens=128,
+        )
+
+        self.assertEqual(parsed["prefill_tok_s"]["median"], 1100.0)
+        self.assertEqual(parsed["decode_tok_s"]["median"], 55.0)
+        self.assertEqual(parsed["llama_cpp"]["backends"], "Metal")
+        self.assertEqual(parsed["llama_cpp"]["build_commit"], "abc123")
+        self.assertEqual(parsed["trials"][0]["prefill_tok_s"], 1000.0)
+        self.assertEqual(parsed["trials"][1]["decode_tok_s"], 60.0)
+
+    def test_parse_llama_cpp_bench_json_requires_metal_backend(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Metal backend"):
+            bench.parse_llama_cpp_bench_json(
+                json.dumps(
+                    [
+                        {"backends": "CPU", "n_prompt": 4, "n_gen": 0, "avg_ts": 10.0},
+                        {"backends": "CPU", "n_prompt": 0, "n_gen": 2, "avg_ts": 1.0},
+                    ]
+                ),
+                prompt_tokens=4,
+                generation_tokens=2,
+            )
+
+    def test_llama_cpp_metal_row_records_external_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "llama-bench"
+            gguf = root / "model.gguf"
+            binary.write_text("#!/bin/sh\n")
+            gguf.write_text("gguf")
+            prompt = bench.write_prompt_tokens(
+                root,
+                prompt_tokens=4,
+                generation_tokens=2,
+                vocab_size=100,
+                tokens=[1, 2, 3, 4],
+            )
+            prompt["token_ids"] = [1, 2, 3, 4]
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "build_commit": "abc123",
+                            "backends": "Metal",
+                            "gpu_info": "Apple GPU",
+                            "n_prompt": 4,
+                            "n_gen": 0,
+                            "n_gpu_layers": 99,
+                            "avg_ts": 100.0,
+                            "samples_ts": [90.0, 110.0],
+                        },
+                        {
+                            "backends": "Metal",
+                            "n_prompt": 0,
+                            "n_gen": 2,
+                            "avg_ts": 20.0,
+                            "samples_ts": [18.0, 22.0],
+                        },
+                    ]
+                ),
+                stderr="",
+            )
+            with (
+                patch.object(bench.subprocess, "run", return_value=completed) as run,
+                patch.object(bench, "collect_llama_cpp_device_evidence", return_value="Metal device"),
+            ):
+                row = bench.run_llama_cpp_metal_benchmark(
+                    binary,
+                    gguf,
+                    prompt_tokens=4,
+                    generation_tokens=2,
+                    repetitions=2,
+                    cooldown=0.0,
+                    n_gpu_layers=99,
+                    prompt_doc=prompt,
+                    extra_args="--device Metal",
+                )
+
+        command_args = run.call_args.args[0]
+        self.assertIn("-o", command_args)
+        self.assertIn("json", command_args)
+        self.assertIn("--device", command_args)
+        self.assertEqual(row["engine"], "llama_cpp_metal")
+        self.assertEqual(row["runtime_identity"]["route_identity"], "external_llama_cpp_metal")
+        self.assertEqual(row["prompt_contract"], "shape_compatible_llama_bench_internal_tokens")
+        self.assertIn("not prompt-hash parity", row["claim_boundary"])
+        self.assertEqual(row["ttft_source"], "derived_from_llama_cpp_pp_tok_s")
+        self.assertEqual(row["llama_cpp_device_evidence"], "Metal device")
+
     def test_collect_model_metadata_detects_linear_attention_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
