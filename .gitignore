@@ -10,6 +10,7 @@ __pycache__/
 .internal/
 
 # AI assistant configuration — not for publication
+.claude/
 CLAUDE.md
 agents.md
 AGENTS.md
