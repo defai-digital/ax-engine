@@ -145,8 +145,9 @@ in `metal/` and `crates/ax-engine-core/src/metal/`.
 model forward pass in `model.rs` uses only MLX fast ops (`rms_norm`, `rope`,
 `scaled_dot_product_attention`, `quantized_matmul`).  Custom-kernel work requires
 profiling evidence on the production decode path before a kernel can be selected
-and wired in.  Any custom-kernel PR must include before/after benchmark rows on
-the canonical scenario matrix.
+and wired in.  Open an issue with before/after benchmark rows on the canonical
+scenario matrix before proposing any custom-kernel code change; maintainers may
+invite a scoped PR after the evidence and validation gate are agreed.
 
 ## Runtime controls
 
