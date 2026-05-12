@@ -87,7 +87,7 @@ AX Engine gives local inference work a stable runtime contract:
 - `ax-engine-server` exposes a local HTTP adapter over the runtime.
 - `ax-engine-bench` records workload contracts, route identity, correctness,
   determinism, and performance evidence.
-- `ax-engine-sdk`, Python bindings, and the JavaScript preview client provide
+- `ax-engine-sdk`, Python bindings, and the JavaScript client provide
   thin integration surfaces over the same backend-resolution rules.
 - Repo-owned MLX execution is optimized for supported Qwen and Gemma families.
 - Delegated `mlx_lm.server` and `llama.cpp` routes cover explicit
@@ -403,7 +403,7 @@ Single-request median throughput (ax-engine-py vs mlx-lm, same session):
 
 ### Homebrew
 
-For tagged macOS arm64 releases, install the preview command-line tools from
+For tagged macOS arm64 releases, install the command-line tools from
 the AutomatosX tap:
 
 ```bash

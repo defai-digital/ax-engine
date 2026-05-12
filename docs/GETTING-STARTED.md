@@ -11,7 +11,7 @@ AX surface for broader model coverage.
 - `ax-engine-bench`: workload-contract, readiness, direct-generate, and
   benchmark-support CLI
 - `ax-engine-sdk`: backend resolution and session contract
-- Python bindings and a JavaScript preview client
+- Python bindings and a JavaScript client
 - repo-owned MLX inference for supported Qwen/Gemma model artifacts
 - explicit delegated compatibility for `mlx_lm.server` and `llama.cpp`
 
@@ -126,7 +126,7 @@ python -m unittest discover -s python/tests -v
 - `crates/ax-engine-bench`: workload-contract CLI and bring-up runtime harness
 - `crates/ax-engine-sdk`: SDK facade with backend resolution and session management
 - `crates/ax-engine-server`: local HTTP server adapter over the SDK
-- `javascript/`: repo-local JavaScript preview client package
+- `javascript/`: repo-local JavaScript client package
 - `crates/ax-engine-py`: Python extension crate (PyO3)
 - `benchmarks/`: canonical benchmark manifests
 - `python/`: Python package wrapper, type stubs, tests, examples
@@ -390,7 +390,7 @@ To start the preview local server:
 cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
 ```
 
-To install the checked-in JavaScript preview client from this repository:
+To install the checked-in JavaScript client from this repository:
 
 ```text
 npm install ./javascript/ax-engine
