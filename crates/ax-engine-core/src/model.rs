@@ -387,6 +387,11 @@ fn is_false(value: &bool) -> bool {
 /// pre-sanitized; raw HuggingFace checkpoints need two transforms (norm delta
 /// +1.0, conv1d axis swap) that the weight loader applies at load time when
 /// this field is set to `HfToMlx`.
+///
+/// Some checkpoints (e.g. Qwen3-Coder-Next) are partially sanitized: the
+/// conv1d axes were already swapped by `mlx_lm.convert` to the MLX layout
+/// `(out, kernel, in)` but the RMSNorm weights were NOT lifted from their
+/// zero-centered delta representation. Use `HfNormOnly` for these.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WeightSanitize {
@@ -401,6 +406,11 @@ pub enum WeightSanitize {
     /// - swap axes (2, 1) on conv1d projection weights (HF stores them in
     ///   a different axis order than MLX expects)
     HfToMlx,
+    /// Partially-sanitized HuggingFace convention: conv1d axes are already in
+    /// MLX layout `(out, kernel, in)` but RMSNorm weights are still stored as
+    /// zero-centered deltas. The loader adds 1.0 to norm weights only; it does
+    /// NOT re-swap the conv1d axes.
+    HfNormOnly,
 }
 
 impl WeightSanitize {

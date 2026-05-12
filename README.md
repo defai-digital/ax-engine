@@ -3,13 +3,28 @@
 [![Preview Surfaces](https://github.com/defai-digital/ax-engine/actions/workflows/python-preview.yml/badge.svg?branch=main)](https://github.com/defai-digital/ax-engine/actions/workflows/python-preview.yml)
 [![Coverage Report](https://github.com/defai-digital/ax-engine/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/defai-digital/ax-engine/actions/workflows/coverage.yml)
 
+### Faster Inference: Prefill, Decode, and TTFT
+
+<table>
+<tr>
+<td align="center"><strong>Prefill rate</strong></td>
+<td align="center"><strong>Decode rate</strong></td>
+<td align="center"><strong>TTFT</strong></td>
+</tr>
+<tr>
+<td><img src="docs/assets/perf-prefill-box-whisker.svg" alt="Box-and-Whisker Plot comparing mlx_lm, mlx_swift_lm, ax_engine, and ax_engine plus n-gram prefill rates"></td>
+<td><img src="docs/assets/perf-decode-box-whisker.svg" alt="Box-and-Whisker Plot comparing mlx_lm, mlx_swift_lm, ax_engine, and ax_engine plus n-gram decode rates"></td>
+<td><img src="docs/assets/perf-ttft-box-whisker.svg" alt="Box-and-Whisker Plot comparing mlx_lm, mlx_swift_lm, ax_engine, and ax_engine plus n-gram TTFT"></td>
+</tr>
+</table>
+
 AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and
 benchmark toolkit for Apple Silicon.
 
-It is not "AX MLX" as a product. MLX is the primary Apple Silicon execution
-backend for supported model families, while AX Engine also exposes explicit
-compatibility routes for upstream `mlx-lm` and `llama.cpp` so users can stay on
-one AX surface while model coverage grows.
+AX Engine runs supported Apple Silicon model families on MLX, and keeps
+unsupported or non-MLX models reachable through explicit `mlx-lm` and
+`llama.cpp` compatibility routes. Users get one AX server, SDK, and benchmark
+surface while model coverage grows.
 
 > Requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB RAM minimum**.
 > Rust 1.85+ for source builds.
@@ -81,16 +96,16 @@ AX Engine gives local inference work a stable runtime contract:
 
 [mlx_lm](https://github.com/ml-explore/mlx-lm) and
 [mlx-swift-lm](https://github.com/ml-explore/mlx-swift) remain the canonical
-MLX references. AX Engine compares against them, learns from them, and delegates
-to `mlx-lm` for unsupported MLX text models when requested. The AX-owned value
-is the runtime layer around supported workloads: request lifecycle, scheduling,
-KV/cache policy, n-gram acceleration, and auditable benchmark artifacts.
+MLX references. AX Engine compares against them, uses them as compatibility
+routes when needed, and owns the runtime layer around supported workloads:
+request lifecycle, scheduling, KV/cache policy, n-gram acceleration, and
+auditable benchmark artifacts.
 
 For supported transformer families on Apple Silicon, the AX-owned runtime layer
 can produce higher effective throughput than the reference MLX runtimes on
 matching benchmark shapes:
 
-- **N-gram acceleration** reaches up to 3.4x mlx_lm decode
+- **N-gram acceleration** reaches up to 3.1x mlx_lm decode
   throughput on high-hit benchmark rows — with no second draft model and no
   model changes
 - **Coding-shaped decode is a natural fit when local repetition exists**:
@@ -105,11 +120,11 @@ matching benchmark shapes:
   determinism, route identity, and regression across checked-in manifests, not
   just throughput snapshots
 
-The thesis is not "our MLX tensor ops are faster." MLX compiles and executes the
-same compute graph either way. The thesis is that **AX's decode strategy above
-MLX** — how tokens are speculated, how requests are scheduled, how KV state is
-materialized — produces measurably higher effective throughput on supported
-workloads.
+The claim is not that AX has faster MLX tensor kernels. MLX still compiles and
+executes the model graph. AX improves the runtime behavior above MLX: how
+tokens are speculated, how requests are scheduled, and how KV state is
+materialized. That runtime layer is what produces higher effective throughput
+on supported workloads.
 
 ## Runtime Paths
 
@@ -182,16 +197,13 @@ descriptor. Each supported architecture has a hand-written forward pass in
 `ax-engine-mlx`. Adding a new architecture means implementing the model graph,
 not wiring up a generic loader.
 
-Recent community-model checks are tracked according to the evidence they have.
-On 2026-05-06, `mlx-community/GLM-4.7-Flash-4bit` was promoted to a repo-owned
-MLX runtime path after the GLM MLA attention, sigmoid router, and latent-KV
-cache contracts landed and an AX server benchmark completed.
-See
-`benchmarks/results/mlx-inference/2026-05-06/README.md` for commands and
-artifacts. Before promoting any additional architecture, run
-`scripts/probe_mlx_model_support.py --model-dir <model-dir>`: GLM now reports
-`repo_owned_runtime_ready` when the runtime-ready manifest and local reference
-files are present.
+Community-model checks are tracked by evidence level. For example,
+`mlx-community/GLM-4.7-Flash-4bit` is now a repo-owned MLX runtime path after
+GLM MLA attention, sigmoid router, latent-KV cache support, and AX server
+benchmarks landed. Before promoting another architecture, run
+`scripts/probe_mlx_model_support.py --model-dir <model-dir>`; a model should
+report `repo_owned_runtime_ready` only when its manifest, local reference files,
+and runtime path are all present.
 
 ## Limitations
 
@@ -224,13 +236,26 @@ files are present.
 
 ## Performance ([methodology](docs/PERFORMANCE.md))
 
-Full README generation-model benchmark refresh ran on 2026-05-11. Artifact directory: `benchmarks/results/mlx-inference/2026-05-11-full-readme-refresh/`. Fresh rows completed for all 14 README generation models with `mlx_lm`, `mlx_swift_lm`, AX direct same-policy, and AX default n-gram at 128/512 prompt tokens and 128 generated tokens. Qwen Coder Next was retested on 2026-05-12 after the local model artifact was fixed; source: `benchmarks/results/mlx-inference/2026-05-12-qwen-coder-retest-r2/qwen3-coder-next-4bit.json`. Each successful fresh model used 5 repetitions and a 10-second trial delay/cooling interval; `ax-engine-server` and the `mlx-swift-lm` adapter were rebuilt before the run.
+The full README generation-model benchmark refresh ran on 2026-05-12. Raw
+artifacts are in
+`benchmarks/results/mlx-inference/2026-05-12-production-build-readme-refresh/`.
+Fresh AX rows completed for all 14 README generation models using a
+production-build binary (`[profile.release]`: LTO thin, `codegen-units=1`,
+`panic=abort`, stripped debuginfo). The `mlx_lm` and `mlx_swift_lm` reference
+rows were reused from the 2026-05-11 full refresh under the same prompt
+contract. Each row has 5 repetitions, a 15-second cooldown between trials, and
+a 45-second pause between models.
 
-**Prefill** — Across the fresh models, AX engine prefill is -9% to +131% vs mlx_lm. The weakest fresh row is Gemma 4 E2B at 512 tokens, while the strongest fresh row is Qwen 3.6 35B A3B at 128 tokens.
+**Prefill** — Across the current table, AX engine prefill is -14% to +174% vs mlx_lm. The weakest current row is Gemma 4 E4B at 512 tokens, while the strongest current row is Qwen Coder Next at 128 tokens.
 
-**Decode** — Direct decode (n-gram disabled) spans -12% to +27% vs mlx_lm across fresh rows. With n-gram acceleration (the default), fresh rows span -0.4% to +207% vs mlx_lm; all fresh models except the Qwen Coder Next 512-token default row are above mlx_lm in default mode.
+**Decode** — Direct decode (n-gram disabled) spans -19% to +26% vs mlx_lm across the current table. With n-gram acceleration (the default), current rows span +11% to +207% vs mlx_lm.
 
-**TTFT** — AX TTFT is lower than mlx_lm on 24/28 fresh prompt rows. Source: `benchmarks/results/mlx-inference/2026-05-11-full-readme-refresh/`. mlx_lm TTFT is derived from reported prefill throughput; ax engine TTFT is measured directly from per-step runner timing.
+**TTFT** — AX TTFT is lower than mlx_lm on 24/28 rows in the current table. The
+4 slower rows are Gemma sliding-window models at 512 prompt tokens, and this
+benchmark was captured before a later sliding-window mask fix. That fix removes
+redundant O(seq²) mask arrays for in-window prefill, so the next refresh should
+improve those rows. `mlx_lm` TTFT is derived from reported prefill throughput;
+AX TTFT is measured directly from per-step runner timing.
 
 Additional long-context validation artifacts are checked in separately from the
 short/mid-prompt public tables. On 2026-05-07, `mlx-community/Qwen3-4B-4bit`
@@ -238,124 +263,127 @@ was run on Apple M5 Max through the P1 prefill-scaling gate and the P2
 startup/concurrent-prefill gate:
 [P1 prefill scaling](benchmarks/results/mlx-inference/2026-05-07-real-p1/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md),
 [P2 startup and concurrency](benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md).
-These artifacts measure direct AX MLX behavior, not n-gram decode acceleration:
-the 8k P1 AX/MLX prefill ratio was 0.840x, and the 4-request P2 concurrent
-prefill row was classified as serialized. Treat them as expectation-management
-evidence for long-context serving claims, not as proof of continuous batching.
+These artifacts measure direct AX MLX behavior, not n-gram decode acceleration.
+The 8k P1 AX/MLX prefill ratio was 0.840x, and the 4-request P2 concurrent
+prefill row was classified as serialized. Use them to set expectations for
+long-context serving; they do not prove continuous batching.
 
 ### Prefill throughput (tok/s) — percentages vs mlx_lm
 
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |
 |---|---|---:|---:|---:|---:|
-| Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 2,615.9 | 2,610.1 (-0.2%) | 3,276.7 (+25.3%) |
-|        |        | 512 | 8,378.7 | 6,768.2 (-19.2%) | **7,661.6 (-8.6%)** |
-| Gemma 4 E2B | 5-bit · group=64 · affine | 128 | 2,711.9 | 2,429.3 (-10.4%) | 3,224.3 (+18.9%) |
-|        |        | 512 | 7,742.3 | 7,032.0 (-9.2%) | **7,375.0 (-4.7%)** |
-| Gemma 4 E2B | 6-bit · group=64 · affine | 128 | 2,306.9 | 2,404.1 (+4.2%) | 3,230.9 (+40.1%) |
-|        |        | 512 | 7,882.5 | 6,643.1 (-15.7%) | **7,566.4 (-4.0%)** |
-| Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 2,190.2 | 2,413.8 (+10.2%) | 3,276.1 (+49.6%) |
-|        |        | 512 | 7,181.8 | 6,039.5 (-15.9%) | 7,611.5 (+6.0%) |
-| Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 1,745.0 | 1,954.7 (+12.0%) | 2,525.2 (+44.7%) |
-|        |        | 512 | 4,568.3 | 4,246.1 (-7.1%) | **4,266.4 (-6.6%)** |
-| Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 735.7 | 1,259.3 (+71.2%) | 1,212.8 (+64.8%) |
-|        |        | 512 | 2,120.0 | 2,929.9 (+38.2%) | 2,985.5 (+40.8%) |
-| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 366.2 | 644.8 (+76.1%) | 559.1 (+52.7%) |
-|        |        | 512 | 638.8 | 811.5 (+27.0%) | 724.5 (+13.4%) |
-| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 968.2 | 1,795.9 (+85.5%) | 2,076.2 (+114.4%) |
-|        |        | 512 | 1,787.8 | 2,402.1 (+34.4%) | 2,921.0 (+63.4%) |
-| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine | 128 | 572.1 | 1,036.5 (+81.2%) | 1,052.8 (+84.0%) |
-|        |        | 512 | 1,681.3 | 2,584.7 (+53.7%) | 2,719.5 (+61.8%) |
-| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine | 128 | 499.6 | 913.5 (+82.9%) | 1,019.7 (+104.1%) |
-|        |        | 512 | 1,568.4 | 2,457.1 (+56.7%) | 2,608.5 (+66.3%) |
-| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine | 128 | 452.0 | 796.1 (+76.1%) | 974.3 (+115.6%) |
-|        |        | 512 | 1,454.5 | 2,430.2 (+67.1%) | 2,516.5 (+73.0%) |
-| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 415.6 | 652.8 (+57.1%) | 961.9 (+131.5%) |
-|        |        | 512 | 1,302.3 | 2,387.6 (+83.3%) | 2,463.4 (+89.1%) |
-| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 301.7 | 471.1 (+56.1%) | 770.1 (+155.2%) |
-|        |        | 512 | 921.0 | 1,659.1 (+80.1%) | 1,742.4 (+89.2%) |
-| GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 516.5 | 971.3 (+88.0%) | 868.8 (+68.2%) |
-|        |        | 512 | 1,637.7 | 2,526.8 (+54.3%) | 2,356.8 (+43.9%) |
+| Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 2,615.9 | 2,610.1 (-0.2%) | 3,389.3 (+29.6%) |
+|        |        | 512 | 8,378.7 | 6,768.2 (-19.2%) | **7,850.5 (-6.3%)** |
+| Gemma 4 E2B | 5-bit · group=64 · affine | 128 | 2,711.9 | 2,429.3 (-10.4%) | 3,346.6 (+23.4%) |
+|        |        | 512 | 7,742.3 | 7,032.0 (-9.2%) | **7,587.9 (-2.0%)** |
+| Gemma 4 E2B | 6-bit · group=64 · affine | 128 | 2,306.9 | 2,404.1 (+4.2%) | 3,305.7 (+43.3%) |
+|        |        | 512 | 7,882.5 | 6,643.1 (-15.7%) | **7,531.2 (-4.5%)** |
+| Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 2,190.2 | 2,413.8 (+10.2%) | 3,279.5 (+49.7%) |
+|        |        | 512 | 7,181.8 | 6,039.5 (-15.9%) | 7,473.9 (+4.1%) |
+| Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 1,745.0 | 1,954.7 (+12.0%) | 2,557.9 (+46.6%) |
+|        |        | 512 | 4,568.3 | 4,246.1 (-7.1%) | **3,938.3 (-13.8%)** |
+| Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 735.7 | 1,259.3 (+71.2%) | 1,205.8 (+63.9%) |
+|        |        | 512 | 2,120.0 | 2,929.9 (+38.2%) | 2,796.0 (+31.9%) |
+| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 366.2 | 644.8 (+76.1%) | 519.2 (+41.8%) |
+|        |        | 512 | 638.8 | 811.5 (+27.0%) | 673.7 (+5.5%) |
+| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 968.2 | 1,795.9 (+85.5%) | 1,876.8 (+93.8%) |
+|        |        | 512 | 1,787.8 | 2,402.1 (+34.4%) | 2,912.8 (+62.9%) |
+| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine | 128 | 572.1 | 1,036.5 (+81.2%) | 1,043.0 (+82.3%) |
+|        |        | 512 | 1,681.3 | 2,584.7 (+53.7%) | 2,463.6 (+46.5%) |
+| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine | 128 | 499.6 | 913.5 (+82.9%) | 1,018.1 (+103.8%) |
+|        |        | 512 | 1,568.4 | 2,457.1 (+56.7%) | 2,613.0 (+66.6%) |
+| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine | 128 | 452.0 | 796.1 (+76.1%) | 965.2 (+113.5%) |
+|        |        | 512 | 1,454.5 | 2,430.2 (+67.1%) | 2,483.1 (+70.7%) |
+| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 415.6 | 652.8 (+57.1%) | 973.5 (+134.3%) |
+|        |        | 512 | 1,302.3 | 2,387.6 (+83.3%) | 2,457.1 (+88.7%) |
+| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 301.7 | 471.1 (+56.1%) | 827.8 (+174.4%) |
+|        |        | 512 | 921.0 | 1,659.1 (+80.1%) | 1,772.7 (+92.5%) |
+| GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 516.5 | 971.3 (+88.0%) | 866.1 (+67.7%) |
+|        |        | 512 | 1,637.7 | 2,526.8 (+54.3%) | 2,375.4 (+45.0%) |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
-Higher is better. The direct AX column is the same-policy baseline with n-gram acceleration
-disabled. The n-gram column is the default AX decode policy and the row to use for
-user-facing throughput expectations. Qwen Coder Next was retested after the local
-model artifact fix; its direct row improved. The default n-gram row is now effectively
-a direct fallback — the retest telemetry shows zero n-gram drafts produced
-(`ax_ngram_fallback_linear_no_draft_steps: 460/635`), a regression introduced between
-the recovery build (cf0228e) and the current build by the ADR 0018 linear-attention
-prefix-cache changes. This is tracked as a separate open issue.
+Higher is better. The direct AX column disables n-gram acceleration and serves
+as the same-policy baseline. The n-gram column is the default AX decode policy
+and is the right column for user-facing throughput expectations. All rows come
+from the 2026-05-12 production-build refresh. Qwen Coder Next n-gram is
+effective at 512 prompt tokens
+(`ngram_acceleration_effective_throughput`, 113.4 tok/s, +23.8% vs mlx_lm); the 128-token
+row falls back to direct mode (no drafts produced, `ngram_no_draft_direct_fallback`).
+Qwen 3.5 9B n-gram is effective at 128 tokens (177.8 tok/s, +116.1% vs mlx_lm); the
+512-token row falls back to direct mode, though effective throughput still exceeds mlx_lm
+(100.1 tok/s, +22.4%).
 
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax direct baseline | ax default n-gram |
 |---|---|---:|---:|---:|---:|---:|
-| Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 196.6 | 194.6 (-1.0%) | 183.9 (-6.5%) | **564.9 (+187.3%)** |
-|        |        | 512 | 189.6 | 189.8 (+0.1%) | 177.9 (-6.2%) | **556.0 (+193.3%)** |
-| Gemma 4 E2B | 5-bit · group=64 · affine | 128 | 186.5 | 174.7 (-6.3%) | 165.6 (-11.2%) | **450.0 (+141.3%)** |
-|        |        | 512 | 178.9 | 165.8 (-7.4%) | 157.9 (-11.7%) | **456.9 (+155.3%)** |
-| Gemma 4 E2B | 6-bit · group=64 · affine | 128 | 174.0 | 164.5 (-5.5%) | 157.0 (-9.8%) | **427.6 (+145.8%)** |
-|        |        | 512 | 166.5 | 158.5 (-4.8%) | 152.8 (-8.2%) | **423.5 (+154.4%)** |
-| Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 153.8 | 145.4 (-5.5%) | 141.0 (-8.3%) | **462.3 (+200.6%)** |
-|        |        | 512 | 149.7 | 141.6 (-5.4%) | 137.0 (-8.5%) | **459.3 (+206.8%)** |
-| Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 136.9 | 131.9 (-3.7%) | 121.5 (-11.3%) | **352.1 (+157.1%)** |
-|        |        | 512 | 133.2 | 126.4 (-5.1%) | 117.6 (-11.7%) | **348.3 (+161.5%)** |
-| Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 125.8 | 118.9 (-5.4%) | 122.4 (-2.7%) | **273.6 (+117.6%)** |
-|        |        | 512 | 123.6 | 115.8 (-6.3%) | 119.4 (-3.4%) | **230.1 (+86.1%)** |
-| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 28.3 | 27.7 (-2.1%) | 27.7 (-2.1%) | **64.8 (+128.9%)** |
-|        |        | 512 | 27.7 | 27.3 (-1.6%) | 27.3 (-1.6%) | **62.7 (+126.3%)** |
-| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 82.3 | 80.9 (-1.7%) | **104.3 (+26.7%)** | **205.6 (+149.9%)** |
-|        |        | 512 | 81.8 | 78.9 (-3.6%) | **103.8 (+26.8%)** | **101.0 (+23.4%)** |
-| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine | 128 | 115.3 | 117.4 (+1.8%) | **124.7 (+8.1%)** | **283.5 (+145.8%)** |
-|        |        | 512 | 117.8 | 113.6 (-3.5%) | **120.1 (+2.0%)** | **279.8 (+137.6%)** |
-| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine | 128 | 121.7 | 116.5 (-4.2%) | **136.0 (+11.7%)** | **279.5 (+129.6%)** |
-|        |        | 512 | 121.7 | 116.0 (-4.7%) | **132.4 (+8.8%)** | **279.1 (+129.4%)** |
-| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine | 128 | 112.1 | 108.2 (-3.6%) | **116.8 (+4.1%)** | **258.4 (+130.4%)** |
-|        |        | 512 | 109.3 | 107.0 (-2.1%) | **119.9 (+9.7%)** | **256.1 (+134.4%)** |
-| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 102.9 | 99.2 (-3.5%) | **108.9 (+5.9%)** | **260.4 (+153.2%)** |
-|        |        | 512 | 101.5 | 98.4 (-3.0%) | **108.0 (+6.4%)** | **249.7 (+146.0%)** |
-| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 90.2 | 89.1 (-1.2%) | **92.7 (+2.8%)** | **90.6 (+0.5%)** |
-|        |        | 512 | 91.6 | 86.6 (-5.4%) | 91.3 (-0.3%) | **92.4 (+0.9%)** |
-| GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 101.9 | 96.6 (-5.2%) | 101.1 (-0.8%) | **273.8 (+168.7%)** |
-|        |        | 512 | 98.3 | 91.3 (-7.2%) | **101.7 (+3.5%)** | **268.0 (+172.6%)** |
+| Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 196.6 | 194.6 (-1.0%) | 189.6 (-3.6%) | **590.1 (+200.1%)** |
+|        |        | 512 | 189.6 | 189.8 (+0.1%) | 186.2 (-1.8%) | **582.1 (+207.0%)** |
+| Gemma 4 E2B | 5-bit · group=64 · affine | 128 | 186.5 | 174.7 (-6.3%) | 174.7 (-6.3%) | **463.2 (+148.3%)** |
+|        |        | 512 | 178.9 | 165.8 (-7.4%) | 169.0 (-5.6%) | **459.3 (+156.7%)** |
+| Gemma 4 E2B | 6-bit · group=64 · affine | 128 | 174.0 | 164.5 (-5.5%) | 157.1 (-9.7%) | **426.4 (+145.0%)** |
+|        |        | 512 | 166.5 | 158.5 (-4.8%) | 152.2 (-8.6%) | **423.9 (+154.6%)** |
+| Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 153.8 | 145.4 (-5.5%) | 140.5 (-8.6%) | **462.8 (+201.0%)** |
+|        |        | 512 | 149.7 | 141.6 (-5.4%) | 131.9 (-11.9%) | **459.6 (+207.0%)** |
+| Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 136.9 | 131.9 (-3.7%) | 122.1 (-10.9%) | **349.5 (+155.2%)** |
+|        |        | 512 | 133.2 | 126.4 (-5.1%) | 108.5 (-18.5%) | **354.2 (+165.9%)** |
+| Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 125.8 | 118.9 (-5.4%) | 121.9 (-3.0%) | **274.5 (+118.3%)** |
+|        |        | 512 | 123.6 | 115.8 (-6.3%) | 108.8 (-12.0%) | **235.6 (+90.6%)** |
+| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 28.3 | 27.7 (-2.1%) | 25.5 (-9.8%) | **64.9 (+129.5%)** |
+|        |        | 512 | 27.7 | 27.3 (-1.6%) | 24.1 (-12.8%) | **57.9 (+109.0%)** |
+| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 82.3 | 80.9 (-1.7%) | **90.0 (+9.4%)** | **177.8 (+116.1%)** |
+|        |        | 512 | 81.8 | 78.9 (-3.6%) | **103.0 (+25.9%)** | **100.1 (+22.4%)** |
+| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine | 128 | 115.3 | 117.4 (+1.8%) | **122.1 (+5.8%)** | **257.9 (+123.6%)** |
+|        |        | 512 | 117.8 | 113.6 (-3.5%) | 108.7 (-7.7%) | **279.5 (+137.3%)** |
+| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine | 128 | 121.7 | 116.5 (-4.2%) | **137.3 (+12.8%)** | **280.9 (+130.8%)** |
+|        |        | 512 | 121.7 | 116.0 (-4.7%) | **135.2 (+11.2%)** | **279.7 (+129.9%)** |
+| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine | 128 | 112.1 | 108.2 (-3.6%) | **121.1 (+8.0%)** | **259.9 (+131.7%)** |
+|        |        | 512 | 109.3 | 107.0 (-2.1%) | **120.6 (+10.3%)** | **250.8 (+129.5%)** |
+| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 102.9 | 99.2 (-3.5%) | **108.8 (+5.8%)** | **262.2 (+154.9%)** |
+|        |        | 512 | 101.5 | 98.4 (-3.0%) | **108.0 (+6.3%)** | **258.1 (+154.3%)** |
+| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 90.2 | 89.1 (-1.2%) | **102.7 (+13.9%)** | **100.0 (+10.9%)** |
+|        |        | 512 | 91.6 | 86.6 (-5.4%) | **102.2 (+11.6%)** | **113.4 (+23.8%)** |
+| GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 101.9 | 96.6 (-5.2%) | **102.1 (+0.2%)** | **273.7 (+168.6%)** |
+|        |        | 512 | 98.3 | 91.3 (-7.2%) | **102.5 (+4.3%)** | **267.0 (+171.5%)** |
 
 ### Time to first token (ms) — generation=128 tokens, temp=0
 
-Lower is better. mlx_lm and mlx_swift_lm values are derived from reported prefill
-throughput (`prompt_tokens / prefill_tok_s × 1000 ms`); ax engine values are directly
-measured from per-step runner timing in the SSE event stream. Source:
-`benchmarks/results/mlx-inference/2026-05-11-full-readme-refresh/` for the full table,
-with Qwen Coder Next sourced from the 2026-05-12 retest-r2 artifact.
+Lower is better. `mlx_lm` and `mlx_swift_lm` values are derived from reported
+prefill throughput (`prompt_tokens / prefill_tok_s × 1000 ms`). AX values are
+measured directly from per-step runner timing in the SSE event stream. Source:
+`benchmarks/results/mlx-inference/2026-05-12-production-build-readme-refresh/`
+for all rows. These numbers predate the sliding-window mask fix, so Gemma 512
+prompt-token TTFT should improve in the next benchmark run.
 
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |
 |---|---|---:|---:|---:|---:|
-| Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 48.9 | 49.0 (+0.2%) | **39.1 (-20.2%)** |
-|        |        | 512 | 61.1 | 75.6 (+23.8%) | 66.8 (+9.4%) |
-| Gemma 4 E2B | 5-bit · group=64 · affine | 128 | 47.2 | 52.7 (+11.6%) | **39.7 (-15.9%)** |
-|        |        | 512 | 66.1 | 72.8 (+10.1%) | 69.4 (+5.0%) |
-| Gemma 4 E2B | 6-bit · group=64 · affine | 128 | 55.5 | 53.2 (-4.0%) | **39.6 (-28.6%)** |
-|        |        | 512 | 65.0 | 77.1 (+18.7%) | 67.7 (+4.2%) |
-| Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 58.4 | 53.0 (-9.3%) | **39.1 (-33.1%)** |
-|        |        | 512 | 71.3 | 84.8 (+18.9%) | **67.3 (-5.6%)** |
-| Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 73.4 | 65.5 (-10.7%) | **50.7 (-30.9%)** |
-|        |        | 512 | 112.1 | 120.6 (+7.6%) | 120.0 (+7.1%) |
-| Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 174.0 | 101.6 (-41.6%) | **105.5 (-39.3%)** |
-|        |        | 512 | 241.5 | 174.7 (-27.6%) | **171.5 (-29.0%)** |
-| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 349.5 | 198.5 (-43.2%) | **228.9 (-34.5%)** |
-|        |        | 512 | 801.5 | 630.9 (-21.3%) | **706.7 (-11.8%)** |
-| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 132.2 | 71.3 (-46.1%) | **61.7 (-53.4%)** |
-|        |        | 512 | 286.4 | 213.1 (-25.6%) | **175.3 (-38.8%)** |
-| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine | 128 | 223.7 | 123.5 (-44.8%) | **121.6 (-45.7%)** |
-|        |        | 512 | 304.5 | 198.1 (-35.0%) | **188.3 (-38.2%)** |
-| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine | 128 | 256.2 | 140.1 (-45.3%) | **125.5 (-51.0%)** |
-|        |        | 512 | 326.5 | 208.4 (-36.2%) | **196.3 (-39.9%)** |
-| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine | 128 | 283.2 | 160.8 (-43.2%) | **131.4 (-53.6%)** |
-|        |        | 512 | 352.0 | 210.7 (-40.2%) | **203.5 (-42.2%)** |
-| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 308.0 | 196.1 (-36.3%) | **133.1 (-56.8%)** |
-|        |        | 512 | 393.1 | 214.4 (-45.5%) | **207.8 (-47.1%)** |
-| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 424.2 | 271.7 (-36.0%) | **166.2 (-60.8%)** |
-|        |        | 512 | 555.9 | 308.6 (-44.5%) | **293.9 (-47.1%)** |
-| GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 247.8 | 131.8 (-46.8%) | **147.3 (-40.5%)** |
-|        |        | 512 | 312.6 | 202.6 (-35.2%) | **217.2 (-30.5%)** |
+| Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 48.9 | 49.0 (+0.2%) | **37.8 (-22.8%)** |
+|        |        | 512 | 61.1 | 75.6 (+23.8%) | 65.2 (+6.7%) |
+| Gemma 4 E2B | 5-bit · group=64 · affine | 128 | 47.2 | 52.7 (+11.6%) | **38.2 (-19.0%)** |
+|        |        | 512 | 66.1 | 72.8 (+10.1%) | 67.5 (+2.0%) |
+| Gemma 4 E2B | 6-bit · group=64 · affine | 128 | 55.5 | 53.2 (-4.0%) | **38.7 (-30.2%)** |
+|        |        | 512 | 65.0 | 77.1 (+18.7%) | 68.0 (+4.7%) |
+| Gemma 4 E2B | 8-bit · group=64 · affine | 128 | 58.4 | 53.0 (-9.3%) | **39.0 (-33.2%)** |
+|        |        | 512 | 71.3 | 84.8 (+18.9%) | **68.5 (-3.9%)** |
+| Gemma 4 E4B | 4-bit · group=64 · affine | 128 | 73.4 | 65.5 (-10.7%) | **50.0 (-31.8%)** |
+|        |        | 512 | 112.1 | 120.6 (+7.6%) | 130.0 (+16.0%) |
+| Gemma 4 26B A4B | 4-bit · group=64 · affine | 128 | 174.0 | 101.6 (-41.6%) | **106.2 (-39.0%)** |
+|        |        | 512 | 241.5 | 174.7 (-27.6%) | **183.1 (-24.2%)** |
+| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 349.5 | 198.5 (-43.2%) | **246.6 (-29.5%)** |
+|        |        | 512 | 801.5 | 630.9 (-21.3%) | **760.0 (-5.2%)** |
+| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 132.2 | 71.3 (-46.1%) | **68.2 (-48.4%)** |
+|        |        | 512 | 286.4 | 213.1 (-25.6%) | **175.8 (-38.6%)** |
+| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine | 128 | 223.7 | 123.5 (-44.8%) | **122.7 (-45.1%)** |
+|        |        | 512 | 304.5 | 198.1 (-35.0%) | **207.8 (-31.8%)** |
+| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine | 128 | 256.2 | 140.1 (-45.3%) | **125.7 (-50.9%)** |
+|        |        | 512 | 326.5 | 208.4 (-36.2%) | **195.9 (-40.0%)** |
+| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine | 128 | 283.2 | 160.8 (-43.2%) | **132.6 (-53.2%)** |
+|        |        | 512 | 352.0 | 210.7 (-40.2%) | **206.2 (-41.4%)** |
+| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine | 128 | 308.0 | 196.1 (-36.3%) | **131.5 (-57.3%)** |
+|        |        | 512 | 393.1 | 214.4 (-45.5%) | **208.4 (-47.0%)** |
+| Qwen Coder Next | 4-bit · group=64 · affine | 128 | 424.2 | 271.7 (-36.0%) | **154.6 (-63.6%)** |
+|        |        | 512 | 555.9 | 308.6 (-44.5%) | **288.8 (-48.0%)** |
+| GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 247.8 | 131.8 (-46.8%) | **147.8 (-40.4%)** |
+|        |        | 512 | 312.6 | 202.6 (-35.2%) | **215.5 (-31.1%)** |
 
 ### Embedding throughput (tok/s) — runtime apples-to-apples
 
@@ -485,13 +513,13 @@ mlx_lm.server --model /path/to/local/mlx-model --host 127.0.0.1 --port 8090
   --mlx-lm-server-url http://127.0.0.1:8090
 ```
 
-`mlx_lm_delegated` is a compatibility route, not a repo-owned MLX throughput
-claim. It forwards text generation to upstream `mlx_lm.server`, preserves AX
+`mlx_lm_delegated` is a compatibility route, not an AX-owned MLX throughput
+claim. AX forwards text generation to upstream `mlx_lm.server`, preserves
 sampling fields such as `temperature`, `top_p`, `top_k`, `repetition_penalty`,
-and `seed`, and exposes blocking plus SSE text surfaces through AX. Streamed
+and `seed`, and exposes blocking plus SSE text through the AX API. Streamed
 chunks are delegated text deltas; they are not AX-owned token IDs, KV state, or
 model-kernel throughput evidence. Tool calls and visual/multimodal inputs are
-not yet AX compatibility contracts.
+not compatibility contracts yet.
 
 ```bash
 # Primary benchmark: AX vs mlx_lm vs mlx-swift-lm

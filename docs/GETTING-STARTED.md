@@ -287,8 +287,9 @@ python3 scripts/bench_mlx_inference_stack.py \
 That harness requires `mlx_lm.benchmark` as the primary reference and fails
 closed if the matching baseline cannot be produced. Add `--ax-compare-policies`
 when you need both direct and n-gram acceleration repo-owned MLX rows. The
-default AX row is the direct same-policy comparison, while n-gram acceleration
-rows are effective-throughput evidence. Each AX
+AX server/user default is n-gram acceleration, while the direct AX row is
+kept as the same-policy comparison baseline. N-gram rows are
+effective-throughput evidence. Each AX
 or optional `mlx-swift-lm` row is compared against the matching
 `mlx_lm.benchmark` random-token prompt/decode shape. Use
 `--mlx-swift-lm-command` only for an explicit `BenchmarkHelpers` /

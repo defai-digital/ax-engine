@@ -3,7 +3,7 @@ use mlx_sys::{
     astype, broadcast_to, concatenate, dequantize, divide, eval, expand_dims, expand_dims_axes,
     gather_mm, gather_qmm, gelu_approx, matmul, multiply, put_along_axis, quantized_matmul,
     reshape, rms_norm, rope, scaled_dot_product_attention_with_mask, slice, slice_last_dim,
-    softmax, softmax_precise, sum_axis, take, take_along_axis, tanh, transpose, zeros,
+    softmax, sum_axis, take, take_along_axis, tanh, transpose, zeros,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -328,7 +328,7 @@ pub struct LayerConfig {
 }
 
 /// Hyperparameters for Qwen3.5 gated-delta linear-attention layers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LinearAttentionConfig {
     pub full_attention_interval: usize,
     pub num_value_heads: usize,
@@ -336,6 +336,10 @@ pub struct LinearAttentionConfig {
     pub key_head_dim: usize,
     pub value_head_dim: usize,
     pub conv_kernel_dim: usize,
+    /// q_scale = key_head_dim^(-1); precomputed at load time to avoid per-step powf calls.
+    pub q_scale: f32,
+    /// k_scale = key_head_dim^(-0.5); precomputed at load time to avoid per-step powf calls.
+    pub k_scale: f32,
 }
 
 impl LinearAttentionConfig {
@@ -344,6 +348,10 @@ impl LinearAttentionConfig {
         if !cfg.is_enabled() {
             return None;
         }
+        let key_head_dim = cfg
+            .key_head_dim
+            .expect("validated linear_attention.key_head_dim") as usize;
+        let (q_scale, k_scale) = crate::linear_attention::linear_attention_qk_scale(key_head_dim);
         Some(Self {
             full_attention_interval: cfg
                 .resolved_full_attention_interval(&m.model_family)
@@ -357,10 +365,7 @@ impl LinearAttentionConfig {
                 .num_key_heads
                 .expect("validated linear_attention.num_key_heads")
                 as usize,
-            key_head_dim: cfg
-                .key_head_dim
-                .expect("validated linear_attention.key_head_dim")
-                as usize,
+            key_head_dim,
             value_head_dim: cfg
                 .value_head_dim
                 .expect("validated linear_attention.value_head_dim")
@@ -369,6 +374,8 @@ impl LinearAttentionConfig {
                 .conv_kernel_dim
                 .expect("validated linear_attention.conv_kernel_dim")
                 as usize,
+            q_scale,
+            k_scale,
         })
     }
 
@@ -1625,7 +1632,8 @@ fn compute_per_layer_inputs_arr(
     let proj_out = rms_norm(&proj_out, Some(proj_norm_w), cfg.rms_norm_eps, None);
 
     // 3. Combine: (proj + embed) * 2^(-0.5)
-    let combined_scale = 2.0_f32.powf(-0.5);
+    const GEMMA4_PER_LAYER_COMBINED_SCALE: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    let combined_scale = GEMMA4_PER_LAYER_COMBINED_SCALE;
     let combined = add(&proj_out, &embed_out, None);
     let combined = scale_hidden(&combined, combined_scale);
     // combined shape: [1, seq, num_layers, per_layer_dim]
@@ -1744,7 +1752,17 @@ fn attention_mask_array(
 
     let offset = key_len.saturating_sub(seq_len);
     if let Some(window) = sliding_window {
-        return Some(create_causal_mask(seq_len, offset, Some(window)));
+        // When there is no KV-cache offset and the prompt fits entirely within
+        // the window, the sliding constraint never fires: every (i, j) pair
+        // where i >= j already satisfies i - j < seq_len <= window.  A plain
+        // causal mask is equivalent, so return None and let the caller use the
+        // fast ScaledDotProductAttentionMask::Causal path.  This avoids adding
+        // an O(seq²) boolean array (and ~5 graph nodes) per sliding-attention
+        // layer to the MLX computation graph.
+        if offset > 0 || seq_len > window {
+            return Some(create_causal_mask(seq_len, offset, Some(window)));
+        }
+        // Fall through to the standard causal / None path below.
     }
     if offset > 0 && seq_len > 1 {
         return Some(create_causal_mask(seq_len, offset, None));
@@ -1888,10 +1906,13 @@ fn build_layer_masks(
 ) -> Vec<Option<MlxArray>> {
     if cfg.layer_configs.is_empty() {
         let m = attention_mask_array(seq, key_len, None);
+        if m.is_none() {
+            return vec![None; n_layers];
+        }
         (0..n_layers).map(|_| m.clone()).collect()
     } else {
         let mut memo: std::collections::HashMap<(Option<usize>, usize), Option<MlxArray>> =
-            std::collections::HashMap::new();
+            std::collections::HashMap::with_capacity(cfg.layer_configs.len());
         cfg.layer_configs
             .iter()
             .map(|lc| {
@@ -2312,9 +2333,8 @@ fn linear_attention_forward(
 
     let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
     let profile_started = Instant::now();
-    let conv_weight = linear_conv_weight(&linear_w.conv1d);
     let (conv_out, new_conv_state) =
-        linear_attention_conv1d(linear_cfg, &qkv, &conv_weight, conv_state);
+        linear_attention_conv1d(linear_cfg, &qkv, &linear_w.conv1d_dense, conv_state);
     linear_attention_profile_eval_elapsed(
         profile_enabled,
         LinearAttentionProfileStage::Conv,
@@ -2496,21 +2516,6 @@ fn linear_attention_inputs(
     (qkv, z, a, b)
 }
 
-fn linear_conv_weight(weight: &QuantizedWeight) -> MlxArray {
-    if let Some(scales) = &weight.scales {
-        dequantize(
-            &weight.weight,
-            scales,
-            weight.biases.as_ref(),
-            Some(weight.group_size),
-            Some(weight.bits),
-            None,
-        )
-    } else {
-        weight.weight.clone()
-    }
-}
-
 #[derive(Debug, Eq, PartialEq)]
 struct QkvSlices {
     q: (i32, i32),
@@ -2687,22 +2692,15 @@ fn moe_router_gemma4(
     w: &LayerWeights,
     hidden: &MlxArray,
 ) -> (MlxArray, MlxArray) {
-    let router_proj = w.router_proj.as_ref().unwrap();
-    let combined_scale = if let Some(precomputed) = &w.router_combined_scale {
-        precomputed.clone()
-    } else {
-        let router_scale = w.router_scale.as_ref().unwrap();
-        let root_factor = 1.0_f32 / (cfg.hidden_size as f32).sqrt();
-        let scale_arr = MlxArray::from_raw_data(
-            &root_factor as *const f32 as *const u8,
-            std::mem::size_of::<f32>(),
-            &[1_i32],
-            MlxDtype::Float32,
-        );
-        let scale_arr = astype(&scale_arr, MlxDtype::Bfloat16, None);
-        multiply(router_scale, &scale_arr, None)
-    };
-    let normed = rms_norm(hidden, Some(&combined_scale), cfg.rms_norm_eps, None);
+    let router_proj = w
+        .router_proj
+        .as_ref()
+        .expect("Gemma4 MoE layer must have router_proj");
+    let combined_scale = w
+        .router_combined_scale
+        .as_ref()
+        .expect("Gemma4 MoE layer must have precomputed router_combined_scale");
+    let normed = rms_norm(hidden, Some(combined_scale), cfg.rms_norm_eps, None);
 
     let expert_scores = qw(&normed, router_proj);
     let (top_k_indices, mut top_k_weights) = top_k_by_argpartition(
@@ -2725,10 +2723,13 @@ fn moe_router_qwen3(
     w: &LayerWeights,
     normed: &MlxArray,
 ) -> (MlxArray, MlxArray) {
-    let router_proj = w.router_proj.as_ref().unwrap();
+    let router_proj = w
+        .router_proj
+        .as_ref()
+        .expect("Qwen3 MoE layer must have router_proj");
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
-    let weights_all = softmax_precise(&logits, last_axis, None);
+    let weights_all = softmax(&logits, last_axis, None);
     let (top_k_indices, top_k_weights) = top_k_by_argpartition(
         &weights_all,
         cfg.moe_expert_count,
@@ -2737,9 +2738,7 @@ fn moe_router_qwen3(
     );
     // norm_topk_prob: renormalise top-k weights to sum to 1.
     let top_k_weights = if cfg.moe_norm_topk_prob {
-        let sum = sum_axis(&top_k_weights, last_axis, false, None);
-        let shape = top_k_weights.shape();
-        let sum = reshape(&sum, &[shape[0], shape[1], 1], None);
+        let sum = sum_axis(&top_k_weights, last_axis, true, None);
         mlx_sys::ops::divide(&top_k_weights, &sum, None)
     } else {
         top_k_weights
@@ -2911,7 +2910,7 @@ fn moe_experts_forward(
     // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
     let x_exp = expand_dims_axes(x, &[-2, -3], None);
     let gather_inputs = switch_gather_inputs(&x_exp, top_k_indices);
-    let down_exps = w.down_exps.as_ref().unwrap();
+    let down_exps = w.down_exps.as_ref().expect("MoE layer must have down_exps");
 
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_exps_packed {
         let out = qw_gather(
@@ -2926,8 +2925,8 @@ fn moe_experts_forward(
             mlx_slice_last_dim(&out, half, half * 2),
         )
     } else {
-        let gate_exps = w.gate_exps.as_ref().unwrap();
-        let up_exps = w.up_exps.as_ref().unwrap();
+        let gate_exps = w.gate_exps.as_ref().expect("MoE layer must have gate_exps");
+        let up_exps = w.up_exps.as_ref().expect("MoE layer must have up_exps");
         (
             qw_gather(
                 &gather_inputs.x,
@@ -3822,7 +3821,11 @@ mod tests {
                 ])),
                 in_proj_qkvz: None,
                 in_proj_ba: None,
-                conv1d: dense_weight(&[cfg.conv_dim() as i32, cfg.conv_kernel_dim as i32, 1_i32]),
+                conv1d_dense: zeros(
+                    &[cfg.conv_dim() as i32, cfg.conv_kernel_dim as i32, 1_i32],
+                    MlxDtype::Float32,
+                    None,
+                ),
                 dt_bias: zeros(&[cfg.num_value_heads as i32], MlxDtype::Float32, None),
                 a_log: zeros(&[cfg.num_value_heads as i32], MlxDtype::Float32, None),
                 norm: zeros(&[cfg.value_head_dim as i32], MlxDtype::Float32, None),
@@ -4617,13 +4620,18 @@ mod tests {
     fn linear_attention_forward_returns_hidden_shape_and_updates_cache() {
         let mut cfg = cfg(true);
         cfg.hidden_size = 8;
-        cfg.linear_attention = Some(LinearAttentionConfig {
-            full_attention_interval: 4,
-            num_value_heads: 1,
-            num_key_heads: 1,
-            key_head_dim: 32,
-            value_head_dim: 4,
-            conv_kernel_dim: 4,
+        cfg.linear_attention = Some({
+            let (q_scale, k_scale) = crate::linear_attention::linear_attention_qk_scale(32);
+            LinearAttentionConfig {
+                full_attention_interval: 4,
+                num_value_heads: 1,
+                num_key_heads: 1,
+                key_head_dim: 32,
+                value_head_dim: 4,
+                conv_kernel_dim: 4,
+                q_scale,
+                k_scale,
+            }
         });
         let linear_cfg = cfg.linear_attention.as_ref().unwrap();
         let weights = qwen35_linear_layer_weights(linear_cfg, cfg.hidden_size);
@@ -5127,8 +5135,13 @@ mod tests {
 
     #[test]
     fn attention_mask_array_uses_fast_modes_for_simple_causal_cases() {
+        // No sliding window, offset == 0 → None (Causal mode)
         assert!(attention_mask_array(1, 1, None).is_none());
         assert!(attention_mask_array(4, 4, None).is_none());
+        // Sliding window, but offset == 0 and seq <= window → None (Causal mode)
+        assert!(attention_mask_array(128, 128, Some(512)).is_none());
+        assert!(attention_mask_array(512, 512, Some(512)).is_none());
+        assert!(attention_mask_array(512, 512, Some(1024)).is_none());
     }
 
     #[test]
@@ -5139,7 +5152,21 @@ mod tests {
     }
 
     #[test]
+    fn attention_mask_array_creates_explicit_mask_when_seq_exceeds_window() {
+        // seq > window: sliding constraint is active, explicit mask required
+        let mask = attention_mask_array(1024, 1024, Some(512))
+            .expect("seq > window must produce explicit mask");
+        assert_eq!(mask.shape(), vec![1024, 1024]);
+
+        // offset > 0: KV cache present, sliding constraint may be active
+        let mask = attention_mask_array(512, 1024, Some(512))
+            .expect("cached sliding prefill needs explicit mask");
+        assert_eq!(mask.shape(), vec![512, 1024]);
+    }
+
+    #[test]
     fn attention_mask_array_keeps_full_kv_for_sliding_attention() {
+        // decode (seq=1) with cache offset — offset > 0 so explicit mask still built
         let mask = attention_mask_array(1, 6, Some(4)).expect("decode needs sliding mask");
 
         assert_eq!(mask.shape(), vec![1, 6]);

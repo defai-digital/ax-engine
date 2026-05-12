@@ -6,14 +6,12 @@ sampling policy, and artifact schema are explicit.
 
 Measured results for each tested model are summarized in the root `README.md`
 under the **Performance** section. Methodology and interpretation for the
-current public table live in `docs/PERFORMANCE.md`. Public review artifacts live under
-`benchmarks/results/mlx-inference/<date>/`; for example, the 2026-05-04 result
-set includes the full JSON output, prompt-token JSON files, and command logs for
-Gemma 4 E2B 4/5/6/8-bit, Gemma 4 26B A4B, Gemma 4 31B,
-Qwen 3.5 9B, Qwen 3.6 35B A3B 4/5/6/8-bit, and Qwen Coder Next.
-The 2026-05-06 result set records `mlx-community/GLM-4.7-Flash-4bit` with
-repo-owned AX runtime rows and `mlx-community/DeepSeek-V4-Flash-2bit-DQ` as a
-reference-only fail-closed check.
+current public table live in `docs/PERFORMANCE.md`. The current README table is
+backed by
+`benchmarks/results/mlx-inference/2026-05-12-production-build-readme-refresh/`.
+Older result sets remain useful diagnostic history, but they should not be
+described as the current public table unless README is rolled back to those
+artifacts.
 
 ## Which Tool To Use
 
@@ -127,9 +125,11 @@ The reference contract is:
 The harness fails closed if `mlx_lm.benchmark` cannot run. It does not support
 AX-only throughput tables. Every non-baseline row records the matching
 `mlx_lm.benchmark` random-token prompt/decode shape plus prefill/decode ratios.
-The default AX row is the direct same-policy comparison against the primary MLX
-baseline. AX n-gram acceleration rows are effective-throughput evidence and
-must not be treated as the same decode policy as the primary MLX baseline.
+The AX user/server default is n-gram decode acceleration. Benchmark artifacts
+still keep the direct same-policy comparison row separate from the default
+n-gram row so that baseline decode throughput is not collapsed into
+effective-throughput evidence. AX n-gram acceleration rows must not be treated
+as the same decode policy as the primary MLX baseline.
 
 The top-level `prefix_reuse_evidence` block summarizes only AX Engine rows. It
 separates physical prefix snapshot hits, eligible misses, warmup tokens, stored
@@ -323,10 +323,11 @@ The harness labels AX rows as `ax_engine_mlx` and
 `ax_engine_mlx_ngram_accel`. Direct throughput and n-gram acceleration
 throughput must not collapse into one AX number. AX rows also record
 `ax_decode_policy`: `direct_no_ngram_acceleration` for the direct comparison
-row, `ngram_acceleration_kv_trim` for dense/full-attention n-gram acceleration
-rows, and `ngram_acceleration_linear_attention_branch_recompute` for Qwen3.5-style
-recurrent linear-attention rows, where repeated n-gram evidence is required
-before probing and partial accepts trigger a longer cooldown.
+row, `ngram_acceleration_kv_trim` for dense/full-attention default n-gram
+acceleration rows, and `ngram_acceleration_linear_attention_branch_recompute`
+for Qwen3.5-style recurrent linear-attention rows, where repeated n-gram
+evidence is required before probing and partial accepts trigger a longer
+cooldown.
 
 For Qwen3.5/Qwen3-Next GatedDelta prefill profiling, use the evidence-first
 profile mode:

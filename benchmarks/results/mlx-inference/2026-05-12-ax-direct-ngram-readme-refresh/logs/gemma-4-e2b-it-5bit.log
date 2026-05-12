@@ -1,0 +1,35 @@
+
+=== AX Engine MLX inference stack ===
+  model: .internal/models/gemma-4-e2b-it-5bit
+  model_dir: .internal/models/gemma-4-e2b-it-5bit
+  prompt_tokens: [128, 512]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-12-ax-direct-ngram-readme-refresh/gemma-4-e2b-it-5bit-prompts
+  [prompt] prompt_tokens=128 sha256=4ebdfdf02961 path=benchmarks/results/mlx-inference/2026-05-12-ax-direct-ngram-readme-refresh/gemma-4-e2b-it-5bit-prompts/prompt-128-gen-128-4ebdfdf02961.json
+  [prompt] prompt_tokens=512 sha256=846109be82df path=benchmarks/results/mlx-inference/2026-05-12-ax-direct-ngram-readme-refresh/gemma-4-e2b-it-5bit-prompts/prompt-512-gen-128-846109be82df.json
+  [reference] reused 4 mlx_lm/mlx_swift_lm rows from benchmarks/results/mlx-inference/2026-05-11-full-readme-refresh/gemma-4-e2b-it-5bit.json
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/gemma-4-e2b-it-5bit --port 8091 --disable-ngram-acceleration
+  [ax-engine/ax_engine_mlx] prompt=128 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=3099.8 tok/s decode=157.7 tok/s out=128
+    rep 2: prefill=3122.0 tok/s decode=158.0 tok/s out=128
+    rep 3: prefill=3061.2 tok/s decode=157.7 tok/s out=128
+    rep 4: prefill=3011.1 tok/s decode=153.2 tok/s out=128
+    rep 5: prefill=3115.2 tok/s decode=155.0 tok/s out=128
+  [ax-engine/ax_engine_mlx] prompt=512 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=6894.6 tok/s decode=148.5 tok/s out=128
+    rep 2: prefill=7000.6 tok/s decode=153.0 tok/s out=128
+    rep 3: prefill=7167.1 tok/s decode=153.6 tok/s out=128
+    rep 4: prefill=7023.7 tok/s decode=152.2 tok/s out=128
+    rep 5: prefill=6802.0 tok/s decode=152.8 tok/s out=128
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/gemma-4-e2b-it-5bit --port 8091
+  [ax-engine/ax_engine_mlx_ngram_accel] prompt=128 generation=128 policy=ngram_acceleration_kv_trim kv_compression=disabled
+    rep 1: prefill=3492.9 tok/s decode=410.5 tok/s out=128
+    rep 2: prefill=3604.5 tok/s decode=427.0 tok/s out=128
+    rep 3: prefill=3629.7 tok/s decode=443.6 tok/s out=128
+    rep 4: prefill=3826.7 tok/s decode=445.2 tok/s out=128
+    rep 5: prefill=3814.5 tok/s decode=458.8 tok/s out=128
+  [ax-engine/ax_engine_mlx_ngram_accel] prompt=512 generation=128 policy=ngram_acceleration_kv_trim kv_compression=disabled
+    rep 1: prefill=8106.9 tok/s decode=449.5 tok/s out=128
+    rep 2: prefill=7832.7 tok/s decode=427.4 tok/s out=128
+    rep 3: prefill=7674.8 tok/s decode=416.0 tok/s out=128

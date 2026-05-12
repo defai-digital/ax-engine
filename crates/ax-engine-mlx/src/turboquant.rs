@@ -2720,13 +2720,18 @@ mod tests {
     #[test]
     fn support_report_excludes_linear_attention_layers() {
         let mut cfg = support_test_model(4, 128);
-        cfg.linear_attention = Some(LinearAttentionConfig {
-            full_attention_interval: 4,
-            num_value_heads: 2,
-            num_key_heads: 2,
-            key_head_dim: 64,
-            value_head_dim: 64,
-            conv_kernel_dim: 4,
+        cfg.linear_attention = Some({
+            let (q_scale, k_scale) = crate::linear_attention::linear_attention_qk_scale(64);
+            LinearAttentionConfig {
+                full_attention_interval: 4,
+                num_value_heads: 2,
+                num_key_heads: 2,
+                key_head_dim: 64,
+                value_head_dim: 64,
+                conv_kernel_dim: 4,
+                q_scale,
+                k_scale,
+            }
         });
 
         let report =

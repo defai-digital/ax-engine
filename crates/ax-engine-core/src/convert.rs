@@ -837,7 +837,7 @@ fn glm_router_config(config: &serde_json::Value, model_type: &str) -> NativeGlmR
 fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
     let is_gemma4_moe = arch_bool(config, model_type, "enable_moe_block").unwrap_or(false);
     let is_qwen3_moe = matches!(model_type, "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_text");
-    let is_qwen3_next_moe = model_type == "qwen3_next";
+    let is_qwen3_next_moe = matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6");
     let is_glm_moe = is_glm4_moe_lite(model_type);
     if !is_gemma4_moe && !is_qwen3_moe && !is_qwen3_next_moe && !is_glm_moe {
         return NativeMoeConfig::default();
@@ -1486,7 +1486,42 @@ fn validate_converted_model_contract(
     if is_qwen_family_model_type(model_type) {
         validate_qwen_rope_scaling(config, model_type)?;
     }
+    if is_qwen_gated_delta_family(model_type) {
+        validate_qwen_gated_delta_contract(model_type, manifest)?;
+    }
 
+    Ok(())
+}
+
+fn validate_qwen_gated_delta_contract(
+    model_type: &str,
+    manifest: &NativeModelManifest,
+) -> Result<(), ConvertError> {
+    let Some(interval) = manifest
+        .linear_attention
+        .resolved_full_attention_interval(&manifest.model_family)
+    else {
+        return Ok(());
+    };
+    if interval == 0 {
+        return invalid_model_contract(
+            model_type,
+            "linear_attention.full_attention_interval must be > 0",
+        );
+    }
+    // Only enforce divisibility when the model has enough layers to include at
+    // least one full-attention layer. Models with fewer layers than the interval
+    // have no full-attention layers (all-linear), which is valid for testing but
+    // unusual in production.
+    if manifest.layer_count >= interval && !manifest.layer_count.is_multiple_of(interval) {
+        return invalid_model_contract(
+            model_type,
+            format!(
+                "layer_count ({}) must be divisible by full_attention_interval ({})",
+                manifest.layer_count, interval
+            ),
+        );
+    }
     Ok(())
 }
 
@@ -1528,6 +1563,20 @@ fn validate_gemma4_contract(manifest: &NativeModelManifest) -> Result<(), Conver
                 layer_index,
                 NativeTensorRole::PerLayerInputPostNorm,
             )?;
+        }
+    }
+
+    if manifest.moe.expert_count.is_some() {
+        if manifest.moe.expert_intermediate_size.unwrap_or(0) == 0 {
+            return invalid_model_contract(
+                "gemma4",
+                "moe.expert_intermediate_size must be > 0 for MoE models",
+            );
+        }
+        for layer_index in 0..manifest.layer_count {
+            require_gemma4_layer_role(manifest, layer_index, NativeTensorRole::FfnNorm2)?;
+            require_gemma4_layer_role(manifest, layer_index, NativeTensorRole::FfnPostNorm1)?;
+            require_gemma4_layer_role(manifest, layer_index, NativeTensorRole::FfnPostNorm2)?;
         }
     }
 
@@ -2957,6 +3006,100 @@ mod tests {
             .expect("qwen3_next manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn qwen3_6_alias_produces_moe_config() {
+        // Regression test for B1: moe_config() previously checked only
+        // `model_type == "qwen3_next"` and missed the "qwen3.6" / "qwen3_6"
+        // aliases. A checkpoint using either alias must still get MoE config.
+        for alias in ["qwen3.6", "qwen3_6"] {
+            let dir = unique_test_dir(&format!("qwen3_6_alias_{}", alias.replace('.', "_")));
+            write_config(
+                &dir,
+                serde_json::json!({
+                    "model_type": alias,
+                    "hidden_size": 64,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 1,
+                    "head_dim": 32,
+                    "num_hidden_layers": 1,
+                    "vocab_size": 128,
+                    "linear_num_value_heads": 2,
+                    "linear_num_key_heads": 1,
+                    "linear_key_head_dim": 32,
+                    "linear_value_head_dim": 16,
+                    "linear_conv_kernel_dim": 4,
+                    "full_attention_interval": 4,
+                    "num_experts": 8,
+                    "num_experts_per_tok": 2,
+                    "moe_intermediate_size": 8,
+                }),
+            );
+            write_fake_safetensors(
+                &dir,
+                "model.safetensors",
+                &[
+                    ("model.embed_tokens.weight", "BF16", &[128, 64]),
+                    ("model.norm.weight", "BF16", &[64]),
+                    ("lm_head.weight", "BF16", &[128, 64]),
+                    ("model.layers.0.input_layernorm.weight", "BF16", &[64]),
+                    (
+                        "model.layers.0.linear_attn.in_proj_qkvz.weight",
+                        "BF16",
+                        &[128, 64],
+                    ),
+                    (
+                        "model.layers.0.linear_attn.in_proj_ba.weight",
+                        "BF16",
+                        &[4, 64],
+                    ),
+                    (
+                        "model.layers.0.linear_attn.conv1d.weight",
+                        "BF16",
+                        &[96, 1, 4],
+                    ),
+                    ("model.layers.0.linear_attn.dt_bias", "F32", &[2]),
+                    ("model.layers.0.linear_attn.A_log", "F32", &[2]),
+                    ("model.layers.0.linear_attn.norm.weight", "BF16", &[16]),
+                    (
+                        "model.layers.0.linear_attn.out_proj.weight",
+                        "BF16",
+                        &[64, 32],
+                    ),
+                    (
+                        "model.layers.0.post_attention_layernorm.weight",
+                        "BF16",
+                        &[64],
+                    ),
+                    ("model.layers.0.mlp.gate.weight", "BF16", &[8, 64]),
+                    (
+                        "model.layers.0.mlp.switch_mlp.gate_proj.weight",
+                        "BF16",
+                        &[8, 8, 64],
+                    ),
+                    (
+                        "model.layers.0.mlp.switch_mlp.up_proj.weight",
+                        "BF16",
+                        &[8, 8, 64],
+                    ),
+                    (
+                        "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                        "BF16",
+                        &[8, 64, 8],
+                    ),
+                ],
+            );
+            let manifest = convert_hf_model_dir(&dir)
+                .unwrap_or_else(|e| panic!("convert with alias '{alias}' failed: {e}"));
+            assert_eq!(
+                manifest.moe.expert_count,
+                Some(8),
+                "alias '{alias}' must produce MoE config with expert_count=8"
+            );
+            assert_eq!(manifest.model_family, "qwen3_next");
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[test]

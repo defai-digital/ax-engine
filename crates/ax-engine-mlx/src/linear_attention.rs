@@ -1,10 +1,11 @@
 use std::sync::OnceLock;
 
 use mlx_sys::{
-    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype,
-    concatenate, conv1d, exp, less, log1p, multiply, negative, reshape, rms_norm, slice,
-    slice_last_dim, where_cond, zeros,
+    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, astype, concatenate,
+    conv1d, multiply, reshape, rms_norm, slice, slice_last_dim, zeros,
 };
+#[cfg(test)]
+use mlx_sys::{add, exp, less, log1p, negative, where_cond};
 
 use crate::model::LinearAttentionConfig;
 
@@ -23,7 +24,12 @@ pub(crate) const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: usize = 512;
 ///
 /// This function is retained for testing; the production path folds this
 /// computation into `gated_delta_kernel` to avoid the 7-node lazy graph.
-pub fn compute_gated_delta_g(a_log: &MlxArray, a: &MlxArray, dt_bias: &MlxArray) -> MlxArray {
+#[cfg(test)]
+pub(crate) fn compute_gated_delta_g(
+    a_log: &MlxArray,
+    a: &MlxArray,
+    dt_bias: &MlxArray,
+) -> MlxArray {
     let a_log_f32 = astype(a_log, MlxDtype::Float32, None);
     let decay_rate = exp(&a_log_f32, None);
     let a_plus_bias = add(a, dt_bias, None);
@@ -130,7 +136,7 @@ pub fn normalize_linear_attention_qk(
     k: &MlxArray,
     eps: f32,
 ) -> (MlxArray, MlxArray) {
-    let (q_scale, k_scale) = linear_attention_qk_scale(cfg.key_head_dim);
+    let (q_scale, k_scale) = (cfg.q_scale, cfg.k_scale);
     let q_normed = rms_norm(q, None, eps, None);
     let k_normed = rms_norm(k, None, eps, None);
     let q_scale = scalar_f32_as(q_scale, q.dtype());
@@ -141,7 +147,7 @@ pub fn normalize_linear_attention_qk(
     )
 }
 
-fn linear_attention_qk_scale(key_head_dim: usize) -> (f32, f32) {
+pub(crate) fn linear_attention_qk_scale(key_head_dim: usize) -> (f32, f32) {
     // mlx-lm/Swift: q *= inv_scale², k *= inv_scale  (inv_scale = Dk^(-0.5))
     let inv_scale = (key_head_dim as f32).powf(-0.5);
     (inv_scale * inv_scale, inv_scale)
@@ -396,6 +402,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> LinearAttentionConfig {
+        let (q_scale, k_scale) = linear_attention_qk_scale(4);
         LinearAttentionConfig {
             full_attention_interval: 4,
             num_value_heads: 2,
@@ -403,6 +410,8 @@ mod tests {
             key_head_dim: 4,
             value_head_dim: 3,
             conv_kernel_dim: 4,
+            q_scale,
+            k_scale,
         }
     }
 
@@ -644,6 +653,7 @@ mod tests {
 
     #[test]
     fn normalize_linear_attention_qk_preserves_reference_shapes() {
+        let (q_scale, k_scale) = linear_attention_qk_scale(32);
         let cfg = LinearAttentionConfig {
             full_attention_interval: 4,
             num_value_heads: 1,
@@ -651,6 +661,8 @@ mod tests {
             key_head_dim: 32,
             value_head_dim: 4,
             conv_kernel_dim: 4,
+            q_scale,
+            k_scale,
         };
         let q = zeros(&[1, 2, 1, 32], MlxDtype::Bfloat16, None);
         let k = zeros(&[1, 2, 1, 32], MlxDtype::Bfloat16, None);
