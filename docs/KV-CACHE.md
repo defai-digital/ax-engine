@@ -320,7 +320,7 @@ AND `--mode warm_extend` with `--pad-to-block-size 16`. Both must
 produce 5/5 token-exact matches between a cold baseline and the warm
 path. Exit 0 on full PASS, exit 3 on any divergence.
 
-The gate is wired into `.github/workflows/python-preview.yml` as
+The gate is wired into `.github/workflows/ci.yml` as
 `Run prefix-reuse equivalence regression gate`, gated on the same MLX
 artifacts availability step as the other model-dependent smoke checks.
 Rotating the mounted model across Qwen / Gemma / GLM rotates the
