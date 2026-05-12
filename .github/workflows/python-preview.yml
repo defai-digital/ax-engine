@@ -1,4 +1,4 @@
-name: Preview Surfaces
+name: CI
 
 on:
   push:
