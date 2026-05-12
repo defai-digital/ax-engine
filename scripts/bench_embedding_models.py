@@ -220,9 +220,20 @@ def bench_ax_engine_py(
     total_tokens = sum(len(ids) for ids in token_ids_list)
     n = len(token_ids_list)
 
+    # Use embed_bytes for a fair comparison vs mlx-lm: mlx-lm's bench only
+    # mx.eval()s the result (no read-back into Python), so ax-engine should
+    # also avoid the per-element PyFloat allocation that list[float] forces.
+    # embed_bytes returns the raw f32 buffer as Python bytes (O(1) materialise).
+    embed_fast = getattr(session, "embed_bytes", None)
+    if embed_fast is None:
+        embed_fast = lambda ids: session.embed(ids, pooling="last", normalize=True)
+    else:
+        _bytes_fn = embed_fast
+        embed_fast = lambda ids: _bytes_fn(ids, pooling="last", normalize=True)
+
     print("  [ax-engine-py] warmup…", file=sys.stderr)
     for ids in token_ids_list:
-        session.embed(ids, pooling="last", normalize=True)
+        embed_fast(ids)
 
     trial_rows = []
     for i in range(1, trials + 1):
@@ -230,7 +241,7 @@ def bench_ax_engine_py(
             time.sleep(cooldown)
         t0 = time.perf_counter()
         for ids in token_ids_list:
-            session.embed(ids, pooling="last", normalize=True)
+            embed_fast(ids)
         elapsed = time.perf_counter() - t0
         ms = elapsed * 1000.0 / n
         tps = total_tokens / elapsed if elapsed > 0 else 0.0

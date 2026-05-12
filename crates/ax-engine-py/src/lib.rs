@@ -14,7 +14,7 @@ use ax_engine_sdk::{
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyString};
+use pyo3::types::{PyBytes, PyDict, PyString};
 
 pyo3::create_exception!(
     ax_engine._ax_engine,
@@ -80,6 +80,29 @@ fn delegated_http_timeouts_from_secs(
 
 fn py_engine_state_error(message: &'static str) -> PyErr {
     EngineStateError::new_err(message)
+}
+
+fn parse_pooling(pooling: &str) -> PyResult<EmbeddingPooling> {
+    match pooling {
+        "last" => Ok(EmbeddingPooling::Last),
+        "mean" => Ok(EmbeddingPooling::Mean),
+        "cls" => Ok(EmbeddingPooling::Cls),
+        other => Err(PyValueError::new_err(format!(
+            "unknown pooling '{other}': expected 'last', 'mean', or 'cls'"
+        ))),
+    }
+}
+
+fn floats_to_pybytes<'py>(py: Python<'py>, floats: &[f32]) -> PyResult<Bound<'py, PyBytes>> {
+    // Write little-endian f32 bytes directly into the PyBytes buffer — avoids
+    // a separate Vec<u8> staging allocation and the per-element PyFloat
+    // allocation we would pay if we returned list[float].
+    PyBytes::new_with(py, std::mem::size_of_val(floats), |out| {
+        for (chunk, &value) in out.chunks_exact_mut(4).zip(floats.iter()) {
+            chunk.copy_from_slice(&value.to_le_bytes());
+        }
+        Ok(())
+    })
 }
 
 #[pymethods]
@@ -451,16 +474,7 @@ impl Session {
         pooling: &str,
         normalize: bool,
     ) -> PyResult<Vec<f32>> {
-        let pooling_mode = match pooling {
-            "last" => EmbeddingPooling::Last,
-            "mean" => EmbeddingPooling::Mean,
-            "cls" => EmbeddingPooling::Cls,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "unknown pooling '{other}': expected 'last', 'mean', or 'cls'"
-                )));
-            }
-        };
+        let pooling_mode = parse_pooling(pooling)?;
         let inner = Arc::clone(&self.inner);
         py.allow_threads(move || {
             let slot = inner
@@ -478,6 +492,38 @@ impl Session {
         })
     }
 
+    /// Same as :meth:`embed` but returns the embedding as raw little-endian
+    /// f32 bytes instead of a ``list[float]``. Avoids the per-element
+    /// ``PyFloat`` allocation that dominates the post-eval cost for large
+    /// hidden sizes; the caller can wrap the result with ``numpy.frombuffer``
+    /// (zero-copy) or ``array.array('f', buf)``.
+    #[pyo3(signature = (token_ids, *, pooling="last", normalize=true))]
+    fn embed_bytes<'py>(
+        &self,
+        py: Python<'py>,
+        token_ids: Vec<u32>,
+        pooling: &str,
+        normalize: bool,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let pooling_mode = parse_pooling(pooling)?;
+        let inner = Arc::clone(&self.inner);
+        let floats: Vec<f32> = py.allow_threads(move || {
+            let slot = inner
+                .lock()
+                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
+            match &*slot {
+                SessionSlot::Ready(session) => session
+                    .embed(&token_ids, pooling_mode, normalize)
+                    .map_err(to_py_runtime_error),
+                SessionSlot::Streaming => {
+                    Err(py_engine_state_error("session has an active stream"))
+                }
+                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
+            }
+        })?;
+        floats_to_pybytes(py, &floats)
+    }
+
     #[pyo3(signature = (batch_token_ids, *, pooling="last", normalize=true))]
     fn embed_batch(
         &self,
@@ -486,16 +532,7 @@ impl Session {
         pooling: &str,
         normalize: bool,
     ) -> PyResult<Vec<Vec<f32>>> {
-        let pooling_mode = match pooling {
-            "last" => EmbeddingPooling::Last,
-            "mean" => EmbeddingPooling::Mean,
-            "cls" => EmbeddingPooling::Cls,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "unknown pooling '{other}': expected 'last', 'mean', or 'cls'"
-                )));
-            }
-        };
+        let pooling_mode = parse_pooling(pooling)?;
         let inner = Arc::clone(&self.inner);
         py.allow_threads(move || {
             let slot = inner
@@ -511,6 +548,36 @@ impl Session {
                 SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
             }
         })
+    }
+
+    /// Same as :meth:`embed_batch` but returns one ``bytes`` blob per
+    /// sequence (raw little-endian f32). See :meth:`embed_bytes` for
+    /// the rationale.
+    #[pyo3(signature = (batch_token_ids, *, pooling="last", normalize=true))]
+    fn embed_batch_bytes<'py>(
+        &self,
+        py: Python<'py>,
+        batch_token_ids: Vec<Vec<u32>>,
+        pooling: &str,
+        normalize: bool,
+    ) -> PyResult<Vec<Bound<'py, PyBytes>>> {
+        let pooling_mode = parse_pooling(pooling)?;
+        let inner = Arc::clone(&self.inner);
+        let vecs: Vec<Vec<f32>> = py.allow_threads(move || {
+            let slot = inner
+                .lock()
+                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
+            match &*slot {
+                SessionSlot::Ready(session) => session
+                    .embed_batch(&batch_token_ids, pooling_mode, normalize)
+                    .map_err(to_py_runtime_error),
+                SessionSlot::Streaming => {
+                    Err(py_engine_state_error("session has an active stream"))
+                }
+                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
+            }
+        })?;
+        vecs.iter().map(|v| floats_to_pybytes(py, v)).collect()
     }
 
     #[pyo3(signature = (_exc_type=None, _exc=None, _traceback=None))]
