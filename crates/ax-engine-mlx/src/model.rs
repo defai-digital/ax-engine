@@ -1669,7 +1669,6 @@ fn compute_per_layer_inputs_arr(
     Some(per_layer)
 }
 
-
 /// Apply optional per-head RMS norm in BSHD [1, seq, n_heads, head_dim] space.
 fn qk_norm_bshd(
     x: MlxArray,
