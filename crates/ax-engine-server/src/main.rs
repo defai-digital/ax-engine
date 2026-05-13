@@ -39,8 +39,15 @@ const DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS: u64 = 2;
 const DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH: usize = 32;
 const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 const STREAM_CHANNEL_CAPACITY: usize = 128;
+// Pre-fills `<think>\n\n</think>\n\n` to signal the model to skip reasoning;
+// applied to Qwen models whose chat templates default to this when
+// `enable_thinking=false`. For reasoning-trained Qwen3.6 / Qwen3-Next /
+// Qwen3-Coder-Next this is the wrong prefix (see #13), so those models use
+// `QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING` instead.
 const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT: &str =
     "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING: &str =
+    "<|im_start|>assistant\n<think>\n";
 
 type StreamEvent = Result<Event, Infallible>;
 type StreamEventSender = mpsc::Sender<StreamEvent>;
@@ -1868,7 +1875,11 @@ fn render_openai_chat_prompt(
         ));
     }
 
-    render_openai_chat_prompt_with_template(ChatPromptTemplate::for_model_id(model_id), messages)
+    render_openai_chat_prompt_with_template(
+        ChatPromptTemplate::for_model_id(model_id),
+        messages,
+        is_qwen_thinking_model(model_id),
+    )
 }
 
 fn build_mlx_lm_chat_messages(
@@ -1939,6 +1950,7 @@ fn default_chat_stop_sequences(template: ChatPromptTemplate) -> Vec<String> {
 fn render_openai_chat_prompt_with_template(
     template: ChatPromptTemplate,
     messages: &[OpenAiChatMessage],
+    qwen_thinking_enabled: bool,
 ) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
     let mut prompt = String::new();
     match template {
@@ -2002,7 +2014,13 @@ fn render_openai_chat_prompt_with_template(
         }
     }
     match template {
-        ChatPromptTemplate::QwenChatMl => prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT),
+        ChatPromptTemplate::QwenChatMl => {
+            if qwen_thinking_enabled {
+                prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING);
+            } else {
+                prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT);
+            }
+        }
         ChatPromptTemplate::Llama3 => {
             prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
         }
@@ -3341,6 +3359,46 @@ sys.stdout.write(f"server::{prompt}")
             Some(json!({"enable_thinking": false}))
         );
         assert_eq!(chat_template_kwargs_for_model_id("gemma4-e2b"), None);
+    }
+
+    #[test]
+    fn native_chat_renderer_keeps_thinking_open_for_qwen_reasoning_models() {
+        // Companion to the kwargs test below: the native MLX path doesn't go
+        // through mlx_lm's chat template; it builds the prompt locally. Qwen3.6
+        // / Qwen3-Next / Qwen3-Coder-Next must end with `<think>\n` (thinking
+        // allowed), NOT `<think>\n\n</think>\n\n` (thinking skipped), otherwise
+        // the same #13 failure mode (premature stop / repetition loop on
+        // reasoning prompts) reproduces on the native path even though the
+        // delegated path is fixed.
+        let messages = vec![OpenAiChatMessage {
+            role: "user".to_string(),
+            content: OpenAiChatContent::Text("hi".to_string()),
+        }];
+        let thinking = render_openai_chat_prompt_with_template(
+            ChatPromptTemplate::QwenChatMl,
+            &messages,
+            true,
+        )
+        .expect("render");
+        assert!(
+            thinking.ends_with("<|im_start|>assistant\n<think>\n"),
+            "thinking-enabled suffix should end with `<think>\\n` only: {thinking}"
+        );
+        assert!(
+            !thinking.contains("</think>"),
+            "thinking-enabled suffix must not pre-close the think block: {thinking}"
+        );
+
+        let no_thinking = render_openai_chat_prompt_with_template(
+            ChatPromptTemplate::QwenChatMl,
+            &messages,
+            false,
+        )
+        .expect("render");
+        assert!(
+            no_thinking.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+            "thinking-disabled suffix should pre-close the think block: {no_thinking}"
+        );
     }
 
     #[test]
