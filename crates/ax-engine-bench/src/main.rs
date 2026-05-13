@@ -15297,6 +15297,7 @@ mod tests {
                 detected_soc: Some("Apple M4 Max".to_string()),
                 supported_mlx_runtime: true,
                 unsupported_host_override_active: false,
+                detection_error: None,
             },
             metal_toolchain: MetalToolchainReport {
                 fully_available: true,
@@ -15462,6 +15463,7 @@ mod tests {
             detected_soc: detected_soc.map(str::to_string),
             supported_mlx_runtime,
             unsupported_host_override_active,
+            detection_error: None,
         }
     }
 
