@@ -32,7 +32,7 @@ pub use fast::{
     ScaledDotProductAttentionMask, rms_norm, rope, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask,
 };
-pub use io::load_safetensors;
+pub use io::{load_safetensors, load_safetensors_mmap};
 pub use metal::{KernelOutputSpec, KernelTemplateArg, MlxMetalKernel};
 pub use ops::{
     add, arange, argmax, argpartition_axis, argsort_axis, as_strided, astype, broadcast_to, clip,

@@ -159,15 +159,35 @@ impl QuantizedWeight {
 
 pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, WeightLoadError> {
     let root = artifacts.root_dir().to_path_buf();
+    // AX_MMAP_WEIGHTS=1 uses the memory-mapped safetensors path. No bytes
+    // are read into a heap buffer up front; pages are pulled in by the
+    // OS on first access (CPU touch or GPU dispatch). On warm page cache
+    // this is roughly equivalent to the C loader; on cold disk it lets
+    // the kernel decide when to read what, which can roughly halve cold
+    // startup time for large models. The default remains the C loader
+    // until the mmap path has wider integration test coverage.
+    let use_mmap = std::env::var("AX_MMAP_WEIGHTS")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
     let mut file_cache: HashMap<PathBuf, HashMap<String, MlxArray>> = HashMap::new();
     for spec in artifacts.tensor_specs() {
         let full = root.join(&spec.file);
         if let Entry::Vacant(entry) = file_cache.entry(full) {
             let path = entry.key().clone();
-            let tensors = load_safetensors(&path, None).map_err(WeightLoadError::FileMissing)?;
+            let tensors = if use_mmap {
+                mlx_sys::load_safetensors_mmap(&path).map_err(WeightLoadError::FileMissing)?
+            } else {
+                load_safetensors(&path, None).map_err(WeightLoadError::FileMissing)?
+            };
             if tensors.is_empty() {
                 return Err(WeightLoadError::FileMissing(path.display().to_string()));
             }
+            // Both loaders need an explicit eval here. The C loader path
+            // builds in-memory MLX arrays that haven't been routed
+            // through the lazy graph yet; the mmap path needs the eval
+            // to wire the page-backed buffers into MLX's working set so
+            // GPU dispatches see initialised data. (Without it, GPU
+            // reads return uninitialised memory → NaN outputs.)
             let refs: Vec<&MlxArray> = tensors.values().collect();
             mlx_sys::eval(&refs);
             entry.insert(tensors);
