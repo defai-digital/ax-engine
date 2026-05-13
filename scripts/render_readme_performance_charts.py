@@ -330,6 +330,7 @@ def render_chart(spec: ChartSpec, stats: list[SeriesStats]) -> str:
 def infer_results_dir_from_readme(readme: Path) -> Path:
     text = readme.read_text()
     patterns = [
+        r"readme-performance-artifacts:[^\n]*reference=([^;\s]+)",
         r"Artifact directory: `([^`]+)`",
         r"artifacts are in\s+`([^`]+)`",
         r"Source:\s+`([^`]+)`\s+for all rows",
