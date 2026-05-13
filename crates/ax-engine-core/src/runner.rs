@@ -209,23 +209,98 @@ pub enum EmbeddingPooling {
     Cls,
 }
 
-/// Row-major batched embedding output. `data.len() == batch_size *
-/// hidden_size`. Returned by `ExecutionRunner::embed_batch_flat` to let
-/// callers consume the buffer as one contiguous slice (zero-copy view
-/// for numpy / faiss / HNSW) instead of `Vec<Vec<f32>>`.
+/// Row-major batched embedding output produced by
+/// [`ExecutionRunner::embed_batch_flat`]. The backing `data` is a single
+/// contiguous `Vec<f32>` of length `batch_size * hidden_size`, laid out
+/// row-major (`data[i * hidden_size .. (i + 1) * hidden_size]` is row
+/// `i`'s embedding vector).
+///
+/// Compared with the older [`ExecutionRunner::embed_batch`] which
+/// returns `Vec<Vec<f32>>`, this type saves `batch_size - 1` heap
+/// allocations per call and lets downstream code (numpy, faiss, HNSW,
+/// custom Metal kernels) see one contiguous slice without re-stacking.
+///
+/// # Examples
+///
+/// Iterate row-by-row:
+///
+/// ```ignore
+/// let matrix = session.embed_batch_flat(&batch, EmbeddingPooling::Last, true)?;
+/// for i in 0..matrix.batch_size {
+///     let embedding: &[f32] = matrix.row(i);
+///     vector_db.insert(doc_ids[i], embedding);
+/// }
+/// ```
+///
+/// Hand the whole matrix to faiss as a contiguous `[B, H]` `f32` buffer:
+///
+/// ```ignore
+/// // SAFETY: `data` is `Vec<f32>`, `.as_ptr()` is `*const f32`, lengths match.
+/// unsafe {
+///     faiss::Index::add(
+///         &mut index,
+///         matrix.batch_size as i64,
+///         matrix.data.as_ptr(),
+///     );
+/// }
+/// ```
+///
+/// Zero-copy `ndarray::ArrayView2`:
+///
+/// ```ignore
+/// use ndarray::ArrayView2;
+/// let view = ArrayView2::from_shape(
+///     (matrix.batch_size, matrix.hidden_size),
+///     &matrix.data,
+/// )?;
+/// ```
+///
+/// On the Python side, [`Session.embed_batch_array`] returns a NumPy
+/// `(B, H)` `float32` ndarray backed by the same row-major bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddingMatrix {
+    /// Row-major embedding values. `data[i * hidden_size + j]` is the
+    /// `j`-th component of row `i`'s embedding. `data.len()` always
+    /// equals `batch_size * hidden_size`.
     pub data: Vec<f32>,
+    /// Number of input sequences. Matches the input batch length.
     pub batch_size: usize,
+    /// Width of each embedding vector. Determined by the model's
+    /// hidden size (e.g. 1024 for Qwen3-Embedding 0.6B, 4096 for 8B).
     pub hidden_size: usize,
 }
 
 impl EmbeddingMatrix {
-    /// View row `i` of the matrix as `&[f32]` of length `hidden_size`.
-    /// Panics if `i >= batch_size`.
+    /// Borrow row `i` as a `hidden_size`-long slice.
+    ///
+    /// # Panics
+    /// Panics when `i >= self.batch_size`. Use [`row_get`](Self::row_get)
+    /// for a non-panicking variant.
     pub fn row(&self, i: usize) -> &[f32] {
         assert!(i < self.batch_size, "row index {i} out of bounds");
         &self.data[i * self.hidden_size..(i + 1) * self.hidden_size]
+    }
+
+    /// Non-panicking variant of [`row`](Self::row); returns `None`
+    /// when `i >= batch_size`.
+    pub fn row_get(&self, i: usize) -> Option<&[f32]> {
+        if i < self.batch_size {
+            Some(&self.data[i * self.hidden_size..(i + 1) * self.hidden_size])
+        } else {
+            None
+        }
+    }
+
+    /// Iterator over all rows.
+    pub fn rows(&self) -> impl Iterator<Item = &[f32]> {
+        (0..self.batch_size).map(|i| self.row(i))
+    }
+
+    /// Total byte length of the row-major buffer (`batch_size *
+    /// hidden_size * 4`). Useful when writing the matrix to a file or
+    /// passing its size to a C FFI caller.
+    pub fn byte_len(&self) -> usize {
+        self.data.len() * std::mem::size_of::<f32>()
     }
 }
 
