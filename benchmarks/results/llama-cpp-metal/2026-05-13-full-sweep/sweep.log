@@ -1,0 +1,76 @@
+[sweep] (1/14) gemma-4-e2b-it-4bit
+[sweep]   download bartowski/google_gemma-4-e2b-it-GGUF :: google_gemma-4-E2B-it-Q4_K_M.gguf
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[sweep]   -> downloaded (3.46 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-4bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-e2b-it-GGUF/snapshots/b5e99bd964eaacc27ba484bb2eb3e9f6160b9143/google_gemma-4-E2B-it-Q4_K_M.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/gemma-4-e2b-it-4bit.json
+[sweep]   -> deleted cached repo bartowski/google_gemma-4-e2b-it-GGUF (freed 3.46 GB)
+[sweep] (2/14) gemma-4-e2b-it-5bit
+[sweep]   download bartowski/google_gemma-4-e2b-it-GGUF :: google_gemma-4-E2B-it-Q5_K_M.gguf
+[sweep]   -> downloaded (3.66 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-5bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-e2b-it-GGUF/snapshots/b5e99bd964eaacc27ba484bb2eb3e9f6160b9143/google_gemma-4-E2B-it-Q5_K_M.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/gemma-4-e2b-it-5bit.json
+[sweep]   -> deleted cached repo bartowski/google_gemma-4-e2b-it-GGUF (freed 3.66 GB)
+[sweep] (3/14) gemma-4-e2b-it-6bit
+[sweep]   download bartowski/google_gemma-4-e2b-it-GGUF :: google_gemma-4-E2B-it-Q6_K.gguf
+[sweep]   -> downloaded (3.90 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-6bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-e2b-it-GGUF/snapshots/b5e99bd964eaacc27ba484bb2eb3e9f6160b9143/google_gemma-4-E2B-it-Q6_K.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/gemma-4-e2b-it-6bit.json
+[sweep]   -> deleted cached repo bartowski/google_gemma-4-e2b-it-GGUF (freed 3.90 GB)
+[sweep] (4/14) gemma-4-e2b-it-8bit
+[sweep]   download bartowski/google_gemma-4-e2b-it-GGUF :: google_gemma-4-E2B-it-Q8_0.gguf
+[sweep]   -> downloaded (4.97 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-8bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-e2b-it-GGUF/snapshots/b5e99bd964eaacc27ba484bb2eb3e9f6160b9143/google_gemma-4-E2B-it-Q8_0.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/gemma-4-e2b-it-8bit.json
+[sweep]   -> deleted cached repo bartowski/google_gemma-4-e2b-it-GGUF (freed 4.97 GB)
+[sweep] (5/14) gemma-4-e4b-it-4bit
+[sweep]   download bartowski/google_gemma-4-e4b-it-GGUF :: google_gemma-4-E4B-it-Q4_K_M.gguf
+[sweep]   -> downloaded (5.41 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e4b-it-4bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-e4b-it-GGUF/snapshots/c04cb322fd63e347db759a08b6249b867488ccf8/google_gemma-4-E4B-it-Q4_K_M.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/gemma-4-e4b-it-4bit.json
+[sweep]   -> deleted cached repo bartowski/google_gemma-4-e4b-it-GGUF (freed 5.41 GB)
+[sweep] (6/14) gemma-4-26b-a4b-it-4bit
+[sweep]   download bartowski/google_gemma-4-26b-a4b-it-GGUF :: google_gemma-4-26B-A4B-it-Q4_K_M.gguf
+[sweep]   -> downloaded (17.04 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-26b-a4b-it-4bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-26b-a4b-it-GGUF/snapshots/cb1f989321df6baa8c647aea074fbad465962bb1/google_gemma-4-26B-A4B-it-Q4_K_M.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/gemma-4-26b-a4b-it-4bit.json
+[sweep]   -> deleted cached repo bartowski/google_gemma-4-26b-a4b-it-GGUF (freed 17.04 GB)
+[sweep] (7/14) gemma-4-31b-it-4bit
+[sweep]   download bartowski/google_gemma-4-31b-it-GGUF :: google_gemma-4-31B-it-Q4_K_M.gguf
+[sweep]   -> downloaded (19.60 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-31b-it-4bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-31b-it-GGUF/snapshots/dbdaa0588c16bed9aa3897f81ad3f48cbdd4244b/google_gemma-4-31B-it-Q4_K_M.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/gemma-4-31b-it-4bit.json
+[sweep]   -> deleted cached repo bartowski/google_gemma-4-31b-it-GGUF (freed 19.60 GB)
+[sweep] (8/14) qwen3_5-9b-mlx-4bit
+[sweep]   download bartowski/Qwen_Qwen3.5-9B-GGUF :: Qwen_Qwen3.5-9B-Q4_K_M.gguf
+[sweep]   -> downloaded (5.89 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.5-9B-MLX-4bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3.5-9B-GGUF/snapshots/ff13963796ee209598509a81340172bb1c3869fe/Qwen_Qwen3.5-9B-Q4_K_M.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/qwen3_5-9b-mlx-4bit.json
+[sweep]   -> deleted cached repo bartowski/Qwen_Qwen3.5-9B-GGUF (freed 5.89 GB)
+[sweep] (9/14) qwen3_6-35b-a3b-ud-mlx-4bit
+[sweep]   download unsloth/Qwen3.6-35B-A3B-GGUF :: Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+[sweep]   -> downloaded (22.36 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-UD-MLX-4bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/qwen3_6-35b-a3b-ud-mlx-4bit.json
+[sweep]   -> deleted cached repo unsloth/Qwen3.6-35B-A3B-GGUF (freed 22.36 GB)
+[sweep] (10/14) qwen3_6-35b-a3b-5bit
+[sweep]   download bartowski/Qwen_Qwen3.6-35B-A3B-GGUF :: Qwen_Qwen3.6-35B-A3B-Q5_K_M.gguf
+[sweep]   -> downloaded (25.02 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-5bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3.6-35B-A3B-GGUF/snapshots/d98fa7286daa6544d050929df95e436741ee739b/Qwen_Qwen3.6-35B-A3B-Q5_K_M.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/qwen3_6-35b-a3b-5bit.json
+[sweep]   -> deleted cached repo bartowski/Qwen_Qwen3.6-35B-A3B-GGUF (freed 25.02 GB)
+[sweep] (11/14) qwen3_6-35b-a3b-6bit
+[sweep]   download bartowski/Qwen_Qwen3.6-35B-A3B-GGUF :: Qwen_Qwen3.6-35B-A3B-Q6_K.gguf
+[sweep]   -> downloaded (30.05 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-6bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3.6-35B-A3B-GGUF/snapshots/d98fa7286daa6544d050929df95e436741ee739b/Qwen_Qwen3.6-35B-A3B-Q6_K.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/qwen3_6-35b-a3b-6bit.json
+[sweep]   -> deleted cached repo bartowski/Qwen_Qwen3.6-35B-A3B-GGUF (freed 30.05 GB)
+[sweep] (12/14) qwen3_6-35b-a3b-8bit
+[sweep]   download bartowski/Qwen_Qwen3.6-35B-A3B-GGUF :: Qwen_Qwen3.6-35B-A3B-Q8_0.gguf
+[sweep]   -> downloaded (36.91 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-8bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3.6-35B-A3B-GGUF/snapshots/d98fa7286daa6544d050929df95e436741ee739b/Qwen_Qwen3.6-35B-A3B-Q8_0.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/qwen3_6-35b-a3b-8bit.json
+[sweep]   -> deleted cached repo bartowski/Qwen_Qwen3.6-35B-A3B-GGUF (freed 36.91 GB)
+[sweep] (13/14) qwen3-coder-next-4bit
+[sweep]   download Qwen/Qwen3-Coder-Next-GGUF :: Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf
+[sweep]   download Qwen/Qwen3-Coder-Next-GGUF :: Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00002-of-00004.gguf
+[sweep]   download Qwen/Qwen3-Coder-Next-GGUF :: Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00003-of-00004.gguf
+[sweep]   download Qwen/Qwen3-Coder-Next-GGUF :: Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00004-of-00004.gguf
+[sweep]   -> downloaded (15.52 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3-Coder-Next-4bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--Qwen--Qwen3-Coder-Next-GGUF/snapshots/b82fb7382639d97b38fa7672e526c760c2fb358e/Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/qwen3-coder-next-4bit.json
+[sweep]   -> deleted cached repo Qwen/Qwen3-Coder-Next-GGUF (freed 48.41 GB)
+[sweep] (14/14) glm-4.7-flash-4bit
+[sweep]   download bartowski/zai-org_GLM-4.7-Flash-GGUF :: zai-org_GLM-4.7-Flash-Q4_K_M.gguf
+[sweep]   -> downloaded (18.47 GB)
+[sweep]   invoke: /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/code/ax-engine-v4/.internal/models/GLM-4.7-Flash-4bit --prompt-tokens 128,512 --generation-tokens 128 --repetitions 5 --cooldown 15.0 --skip-mlx-lm --skip-ax-engine --no-build-ax-engine --llama-cpp-bench /opt/homebrew/bin/llama-bench --llama-cpp-gguf /Users/akiralam/.cache/huggingface/hub/models--bartowski--zai-org_GLM-4.7-Flash-GGUF/snapshots/464d07505b441959737cd04d900f047469614c8d/zai-org_GLM-4.7-Flash-Q4_K_M.gguf --llama-cpp-n-gpu-layers 99 --output benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/glm-4.7-flash-4bit.json
+[sweep]   -> deleted cached repo bartowski/zai-org_GLM-4.7-Flash-GGUF (freed 18.47 GB)
+[sweep] wrote benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/sweep_results.json
+[sweep] wrote benchmarks/results/llama-cpp-metal/2026-05-13-full-sweep/sweep_summary.md

@@ -296,11 +296,62 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(parsed["decode_tok_s"]["median"], 55.0)
         self.assertEqual(parsed["llama_cpp"]["backends"], "Metal")
         self.assertEqual(parsed["llama_cpp"]["build_commit"], "abc123")
-        self.assertEqual(parsed["trials"][0]["prefill_tok_s"], 1000.0)
-        self.assertEqual(parsed["trials"][1]["decode_tok_s"], 60.0)
+        self.assertEqual(parsed["prefill_trials"][0]["prefill_tok_s"], 1000.0)
+        self.assertEqual(parsed["prefill_trials"][1]["prefill_tok_s"], 1200.0)
+        self.assertEqual(parsed["decode_trials"][0]["decode_tok_s"], 50.0)
+        self.assertEqual(parsed["decode_trials"][1]["decode_tok_s"], 60.0)
+        self.assertIn("independent test", parsed["trials_pairing_note"])
+        self.assertEqual(len(parsed["raw_rows"]), 2)
+        self.assertEqual(parsed["raw_rows"][0]["n_prompt"], 512)
+        self.assertEqual(parsed["raw_rows"][1]["n_gen"], 128)
+
+    def test_run_llama_cpp_metal_benchmark_rounds_float_cooldown_to_int(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "llama-bench"
+            gguf = root / "model.gguf"
+            binary.write_text("#!/bin/sh\n")
+            gguf.write_text("gguf")
+            prompt = bench.write_prompt_tokens(
+                root,
+                prompt_tokens=4,
+                generation_tokens=2,
+                vocab_size=100,
+                tokens=[1, 2, 3, 4],
+            )
+            prompt["token_ids"] = [1, 2, 3, 4]
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {"backends": "Metal", "n_prompt": 4, "n_gen": 0, "avg_ts": 1.0, "samples_ts": [1.0]},
+                        {"backends": "Metal", "n_prompt": 0, "n_gen": 2, "avg_ts": 1.0, "samples_ts": [1.0]},
+                    ]
+                ),
+                stderr="",
+            )
+            with (
+                patch.object(bench.subprocess, "run", return_value=completed) as run,
+                patch.object(bench, "collect_llama_cpp_device_evidence", return_value=None),
+            ):
+                bench.run_llama_cpp_metal_benchmark(
+                    binary,
+                    gguf,
+                    prompt_tokens=4,
+                    generation_tokens=2,
+                    repetitions=1,
+                    cooldown=2.6,
+                    n_gpu_layers=99,
+                    prompt_doc=prompt,
+                    extra_args=None,
+                )
+        command_args = run.call_args.args[0]
+        delay_value = command_args[command_args.index("--delay") + 1]
+        self.assertEqual(delay_value, "3")
 
     def test_parse_llama_cpp_bench_json_requires_metal_backend(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "Metal backend"):
+        with self.assertRaisesRegex(RuntimeError, "Metal/MTL backend"):
             bench.parse_llama_cpp_bench_json(
                 json.dumps(
                     [
@@ -311,6 +362,21 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 prompt_tokens=4,
                 generation_tokens=2,
             )
+
+    def test_parse_llama_cpp_bench_json_accepts_mtl_token(self) -> None:
+        # Real llama-bench emits comma-separated backend tokens like "BLAS,MTL".
+        # The guard must accept the MTL token (Metal backend label).
+        parsed = bench.parse_llama_cpp_bench_json(
+            json.dumps(
+                [
+                    {"backends": "BLAS,MTL", "n_prompt": 4, "n_gen": 0, "avg_ts": 10.0, "samples_ts": [10.0]},
+                    {"backends": "BLAS,MTL", "n_prompt": 0, "n_gen": 2, "avg_ts": 1.0, "samples_ts": [1.0]},
+                ]
+            ),
+            prompt_tokens=4,
+            generation_tokens=2,
+        )
+        self.assertEqual(parsed["llama_cpp"]["backends"], "BLAS,MTL")
 
     def test_llama_cpp_metal_row_records_external_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -363,22 +429,30 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     prompt_tokens=4,
                     generation_tokens=2,
                     repetitions=2,
-                    cooldown=0.0,
+                    cooldown=0.4,
                     n_gpu_layers=99,
                     prompt_doc=prompt,
-                    extra_args="--device Metal",
+                    extra_args="-fa 1",
                 )
 
         command_args = run.call_args.args[0]
         self.assertIn("-o", command_args)
         self.assertIn("json", command_args)
-        self.assertIn("--device", command_args)
+        self.assertIn("-fa", command_args)
+        self.assertIn("--delay", command_args)
+        delay_value = command_args[command_args.index("--delay") + 1]
+        self.assertEqual(delay_value, "0")
         self.assertEqual(row["engine"], "llama_cpp_metal")
         self.assertEqual(row["runtime_identity"]["route_identity"], "external_llama_cpp_metal")
         self.assertEqual(row["prompt_contract"], "shape_compatible_llama_bench_internal_tokens")
         self.assertIn("not prompt-hash parity", row["claim_boundary"])
         self.assertEqual(row["ttft_source"], "derived_from_llama_cpp_pp_tok_s")
         self.assertEqual(row["llama_cpp_device_evidence"], "Metal device")
+        self.assertEqual(row["prefill_trials"][0]["prefill_tok_s"], 90.0)
+        self.assertEqual(row["decode_trials"][1]["decode_tok_s"], 22.0)
+        self.assertIn("ttft_ms", row["prefill_trials"][0])
+        self.assertIn("independent test", row["trials_pairing_note"])
+        self.assertNotIn("trials", row)
 
     def test_collect_model_metadata_detects_linear_attention_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1468,18 +1542,43 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(results[0]["baseline"]["role"], "primary_reference")
         self.assertEqual(results[1]["baseline"]["decode_ratio_to_mlx_lm"], 0.8)
 
+        # When some mlx_lm rows exist but none match a non-mlx_lm row's (pt, gt),
+        # that's a bug -> raise.
         with self.assertRaisesRegex(RuntimeError, "missing mlx_lm.benchmark baseline"):
             bench.attach_mlx_lm_baselines(
                 [
+                    {
+                        "engine": "mlx_lm",
+                        "prompt_tokens": 4,
+                        "generation_tokens": 2,
+                        "prefill_tok_s": {"median": 100.0},
+                        "decode_tok_s": {"median": 50.0},
+                    },
                     {
                         "engine": "ax_engine_mlx",
                         "prompt_tokens": 8,
                         "generation_tokens": 2,
                         "prefill_tok_s": {"median": 80.0},
                         "decode_tok_s": {"median": 40.0},
-                    }
+                    },
                 ]
             )
+
+        # When NO mlx_lm rows exist (e.g. --skip-mlx-lm), do not raise;
+        # mark the non-mlx_lm row's baseline as explicitly absent.
+        results_no_mlx_lm = [
+            {
+                "engine": "llama_cpp_metal",
+                "prompt_tokens": 8,
+                "generation_tokens": 2,
+                "prefill_tok_s": {"median": 80.0},
+                "decode_tok_s": {"median": 40.0},
+            }
+        ]
+        bench.attach_mlx_lm_baselines(results_no_mlx_lm)
+        self.assertEqual(
+            results_no_mlx_lm[0]["baseline"]["role"], "absent_skipped_via_cli"
+        )
 
     def test_load_reused_reference_rows_filters_and_requires_mlx_lm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

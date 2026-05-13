@@ -1,0 +1,217 @@
+{
+  "schema_version": "ax.llama_cpp_metal_inventory.v1",
+  "purpose": "Map each row in the README MLX-inference performance table to a candidate GGUF + llama.cpp Metal architecture for shape-compatible external baseline benchmarking.",
+  "claim_boundary": "Rows produced from this manifest are shape-compatible external GGUF baselines only. llama-bench does not consume the ax/MLX prompt-token JSON, so the resulting numbers are NOT prompt-hash parity evidence and must NEVER be merged into the repo-owned MLX prefill/decode/TTFT tables. They belong in a separate 'External GGUF baseline' section with explicit disclaimer.",
+  "quant_mapping_policy": "MLX bit-width is mapped to the closest standard GGUF K-quant: 4-bit -> Q4_K_M, 5-bit -> Q5_K_M, 6-bit -> Q6_K, 8-bit -> Q8_0. 'UD-MLX 4-bit' rows pick unsloth dynamic quants (UD-Q4_K_XL) when available, else fall back to Q4_K_M. Architectural bit-for-bit equivalence is NOT claimed.",
+  "resolution_policy": "Each row lists candidate (repo, filename_pattern) pairs in priority order. The sweep driver resolves the first candidate whose pattern matches a file via huggingface_hub.list_repo_files. Status 'candidate' means unresolved; the driver flips it to 'resolved' or 'unresolved' at sweep time. Rows where llama.cpp architecture support is unknown stay 'candidate' until the driver attempts a load.",
+  "rows": [
+    {
+      "slug": "gemma-4-e2b-it-4bit",
+      "readme_model": "Gemma 4 E2B",
+      "readme_quant": "4-bit",
+      "mlx_local_dir": ".internal/models/gemma-4-e2b-it-4bit",
+      "hf_arch": "Gemma4ForConditionalGeneration",
+      "llama_cpp_arch": "gemma4",
+      "multimodal_note": "Source MLX is multimodal (Gemma4 + audio). GGUF candidates must be text-only conversions.",
+      "gguf_quant_target": "Q4_K_M",
+      "gguf_candidates": [
+        {"repo": "bartowski/google_gemma-4-e2b-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "unsloth/gemma-4-e2b-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "google/gemma-4-e2b-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "gemma-4-e2b-it-5bit",
+      "readme_model": "Gemma 4 E2B",
+      "readme_quant": "5-bit",
+      "mlx_local_dir": ".internal/models/gemma-4-e2b-it-5bit",
+      "hf_arch": "Gemma4ForConditionalGeneration",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q5_K_M",
+      "gguf_candidates": [
+        {"repo": "bartowski/google_gemma-4-e2b-it-GGUF", "filename_pattern": "*Q5_K_M*.gguf"},
+        {"repo": "unsloth/gemma-4-e2b-it-GGUF", "filename_pattern": "*Q5_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "gemma-4-e2b-it-6bit",
+      "readme_model": "Gemma 4 E2B",
+      "readme_quant": "6-bit",
+      "mlx_local_dir": ".internal/models/gemma-4-e2b-it-6bit",
+      "hf_arch": "Gemma4ForConditionalGeneration",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q6_K",
+      "gguf_candidates": [
+        {"repo": "bartowski/google_gemma-4-e2b-it-GGUF", "filename_pattern": "*Q6_K*.gguf"},
+        {"repo": "unsloth/gemma-4-e2b-it-GGUF", "filename_pattern": "*Q6_K*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "gemma-4-e2b-it-8bit",
+      "readme_model": "Gemma 4 E2B",
+      "readme_quant": "8-bit",
+      "mlx_local_dir": ".internal/models/gemma-4-e2b-it-8bit",
+      "hf_arch": "Gemma4ForConditionalGeneration",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q8_0",
+      "gguf_candidates": [
+        {"repo": "bartowski/google_gemma-4-e2b-it-GGUF", "filename_pattern": "*Q8_0*.gguf"},
+        {"repo": "unsloth/gemma-4-e2b-it-GGUF", "filename_pattern": "*Q8_0*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "gemma-4-e4b-it-4bit",
+      "readme_model": "Gemma 4 E4B",
+      "readme_quant": "4-bit",
+      "mlx_local_dir": ".internal/models/gemma-4-e4b-it-4bit",
+      "hf_arch": "Gemma4ForConditionalGeneration",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q4_K_M",
+      "gguf_candidates": [
+        {"repo": "bartowski/google_gemma-4-e4b-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "unsloth/gemma-4-e4b-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "gemma-4-26b-a4b-it-4bit",
+      "readme_model": "Gemma 4 26B A4B",
+      "readme_quant": "4-bit",
+      "mlx_local_dir": ".internal/models/gemma-4-26b-a4b-it-4bit",
+      "hf_arch": "Gemma4ForConditionalGeneration",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q4_K_M",
+      "gguf_candidates": [
+        {"repo": "bartowski/google_gemma-4-26b-a4b-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "unsloth/gemma-4-26b-a4b-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "gemma-4-31b-it-4bit",
+      "readme_model": "Gemma 4 31B",
+      "readme_quant": "4-bit",
+      "mlx_local_dir": ".internal/models/gemma-4-31b-it-4bit",
+      "hf_arch": "Gemma4ForConditionalGeneration",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q4_K_M",
+      "gguf_candidates": [
+        {"repo": "bartowski/google_gemma-4-31b-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "unsloth/gemma-4-31b-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3_5-9b-mlx-4bit",
+      "readme_model": "Qwen 3.5 9B",
+      "readme_quant": "4-bit",
+      "mlx_local_dir": ".internal/models/Qwen3.5-9B-MLX-4bit",
+      "hf_arch": "Qwen3_5ForConditionalGeneration",
+      "llama_cpp_arch": "qwen35",
+      "gguf_quant_target": "Q4_K_M",
+      "gguf_candidates": [
+        {"repo": "Qwen/Qwen3.5-9B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "bartowski/Qwen_Qwen3.5-9B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "unsloth/Qwen3.5-9B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-ud-mlx-4bit",
+      "readme_model": "Qwen 3.6 35B A3B",
+      "readme_quant": "UD-MLX 4-bit",
+      "mlx_local_dir": ".internal/models/Qwen3.6-35B-A3B-UD-MLX-4bit",
+      "hf_arch": "Qwen3_5MoeForConditionalGeneration",
+      "llama_cpp_arch": "qwen35moe",
+      "gguf_quant_target": "UD-Q4_K_XL or Q4_K_M",
+      "gguf_candidates": [
+        {"repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*UD-Q4_K_XL*.gguf"},
+        {"repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "Qwen/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-5bit",
+      "readme_model": "Qwen 3.6 35B A3B",
+      "readme_quant": "MLX 5-bit",
+      "mlx_local_dir": ".internal/models/Qwen3.6-35B-A3B-5bit",
+      "hf_arch": "Qwen3_5MoeForConditionalGeneration",
+      "llama_cpp_arch": "qwen35moe",
+      "gguf_quant_target": "Q5_K_M",
+      "gguf_candidates": [
+        {"repo": "Qwen/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q5_K_M*.gguf"},
+        {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q5_K_M*.gguf"},
+        {"repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q5_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-6bit",
+      "readme_model": "Qwen 3.6 35B A3B",
+      "readme_quant": "MLX 6-bit",
+      "mlx_local_dir": ".internal/models/Qwen3.6-35B-A3B-6bit",
+      "hf_arch": "Qwen3_5MoeForConditionalGeneration",
+      "llama_cpp_arch": "qwen35moe",
+      "gguf_quant_target": "Q6_K",
+      "gguf_candidates": [
+        {"repo": "Qwen/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q6_K*.gguf"},
+        {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q6_K*.gguf"},
+        {"repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q6_K*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-8bit",
+      "readme_model": "Qwen 3.6 35B A3B",
+      "readme_quant": "MLX 8-bit",
+      "mlx_local_dir": ".internal/models/Qwen3.6-35B-A3B-8bit",
+      "hf_arch": "Qwen3_5MoeForConditionalGeneration",
+      "llama_cpp_arch": "qwen35moe",
+      "gguf_quant_target": "Q8_0",
+      "gguf_candidates": [
+        {"repo": "Qwen/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q8_0*.gguf"},
+        {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q8_0*.gguf"},
+        {"repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q8_0*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3-coder-next-4bit",
+      "readme_model": "Qwen Coder Next",
+      "readme_quant": "4-bit",
+      "mlx_local_dir": ".internal/models/Qwen3-Coder-Next-4bit",
+      "hf_arch": "Qwen3NextForCausalLM",
+      "llama_cpp_arch": "qwen3next",
+      "qwen3next_note": "qwen3next architecture is supported in llama.cpp (LLM_ARCH_QWEN3NEXT). Verify runtime correctness on the resolved GGUF before treating decode numbers as comparable.",
+      "gguf_quant_target": "Q4_K_M",
+      "gguf_candidates": [
+        {"repo": "Qwen/Qwen3-Coder-Next-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "bartowski/Qwen_Qwen3-Coder-Next-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "unsloth/Qwen3-Coder-Next-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "glm-4.7-flash-4bit",
+      "readme_model": "GLM 4.7 Flash",
+      "readme_quant": "4-bit",
+      "mlx_local_dir": ".internal/models/GLM-4.7-Flash-4bit",
+      "hf_arch": "Glm4MoeLiteForCausalLM",
+      "llama_cpp_arch": "glm4moe",
+      "glm4_lite_note": "Source MLX architecture is Glm4MoeLite (LoRA-style KV with kv_lora_rank). llama.cpp glm4moe may not exactly match the 'Lite' variant; verify load + decode correctness before treating numbers as comparable.",
+      "gguf_quant_target": "Q4_K_M",
+      "gguf_candidates": [
+        {"repo": "zai-org/GLM-4.7-Flash-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "bartowski/zai-org_GLM-4.7-Flash-GGUF", "filename_pattern": "*Q4_K_M*.gguf"},
+        {"repo": "unsloth/GLM-4.7-Flash-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    }
+  ]
+}

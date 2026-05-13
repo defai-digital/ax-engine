@@ -14,32 +14,32 @@ from typing import Any
 
 
 ARTIFACT_LABELS = {
-    "gemma-4-e2b-it-4bit": ("Gemma 4 E2B", "4-bit · group=64 · affine"),
-    "gemma-4-e2b-it-5bit": ("Gemma 4 E2B", "5-bit · group=64 · affine"),
-    "gemma-4-e2b-it-6bit": ("Gemma 4 E2B", "6-bit · group=64 · affine"),
-    "gemma-4-e2b-it-8bit": ("Gemma 4 E2B", "8-bit · group=64 · affine"),
-    "gemma-4-e4b-it-4bit": ("Gemma 4 E4B", "4-bit · group=64 · affine"),
-    "gemma-4-26b-a4b-it-4bit": ("Gemma 4 26B A4B", "4-bit · group=64 · affine"),
-    "gemma-4-31b-it-4bit": ("Gemma 4 31B", "4-bit · group=64 · affine"),
-    "qwen3_5-9b-mlx-4bit": ("Qwen 3.5 9B", "4-bit · group=64 · affine"),
+    "gemma-4-e2b-it-4bit": ("Gemma 4 E2B", "4-bit"),
+    "gemma-4-e2b-it-5bit": ("Gemma 4 E2B", "5-bit"),
+    "gemma-4-e2b-it-6bit": ("Gemma 4 E2B", "6-bit"),
+    "gemma-4-e2b-it-8bit": ("Gemma 4 E2B", "8-bit"),
+    "gemma-4-e4b-it-4bit": ("Gemma 4 E4B", "4-bit"),
+    "gemma-4-26b-a4b-it-4bit": ("Gemma 4 26B A4B", "4-bit"),
+    "gemma-4-31b-it-4bit": ("Gemma 4 31B", "4-bit"),
+    "qwen3_5-9b-mlx-4bit": ("Qwen 3.5 9B", "4-bit"),
     "qwen3_6-35b-a3b-ud-mlx-4bit": (
         "Qwen 3.6 35B A3B",
-        "UD-MLX 4-bit · group=64 · affine",
+        "UD-MLX 4-bit",
     ),
     "qwen3_6-35b-a3b-5bit": (
         "Qwen 3.6 35B A3B",
-        "MLX 5-bit · group=64 · affine",
+        "MLX 5-bit",
     ),
     "qwen3_6-35b-a3b-6bit": (
         "Qwen 3.6 35B A3B",
-        "MLX 6-bit · group=64 · affine",
+        "MLX 6-bit",
     ),
     "qwen3_6-35b-a3b-8bit": (
         "Qwen 3.6 35B A3B",
-        "MLX 8-bit · group=64 · affine",
+        "MLX 8-bit",
     ),
-    "qwen3-coder-next-4bit": ("Qwen Coder Next", "4-bit · group=64 · affine"),
-    "glm-4.7-flash-4bit": ("GLM 4.7 Flash", "4-bit · group=64 · affine"),
+    "qwen3-coder-next-4bit": ("Qwen Coder Next", "4-bit"),
+    "glm-4.7-flash-4bit": ("GLM 4.7 Flash", "4-bit"),
 }
 
 DECODE_TABLE_COLUMNS = {

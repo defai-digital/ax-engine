@@ -1283,7 +1283,8 @@ fn load_glm_mla_attention_weights(
 /// Concatenate two weight matrices along the output (row) dimension.
 ///
 /// Used to fuse parallel projections that read the same input (e.g. q_a_proj
-/// and kv_a_proj in GLM MLA), replacing two matmul kernel launches with one.
+/// and kv_a_proj in GLM MLA, or Q/K/V in standard full-attention), replacing
+/// multiple matmul kernel launches with one.
 fn concat_quantized_weight_rows(
     a: &QuantizedWeight,
     b: &QuantizedWeight,
@@ -1292,13 +1293,13 @@ fn concat_quantized_weight_rows(
         (Some(sa), Some(sb)) => {
             if a.group_size != b.group_size {
                 return Err(WeightLoadError::InvalidLayer(format!(
-                    "cannot fuse quantized GLM MLA qa/kv projections with different group sizes: {} vs {}",
+                    "cannot fuse quantized projections with different group sizes: {} vs {}",
                     a.group_size, b.group_size
                 )));
             }
             if a.bits != b.bits {
                 return Err(WeightLoadError::InvalidLayer(format!(
-                    "cannot fuse quantized GLM MLA qa/kv projections with different bit widths: {} vs {}",
+                    "cannot fuse quantized projections with different bit widths: {} vs {}",
                     a.bits, b.bits
                 )));
             }
@@ -1307,7 +1308,7 @@ fn concat_quantized_weight_rows(
                 (None, None) => None,
                 _ => {
                     return Err(WeightLoadError::InvalidLayer(
-                        "cannot fuse GLM MLA qa/kv projections where only one has quantization biases"
+                        "cannot fuse projections where only one has quantization biases"
                             .to_string(),
                     ));
                 }
@@ -1317,8 +1318,7 @@ fn concat_quantized_weight_rows(
         (None, None) => (None, None),
         _ => {
             return Err(WeightLoadError::InvalidLayer(
-                "cannot fuse GLM MLA qa/kv projections where only one has quantization scales"
-                    .to_string(),
+                "cannot fuse projections where only one has quantization scales".to_string(),
             ));
         }
     };

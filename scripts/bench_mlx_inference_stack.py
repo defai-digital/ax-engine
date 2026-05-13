@@ -49,6 +49,9 @@ Optional llama.cpp Metal baseline:
 The llama.cpp row is a shape-compatible external GGUF baseline. `llama-bench`
 does not consume the MLX random-token prompt JSON, so it is not a prompt-hash
 parity baseline and must not be used as repo-owned MLX throughput evidence.
+Metal backend is selected at llama.cpp build time and verified at parse time
+via the row's `backends` field; `--llama-cpp-extra-args` is for flags like
+`-fa 1` (flash attention), not for selecting the backend.
 """
 from __future__ import annotations
 
@@ -1529,18 +1532,19 @@ def _llama_cpp_trial_rows(row: dict[str, Any], metric_name: str) -> list[dict[st
     samples = row.get("samples_ts")
     if not isinstance(samples, list):
         return []
-    return [
-        {
-            "trial": index + 1,
-            metric_name: float(value),
-            "sample_ns": int(row.get("samples_ns", [None] * len(samples))[index])
-            if isinstance(row.get("samples_ns"), list)
-            and index < len(row.get("samples_ns"))
-            and row.get("samples_ns")[index] is not None
-            else None,
-        }
-        for index, value in enumerate(samples)
-    ]
+    raw_ns = row.get("samples_ns")
+    sample_ns = raw_ns if isinstance(raw_ns, list) else []
+    trials = []
+    for index, value in enumerate(samples):
+        ns = sample_ns[index] if index < len(sample_ns) and sample_ns[index] is not None else None
+        trials.append(
+            {
+                "trial": index + 1,
+                metric_name: float(value),
+                "sample_ns": int(ns) if ns is not None else None,
+            }
+        )
+    return trials
 
 
 def parse_llama_cpp_bench_json(
@@ -1575,27 +1579,26 @@ def parse_llama_cpp_bench_json(
         raise RuntimeError(f"llama-bench JSON missing tg row for n_gen={generation_tokens}")
 
     backends = str(prefill_row.get("backends") or decode_row.get("backends") or "")
-    if require_metal and "metal" not in backends.lower():
-        raise RuntimeError(f"llama-bench row did not report Metal backend: {backends!r}")
+    if require_metal:
+        tokens = {token.strip().lower() for token in backends.split(",") if token.strip()}
+        if "metal" not in tokens and "mtl" not in tokens:
+            raise RuntimeError(
+                f"llama-bench row did not report Metal/MTL backend: {backends!r}"
+            )
 
     prefill_trials = _llama_cpp_trial_rows(prefill_row, "prefill_tok_s")
     decode_trials = _llama_cpp_trial_rows(decode_row, "decode_tok_s")
-    trial_count = max(len(prefill_trials), len(decode_trials))
-    trials = []
-    for index in range(trial_count):
-        trial: dict[str, Any] = {"trial": index + 1}
-        if index < len(prefill_trials):
-            trial["prefill_tok_s"] = prefill_trials[index]["prefill_tok_s"]
-            trial["prefill_sample_ns"] = prefill_trials[index]["sample_ns"]
-        if index < len(decode_trials):
-            trial["decode_tok_s"] = decode_trials[index]["decode_tok_s"]
-            trial["decode_sample_ns"] = decode_trials[index]["sample_ns"]
-        trials.append(trial)
 
     return {
         "prefill_tok_s": _llama_cpp_metric_from_row(prefill_row),
         "decode_tok_s": _llama_cpp_metric_from_row(decode_row),
-        "trials": trials,
+        "prefill_trials": prefill_trials,
+        "decode_trials": decode_trials,
+        "trials_pairing_note": (
+            "llama-bench runs pp (prefill) and tg (decode) as independent test "
+            "invocations. prefill_trials[i] and decode_trials[i] are NOT from the "
+            "same end-to-end run; do not compute per-trial joint statistics."
+        ),
         "llama_cpp": {
             "build_commit": prefill_row.get("build_commit"),
             "build_number": prefill_row.get("build_number"),
@@ -1614,8 +1617,29 @@ def parse_llama_cpp_bench_json(
             "flash_attn": prefill_row.get("flash_attn"),
             "devices": prefill_row.get("devices"),
         },
-        "raw_rows": rows,
+        "raw_rows": [prefill_row, decode_row],
     }
+
+
+def _attach_llama_cpp_ttft(
+    cell: dict[str, Any],
+    *,
+    prompt_tokens: int,
+    source: str,
+) -> None:
+    values = []
+    for trial in cell.get("prefill_trials", []):
+        if not isinstance(trial, dict):
+            continue
+        prefill_tok_s = float(trial.get("prefill_tok_s", 0.0))
+        if prefill_tok_s <= 0.0:
+            continue
+        ttft_ms = prompt_tokens / prefill_tok_s * 1000.0
+        trial["ttft_ms"] = ttft_ms
+        values.append(ttft_ms)
+    if values:
+        cell["ttft_ms"] = summarize_values(values)
+        cell["ttft_source"] = source
 
 
 def collect_llama_cpp_device_evidence(binary: Path) -> str | None:
@@ -1654,6 +1678,14 @@ def run_llama_cpp_metal_benchmark(
     if not gguf.exists():
         raise RuntimeError(f"llama.cpp GGUF model not found: {gguf}")
 
+    delay_seconds = max(0, round(cooldown))
+    if cooldown > 0 and float(delay_seconds) != float(cooldown):
+        print(
+            f"  [llama.cpp/metal] note: --delay rounds float cooldown={cooldown} "
+            f"to integer seconds ({delay_seconds})",
+            file=sys.stderr,
+        )
+
     cmd = [
         str(binary),
         "-m",
@@ -1665,7 +1697,7 @@ def run_llama_cpp_metal_benchmark(
         "-r",
         str(repetitions),
         "--delay",
-        str(int(cooldown)),
+        str(delay_seconds),
         "-ngl",
         str(n_gpu_layers),
         "-o",
@@ -1703,7 +1735,9 @@ def run_llama_cpp_metal_benchmark(
         "n_gpu_layers": n_gpu_layers,
         "prefill_tok_s": metrics["prefill_tok_s"],
         "decode_tok_s": metrics["decode_tok_s"],
-        "trials": metrics["trials"],
+        "prefill_trials": metrics["prefill_trials"],
+        "decode_trials": metrics["decode_trials"],
+        "trials_pairing_note": metrics["trials_pairing_note"],
         "llama_cpp": metrics["llama_cpp"],
         "external_baseline_role": "gguf_non_mlx_metal_reference",
         "claim_boundary": (
@@ -1715,7 +1749,7 @@ def run_llama_cpp_metal_benchmark(
     device_evidence = collect_llama_cpp_device_evidence(binary)
     if device_evidence:
         cell["llama_cpp_device_evidence"] = device_evidence
-    attach_derived_ttft_ms(
+    _attach_llama_cpp_ttft(
         cell,
         prompt_tokens=prompt_tokens,
         source="derived_from_llama_cpp_pp_tok_s",
@@ -1804,6 +1838,8 @@ def attach_mlx_lm_baselines(results: list[dict[str, Any]]) -> None:
         if cell.get("engine") == "mlx_lm"
     }
 
+    mlx_lm_present = bool(baselines)
+
     for cell in results:
         if cell.get("engine") == "mlx_lm":
             cell["baseline"] = {
@@ -1812,6 +1848,15 @@ def attach_mlx_lm_baselines(results: list[dict[str, Any]]) -> None:
                 "role": "primary_reference",
                 "prompt_contract": cell.get("prompt_contract"),
                 "timing_scope": cell.get("timing_scope"),
+            }
+            continue
+
+        if not mlx_lm_present:
+            cell["baseline"] = {
+                "engine": "mlx_lm",
+                "method": "mlx_lm.benchmark",
+                "role": "absent_skipped_via_cli",
+                "note": "Row produced under --skip-mlx-lm; no in-run baseline attached.",
             }
             continue
 
@@ -1978,6 +2023,16 @@ def main() -> None:
     )
     parser.add_argument("--skip-ax-engine", action="store_true")
     parser.add_argument(
+        "--skip-mlx-lm",
+        action="store_true",
+        help=(
+            "Skip the mlx_lm.benchmark baseline. Useful when the run only "
+            "needs an external baseline (e.g. llama.cpp Metal) and the "
+            "mlx_lm rows have already been captured elsewhere. Conflicts "
+            "with --reuse-reference-results-from."
+        ),
+    )
+    parser.add_argument(
         "--no-build-ax-engine",
         action="store_true",
         help=(
@@ -2112,7 +2167,9 @@ def main() -> None:
         "--llama-cpp-extra-args",
         help=(
             "Extra arguments appended to llama-bench, for example "
-            "'--device Metal'. Keep empty for the default Metal-enabled build behavior."
+            "'-fa 1' (flash attention) or '-ctk q8_0 -ctv q8_0' (kv quantization). "
+            "The Metal backend is selected at llama.cpp build time and verified at "
+            "parse time via the row's 'backends' field; do not try to pass it here."
         ),
     )
     args = parser.parse_args()
@@ -2126,6 +2183,8 @@ def main() -> None:
         parser.error("--reuse-reference-results-from conflicts with --mlx-swift-lm-command")
     if bool(args.llama_cpp_bench) != bool(args.llama_cpp_gguf):
         parser.error("--llama-cpp-bench and --llama-cpp-gguf must be provided together")
+    if args.skip_mlx_lm and args.reuse_reference_results_from:
+        parser.error("--skip-mlx-lm conflicts with --reuse-reference-results-from")
     if args.prefill_scaling_output and not args.output:
         parser.error("--prefill-scaling-output requires --output")
     if args.gateddelta_prefill_profile_report_output and not args.output:
@@ -2238,7 +2297,7 @@ def main() -> None:
 
     procs: list[subprocess.Popen[Any]] = []
     try:
-        if not args.reuse_reference_results_from:
+        if not args.reuse_reference_results_from and not args.skip_mlx_lm:
             for prompt_doc in prompts:
                 prompt_tokens = int(prompt_doc["prompt_tokens"])
                 results.append(
