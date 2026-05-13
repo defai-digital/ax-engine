@@ -908,6 +908,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 "crossover_decisions": {
                     "ax_mlx_prefill_steps": 1,
                     "ax_mlx_prefill_wall_us": 100,
+                    "ax_mlx_prefill_forward_wall_us": 70,
+                    "ax_mlx_prefill_prefix_cache_wall_us": 20,
+                    "ax_mlx_prefill_generation_state_wall_us": 5,
+                    "ax_mlx_prefill_eval_barriers": 1,
+                    "ax_mlx_prefill_drain_async_evals": 2,
                     "ax_mlx_decode_steps": 2,
                     "ax_mlx_decode_wall_us": 80,
                     "ax_mlx_direct_pipeline_steps": 2,
@@ -922,6 +927,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(telemetry["ax_mlx_prefill_steps"], 1)
         self.assertEqual(telemetry["ax_mlx_prefill_wall_us"], 100)
+        self.assertEqual(telemetry["ax_mlx_prefill_forward_wall_us"], 70)
+        self.assertEqual(telemetry["ax_mlx_prefill_prefix_cache_wall_us"], 20)
+        self.assertEqual(telemetry["ax_mlx_prefill_generation_state_wall_us"], 5)
+        self.assertEqual(telemetry["ax_mlx_prefill_eval_barriers"], 1)
+        self.assertEqual(telemetry["ax_mlx_prefill_drain_async_evals"], 2)
         self.assertEqual(telemetry["ax_mlx_decode_steps"], 2)
         self.assertEqual(telemetry["ax_mlx_decode_wall_us"], 80)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_steps"], 2)
@@ -942,6 +952,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 {
                     "ax_mlx_telemetry": {
                         "ax_mlx_prefill_steps": 1,
+                        "ax_mlx_prefill_forward_wall_us": 30,
+                        "ax_mlx_prefill_prefix_cache_wall_us": 10,
+                        "ax_mlx_prefill_generation_state_wall_us": 1,
+                        "ax_mlx_prefill_eval_barriers": 1,
+                        "ax_mlx_prefill_drain_async_evals": 3,
                         "ax_mlx_decode_steps": 3,
                         "ax_mlx_decode_wall_us": 120,
                     }
@@ -949,6 +964,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             ]
         )
         self.assertEqual(summary["ax_mlx_prefill_steps"], 2)
+        self.assertEqual(summary["ax_mlx_prefill_forward_wall_us"], 100)
+        self.assertEqual(summary["ax_mlx_prefill_prefix_cache_wall_us"], 30)
+        self.assertEqual(summary["ax_mlx_prefill_generation_state_wall_us"], 6)
+        self.assertEqual(summary["ax_mlx_prefill_eval_barriers"], 2)
+        self.assertEqual(summary["ax_mlx_prefill_drain_async_evals"], 5)
         self.assertEqual(summary["ax_mlx_decode_steps"], 5)
         self.assertEqual(summary["ax_mlx_decode_wall_us"], 200)
         self.assertEqual(summary["ax_mlx_prefix_cache_hits"], 1)

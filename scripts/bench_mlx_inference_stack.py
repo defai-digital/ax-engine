@@ -156,6 +156,11 @@ AX_NGRAM_ACCEPT_RATE_KEY = "ax_ngram_accept_rate_micros"
 AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_prefill_steps",
     "ax_mlx_prefill_wall_us",
+    "ax_mlx_prefill_forward_wall_us",
+    "ax_mlx_prefill_prefix_cache_wall_us",
+    "ax_mlx_prefill_generation_state_wall_us",
+    "ax_mlx_prefill_eval_barriers",
+    "ax_mlx_prefill_drain_async_evals",
     "ax_mlx_decode_steps",
     "ax_mlx_decode_wall_us",
     "ax_mlx_direct_bootstrap_steps",
@@ -2183,6 +2188,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-linear-attention-profile",
+        action="store_true",
+        help=(
+            "Enable opt-in linear-attention stage profiling for AX rows without "
+            "requiring the long-prompt gated-delta profile matrix. This inserts "
+            "timing barriers and is for diagnosis, not headline throughput."
+        ),
+    )
+    parser.add_argument(
         "--gateddelta-prefill-profile",
         action="store_true",
         help=(
@@ -2464,7 +2478,9 @@ def main() -> None:
                         args.experimental_mlx_kv_compression_min_context_tokens
                     ),
                     gemma4_moe_profile=args.ax_gemma4_moe_profile,
-                    linear_attention_profile=args.gateddelta_prefill_profile,
+                    linear_attention_profile=(
+                        args.gateddelta_prefill_profile or args.ax_linear_attention_profile
+                    ),
                 )
                 procs.append(proc)
                 if not wait_for_server(
@@ -2583,7 +2599,9 @@ def main() -> None:
         },
         "prefix_reuse_evidence": summarize_prefix_reuse_evidence(results),
         "ax_gemma4_moe_profile": bool(args.ax_gemma4_moe_profile),
-        "ax_linear_attention_profile": bool(args.gateddelta_prefill_profile),
+        "ax_linear_attention_profile": bool(
+            args.gateddelta_prefill_profile or args.ax_linear_attention_profile
+        ),
         "results": results,
     }
     if gateddelta_prefill_profile_contract:

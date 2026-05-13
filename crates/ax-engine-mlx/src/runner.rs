@@ -792,6 +792,9 @@ fn kv_layer_windows_from_config(cfg: &ModelConfig) -> Vec<Option<usize>> {
 struct DecodeTelemetry {
     prefill_steps: u32,
     prefill_wall_us: u32,
+    prefill_forward_wall_us: u32,
+    prefill_prefix_cache_wall_us: u32,
+    prefill_generation_state_wall_us: u32,
     decode_steps: u32,
     decode_wall_us: u32,
     direct_bootstrap_steps: u32,
@@ -815,6 +818,21 @@ impl DecodeTelemetry {
     fn record_prefill(&mut self, wall_us: u32) {
         self.prefill_steps = self.prefill_steps.saturating_add(1);
         self.prefill_wall_us = self.prefill_wall_us.saturating_add(wall_us);
+    }
+
+    fn record_prefill_breakdown(
+        &mut self,
+        forward_wall_us: u32,
+        prefix_cache_wall_us: u32,
+        generation_state_wall_us: u32,
+    ) {
+        self.prefill_forward_wall_us = self.prefill_forward_wall_us.saturating_add(forward_wall_us);
+        self.prefill_prefix_cache_wall_us = self
+            .prefill_prefix_cache_wall_us
+            .saturating_add(prefix_cache_wall_us);
+        self.prefill_generation_state_wall_us = self
+            .prefill_generation_state_wall_us
+            .saturating_add(generation_state_wall_us);
     }
 
     fn record_decode(&mut self, wall_us: u32) {
@@ -861,6 +879,15 @@ impl DecodeTelemetry {
     fn merge_from(&mut self, other: Self) {
         self.prefill_steps = self.prefill_steps.saturating_add(other.prefill_steps);
         self.prefill_wall_us = self.prefill_wall_us.saturating_add(other.prefill_wall_us);
+        self.prefill_forward_wall_us = self
+            .prefill_forward_wall_us
+            .saturating_add(other.prefill_forward_wall_us);
+        self.prefill_prefix_cache_wall_us = self
+            .prefill_prefix_cache_wall_us
+            .saturating_add(other.prefill_prefix_cache_wall_us);
+        self.prefill_generation_state_wall_us = self
+            .prefill_generation_state_wall_us
+            .saturating_add(other.prefill_generation_state_wall_us);
         self.decode_steps = self.decode_steps.saturating_add(other.decode_steps);
         self.decode_wall_us = self.decode_wall_us.saturating_add(other.decode_wall_us);
         self.direct_bootstrap_steps = self
@@ -903,6 +930,18 @@ impl DecodeTelemetry {
         let entries = [
             ("ax_mlx_prefill_steps", self.prefill_steps),
             ("ax_mlx_prefill_wall_us", self.prefill_wall_us),
+            (
+                "ax_mlx_prefill_forward_wall_us",
+                self.prefill_forward_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_prefix_cache_wall_us",
+                self.prefill_prefix_cache_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_generation_state_wall_us",
+                self.prefill_generation_state_wall_us,
+            ),
             ("ax_mlx_decode_steps", self.decode_steps),
             ("ax_mlx_decode_wall_us", self.decode_wall_us),
             ("ax_mlx_direct_bootstrap_steps", self.direct_bootstrap_steps),
@@ -2127,10 +2166,8 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Mean => None,
         };
         let encode_started = Instant::now();
-        let (hidden, actual_lens) = self.embedding_batch_forward(
-            batch,
-            target_positions.as_deref(),
-        );
+        let (hidden, actual_lens) =
+            self.embedding_batch_forward(batch, target_positions.as_deref());
         let encode_us = elapsed_us(encode_started);
 
         // Last/Cls: hidden is [B, H] (already extracted).
@@ -2361,11 +2398,7 @@ impl MlxRunner {
     /// The compiled closure is shape-specific (per `seq_len`,
     /// `target_position`) — first call at a new shape pays the trace cost
     /// once, subsequent calls hit the cache.
-    fn embedding_forward(
-        &self,
-        token_ids: &[u32],
-        target_position: Option<usize>,
-    ) -> MlxArray {
+    fn embedding_forward(&self, token_ids: &[u32], target_position: Option<usize>) -> MlxArray {
         let disable_compile = std::env::var("AX_EMBED_NO_COMPILE").is_ok();
         if disable_compile {
             return crate::model::forward_for_embedding(
@@ -2456,15 +2489,12 @@ impl MlxRunner {
                 target_positions,
             );
         }
-        let (hidden, batch, max_len, actual_lens) =
-            crate::model::build_embedding_batch_hidden_pub(
-                &self.cfg,
-                &self.weights,
-                batch_token_ids,
-            );
-        let target_positions_vec: Vec<usize> = target_positions
-            .expect("checked above")
-            .to_vec();
+        let (hidden, batch, max_len, actual_lens) = crate::model::build_embedding_batch_hidden_pub(
+            &self.cfg,
+            &self.weights,
+            batch_token_ids,
+        );
+        let target_positions_vec: Vec<usize> = target_positions.expect("checked above").to_vec();
         let key: EmbedBatchCompileKey = (batch, max_len, Some(target_positions_vec.clone()));
         let mut cache = self
             .embed_batch_compile_cache
@@ -2603,6 +2633,7 @@ impl MlxRunner {
                     state.cached_prefill_output_token = None;
                 }
                 let repetition_history = state.repetition_history(prefill_tokens, sampling);
+                let prefill_forward_started = Instant::now();
                 let tok = chunked_prefill(
                     &self.cfg,
                     &self.weights,
@@ -2612,12 +2643,14 @@ impl MlxRunner {
                     MlxSamplingRequest::new(sampling, &repetition_history),
                     &mut state.rng,
                 );
+                let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
                 let prefill_token_count = prefill_tokens.len();
                 if let Some(tokens) = full_recompute_tokens {
                     state.prompt_prefix_tokens = tokens;
                 } else {
                     extend_prompt_prefix_tokens(&mut state, item, token_ids);
                 }
+                let prefix_cache_started = Instant::now();
                 prefix_cache.merge_from(
                     self.store_prompt_prefix_snapshots(
                         model_id,
@@ -2628,12 +2661,16 @@ impl MlxRunner {
                             .filter(|_| is_greedy),
                     ),
                 );
+                let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
+                let mut prefill_generation_state_wall_us = 0;
                 if prefill_completes_prompt {
+                    let generation_state_started = Instant::now();
                     kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
                         &mut state,
                         max_output,
                         kv_compression_layer_eligible,
                     );
+                    prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                 }
 
                 // Each non-final chunk in chunked_prefill calls async_eval; only the
@@ -2647,6 +2684,11 @@ impl MlxRunner {
                 state
                     .decode_telemetry
                     .record_prefill(elapsed_us(prefill_started));
+                state.decode_telemetry.record_prefill_breakdown(
+                    prefill_forward_wall_us,
+                    prefill_prefix_cache_wall_us,
+                    prefill_generation_state_wall_us,
+                );
                 prefill_completes_prompt.then_some(tok)
             }
             ExecutionMode::Decode => {
@@ -2689,7 +2731,9 @@ impl MlxRunner {
         let decode_telemetry = state.decode_telemetry;
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
         let linear_attention_profile = take_linear_attention_profile_snapshot();
-        state.decode_profile.merge_from(take_decode_profile_snapshot());
+        state
+            .decode_profile
+            .merge_from(take_decode_profile_snapshot());
         let decode_profile = state.decode_profile;
         {
             let force_shadow_sync = is_prefill
@@ -3707,9 +3751,7 @@ fn validate_glm4_moe_lite_manifest(manifest: &NativeModelManifest) -> Result<(),
         ));
     }
     let n_group = manifest.glm_router.n_group.ok_or_else(|| {
-        MlxRunnerError::UnsupportedFeature(
-            "glm4_moe_lite requires glm_router.n_group".to_string(),
-        )
+        MlxRunnerError::UnsupportedFeature("glm4_moe_lite requires glm_router.n_group".to_string())
     })?;
     let topk_group = manifest.glm_router.topk_group.ok_or_else(|| {
         MlxRunnerError::UnsupportedFeature(
@@ -3734,9 +3776,7 @@ fn validate_glm4_moe_lite_manifest(manifest: &NativeModelManifest) -> Result<(),
     // would silently slip past the divisibility check and then crash on the
     // group-size assert. Require the fields explicitly here.
     let expert_count = manifest.moe.expert_count.ok_or_else(|| {
-        MlxRunnerError::UnsupportedFeature(
-            "glm4_moe_lite requires moe.expert_count".to_string(),
-        )
+        MlxRunnerError::UnsupportedFeature("glm4_moe_lite requires moe.expert_count".to_string())
     })?;
     if manifest.moe.experts_per_token.is_none() {
         return Err(MlxRunnerError::UnsupportedFeature(
@@ -5651,6 +5691,9 @@ mod tests {
         let mut telemetry = DecodeTelemetry::default();
 
         telemetry.record_prefill(100);
+        telemetry.record_prefill_breakdown(70, 20, 5);
+        telemetry.record_prefill_eval_barrier();
+        telemetry.record_prefill_drain_async_evals(2);
         telemetry.record_decode(40);
         telemetry.record_direct_bootstrap(7);
         telemetry.record_direct_pipeline(11);
@@ -5671,6 +5714,17 @@ mod tests {
 
         assert_eq!(decisions.get("ax_mlx_prefill_steps"), Some(&1));
         assert_eq!(decisions.get("ax_mlx_prefill_wall_us"), Some(&100));
+        assert_eq!(decisions.get("ax_mlx_prefill_forward_wall_us"), Some(&70));
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_prefix_cache_wall_us"),
+            Some(&20)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_generation_state_wall_us"),
+            Some(&5)
+        );
+        assert_eq!(decisions.get("ax_mlx_prefill_eval_barriers"), Some(&1));
+        assert_eq!(decisions.get("ax_mlx_prefill_drain_async_evals"), Some(&2));
         assert_eq!(decisions.get("ax_mlx_decode_steps"), Some(&1));
         assert_eq!(decisions.get("ax_mlx_decode_wall_us"), Some(&40));
         assert_eq!(decisions.get("ax_mlx_direct_bootstrap_steps"), Some(&1));
