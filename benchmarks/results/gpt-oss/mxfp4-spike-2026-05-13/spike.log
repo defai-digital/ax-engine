@@ -1,0 +1,82 @@
+shards: ['model-00000-of-00002.safetensors', 'model-00001-of-00002.safetensors', 'model-00002-of-00002.safetensors']
+sampling layers=[0, 2, 3, 14] experts=[2, 5, 6, 22]
+loading mlx-lm reference (one-time)…
+Fetching 12 files:   0%|          | 0/12 [00:00<?, ?it/s]Fetching 12 files: 100%|██████████| 12/12 [00:00<00:00, 171196.08it/s]
+loaded in 2.50s
+  layer=  0 expert=  2 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert=  5 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert=  6 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert= 22 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert=  2 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert=  5 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert=  6 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert= 22 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert=  2 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert=  5 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert=  6 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  0 expert= 22 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert=  2 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert=  5 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert=  6 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert= 22 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert=  2 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert=  5 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert=  6 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert= 22 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert=  2 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert=  5 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert=  6 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  2 expert= 22 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert=  2 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert=  5 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert=  6 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert= 22 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert=  2 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert=  5 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert=  6 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert= 22 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert=  2 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert=  5 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert=  6 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer=  3 expert= 22 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert=  2 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert=  5 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert=  6 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert= 22 gate_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert=  2 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert=  5 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert=  6 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert= 22 up_proj    shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert=  2 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert=  5 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert=  6 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+  layer= 14 expert= 22 down_proj  shape=(2880, 2880) max_abs=0 mean_abs=0
+{
+  "model_id": "openai/gpt-oss-20b",
+  "snapshot_dir": "/Users/akiralam/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee",
+  "shards": [
+    "model-00000-of-00002.safetensors",
+    "model-00001-of-00002.safetensors",
+    "model-00002-of-00002.safetensors"
+  ],
+  "sampled_layers": [
+    0,
+    2,
+    3,
+    14
+  ],
+  "sampled_experts": [
+    2,
+    5,
+    6,
+    22
+  ],
+  "samples_total": 48,
+  "aggregate_max_abs_diff": 0.0,
+  "aggregate_mean_abs_diff": 0.0,
+  "pass_bar": 0.001,
+  "passed": true,
+  "mlx_lm_load_seconds": 2.5041656668763608,
+  "spike_finding": "mlx-core supports mx.dequantize(..., mode='mxfp4') natively; ax-engine MXFP4 loader is a safetensors\u2192mlx-array adapter, not a new kernel."
+}
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/gpt-oss/mxfp4-spike-2026-05-13/mxfp4_dequant_check.json

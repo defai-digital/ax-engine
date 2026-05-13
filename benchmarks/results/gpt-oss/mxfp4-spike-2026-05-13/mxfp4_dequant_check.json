@@ -1,0 +1,656 @@
+{
+  "summary": {
+    "model_id": "openai/gpt-oss-20b",
+    "snapshot_dir": "/Users/akiralam/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee",
+    "shards": [
+      "model-00000-of-00002.safetensors",
+      "model-00001-of-00002.safetensors",
+      "model-00002-of-00002.safetensors"
+    ],
+    "sampled_layers": [
+      0,
+      2,
+      3,
+      14
+    ],
+    "sampled_experts": [
+      2,
+      5,
+      6,
+      22
+    ],
+    "samples_total": 48,
+    "aggregate_max_abs_diff": 0.0,
+    "aggregate_mean_abs_diff": 0.0,
+    "pass_bar": 0.001,
+    "passed": true,
+    "mlx_lm_load_seconds": 2.5041656668763608,
+    "spike_finding": "mlx-core supports mx.dequantize(..., mode='mxfp4') natively; ax-engine MXFP4 loader is a safetensors\u2192mlx-array adapter, not a new kernel."
+  },
+  "per_sample": [
+    {
+      "layer": 0,
+      "expert": 2,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 5,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 6,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 22,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 2,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 5,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 6,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 22,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 2,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 5,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 6,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 0,
+      "expert": 22,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 2,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 5,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 6,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 22,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 2,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 5,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 6,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 22,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 2,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 5,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 6,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 2,
+      "expert": 22,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 2,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 5,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 6,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 22,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 2,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 5,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 6,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 22,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 2,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 5,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 6,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 3,
+      "expert": 22,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 2,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 5,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 6,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 22,
+      "tensor": "gate_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 2,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 5,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 6,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 22,
+      "tensor": "up_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 2,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 5,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 6,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    },
+    {
+      "layer": 14,
+      "expert": 22,
+      "tensor": "down_proj",
+      "shape": [
+        2880,
+        2880
+      ],
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "ref_dtype": "mlx.core.bfloat16",
+      "own_dtype": "mlx.core.bfloat16"
+    }
+  ]
+}
