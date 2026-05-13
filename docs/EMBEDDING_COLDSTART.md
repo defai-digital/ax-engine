@@ -68,19 +68,32 @@ directly to the destination via the unified-memory page cache.
 
 ## Expected outcome and decision rule
 
-Warm-cache numbers from the 2026-05-12 measurement
-(`benchmarks/results/embedding/2026-05-12-r4-mmap-loader/`):
+Two measurement runs across two days produced **conflicting warm-cache
+numbers**, which is why the env var is still opt-in:
 
-| Model | safetensors size | C loader | mmap (R4) | warm Δ |
-|---|---:|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 633 MB | 143 ms | 127 ms | -11% |
-| Qwen3-Embedding 4B 4-bit | 2.2 GB | 197 ms | 139 ms | -30% |
-| Qwen3-Embedding 8B 4-bit DWQ | 4.3 GB | 261 ms | 155 ms | -41% |
+2026-05-12 run (`benchmarks/results/embedding/2026-05-12-r4-mmap-loader/`):
+the mmap loader was faster (`-11% / -30% / -41%` on `0.6B / 4B / 8B`).
 
-True-cold Δ should be **at least as large** in relative terms (the C
-loader's `read()` pipeline does more userspace work that the OS can't
-hide on cold disk). Cold-disk absolute times will be larger for both
-paths — expect 1–3 seconds for the 8B model on M-series NVMe.
+2026-05-13 run (`benchmarks/results/embedding/2026-05-13-readme/`):
+the mmap loader was **slower** (`+32% / +78% / +106%` on the same three
+models).
+
+The discrepancy is most likely measurement-order dependent: when the C
+loader runs first and primes the OS page cache, the mmap loader inherits
+the hot cache and the absolute work it adds (Rust-side JSON header parse
++ per-tensor `mlx_array_new_data` copy) is what's measured. When the
+mmap loader runs first, MLX's parallel-`read()` C loader has to compete
+with cold disk and looks worse.
+
+The fair comparison is **true-cold for both paths** — drop the page
+cache between every run. On Apple Silicon NVMe the C loader's
+`ParallelFileReader` is well tuned; the mmap loader's theoretical win
+(no userspace heap buffer for the safetensors file) only shows up when
+the kernel can issue read-ahead in parallel with MLX consuming the
+already-mapped pages.
+
+Cold-disk absolute times will be larger for both paths — expect 1–3
+seconds for the 8B model on M-series NVMe.
 
 **Default-on criteria** (when to flip `AX_MMAP_WEIGHTS=1` to the
 runtime default):

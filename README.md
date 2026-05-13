@@ -417,207 +417,71 @@ are not mixed into this table.
 | GLM 4.7 Flash | 4-bit | 128 | 247.8 | 131.8 (-46.8%) | **137.2 (-47.5%)** |
 |        |        | 512 | 312.6 | 202.6 (-35.2%) | **202.7 (-36.3%)** |
 
-### Embedding throughput (tok/s)
+### Embedding throughput
 
-For embeddings the right question is not "what backend?" — it is **how many
-sentences per call**. Batching collapses the Python interpreter loop into one
-Rust call and lets MLX amortize one forward pass and one GPU sync across all
-sentences in the request. On Qwen3-Embedding models the batched path is
-**5–8× faster per sentence** than calling once per sentence in a Python
-`for` loop. Backend choice (Python in-process, Rust in-process, or HTTP) only
-makes a small additional difference; *not* batching is what costs an order
-of magnitude.
+ax-engine matches `mlx-lm` on Qwen3-Embedding 4B and 8B and is
+within ~10% on 0.6B (small-model Python/PyO3 overhead). Use the
+batched API — `embed_batch_array` in Python, `embed_batch_flat`
+in Rust, or `{"input": [[ids], ...]}` over HTTP. Single-sentence
+loops are 2–3× slower in both backends.
 
-ax-engine exposes the batched path through three equivalent entry points:
+Source: `benchmarks/results/embedding/2026-05-13-readme/`.
 
-- **Python:** `session.embed_batch_array(list_of_sentences, ...)` returns
-  a NumPy `(B, H)` `float32` ndarray ready for vector-DB / faiss / HNSW
-  ingest (`embed_batch_bytes` is also available for callers that want
-  raw f32 bytes).
-- **Rust:** `EngineSession::embed_batch_flat(&batch, pooling, normalize)`
-  returns one contiguous `EmbeddingMatrix { data, batch_size, hidden_size }`
-  with zero PyO3 boundary cost. This is the canonical fast path for Rust
-  callers.
-- **HTTP / serving:** two equivalent ways to send a batch.
-  1. **Explicit batch in one request** — POST `/v1/embeddings` with
-     `{"input": [[id, id, ...], [id, id, ...]]}`. The response's `data`
-     array contains one entry per input, in the same order. This bypasses
-     the microbatcher (the request is already pre-batched) and goes
-     straight to `embed_batch_flat`.
-  2. **Concurrent single-sentence requests** — many clients call
-     `{"input": [id, id, ...]}` concurrently and let
-     `ax-engine-server`'s `EmbeddingMicroBatcher` coalesce them within a
-     short window into one batched runner call. Use this when the client
-     can't see the batch boundary up front (e.g. one async task per doc).
+#### In-process batched (sustained, hot-loop)
 
-The tables below show what each of those paths buys you on the same Qwen3
-embedding corpus (10 sentences, lengths `[10,15,13,8,3,8,10,8,10,10]`, last-
-token pooling, l2-normalized).
+| Model | mlx-lm | ax-engine-py | ax-engine Rust |
+|---|---:|---:|---:|
+| Qwen3-Embedding 0.6B 8-bit | 9,828 | 8,729 | 8,719 |
+| Qwen3-Embedding 4B 4-bit | 2,336 | 2,355 | 2,375 |
+| Qwen3-Embedding 8B 4-bit DWQ | 1,449 | 1,448 | 1,422 |
 
-#### Sustained batched throughput (one batched call per trial, no cooldown)
+Median tok/s, 5 warmup + 15 timed trials, no cooldown. 10-sentence
+corpus with lengths [10,15,13,8,3,8,10,8,10,10], `last` pooling,
+l2-normalized.
 
-This is the throughput a sustained workload (vector-DB ingest, per-document
-re-indexing, batch evaluation) sees. Each trial is one `embed_batch_*` call
-over the full 10-sentence corpus; numbers are medians across 15 timed reps
-with 5 warmup reps. Source:
-`benchmarks/results/embedding/2026-05-12-sustained-batched/`.
+#### HTTP serving (`/v1/embeddings`)
 
-| Model | mlx-lm batched | ax-engine-py batched | ax-engine Rust batched | AX-py vs mlx-lm | AX-Rust vs mlx-lm |
-|---|---:|---:|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 9,733 | 8,747 | **8,534** | ≈-10.1% | ≈-12.3% |
-| Qwen3-Embedding 4B 4-bit | 2,372 | 2,362 | **2,370** | -0.4% (tied) | -0.1% (tied) |
-| Qwen3-Embedding 8B 4-bit DWQ | 1,479 | 1,448 | **1,453** | -2.1% (tied) | -1.8% (tied) |
+Three serving contracts on the same 10-sentence corpus:
 
-Reading the rows:
+| Model | Sequential | Concurrent (microbatcher) | Batched POST |
+|---|---:|---:|---:|
+| Qwen3-Embedding 0.6B 8-bit | 332 | 1,966 | 4,046 |
+| Qwen3-Embedding 4B 4-bit | 239 | 1,202 | 1,784 |
+| Qwen3-Embedding 8B 4-bit DWQ | 186 | 946 | 1,180 |
 
-- **4B and 8B**: ax-engine is statistically tied with `mlx-lm` (within ~2%
-  noise) after the `mlx_compile`-based layer fusion landed in the embedding
-  forward path (`crates/ax-engine-mlx`).
-- **0.6B**: ax-engine is ~10% behind. At ~10 ms per batched call the per-call
-  fixed cost is a larger fraction of total wall time; this is small-model
-  binding-layer overhead, not a runtime / kernel deficit, and it disappears
-  on the 4B and 8B models where compute dominates.
-- **Python in-process vs Rust in-process**: within ~3% on every model. The
-  PyO3 boundary cost on a single batched call is small (~0.3 ms), so most
-  Python users do not need to switch to Rust to get sustained throughput.
-- **Rust direct** is the right path for tight embedding loops inside a Rust
-  application; see `crates/ax-engine-bench/examples/embed_rust_bench.rs`.
+- **Batched POST** `{"input": [[ids], ...]}` is the fastest path.
+- **Concurrent** single-input POSTs are coalesced server-side by
+  `EmbeddingMicroBatcher` (20 ms window in this measurement). Use
+  this when the caller can't pre-batch.
+- **Sequential** is the worst case — every POST round-trips through
+  the GPU on its own.
 
-#### Anti-pattern: one Python call per sentence
+#### Cold start (session construction)
 
-The same model and same corpus, but the caller does the Python `for`-loop
-itself (one `embed_bytes` / `model.model(x)` call per sentence) is the
-worst case for **both** backends. Each call pays a fresh Python frame
-setup, a PyO3 / MLX dispatch, and one GPU sync — costs that do not
-amortise. Batching collapses those costs to once per request for both
-`mlx-lm` and `ax-engine`. Numbers are medians of 5 trials with a 10 s
-cooldown between trials (the conservative benchmark profile). Source:
-`benchmarks/results/embedding/2026-05-12-full-fresh-readme-refresh/`.
+| Model | Default | `AX_MMAP_WEIGHTS=1` |
+|---|---:|---:|
+| Qwen3-Embedding 0.6B 8-bit | 161 ms | 213 ms (+32%) |
+| Qwen3-Embedding 4B 4-bit | 209 ms | 373 ms (+78%) |
+| Qwen3-Embedding 8B 4-bit DWQ | 321 ms | 662 ms (+106%) |
 
-| Model | mlx-lm loop | mlx-lm batched | ax-py loop | ax-py batched | mlx-lm speedup | ax-py speedup |
-|---|---:|---:|---:|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 1,477.7 | **2,804.7** | 1,386.0 | **2,620.1** | **1.9×** | **1.9×** |
-| Qwen3-Embedding 4B 4-bit | 477.0 | **1,434.0** | 536.5 | **1,484.4** | **3.0×** | **2.8×** |
-| Qwen3-Embedding 8B 4-bit DWQ | 319.1 | **871.5** | 302.6 | **868.0** | **2.7×** | **2.9×** |
+Default loader (`mlx_load_safetensors`) is the recommended choice
+on warm OS page cache. `AX_MMAP_WEIGHTS=1` selects a Rust mmap +
+`mlx_array_new_data` path that may be faster on true-cold disk
+(where the C loader's userspace `read()` pipeline costs more than
+mmap-on-demand) but is slower on warm cache because it adds JSON-
+header parsing and per-tensor registration overhead on top of the
+required copy. See
+[`docs/EMBEDDING_COLDSTART.md`](docs/EMBEDDING_COLDSTART.md)
+for the true-cold (post-`sudo purge`) measurement procedure and the
+default-on criteria.
 
-Both backends gain ~2–3× from batching, so this is *not* an
-AX-over-`mlx-lm` advantage — it is a general "stop calling per-
-sentence" observation that applies regardless of which backend you
-pick. The previous sustained-batched table is the AX-vs-mlx-lm
-comparison on the same request shape; this table is *batched-vs-loop*
-inside each backend to quantify the cost of the loop anti-pattern.
-Numbers here are below the sustained-batched table because each timed
-trial follows a 10 s GPU idle period; sustained loads do not pay that
-penalty.
+#### Reproducing
 
-#### Server-side embedding paths (`/v1/embeddings`)
+```bash
+bash scripts/bench_embedding_readme.sh
+```
 
-`ax-engine-server` accepts two equivalent request shapes:
-
-- **Explicit batch** — `{"input": [[ids], [ids], ...]}` returns one
-  embedding per input in `data[]`, in the same order. Goes directly to
-  `embed_batch_flat`, skipping the microbatcher (the request is already
-  pre-coalesced by the caller). Best when the caller has the batch up
-  front: vector-DB ingest, per-document indexing, batch evaluation.
-- **Concurrent single** — many clients post `{"input": [ids]}` in
-  parallel and let `EmbeddingMicroBatcher` coalesce them within a short
-  window into one batched runner call. Best when the batch boundary is
-  not visible to the client: per-document async workers, multi-tenant
-  request queues.
-
-Both are valid; they expose the same batched runner path through
-different serving contracts. On 2026-05-13 measurements (10-sentence
-corpus, 10 trials each), the explicit-batch POST is **+28% / +11% / +6%**
-faster than the concurrent-single path on 0.6B / 4B / 8B respectively —
-the win comes from avoiding the microbatcher collection window and from
-sending 1 HTTP request instead of 10. Source:
-`benchmarks/results/embedding/2026-05-13-http-batch-vs-concurrent/`.
-
-The microbatcher description below covers the concurrent-single path —
-it is the right serving model when callers can't pre-batch. Requests
-with different `pooling` / `normalize` options are grouped separately
-so semantics never change; serving callers get the batched-row
-per-sentence throughput automatically when their workload sends
-embeddings concurrently, with no client-side coalescing required.
-
-Tunables (server-side env vars):
-
-- `AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS` — collection window, default 2 ms
-  (the value used in the table below is 20 ms for predictable coalescing
-  under Python thread-pool jitter; production caller jitter is typically
-  smaller).
-- `AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH` — max coalesced batch, default 32.
-
-Each trial sends 10 sentences. *Sequential HTTP* sends them one POST at a
-time (HTTP equivalent of the anti-pattern); *concurrent HTTP* fires all 10
-in parallel and lets the server coalesce them. Source:
-`benchmarks/results/embedding/2026-05-12-microbatch-demo/`.
-
-| Model | mlx-lm (in-process) | ax-engine-http (sequential) | ax-engine-http (10 concurrent) | concurrent vs sequential | concurrent vs mlx-lm |
-|---|---:|---:|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 1,388 | 816 | **1,574** | +93% | ≈+13% |
-| Qwen3-Embedding 4B 4-bit | 475 | 356 | **1,021** | +187% | **+115%** |
-| Qwen3-Embedding 8B 4-bit DWQ | 320 | 237 | **792** | +234% | **+147%** |
-
-Reading the rows:
-
-- *Sequential HTTP* is slower than `mlx-lm` in-process for every model — the
-  gap is per-request HTTP serialization, not the runtime layer. It is the
-  HTTP version of the Python-loop anti-pattern.
-- *Concurrent HTTP* recovers the sequential loss and then **surpasses
-  in-process `mlx-lm`** for 4B (+115%) and 8B (+147%), because the server
-  runs one batched forward pass + one GPU sync across all 10 coalesced
-  requests.
-- Tooling that already submits embeddings concurrently (vector-DB ingest,
-  per-document indexing, async workers) gets this speedup for free with the
-  default server configuration; no client changes required.
-
-#### Cold start (serverless / scale-to-zero)
-
-`AX_MMAP_WEIGHTS=1` selects a memory-mapped safetensors loader for the
-`MlxRunner` weight load step. The mmap path parses the safetensors
-header in Rust and constructs `MlxArray`s from mapped regions, skipping
-the userspace heap buffer + `read()` pipeline that the upstream C
-loader does. Measured on warm OS page cache (median of 3 runs of
-`EngineSession::new`):
-
-| Model | safetensors size | C loader | mmap (R4) | improvement |
-|---|---:|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 633 MB | 143 ms | **127 ms** | -11% |
-| Qwen3-Embedding 4B 4-bit | 2.2 GB | 197 ms | **139 ms** | -30% |
-| Qwen3-Embedding 8B 4-bit DWQ | 4.3 GB | 261 ms | **155 ms** | -41% |
-
-Output is bit-exact with the C loader. Default remains the C loader
-while the borrowed-data variant matures; opt in with the env var on
-serverless / Lambda-style cold paths where each saved 100 ms matters.
-Source: `benchmarks/results/embedding/2026-05-12-r4-mmap-loader/`.
-
-#### Methodology
-
-All backends end each call with the embedding materialized as a Python value
-the caller can consume (Python `list[float]` or raw `bytes`); neither path
-leaves a result that lives only on GPU. This matters because calling
-`mx.eval(...)` without reading the array back hides the post-compute GPU→CPU
-transfer that real callers pay.
-
-- `mlx-lm` path: `model.model(x)` → last-token slice → `astype(float32)` →
-  l2-normalize → `.tolist()` (triggers eval + read-back).
-- `ax-engine-py` path:
-  - `session.embed_bytes(token_ids, ...)` — single-sentence raw f32 bytes.
-  - `session.embed_batch_bytes(batch, ...)` — batched, one bytes blob per
-    sentence.
-  - `session.embed_batch_array(batch, ...)` — batched, returns a NumPy
-    `(B, H)` `float32` ndarray (zero-copy view via `np.frombuffer`); the
-    recommended API for vector-DB / faiss / HNSW ingest pipelines.
-- `ax-engine` Rust path:
-  - `EngineSession::embed_batch(...)` — `Vec<Vec<f32>>` (legacy).
-  - `EngineSession::embed_batch_flat(...)` — one contiguous `EmbeddingMatrix
-    { data: Vec<f32>, batch_size, hidden_size }`, saves `B - 1` heap
-    allocations and is the right API for downstream zero-copy consumers.
-
-Same prompts, same pooling (`last`), same normalization (`true`), same
-warmup. The sustained-batched and anti-pattern tables share the same input
-corpus but differ in trial profile (no cooldown vs 10 s cooldown).
+Detailed methodology: [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
 
 ## Installation
 

@@ -1,0 +1,3 @@
+session_new_ms 212.90
+session_new_ms 195.20
+session_new_ms 236.41
