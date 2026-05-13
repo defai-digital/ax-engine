@@ -1,0 +1,43 @@
+{
+  "schema_version": "ax.engine_bench.manifest.v1",
+  "id": "chat_gpt_oss_20b_short",
+  "class": "scenario",
+  "scenario": "chat",
+  "model": {
+    "family": "gpt_oss",
+    "revision": "openai-gpt-oss-20b",
+    "quant": "mxfp4",
+    "tokenizer_revision": "o200k_harmony",
+    "chat_template_revision": "harmony-raw"
+  },
+  "runtime": {
+    "selected_backend": "mlx_lm_delegated",
+    "support_tier": "mlx_lm_delegated",
+    "resolution_policy": "allow_mlx_lm_delegated",
+    "deterministic": false,
+    "max_batch_tokens": 2048,
+    "flags": {
+      "prefix_cache": false
+    }
+  },
+  "sampling": {
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": 0,
+    "seed": 1234
+  },
+  "shape": {
+    "input_tokens_target": 256,
+    "output_tokens_target": 192,
+    "concurrency": 1
+  },
+  "source": {
+    "dataset_id": "ax-chat-v1",
+    "prompt_set": "short"
+  },
+  "checks": {
+    "expect_deterministic": false,
+    "require_prefix_reuse": false
+  },
+  "notes": "Phase A evidence scenario for openai/gpt-oss-20b via mlx_lm_delegated (PRD: GPT-OSS-SUPPORT-PRD.md, W1.3). DOES NOT EXECUTE under ax-engine-bench scenario today: crates/ax-engine-bench/src/main.rs::BackendAdapterManifest (line 11538) only enumerates LlamaCpp variants, and runtime_config_from_manifest (line 9311) requires backend_adapter for any non-Mlx selected_backend. Adding an MlxLmServerCompletion adapter variant is out of Phase A scope; tracked as a separate bench-tooling gap in benchmarks/results/gpt-oss/20b-2026-05-13/report.md §4.1. This manifest is retained as a documentation artifact and as the target shape for when that variant lands. Phase A perf+correctness evidence was captured via scripts/gpt_oss_inproc_evidence.py instead. Determinism is not claimed under delegated routing. Prompts must be pre-formatted in OpenAI harmony format. Companion runbook: ../../../.internal/planning/GPT-OSS-PHASE-A-RUNBOOK.md."
+}

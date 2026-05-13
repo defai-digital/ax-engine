@@ -1,0 +1,10 @@
+{"prompt": "<|start|>system<|message|>You are a helpful assistant.<|end|><|start|>user<|message|>What is 2 + 2? Answer with one number.<|end|><|start|>assistant"}
+{"prompt": "<|start|>system<|message|>You are a helpful assistant.<|end|><|start|>user<|message|>Name three primary colors.<|end|><|start|>assistant"}
+{"prompt": "<|start|>system<|message|>You are a helpful assistant.<|end|><|start|>user<|message|>What is the capital of France?<|end|><|start|>assistant"}
+{"prompt": "<|start|>system<|message|>You are a helpful assistant.<|end|><|start|>user<|message|>Translate \"hello\" to Spanish.<|end|><|start|>assistant"}
+{"prompt": "<|start|>system<|message|>You are a helpful assistant.<|end|><|start|>user<|message|>Write one sentence about the ocean.<|end|><|start|>assistant"}
+{"prompt": "<|start|>system<|message|>You are a helpful assistant.<|end|><|start|>user<|message|>List the first five prime numbers.<|end|><|start|>assistant"}
+{"prompt": "<|start|>system<|message|>You are a helpful assistant.<|end|><|start|>user<|message|>What does HTTP stand for?<|end|><|start|>assistant"}
+{"prompt": "<|start|>system<|message|>You are a helpful assistant.<|end|><|start|>user<|message|>Define recursion in one sentence.<|end|><|start|>assistant"}
+{"prompt": "<|start|>system<|message|>You are a helpful assistant.<|end|><|start|>user<|message|>What is the boiling point of water in Celsius at sea level?<|end|><|start|>assistant"}
+{"prompt": "<|start|>system<|message|>You are a helpful assistant.<|end|><|start|>user<|message|>Name the four seasons.<|end|><|start|>assistant"}

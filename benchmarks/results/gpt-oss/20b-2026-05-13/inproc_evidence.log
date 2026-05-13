@@ -1,0 +1,27 @@
+loading openai/gpt-oss-20b ...
+Fetching 12 files:   0%|          | 0/12 [00:00<?, ?it/s]Fetching 12 files: 100%|██████████| 12/12 [00:00<00:00, 285975.27it/s]
+loaded in 1.16s
+prompt 0: total=0.42s prompt=29tok @ 306.8tps gen=25tok @ 114.4tps peak=14.9GB finish=stop
+prompt 1: total=1.16s prompt=21tok @ 308.9tps gen=115tok @ 112.9tps peak=14.9GB finish=stop
+prompt 2: total=0.46s prompt=23tok @ 358.3tps gen=37tok @ 115.0tps peak=14.9GB finish=stop
+prompt 3: total=0.38s prompt=23tok @ 373.7tps gen=28tok @ 116.6tps peak=14.9GB finish=stop
+prompt 4: total=1.29s prompt=23tok @ 368.5tps gen=128tok @ 111.3tps peak=14.9GB finish=length
+prompt 5: total=0.77s prompt=23tok @ 365.1tps gen=71tok @ 112.1tps peak=14.9GB finish=stop
+prompt 6: total=0.69s prompt=22tok @ 359.1tps gen=62tok @ 112.1tps peak=14.9GB finish=stop
+prompt 7: total=1.26s prompt=22tok @ 361.3tps gen=125tok @ 111.6tps peak=14.9GB finish=stop
+prompt 8: total=0.74s prompt=29tok @ 407.8tps gen=66tok @ 112.3tps peak=14.9GB finish=stop
+prompt 9: total=0.84s prompt=21tok @ 348.1tps gen=79tok @ 112.3tps peak=14.9GB finish=stop
+{
+  "model": "openai/gpt-oss-20b",
+  "prompts_evaluated": 10,
+  "load_seconds": 1.1559451250359416,
+  "generation_tps_mean": 113.05197711717533,
+  "generation_tps_p50": 112.29106211071472,
+  "generation_tps_max": 116.63884343324295,
+  "generation_tps_min": 111.29549653944368,
+  "prompt_tps_mean": 355.75133705395353,
+  "prompt_tps_p50": 361.3305198566284,
+  "peak_memory_gb_max": 14.89290852,
+  "max_tokens_per_request": 128
+}
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/gpt-oss/20b-2026-05-13/inproc_evidence.json
