@@ -1087,6 +1087,79 @@ def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     return totals
 
 
+def summarize_ax_mlx_decode_route(telemetry: dict[str, int]) -> dict[str, Any]:
+    decode_steps = int(telemetry.get("ax_mlx_decode_steps", 0))
+    decode_wall_us = int(telemetry.get("ax_mlx_decode_wall_us", 0))
+    direct_pipeline_steps = int(telemetry.get("ax_mlx_direct_pipeline_steps", 0))
+    direct_pipeline_wall_us = int(telemetry.get("ax_mlx_direct_pipeline_wall_us", 0))
+    single_decode_steps = int(telemetry.get("ax_mlx_single_decode_steps", 0))
+    single_decode_wall_us = int(telemetry.get("ax_mlx_single_decode_wall_us", 0))
+    ngram_decode_steps = int(telemetry.get("ax_mlx_ngram_decode_steps", 0))
+    ngram_decode_wall_us = int(telemetry.get("ax_mlx_ngram_decode_wall_us", 0))
+
+    if decode_steps <= 0:
+        classification = "no_decode_steps"
+    elif (
+        direct_pipeline_steps == decode_steps
+        and single_decode_steps == 0
+        and ngram_decode_steps == 0
+    ):
+        classification = "direct_pipeline"
+    elif (
+        single_decode_steps == decode_steps
+        and direct_pipeline_steps == 0
+        and ngram_decode_steps == 0
+    ):
+        classification = "single_decode"
+    elif (
+        ngram_decode_steps > 0
+        and direct_pipeline_steps == 0
+        and single_decode_steps == 0
+    ):
+        classification = "ngram"
+    else:
+        classification = "mixed"
+
+    def share_micros(part: int, total: int) -> int:
+        if total <= 0:
+            return 0
+        return int(round(part * 1_000_000 / total))
+
+    return {
+        "classification": classification,
+        "decode_steps": decode_steps,
+        "decode_wall_us": decode_wall_us,
+        "direct_pipeline_steps": direct_pipeline_steps,
+        "direct_pipeline_step_share_micros": share_micros(
+            direct_pipeline_steps,
+            decode_steps,
+        ),
+        "direct_pipeline_wall_share_micros": share_micros(
+            direct_pipeline_wall_us,
+            decode_wall_us,
+        ),
+        "single_decode_steps": single_decode_steps,
+        "single_decode_step_share_micros": share_micros(
+            single_decode_steps,
+            decode_steps,
+        ),
+        "single_decode_wall_share_micros": share_micros(
+            single_decode_wall_us,
+            decode_wall_us,
+        ),
+        "ngram_decode_steps": ngram_decode_steps,
+        "ngram_decode_step_share_micros": share_micros(
+            ngram_decode_steps,
+            decode_steps,
+        ),
+        "ngram_decode_wall_share_micros": share_micros(
+            ngram_decode_wall_us,
+            decode_wall_us,
+        ),
+        "bonus_tokens": int(telemetry.get("ax_mlx_bonus_tokens", 0)),
+    }
+
+
 def summarize_scheduler_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for run in runs:
@@ -1447,6 +1520,7 @@ def bench_axengine(
             time.sleep(cooldown)
 
     ngram_summary = summarize_telemetry(runs)
+    ax_mlx_telemetry = summarize_ax_mlx_telemetry(runs)
     row = {
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
@@ -1466,7 +1540,8 @@ def bench_axengine(
         "prefill_s": summarize_runs(runs, "prefill_s"),
         "decode_s": summarize_runs(runs, "decode_s"),
         "ngram_acceleration_telemetry": ngram_summary,
-        "ax_mlx_telemetry": summarize_ax_mlx_telemetry(runs),
+        "ax_mlx_telemetry": ax_mlx_telemetry,
+        "ax_mlx_decode_route": summarize_ax_mlx_decode_route(ax_mlx_telemetry),
         "scheduler_telemetry": summarize_scheduler_telemetry(runs),
         "ax_mlx_gemma4_moe_profile": summarize_ax_mlx_gemma4_moe_profile(runs),
         "ax_mlx_linear_attention_profile": summarize_ax_mlx_linear_attention_profile(runs),
