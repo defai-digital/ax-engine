@@ -1,11 +1,12 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, argsort_axis,
-    astype, broadcast_to, concatenate, dequantize, divide, eval, expand_dims, expand_dims_axes,
-    gather_mm, gather_qmm, gelu_approx, matmul, multiply, put_along_axis, quantized_matmul,
-    reshape, rms_norm, rope, scaled_dot_product_attention_with_mask, slice, slice_last_dim,
-    softmax, sum_axis, take, take_along_axis, tanh, transpose, zeros,
+    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask, add,
+    argpartition_axis, argsort_axis, astype, broadcast_to, concatenate, dequantize, divide, eval,
+    expand_dims, expand_dims_axes, gather_mm, gather_qmm, gelu_approx, matmul, multiply,
+    put_along_axis, quantized_matmul, reshape, rms_norm, rope,
+    scaled_dot_product_attention_with_mask, slice, slice_last_dim, softmax, sum_axis, take,
+    take_along_axis, tanh, transpose, zeros,
 };
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use ax_engine_core::{MlxKvCompressionConfig, MlxTurboQuantPreset, NativeModelManifest};
@@ -47,6 +48,37 @@ pub struct LinearAttentionProfileSnapshot {
     pub output_wall_us: u32,
 }
 
+/// Per-section wall time for the single-token lazy decode path.
+///
+/// Enabled via `AX_MLX_DECODE_PROFILE=1`.  Each stage timing forces a blocking
+/// `eval()` to materialise the lazy graph at that point, so enabling the
+/// profile **disables decode pipelining** and inflates step time relative to
+/// production.  The ratios between stages are what matters for diagnosis.
+///
+/// Stages mirror the decode path:
+/// - `per_layer_input_wall_us` — `compute_per_layer_inputs_arr` (Gemma4 2B/4B
+///   per-layer embed + project + RMSNorm + combine + slice).
+/// - `pre_sdpa_wall_us` — qkv_project + reshape + QK/V norm + transpose +
+///   RoPE + KV append. Dense full-attention layers only; linear-attention and
+///   MLA layers contribute zero here.
+/// - `sdpa_wall_us` — `scaled_dot_product_attention_with_mask` (or TurboQuant
+///   fused fallback). Dense full-attention layers only.
+/// - `post_attn_wall_us` — transpose-back, output projection, residual,
+///   FFN/MoE, per-layer-input gating, layer_scalar.  Includes the full layer
+///   tail for linear/MLA layers (since pre_sdpa/sdpa do not apply).
+/// - `lm_head_wall_us` — final RMSNorm + lm_head matmul + softcap + reshape.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DecodeProfileSnapshot {
+    pub enabled: u32,
+    pub decode_steps: u32,
+    pub layers: u32,
+    pub per_layer_input_wall_us: u32,
+    pub pre_sdpa_wall_us: u32,
+    pub sdpa_wall_us: u32,
+    pub post_attn_wall_us: u32,
+    pub lm_head_wall_us: u32,
+}
+
 #[derive(Clone, Copy)]
 enum Gemma4MoeProfileStage {
     Attention,
@@ -65,8 +97,18 @@ enum LinearAttentionProfileStage {
     Output,
 }
 
+#[derive(Clone, Copy)]
+enum DecodeProfileStage {
+    PerLayerInput,
+    PreSdpa,
+    Sdpa,
+    PostAttn,
+    LmHead,
+}
+
 static GEMMA4_MOE_PROFILE: OnceLock<Mutex<Gemma4MoeProfileSnapshot>> = OnceLock::new();
 static LINEAR_ATTENTION_PROFILE: OnceLock<Mutex<LinearAttentionProfileSnapshot>> = OnceLock::new();
+static DECODE_PROFILE: OnceLock<Mutex<DecodeProfileSnapshot>> = OnceLock::new();
 
 fn gemma4_moe_profile_enabled() -> bool {
     matches!(
@@ -82,12 +124,23 @@ fn linear_attention_profile_enabled() -> bool {
     )
 }
 
+fn decode_profile_enabled() -> bool {
+    matches!(
+        std::env::var("AX_MLX_DECODE_PROFILE").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 fn gemma4_moe_profile() -> &'static Mutex<Gemma4MoeProfileSnapshot> {
     GEMMA4_MOE_PROFILE.get_or_init(|| Mutex::new(Gemma4MoeProfileSnapshot::default()))
 }
 
 fn linear_attention_profile() -> &'static Mutex<LinearAttentionProfileSnapshot> {
     LINEAR_ATTENTION_PROFILE.get_or_init(|| Mutex::new(LinearAttentionProfileSnapshot::default()))
+}
+
+fn decode_profile() -> &'static Mutex<DecodeProfileSnapshot> {
+    DECODE_PROFILE.get_or_init(|| Mutex::new(DecodeProfileSnapshot::default()))
 }
 
 fn saturating_profile_us(started: Instant) -> u32 {
@@ -143,6 +196,26 @@ fn record_linear_attention_profile_stage(stage: LinearAttentionProfileStage, wal
     *target = target.saturating_add(wall_us);
 }
 
+fn record_decode_profile_stage(stage: DecodeProfileStage, wall_us: u32) {
+    let mut profile = decode_profile().lock().unwrap();
+    profile.enabled = 1;
+    let target = match stage {
+        DecodeProfileStage::PerLayerInput => &mut profile.per_layer_input_wall_us,
+        DecodeProfileStage::PreSdpa => &mut profile.pre_sdpa_wall_us,
+        DecodeProfileStage::Sdpa => &mut profile.sdpa_wall_us,
+        DecodeProfileStage::PostAttn => &mut profile.post_attn_wall_us,
+        DecodeProfileStage::LmHead => &mut profile.lm_head_wall_us,
+    };
+    *target = target.saturating_add(wall_us);
+}
+
+fn record_decode_profile_step(layers: u32) {
+    let mut profile = decode_profile().lock().unwrap();
+    profile.enabled = 1;
+    profile.decode_steps = profile.decode_steps.saturating_add(1);
+    profile.layers = profile.layers.saturating_add(layers);
+}
+
 fn profile_eval_elapsed(
     enabled: bool,
     stage: Gemma4MoeProfileStage,
@@ -167,6 +240,18 @@ fn linear_attention_profile_eval_elapsed(
     }
 }
 
+fn decode_profile_eval_elapsed(
+    enabled: bool,
+    stage: DecodeProfileStage,
+    started: Instant,
+    targets: &[&MlxArray],
+) {
+    if enabled {
+        eval(targets);
+        record_decode_profile_stage(stage, saturating_profile_us(started));
+    }
+}
+
 pub fn take_gemma4_moe_profile_snapshot() -> Gemma4MoeProfileSnapshot {
     let mut profile = gemma4_moe_profile().lock().unwrap();
     let snapshot = *profile;
@@ -178,6 +263,13 @@ pub fn take_linear_attention_profile_snapshot() -> LinearAttentionProfileSnapsho
     let mut profile = linear_attention_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = LinearAttentionProfileSnapshot::default();
+    snapshot
+}
+
+pub fn take_decode_profile_snapshot() -> DecodeProfileSnapshot {
+    let mut profile = decode_profile().lock().unwrap();
+    let snapshot = *profile;
+    *profile = DecodeProfileSnapshot::default();
     snapshot
 }
 
@@ -745,6 +837,13 @@ pub fn layer_forward_with_turboquant_context(
     let profile_gemma4_moe_decode =
         cfg.gemma4_moe_router && seq == 1 && gemma4_moe_profile_enabled();
     let attention_started = profile_gemma4_moe_decode.then(Instant::now);
+    // Generic decode profile (AX_MLX_DECODE_PROFILE=1): pre_sdpa/sdpa/post_attn
+    // splits are only recorded for the dense full-attention path.  Linear-attention
+    // and GLM-MLA layers contribute zero to these three stages — their existing
+    // dedicated profilers (LinearAttentionProfile, MoE attention profile) cover
+    // those paths.
+    let profile_decode_layer = seq == 1 && decode_profile_enabled();
+    let mut post_attn_started: Option<Instant> = None;
 
     let attn_proj = if cfg.is_linear_attention_layer(layer_idx) {
         linear_attention_forward(cfg, w, &normed, cache, layer_idx)
@@ -756,6 +855,7 @@ pub fn layer_forward_with_turboquant_context(
             attn_proj
         }
     } else {
+        let pre_sdpa_started = profile_decode_layer.then(Instant::now);
         // 2-7. QKV projections + RoPE. KV-shared layers skip K/V and borrow from source.
         let (q_rope, cached_k, cached_v, attn_gate) = if let Some(src_layer) = kv_source {
             // KV-shared layer (Gemma4 layers 24-41): compute Q only.
@@ -868,6 +968,18 @@ pub fn layer_forward_with_turboquant_context(
             };
             (q_rope, ck, cv, attn_gate_raw)
         };
+        if let Some(started) = pre_sdpa_started {
+            let mut refs: Vec<&MlxArray> = vec![&q_rope, &cached_k, &cached_v];
+            if let Some(g) = attn_gate.as_ref() {
+                refs.push(g);
+            }
+            decode_profile_eval_elapsed(
+                profile_decode_layer,
+                DecodeProfileStage::PreSdpa,
+                started,
+                &refs,
+            );
+        }
         let turboquant_candidate = turboquant_context
             .map(|context| {
                 context.decode_candidate(
@@ -896,6 +1008,7 @@ pub fn layer_forward_with_turboquant_context(
             local_mask = attention_mask_array(seq, key_len, sliding_window);
             &local_mask
         };
+        let sdpa_started = profile_decode_layer.then(Instant::now);
         let attn_sdpa =
             if turboquant_candidate.status == TurboQuantModelDecodeCandidateStatus::Ready {
                 let turboquant_out = turboquant_decode_attention_experimental(
@@ -938,6 +1051,15 @@ pub fn layer_forward_with_turboquant_context(
                     mask_opt,
                 )
             };
+        if let Some(started) = sdpa_started {
+            decode_profile_eval_elapsed(
+                profile_decode_layer,
+                DecodeProfileStage::Sdpa,
+                started,
+                &[&attn_sdpa],
+            );
+        }
+        post_attn_started = profile_decode_layer.then(Instant::now);
 
         // 10. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
         let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
@@ -1079,11 +1201,20 @@ pub fn layer_forward_with_turboquant_context(
     }
 
     // 20. Optional layer scalar (Gemma4): h = h * layer_scalar.
-    if let Some(scalar) = &w.layer_scalar {
+    let out = if let Some(scalar) = &w.layer_scalar {
         multiply(&out, scalar, None)
     } else {
         out
+    };
+    if let Some(started) = post_attn_started {
+        decode_profile_eval_elapsed(
+            profile_decode_layer,
+            DecodeProfileStage::PostAttn,
+            started,
+            &[&out],
+        );
     }
+    out
 }
 
 /// Embed token IDs and return hidden states of shape [1, seq_len, hidden].
@@ -1408,17 +1539,31 @@ pub fn forward_for_embedding(
     target_position: Option<usize>,
 ) -> MlxArray {
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    // `dequantize` produces bf16 for bf16-scales quantized embeddings; only
+    // insert the cast when the embed_tokens output is not already bf16
+    // (e.g. unquantized fp16/fp32 embeddings). Skipping the redundant graph
+    // node avoids one MLX FFI hop per call.
+    if hidden.dtype() != MlxDtype::Bfloat16 {
+        hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    }
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
+    forward_for_embedding_body(cfg, weights, hidden, target_position)
+}
+
+/// Body of `forward_for_embedding` starting from a pre-embedded bf16 hidden
+/// state. Split out so the same logic can be wrapped in an `mlx_compile`
+/// closure that fuses the per-layer dispatches into a single compiled graph.
+fn forward_for_embedding_body(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    mut hidden: MlxArray,
+    target_position: Option<usize>,
+) -> MlxArray {
     for (li, layer_w) in weights.layers.iter().enumerate() {
         hidden = layer_forward_dense_embed(cfg, layer_w, &hidden, li);
     }
-    // For Last/Cls pooling the caller knows which position it needs. Extract it
-    // before the final norm so we norm [1, 1, H] instead of [1, seq, H].
-    // slice() is a zero-copy strided view; cheaper than take() (gather) for a
-    // single deterministic index. Matches the pattern in forward().
     let to_norm = match target_position {
         Some(pos) => {
             let pos_i32 = pos as i32;
@@ -1434,6 +1579,37 @@ pub fn forward_for_embedding(
         None => hidden,
     };
     rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None)
+}
+
+/// Build an `mlx_compile`-wrapped closure that takes the pre-embedded bf16
+/// hidden state and returns the final norm-output for Last/Cls pooling.
+///
+/// The closure captures `Arc<ModelWeights>` and `ModelConfig` by value so the
+/// caller can drop them safely. The compiled graph is shape-specific (the
+/// `seq_len` and `target_position` are baked into the trace), so callers
+/// must cache one closure per `(seq_len, target_position)` shape.
+///
+/// Falling back to the imperative `forward_for_embedding_body` is always
+/// correct; this path exists purely to amortize the per-op MLX C-API
+/// dispatch cost across the ~28 ops/layer × N layers of the forward pass.
+pub fn build_embedding_forward_closure(
+    cfg: Arc<ModelConfig>,
+    weights: Arc<ModelWeights>,
+    target_position: Option<usize>,
+) -> Result<MlxClosure, &'static str> {
+    let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+        if inputs.is_empty() {
+            return vec![];
+        }
+        let hidden = inputs.get(0);
+        let out = forward_for_embedding_body(&cfg, &weights, hidden, target_position);
+        vec![out]
+    });
+    // shapeless=false → compile per concrete seq_len. The caller caches one
+    // compiled closure per `(seq_len, target_position)` key so the first
+    // call at a new shape pays the trace cost once and subsequent calls hit
+    // the cached compiled graph.
+    body_closure.compile(false)
 }
 
 /// Embed a flat token-id array and reshape to [batch, max_seq, hidden_size].
@@ -1475,6 +1651,27 @@ pub fn forward_for_embedding_batch(
     let max_len = *actual_lens.iter().max().expect("non-empty batch");
     let batch = batch_token_ids.len();
 
+    let hidden = build_embedding_batch_hidden(
+        cfg,
+        weights,
+        batch_token_ids,
+        batch,
+        max_len,
+    );
+    let out = forward_for_embedding_batch_body(cfg, weights, hidden, target_positions);
+    (out, actual_lens)
+}
+
+/// Pre-embed a token-id batch + bf16 cast + (optional) hidden states scale.
+/// Returns `[batch, max_len, hidden]` bf16. Split out so the same prelude
+/// can be used by the imperative and compiled-closure batch paths.
+fn build_embedding_batch_hidden(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    batch_token_ids: &[Vec<u32>],
+    batch: usize,
+    max_len: usize,
+) -> MlxArray {
     let mut flat_ids = vec![0u32; batch * max_len];
     for (i, ids) in batch_token_ids.iter().enumerate() {
         flat_ids[i * max_len..i * max_len + ids.len()].copy_from_slice(ids);
@@ -1494,10 +1691,26 @@ pub fn forward_for_embedding_batch(
         batch,
         max_len,
     );
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if hidden.dtype() != MlxDtype::Bfloat16 {
+        hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    }
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
+    hidden
+}
+
+/// Body of `forward_for_embedding_batch` from the pre-embedded `[B, max_seq, H]`
+/// hidden state to the final norm output. Split out so the same logic can
+/// be wrapped in an `mlx_compile` closure that fuses the per-layer
+/// dispatches into a single compiled graph.
+fn forward_for_embedding_batch_body(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    mut hidden: MlxArray,
+    target_positions: Option<&[usize]>,
+) -> MlxArray {
+    let batch = hidden.shape()[0];
     for (li, layer_w) in weights.layers.iter().enumerate() {
         hidden = layer_forward_dense_embed(cfg, layer_w, &hidden, li);
     }
@@ -1506,7 +1719,7 @@ pub fn forward_for_embedding_batch(
     // full padded [B, max_seq, H] tensor.
     let to_norm = match target_positions {
         Some(positions) => {
-            let batch_size = batch as i32;
+            let batch_size = batch;
             let hidden_size = hidden.shape()[2] as usize;
             // Fast path: when all sequences extract at the same position
             // (e.g. Cls pooling at index 0, or Last pooling on equal-length
@@ -1542,8 +1755,48 @@ pub fn forward_for_embedding_batch(
         }
         None => hidden,
     };
-    let out = rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None);
-    (out, actual_lens)
+    rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None)
+}
+
+/// Build an `mlx_compile`-wrapped closure for the batched embedding forward.
+/// The closure takes the pre-embedded `[B, max_seq, H]` bf16 hidden state and
+/// returns the final norm output. `target_positions` is baked into the trace,
+/// so callers must cache one closure per `(batch_size, max_seq,
+/// target_positions)` shape combination.
+pub fn build_embedding_batch_forward_closure(
+    cfg: Arc<ModelConfig>,
+    weights: Arc<ModelWeights>,
+    target_positions: Option<Vec<usize>>,
+) -> Result<MlxClosure, &'static str> {
+    let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+        if inputs.is_empty() {
+            return vec![];
+        }
+        let hidden = inputs.get(0);
+        let out = forward_for_embedding_batch_body(
+            &cfg,
+            &weights,
+            hidden,
+            target_positions.as_deref(),
+        );
+        vec![out]
+    });
+    body_closure.compile(false)
+}
+
+/// Pub re-export so `runner.rs` can build the same pre-embedded hidden
+/// state outside the compile cache (the closure body operates on the
+/// already-embedded array).
+pub(crate) fn build_embedding_batch_hidden_pub(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    batch_token_ids: &[Vec<u32>],
+) -> (MlxArray, usize, usize, Vec<usize>) {
+    let actual_lens: Vec<usize> = batch_token_ids.iter().map(Vec::len).collect();
+    let max_len = *actual_lens.iter().max().expect("non-empty batch");
+    let batch = batch_token_ids.len();
+    let hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
+    (hidden, batch, max_len, actual_lens)
 }
 
 /// Single-token forward pass accepting a lazy token `MlxArray`.
@@ -1578,6 +1831,8 @@ pub fn forward_lazy_single_with_turboquant_context(
     token_offset: usize,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
+    let profile_decode = decode_profile_enabled();
+
     // Normalise to [1] for embedding take (reshape is a no-op if already [1]).
     let tok_1d = reshape(token_arr, &[1_i32], None);
 
@@ -1587,7 +1842,22 @@ pub fn forward_lazy_single_with_turboquant_context(
         hidden = scale_hidden(&hidden, scale);
     }
     let masks = build_layer_masks(cfg, weights.layers.len(), 1, token_offset + 1);
+
+    let per_layer_started = profile_decode.then(Instant::now);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &tok_1d, &hidden);
+    if let (Some(started), Some(inputs)) = (per_layer_started, per_layer_inputs.as_ref()) {
+        // Force materialization of the per-layer-input tensors to attribute their
+        // graph-build + dispatch cost to this stage. Models without per-layer input
+        // gating (per_layer_inputs == None) skip this stage entirely.
+        let refs: Vec<&MlxArray> = inputs.iter().collect();
+        decode_profile_eval_elapsed(
+            profile_decode,
+            DecodeProfileStage::PerLayerInput,
+            started,
+            &refs,
+        );
+    }
+
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward_with_turboquant_context(
@@ -1603,11 +1873,24 @@ pub fn forward_lazy_single_with_turboquant_context(
         );
     }
     // Single token: hidden shape is [1, 1, hidden_size] — no sequence slice needed.
+    let lm_head_started = profile_decode.then(Instant::now);
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
-    reshape(&logits_f32, &[cfg.vocab_size as i32], None)
+    let logits = reshape(&logits_f32, &[cfg.vocab_size as i32], None);
+    if let Some(started) = lm_head_started {
+        decode_profile_eval_elapsed(
+            profile_decode,
+            DecodeProfileStage::LmHead,
+            started,
+            &[&logits],
+        );
+    }
+    if profile_decode {
+        record_decode_profile_step(weights.layers.len() as u32);
+    }
+    logits
 }
 
 // ── private helpers ──────────────────────────────────────────────────────────
@@ -2685,6 +2968,10 @@ fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
 
 fn mlx_slice_last_dim(x: &MlxArray, start: i32, end: i32) -> MlxArray {
     slice_last_dim(x, start, end, None)
+}
+
+pub(crate) fn scale_hidden_pub(hidden: &MlxArray, scale: f32) -> MlxArray {
+    scale_hidden(hidden, scale)
 }
 
 fn scale_hidden(hidden: &MlxArray, scale: f32) -> MlxArray {

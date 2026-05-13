@@ -1,0 +1,10 @@
+  [py] qwen3-embedding-0.6b-8bit
+  wrote benchmarks/results/embedding/2026-05-12-sustained-batched/qwen3-embedding-0.6b-8bit/python_sustained.json
+  [rust] qwen3-embedding-0.6b-8bit
+  [py] qwen3-embedding-4b-4bit
+  wrote benchmarks/results/embedding/2026-05-12-sustained-batched/qwen3-embedding-4b-4bit/python_sustained.json
+  [rust] qwen3-embedding-4b-4bit
+  [py] qwen3-embedding-8b-4bit-dwq
+  wrote benchmarks/results/embedding/2026-05-12-sustained-batched/qwen3-embedding-8b-4bit-dwq/python_sustained.json
+  [rust] qwen3-embedding-8b-4bit-dwq
+Done.

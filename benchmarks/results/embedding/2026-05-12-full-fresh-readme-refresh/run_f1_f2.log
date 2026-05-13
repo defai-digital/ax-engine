@@ -1,0 +1,174 @@
+
+  [embedding] qwen3-embedding-0.6b-8bit  (21:27:36)
+Tokenizing 10 sentences…
+  token counts: [10, 15, 13, 8, 3, 8, 10, 8, 10, 10]
+
+[mlx-lm] Loading model…
+  [mlx-lm] warmup…
+    trial 1: 6.3ms/sentence  1505.6 tok/s
+    trial 2: 6.4ms/sentence  1477.7 tok/s
+    trial 3: 6.0ms/sentence  1575.0 tok/s
+    trial 4: 6.8ms/sentence  1393.8 tok/s
+    trial 5: 6.9ms/sentence  1369.5 tok/s
+
+[ax-engine-py] Loading session…
+  [ax-engine-py] warmup…
+    trial 1: 6.0ms/sentence  1590.4 tok/s
+    trial 2: 7.1ms/sentence  1343.5 tok/s
+    trial 3: 6.9ms/sentence  1386.0 tok/s
+    trial 4: 6.7ms/sentence  1408.3 tok/s
+    trial 5: 6.9ms/sentence  1383.3 tok/s
+
+[mlx-lm/batched] Loading model…
+  [mlx-lm/batched] warmup…
+    trial 1: 3.39ms/sentence  2804.7 tok/s
+    trial 2: 3.54ms/sentence  2685.1 tok/s
+    trial 3: 3.48ms/sentence  2732.9 tok/s
+    trial 4: 3.37ms/sentence  2818.5 tok/s
+    trial 5: 3.00ms/sentence  3164.9 tok/s
+
+[ax-engine-py/batched] Loading session…
+  [ax-engine-py/batched] warmup…
+    trial 1: 3.63ms/sentence  2620.1 tok/s
+    trial 2: 3.73ms/sentence  2544.7 tok/s
+    trial 3: 2.84ms/sentence  3348.8 tok/s
+    trial 4: 3.86ms/sentence  2464.0 tok/s
+    trial 5: 3.31ms/sentence  2874.3 tok/s
+
+Engine                       mean ms/sent   median ms/sent   mean tok/s
+------------------------------------------------------------------------
+mlx-lm (Python)                       6.5              6.4       1464.3
+ax-engine-py (direct)                 6.7              6.9       1422.3
+mlx-swift-lm                    (skipped)
+ax-engine-http                  (skipped)
+
+--- Batched (10 sentences/request) ---
+
+Engine                       mean ms/sent   median ms/sent   mean tok/s
+------------------------------------------------------------------------
+mlx-lm (Python)                       3.4              3.4       2841.2
+ax-engine-py (direct)                 3.5              3.6       2770.4
+mlx-swift-lm                    (skipped)
+ax-engine-http                  (skipped)
+
+Wrote results to benchmarks/results/embedding/2026-05-12-full-fresh-readme-refresh/2026-05-12-2127-qwen3-embedding-0.6b-8bit/embedding_bench.json
+
+  [embedding] qwen3-embedding-4b-4bit  (21:31:31)
+Tokenizing 10 sentences…
+  token counts: [10, 15, 13, 8, 3, 8, 10, 8, 10, 10]
+
+[mlx-lm] Loading model…
+  [mlx-lm] warmup…
+    trial 1: 20.0ms/sentence  476.0 tok/s
+    trial 2: 19.9ms/sentence  476.7 tok/s
+    trial 3: 19.9ms/sentence  477.1 tok/s
+    trial 4: 19.7ms/sentence  481.6 tok/s
+    trial 5: 19.9ms/sentence  477.0 tok/s
+
+[ax-engine-py] Loading session…
+  [ax-engine-py] warmup…
+    trial 1: 17.7ms/sentence  536.3 tok/s
+    trial 2: 17.7ms/sentence  537.3 tok/s
+    trial 3: 17.7ms/sentence  536.5 tok/s
+    trial 4: 17.7ms/sentence  536.0 tok/s
+    trial 5: 17.2ms/sentence  550.8 tok/s
+
+[mlx-lm/batched] Loading model…
+  [mlx-lm/batched] warmup…
+    trial 1: 6.62ms/sentence  1434.0 tok/s
+    trial 2: 6.77ms/sentence  1403.6 tok/s
+    trial 3: 6.46ms/sentence  1469.6 tok/s
+    trial 4: 6.79ms/sentence  1398.1 tok/s
+    trial 5: 6.53ms/sentence  1455.0 tok/s
+
+[ax-engine-py/batched] Loading session…
+  [ax-engine-py/batched] warmup…
+    trial 1: 6.46ms/sentence  1470.3 tok/s
+    trial 2: 6.40ms/sentence  1484.4 tok/s
+    trial 3: 5.81ms/sentence  1634.9 tok/s
+    trial 4: 6.12ms/sentence  1551.4 tok/s
+    trial 5: 6.74ms/sentence  1410.5 tok/s
+
+Engine                       mean ms/sent   median ms/sent   mean tok/s
+------------------------------------------------------------------------
+mlx-lm (Python)                      19.9             19.9        477.7
+ax-engine-py (direct)                17.6             17.7        539.4
+mlx-swift-lm                    (skipped)
+ax-engine-http                  (skipped)
+
+--- Batched (10 sentences/request) ---
+
+Engine                       mean ms/sent   median ms/sent   mean tok/s
+------------------------------------------------------------------------
+mlx-lm (Python)                       6.6              6.6       1432.1
+ax-engine-py (direct)                 6.3              6.4       1510.3
+mlx-swift-lm                    (skipped)
+ax-engine-http                  (skipped)
+
+Wrote results to benchmarks/results/embedding/2026-05-12-full-fresh-readme-refresh/2026-05-12-2131-qwen3-embedding-4b-4bit/embedding_bench.json
+
+  [embedding] qwen3-embedding-8b-4bit-dwq  (21:35:29)
+Tokenizing 10 sentences…
+  token counts: [10, 15, 13, 8, 3, 8, 10, 8, 10, 10]
+
+[mlx-lm] Loading model…
+  [mlx-lm] warmup…
+    trial 1: 29.8ms/sentence  319.2 tok/s
+    trial 2: 29.8ms/sentence  318.5 tok/s
+    trial 3: 29.7ms/sentence  319.8 tok/s
+    trial 4: 29.8ms/sentence  319.1 tok/s
+    trial 5: 29.8ms/sentence  318.4 tok/s
+
+[ax-engine-py] Loading session…
+  [ax-engine-py] warmup…
+    trial 1: 31.7ms/sentence  299.5 tok/s
+    trial 2: 31.4ms/sentence  302.6 tok/s
+    trial 3: 31.6ms/sentence  300.5 tok/s
+    trial 4: 29.9ms/sentence  317.7 tok/s
+    trial 5: 31.0ms/sentence  306.2 tok/s
+
+[mlx-lm/batched] Loading model…
+  [mlx-lm/batched] warmup…
+    trial 1: 9.29ms/sentence  1022.2 tok/s
+    trial 2: 11.04ms/sentence  860.5 tok/s
+    trial 3: 10.97ms/sentence  866.4 tok/s
+    trial 4: 10.90ms/sentence  871.5 tok/s
+    trial 5: 9.33ms/sentence  1018.1 tok/s
+
+[ax-engine-py/batched] Loading session…
+  [ax-engine-py/batched] warmup…
+    trial 1: 11.19ms/sentence  848.6 tok/s
+    trial 2: 10.96ms/sentence  866.9 tok/s
+    trial 3: 10.66ms/sentence  891.0 tok/s
+    trial 4: 10.94ms/sentence  868.0 tok/s
+    trial 5: 9.36ms/sentence  1015.3 tok/s
+
+Engine                       mean ms/sent   median ms/sent   mean tok/s
+------------------------------------------------------------------------
+mlx-lm (Python)                      29.8             29.8        319.0
+ax-engine-py (direct)                31.1             31.4        305.3
+mlx-swift-lm                    (skipped)
+ax-engine-http                  (skipped)
+
+--- Batched (10 sentences/request) ---
+
+Engine                       mean ms/sent   median ms/sent   mean tok/s
+------------------------------------------------------------------------
+mlx-lm (Python)                      10.3             10.9        927.7
+ax-engine-py (direct)                10.6             10.9        898.0
+mlx-swift-lm                    (skipped)
+ax-engine-http                  (skipped)
+
+Wrote results to benchmarks/results/embedding/2026-05-12-full-fresh-readme-refresh/2026-05-12-2135-qwen3-embedding-8b-4bit-dwq/embedding_bench.json
+
+  [readme] applying embedding rows (single + batched)
+  qwen3-embedding-0.6b-8bit single:  mlx_lm=1477.7  ax=1386.0
+  qwen3-embedding-0.6b-8bit batched: mlx_lm=2804.7  ax=2620.1
+  qwen3-embedding-4b-4bit single:  mlx_lm=477.0  ax=536.5
+  qwen3-embedding-4b-4bit batched: mlx_lm=1434.0  ax=1484.4
+  qwen3-embedding-8b-4bit-dwq single:  mlx_lm=319.1  ax=302.6
+  qwen3-embedding-8b-4bit-dwq batched: mlx_lm=871.5  ax=868.0
+  embedding: 7 cells updated
+  README.md updated
+
+Done at 21:39:28.
