@@ -406,5 +406,71 @@ class Session:
         deterministic: bool | None = None,
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]: ...
+    # ------------------------------------------------------------------
+    # Embedding API — only available when the runtime selects MLX-native
+    # (`mlx=True`). Calls raise `EngineSessionError` (`embedding_not_supported`)
+    # when the runtime is `llama_cpp` or `mlx_lm_delegated`.
+    # ------------------------------------------------------------------
+    def embed(
+        self,
+        token_ids: list[int],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ) -> list[float]:
+        """Compute a dense embedding for a single sequence."""
+        ...
+    def embed_bytes(
+        self,
+        token_ids: list[int],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ) -> bytes:
+        """Like :meth:`embed` but returns raw little-endian f32 bytes
+        instead of a `list[float]`."""
+        ...
+    def embed_batch(
+        self,
+        batch_token_ids: list[list[int]],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ) -> list[list[float]]:
+        """Batched embedding — one `list[float]` per input sequence."""
+        ...
+    def embed_batch_bytes(
+        self,
+        batch_token_ids: list[list[int]],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ) -> list[bytes]:
+        """Batched embedding — one raw f32-bytes blob per input sequence."""
+        ...
+    def embed_batch_flat_bytes(
+        self,
+        batch_token_ids: list[list[int]],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ) -> tuple[bytes, int, int]:
+        """Batched embedding as one contiguous f32-bytes blob plus
+        `(batch_size, hidden_size)`. Saves the `B-1` per-sequence
+        allocations of :meth:`embed_batch_bytes`."""
+        ...
+    def embed_batch_array(
+        self,
+        batch_token_ids: list[list[int]],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ):
+        """Batched embedding as a NumPy `(B, H)` `float32` ndarray.
+        Recommended API for vector-DB / faiss / HNSW ingest pipelines.
+        Return type is `numpy.ndarray`; not declared in this stub to
+        avoid forcing a numpy import on callers that do not use the
+        helper."""
+        ...
     def __enter__(self) -> "Session": ...
     def __exit__(self, exc_type: object | None, exc: object | None, traceback: object | None) -> None: ...
