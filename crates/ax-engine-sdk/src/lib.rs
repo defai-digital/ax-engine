@@ -6,8 +6,8 @@
 )]
 
 pub use ax_engine_core::{
-    CacheGroupId, EmbeddingPooling, KvManagerConfig, MlxKvCompressionConfig, MlxKvCompressionMode,
-    MlxTurboQuantPreset,
+    CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvManagerConfig, MlxKvCompressionConfig,
+    MlxKvCompressionMode, MlxTurboQuantPreset,
 };
 
 pub mod backend;
@@ -18,6 +18,10 @@ pub mod llama_cpp;
 pub mod mlx_lm;
 pub mod request;
 pub mod session;
+#[cfg(feature = "tokenizer")]
+pub mod tokenizer;
+#[cfg(feature = "tokenizer")]
+pub use tokenizer::{EngineTokenizer, EngineTokenizerError};
 
 pub use backend::{
     BackendContractError, BackendPolicy, CapabilityLevel, CapabilityReport, HostReport,

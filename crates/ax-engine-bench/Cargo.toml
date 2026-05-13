@@ -6,7 +6,7 @@ version.workspace = true
 
 [dependencies]
 ax-engine-core = { path = "../ax-engine-core" }
-ax-engine-sdk = { path = "../ax-engine-sdk", features = ["mlx-native"] }
+ax-engine-sdk = { path = "../ax-engine-sdk", features = ["mlx-native", "tokenizer"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

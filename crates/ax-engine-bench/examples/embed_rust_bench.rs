@@ -139,9 +139,12 @@ fn main() {
     for _ in 0..args.warmup {
         match &args.batch {
             Some(_) => {
+                // R1: embed_batch_flat returns one contiguous [B*H] Vec<f32>
+                // instead of Vec<Vec<f32>>. Saves B-1 heap allocations per
+                // call and matches what numpy / faiss / HNSW consume.
                 let _ = session
-                    .embed_batch(&batch_input, EmbeddingPooling::Last, true)
-                    .expect("embed_batch");
+                    .embed_batch_flat(&batch_input, EmbeddingPooling::Last, true)
+                    .expect("embed_batch_flat");
             }
             None => {
                 let _ = session
@@ -157,8 +160,8 @@ fn main() {
         match &args.batch {
             Some(_) => {
                 let _ = session
-                    .embed_batch(&batch_input, EmbeddingPooling::Last, true)
-                    .expect("embed_batch");
+                    .embed_batch_flat(&batch_input, EmbeddingPooling::Last, true)
+                    .expect("embed_batch_flat");
             }
             None => {
                 let _ = session

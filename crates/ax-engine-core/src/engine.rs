@@ -183,6 +183,15 @@ impl EngineCore {
         self.runner.embed_batch(batch, pooling, normalize)
     }
 
+    pub fn embed_batch_flat(
+        &self,
+        batch: &[Vec<u32>],
+        pooling: crate::runner::EmbeddingPooling,
+        normalize: bool,
+    ) -> Result<crate::runner::EmbeddingMatrix, &'static str> {
+        self.runner.embed_batch_flat(batch, pooling, normalize)
+    }
+
     pub fn submit(&mut self, submission: RequestSubmission) -> Result<RequestId, EngineCoreError> {
         validate_submission(&submission)?;
         let request_id = submission.request_id;

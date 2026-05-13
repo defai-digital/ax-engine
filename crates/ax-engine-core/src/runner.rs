@@ -209,6 +209,26 @@ pub enum EmbeddingPooling {
     Cls,
 }
 
+/// Row-major batched embedding output. `data.len() == batch_size *
+/// hidden_size`. Returned by `ExecutionRunner::embed_batch_flat` to let
+/// callers consume the buffer as one contiguous slice (zero-copy view
+/// for numpy / faiss / HNSW) instead of `Vec<Vec<f32>>`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmbeddingMatrix {
+    pub data: Vec<f32>,
+    pub batch_size: usize,
+    pub hidden_size: usize,
+}
+
+impl EmbeddingMatrix {
+    /// View row `i` of the matrix as `&[f32]` of length `hidden_size`.
+    /// Panics if `i >= batch_size`.
+    pub fn row(&self, i: usize) -> &[f32] {
+        assert!(i < self.batch_size, "row index {i} out of bounds");
+        &self.data[i * self.hidden_size..(i + 1) * self.hidden_size]
+    }
+}
+
 pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     fn run(&self, input: RunnerInput) -> RunnerOutput;
 
@@ -236,6 +256,40 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
         _normalize: bool,
     ) -> Result<Vec<Vec<f32>>, &'static str> {
         Err("batch embedding not supported by this runner")
+    }
+
+    /// Same as `embed_batch` but returns the result as one row-major
+    /// `[B, hidden_size]` `Vec<f32>` plus shape metadata, instead of
+    /// `Vec<Vec<f32>>`. Saves `B-1` heap allocations and lets the caller
+    /// pass the buffer to numpy/faiss/HNSW as zero-copy contiguous memory.
+    ///
+    /// Default implementation flattens `embed_batch` for compatibility;
+    /// MLX-backed runners override this with a single device-to-host read.
+    fn embed_batch_flat(
+        &self,
+        batch: &[Vec<u32>],
+        pooling: EmbeddingPooling,
+        normalize: bool,
+    ) -> Result<EmbeddingMatrix, &'static str> {
+        let vecs = self.embed_batch(batch, pooling, normalize)?;
+        if vecs.is_empty() {
+            return Ok(EmbeddingMatrix {
+                data: Vec::new(),
+                batch_size: 0,
+                hidden_size: 0,
+            });
+        }
+        let hidden_size = vecs[0].len();
+        let batch_size = vecs.len();
+        let mut data = Vec::with_capacity(batch_size * hidden_size);
+        for v in vecs {
+            data.extend_from_slice(&v);
+        }
+        Ok(EmbeddingMatrix {
+            data,
+            batch_size,
+            hidden_size,
+        })
     }
 
     fn release_request_state(&self, _request_id: RequestId) {}
