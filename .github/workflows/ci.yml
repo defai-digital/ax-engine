@@ -57,7 +57,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 25
     env:
-      AX_CI_LOG_DIR: ${{ runner.temp }}/ax-ci-logs
+      AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
 
     steps:
       - name: Check out repository
@@ -110,7 +110,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ci-script-smoke-logs
-          path: ${{ runner.temp }}/ax-ci-logs
+          path: ${{ github.workspace }}/ax-ci-logs
           if-no-files-found: ignore
 
   python-package:
@@ -118,7 +118,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 20
     env:
-      AX_CI_LOG_DIR: ${{ runner.temp }}/ax-ci-logs
+      AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
 
     steps:
       - name: Check out repository
@@ -156,7 +156,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ci-python-package-logs
-          path: ${{ runner.temp }}/ax-ci-logs
+          path: ${{ github.workspace }}/ax-ci-logs
           if-no-files-found: ignore
 
   sdk-clients:
@@ -200,7 +200,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     env:
-      AX_CI_LOG_DIR: ${{ runner.temp }}/ax-ci-logs
+      AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
       AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR: ${{ inputs.mlx_model_artifacts_dir || vars.AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR }}
 
     steps:
@@ -296,7 +296,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ci-model-smoke-logs
-          path: ${{ runner.temp }}/ax-ci-logs
+          path: ${{ github.workspace }}/ax-ci-logs
           if-no-files-found: ignore
 
   ci:
