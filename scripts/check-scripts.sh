@@ -42,6 +42,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_gateddelta_prefill_profile_artifact.py \
   scripts/render_gateddelta_prefill_profile_report.py \
   scripts/test_render_gateddelta_prefill_profile_report.py \
+  scripts/render_mlx_forward_profile_report.py \
+  scripts/test_render_mlx_forward_profile_report.py \
   scripts/check_gateddelta_prefill_model.py \
   scripts/test_gateddelta_prefill_model.py \
   scripts/test_run_gateddelta_prefill_profile.py \

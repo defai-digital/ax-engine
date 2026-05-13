@@ -28,6 +28,7 @@ cd "$ROOT_DIR"
   scripts/test_run_mlx_p2_latency_artifacts.py \
   scripts/test_gateddelta_prefill_profile_artifact.py \
   scripts/test_render_gateddelta_prefill_profile_report.py \
+  scripts/test_render_mlx_forward_profile_report.py \
   scripts/test_gateddelta_prefill_model.py \
   scripts/test_run_gateddelta_prefill_profile.py \
   scripts/test_readme_performance_artifacts.py \

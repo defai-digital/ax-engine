@@ -114,6 +114,11 @@ throughput baselines.
   linear-attention stage timings, recurrent share, dominant stage, and next-step
   hints for scan/fusion experiments. The benchmark harness can call it during
   capture with `--gateddelta-prefill-profile-report-output`.
+- `render_mlx_forward_profile_report.py`: renders diagnostic
+  `AX_MLX_LINEAR_ATTENTION_PROFILE=1` inference-stack artifacts as a Markdown
+  review table. It is intentionally broader than the GatedDelta validator and
+  is used after prefill-breakdown evidence shows model-forward dominance. Keep
+  its timing-barrier output out of README headline throughput tables.
 - `check_gateddelta_prefill_model.py`: fail-closed preflight for real-model
   GatedDelta profile runs. It checks `config.json` plus `model-manifest.json`
   before release-server build and requires a `qwen3_5`/`qwen3_next`
