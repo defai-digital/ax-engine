@@ -17,13 +17,45 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  AX_ALLOW_UNSUPPORTED_HOST: "1"
+
 jobs:
-  ci:
+  rust:
+    name: Rust
     runs-on: macos-14
-    timeout-minutes: 30
-    env:
-      AX_ALLOW_UNSUPPORTED_HOST: "1"
-      AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR: ${{ github.event.inputs.mlx_model_artifacts_dir || vars.AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR }}
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Ensure stable Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install native build dependencies
+        run: brew install mlx-c protobuf
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run workspace tests
+        run: cargo test --quiet --no-fail-fast
+
+      - name: Run workspace clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  scripts:
+    name: Scripts and Bench Smoke
+    runs-on: macos-14
+    timeout-minutes: 25
 
     steps:
       - name: Check out repository
@@ -48,15 +80,6 @@ jobs:
       - name: Install native build dependencies
         run: brew install mlx-c protobuf
 
-      - name: Check formatting
-        run: cargo fmt --check
-
-      - name: Run workspace tests
-        run: cargo test --no-fail-fast
-
-      - name: Run workspace clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
       - name: Run script hygiene smoke check
         run: bash scripts/check-scripts.sh
 
@@ -69,16 +92,127 @@ jobs:
       - name: Run benchmark preview smoke check
         run: bash scripts/check-bench-preview.sh
 
+  python-package:
+    name: Python Package
+    runs-on: macos-14
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Ensure stable Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install native build dependencies
+        run: brew install mlx-c protobuf
+
+      - name: Run Python packaging smoke check
+        run: bash scripts/check-python-preview.sh
+
+  sdk-clients:
+    name: SDK Clients
+    runs-on: macos-14
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.22"
+          cache-dependency-path: sdk/go/axengine/go.mod
+
+      - name: Run JavaScript SDK tests
+        working-directory: javascript/ax-engine
+        run: npm test
+
+      - name: Run Go SDK tests
+        working-directory: sdk/go/axengine
+        run: go test ./...
+
+      - name: Run Ruby SDK tests
+        working-directory: sdk/ruby
+        run: ruby -Ilib -Itest test/test_sse_reader.rb test/test_client.rb
+
+      - name: Run Swift SDK tests
+        working-directory: sdk/swift
+        run: swift test
+
+  model-smoke:
+    name: Model Smoke
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR: ${{ inputs.mlx_model_artifacts_dir || vars.AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
       - name: Detect MLX model artifacts
         id: mlx-artifacts
         run: |
           if [ -n "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:-}" ] && [ -d "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" ]; then
             echo "available=true" >>"$GITHUB_OUTPUT"
             echo "MLX model artifacts found at $AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR"
+            {
+              echo "## Model Smoke"
+              echo
+              echo "MLX model artifacts: available"
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "available=false" >>"$GITHUB_OUTPUT"
             echo "MLX model artifacts not mounted; skipping real-model smoke checks."
+            {
+              echo "## Model Smoke"
+              echo
+              echo "MLX model artifacts: not mounted, model-dependent smoke checks skipped."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Set up Python
+        if: steps.mlx-artifacts.outputs.available == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Ensure stable Rust toolchain
+        if: steps.mlx-artifacts.outputs.available == 'true'
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Rust build artifacts
+        if: steps.mlx-artifacts.outputs.available == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install native build dependencies
+        if: steps.mlx-artifacts.outputs.available == 'true'
+        run: brew install mlx-c protobuf
 
       - name: Run server preview smoke check
         if: steps.mlx-artifacts.outputs.available == 'true'
@@ -103,6 +237,3 @@ jobs:
       - name: Run prefix-reuse equivalence regression gate
         if: steps.mlx-artifacts.outputs.available == 'true'
         run: bash scripts/check-prefix-reuse-equivalence.sh
-
-      - name: Run Python preview packaging smoke check
-        run: bash scripts/check-python-preview.sh
