@@ -27,7 +27,7 @@ use serde_json::json;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::{Instant, sleep_until};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod args;
@@ -495,6 +495,22 @@ impl ChatPromptTemplate {
     }
 }
 
+fn log_host_detection_warnings(session_config: &EngineSessionConfig) {
+    let host = ax_engine_sdk::current_host_report();
+    if let Some(reason) = host.detection_error.as_deref() {
+        let selected = session_config.resolved_backend.selected_backend;
+        warn!(
+            detected_soc = host.detected_soc.as_deref().unwrap_or("unknown Apple Silicon"),
+            supported_mlx_runtime = host.supported_mlx_runtime,
+            selected_backend = ?selected,
+            reason = %reason,
+            "ax-engine host SoC detection failed; MLX backends will refuse to start in this \
+             environment. Run outside the sandbox or set AX_ALLOW_UNSUPPORTED_HOST=1 only for \
+             bring-up. /health surfaces this under runtime.host.detection_error."
+        );
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tracing_enabled = init_tracing();
@@ -510,6 +526,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session_config = args
         .session_config()
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+    log_host_detection_warnings(&session_config);
     let session = EngineSession::new(session_config.clone())?;
     let state = build_app_state(model_id.clone(), session)?;
     let app = build_router(state.clone());

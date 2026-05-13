@@ -216,6 +216,12 @@ pub struct HostReport {
     pub supported_mlx_runtime: bool,
     #[serde(default)]
     pub unsupported_host_override_active: bool,
+    /// Reason SoC detection failed (e.g. `sysctl exited with status: 1: Operation not permitted`).
+    /// Set when host detection could not classify the CPU/GPU (typically a sandboxed environment
+    /// blocking sysctl/IOKit). Surfaced via /health so operators can diagnose silent MLX
+    /// fallbacks instead of debugging blind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detection_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
