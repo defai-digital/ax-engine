@@ -474,24 +474,29 @@ Reading the rows:
 #### Anti-pattern: one Python call per sentence
 
 The same model and same corpus, but the caller does the Python `for`-loop
-itself (one `embed_bytes` call per sentence), is the worst case. Each call
-pays a fresh Python frame setup, a PyO3 boundary, and one GPU sync — and
-those costs do not amortize. Numbers are medians of 5 trials with a 10 s
+itself (one `embed_bytes` / `model.model(x)` call per sentence) is the
+worst case for **both** backends. Each call pays a fresh Python frame
+setup, a PyO3 / MLX dispatch, and one GPU sync — costs that do not
+amortise. Batching collapses those costs to once per request for both
+`mlx-lm` and `ax-engine`. Numbers are medians of 5 trials with a 10 s
 cooldown between trials (the conservative benchmark profile). Source:
 `benchmarks/results/embedding/2026-05-12-full-fresh-readme-refresh/`.
 
-| Model | mlx-lm (loop) | ax-engine-py (loop) | ax-engine-py batched (same corpus) | batched speedup over loop |
-|---|---:|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 1,477.7 | 1,386.0 | 2,620.1 | **1.9×** |
-| Qwen3-Embedding 4B 4-bit | 477.0 | 536.5 | 1,484.4 | **2.8×** |
-| Qwen3-Embedding 8B 4-bit DWQ | 319.1 | 302.6 | 868.0 | **2.9×** |
+| Model | mlx-lm loop | mlx-lm batched | ax-py loop | ax-py batched | mlx-lm speedup | ax-py speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| Qwen3-Embedding 0.6B 8-bit | 1,477.7 | **2,804.7** | 1,386.0 | **2,620.1** | **1.9×** | **1.9×** |
+| Qwen3-Embedding 4B 4-bit | 477.0 | **1,434.0** | 536.5 | **1,484.4** | **3.0×** | **2.8×** |
+| Qwen3-Embedding 8B 4-bit DWQ | 319.1 | **871.5** | 302.6 | **868.0** | **2.7×** | **2.9×** |
 
-The batched column above uses the same 10-sentence corpus and the same
-10 s-cooldown trial profile as the loop column, so the speedup ratio is the
-honest cost of *not* batching, free of methodology differences. Compared
-against the sustained-throughput table above the batched numbers here are
-lower because each timed trial follows a 10 s GPU idle period; sustained
-loads do not pay that penalty.
+Both backends gain ~2–3× from batching, so this is *not* an
+AX-over-`mlx-lm` advantage — it is a general "stop calling per-
+sentence" observation that applies regardless of which backend you
+pick. The previous sustained-batched table is the AX-vs-mlx-lm
+comparison on the same request shape; this table is *batched-vs-loop*
+inside each backend to quantify the cost of the loop anti-pattern.
+Numbers here are below the sustained-batched table because each timed
+trial follows a 10 s GPU idle period; sustained loads do not pay that
+penalty.
 
 #### Server-side embedding micro-batcher
 
