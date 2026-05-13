@@ -1,0 +1,2704 @@
+
+=== AX Engine MLX inference stack ===
+  model: .internal/models/Qwen3.6-35B-A3B-6bit
+  model_dir: .internal/models/Qwen3.6-35B-A3B-6bit
+  prompt_tokens: [128, 512]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts
+  [prompt] prompt_tokens=128 sha256=a03e5d1e2a75 path=benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json
+  [prompt] prompt_tokens=512 sha256=b1c0bcb994aa path=benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json
+  [mlx_lm] python3 -m mlx_lm.benchmark --model .internal/models/Qwen3.6-35B-A3B-6bit --batch-size 1 --prompt-tokens 128 --generation-tokens 128 --num-trials 5 --delay 15 --prefill-step-size 2048
+  [mlx_lm] python3 -m mlx_lm.benchmark --model .internal/models/Qwen3.6-35B-A3B-6bit --batch-size 1 --prompt-tokens 512 --generation-tokens 128 --num-trials 5 --delay 15 --prefill-step-size 2048
+  [mlx-swift-lm] scripts/mlx-swift-bench/.build/release/mlx-swift-bench --model .internal/models/Qwen3.6-35B-A3B-6bit --prompt-token-ids benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json --generation-tokens 128 --trials 5 --delay 15.0 --prefill-step-size 2048
+  [mlx-swift-lm] scripts/mlx-swift-bench/.build/release/mlx-swift-bench --model .internal/models/Qwen3.6-35B-A3B-6bit --prompt-token-ids benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json --generation-tokens 128 --trials 5 --delay 15.0 --prefill-step-size 2048
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/Qwen3.6-35B-A3B-6bit --port 8091 --disable-ngram-acceleration
+  [ax-engine/ax_engine_mlx] prompt=128 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=1005.9 tok/s decode=122.1 tok/s out=128
+    rep 2: prefill=1047.0 tok/s decode=121.2 tok/s out=128
+    rep 3: prefill=1076.2 tok/s decode=121.9 tok/s out=128
+    rep 4: prefill=1037.6 tok/s decode=121.6 tok/s out=128
+    rep 5: prefill=1071.0 tok/s decode=121.1 tok/s out=128
+  [ax-engine/ax_engine_mlx] prompt=512 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=2662.7 tok/s decode=119.9 tok/s out=128
+    rep 2: prefill=2624.1 tok/s decode=119.7 tok/s out=128
+    rep 3: prefill=2625.2 tok/s decode=119.8 tok/s out=128
+    rep 4: prefill=2645.8 tok/s decode=121.2 tok/s out=128
+    rep 5: prefill=2647.7 tok/s decode=121.2 tok/s out=128
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/Qwen3.6-35B-A3B-6bit --port 8091
+  [ax-engine/ax_engine_mlx_ngram_accel] prompt=128 generation=128 policy=ngram_acceleration_linear_attention_branch_recompute kv_compression=disabled
+    rep 1: prefill=1046.9 tok/s decode=261.0 tok/s out=128
+    rep 2: prefill=1074.1 tok/s decode=261.6 tok/s out=128
+    rep 3: prefill=1018.5 tok/s decode=262.1 tok/s out=128
+    rep 4: prefill=1063.8 tok/s decode=261.4 tok/s out=128
+    rep 5: prefill=1030.6 tok/s decode=261.0 tok/s out=128
+  [ax-engine/ax_engine_mlx_ngram_accel] prompt=512 generation=128 policy=ngram_acceleration_linear_attention_branch_recompute kv_compression=disabled
+    rep 1: prefill=2638.0 tok/s decode=258.3 tok/s out=128
+    rep 2: prefill=2619.9 tok/s decode=257.9 tok/s out=128
+    rep 3: prefill=2626.9 tok/s decode=257.7 tok/s out=128
+    rep 4: prefill=2638.4 tok/s decode=257.7 tok/s out=128
+    rep 5: prefill=2636.5 tok/s decode=258.4 tok/s out=128
+
+========================================================================================
+AX Engine MLX inference stack benchmark
+========================================================================================
+Engine             Prompt tok  Prefill tok/s  Decode tok/s Decode vs mlx_lm  Method
+----------------------------------------------------------------------------------------
+mlx_lm                    128          429.5         114.8         baseline  mlx_lm.benchmark
+mlx_lm                    512         1415.1         114.5         baseline  mlx_lm.benchmark
+mlx_swift_lm              128          780.5         111.8           0.974x  mlx_swift_lm_benchmark_adapter
+mlx_swift_lm              512         2410.7         110.4           0.965x  mlx_swift_lm_benchmark_adapter
+ax_engine_mlx             128         1047.0         121.6           1.059x  server_sse_runner_time_us
+ax_engine_mlx             512         2645.8         119.9           1.048x  server_sse_runner_time_us
+ax_engine_mlx_ngram_accel        128         1046.9         261.4           2.277x  server_sse_runner_time_us
+ax_engine_mlx_ngram_accel        512         2636.5         257.9           2.253x  server_sse_runner_time_us
+
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "claim_gate": {
+    "schema_version": "ax.phase0_claim_gate.v1",
+    "scope": "mlx_inference_stack_public_readme",
+    "requires_prompt_hash_parity": true,
+    "requires_runtime_identity": true,
+    "requires_decode_policy_identity": true,
+    "requires_prefill_decode_split": true,
+    "forbidden_public_claims_without_artifacts": [
+      "continuous_batching",
+      "prefix_reuse",
+      "long_context_prefill_improvement"
+    ]
+  },
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.4.1",
+    "platform": "darwin"
+  },
+  "build": {
+    "commit": "3f41900473ae04ffb67f5cfa9d027e6f6bf5b6d2",
+    "build_profile": "release",
+    "server_binary": "/Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server"
+  },
+  "model": ".internal/models/Qwen3.6-35B-A3B-6bit",
+  "model_dir": ".internal/models/Qwen3.6-35B-A3B-6bit",
+  "model_config": {
+    "model_type": "qwen3_5_moe",
+    "quantization": {
+      "group_size": 64,
+      "bits": 6,
+      "mode": "affine",
+      "language_model.model.layers.0.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.0.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.1.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.1.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.2.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.2.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.3.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.3.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.4.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.4.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.5.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.5.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.6.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.6.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.7.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.7.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.8.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.8.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.9.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.9.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.10.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.10.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.11.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.11.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.12.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.12.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.13.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.13.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.14.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.14.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.15.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.15.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.16.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.16.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.17.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.17.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.18.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.18.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.19.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.19.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.20.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.20.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.21.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.21.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.22.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.22.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.23.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.23.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.24.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.24.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.25.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.25.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.26.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.26.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.27.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.27.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.28.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.28.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.29.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.29.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.30.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.30.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.31.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.31.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.32.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.32.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.33.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.33.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.34.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.34.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.35.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.35.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.36.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.36.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.37.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.37.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.38.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.38.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.39.mlp.gate": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.39.mlp.shared_expert_gate": {
+        "group_size": 64,
+        "bits": 8
+      }
+    },
+    "model_family": "qwen3_5",
+    "linear_attention_enabled": true,
+    "linear_attention": {
+      "full_attention_interval": 4,
+      "num_value_heads": 32,
+      "num_key_heads": 16,
+      "key_head_dim": 128,
+      "value_head_dim": 128,
+      "conv_kernel_dim": 4
+    }
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "secondary_reference": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
+    "secondary_reference_present": true,
+    "secondary_reference_required": false,
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback.",
+    "secondary_reference_policy": "mlx-swift-lm rows are admitted only through an explicit BenchmarkHelpers/MLXLMCommon generation adapter that reads the prompt token JSON emitted by this harness and reports prefill/decode metrics for the same random-token prompt/decode shape.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+          "token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+          "token_count": 128
+        },
+        {
+          "prompt_tokens": 512,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+          "token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+          "token_count": 512
+        }
+      ]
+    },
+    "strictness": "same_prompt_tokens_for_ax_and_swift_adapter; mlx_lm_prompt_algorithm_reproduced"
+  },
+  "prompt_tokens": [
+    128,
+    512
+  ],
+  "generation_tokens": 128,
+  "repetitions": 5,
+  "cooldown": 15.0,
+  "prefill_step_size": 2048,
+  "concurrency": 1,
+  "concurrent_prefill_overlap_classification": {
+    "classification": "single_request_no_overlap",
+    "continuous_batching_claim": false,
+    "concurrency": 1
+  },
+  "prefix_reuse_evidence": {
+    "hit_count": 0,
+    "miss_count": 0,
+    "blocked_count": 0,
+    "blocked_policy_disabled_count": 0,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "stored_prefix_count": 20,
+    "eviction_count": 0,
+    "reused_token_count": 0,
+    "warmup_token_count": 0,
+    "cache_entry_count": 5,
+    "cache_bytes_kib": 51200,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": false,
+    "physical_snapshot_coverage": "none_observed",
+    "blocked_reason_count": 0,
+    "blocked_reason_accounting_gap_count": 0
+  },
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "results": [
+    {
+      "prefill_tok_s": {
+        "mean": 428.56080000000003,
+        "median": 429.485,
+        "min": 423.992,
+        "max": 430.991
+      },
+      "decode_tok_s": {
+        "mean": 114.898,
+        "median": 114.786,
+        "min": 114.603,
+        "max": 115.258
+      },
+      "peak_memory_gb": {
+        "mean": 28.4052,
+        "median": 28.405,
+        "min": 28.404,
+        "max": 28.406
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 429.485,
+          "decode_tok_s": 114.623,
+          "peak_memory_gb": 28.404,
+          "total_time_s": 1.525,
+          "ttft_ms": 298.0313631442309
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 430.991,
+          "decode_tok_s": 115.22,
+          "peak_memory_gb": 28.405,
+          "total_time_s": 1.521,
+          "ttft_ms": 296.9899603471998
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 423.992,
+          "decode_tok_s": 115.258,
+          "peak_memory_gb": 28.405,
+          "total_time_s": 1.524,
+          "ttft_ms": 301.89248853751957
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 428.37,
+          "decode_tok_s": 114.603,
+          "peak_memory_gb": 28.406,
+          "total_time_s": 1.532,
+          "ttft_ms": 298.8071060064897
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 429.966,
+          "decode_tok_s": 114.786,
+          "peak_memory_gb": 28.406,
+          "total_time_s": 1.525,
+          "ttft_ms": 297.69795751291963
+        }
+      ],
+      "total_time_s": {
+        "mean": 1.5253999999999999,
+        "median": 1.525,
+        "min": 1.521,
+        "max": 1.532
+      },
+      "reported_averages": {
+        "prefill_tok_s": 428.561,
+        "decode_tok_s": 114.898,
+        "peak_memory_gb": 28.405
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 298.68377510967196,
+        "median": 298.0313631442309,
+        "min": 296.9899603471998,
+        "max": 301.89248853751957
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 1412.2736,
+        "median": 1415.052,
+        "min": 1402.176,
+        "max": 1422.143
+      },
+      "decode_tok_s": {
+        "mean": 114.4,
+        "median": 114.475,
+        "min": 113.903,
+        "max": 114.833
+      },
+      "peak_memory_gb": {
+        "mean": 28.8408,
+        "median": 28.841,
+        "min": 28.84,
+        "max": 28.842
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 1402.176,
+          "decode_tok_s": 113.903,
+          "peak_memory_gb": 28.84,
+          "total_time_s": 1.606,
+          "ttft_ms": 365.14674334748275
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 1422.143,
+          "decode_tok_s": 114.833,
+          "peak_memory_gb": 28.84,
+          "total_time_s": 1.583,
+          "ttft_ms": 360.0200542420839
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 1419.273,
+          "decode_tok_s": 114.613,
+          "peak_memory_gb": 28.841,
+          "total_time_s": 1.583,
+          "ttft_ms": 360.74807313321685
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 1415.052,
+          "decode_tok_s": 114.475,
+          "peak_memory_gb": 28.841,
+          "total_time_s": 1.588,
+          "ttft_ms": 361.82415911217396
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 1402.724,
+          "decode_tok_s": 114.176,
+          "peak_memory_gb": 28.842,
+          "total_time_s": 1.592,
+          "ttft_ms": 365.0040920380631
+        }
+      ],
+      "total_time_s": {
+        "mean": 1.5904,
+        "median": 1.588,
+        "min": 1.583,
+        "max": 1.606
+      },
+      "reported_averages": {
+        "prefill_tok_s": 1412.273,
+        "decode_tok_s": 114.4,
+        "peak_memory_gb": 28.841
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+      "prompt_token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 362.5486243746041,
+        "median": 361.82415911217396,
+        "min": 360.0200542420839,
+        "max": 365.14674334748275
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "engine": "mlx_swift_lm",
+      "method": "mlx_swift_lm_benchmark_adapter",
+      "timing_scope": "external_adapter_reported",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "secondary_reference_role": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "prefill_tok_s": {
+        "mean": 785.6839649968394,
+        "median": 780.4547380050734,
+        "min": 765.3719390235384,
+        "max": 815.6399139801936
+      },
+      "decode_tok_s": {
+        "mean": 111.56848678878744,
+        "median": 111.75906030705326,
+        "min": 110.75682886162878,
+        "max": 111.9847280348692
+      },
+      "peak_memory_gb": {
+        "mean": 26.271726436913013,
+        "median": 26.271723188459873,
+        "min": 26.271723188459873,
+        "max": 26.271738447248936
+      },
+      "trials": [
+        {
+          "decode_tok_s": 111.9847280348692,
+          "peak_memory_gb": 26.271724171936512,
+          "prefill_tok_s": 815.6399139801936,
+          "ttft_ms": 156.93199634552002
+        },
+        {
+          "decode_tok_s": 111.75906030705326,
+          "peak_memory_gb": 26.271723188459873,
+          "prefill_tok_s": 780.4547380050734,
+          "ttft_ms": 164.00694847106934
+        },
+        {
+          "decode_tok_s": 111.51060124689273,
+          "peak_memory_gb": 26.271723188459873,
+          "prefill_tok_s": 789.0130512386589,
+          "ttft_ms": 162.22798824310303
+        },
+        {
+          "decode_tok_s": 110.75682886162878,
+          "peak_memory_gb": 26.271723188459873,
+          "prefill_tok_s": 777.9401827367329,
+          "ttft_ms": 164.53707218170166
+        },
+        {
+          "decode_tok_s": 111.83121549349318,
+          "peak_memory_gb": 26.271738447248936,
+          "prefill_tok_s": 765.3719390235384,
+          "ttft_ms": 167.23895072937012
+        }
+      ],
+      "ttft_ms": {
+        "mean": 162.98859119415283,
+        "median": 164.00694847106934,
+        "min": 156.93199634552002,
+        "max": 167.23895072937012
+      },
+      "ttft_source": "derived_from_mlx_swift_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "prefill_tok_s": 429.485,
+        "decode_tok_s": 114.786,
+        "prefill_ratio_to_mlx_lm": 1.8171874175002,
+        "decode_ratio_to_mlx_lm": 0.9736297136153648
+      }
+    },
+    {
+      "engine": "mlx_swift_lm",
+      "method": "mlx_swift_lm_benchmark_adapter",
+      "timing_scope": "external_adapter_reported",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "secondary_reference_role": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+      "prompt_token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "prefill_tok_s": {
+        "mean": 2404.225313128755,
+        "median": 2410.660248667532,
+        "min": 2368.17767808749,
+        "max": 2421.0324759036384
+      },
+      "decode_tok_s": {
+        "mean": 110.37691416838773,
+        "median": 110.41497776310251,
+        "min": 110.25538720395241,
+        "max": 110.4336472055472
+      },
+      "peak_memory_gb": {
+        "mean": 26.28146336004138,
+        "median": 26.28146020323038,
+        "min": 26.281459726393223,
+        "max": 26.281476464122534
+      },
+      "trials": [
+        {
+          "decode_tok_s": 110.25538720395241,
+          "peak_memory_gb": 26.281476464122534,
+          "prefill_tok_s": 2408.255583186379,
+          "ttft_ms": 212.60201930999756
+        },
+        {
+          "decode_tok_s": 110.35976725551696,
+          "peak_memory_gb": 26.28146020323038,
+          "prefill_tok_s": 2410.660248667532,
+          "ttft_ms": 212.3899459838867
+        },
+        {
+          "decode_tok_s": 110.42079141381956,
+          "peak_memory_gb": 26.28146020323038,
+          "prefill_tok_s": 2413.0005797987333,
+          "ttft_ms": 212.183952331543
+        },
+        {
+          "decode_tok_s": 110.4336472055472,
+          "peak_memory_gb": 26.281459726393223,
+          "prefill_tok_s": 2421.0324759036384,
+          "ttft_ms": 211.48002147674558
+        },
+        {
+          "decode_tok_s": 110.41497776310251,
+          "peak_memory_gb": 26.28146020323038,
+          "prefill_tok_s": 2368.17767808749,
+          "ttft_ms": 216.19999408721924
+        }
+      ],
+      "ttft_ms": {
+        "mean": 212.97118663787842,
+        "median": 212.3899459838867,
+        "min": 211.48002147674558,
+        "max": 216.19999408721924
+      },
+      "ttft_source": "derived_from_mlx_swift_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 512,
+        "generation_tokens": 128,
+        "prefill_tok_s": 1415.052,
+        "decode_tok_s": 114.475,
+        "prefill_ratio_to_mlx_lm": 1.7035842136313946,
+        "decode_ratio_to_mlx_lm": 0.9645335467403583
+      }
+    },
+    {
+      "engine": "ax_engine_mlx",
+      "method": "server_sse_runner_time_us",
+      "timing_scope": "ax_engine_runner_time_us",
+      "runtime_identity": {
+        "selected_backend": "mlx",
+        "route_identity": "repo_owned_mlx",
+        "resolution_policy": "mlx_only",
+        "benchmark_surface": "mlx_inference_stack"
+      },
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "ax_decode_claim_status": "direct_same_policy_baseline",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "prefill_tok_s": {
+        "mean": 1047.5401877935967,
+        "median": 1047.0433295977882,
+        "min": 1005.893909626719,
+        "max": 1076.1728602656801
+      },
+      "decode_tok_s": {
+        "mean": 121.59992898535036,
+        "median": 121.6079054713982,
+        "min": 121.1343131541372,
+        "max": 122.09765697480461
+      },
+      "ttft_ms": {
+        "mean": 122.26320000000001,
+        "median": 122.249,
+        "min": 118.94,
+        "max": 127.25
+      },
+      "ttft_source": "ax_engine_runner_prefill_time",
+      "prefill_s": {
+        "mean": 0.12226319999999999,
+        "median": 0.122249,
+        "min": 0.11894,
+        "max": 0.12725
+      },
+      "decode_s": {
+        "mean": 1.0444184,
+        "median": 1.04434,
+        "min": 1.040151,
+        "max": 1.048423
+      },
+      "ngram_acceleration_telemetry": {
+        "ax_ngram_draft_attempts": 0,
+        "ax_ngram_draft_tokens": 0,
+        "ax_ngram_accepted_tokens": 0,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_ngram_full_accepts": 0,
+        "ax_ngram_partial_rejects": 0,
+        "ax_ngram_complete_misses": 0,
+        "ax_ngram_no_draft_steps": 0,
+        "ax_ngram_cooldown_steps": 0,
+        "ax_ngram_cooldown_events": 0,
+        "ax_ngram_cooldown_steps_scheduled": 0,
+        "ax_ngram_request_disable_events": 0,
+        "ax_ngram_request_disabled_steps": 0,
+        "ax_ngram_fallback_no_candidate_steps": 0,
+        "ax_ngram_fallback_confidence_filtered_steps": 0,
+        "ax_ngram_fallback_short_output_steps": 0,
+        "ax_ngram_fallback_linear_no_draft_steps": 0,
+        "ax_ngram_policy_variant": 0,
+        "ax_ngram_adaptive_draft_len_steps": 0,
+        "ax_ngram_adaptive_draft_len_total": 0
+      },
+      "ax_mlx_telemetry": {
+        "ax_mlx_prefill_steps": 5,
+        "ax_mlx_prefill_wall_us": 611227,
+        "ax_mlx_decode_steps": 635,
+        "ax_mlx_decode_wall_us": 5213499,
+        "ax_mlx_direct_bootstrap_steps": 5,
+        "ax_mlx_direct_bootstrap_wall_us": 45467,
+        "ax_mlx_direct_pipeline_steps": 635,
+        "ax_mlx_direct_pipeline_wall_us": 5167781,
+        "ax_mlx_single_decode_steps": 0,
+        "ax_mlx_single_decode_wall_us": 0,
+        "ax_mlx_ngram_decode_steps": 0,
+        "ax_mlx_ngram_decode_wall_us": 0,
+        "ax_mlx_bonus_tokens": 0,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+        "ax_mlx_prefix_cache_stores": 5,
+        "ax_mlx_prefix_cache_evictions": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "ax_mlx_prefix_cache_entries": 5,
+        "ax_mlx_prefix_cache_bytes_kib": 12800
+      },
+      "scheduler_telemetry": {
+        "ax_scheduler_scheduled_prefill_tokens": 640,
+        "ax_scheduler_scheduled_decode_tokens": 635,
+        "ax_scheduler_skipped_prefill_tokens": 0,
+        "ax_scheduler_skipped_decode_tokens": 0,
+        "ax_scheduler_mixed_prefill_decode_batches": 0
+      },
+      "ax_mlx_gemma4_moe_profile": {},
+      "ax_mlx_linear_attention_profile": {},
+      "trials": [
+        {
+          "prefill_s": 0.12725,
+          "decode_s": 1.040151,
+          "ttft_ms": 127.25,
+          "prefill_tok_s": 1005.893909626719,
+          "decode_tok_s": 122.09765697480461,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.617645263671875,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 127229,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1038496,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 8998,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1029450,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 2560
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.122249,
+          "decode_s": 1.047535,
+          "ttft_ms": 122.249,
+          "prefill_tok_s": 1047.0433295977882,
+          "decode_tok_s": 121.23699924107547,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.62709045410156,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 122230,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1045720,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 8977,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1036687,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 2560
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.11894,
+          "decode_s": 1.041643,
+          "ttft_ms": 118.94,
+          "prefill_tok_s": 1076.1728602656801,
+          "decode_tok_s": 121.92277008533632,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.63671875,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 118924,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1039918,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 9112,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1030760,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 2560
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.12336,
+          "decode_s": 1.04434,
+          "ttft_ms": 123.36,
+          "prefill_tok_s": 1037.6134889753566,
+          "decode_tok_s": 121.6079054713982,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.641845703125,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 123343,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1042667,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 9172,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1033443,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 2560
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.119517,
+          "decode_s": 1.048423,
+          "ttft_ms": 119.517,
+          "prefill_tok_s": 1070.977350502439,
+          "decode_tok_s": 121.1343131541372,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.647064208984375,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 119501,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1046698,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 9208,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1037441,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 2560
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        }
+      ],
+      "peak_memory_gb": {
+        "mean": 52.634072875976564,
+        "median": 52.63671875,
+        "min": 52.617645263671875,
+        "max": 52.647064208984375
+      },
+      "memory_source": "server_process_rss_after_stream",
+      "prefill_step_size": 2048,
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "prefill_tok_s": 429.485,
+        "decode_tok_s": 114.786,
+        "prefill_ratio_to_mlx_lm": 2.4379043030554923,
+        "decode_ratio_to_mlx_lm": 1.0594315114334343
+      }
+    },
+    {
+      "engine": "ax_engine_mlx",
+      "method": "server_sse_runner_time_us",
+      "timing_scope": "ax_engine_runner_time_us",
+      "runtime_identity": {
+        "selected_backend": "mlx",
+        "route_identity": "repo_owned_mlx",
+        "resolution_policy": "mlx_only",
+        "benchmark_surface": "mlx_inference_stack"
+      },
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "ax_decode_claim_status": "direct_same_policy_baseline",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "prefill_tok_s": {
+        "mean": 2641.0835670765873,
+        "median": 2645.789732062114,
+        "min": 2624.0531370760255,
+        "max": 2662.700352599773
+      },
+      "decode_tok_s": {
+        "mean": 120.3626006393537,
+        "median": 119.91596440289875,
+        "min": 119.68113928905633,
+        "max": 121.21940999554256
+      },
+      "ttft_ms": {
+        "mean": 193.86579999999998,
+        "median": 193.515,
+        "min": 192.286,
+        "max": 195.11800000000002
+      },
+      "ttft_source": "ax_engine_runner_prefill_time",
+      "prefill_s": {
+        "mean": 0.1938658,
+        "median": 0.193515,
+        "min": 0.192286,
+        "max": 0.195118
+      },
+      "decode_s": {
+        "mean": 1.0551798,
+        "median": 1.059075,
+        "min": 1.047687,
+        "max": 1.061153
+      },
+      "ngram_acceleration_telemetry": {
+        "ax_ngram_draft_attempts": 0,
+        "ax_ngram_draft_tokens": 0,
+        "ax_ngram_accepted_tokens": 0,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_ngram_full_accepts": 0,
+        "ax_ngram_partial_rejects": 0,
+        "ax_ngram_complete_misses": 0,
+        "ax_ngram_no_draft_steps": 0,
+        "ax_ngram_cooldown_steps": 0,
+        "ax_ngram_cooldown_events": 0,
+        "ax_ngram_cooldown_steps_scheduled": 0,
+        "ax_ngram_request_disable_events": 0,
+        "ax_ngram_request_disabled_steps": 0,
+        "ax_ngram_fallback_no_candidate_steps": 0,
+        "ax_ngram_fallback_confidence_filtered_steps": 0,
+        "ax_ngram_fallback_short_output_steps": 0,
+        "ax_ngram_fallback_linear_no_draft_steps": 0,
+        "ax_ngram_policy_variant": 0,
+        "ax_ngram_adaptive_draft_len_steps": 0,
+        "ax_ngram_adaptive_draft_len_total": 0
+      },
+      "ax_mlx_telemetry": {
+        "ax_mlx_prefill_steps": 5,
+        "ax_mlx_prefill_wall_us": 969247,
+        "ax_mlx_decode_steps": 635,
+        "ax_mlx_decode_wall_us": 5267150,
+        "ax_mlx_direct_bootstrap_steps": 5,
+        "ax_mlx_direct_bootstrap_wall_us": 49210,
+        "ax_mlx_direct_pipeline_steps": 635,
+        "ax_mlx_direct_pipeline_wall_us": 5217732,
+        "ax_mlx_single_decode_steps": 0,
+        "ax_mlx_single_decode_wall_us": 0,
+        "ax_mlx_ngram_decode_steps": 0,
+        "ax_mlx_ngram_decode_wall_us": 0,
+        "ax_mlx_bonus_tokens": 0,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+        "ax_mlx_prefix_cache_stores": 5,
+        "ax_mlx_prefix_cache_evictions": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "ax_mlx_prefix_cache_entries": 5,
+        "ax_mlx_prefix_cache_bytes_kib": 51200
+      },
+      "scheduler_telemetry": {
+        "ax_scheduler_scheduled_prefill_tokens": 2560,
+        "ax_scheduler_scheduled_decode_tokens": 635,
+        "ax_scheduler_skipped_prefill_tokens": 0,
+        "ax_scheduler_skipped_decode_tokens": 0,
+        "ax_scheduler_mixed_prefill_decode_batches": 0
+      },
+      "ax_mlx_gemma4_moe_profile": {},
+      "ax_mlx_linear_attention_profile": {},
+      "trials": [
+        {
+          "prefill_s": 0.192286,
+          "decode_s": 1.059075,
+          "ttft_ms": 192.286,
+          "prefill_tok_s": 2662.700352599773,
+          "decode_tok_s": 119.91596440289875,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.65309143066406,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 192268,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1057306,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 9693,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1047571,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 10240
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 512,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.195118,
+          "decode_s": 1.061153,
+          "ttft_ms": 195.11800000000002,
+          "prefill_tok_s": 2624.0531370760255,
+          "decode_tok_s": 119.68113928905633,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.65800476074219,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 195102,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1059313,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 9762,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1049502,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 10240
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 512,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.195033,
+          "decode_s": 1.060043,
+          "ttft_ms": 195.03300000000002,
+          "prefill_tok_s": 2625.196761573682,
+          "decode_tok_s": 119.80646068131198,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.6629638671875,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 195017,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1058194,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 10321,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1047826,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 10240
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 512,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.193515,
+          "decode_s": 1.047941,
+          "ttft_ms": 193.515,
+          "prefill_tok_s": 2645.789732062114,
+          "decode_tok_s": 121.19002882795883,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.667877197265625,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 193498,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1046299,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 9779,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1036487,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 10240
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 512,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.193377,
+          "decode_s": 1.047687,
+          "ttft_ms": 193.37699999999998,
+          "prefill_tok_s": 2647.6778520713424,
+          "decode_tok_s": 121.21940999554256,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.67283630371094,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 193362,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 1046038,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 9655,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 1036346,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 10240
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 512,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        }
+      ],
+      "peak_memory_gb": {
+        "mean": 52.66295471191406,
+        "median": 52.6629638671875,
+        "min": 52.65309143066406,
+        "max": 52.67283630371094
+      },
+      "memory_source": "server_process_rss_after_stream",
+      "prefill_step_size": 2048,
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+      "prompt_token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 512,
+        "generation_tokens": 128,
+        "prefill_tok_s": 1415.052,
+        "decode_tok_s": 114.475,
+        "prefill_ratio_to_mlx_lm": 1.869747353498044,
+        "decode_ratio_to_mlx_lm": 1.0475297174308693
+      }
+    },
+    {
+      "engine": "ax_engine_mlx_ngram_accel",
+      "method": "server_sse_runner_time_us",
+      "timing_scope": "ax_engine_runner_time_us",
+      "runtime_identity": {
+        "selected_backend": "mlx",
+        "route_identity": "repo_owned_mlx",
+        "resolution_policy": "mlx_only",
+        "benchmark_surface": "mlx_inference_stack"
+      },
+      "ax_decode_policy": "ngram_acceleration_linear_attention_branch_recompute",
+      "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "prefill_tok_s": {
+        "mean": 1046.7639584565961,
+        "median": 1046.872060784009,
+        "min": 1018.5244127570182,
+        "max": 1074.0507656807215
+      },
+      "decode_tok_s": {
+        "mean": 261.3863596252943,
+        "median": 261.3706523976127,
+        "min": 260.9506823757608,
+        "max": 262.0561295341385
+      },
+      "ttft_ms": {
+        "mean": 122.32840000000002,
+        "median": 122.269,
+        "min": 119.175,
+        "max": 125.67200000000001
+      },
+      "ttft_source": "ax_engine_runner_prefill_time",
+      "prefill_s": {
+        "mean": 0.1223284,
+        "median": 0.122269,
+        "min": 0.119175,
+        "max": 0.125672
+      },
+      "decode_s": {
+        "mean": 0.48587199999999997,
+        "median": 0.4859,
+        "min": 0.484629,
+        "max": 0.486682
+      },
+      "ngram_acceleration_telemetry": {
+        "ax_ngram_draft_attempts": 125,
+        "ax_ngram_draft_tokens": 500,
+        "ax_ngram_accepted_tokens": 500,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_ngram_full_accepts": 125,
+        "ax_ngram_partial_rejects": 0,
+        "ax_ngram_complete_misses": 0,
+        "ax_ngram_no_draft_steps": 5,
+        "ax_ngram_cooldown_steps": 20,
+        "ax_ngram_cooldown_events": 5,
+        "ax_ngram_cooldown_steps_scheduled": 20,
+        "ax_ngram_request_disable_events": 0,
+        "ax_ngram_request_disabled_steps": 0,
+        "ax_ngram_fallback_no_candidate_steps": 5,
+        "ax_ngram_fallback_confidence_filtered_steps": 0,
+        "ax_ngram_fallback_short_output_steps": 0,
+        "ax_ngram_fallback_linear_no_draft_steps": 0,
+        "ax_ngram_policy_variant": 1,
+        "ax_ngram_adaptive_draft_len_steps": 130,
+        "ax_ngram_adaptive_draft_len_total": 520,
+        "ax_ngram_accept_rate_micros": 1000000
+      },
+      "ax_mlx_telemetry": {
+        "ax_mlx_prefill_steps": 5,
+        "ax_mlx_prefill_wall_us": 611568,
+        "ax_mlx_decode_steps": 635,
+        "ax_mlx_decode_wall_us": 2419316,
+        "ax_mlx_direct_bootstrap_steps": 0,
+        "ax_mlx_direct_bootstrap_wall_us": 0,
+        "ax_mlx_direct_pipeline_steps": 0,
+        "ax_mlx_direct_pipeline_wall_us": 0,
+        "ax_mlx_single_decode_steps": 25,
+        "ax_mlx_single_decode_wall_us": 237917,
+        "ax_mlx_ngram_decode_steps": 125,
+        "ax_mlx_ngram_decode_wall_us": 2181313,
+        "ax_mlx_bonus_tokens": 485,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+        "ax_mlx_prefix_cache_stores": 5,
+        "ax_mlx_prefix_cache_evictions": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "ax_mlx_prefix_cache_entries": 5,
+        "ax_mlx_prefix_cache_bytes_kib": 12800
+      },
+      "scheduler_telemetry": {
+        "ax_scheduler_scheduled_prefill_tokens": 640,
+        "ax_scheduler_scheduled_decode_tokens": 635,
+        "ax_scheduler_skipped_prefill_tokens": 0,
+        "ax_scheduler_skipped_decode_tokens": 0,
+        "ax_scheduler_mixed_prefill_decode_batches": 0
+      },
+      "ax_mlx_gemma4_moe_profile": {},
+      "ax_mlx_linear_attention_profile": {},
+      "trials": [
+        {
+          "prefill_s": 0.122269,
+          "decode_s": 0.486634,
+          "ttft_ms": 122.269,
+          "prefill_tok_s": 1046.872060784009,
+          "decode_tok_s": 260.97642170501854,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.60801696777344,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 25,
+            "ax_ngram_draft_tokens": 100,
+            "ax_ngram_accepted_tokens": 100,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 25,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 1,
+            "ax_ngram_cooldown_steps": 4,
+            "ax_ngram_cooldown_events": 1,
+            "ax_ngram_cooldown_steps_scheduled": 4,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 1,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 1,
+            "ax_ngram_adaptive_draft_len_steps": 26,
+            "ax_ngram_adaptive_draft_len_total": 104,
+            "ax_ngram_accept_rate_micros": 1000000
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 122254,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 484620,
+            "ax_mlx_direct_bootstrap_steps": 0,
+            "ax_mlx_direct_bootstrap_wall_us": 0,
+            "ax_mlx_direct_pipeline_steps": 0,
+            "ax_mlx_direct_pipeline_wall_us": 0,
+            "ax_mlx_single_decode_steps": 5,
+            "ax_mlx_single_decode_wall_us": 47871,
+            "ax_mlx_ngram_decode_steps": 25,
+            "ax_mlx_ngram_decode_wall_us": 436736,
+            "ax_mlx_bonus_tokens": 97,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 2560
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.119175,
+          "decode_s": 0.485515,
+          "ttft_ms": 119.175,
+          "prefill_tok_s": 1074.0507656807215,
+          "decode_tok_s": 261.5779121139409,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.609344482421875,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 25,
+            "ax_ngram_draft_tokens": 100,
+            "ax_ngram_accepted_tokens": 100,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 25,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 1,
+            "ax_ngram_cooldown_steps": 4,
+            "ax_ngram_cooldown_events": 1,
+            "ax_ngram_cooldown_steps_scheduled": 4,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 1,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 1,
+            "ax_ngram_adaptive_draft_len_steps": 26,
+            "ax_ngram_adaptive_draft_len_total": 104,
+            "ax_ngram_accept_rate_micros": 1000000
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 119161,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 483512,
+            "ax_mlx_direct_bootstrap_steps": 0,
+            "ax_mlx_direct_bootstrap_wall_us": 0,
+            "ax_mlx_direct_pipeline_steps": 0,
+            "ax_mlx_direct_pipeline_wall_us": 0,
+            "ax_mlx_single_decode_steps": 5,
+            "ax_mlx_single_decode_wall_us": 47571,
+            "ax_mlx_ngram_decode_steps": 25,
+            "ax_mlx_ngram_decode_wall_us": 435925,
+            "ax_mlx_bonus_tokens": 97,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 2560
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.125672,
+          "decode_s": 0.484629,
+          "ttft_ms": 125.67200000000001,
+          "prefill_tok_s": 1018.5244127570182,
+          "decode_tok_s": 262.0561295341385,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.61064147949219,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 25,
+            "ax_ngram_draft_tokens": 100,
+            "ax_ngram_accepted_tokens": 100,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 25,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 1,
+            "ax_ngram_cooldown_steps": 4,
+            "ax_ngram_cooldown_events": 1,
+            "ax_ngram_cooldown_steps_scheduled": 4,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 1,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 1,
+            "ax_ngram_adaptive_draft_len_steps": 26,
+            "ax_ngram_adaptive_draft_len_total": 104,
+            "ax_ngram_accept_rate_micros": 1000000
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 125657,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 482671,
+            "ax_mlx_direct_bootstrap_steps": 0,
+            "ax_mlx_direct_bootstrap_wall_us": 0,
+            "ax_mlx_direct_pipeline_steps": 0,
+            "ax_mlx_direct_pipeline_wall_us": 0,
+            "ax_mlx_single_decode_steps": 5,
+            "ax_mlx_single_decode_wall_us": 47230,
+            "ax_mlx_ngram_decode_steps": 25,
+            "ax_mlx_ngram_decode_wall_us": 435426,
+            "ax_mlx_bonus_tokens": 97,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 2560
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.120326,
+          "decode_s": 0.4859,
+          "ttft_ms": 120.32600000000001,
+          "prefill_tok_s": 1063.7767398567225,
+          "decode_tok_s": 261.3706523976127,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.61192321777344,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 25,
+            "ax_ngram_draft_tokens": 100,
+            "ax_ngram_accepted_tokens": 100,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 25,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 1,
+            "ax_ngram_cooldown_steps": 4,
+            "ax_ngram_cooldown_events": 1,
+            "ax_ngram_cooldown_steps_scheduled": 4,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 1,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 1,
+            "ax_ngram_adaptive_draft_len_steps": 26,
+            "ax_ngram_adaptive_draft_len_total": 104,
+            "ax_ngram_accept_rate_micros": 1000000
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 120311,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 483863,
+            "ax_mlx_direct_bootstrap_steps": 0,
+            "ax_mlx_direct_bootstrap_wall_us": 0,
+            "ax_mlx_direct_pipeline_steps": 0,
+            "ax_mlx_direct_pipeline_wall_us": 0,
+            "ax_mlx_single_decode_steps": 5,
+            "ax_mlx_single_decode_wall_us": 47451,
+            "ax_mlx_ngram_decode_steps": 25,
+            "ax_mlx_ngram_decode_wall_us": 436389,
+            "ax_mlx_bonus_tokens": 97,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 2560
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.1242,
+          "decode_s": 0.486682,
+          "ttft_ms": 124.2,
+          "prefill_tok_s": 1030.5958132045089,
+          "decode_tok_s": 260.9506823757608,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.61322021484375,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 25,
+            "ax_ngram_draft_tokens": 100,
+            "ax_ngram_accepted_tokens": 100,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 25,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 1,
+            "ax_ngram_cooldown_steps": 4,
+            "ax_ngram_cooldown_events": 1,
+            "ax_ngram_cooldown_steps_scheduled": 4,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 1,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 1,
+            "ax_ngram_adaptive_draft_len_steps": 26,
+            "ax_ngram_adaptive_draft_len_total": 104,
+            "ax_ngram_accept_rate_micros": 1000000
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 124185,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 484650,
+            "ax_mlx_direct_bootstrap_steps": 0,
+            "ax_mlx_direct_bootstrap_wall_us": 0,
+            "ax_mlx_direct_pipeline_steps": 0,
+            "ax_mlx_direct_pipeline_wall_us": 0,
+            "ax_mlx_single_decode_steps": 5,
+            "ax_mlx_single_decode_wall_us": 47794,
+            "ax_mlx_ngram_decode_steps": 25,
+            "ax_mlx_ngram_decode_wall_us": 436837,
+            "ax_mlx_bonus_tokens": 97,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 2560
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        }
+      ],
+      "peak_memory_gb": {
+        "mean": 52.61062927246094,
+        "median": 52.61064147949219,
+        "min": 52.60801696777344,
+        "max": 52.61322021484375
+      },
+      "memory_source": "server_process_rss_after_stream",
+      "prefill_step_size": 2048,
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "prefill_tok_s": 429.485,
+        "decode_tok_s": 114.786,
+        "prefill_ratio_to_mlx_lm": 2.437505525883346,
+        "decode_ratio_to_mlx_lm": 2.277025529224929
+      }
+    },
+    {
+      "engine": "ax_engine_mlx_ngram_accel",
+      "method": "server_sse_runner_time_us",
+      "timing_scope": "ax_engine_runner_time_us",
+      "runtime_identity": {
+        "selected_backend": "mlx",
+        "route_identity": "repo_owned_mlx",
+        "resolution_policy": "mlx_only",
+        "benchmark_surface": "mlx_inference_stack"
+      },
+      "ax_decode_policy": "ngram_acceleration_linear_attention_branch_recompute",
+      "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "prefill_tok_s": {
+        "mean": 2631.945830717008,
+        "median": 2636.52514225392,
+        "min": 2619.917513534535,
+        "max": 2638.4136537906584
+      },
+      "decode_tok_s": {
+        "mean": 257.9940171328088,
+        "median": 257.92667571102464,
+        "min": 257.717837524123,
+        "max": 258.3537778645738
+      },
+      "ttft_ms": {
+        "mean": 194.5344,
+        "median": 194.195,
+        "min": 194.056,
+        "max": 195.426
+      },
+      "ttft_source": "ax_engine_runner_prefill_time",
+      "prefill_s": {
+        "mean": 0.1945344,
+        "median": 0.194195,
+        "min": 0.194056,
+        "max": 0.195426
+      },
+      "decode_s": {
+        "mean": 0.49226000000000003,
+        "median": 0.492388,
+        "min": 0.491574,
+        "max": 0.492787
+      },
+      "ngram_acceleration_telemetry": {
+        "ax_ngram_draft_attempts": 125,
+        "ax_ngram_draft_tokens": 500,
+        "ax_ngram_accepted_tokens": 500,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_ngram_full_accepts": 125,
+        "ax_ngram_partial_rejects": 0,
+        "ax_ngram_complete_misses": 0,
+        "ax_ngram_no_draft_steps": 5,
+        "ax_ngram_cooldown_steps": 20,
+        "ax_ngram_cooldown_events": 5,
+        "ax_ngram_cooldown_steps_scheduled": 20,
+        "ax_ngram_request_disable_events": 0,
+        "ax_ngram_request_disabled_steps": 0,
+        "ax_ngram_fallback_no_candidate_steps": 5,
+        "ax_ngram_fallback_confidence_filtered_steps": 0,
+        "ax_ngram_fallback_short_output_steps": 0,
+        "ax_ngram_fallback_linear_no_draft_steps": 0,
+        "ax_ngram_policy_variant": 1,
+        "ax_ngram_adaptive_draft_len_steps": 130,
+        "ax_ngram_adaptive_draft_len_total": 520,
+        "ax_ngram_accept_rate_micros": 1000000
+      },
+      "ax_mlx_telemetry": {
+        "ax_mlx_prefill_steps": 5,
+        "ax_mlx_prefill_wall_us": 972597,
+        "ax_mlx_decode_steps": 635,
+        "ax_mlx_decode_wall_us": 2450357,
+        "ax_mlx_direct_bootstrap_steps": 0,
+        "ax_mlx_direct_bootstrap_wall_us": 0,
+        "ax_mlx_direct_pipeline_steps": 0,
+        "ax_mlx_direct_pipeline_wall_us": 0,
+        "ax_mlx_single_decode_steps": 25,
+        "ax_mlx_single_decode_wall_us": 243252,
+        "ax_mlx_ngram_decode_steps": 125,
+        "ax_mlx_ngram_decode_wall_us": 2207018,
+        "ax_mlx_bonus_tokens": 485,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+        "ax_mlx_prefix_cache_stores": 5,
+        "ax_mlx_prefix_cache_evictions": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "ax_mlx_prefix_cache_entries": 5,
+        "ax_mlx_prefix_cache_bytes_kib": 51200
+      },
+      "scheduler_telemetry": {
+        "ax_scheduler_scheduled_prefill_tokens": 2560,
+        "ax_scheduler_scheduled_decode_tokens": 635,
+        "ax_scheduler_skipped_prefill_tokens": 0,
+        "ax_scheduler_skipped_decode_tokens": 0,
+        "ax_scheduler_mixed_prefill_decode_batches": 0
+      },
+      "ax_mlx_gemma4_moe_profile": {},
+      "ax_mlx_linear_attention_profile": {},
+      "trials": [
+        {
+          "prefill_s": 0.194085,
+          "decode_s": 0.491765,
+          "ttft_ms": 194.085,
+          "prefill_tok_s": 2638.0194244789654,
+          "decode_tok_s": 258.2534340589509,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.6160888671875,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 25,
+            "ax_ngram_draft_tokens": 100,
+            "ax_ngram_accepted_tokens": 100,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 25,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 1,
+            "ax_ngram_cooldown_steps": 4,
+            "ax_ngram_cooldown_events": 1,
+            "ax_ngram_cooldown_steps_scheduled": 4,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 1,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 1,
+            "ax_ngram_adaptive_draft_len_steps": 26,
+            "ax_ngram_adaptive_draft_len_total": 104,
+            "ax_ngram_accept_rate_micros": 1000000
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 194070,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 489579,
+            "ax_mlx_direct_bootstrap_steps": 0,
+            "ax_mlx_direct_bootstrap_wall_us": 0,
+            "ax_mlx_direct_pipeline_steps": 0,
+            "ax_mlx_direct_pipeline_wall_us": 0,
+            "ax_mlx_single_decode_steps": 5,
+            "ax_mlx_single_decode_wall_us": 48333,
+            "ax_mlx_ngram_decode_steps": 25,
+            "ax_mlx_ngram_decode_wall_us": 441233,
+            "ax_mlx_bonus_tokens": 97,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 10240
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 512,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.195426,
+          "decode_s": 0.492388,
+          "ttft_ms": 195.426,
+          "prefill_tok_s": 2619.917513534535,
+          "decode_tok_s": 257.92667571102464,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.61738586425781,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 25,
+            "ax_ngram_draft_tokens": 100,
+            "ax_ngram_accepted_tokens": 100,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 25,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 1,
+            "ax_ngram_cooldown_steps": 4,
+            "ax_ngram_cooldown_events": 1,
+            "ax_ngram_cooldown_steps_scheduled": 4,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 1,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 1,
+            "ax_ngram_adaptive_draft_len_steps": 26,
+            "ax_ngram_adaptive_draft_len_total": 104,
+            "ax_ngram_accept_rate_micros": 1000000
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 195410,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 490261,
+            "ax_mlx_direct_bootstrap_steps": 0,
+            "ax_mlx_direct_bootstrap_wall_us": 0,
+            "ax_mlx_direct_pipeline_steps": 0,
+            "ax_mlx_direct_pipeline_wall_us": 0,
+            "ax_mlx_single_decode_steps": 5,
+            "ax_mlx_single_decode_wall_us": 48790,
+            "ax_mlx_ngram_decode_steps": 25,
+            "ax_mlx_ngram_decode_wall_us": 441452,
+            "ax_mlx_bonus_tokens": 97,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 10240
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 512,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.19491,
+          "decode_s": 0.492787,
+          "ttft_ms": 194.91,
+          "prefill_tok_s": 2626.8534195269613,
+          "decode_tok_s": 257.717837524123,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.61863708496094,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 25,
+            "ax_ngram_draft_tokens": 100,
+            "ax_ngram_accepted_tokens": 100,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 25,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 1,
+            "ax_ngram_cooldown_steps": 4,
+            "ax_ngram_cooldown_events": 1,
+            "ax_ngram_cooldown_steps_scheduled": 4,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 1,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 1,
+            "ax_ngram_adaptive_draft_len_steps": 26,
+            "ax_ngram_adaptive_draft_len_total": 104,
+            "ax_ngram_accept_rate_micros": 1000000
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 194895,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 490581,
+            "ax_mlx_direct_bootstrap_steps": 0,
+            "ax_mlx_direct_bootstrap_wall_us": 0,
+            "ax_mlx_direct_pipeline_steps": 0,
+            "ax_mlx_direct_pipeline_wall_us": 0,
+            "ax_mlx_single_decode_steps": 5,
+            "ax_mlx_single_decode_wall_us": 48413,
+            "ax_mlx_ngram_decode_steps": 25,
+            "ax_mlx_ngram_decode_wall_us": 442153,
+            "ax_mlx_bonus_tokens": 97,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 10240
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 512,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.194056,
+          "decode_s": 0.492786,
+          "ttft_ms": 194.056,
+          "prefill_tok_s": 2638.4136537906584,
+          "decode_tok_s": 257.7183605053715,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.61991882324219,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 25,
+            "ax_ngram_draft_tokens": 100,
+            "ax_ngram_accepted_tokens": 100,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 25,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 1,
+            "ax_ngram_cooldown_steps": 4,
+            "ax_ngram_cooldown_events": 1,
+            "ax_ngram_cooldown_steps_scheduled": 4,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 1,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 1,
+            "ax_ngram_adaptive_draft_len_steps": 26,
+            "ax_ngram_adaptive_draft_len_total": 104,
+            "ax_ngram_accept_rate_micros": 1000000
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 194042,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 490565,
+            "ax_mlx_direct_bootstrap_steps": 0,
+            "ax_mlx_direct_bootstrap_wall_us": 0,
+            "ax_mlx_direct_pipeline_steps": 0,
+            "ax_mlx_direct_pipeline_wall_us": 0,
+            "ax_mlx_single_decode_steps": 5,
+            "ax_mlx_single_decode_wall_us": 48965,
+            "ax_mlx_ngram_decode_steps": 25,
+            "ax_mlx_ngram_decode_wall_us": 441578,
+            "ax_mlx_bonus_tokens": 97,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 10240
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 512,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.194195,
+          "decode_s": 0.491574,
+          "ttft_ms": 194.195,
+          "prefill_tok_s": 2636.52514225392,
+          "decode_tok_s": 258.3537778645738,
+          "output_tokens": 128.0,
+          "peak_memory_gb": 52.621185302734375,
+          "ngram_acceleration_telemetry": {
+            "ax_ngram_draft_attempts": 25,
+            "ax_ngram_draft_tokens": 100,
+            "ax_ngram_accepted_tokens": 100,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_full_accepts": 25,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_no_draft_steps": 1,
+            "ax_ngram_cooldown_steps": 4,
+            "ax_ngram_cooldown_events": 1,
+            "ax_ngram_cooldown_steps_scheduled": 4,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 1,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_policy_variant": 1,
+            "ax_ngram_adaptive_draft_len_steps": 26,
+            "ax_ngram_adaptive_draft_len_total": 104,
+            "ax_ngram_accept_rate_micros": 1000000
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 194180,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 489371,
+            "ax_mlx_direct_bootstrap_steps": 0,
+            "ax_mlx_direct_bootstrap_wall_us": 0,
+            "ax_mlx_direct_pipeline_steps": 0,
+            "ax_mlx_direct_pipeline_wall_us": 0,
+            "ax_mlx_single_decode_steps": 5,
+            "ax_mlx_single_decode_wall_us": 48751,
+            "ax_mlx_ngram_decode_steps": 25,
+            "ax_mlx_ngram_decode_wall_us": 440602,
+            "ax_mlx_bonus_tokens": 97,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 0,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 1,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 1,
+            "ax_mlx_prefix_cache_bytes_kib": 10240
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 512,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        }
+      ],
+      "peak_memory_gb": {
+        "mean": 52.61864318847656,
+        "median": 52.61863708496094,
+        "min": 52.6160888671875,
+        "max": 52.621185302734375
+      },
+      "memory_source": "server_process_rss_after_stream",
+      "prefill_step_size": 2048,
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+      "prompt_token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 512,
+        "generation_tokens": 128,
+        "prefill_tok_s": 1415.052,
+        "decode_tok_s": 114.475,
+        "prefill_ratio_to_mlx_lm": 1.8632001808088468,
+        "decode_ratio_to_mlx_lm": 2.2531266714219234
+      }
+    }
+  ]
+}
+
+Saved to benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/qwen3_6-35b-a3b-6bit.json
+
+  [readme] applying qwen3_6-35b-a3b-6bit rows to README.md
+  qwen3_6-35b-a3b-6bit: 6 row cells updated
+  README.md updated
+  [cooling 60s before next model]
