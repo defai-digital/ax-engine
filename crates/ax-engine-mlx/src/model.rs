@@ -42,6 +42,12 @@ pub struct LinearAttentionProfileSnapshot {
     pub layers: u32,
     pub tokens: u32,
     pub projection_wall_us: u32,
+    pub projection_qkvz_wall_us: u32,
+    pub projection_ba_wall_us: u32,
+    pub projection_qkv_wall_us: u32,
+    pub projection_z_wall_us: u32,
+    pub projection_a_wall_us: u32,
+    pub projection_b_wall_us: u32,
     pub conv_wall_us: u32,
     pub qk_norm_wall_us: u32,
     pub recurrent_wall_us: u32,
@@ -102,6 +108,12 @@ enum Gemma4MoeProfileStage {
 #[derive(Clone, Copy)]
 enum LinearAttentionProfileStage {
     Projection,
+    ProjectionQkvz,
+    ProjectionBa,
+    ProjectionQkv,
+    ProjectionZ,
+    ProjectionA,
+    ProjectionB,
     Conv,
     QkNorm,
     Recurrent,
@@ -199,6 +211,12 @@ fn record_linear_attention_profile_stage(stage: LinearAttentionProfileStage, wal
     profile.enabled = 1;
     let target = match stage {
         LinearAttentionProfileStage::Projection => &mut profile.projection_wall_us,
+        LinearAttentionProfileStage::ProjectionQkvz => &mut profile.projection_qkvz_wall_us,
+        LinearAttentionProfileStage::ProjectionBa => &mut profile.projection_ba_wall_us,
+        LinearAttentionProfileStage::ProjectionQkv => &mut profile.projection_qkv_wall_us,
+        LinearAttentionProfileStage::ProjectionZ => &mut profile.projection_z_wall_us,
+        LinearAttentionProfileStage::ProjectionA => &mut profile.projection_a_wall_us,
+        LinearAttentionProfileStage::ProjectionB => &mut profile.projection_b_wall_us,
         LinearAttentionProfileStage::Conv => &mut profile.conv_wall_us,
         LinearAttentionProfileStage::QkNorm => &mut profile.qk_norm_wall_us,
         LinearAttentionProfileStage::Recurrent => &mut profile.recurrent_wall_us,
@@ -2695,7 +2713,7 @@ fn linear_attention_forward(
     }
 
     let profile_started = Instant::now();
-    let (qkv, z, a, b) = linear_attention_inputs(linear_cfg, linear_w, x, seq);
+    let (qkv, z, a, b) = linear_attention_inputs(linear_cfg, linear_w, x, seq, profile_enabled);
     linear_attention_profile_eval_elapsed(
         profile_enabled,
         LinearAttentionProfileStage::Projection,
@@ -2773,9 +2791,17 @@ fn linear_attention_inputs(
     w: &crate::weights::LinearAttentionWeights,
     x: &MlxArray,
     seq: i32,
+    profile_enabled: bool,
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
     if let (Some(qkvz_w), Some(ba_w)) = (&w.in_proj_qkvz, &w.in_proj_ba) {
+        let profile_started = Instant::now();
         let mixed_qkvz = qw(x, qkvz_w);
+        linear_attention_profile_eval_elapsed(
+            profile_enabled,
+            LinearAttentionProfileStage::ProjectionQkvz,
+            profile_started,
+            &[&mixed_qkvz],
+        );
         let value_heads_per_key = cfg.num_value_heads / cfg.num_key_heads;
         let value_dim_per_key = value_heads_per_key * cfg.value_head_dim;
         let qkvz_per_key = cfg.key_head_dim * 2 + value_dim_per_key * 2;
@@ -2823,7 +2849,14 @@ fn linear_attention_inputs(
             None,
         );
 
+        let profile_started = Instant::now();
         let mixed_ba = qw(x, ba_w);
+        linear_attention_profile_eval_elapsed(
+            profile_enabled,
+            LinearAttentionProfileStage::ProjectionBa,
+            profile_started,
+            &[&mixed_ba],
+        );
         let ba = reshape(
             &mixed_ba,
             &[
@@ -2852,12 +2885,20 @@ fn linear_attention_inputs(
         return (qkv, z, a, b);
     }
 
+    let profile_started = Instant::now();
     let qkv = qw(
         x,
         w.in_proj_qkv
             .as_ref()
             .expect("split linear attention must have qkv projection"),
     );
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::ProjectionQkv,
+        profile_started,
+        &[&qkv],
+    );
+    let profile_started = Instant::now();
     let z = reshape(
         &qw(
             x,
@@ -2873,17 +2914,37 @@ fn linear_attention_inputs(
         ],
         None,
     );
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::ProjectionZ,
+        profile_started,
+        &[&z],
+    );
+    let profile_started = Instant::now();
     let a = qw(
         x,
         w.in_proj_a
             .as_ref()
             .expect("split linear attention must have a projection"),
     );
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::ProjectionA,
+        profile_started,
+        &[&a],
+    );
+    let profile_started = Instant::now();
     let b = qw(
         x,
         w.in_proj_b
             .as_ref()
             .expect("split linear attention must have b projection"),
+    );
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::ProjectionB,
+        profile_started,
+        &[&b],
     );
     (qkv, z, a, b)
 }
