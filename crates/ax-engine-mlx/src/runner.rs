@@ -65,8 +65,8 @@ use crate::generate::{
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
-    Gemma4MoeProfileSnapshot, LinearAttentionProfileSnapshot, ModelConfig,
-    TurboQuantModelDecodeContext, take_gemma4_moe_profile_snapshot,
+    DecodeProfileSnapshot, Gemma4MoeProfileSnapshot, LinearAttentionProfileSnapshot, ModelConfig,
+    TurboQuantModelDecodeContext, take_decode_profile_snapshot, take_gemma4_moe_profile_snapshot,
     take_linear_attention_profile_snapshot,
 };
 use crate::ngram_accel::{
@@ -1058,6 +1058,56 @@ impl LinearAttentionProfileSnapshot {
     }
 }
 
+impl DecodeProfileSnapshot {
+    fn merge_from(&mut self, other: Self) {
+        self.enabled = self.enabled.max(other.enabled);
+        self.decode_steps = self.decode_steps.saturating_add(other.decode_steps);
+        self.layers = self.layers.saturating_add(other.layers);
+        self.per_layer_input_wall_us = self
+            .per_layer_input_wall_us
+            .saturating_add(other.per_layer_input_wall_us);
+        self.pre_sdpa_wall_us = self.pre_sdpa_wall_us.saturating_add(other.pre_sdpa_wall_us);
+        self.sdpa_wall_us = self.sdpa_wall_us.saturating_add(other.sdpa_wall_us);
+        self.post_attn_wall_us = self
+            .post_attn_wall_us
+            .saturating_add(other.post_attn_wall_us);
+        self.lm_head_wall_us = self.lm_head_wall_us.saturating_add(other.lm_head_wall_us);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
+        if self.enabled == 0 {
+            return;
+        }
+
+        let entries = [
+            ("ax_mlx_decode_profile_enabled", self.enabled),
+            ("ax_mlx_decode_profile_decode_steps", self.decode_steps),
+            ("ax_mlx_decode_profile_layers", self.layers),
+            (
+                "ax_mlx_decode_profile_per_layer_input_wall_us",
+                self.per_layer_input_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_pre_sdpa_wall_us",
+                self.pre_sdpa_wall_us,
+            ),
+            ("ax_mlx_decode_profile_sdpa_wall_us", self.sdpa_wall_us),
+            (
+                "ax_mlx_decode_profile_post_attn_wall_us",
+                self.post_attn_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_lm_head_wall_us",
+                self.lm_head_wall_us,
+            ),
+        ];
+
+        for (key, value) in entries {
+            decisions.upsert_route_decision(key, value);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct KvCacheTelemetry {
     request_snapshots: u32,
@@ -1656,9 +1706,20 @@ fn seed_generation_ngram_from_prompt(state: &mut RequestState) {
     state.ngram.feed(&state.prompt_prefix_tokens[feed_start..]);
 }
 
+/// Cache key for the embedding-forward compiled closure: shape-specific.
+/// `target_position` is baked into the trace, so we key on (seq_len, pos).
+type EmbedCompileKey = (usize, Option<usize>);
+
+/// Cache key for the batched embedding-forward compiled closure.
+/// `target_positions` is baked into the trace, so two batches with the same
+/// `(batch_size, max_len)` but different per-sequence target positions hit
+/// distinct keys.
+type EmbedBatchCompileKey = (usize, usize, Option<Vec<usize>>);
+
 /// ExecutionRunner backed by the MLX inference path.
 pub struct MlxRunner {
     cfg: ModelConfig,
+    cfg_arc: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
     prefill_chunk: usize,
     kv_layer_windows: Vec<Option<usize>>,
@@ -1680,6 +1741,15 @@ pub struct MlxRunner {
     rotating_sliding_decode: bool,
     /// Optional mlx_lm-style `clear_cache` cadence for the direct decode pipeline.
     direct_clear_cache_cadence: u32,
+    /// Per-shape compiled embedding-forward closures. Each entry is built on
+    /// the first `embed()` call at a new `(seq_len, target_position)` shape
+    /// and reused for subsequent calls. Set `AX_EMBED_NO_COMPILE=1` to skip
+    /// the compiled path and fall back to imperative `forward_for_embedding`.
+    embed_compile_cache: Mutex<HashMap<EmbedCompileKey, mlx_sys::MlxClosure>>,
+    /// Per-shape compiled batched-embedding-forward closures. Keyed on
+    /// `(batch_size, max_len, target_positions)`; same kill switch as the
+    /// single-call cache (`AX_EMBED_NO_COMPILE`).
+    embed_batch_compile_cache: Mutex<HashMap<EmbedBatchCompileKey, mlx_sys::MlxClosure>>,
 }
 
 impl fmt::Debug for MlxRunner {
@@ -1773,12 +1843,15 @@ impl MlxRunner {
         }
         let _ = take_gemma4_moe_profile_snapshot();
         let _ = take_linear_attention_profile_snapshot();
+        let _ = take_decode_profile_snapshot();
 
         // Qwen3.5 linear-attention uses `ngram_accel_decode_step_linear_safe` which
         // clones the cache for verification and recomputes the committed prefix on
         // partial accept, so n-gram acceleration is safe to enable for these models.
+        let cfg_arc = Arc::new(cfg.clone());
         Ok(Self {
             cfg,
+            cfg_arc,
             weights,
             prefill_chunk: prefill_chunk.max(1),
             kv_layer_windows,
@@ -1793,6 +1866,8 @@ impl MlxRunner {
             prefix_cache: Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy::from_env())),
             rotating_sliding_decode,
             direct_clear_cache_cadence,
+            embed_compile_cache: Mutex::new(HashMap::new()),
+            embed_batch_compile_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -1818,6 +1893,7 @@ impl ExecutionRunner for MlxRunner {
         let mut decode_telemetry = DecodeTelemetry::default();
         let mut gemma4_moe_profile = Gemma4MoeProfileSnapshot::default();
         let mut linear_attention_profile = LinearAttentionProfileSnapshot::default();
+        let mut decode_profile = DecodeProfileSnapshot::default();
         let mut kv_cache = KvCacheTelemetry::default();
         let mut prefix_cache = MlxPrefixCacheTelemetry::default();
 
@@ -1837,6 +1913,7 @@ impl ExecutionRunner for MlxRunner {
             decode_telemetry.merge_from(result.decode_telemetry);
             gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
             linear_attention_profile.merge_from(result.linear_attention_profile);
+            decode_profile.merge_from(result.decode_profile);
             kv_cache.merge_from(result.kv_usage);
             prefix_cache.merge_from(result.prefix_cache);
             if let Some(wall_us) = result.kv_compression_shadow_sync_wall_us {
@@ -1851,6 +1928,7 @@ impl ExecutionRunner for MlxRunner {
             decode_telemetry.append_route_decisions(&mut route_decisions);
             gemma4_moe_profile.append_route_decisions(&mut route_decisions);
             linear_attention_profile.append_route_decisions(&mut route_decisions);
+            decode_profile.append_route_decisions(&mut route_decisions);
             kv_cache.append_route_decisions(&mut route_decisions);
             prefix_cache.append_route_decisions(&mut route_decisions);
         }
@@ -1897,12 +1975,7 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Mean => None,
         };
         let encode_started = Instant::now();
-        let hidden = crate::model::forward_for_embedding(
-            &self.cfg,
-            &self.weights,
-            token_ids,
-            target_position,
-        );
+        let hidden = self.embedding_forward(token_ids, target_position);
         let encode_us = elapsed_us(encode_started);
 
         // Last/Cls: hidden is [1, 1, H] (already at the target position).
@@ -1966,9 +2039,7 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Mean => None,
         };
         let encode_started = Instant::now();
-        let (hidden, actual_lens) = crate::model::forward_for_embedding_batch(
-            &self.cfg,
-            &self.weights,
+        let (hidden, actual_lens) = self.embedding_batch_forward(
             batch,
             target_positions.as_deref(),
         );
@@ -2070,6 +2141,140 @@ fn mlx_scalar_f32(value: f32) -> MlxArray {
 }
 
 impl MlxRunner {
+    /// Run the embedding forward pass, preferring the compiled-closure path
+    /// when caching is permitted. Falls back to imperative
+    /// `forward_for_embedding` when:
+    ///   * `AX_EMBED_NO_COMPILE` is set (kill switch / A-B benchmarking),
+    ///   * the compile step itself returns an error.
+    /// The compiled closure is shape-specific (per `seq_len`,
+    /// `target_position`) — first call at a new shape pays the trace cost
+    /// once, subsequent calls hit the cache.
+    fn embedding_forward(
+        &self,
+        token_ids: &[u32],
+        target_position: Option<usize>,
+    ) -> MlxArray {
+        let disable_compile = std::env::var("AX_EMBED_NO_COMPILE").is_ok();
+        if disable_compile {
+            return crate::model::forward_for_embedding(
+                &self.cfg,
+                &self.weights,
+                token_ids,
+                target_position,
+            );
+        }
+        // The closure body operates on the pre-embedded bf16 hidden state.
+        // `embed_tokens` itself is fast (one gather + reshape) and produces
+        // an array whose shape encodes seq_len — so we keep it outside the
+        // closure and use seq_len as the cache key dimension.
+        let mut hidden = crate::model::embed_tokens(
+            token_ids,
+            &self.weights.token_embedding,
+            self.cfg.hidden_size,
+        );
+        if hidden.dtype() != MlxDtype::Bfloat16 {
+            hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+        }
+        if let Some(scale) = self.cfg.hidden_states_scale {
+            hidden = crate::model::scale_hidden_pub(&hidden, scale);
+        }
+
+        let key: EmbedCompileKey = (token_ids.len(), target_position);
+        let mut cache = self
+            .embed_compile_cache
+            .lock()
+            .expect("embed_compile_cache mutex poisoned");
+        if !cache.contains_key(&key) {
+            match crate::model::build_embedding_forward_closure(
+                Arc::clone(&self.cfg_arc),
+                Arc::clone(&self.weights),
+                target_position,
+            ) {
+                Ok(cls) => {
+                    cache.insert(key, cls);
+                }
+                Err(_) => {
+                    drop(cache);
+                    return crate::model::forward_for_embedding(
+                        &self.cfg,
+                        &self.weights,
+                        token_ids,
+                        target_position,
+                    );
+                }
+            }
+        }
+        let cls = cache.get(&key).expect("just inserted");
+        let outputs = cls.apply(&[&hidden]);
+        outputs
+            .into_iter()
+            .next()
+            .expect("compiled embedding closure must return one output")
+    }
+
+    /// Batched version of `embedding_forward`. Same compile-cache strategy,
+    /// keyed on `(batch_size, max_len, target_positions)`. Mean pooling
+    /// (`target_positions = None`) currently falls back to the imperative
+    /// path because Mean pools after the closure result is materialized.
+    fn embedding_batch_forward(
+        &self,
+        batch_token_ids: &[Vec<u32>],
+        target_positions: Option<&[usize]>,
+    ) -> (MlxArray, Vec<usize>) {
+        let disable_compile = std::env::var("AX_EMBED_NO_COMPILE").is_ok();
+        if disable_compile || target_positions.is_none() {
+            // Mean pooling needs the full [B, max_seq, H] hidden; the closure
+            // body is only built for the Last/Cls (extract-then-norm) shape.
+            return crate::model::forward_for_embedding_batch(
+                &self.cfg,
+                &self.weights,
+                batch_token_ids,
+                target_positions,
+            );
+        }
+        let (hidden, batch, max_len, actual_lens) =
+            crate::model::build_embedding_batch_hidden_pub(
+                &self.cfg,
+                &self.weights,
+                batch_token_ids,
+            );
+        let target_positions_vec: Vec<usize> = target_positions
+            .expect("checked above")
+            .to_vec();
+        let key: EmbedBatchCompileKey = (batch, max_len, Some(target_positions_vec.clone()));
+        let mut cache = self
+            .embed_batch_compile_cache
+            .lock()
+            .expect("embed_batch_compile_cache mutex poisoned");
+        if !cache.contains_key(&key) {
+            match crate::model::build_embedding_batch_forward_closure(
+                Arc::clone(&self.cfg_arc),
+                Arc::clone(&self.weights),
+                Some(target_positions_vec.clone()),
+            ) {
+                Ok(cls) => {
+                    cache.insert(key.clone(), cls);
+                }
+                Err(_) => {
+                    drop(cache);
+                    return crate::model::forward_for_embedding_batch(
+                        &self.cfg,
+                        &self.weights,
+                        batch_token_ids,
+                        target_positions,
+                    );
+                }
+            }
+        }
+        let cls = cache.get(&key).expect("just inserted");
+        let outputs = cls.apply(&[&hidden]);
+        let out = outputs
+            .into_iter()
+            .next()
+            .expect("compiled batched embedding closure must return one output");
+        (out, actual_lens)
+    }
+
     fn run_item(
         &self,
         item: &ax_engine_core::ExecutionItem,
@@ -2091,6 +2296,7 @@ impl MlxRunner {
                 decode_telemetry: DecodeTelemetry::default(),
                 gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
                 linear_attention_profile: LinearAttentionProfileSnapshot::default(),
+                decode_profile: DecodeProfileSnapshot::default(),
                 kv_usage: MlxKVCacheUsage::default(),
                 prefix_cache: MlxPrefixCacheTelemetry::default(),
                 kv_compression_shadow_sync_wall_us: None,
@@ -2247,6 +2453,7 @@ impl MlxRunner {
         let decode_telemetry = state.decode_telemetry;
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
         let linear_attention_profile = take_linear_attention_profile_snapshot();
+        let decode_profile = take_decode_profile_snapshot();
         {
             let force_shadow_sync = is_prefill
                 && prefill_completes_prompt
@@ -2293,6 +2500,7 @@ impl MlxRunner {
             decode_telemetry,
             gemma4_moe_profile,
             linear_attention_profile,
+            decode_profile,
             kv_usage,
             prefix_cache,
             kv_compression_shadow_sync_wall_us,
@@ -3101,6 +3309,7 @@ struct MlxItemRun {
     decode_telemetry: DecodeTelemetry,
     gemma4_moe_profile: Gemma4MoeProfileSnapshot,
     linear_attention_profile: LinearAttentionProfileSnapshot,
+    decode_profile: DecodeProfileSnapshot,
     kv_usage: MlxKVCacheUsage,
     prefix_cache: MlxPrefixCacheTelemetry,
     kv_compression_shadow_sync_wall_us: Option<u32>,
@@ -4809,6 +5018,67 @@ mod tests {
 
         let mut disabled_decisions = Vec::new();
         LinearAttentionProfileSnapshot::default().append_route_decisions(&mut disabled_decisions);
+        assert!(disabled_decisions.is_empty());
+    }
+
+    #[test]
+    fn decode_profile_route_decisions_emit_only_when_enabled() {
+        let mut profile = DecodeProfileSnapshot {
+            enabled: 1,
+            decode_steps: 64,
+            layers: 1536,
+            per_layer_input_wall_us: 800,
+            pre_sdpa_wall_us: 1200,
+            sdpa_wall_us: 500,
+            post_attn_wall_us: 2400,
+            lm_head_wall_us: 150,
+        };
+        profile.merge_from(DecodeProfileSnapshot {
+            enabled: 1,
+            decode_steps: 64,
+            layers: 1536,
+            per_layer_input_wall_us: 200,
+            pre_sdpa_wall_us: 300,
+            sdpa_wall_us: 100,
+            post_attn_wall_us: 600,
+            lm_head_wall_us: 50,
+        });
+
+        let mut decisions = Vec::new();
+        profile.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(decisions.get("ax_mlx_decode_profile_enabled"), Some(&1));
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_decode_steps"),
+            Some(&128)
+        );
+        assert_eq!(decisions.get("ax_mlx_decode_profile_layers"), Some(&3072));
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_per_layer_input_wall_us"),
+            Some(&1000)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_pre_sdpa_wall_us"),
+            Some(&1500)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_sdpa_wall_us"),
+            Some(&600)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_post_attn_wall_us"),
+            Some(&3000)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_lm_head_wall_us"),
+            Some(&200)
+        );
+
+        let mut disabled_decisions = Vec::new();
+        DecodeProfileSnapshot::default().append_route_decisions(&mut disabled_decisions);
         assert!(disabled_decisions.is_empty());
     }
 

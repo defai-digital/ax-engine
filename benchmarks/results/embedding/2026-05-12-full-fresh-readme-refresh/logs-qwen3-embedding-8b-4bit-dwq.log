@@ -1,0 +1,52 @@
+Tokenizing 10 sentences…
+  token counts: [10, 15, 13, 8, 3, 8, 10, 8, 10, 10]
+
+[mlx-lm] Loading model…
+  [mlx-lm] warmup…
+    trial 1: 29.8ms/sentence  319.2 tok/s
+    trial 2: 29.8ms/sentence  318.5 tok/s
+    trial 3: 29.7ms/sentence  319.8 tok/s
+    trial 4: 29.8ms/sentence  319.1 tok/s
+    trial 5: 29.8ms/sentence  318.4 tok/s
+
+[ax-engine-py] Loading session…
+  [ax-engine-py] warmup…
+    trial 1: 31.7ms/sentence  299.5 tok/s
+    trial 2: 31.4ms/sentence  302.6 tok/s
+    trial 3: 31.6ms/sentence  300.5 tok/s
+    trial 4: 29.9ms/sentence  317.7 tok/s
+    trial 5: 31.0ms/sentence  306.2 tok/s
+
+[mlx-lm/batched] Loading model…
+  [mlx-lm/batched] warmup…
+    trial 1: 9.29ms/sentence  1022.2 tok/s
+    trial 2: 11.04ms/sentence  860.5 tok/s
+    trial 3: 10.97ms/sentence  866.4 tok/s
+    trial 4: 10.90ms/sentence  871.5 tok/s
+    trial 5: 9.33ms/sentence  1018.1 tok/s
+
+[ax-engine-py/batched] Loading session…
+  [ax-engine-py/batched] warmup…
+    trial 1: 11.19ms/sentence  848.6 tok/s
+    trial 2: 10.96ms/sentence  866.9 tok/s
+    trial 3: 10.66ms/sentence  891.0 tok/s
+    trial 4: 10.94ms/sentence  868.0 tok/s
+    trial 5: 9.36ms/sentence  1015.3 tok/s
+
+Engine                       mean ms/sent   median ms/sent   mean tok/s
+------------------------------------------------------------------------
+mlx-lm (Python)                      29.8             29.8        319.0
+ax-engine-py (direct)                31.1             31.4        305.3
+mlx-swift-lm                    (skipped)
+ax-engine-http                  (skipped)
+
+--- Batched (10 sentences/request) ---
+
+Engine                       mean ms/sent   median ms/sent   mean tok/s
+------------------------------------------------------------------------
+mlx-lm (Python)                      10.3             10.9        927.7
+ax-engine-py (direct)                10.6             10.9        898.0
+mlx-swift-lm                    (skipped)
+ax-engine-http                  (skipped)
+
+Wrote results to benchmarks/results/embedding/2026-05-12-full-fresh-readme-refresh/2026-05-12-2135-qwen3-embedding-8b-4bit-dwq/embedding_bench.json

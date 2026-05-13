@@ -1,0 +1,58 @@
+Tokenizing 10 sentences…
+  token counts: [10, 15, 13, 8, 3, 8, 10, 8, 10, 10]
+
+[mlx-lm] Loading model…
+  [mlx-lm] warmup…
+    trial 1: 29.6ms/sentence  321.1 tok/s
+    trial 2: 29.7ms/sentence  319.7 tok/s
+    trial 3: 29.8ms/sentence  319.2 tok/s
+    trial 4: 29.4ms/sentence  323.6 tok/s
+    trial 5: 29.7ms/sentence  320.0 tok/s
+
+[ax-engine-py] Loading session…
+  [ax-engine-py] warmup…
+    trial 1: 30.5ms/sentence  311.1 tok/s
+    trial 2: 30.3ms/sentence  313.8 tok/s
+    trial 3: 29.8ms/sentence  319.1 tok/s
+    trial 4: 29.8ms/sentence  319.2 tok/s
+    trial 5: 30.0ms/sentence  316.9 tok/s
+
+[ax-engine-http] Starting server…
+  [ax-engine-http] starting: /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --model-id qwen3_dense --support-tier mlx-preview --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/qwen3-embedding-8b-4bit-dwq --host 127.0.0.1 --port 8083
+  [ax-engine-http] waiting for port 8083…
+  [ax-engine-http] server ready.
+  [ax-engine-http] warmup…
+    trial 1: 39.5ms/sentence  240.6 tok/s
+    trial 2: 40.2ms/sentence  236.5 tok/s
+    trial 3: 41.0ms/sentence  231.7 tok/s
+    trial 4: 41.2ms/sentence  230.7 tok/s
+    trial 5: 39.6ms/sentence  240.0 tok/s
+
+[ax-engine-http/concurrent] Starting server…
+  [ax-engine-http] starting: /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --model-id qwen3_dense --support-tier mlx-preview --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/qwen3-embedding-8b-4bit-dwq --host 127.0.0.1 --port 8083
+  [ax-engine-http/concurrent] waiting for port 8083…
+  [ax-engine-http/concurrent] server ready.
+  [ax-engine-http/concurrent] warmup…
+    trial 1: 11.46ms/sentence  829.3 tok/s
+    trial 2: 11.66ms/sentence  814.5 tok/s
+    trial 3: 12.95ms/sentence  733.7 tok/s
+    trial 4: 12.00ms/sentence  791.5 tok/s
+    trial 5: 12.28ms/sentence  773.9 tok/s
+
+Engine                       mean ms/sent   median ms/sent   mean tok/s
+------------------------------------------------------------------------
+mlx-lm (Python)                      29.6             29.7        320.7
+ax-engine-py (direct)                30.1             30.0        316.0
+mlx-swift-lm                    (skipped)
+ax-engine-http                       40.3             40.2        235.9
+
+--- Concurrent HTTP (10 simultaneous /v1/embeddings requests) ---
+
+Engine                       mean ms/sent   median ms/sent   mean tok/s
+------------------------------------------------------------------------
+mlx-lm (Python)                 (skipped)
+ax-engine-py (direct)           (skipped)
+mlx-swift-lm                    (skipped)
+ax-engine-http                       12.1             12.0        788.5
+
+Wrote results to benchmarks/results/embedding/2026-05-12-microbatch-demo/2026-05-12-2111-qwen3-embedding-8b-4bit-dwq/embedding_bench.json

@@ -161,13 +161,21 @@ def bench_mlx_lm(
     total_tokens = sum(len(ids) for ids in token_ids_list)
     n = len(token_ids_list)
 
+    # Apples-to-apples with ax-engine: caller needs the embedding as a CPU
+    # value (list[float] / bytes) to use it. ax-engine's `embed_bytes` runs
+    # `data_f32().to_vec()` after eval, so the mlx-lm path here calls
+    # `.tolist()` (which triggers eval + GPU→CPU read-back). For Apple
+    # Silicon unified memory + small embedding sizes (~14 KB) this only
+    # adds ~0.05–0.15 ms per call; the larger effect appears in batched
+    # paths where 10 reads stack up.
     print("  [mlx-lm] warmup…", file=sys.stderr)
     for ids in token_ids_list:
         x = mx.array([ids])
         h = model.model(x)
         last = h[0, -1, :].astype(mx.float32)
         norm = mx.sqrt(mx.sum(last * last))
-        mx.eval(last / (norm + 1e-12))
+        emb = last / (norm + 1e-12)
+        _ = emb.tolist()
 
     trial_rows = []
     for i in range(1, trials + 1):
@@ -179,7 +187,8 @@ def bench_mlx_lm(
             h = model.model(x)
             last = h[0, -1, :].astype(mx.float32)
             norm = mx.sqrt(mx.sum(last * last))
-            mx.eval(last / (norm + 1e-12))
+            emb = last / (norm + 1e-12)
+            _ = emb.tolist()
         elapsed = time.perf_counter() - t0
         ms = elapsed * 1000.0 / n
         tps = total_tokens / elapsed if elapsed > 0 else 0.0
@@ -189,6 +198,132 @@ def bench_mlx_lm(
     ms_vals = [t["ms_per_sentence"] for t in trial_rows]
     tps_vals = [t["tokens_per_sec"] for t in trial_rows]
     return {**_trial_stats(ms_vals, tps_vals, "mlx_lm"), "trials": trial_rows}
+
+
+# ---------------------------------------------------------------------------
+# Backend: mlx-lm batched (single forward over the whole batch, right-padded)
+# ---------------------------------------------------------------------------
+
+def bench_mlx_lm_batched(
+    model_dir: Path,
+    token_ids_list: list[list[int]],
+    trials: int,
+    cooldown: float,
+) -> dict[str, Any]:
+    """Batched mlx-lm path: one forward over the full padded batch per trial.
+
+    Right-pads with the tokenizer's pad/eos id and extracts each sequence's
+    last *real* token before pooling. Causal attention sees the pad tokens
+    that follow the last real position, but they cannot influence positions
+    at or before it — so last-token pooling is correct for right-padded
+    causal LM embedders.
+    """
+    print("\n[mlx-lm/batched] Loading model…", file=sys.stderr)
+    from mlx_lm import load
+    import mlx.core as mx
+    from transformers import AutoTokenizer
+
+    model, _ = load(str(model_dir))
+    tok = AutoTokenizer.from_pretrained(str(model_dir))
+    pad_id = tok.pad_token_id if tok.pad_token_id is not None else (tok.eos_token_id or 0)
+
+    max_len = max(len(ids) for ids in token_ids_list)
+    padded = [ids + [pad_id] * (max_len - len(ids)) for ids in token_ids_list]
+    last_positions = [len(ids) - 1 for ids in token_ids_list]
+    n = len(token_ids_list)
+    total_tokens = sum(len(ids) for ids in token_ids_list)
+
+    def step():
+        x = mx.array(padded)        # [B, max_len]
+        h = model.model(x)          # [B, max_len, H]
+        outs = []
+        for i, pos in enumerate(last_positions):
+            last = h[i, pos, :].astype(mx.float32)
+            norm = mx.sqrt(mx.sum(last * last))
+            outs.append(last / (norm + 1e-12))
+        # Apples-to-apples with ax-engine's `embed_batch_bytes` which
+        # materialises each sequence's f32 buffer back to Python. mlx-lm
+        # callers consume the embeddings as Python objects too — the bare
+        # `mx.eval(...)` form leaves results on GPU and hides this cost.
+        return [o.tolist() for o in outs]
+
+    print("  [mlx-lm/batched] warmup…", file=sys.stderr)
+    for _ in range(2):
+        step()
+
+    trial_rows = []
+    for i in range(1, trials + 1):
+        if cooldown > 0:
+            time.sleep(cooldown)
+        t0 = time.perf_counter()
+        step()
+        elapsed = time.perf_counter() - t0
+        ms = elapsed * 1000.0 / n
+        tps = total_tokens / elapsed if elapsed > 0 else 0.0
+        trial_rows.append({"ms_per_sentence": ms, "tokens_per_sec": tps})
+        print(f"    trial {i}: {ms:.2f}ms/sentence  {tps:.1f} tok/s", file=sys.stderr)
+
+    ms_vals = [t["ms_per_sentence"] for t in trial_rows]
+    tps_vals = [t["tokens_per_sec"] for t in trial_rows]
+    return {**_trial_stats(ms_vals, tps_vals, "mlx_lm_batched"), "trials": trial_rows}
+
+
+# ---------------------------------------------------------------------------
+# Backend: ax-engine-py batched (single embed_batch_bytes call per trial)
+# ---------------------------------------------------------------------------
+
+def bench_ax_engine_py_batched(
+    model_dir: Path,
+    token_ids_list: list[list[int]],
+    trials: int,
+    cooldown: float,
+) -> dict[str, Any]:
+    print("\n[ax-engine-py/batched] Loading session…", file=sys.stderr)
+    try:
+        sys.path.insert(0, str(REPO_ROOT / "python"))
+        import ax_engine
+    except ImportError:
+        raise ImportError(
+            "ax_engine not installed. Run: maturin develop --release"
+        )
+
+    session = ax_engine.Session(
+        model_id="qwen3_dense",
+        mlx=True,
+        support_tier="mlx_preview",
+        mlx_model_artifacts_dir=str(model_dir),
+    )
+
+    embed_batch_fast = getattr(session, "embed_batch_bytes", None)
+    if embed_batch_fast is None:
+        embed_batch_fast = lambda batch: session.embed_batch(batch, pooling="last", normalize=True)
+    else:
+        _b_fn = embed_batch_fast
+        embed_batch_fast = lambda batch: _b_fn(batch, pooling="last", normalize=True)
+
+    n = len(token_ids_list)
+    total_tokens = sum(len(ids) for ids in token_ids_list)
+
+    print("  [ax-engine-py/batched] warmup…", file=sys.stderr)
+    for _ in range(2):
+        embed_batch_fast(token_ids_list)
+
+    trial_rows = []
+    for i in range(1, trials + 1):
+        if cooldown > 0:
+            time.sleep(cooldown)
+        t0 = time.perf_counter()
+        embed_batch_fast(token_ids_list)
+        elapsed = time.perf_counter() - t0
+        ms = elapsed * 1000.0 / n
+        tps = total_tokens / elapsed if elapsed > 0 else 0.0
+        trial_rows.append({"ms_per_sentence": ms, "tokens_per_sec": tps})
+        print(f"    trial {i}: {ms:.2f}ms/sentence  {tps:.1f} tok/s", file=sys.stderr)
+
+    session.close()
+    ms_vals = [t["ms_per_sentence"] for t in trial_rows]
+    tps_vals = [t["tokens_per_sec"] for t in trial_rows]
+    return {**_trial_stats(ms_vals, tps_vals, "ax_engine_py_batched"), "trials": trial_rows}
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +393,11 @@ def bench_ax_engine_py(
 # Backend: ax-engine HTTP (shows serialization overhead)
 # ---------------------------------------------------------------------------
 
-def _start_axengine_server(model_dir: Path, port: int) -> subprocess.Popen:
+def _start_axengine_server(
+    model_dir: Path,
+    port: int,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.Popen:
     server_bin = REPO_ROOT / "target" / "release" / "ax-engine-server"
     if not server_bin.exists():
         server_bin = REPO_ROOT / "target" / "debug" / "ax-engine-server"
@@ -276,7 +415,12 @@ def _start_axengine_server(model_dir: Path, port: int) -> subprocess.Popen:
         "--port", str(port),
     ]
     print(f"  [ax-engine-http] starting: {' '.join(cmd)}", file=sys.stderr)
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+    )
 
 
 def bench_ax_engine_http(
@@ -325,6 +469,81 @@ def bench_ax_engine_http(
         ms_vals = [t["ms_per_sentence"] for t in trial_rows]
         tps_vals = [t["tokens_per_sec"] for t in trial_rows]
         return {**_trial_stats(ms_vals, tps_vals, "ax_engine_http"), "trials": trial_rows}
+
+    finally:
+        if server_proc is not None:
+            server_proc.send_signal(signal.SIGTERM)
+            try:
+                server_proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server_proc.kill()
+
+
+# ---------------------------------------------------------------------------
+# Backend: ax-engine-http concurrent (server-side micro-batcher demo)
+# ---------------------------------------------------------------------------
+
+def bench_ax_engine_http_concurrent(
+    model_dir: Path,
+    token_ids_list: list[list[int]],
+    trials: int,
+    cooldown: float,
+    port: int,
+    skip_server: bool = False,
+    server_env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Send N sentences as N concurrent HTTP requests per trial.
+
+    This exercises the server's `EmbeddingMicroBatcher`: incoming requests
+    that arrive within `AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS` (default 2ms)
+    are coalesced into a single batched runner call, then per-request
+    responses are dispatched back through their oneshot channels.
+    Compare to `bench_ax_engine_http` (sequential POSTs) to see the
+    serving-mode speedup from automatic batching.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    server_proc: subprocess.Popen | None = None
+    server_url = f"http://127.0.0.1:{port}"
+    total_tokens = sum(len(ids) for ids in token_ids_list)
+    n = len(token_ids_list)
+
+    def fire(ids: list[int]) -> None:
+        http_post(f"{server_url}/v1/embeddings",
+                  {"input": ids, "pooling": "last", "normalize": True})
+
+    try:
+        if not skip_server:
+            print("\n[ax-engine-http/concurrent] Starting server…", file=sys.stderr)
+            server_proc = _start_axengine_server(model_dir, port, extra_env=server_env)
+            print(f"  [ax-engine-http/concurrent] waiting for port {port}…", file=sys.stderr)
+            if not wait_for_port("127.0.0.1", port, timeout=120.0):
+                raise RuntimeError("ax-engine-server did not start within 120s")
+            print("  [ax-engine-http/concurrent] server ready.", file=sys.stderr)
+        else:
+            print(f"\n[ax-engine-http/concurrent] using running server on port {port}", file=sys.stderr)
+
+        print("  [ax-engine-http/concurrent] warmup…", file=sys.stderr)
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            for _ in range(2):
+                list(pool.map(fire, token_ids_list))
+
+        trial_rows = []
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            for i in range(1, trials + 1):
+                if cooldown > 0:
+                    time.sleep(cooldown)
+                t0 = time.perf_counter()
+                list(pool.map(fire, token_ids_list))
+                elapsed = time.perf_counter() - t0
+                ms = elapsed * 1000.0 / n
+                tps = total_tokens / elapsed if elapsed > 0 else 0.0
+                trial_rows.append({"ms_per_sentence": ms, "tokens_per_sec": tps})
+                print(f"    trial {i}: {ms:.2f}ms/sentence  {tps:.1f} tok/s", file=sys.stderr)
+
+        ms_vals = [t["ms_per_sentence"] for t in trial_rows]
+        tps_vals = [t["tokens_per_sec"] for t in trial_rows]
+        return {**_trial_stats(ms_vals, tps_vals, "ax_engine_http_concurrent"), "trials": trial_rows}
 
     finally:
         if server_proc is not None:
@@ -430,6 +649,18 @@ def main() -> int:
                         help="Assume ax-engine-server already running on --port")
     parser.add_argument("--skip-swift", action="store_true",
                         help="Skip mlx-swift benchmark")
+    parser.add_argument("--include-batched", action="store_true",
+                        help="Also run mlx-lm and ax-engine-py with batched "
+                             "(single forward over all sentences) and emit results_batched")
+    parser.add_argument("--include-concurrent-http", action="store_true",
+                        help="Also run ax-engine-http with N sentences as N "
+                             "concurrent POSTs per trial to demonstrate the "
+                             "server-side micro-batcher; emits "
+                             "results_concurrent_http")
+    parser.add_argument("--microbatch-window-ms", type=int, default=None,
+                        help="Override AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS for "
+                             "the server started by --include-concurrent-http "
+                             "(default uses the server's compiled-in 2ms)")
     parser.add_argument("--swift-bench-binary", type=Path,
                         default=REPO_ROOT / "scripts/mlx-swift-bench/.build/arm64-apple-macosx/release/mlx-swift-embed-bench",
                         help="Path to compiled mlx-swift-embed-bench binary")
@@ -498,8 +729,50 @@ def main() -> int:
             print(f"\n[ax-engine-http] FAILED: {e}", file=sys.stderr)
             errors.append(f"ax_engine_http: {e}")
 
+    # --- concurrent HTTP (optional, demonstrates server micro-batcher) ---
+    concurrent_results: dict[str, dict] = {}
+    if args.include_concurrent_http:
+        server_env = None
+        if args.microbatch_window_ms is not None:
+            server_env = {
+                "AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS": str(args.microbatch_window_ms),
+            }
+        try:
+            concurrent_results["ax_engine_http"] = bench_ax_engine_http_concurrent(
+                model_dir, token_ids_list, args.trials, args.cooldown,
+                args.port, skip_server=args.skip_ax_server,
+                server_env=server_env,
+            )
+        except Exception as e:
+            print(f"\n[ax-engine-http/concurrent] FAILED: {e}", file=sys.stderr)
+            errors.append(f"ax_engine_http_concurrent: {e}")
+
+    # --- batched (optional) ---
+    batched_results: dict[str, dict] = {}
+    if args.include_batched:
+        try:
+            batched_results["mlx_lm"] = bench_mlx_lm_batched(
+                model_dir, token_ids_list, args.trials, args.cooldown,
+            )
+        except Exception as e:
+            print(f"\n[mlx-lm/batched] FAILED: {e}", file=sys.stderr)
+            errors.append(f"mlx_lm_batched: {e}")
+        try:
+            batched_results["ax_engine_py"] = bench_ax_engine_py_batched(
+                model_dir, token_ids_list, args.trials, args.cooldown,
+            )
+        except Exception as e:
+            print(f"\n[ax-engine-py/batched] FAILED: {e}", file=sys.stderr)
+            errors.append(f"ax_engine_py_batched: {e}")
+
     # --- summary ---
     print_summary(all_results)
+    if batched_results:
+        print("\n--- Batched (10 sentences/request) ---")
+        print_summary(batched_results)
+    if concurrent_results:
+        print("\n--- Concurrent HTTP (10 simultaneous /v1/embeddings requests) ---")
+        print_summary(concurrent_results)
 
     # --- write output ---
     output = {
@@ -512,6 +785,8 @@ def main() -> int:
         "trials": args.trials,
         "cooldown_s": args.cooldown,
         "results": all_results,
+        "results_batched": batched_results,
+        "results_concurrent_http": concurrent_results,
     }
     out_path = run_dir / "embedding_bench.json"
     out_path.write_text(json.dumps(output, indent=2) + "\n")

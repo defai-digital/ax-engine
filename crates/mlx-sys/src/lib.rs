@@ -6,6 +6,7 @@
 #![allow(unsafe_code)]
 
 pub mod array;
+pub mod closure;
 pub mod fast;
 pub mod io;
 pub mod metal;
@@ -26,6 +27,7 @@ pub mod ffi {
 }
 
 pub use array::{MlxArray, MlxDtype};
+pub use closure::{MlxClosure, MlxVectorArray};
 pub use fast::{
     ScaledDotProductAttentionMask, rms_norm, rope, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask,
