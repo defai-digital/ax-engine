@@ -55,6 +55,8 @@ PREFILL_TABLE_COLUMNS = {
     "ax engine": "ax_engine_mlx",
 }
 
+TTFT_TABLE_COLUMNS = PREFILL_TABLE_COLUMNS
+
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
 REUSED_REFERENCE_MIN_REPETITIONS = 3
 
@@ -138,6 +140,7 @@ class ReadmeMetric:
     column: str
     engine: str
     displayed_value: float
+    displayed_delta_percent: float | None
 
 
 @dataclass(frozen=True)
@@ -168,6 +171,14 @@ def parse_numeric_cell(cell: str) -> float:
     if not match:
         raise ArtifactCheckError(f"metric cell has no numeric value: {cell!r}")
     return float(match.group(0))
+
+
+def parse_percent_cell(cell: str) -> float | None:
+    cleaned = cell.replace("**", "")
+    match = re.search(r"\(([+-]?\d+(?:\.\d+)?)%\)", cleaned)
+    if not match:
+        return None
+    return float(match.group(1))
 
 
 def is_unavailable_cell(cell: str) -> bool:
@@ -260,6 +271,7 @@ def parse_readme_table(
                     column=headers[normalized_headers.index(header)],
                     engine=engine,
                     displayed_value=parse_numeric_cell(cell),
+                    displayed_delta_percent=parse_percent_cell(cell),
                 )
             )
     return rows
@@ -279,6 +291,12 @@ def parse_readme_metrics(readme_path: Path) -> list[ReadmeMetric]:
             heading_prefix="### Prefill throughput",
             table_name="prefill",
             column_map=PREFILL_TABLE_COLUMNS,
+        ),
+        *parse_readme_table(
+            text,
+            heading_prefix="### Time to first token",
+            table_name="ttft",
+            column_map=TTFT_TABLE_COLUMNS,
         ),
     ]
 
@@ -334,7 +352,15 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
 
 
 def metric_median(row: dict[str, Any], table: str) -> float:
-    metric_key = "decode_tok_s" if table == "decode" else "prefill_tok_s"
+    if table == "ttft":
+        if row.get("engine") in {"mlx_lm", "mlx_swift_lm"}:
+            prompt_tokens = row.get("prompt_tokens")
+            if not isinstance(prompt_tokens, int):
+                raise ArtifactCheckError("reference TTFT row lacks prompt_tokens")
+            return prompt_tokens / metric_median(row, "prefill") * 1000.0
+        metric_key = "ttft_ms"
+    else:
+        metric_key = "decode_tok_s" if table == "decode" else "prefill_tok_s"
     metric = row.get(metric_key)
     if not isinstance(metric, dict) or "median" not in metric:
         raise ArtifactCheckError(f"artifact row lacks {metric_key}.median")
@@ -635,6 +661,46 @@ def assert_display_matches(metric: ReadmeMetric, artifact_row: ArtifactRow) -> N
             f"{metric.quantization} prompt={metric.prompt_tokens} "
             f"{metric.column}: README={metric.displayed_value:.1f} "
             f"artifact median={actual:.3f} ({artifact_row.artifact_path})"
+        )
+
+
+def assert_display_delta_matches(
+    metric: ReadmeMetric,
+    artifact_row: ArtifactRow,
+    artifact_rows: dict[tuple[str, str, int, int, str], ArtifactRow],
+) -> None:
+    if metric.displayed_delta_percent is None:
+        return
+    reference_row = artifact_rows.get(
+        (
+            metric.model,
+            metric.quantization,
+            metric.prompt_tokens,
+            artifact_row.generation_tokens,
+            "mlx_lm",
+        )
+    )
+    if reference_row is None:
+        raise ArtifactCheckError(
+            f"README {metric.table} delta has no mlx_lm reference: "
+            f"{metric.model} {metric.quantization} prompt={metric.prompt_tokens} "
+            f"generation_tokens={artifact_row.generation_tokens} engine={metric.engine}"
+        )
+    reference = metric_median(reference_row.row, metric.table)
+    if reference == 0:
+        raise ArtifactCheckError(
+            f"README {metric.table} delta has zero mlx_lm reference: "
+            f"{metric.model} {metric.quantization} prompt={metric.prompt_tokens}"
+        )
+    actual = metric_median(artifact_row.row, metric.table)
+    expected = (actual - reference) / reference * 100.0
+    if abs(expected - metric.displayed_delta_percent) > 0.06:
+        raise ArtifactCheckError(
+            f"{metric.table} README percentage mismatch for {metric.model} "
+            f"{metric.quantization} prompt={metric.prompt_tokens} "
+            f"{metric.column}: README={metric.displayed_delta_percent:.1f}% "
+            f"artifact={expected:.3f}% ({artifact_row.artifact_path}; "
+            f"reference={reference_row.artifact_path})"
         )
 
 
@@ -940,7 +1006,7 @@ def check_readme_performance(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 196,
+    expected_metric_count: int | None = 280,
 ) -> list[str]:
     resolved_readme = readme_path.resolve()
     artifact_sources = (
@@ -963,6 +1029,7 @@ def check_readme_performance(
                 f"generation_tokens={metric.generation_tokens} engine={metric.engine}"
             )
         assert_display_matches(metric, artifact_row)
+        assert_display_delta_matches(metric, artifact_row, artifact_rows)
         checked.append(
             f"{metric.table}:{metric.model}:{metric.quantization}:"
             f"{metric.prompt_tokens}:{metric.engine}"

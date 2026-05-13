@@ -57,7 +57,13 @@ def ax_mlx_telemetry() -> dict[str, int]:
 
 
 class ReadmePerformanceArtifactTests(unittest.TestCase):
-    def write_fixture(self, root: Path, *, stale_readme_value: bool = False) -> None:
+    def write_fixture(
+        self,
+        root: Path,
+        *,
+        stale_readme_value: bool = False,
+        stale_readme_percent: bool = False,
+    ) -> None:
         artifact_dir = root / "benchmarks/results/mlx-inference/local"
         prompt_dir = artifact_dir / "gemma-4-e2b-it-4bit-prompts"
         prompt_dir.mkdir(parents=True)
@@ -99,6 +105,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 "prompt_token_ids_sha256": prompt_hash,
                 "prefill_tok_s": metric(prefill),
                 "decode_tok_s": metric(decode),
+                "ttft_ms": metric(30.0),
                 "trials": [{}, {}, {}],
             }
             if engine == "mlx_lm":
@@ -206,6 +213,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
         )
 
         direct_decode = "8.7" if stale_readme_value else "8.0"
+        direct_delta = "-19.0%" if stale_readme_percent else "-20.0%"
         (root / "README.md").write_text(
             "\n".join(
                 [
@@ -214,11 +222,15 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     "### Decode throughput (tok/s) - generation=2 tokens, temp=0",
                     "| Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax direct baseline | ax default n-gram |",
                     "|---|---|---:|---:|---:|---:|---:|",
-                    f"| Gemma 4 E2B | 4-bit | 4 | 10.0 | 9.0 (-10.0%) | {direct_decode} (-20.0%) | **12.0 (+20.0%)** |",
+                    f"| Gemma 4 E2B | 4-bit | 4 | 10.0 | 9.0 (-10.0%) | {direct_decode} ({direct_delta}) | **12.0 (+20.0%)** |",
                     "### Prefill throughput (tok/s) - percentages vs mlx_lm",
                     "| Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |",
                     "|---|---|---:|---:|---:|---:|",
                     "| Gemma 4 E2B | 4-bit | 4 | 100.0 | 90.0 (-10.0%) | 80.0 (-20.0%) |",
+                    "### Time to first token (ms) - generation=2 tokens, temp=0",
+                    "| Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |",
+                    "|---|---|---:|---:|---:|---:|",
+                    "| Gemma 4 E2B | 4-bit | 4 | 40.0 | 44.4 (+11.1%) | **30.0 (-25.0%)** |",
                     "",
                 ]
             )
@@ -232,10 +244,10 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             checked = checker.check_readme_performance(
                 repo_root=root,
                 readme_path=root / "README.md",
-                expected_metric_count=7,
+                expected_metric_count=10,
             )
 
-        self.assertEqual(len(checked), 7)
+        self.assertEqual(len(checked), 10)
 
     def test_stale_readme_metric_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -249,7 +261,22 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
+                )
+
+    def test_stale_readme_percentage_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root, stale_readme_percent=True)
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "README percentage mismatch",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=10,
                 )
 
     def test_decode_table_generation_heading_must_match_artifact_shape(self) -> None:
@@ -271,7 +298,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=readme_path,
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_reused_reference_rows_may_have_source_repetition_count(self) -> None:
@@ -297,10 +324,10 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             checked = checker.check_readme_performance(
                 repo_root=root,
                 readme_path=root / "README.md",
-                expected_metric_count=7,
+                expected_metric_count=10,
             )
 
-        self.assertEqual(len(checked), 7)
+        self.assertEqual(len(checked), 10)
 
     def test_readme_can_validate_reference_and_ax_overlay_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -337,10 +364,10 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             checked = checker.check_readme_performance(
                 repo_root=root,
                 readme_path=readme_path,
-                expected_metric_count=7,
+                expected_metric_count=10,
             )
 
-        self.assertEqual(len(checked), 7)
+        self.assertEqual(len(checked), 10)
 
     def test_non_reference_rows_must_match_artifact_repetition_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -363,7 +390,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_phase0_artifact_requires_ax_runtime_identity(self) -> None:
@@ -384,7 +411,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_ngram_effective_claim_requires_draft_acceptance(self) -> None:
@@ -409,7 +436,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_ngram_no_accept_fallback_allows_attempts_without_acceptance(self) -> None:
@@ -431,10 +458,10 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             checked = checker.check_readme_performance(
                 repo_root=root,
                 readme_path=root / "README.md",
-                expected_metric_count=7,
+                expected_metric_count=10,
             )
 
-            self.assertEqual(len(checked), 7)
+            self.assertEqual(len(checked), 10)
 
     def test_public_prefix_reuse_claim_requires_physical_snapshot_hit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -452,7 +479,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_phase0_claim_gate_requires_prefix_coverage_classification(self) -> None:
@@ -471,7 +498,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_phase0_claim_gate_rejects_inconsistent_prefix_coverage(self) -> None:
@@ -490,7 +517,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_phase0_claim_gate_rejects_inconsistent_blocked_reason_count(self) -> None:
@@ -514,7 +541,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_phase0_claim_gate_rejects_negative_prefix_counter(self) -> None:
@@ -533,7 +560,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_public_claim_requires_matching_artifact_evidence(self) -> None:
@@ -553,7 +580,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_unknown_public_claim_fails_closed(self) -> None:
@@ -572,7 +599,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_public_continuous_batching_claim_requires_positive_overlap(self) -> None:
@@ -591,7 +618,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_public_continuous_batching_claim_accepts_positive_overlap(self) -> None:
@@ -611,10 +638,10 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             checked = checker.check_readme_performance(
                 repo_root=root,
                 readme_path=root / "README.md",
-                expected_metric_count=7,
+                expected_metric_count=10,
             )
 
-        self.assertEqual(len(checked), 7)
+        self.assertEqual(len(checked), 10)
 
     def test_phase0_claim_gate_rejects_invalid_overlap_classification(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -632,7 +659,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
     def test_phase0_claim_gate_rejects_inconsistent_overlap_claim(self) -> None:
@@ -655,7 +682,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
-                    expected_metric_count=7,
+                    expected_metric_count=10,
                 )
 
 
