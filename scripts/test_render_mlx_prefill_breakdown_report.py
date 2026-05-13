@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for rendering AX MLX prefill breakdown reports."""
+"""Unit tests for render_mlx_prefill_breakdown_report.py."""
 
 from __future__ import annotations
 
@@ -10,138 +10,154 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).parent
-sys.path.insert(0, str(SCRIPT_DIR))
-SCRIPT_PATH = SCRIPT_DIR / "render_mlx_prefill_breakdown_report.py"
+SCRIPT_PATH = Path(__file__).with_name("render_mlx_prefill_breakdown_report.py")
 MODULE_SPEC = importlib.util.spec_from_file_location(
     "render_mlx_prefill_breakdown_report",
     SCRIPT_PATH,
 )
 assert MODULE_SPEC and MODULE_SPEC.loader
-renderer = importlib.util.module_from_spec(MODULE_SPEC)
-sys.modules[MODULE_SPEC.name] = renderer
-MODULE_SPEC.loader.exec_module(renderer)
+reporter = importlib.util.module_from_spec(MODULE_SPEC)
+sys.modules[MODULE_SPEC.name] = reporter
+MODULE_SPEC.loader.exec_module(reporter)
 
 
-def metric(median: float) -> dict[str, float]:
-    return {"mean": median, "median": median, "min": median, "max": median}
-
-
-def ax_row(prompt_tokens: int, prefill_tok_s: float) -> dict[str, object]:
-    return {
-        "engine": "ax_engine_mlx",
-        "prompt_tokens": prompt_tokens,
-        "generation_tokens": 128,
-        "prefill_tok_s": metric(prefill_tok_s),
-        "ax_mlx_telemetry": {
-            "ax_mlx_prefill_wall_us": 100_000,
-            "ax_mlx_prefill_forward_wall_us": 70_000,
-            "ax_mlx_prefill_prefix_cache_wall_us": 20_000,
-            "ax_mlx_prefill_generation_state_wall_us": 5_000,
-            "ax_mlx_prefill_eval_barriers": 1,
-            "ax_mlx_prefill_drain_async_evals": 2,
-        },
-    }
-
-
-def mlx_row(prompt_tokens: int) -> dict[str, object]:
-    return {
-        "engine": "mlx_lm",
-        "prompt_tokens": prompt_tokens,
-        "generation_tokens": 128,
-        "prefill_tok_s": metric(1_000.0),
-    }
-
-
-def llama_row(prompt_tokens: int, prefill_tok_s: float) -> dict[str, object]:
-    return {
-        "engine": "llama_cpp_metal",
-        "prompt_tokens": prompt_tokens,
-        "generation_tokens": 128,
-        "prefill_tok_s": metric(prefill_tok_s),
-    }
+def metric(value: float) -> dict[str, float]:
+    return {"median": value, "mean": value, "min": value, "max": value}
 
 
 class PrefillBreakdownReportTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-
-    def write_artifacts(self) -> tuple[Path, Path]:
-        ax_path = self.root / "qwen.json"
-        ax_path.write_text(
+    def write_artifact(self, path: Path, *, model: str = "test_model") -> None:
+        path.write_text(
             json.dumps(
                 {
                     "schema_version": "ax.mlx_inference_stack.v2",
-                    "model": "mlx-community/Qwen",
+                    "model": model,
                     "results": [
-                        mlx_row(128),
-                        ax_row(128, 1_500.0),
-                        mlx_row(512),
-                        ax_row(512, 2_400.0),
+                        {
+                            "engine": "mlx_lm",
+                            "prompt_tokens": 128,
+                            "generation_tokens": 128,
+                            "prefill_tok_s": metric(500.0),
+                        },
+                        {
+                            "engine": "ax_engine_mlx",
+                            "prompt_tokens": 128,
+                            "generation_tokens": 128,
+                            "prefill_tok_s": metric(750.0),
+                            "ax_mlx_telemetry": {
+                                "ax_mlx_prefill_wall_us": 200_000,
+                                "ax_mlx_prefill_forward_wall_us": 160_000,
+                                "ax_mlx_prefill_prefix_cache_wall_us": 20_000,
+                                "ax_mlx_prefill_generation_state_wall_us": 10_000,
+                                "ax_mlx_prefill_eval_barriers": 1,
+                                "ax_mlx_prefill_drain_async_evals": 2,
+                            },
+                        },
                     ],
                 },
                 indent=2,
             )
             + "\n"
         )
-        llama_dir = self.root / "llama"
-        llama_dir.mkdir()
-        (llama_dir / "qwen.json").write_text(
+
+    def write_llama_artifact(self, path: Path) -> None:
+        path.write_text(
             json.dumps(
                 {
                     "schema_version": "ax.mlx_inference_stack.v2",
                     "results": [
-                        llama_row(128, 2_000.0),
-                        llama_row(512, 2_000.0),
+                        {
+                            "engine": "llama_cpp_metal",
+                            "prompt_tokens": 128,
+                            "generation_tokens": 128,
+                            "prefill_tok_s": metric(1000.0),
+                        }
                     ],
                 },
                 indent=2,
             )
             + "\n"
         )
-        return ax_path, llama_dir
 
-    def test_renders_breakdown_table_with_ratios(self) -> None:
-        ax_path, llama_dir = self.write_artifacts()
+    def test_directory_inputs_skip_diagnostic_artifacts_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            public_artifact = root / "model.json"
+            diagnostic_artifact = root / "model-linear-profile.json"
+            self.write_artifact(public_artifact, model="public")
+            self.write_artifact(diagnostic_artifact, model="diagnostic")
 
-        rows = renderer.build_rows(ax_path, llama_dir=llama_dir)
-        report = renderer.render_report(rows, title="Prefill Slice")
+            paths = reporter.artifact_paths([root])
+            diagnostic_paths = reporter.artifact_paths([root], include_diagnostics=True)
 
-        self.assertIn("# Prefill Slice", report)
-        self.assertIn("mlx-community/Qwen | 128 | 1,500.0 | 1.500x | 0.750x", report)
-        self.assertIn("70.0 | 20.0 | 5.0 | 5.0 | 70.0%", report)
-        self.assertIn("Worst AX/llama.cpp row", report)
-        self.assertIn("prompt=128", report)
+        self.assertEqual(paths, [public_artifact])
+        self.assertCountEqual(diagnostic_paths, [public_artifact, diagnostic_artifact])
 
     def test_cli_writes_report_from_directory(self) -> None:
-        ax_path, llama_dir = self.write_artifacts()
-        output = self.root / "report.md"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "model.json"
+            output = root / "report.md"
+            self.write_artifact(artifact)
 
-        exit_code = renderer.main_with_args_for_test(
-            [str(ax_path.parent), "--llama-dir", str(llama_dir), "--output", str(output)]
-        )
+            exit_code = reporter.main_with_args_for_test(
+                [str(root), "--output", str(output)]
+            )
 
-        self.assertEqual(exit_code, 0)
-        self.assertIn("AX MLX Prefill Breakdown Report", output.read_text())
+            self.assertEqual(exit_code, 0)
+            self.assertIn("AX MLX Prefill Breakdown Report", output.read_text())
+
+    def test_render_report_calculates_prefill_breakdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "model.json"
+            self.write_artifact(artifact)
+
+            rows = reporter.build_rows(artifact)
+            rendered = reporter.render_report(rows, title="Test Report")
+
+        self.assertIn("# Test Report", rendered)
+        self.assertIn("| test_model | 128 | 750.0 | 1.500x | n/a |", rendered)
+        self.assertIn("| 200.0 | 160.0 | 20.0 | 10.0 | 10.0 | 80.0% | 1 | 2 |", rendered)
+
+    def test_render_report_includes_llama_ratio_when_supplied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "model.json"
+            llama_dir = root / "llama"
+            llama_dir.mkdir()
+            self.write_artifact(artifact)
+            self.write_llama_artifact(llama_dir / "model.json")
+
+            rows = reporter.build_rows(artifact, llama_dir=llama_dir)
+            rendered = reporter.render_report(rows, title="Prefill Slice")
+
+        self.assertIn("test_model | 128 | 750.0 | 1.500x | 0.750x", rendered)
+        self.assertIn("Worst AX/llama.cpp row", rendered)
 
     def test_missing_prefill_telemetry_fails_closed(self) -> None:
-        path = self.root / "bad.json"
-        payload = {
-            "results": [
-                {
-                    "engine": "ax_engine_mlx",
-                    "prompt_tokens": 128,
-                    "generation_tokens": 128,
-                    "prefill_tok_s": metric(1_000.0),
-                }
-            ]
-        }
-        path.write_text(json.dumps(payload) + "\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "bad.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "engine": "ax_engine_mlx",
+                                "prompt_tokens": 128,
+                                "generation_tokens": 128,
+                                "prefill_tok_s": metric(1000.0),
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
 
-        with self.assertRaisesRegex(renderer.PrefillBreakdownReportError, "lacks ax_mlx_telemetry"):
-            renderer.build_rows(path)
+            with self.assertRaisesRegex(
+                reporter.PrefillBreakdownReportError,
+                "lacks ax_mlx_telemetry",
+            ):
+                reporter.build_rows(artifact)
 
 
 if __name__ == "__main__":

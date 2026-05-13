@@ -163,7 +163,19 @@ def build_rows(artifact_path: Path, *, llama_dir: Path | None = None) -> list[Pr
     return rows
 
 
-def artifact_paths(inputs: list[Path]) -> list[Path]:
+DIAGNOSTIC_ARTIFACT_SUFFIXES = (
+    "-decode-profile",
+    "-gemma4-moe-profile",
+    "-linear-profile",
+    "-prefill-profile",
+)
+
+
+def is_diagnostic_artifact(path: Path) -> bool:
+    return any(suffix in path.stem for suffix in DIAGNOSTIC_ARTIFACT_SUFFIXES)
+
+
+def artifact_paths(inputs: list[Path], *, include_diagnostics: bool = False) -> list[Path]:
     paths: list[Path] = []
     for input_path in inputs:
         if input_path.is_dir():
@@ -171,8 +183,11 @@ def artifact_paths(inputs: list[Path]) -> list[Path]:
                 path
                 for path in sorted(input_path.glob("*.json"))
                 if not path.name.startswith("sweep_")
+                and (include_diagnostics or not is_diagnostic_artifact(path))
             )
         else:
+            if not include_diagnostics and is_diagnostic_artifact(input_path):
+                continue
             paths.append(input_path)
     return paths
 
@@ -260,6 +275,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--llama-dir", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--title", default="AX MLX Prefill Breakdown Report")
+    parser.add_argument(
+        "--include-diagnostics",
+        action="store_true",
+        help="Include diagnostic/profile artifacts such as *-linear-profile.json.",
+    )
     return parser.parse_args(argv)
 
 
@@ -267,7 +287,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         rows: list[PrefillBreakdownRow] = []
-        for path in artifact_paths(args.artifacts):
+        for path in artifact_paths(
+            args.artifacts,
+            include_diagnostics=args.include_diagnostics,
+        ):
             rows.extend(build_rows(path, llama_dir=args.llama_dir))
         report = render_report(rows, title=args.title)
     except PrefillBreakdownReportError as error:
