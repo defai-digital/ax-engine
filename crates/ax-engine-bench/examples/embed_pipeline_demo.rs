@@ -29,7 +29,7 @@
 //!    (small models / small batches).
 
 use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
@@ -79,7 +79,7 @@ fn parse_args() -> CliArgs {
     }
 }
 
-fn build_session(model_dir: &PathBuf) -> EngineSession {
+fn build_session(model_dir: &Path) -> EngineSession {
     let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
         cache_group_id: CacheGroupId(0),
         block_size_tokens: 16,
@@ -88,7 +88,7 @@ fn build_session(model_dir: &PathBuf) -> EngineSession {
         max_batch_tokens: 2048,
         mlx_runtime_artifacts_dir: None,
         backend_request: PreviewBackendRequest::shipping_mlx(),
-        mlx_model_artifacts_dir: Some(model_dir.clone()),
+        mlx_model_artifacts_dir: Some(model_dir.to_path_buf()),
         mlx_disable_ngram_acceleration: false,
         mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
     })
@@ -163,7 +163,7 @@ fn main() {
     let lines: Vec<String> = stdin
         .lock()
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(Result::ok)
         .filter(|l| !l.trim().is_empty())
         .collect();
     if lines.is_empty() {

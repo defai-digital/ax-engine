@@ -2357,6 +2357,7 @@ impl MlxRunner {
     /// `forward_for_embedding` when:
     ///   * `AX_EMBED_NO_COMPILE` is set (kill switch / A-B benchmarking),
     ///   * the compile step itself returns an error.
+    ///
     /// The compiled closure is shape-specific (per `seq_len`,
     /// `target_position`) — first call at a new shape pays the trace cost
     /// once, subsequent calls hit the cache.
