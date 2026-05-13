@@ -496,16 +496,31 @@ def wait_for_server(
     timeout: float = 600.0,
     proc: subprocess.Popen[Any] | None = None,
 ) -> bool:
+    """Poll `url` (`/health`) until it returns < 500 or the process dies.
+    Returns True only after a *second* successful probe ~200 ms later,
+    so a transient one-shot 200 from a server that is about to crash
+    or lose its port (e.g. TIME_WAIT collision with a freshly-recycled
+    socket) does not pass the readiness gate. The cost of the extra
+    probe is one round-trip — negligible compared to the ~600 s budget,
+    and worth it to make per-model retries reliable on Mac kernels that
+    hold TIME_WAIT for up to two minutes.
+    """
     deadline = time.monotonic() + timeout
+    consecutive_ok = 0
     while time.monotonic() < deadline:
         if proc is not None and proc.poll() is not None:
             return False
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
                 if response.status < 500:
-                    return True
+                    consecutive_ok += 1
+                    if consecutive_ok >= 2:
+                        return True
+                    time.sleep(0.2)
+                    continue
+                consecutive_ok = 0
         except Exception:
-            pass
+            consecutive_ok = 0
         time.sleep(0.5)
     return False
 

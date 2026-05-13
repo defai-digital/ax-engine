@@ -616,13 +616,32 @@ fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(json!({
+async fn health(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    // `/health` is the readiness probe most callers (bench harness,
+    // k8s, load balancers) poll while a server starts. Returning 200
+    // when the server has bound a port but the inference session is
+    // wedged (deadlocked on another in-flight call, runtime panicked,
+    // weights not loadable on this device, etc.) sends those callers
+    // into the failure pattern below. A `try_lock` is a sub-µs probe
+    // that confirms the session mutex is grabbable, which is the
+    // strongest "ready" signal we can give without doing real work.
+    let session_lock = state.request_session.try_lock();
+    if session_lock.is_err() {
+        return Err(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_busy",
+            "ax-engine-server has not finished initialising its inference session".into(),
+        ));
+    }
+    drop(session_lock);
+    Ok(Json(json!({
         "status": "ok",
         "service": "ax-engine-server",
         "model_id": state.model_id.as_ref(),
         "runtime": runtime_response(&state),
-    }))
+    })))
 }
 
 async fn runtime_info(State(state): State<AppState>) -> Json<ServerInfoResponse> {
@@ -1885,86 +1904,6 @@ fn openai_chat_stop_sequences(model_id: &str, stop: Option<OpenAiStopInput>) -> 
     match stop {
         Some(stop) => stop.into_vec(),
         None => default_chat_stop_sequences(ChatPromptTemplate::for_model_id(model_id)),
-    }
-}
-
-/// Render a chat prompt from plain (role, content) pairs — used by the gRPC service.
-pub(crate) fn render_grpc_chat_prompt(
-    model_id: &str,
-    messages: &[(String, String)],
-) -> Result<String, String> {
-    if messages.is_empty() {
-        return Err("chat.completions requires at least one message".to_string());
-    }
-    let template = ChatPromptTemplate::for_model_id(model_id);
-    let mut prompt = String::new();
-    match template {
-        ChatPromptTemplate::Llama3 => prompt.push_str("<|begin_of_text|>"),
-        ChatPromptTemplate::Gemma4 => prompt.push_str("<bos>"),
-        ChatPromptTemplate::Glm47 => prompt.push_str("[gMASK]<sop>"),
-        ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
-    }
-    for (role, content) in messages {
-        let role = match role.trim() {
-            "system" | "user" | "assistant" | "tool" | "function" => role.trim(),
-            _ => return Err(format!("unsupported chat role: {role}")),
-        };
-        match template {
-            ChatPromptTemplate::QwenChatMl => {
-                prompt.push_str("<|im_start|>");
-                prompt.push_str(role);
-                prompt.push('\n');
-                prompt.push_str(content);
-                prompt.push_str("<|im_end|>\n");
-            }
-            ChatPromptTemplate::Llama3 => {
-                prompt.push_str("<|start_header_id|>");
-                prompt.push_str(role);
-                prompt.push_str("<|end_header_id|>\n\n");
-                prompt.push_str(content);
-                prompt.push_str("<|eot_id|>");
-            }
-            ChatPromptTemplate::Gemma4 => {
-                let turn = if role == "assistant" { "model" } else { role };
-                prompt.push_str("<|turn>");
-                prompt.push_str(turn);
-                prompt.push('\n');
-                prompt.push_str(content);
-            }
-            ChatPromptTemplate::Glm47 => {
-                prompt.push('<');
-                prompt.push('|');
-                prompt.push_str(role);
-                prompt.push('|');
-                prompt.push('>');
-                prompt.push_str(content);
-            }
-            ChatPromptTemplate::PlainRolePrefix => {
-                prompt.push_str(role);
-                prompt.push_str(": ");
-                prompt.push_str(content);
-                prompt.push('\n');
-            }
-        }
-    }
-    match template {
-        ChatPromptTemplate::QwenChatMl => prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT),
-        ChatPromptTemplate::Llama3 => {
-            prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
-        }
-        ChatPromptTemplate::Gemma4 => prompt.push_str("<|turn>model\n"),
-        ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|></think>"),
-        ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
-    }
-    Ok(prompt)
-}
-
-/// Chat stop sequences for the gRPC service (uses caller-supplied list or model defaults).
-pub(crate) fn grpc_chat_stop_sequences(model_id: &str, stop: Vec<String>) -> Vec<String> {
-    if stop.is_empty() {
-        default_chat_stop_sequences(ChatPromptTemplate::for_model_id(model_id))
-    } else {
-        stop
     }
 }
 
