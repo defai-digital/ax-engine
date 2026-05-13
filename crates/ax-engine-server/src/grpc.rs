@@ -70,14 +70,27 @@ fn render_grpc_chat_prompt(model_id: &str, messages: &[(String, String)]) -> Res
                 prompt.push_str(turn);
                 prompt.push('\n');
                 prompt.push_str(content);
+                prompt.push_str("<turn|>\n");
             }
             ChatPromptTemplate::Glm47 => {
-                prompt.push('<');
-                prompt.push('|');
-                prompt.push_str(role);
-                prompt.push('|');
-                prompt.push('>');
-                prompt.push_str(content);
+                if matches!(role, "tool" | "function") {
+                    prompt.push_str("<|observation|><tool_response>");
+                    prompt.push_str(content);
+                    prompt.push_str("</tool_response>");
+                } else {
+                    let tag = match role {
+                        "assistant" => "<|assistant|>",
+                        "system" => "<|system|>",
+                        _ => "<|user|>",
+                    };
+                    prompt.push_str(tag);
+                    if role == "assistant" {
+                        prompt.push_str("</think>");
+                        prompt.push_str(content.trim());
+                    } else {
+                        prompt.push_str(content);
+                    }
+                }
             }
             ChatPromptTemplate::PlainRolePrefix => {
                 prompt.push_str(role);
@@ -815,5 +828,53 @@ mod tests {
     fn grpc_chat_prompt_rejects_empty_messages() {
         let err = render_grpc_chat_prompt("qwen3_dense", &[]).expect_err("empty must fail");
         assert!(err.contains("at least one message"));
+    }
+
+    #[test]
+    fn grpc_chat_prompt_closes_gemma4_turns() {
+        // Without `<turn|>\n` after content, Gemma4 sees a single unterminated turn
+        // and continues the user's message instead of producing an assistant reply.
+        let messages = vec![
+            ("user".to_string(), "hello".to_string()),
+            ("assistant".to_string(), "hi".to_string()),
+            ("user".to_string(), "again".to_string()),
+        ];
+        let prompt = render_grpc_chat_prompt("gemma-4-e2b", &messages).expect("render");
+        assert_eq!(
+            prompt,
+            "<bos>\
+             <|turn>user\nhello<turn|>\n\
+             <|turn>model\nhi<turn|>\n\
+             <|turn>user\nagain<turn|>\n\
+             <|turn>model\n",
+        );
+    }
+
+    #[test]
+    fn grpc_chat_prompt_preserves_glm47_tool_observation_shape() {
+        // Mirror of `openai_glm_prompt_renderer_preserves_tool_observation_shape`
+        // in main.rs. GLM4.7 needs tool/function roles routed to
+        // `<|observation|><tool_response>...</tool_response>` and assistant turns
+        // to include `</think>` after the tag.
+        let messages = vec![
+            ("user".to_string(), "call tool".to_string()),
+            (
+                "assistant".to_string(),
+                "<tool_call>x</tool_call>".to_string(),
+            ),
+            ("tool".to_string(), "tool result".to_string()),
+            ("user".to_string(), "continue".to_string()),
+        ];
+        let prompt = render_grpc_chat_prompt("mlx-community/GLM-4.7-Flash-4bit", &messages)
+            .expect("render");
+        assert_eq!(
+            prompt,
+            "[gMASK]<sop>\
+             <|user|>call tool\
+             <|assistant|></think><tool_call>x</tool_call>\
+             <|observation|><tool_response>tool result</tool_response>\
+             <|user|>continue\
+             <|assistant|></think>",
+        );
     }
 }

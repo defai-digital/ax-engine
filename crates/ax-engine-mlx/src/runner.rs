@@ -3697,6 +3697,70 @@ fn validate_glm4_moe_lite_manifest(manifest: &NativeModelManifest) -> Result<(),
             "glm4_moe_lite requires glm_router.first_dense_layer_count".to_string(),
         )
     })?;
+    // `GlmRouterConfig::from_manifest` `.expect()`s these three fields once the router
+    // is considered enabled (`is_enabled()` returns true if *any* field is set), and
+    // `glm_router_apply_group_selection` follows up with runtime `assert!`s on the
+    // group invariants. Surface every panic-source as a typed manifest error here.
+    if manifest.glm_router.routed_scaling_factor.is_none() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite requires glm_router.routed_scaling_factor".to_string(),
+        ));
+    }
+    let n_group = manifest.glm_router.n_group.ok_or_else(|| {
+        MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite requires glm_router.n_group".to_string(),
+        )
+    })?;
+    let topk_group = manifest.glm_router.topk_group.ok_or_else(|| {
+        MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite requires glm_router.topk_group".to_string(),
+        )
+    })?;
+    if n_group == 0 {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite glm_router.n_group must be greater than zero".to_string(),
+        ));
+    }
+    if topk_group == 0 || topk_group > n_group {
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "glm4_moe_lite glm_router.topk_group {topk_group} must satisfy 0 < topk_group <= n_group ({n_group})"
+        )));
+    }
+    // `NativeMoeConfig::is_enabled` (checked above) only requires that *some*
+    // MoE field is present, but `ModelConfig::from_manifest` then
+    // `unwrap_or(0)`s the missing ones. With `n_group > 1`,
+    // `glm_router_apply_group_selection` asserts both divisibility and
+    // `experts_per_group >= 2`, so a missing `expert_count` (decoded as 0)
+    // would silently slip past the divisibility check and then crash on the
+    // group-size assert. Require the fields explicitly here.
+    let expert_count = manifest.moe.expert_count.ok_or_else(|| {
+        MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite requires moe.expert_count".to_string(),
+        )
+    })?;
+    if manifest.moe.experts_per_token.is_none() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "glm4_moe_lite requires moe.experts_per_token".to_string(),
+        ));
+    }
+    if n_group > 1 {
+        if expert_count % n_group != 0 {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "glm4_moe_lite moe.expert_count {expert_count} must be divisible by glm_router.n_group {n_group}"
+            )));
+        }
+        if expert_count / n_group < 2 {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "glm4_moe_lite moe.expert_count {expert_count} divided by glm_router.n_group {n_group} must yield at least two experts per group"
+            )));
+        }
+    }
+    if first_dense_layers > manifest.layer_count {
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "glm4_moe_lite glm_router.first_dense_layer_count {first_dense_layers} cannot exceed layer_count {}",
+            manifest.layer_count
+        )));
+    }
     let has_shared_experts = manifest.glm_router.has_shared_experts;
 
     for layer_index in 0..manifest.layer_count {
@@ -3950,7 +4014,8 @@ fn validate_qwen_gated_delta_linear_attention(
                 .to_string(),
         ));
     }
-    let Some(key_head_dim) = manifest.linear_attention.key_head_dim else {
+    let cfg = &manifest.linear_attention;
+    let Some(key_head_dim) = cfg.key_head_dim else {
         return Err(MlxRunnerError::UnsupportedFeature(
             "linear_attention.key_head_dim must be configured".to_string(),
         ));
@@ -3959,6 +4024,44 @@ fn validate_qwen_gated_delta_linear_attention(
         return Err(MlxRunnerError::UnsupportedFeature(format!(
             "linear_attention.key_head_dim {key_head_dim} must be divisible by 32 for the MLX gated-delta kernel"
         )));
+    }
+    if cfg.num_value_heads.is_none() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "linear_attention.num_value_heads must be configured".to_string(),
+        ));
+    }
+    if cfg.num_key_heads.is_none() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "linear_attention.num_key_heads must be configured".to_string(),
+        ));
+    }
+    if cfg.value_head_dim.is_none() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "linear_attention.value_head_dim must be configured".to_string(),
+        ));
+    }
+    if cfg.conv_kernel_dim.is_none() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "linear_attention.conv_kernel_dim must be configured".to_string(),
+        ));
+    }
+    // `resolved_full_attention_interval` falls back to QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL
+    // when the manifest omits the field, so None here means an explicit zero (or an
+    // unsupported family that slipped past the model_family gate above). Reject zero
+    // explicitly: `is_linear_layer` uses `is_multiple_of(interval)`, which would silently
+    // treat every layer as linear when interval == 0.
+    match cfg.resolved_full_attention_interval(&manifest.model_family) {
+        Some(0) => {
+            return Err(MlxRunnerError::UnsupportedFeature(
+                "linear_attention.full_attention_interval must be greater than zero".to_string(),
+            ));
+        }
+        Some(_) => {}
+        None => {
+            return Err(MlxRunnerError::UnsupportedFeature(
+                "linear_attention.full_attention_interval must be configured".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -3992,10 +4095,24 @@ fn validate_gemma4_interleaved_attention(
         .layer_types
         .iter()
         .any(|layer_type| layer_type == "sliding_attention");
-    if has_sliding && manifest.sliding_window_size.is_none() {
-        return Err(MlxRunnerError::UnsupportedFeature(
-            "Gemma4 sliding_attention layers require sliding_window_size".to_string(),
-        ));
+    if has_sliding {
+        match manifest.sliding_window_size {
+            None => {
+                return Err(MlxRunnerError::UnsupportedFeature(
+                    "Gemma4 sliding_attention layers require sliding_window_size".to_string(),
+                ));
+            }
+            Some(0) => {
+                // build_layer_configs maps Some(0) to Some(0), and the cache path then
+                // filters it back to None — sliding layers would silently degrade to a
+                // grow-forever window. Reject up front instead of running with a layout
+                // the user did not ask for.
+                return Err(MlxRunnerError::UnsupportedFeature(
+                    "Gemma4 sliding_window_size must be greater than zero".to_string(),
+                ));
+            }
+            Some(_) => {}
+        }
     }
 
     for (&layer, &source) in &manifest.kv_shared_source_layers {
@@ -4009,6 +4126,15 @@ fn validate_gemma4_interleaved_attention(
         if layer_type != source_type {
             return Err(MlxRunnerError::UnsupportedFeature(format!(
                 "Gemma4 KV-shared layer {layer} type {layer_type:?} cannot reuse source {source} type {source_type:?}"
+            )));
+        }
+        // Chained KV sharing would panic at runtime in `MlxKVCache::peek_source_kv`
+        // (the source layer never writes its own K/V, so the cached entry is None
+        // and the `.expect("…source layer must appear earlier")` fires). Reject it
+        // here so the manifest fails closed instead of producing a midstream panic.
+        if manifest.kv_shared_source_layers.contains_key(&source) {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "Gemma4 KV-shared layer {layer} cannot use shared layer {source} as its source"
             )));
         }
     }
@@ -4994,11 +5120,141 @@ mod tests {
     }
 
     #[test]
+    fn mlx_manifest_validation_rejects_partial_glm_router_fields() {
+        // Each `.expect()` in `GlmRouterConfig::from_manifest` and each runtime
+        // `assert!` in `glm_router_apply_group_selection` corresponds to one of
+        // these checks. A partial manifest passed the prior validator (only
+        // `first_dense_layer_count` was required) and then panicked downstream.
+        type Mutator = Box<dyn Fn(&mut NativeModelManifest)>;
+        for (label, mutate) in [
+            (
+                "missing routed_scaling_factor",
+                Box::new(|m: &mut NativeModelManifest| m.glm_router.routed_scaling_factor = None)
+                    as Mutator,
+            ),
+            (
+                "missing n_group",
+                Box::new(|m: &mut NativeModelManifest| m.glm_router.n_group = None),
+            ),
+            (
+                "missing topk_group",
+                Box::new(|m: &mut NativeModelManifest| m.glm_router.topk_group = None),
+            ),
+            (
+                "zero n_group",
+                Box::new(|m: &mut NativeModelManifest| m.glm_router.n_group = Some(0)),
+            ),
+            (
+                "zero topk_group",
+                Box::new(|m: &mut NativeModelManifest| m.glm_router.topk_group = Some(0)),
+            ),
+            (
+                "topk_group exceeds n_group",
+                Box::new(|m: &mut NativeModelManifest| {
+                    m.glm_router.n_group = Some(2);
+                    m.glm_router.topk_group = Some(3);
+                    m.moe.expert_count = Some(4);
+                }),
+            ),
+            (
+                "expert_count not divisible by n_group",
+                Box::new(|m: &mut NativeModelManifest| {
+                    m.glm_router.n_group = Some(3);
+                    m.glm_router.topk_group = Some(1);
+                    m.moe.expert_count = Some(4);
+                }),
+            ),
+            (
+                "expert_count per group below two",
+                Box::new(|m: &mut NativeModelManifest| {
+                    // 4 experts / 4 groups = 1 per group; the runtime assert
+                    // `experts_per_group >= 2` would fire mid-forward.
+                    m.glm_router.n_group = Some(4);
+                    m.glm_router.topk_group = Some(1);
+                    m.moe.expert_count = Some(4);
+                }),
+            ),
+            (
+                "missing moe.expert_count",
+                Box::new(|m: &mut NativeModelManifest| {
+                    // `is_enabled()` stays true via experts_per_token, but
+                    // `unwrap_or(0)` downstream then crashes the group-size assert
+                    // when n_group > 1.
+                    m.moe.expert_count = None;
+                    m.glm_router.n_group = Some(2);
+                    m.glm_router.topk_group = Some(1);
+                }),
+            ),
+            (
+                "missing moe.experts_per_token",
+                Box::new(|m: &mut NativeModelManifest| m.moe.experts_per_token = None),
+            ),
+            (
+                "first_dense_layer_count exceeds layer_count",
+                Box::new(|m: &mut NativeModelManifest| {
+                    m.glm_router.first_dense_layer_count = Some(m.layer_count + 1);
+                }),
+            ),
+        ] {
+            let mut manifest = glm4_moe_lite_manifest();
+            mutate(&mut manifest);
+            let error = validate_glm4_moe_lite_manifest(&manifest)
+                .expect_err(&format!("{label} should fail closed"));
+            let message = error.to_string();
+            assert!(
+                message.contains("glm_router") || message.contains("glm4_moe_lite"),
+                "{label}: unexpected error message: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn mlx_manifest_validation_allows_qwen35_linear_attention() {
         let artifacts = write_artifacts(qwen35_linear_manifest());
 
         validate_mlx_supported_manifest(&artifacts)
             .expect("Qwen3.5 linear attention is wired for the MLX path");
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_partial_linear_attention_fields() {
+        // Each `.expect()` in `LinearAttentionConfig::from_manifest` corresponds
+        // to one of these required fields; the validator must surface a typed
+        // error before the runner panics on a partially-configured manifest.
+        for (label, mutate) in [
+            (
+                "missing num_value_heads",
+                Box::new(|m: &mut NativeModelManifest| m.linear_attention.num_value_heads = None)
+                    as Box<dyn Fn(&mut NativeModelManifest)>,
+            ),
+            (
+                "missing num_key_heads",
+                Box::new(|m: &mut NativeModelManifest| m.linear_attention.num_key_heads = None),
+            ),
+            (
+                "missing value_head_dim",
+                Box::new(|m: &mut NativeModelManifest| m.linear_attention.value_head_dim = None),
+            ),
+            (
+                "missing conv_kernel_dim",
+                Box::new(|m: &mut NativeModelManifest| m.linear_attention.conv_kernel_dim = None),
+            ),
+            (
+                "zero full_attention_interval",
+                Box::new(|m: &mut NativeModelManifest| {
+                    m.linear_attention.full_attention_interval = Some(0)
+                }),
+            ),
+        ] {
+            let mut manifest = qwen35_linear_manifest();
+            mutate(&mut manifest);
+            let error = validate_qwen_gated_delta_linear_attention(&manifest)
+                .expect_err(&format!("{label} should fail closed"));
+            assert!(
+                error.to_string().contains("linear_attention"),
+                "{label}: unexpected error message: {error}"
+            );
+        }
     }
 
     #[test]
@@ -6212,6 +6468,45 @@ mod tests {
             .expect_err("cross-type KV sharing should fail closed");
 
         assert!(error.to_string().contains("cannot reuse"));
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_chained_gemma4_kv_shared_layers() {
+        // Layer 2 tries to share KV from layer 1, but layer 1 is itself a shared
+        // layer (no own K/V cache). `MlxKVCache::peek_source_kv` would `.expect()`
+        // on the missing source and panic mid-decode; reject the manifest up front.
+        let mut manifest = dense_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.layer_count = 3;
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+        ];
+        manifest.kv_shared_source_layers.insert(1, 0);
+        manifest.kv_shared_source_layers.insert(2, 1);
+
+        let error = validate_gemma4_interleaved_attention(&manifest)
+            .expect_err("chained KV sharing should fail closed");
+
+        assert!(error.to_string().contains("shared layer"));
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_zero_gemma4_sliding_window() {
+        // `Some(0)` survives build_layer_configs as Some(0) and is then filtered
+        // back to None by the rotating-window cache path, silently turning sliding
+        // layers into grow-forever ones. Force the manifest to fail closed instead.
+        let mut manifest = dense_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.sliding_window_size = Some(0);
+        manifest.layer_types = vec!["sliding_attention".to_string()];
+
+        let error = validate_gemma4_interleaved_attention(&manifest)
+            .expect_err("zero sliding_window_size should fail closed");
+
+        assert!(error.to_string().contains("sliding_window_size"));
     }
 
     #[test]
