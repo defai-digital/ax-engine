@@ -1,8 +1,5 @@
 # AX Engine
 
-[![CI](https://github.com/defai-digital/ax-engine/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/defai-digital/ax-engine/actions/workflows/ci.yml)
-[![Coverage Report](https://github.com/defai-digital/ax-engine/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/defai-digital/ax-engine/actions/workflows/coverage.yml)
-
 ### Faster Inference: Prefill, Decode, and TTFT
 
 <table>
