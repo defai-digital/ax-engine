@@ -298,3 +298,24 @@ jobs:
           name: ci-model-smoke-logs
           path: ${{ runner.temp }}/ax-ci-logs
           if-no-files-found: ignore
+
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    needs:
+      - rust
+      - scripts
+      - python-package
+      - sdk-clients
+      - model-smoke
+    if: always()
+
+    steps:
+      - name: Fail if any CI gate failed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "One or more CI gates failed or were cancelled."
+          exit 1
+
+      - name: Report CI gate success
+        run: echo "All CI gates passed."
