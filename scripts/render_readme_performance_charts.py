@@ -32,6 +32,7 @@ README_MODELS = [
 PROMPT_TOKENS = (128, 512)
 
 SERIES = [
+    ("llama_cpp_metal", "llama.cpp", "#f97316", "#c2410c"),
     ("mlx_lm", "mlx_lm", "#f2b705", "#9a6a00"),
     ("mlx_swift_lm", "mlx_swift_lm", "#4062bb", "#243b87"),
     ("ax_engine_mlx", "ax_engine", "#2eaf5f", "#176c37"),
@@ -177,6 +178,31 @@ def load_rows(results_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def infer_llama_results_dir(repo_root: Path) -> Path:
+    root = repo_root / "benchmarks" / "results" / "llama-cpp-metal"
+    if not root.exists():
+        raise ChartError(
+            f"could not infer llama.cpp Metal artifact directory; {root} does not exist"
+        )
+    candidates = [
+        path
+        for path in root.iterdir()
+        if path.is_dir() and (path / "sweep_results.json").exists()
+    ]
+    if not candidates:
+        raise ChartError(
+            f"could not infer llama.cpp Metal artifact directory; no sweep_results.json under {root}"
+        )
+    complete = [
+        path
+        for path in candidates
+        if all((path / f"{slug}.json").exists() for slug in README_MODELS)
+    ]
+    if complete:
+        return max(complete, key=lambda path: path.name).resolve()
+    return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
+
+
 def collect_values(rows: list[dict[str, Any]], metric: str) -> list[SeriesStats]:
     stats: list[SeriesStats] = []
     for engine, label, color, dot_color in SERIES:
@@ -189,7 +215,7 @@ def collect_values(rows: list[dict[str, Any]], metric: str) -> list[SeriesStats]
             elif metric == "decode":
                 values.append(metric_median(row, "decode_tok_s"))
             elif metric == "ttft":
-                if engine in {"mlx_lm", "mlx_swift_lm"}:
+                if engine in {"llama_cpp_metal", "mlx_lm", "mlx_swift_lm"}:
                     prompt_tokens = row.get("prompt_tokens")
                     if not isinstance(prompt_tokens, int):
                         raise ChartError(f"missing prompt_tokens for {engine}")
@@ -230,7 +256,7 @@ def median_label(value: float) -> str:
 
 
 def render_chart(spec: ChartSpec, stats: list[SeriesStats]) -> str:
-    x_positions = [98.8, 200.2, 301.6, 403.0]
+    x_positions = [78.0, 159.25, 240.5, 321.75, 403.0]
     dot_offsets = (-8.5, -5.0, -2.0, 1.5, 5.0, 8.5, -6.5, 3.5)
     ngram = next(item for item in stats if item.engine == "ax_engine_mlx_ngram_accel")
     ngram_median_y = y_scale(ngram.median, spec.axis_max)
@@ -239,8 +265,8 @@ def render_chart(spec: ChartSpec, stats: list[SeriesStats]) -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
         f"<title>{escape(spec.title)}</title>",
         (
-            f"<desc>Box-and-Whisker Plot comparing mlx_lm, mlx_swift_lm, "
-            f"ax_engine, and ax_engine plus n-gram across 28 README benchmark rows. "
+            f"<desc>Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, "
+            f"mlx_swift_lm, ax_engine, and ax_engine plus n-gram across 28 README benchmark rows. "
             f"A red dotted horizontal line marks the ax_engine plus n-gram median.</desc>"
         ),
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#ffffff"/>',
@@ -267,9 +293,9 @@ def render_chart(spec: ChartSpec, stats: list[SeriesStats]) -> str:
     lines.append(
         f'<line x1="{LEFT}" y1="{ngram_median_y:.1f}" x2="{RIGHT}" y2="{ngram_median_y:.1f}" stroke="{RED}" stroke-width="1.2" stroke-dasharray="2 4"/>'
     )
-    lines.append(f'<rect x="270" y="50" width="165" height="160" fill="none" stroke="{RED}" stroke-width="1.4"/>')
+    lines.append(f'<rect x="300" y="50" width="135" height="160" fill="none" stroke="{RED}" stroke-width="1.4"/>')
 
-    box_width = 42
+    box_width = 34
     for stat, x in zip(stats, x_positions):
         y_min = y_scale(stat.minimum, spec.axis_max)
         y_q1 = y_scale(stat.q1, spec.axis_max)
@@ -328,6 +354,14 @@ def main() -> int:
         type=Path,
         help="Benchmark artifact directory. Defaults to the README artifact directory.",
     )
+    parser.add_argument(
+        "--llama-results-dir",
+        type=Path,
+        help=(
+            "llama.cpp Metal artifact directory. Defaults to the newest "
+            "benchmarks/results/llama-cpp-metal/*/sweep_results.json directory."
+        ),
+    )
     parser.add_argument("--readme", type=Path, default=Path("README.md"))
     parser.add_argument("--output-dir", type=Path, default=Path("docs/assets"))
     parser.add_argument(
@@ -338,7 +372,8 @@ def main() -> int:
     args = parser.parse_args()
 
     results_dir = args.results_dir or infer_results_dir_from_readme(args.readme)
-    rows = load_rows(results_dir)
+    llama_results_dir = args.llama_results_dir or infer_llama_results_dir(args.readme.parent)
+    rows = load_rows(results_dir) + load_rows(llama_results_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     mismatches: list[Path] = []
@@ -358,7 +393,7 @@ def main() -> int:
     if args.check:
         print("README performance charts are up to date")
     else:
-        print(f"Rendered README performance charts from {results_dir}")
+        print(f"Rendered README performance charts from {results_dir} and {llama_results_dir}")
     return 0
 
 

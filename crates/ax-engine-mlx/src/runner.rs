@@ -1067,6 +1067,9 @@ impl DecodeProfileSnapshot {
             .per_layer_input_wall_us
             .saturating_add(other.per_layer_input_wall_us);
         self.pre_sdpa_wall_us = self.pre_sdpa_wall_us.saturating_add(other.pre_sdpa_wall_us);
+        self.pre_sdpa_qkv_proj_wall_us = self
+            .pre_sdpa_qkv_proj_wall_us
+            .saturating_add(other.pre_sdpa_qkv_proj_wall_us);
         self.sdpa_wall_us = self.sdpa_wall_us.saturating_add(other.sdpa_wall_us);
         self.post_attn_wall_us = self
             .post_attn_wall_us
@@ -1090,6 +1093,10 @@ impl DecodeProfileSnapshot {
             (
                 "ax_mlx_decode_profile_pre_sdpa_wall_us",
                 self.pre_sdpa_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_pre_sdpa_qkv_proj_wall_us",
+                self.pre_sdpa_qkv_proj_wall_us,
             ),
             ("ax_mlx_decode_profile_sdpa_wall_us", self.sdpa_wall_us),
             (
@@ -1614,6 +1621,11 @@ struct RequestState {
     /// benchmark auditability.
     ngram_acceleration: NgramAccelerationTelemetry,
     decode_telemetry: DecodeTelemetry,
+    /// Per-request cumulative decode profile.  The MLX-global
+    /// `take_decode_profile_snapshot` returns the delta since the last call;
+    /// we merge each batch's delta into this field so the surfaced totals
+    /// reflect the full request, not just the latest step.
+    decode_profile: DecodeProfileSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1645,6 +1657,7 @@ impl RequestState {
             direct_pipeline_emitted_tokens: 0,
             ngram_acceleration: NgramAccelerationTelemetry::default(),
             decode_telemetry: DecodeTelemetry::default(),
+            decode_profile: DecodeProfileSnapshot::default(),
         }
     }
 
@@ -2668,7 +2681,8 @@ impl MlxRunner {
         let decode_telemetry = state.decode_telemetry;
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
         let linear_attention_profile = take_linear_attention_profile_snapshot();
-        let decode_profile = take_decode_profile_snapshot();
+        state.decode_profile.merge_from(take_decode_profile_snapshot());
+        let decode_profile = state.decode_profile;
         {
             let force_shadow_sync = is_prefill
                 && prefill_completes_prompt

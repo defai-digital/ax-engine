@@ -1070,6 +1070,13 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
         args.mlx_model_artifacts_dir.clone()
     };
 
+    // Honor AX_NO_SPEC=1 (per CLAUDE.md convention) so direct-pipeline
+    // baselines and decode-profile runs can route through `decode_one`'s
+    // direct double-buffer path instead of n-gram acceleration.
+    let disable_ngram = matches!(
+        std::env::var("AX_NO_SPEC").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    );
     let config =
         EngineSessionConfig::from_preview_request(ax_engine_sdk::PreviewSessionConfigRequest {
             cache_group_id: CacheGroupId(0),
@@ -1080,7 +1087,7 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
             mlx_runtime_artifacts_dir: None,
             backend_request,
             mlx_model_artifacts_dir,
-            mlx_disable_ngram_acceleration: false,
+            mlx_disable_ngram_acceleration: disable_ngram,
             mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
         })
         .map_err(|error| CliError::Usage(format!("invalid inference configuration: {error}")))?;

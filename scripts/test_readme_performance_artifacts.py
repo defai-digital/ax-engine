@@ -214,11 +214,11 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     "### Decode throughput (tok/s) - generation=2 tokens, temp=0",
                     "| Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax direct baseline | ax default n-gram |",
                     "|---|---|---:|---:|---:|---:|---:|",
-                    f"| Gemma 4 E2B | 4-bit · group=64 · affine | 4 | 10.0 | 9.0 (-10.0%) | {direct_decode} (-20.0%) | **12.0 (+20.0%)** |",
+                    f"| Gemma 4 E2B | 4-bit | 4 | 10.0 | 9.0 (-10.0%) | {direct_decode} (-20.0%) | **12.0 (+20.0%)** |",
                     "### Prefill throughput (tok/s) - percentages vs mlx_lm",
                     "| Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |",
                     "|---|---|---:|---:|---:|---:|",
-                    "| Gemma 4 E2B | 4-bit · group=64 · affine | 4 | 100.0 | 90.0 (-10.0%) | 80.0 (-20.0%) |",
+                    "| Gemma 4 E2B | 4-bit | 4 | 100.0 | 90.0 (-10.0%) | 80.0 (-20.0%) |",
                     "",
                 ]
             )
