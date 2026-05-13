@@ -955,6 +955,33 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(summary["ax_mlx_prefix_cache_reused_tokens"], 16)
 
+    def test_ax_mlx_decode_route_summary_classifies_pipeline_and_mixed_rows(self) -> None:
+        direct = bench.summarize_ax_mlx_decode_route(
+            {
+                "ax_mlx_decode_steps": 10,
+                "ax_mlx_decode_wall_us": 1000,
+                "ax_mlx_direct_pipeline_steps": 10,
+                "ax_mlx_direct_pipeline_wall_us": 900,
+            }
+        )
+        self.assertEqual(direct["classification"], "direct_pipeline")
+        self.assertEqual(direct["direct_pipeline_step_share_micros"], 1_000_000)
+        self.assertEqual(direct["direct_pipeline_wall_share_micros"], 900_000)
+
+        mixed = bench.summarize_ax_mlx_decode_route(
+            {
+                "ax_mlx_decode_steps": 10,
+                "ax_mlx_decode_wall_us": 1000,
+                "ax_mlx_direct_pipeline_steps": 7,
+                "ax_mlx_direct_pipeline_wall_us": 700,
+                "ax_mlx_single_decode_steps": 3,
+                "ax_mlx_single_decode_wall_us": 300,
+            }
+        )
+        self.assertEqual(mixed["classification"], "mixed")
+        self.assertEqual(mixed["direct_pipeline_step_share_micros"], 700_000)
+        self.assertEqual(mixed["single_decode_step_share_micros"], 300_000)
+
     def test_scheduler_telemetry_is_extracted_and_summarized(self) -> None:
         telemetry = bench.extract_scheduler_telemetry(
             {
