@@ -1210,6 +1210,25 @@ impl EngineSession {
             .map_err(|message| EngineSessionError::EmbeddingFailed { message })
     }
 
+    /// Batched embedding returning one contiguous row-major
+    /// `[batch_size, hidden_size]` buffer instead of `Vec<Vec<f32>>`.
+    /// Saves `B - 1` heap allocations per call and lets downstream code
+    /// (numpy, faiss, HNSW indices) treat the result as a zero-copy view
+    /// over a single `&[f32]`.
+    pub fn embed_batch_flat(
+        &self,
+        batch: &[Vec<u32>],
+        pooling: EmbeddingPooling,
+        normalize: bool,
+    ) -> Result<ax_engine_core::EmbeddingMatrix, EngineSessionError> {
+        if !self.uses_mlx_runtime() {
+            return Err(EngineSessionError::EmbeddingNotSupported);
+        }
+        self.core
+            .embed_batch_flat(batch, pooling, normalize)
+            .map_err(|message| EngineSessionError::EmbeddingFailed { message })
+    }
+
     pub fn stream_state(&self, request_id: u64) -> Result<GenerateStreamState, EngineSessionError> {
         let current_report = self
             .request_report(request_id)

@@ -2113,6 +2113,82 @@ impl ExecutionRunner for MlxRunner {
             .collect();
         Ok(vecs)
     }
+
+    fn embed_batch_flat(
+        &self,
+        batch: &[Vec<u32>],
+        pooling: EmbeddingPooling,
+        normalize: bool,
+    ) -> Result<ax_engine_core::EmbeddingMatrix, &'static str> {
+        if batch.is_empty() {
+            return Ok(ax_engine_core::EmbeddingMatrix {
+                data: Vec::new(),
+                batch_size: 0,
+                hidden_size: 0,
+            });
+        }
+        for ids in batch {
+            if ids.is_empty() {
+                return Err("token_ids must not be empty");
+            }
+        }
+        let target_positions: Option<Vec<usize>> = match pooling {
+            EmbeddingPooling::Last => Some(batch.iter().map(|ids| ids.len() - 1).collect()),
+            EmbeddingPooling::Cls => Some(vec![0; batch.len()]),
+            EmbeddingPooling::Mean => None,
+        };
+        let (hidden, actual_lens) =
+            self.embedding_batch_forward(batch, target_positions.as_deref());
+        let batch_size = batch.len() as i32;
+        let hidden_size = hidden.shape()[hidden.shape().len() - 1] as usize;
+        let pooled = match pooling {
+            EmbeddingPooling::Mean => {
+                let max_seq = hidden.shape()[1] as usize;
+                let mut mask_data = vec![0.0f32; batch.len() * max_seq];
+                for (i, &l) in actual_lens.iter().enumerate() {
+                    for j in 0..l {
+                        mask_data[i * max_seq + j] = 1.0;
+                    }
+                }
+                let mask_arr = MlxArray::from_raw_data(
+                    mask_data.as_ptr() as *const u8,
+                    mask_data.len() * std::mem::size_of::<f32>(),
+                    &[batch_size, max_seq as i32, 1_i32],
+                    MlxDtype::Float32,
+                );
+                let mask_bf16 = astype(&mask_arr, MlxDtype::Bfloat16, None);
+                let masked = multiply(&hidden, &mask_bf16, None);
+                let sums = sum_axis(&masked, 1, false, None);
+                let mut len_data = vec![0.0f32; batch.len()];
+                for (i, &l) in actual_lens.iter().enumerate() {
+                    len_data[i] = l as f32;
+                }
+                let len_arr = MlxArray::from_raw_data(
+                    len_data.as_ptr() as *const u8,
+                    len_data.len() * std::mem::size_of::<f32>(),
+                    &[batch_size, 1_i32],
+                    MlxDtype::Float32,
+                );
+                let len_bf16 = astype(&len_arr, MlxDtype::Bfloat16, None);
+                divide(&sums, &len_bf16, None)
+            }
+            EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
+        };
+        let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
+        let result = if normalize {
+            l2_normalize_last_dim(&pooled_f32)
+        } else {
+            pooled_f32
+        };
+        mlx_sys::eval(&[&result]);
+        // Single contiguous read-back: B * H floats in one allocation.
+        let data = result.data_f32().to_vec();
+        Ok(ax_engine_core::EmbeddingMatrix {
+            data,
+            batch_size: batch.len(),
+            hidden_size,
+        })
+    }
 }
 
 /// L2-normalize `x` along its last dimension.
