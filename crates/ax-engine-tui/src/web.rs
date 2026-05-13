@@ -957,7 +957,7 @@ async function pollDownload(jobId, repoId) {
 
 const MAX_CHAT_HISTORY_TURNS = 20;
 const MAX_CHAT_HISTORY_MESSAGES = MAX_CHAT_HISTORY_TURNS * 2;
-const MANAGER_CHAT_MAX_TOKENS = 128;
+const MANAGER_CHAT_MAX_TOKENS = 2048;
 const history = [];
 
 function ensureChatOpen() {
