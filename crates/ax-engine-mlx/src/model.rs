@@ -61,11 +61,20 @@ pub struct LinearAttentionProfileSnapshot {
 /// - `pre_sdpa_wall_us` — qkv_project + reshape + QK/V norm + transpose +
 ///   RoPE + KV append. Dense full-attention layers only; linear-attention and
 ///   MLA layers contribute zero here.
+/// - `pre_sdpa_qkv_proj_wall_us` — subset of pre_sdpa: just the
+///   `qkv_project` call (Q/K/V quantized matmul(s), with the subsequent
+///   reshape to BSHD).  Use `pre_sdpa - pre_sdpa_qkv_proj` to size the
+///   "tail" (QK/V norm + transpose + RoPE + KV append) for ablation.
 /// - `sdpa_wall_us` — `scaled_dot_product_attention_with_mask` (or TurboQuant
 ///   fused fallback). Dense full-attention layers only.
 /// - `post_attn_wall_us` — transpose-back, output projection, residual,
 ///   FFN/MoE, per-layer-input gating, layer_scalar.  Includes the full layer
 ///   tail for linear/MLA layers (since pre_sdpa/sdpa do not apply).
+/// - `post_attn_ffn_wall_us` — subset of post_attn: just the FFN section
+///   (`ffn_swiglu` for dense, MoE expert forward for sparse).  Excludes the
+///   surrounding attention tail (transpose+o_proj+post_norm), residuals,
+///   per-layer-input gating, and layer_scalar.  Use `post_attn - post_attn_ffn`
+///   to size the non-FFN portion.
 /// - `lm_head_wall_us` — final RMSNorm + lm_head matmul + softcap + reshape.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DecodeProfileSnapshot {
@@ -74,8 +83,10 @@ pub struct DecodeProfileSnapshot {
     pub layers: u32,
     pub per_layer_input_wall_us: u32,
     pub pre_sdpa_wall_us: u32,
+    pub pre_sdpa_qkv_proj_wall_us: u32,
     pub sdpa_wall_us: u32,
     pub post_attn_wall_us: u32,
+    pub post_attn_ffn_wall_us: u32,
     pub lm_head_wall_us: u32,
 }
 
@@ -101,8 +112,10 @@ enum LinearAttentionProfileStage {
 enum DecodeProfileStage {
     PerLayerInput,
     PreSdpa,
+    PreSdpaQkvProj,
     Sdpa,
     PostAttn,
+    PostAttnFfn,
     LmHead,
 }
 
@@ -202,8 +215,10 @@ fn record_decode_profile_stage(stage: DecodeProfileStage, wall_us: u32) {
     let target = match stage {
         DecodeProfileStage::PerLayerInput => &mut profile.per_layer_input_wall_us,
         DecodeProfileStage::PreSdpa => &mut profile.pre_sdpa_wall_us,
+        DecodeProfileStage::PreSdpaQkvProj => &mut profile.pre_sdpa_qkv_proj_wall_us,
         DecodeProfileStage::Sdpa => &mut profile.sdpa_wall_us,
         DecodeProfileStage::PostAttn => &mut profile.post_attn_wall_us,
+        DecodeProfileStage::PostAttnFfn => &mut profile.post_attn_ffn_wall_us,
         DecodeProfileStage::LmHead => &mut profile.lm_head_wall_us,
     };
     *target = target.saturating_add(wall_us);
@@ -891,6 +906,7 @@ pub fn layer_forward_with_turboquant_context(
             (q_rope, ck, cv, None)
         } else {
             // Normal layer: compute Q, K, V from own projections.
+            let qkv_proj_started = profile_decode_layer.then(Instant::now);
             let (q_raw, k_raw, v_raw, attn_gate_raw) = qkv_project(cfg, w, &normed, head_dim);
 
             let q = reshape(
@@ -911,6 +927,18 @@ pub fn layer_forward_with_turboquant_context(
                 &[1, seq as i32, kv_heads as i32, head_dim as i32],
                 None,
             );
+            if let Some(started) = qkv_proj_started {
+                let mut refs: Vec<&MlxArray> = vec![&q, &k, &v];
+                if let Some(g) = attn_gate_raw.as_ref() {
+                    refs.push(g);
+                }
+                decode_profile_eval_elapsed(
+                    profile_decode_layer,
+                    DecodeProfileStage::PreSdpaQkvProj,
+                    started,
+                    &refs,
+                );
+            }
 
             let q = qk_norm_bshd(
                 q,
@@ -1103,6 +1131,7 @@ pub fn layer_forward_with_turboquant_context(
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
 
     // 17. FFN: MoE or dense.
+    let ffn_started = profile_decode_layer.then(Instant::now);
     let ffn_out = if w.router_proj.is_some() {
         if cfg.gemma4_moe_router {
             // Gemma4 dual-path: dense sub-block + expert sub-block.
@@ -1182,6 +1211,14 @@ pub fn layer_forward_with_turboquant_context(
         let out = ffn_swiglu(cfg, w, &normed2);
         rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
     };
+    if let Some(started) = ffn_started {
+        decode_profile_eval_elapsed(
+            profile_decode_layer,
+            DecodeProfileStage::PostAttnFfn,
+            started,
+            &[&ffn_out],
+        );
+    }
 
     // 18. Residual.
     let mut out = add(&hidden, &ffn_out, None);
