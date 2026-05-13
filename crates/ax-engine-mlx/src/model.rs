@@ -2308,10 +2308,36 @@ fn qkv_project(
     let slices = qkv_slices(cfg, head_dim);
     if let Some(packed) = &w.qkv_packed {
         let out = qw(x, packed);
-        let q = mlx_slice_last_dim(&out, slices.q.0, slices.q.1);
-        let gate = slices
-            .gate
-            .map(|(start, end)| mlx_slice_last_dim(&out, start, end));
+        let (q, gate) = if let Some((gate_start, gate_end)) = slices.gate {
+            // attn_output_gate=true: the q section of the packed output preserves
+            // q_proj's per-head interleaved layout `[h0_q, h0_gate, h1_q, h1_gate, ...]`,
+            // so a flat slice `[0, q_size)` would mix one head's q with its gate
+            // instead of yielding all heads' q. Reshape per-head and slice the
+            // last dim, matching the split path below and mlx-lm's
+            // `mx.split(q.reshape(B, L, n_heads, -1), 2, axis=-1)`.
+            debug_assert_eq!(slices.q.0, 0);
+            debug_assert_eq!(slices.q.1, gate_start);
+            let seq = out.shape()[1];
+            let qg = mlx_slice_last_dim(&out, 0, gate_end);
+            let qg_heads = reshape(
+                &qg,
+                &[1, seq, cfg.n_heads as i32, 2 * head_dim as i32],
+                None,
+            );
+            let q = reshape(
+                &slice_last_dim(&qg_heads, 0, head_dim as i32, None),
+                &[1, seq, (cfg.n_heads * head_dim) as i32],
+                None,
+            );
+            let gate = reshape(
+                &slice_last_dim(&qg_heads, head_dim as i32, 2 * head_dim as i32, None),
+                &[1, seq, (cfg.n_heads * head_dim) as i32],
+                None,
+            );
+            (q, Some(gate))
+        } else {
+            (mlx_slice_last_dim(&out, slices.q.0, slices.q.1), None)
+        };
         let k = mlx_slice_last_dim(&out, slices.k.0, slices.k.1);
         let v = mlx_slice_last_dim(&out, slices.v.0, slices.v.1);
         (q, k, v, gate)
@@ -4274,6 +4300,45 @@ mod tests {
         eval(&[&out]);
         assert_eq!(out.shape(), vec![1, 1, 1]);
         assert_eq!(out.data_f32(), &[10.0]);
+    }
+
+    #[test]
+    fn qkv_project_packed_attn_output_gate_extracts_per_head_q_and_gate() {
+        // Reproduces the per-head interleaved layout `[h0_q, h0_gate, h1_q, h1_gate, ...]`
+        // that q_proj produces when attn_output_gate=true. With n_heads=2, head_dim=2,
+        // q_size=4 and kv_size=4, the packed output's last dim is 16 elements:
+        //   [0..2]  head0 q, [2..4]  head0 gate,
+        //   [4..6]  head1 q, [6..8]  head1 gate,
+        //   [8..12] k,       [12..16] v.
+        // Before the fix, a flat slice (0, q_size=4) returned [h0_q, h0_gate] as `q` and
+        // (4, 8) returned [h1_q, h1_gate] as `gate` — i.e. one head's q/gate masquerading
+        // as all heads' q. After the fix `q` must be all heads' q values.
+        let mut cfg = cfg(true);
+        cfg.n_heads = 2;
+        cfg.n_kv_heads = 2;
+        cfg.hidden_size = 1;
+        let head_dim = 2;
+
+        // `out = x @ packed.T` with x=[[[1.0]]] and packed[i, 0]=i yields out[..]=[0..16].
+        let packed_data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let mut weights = empty_layer_weights(cfg.hidden_size);
+        weights.qkv_packed = Some(dense_weight_from_data(&packed_data, &[16, 1]));
+
+        let x_data = [1.0_f32];
+        let x = array_f32(&x_data, &[1, 1, 1]);
+
+        let (q, k, v, gate) = qkv_project(&cfg, &weights, &x, head_dim);
+        let gate = gate.expect("attn_output_gate=true must produce a gate tensor");
+        eval(&[&q, &k, &v, &gate]);
+
+        assert_eq!(q.shape(), vec![1, 1, 4]);
+        assert_eq!(q.data_f32(), &[0.0, 1.0, 4.0, 5.0]);
+        assert_eq!(gate.shape(), vec![1, 1, 4]);
+        assert_eq!(gate.data_f32(), &[2.0, 3.0, 6.0, 7.0]);
+        assert_eq!(k.shape(), vec![1, 1, 4]);
+        assert_eq!(k.data_f32(), &[8.0, 9.0, 10.0, 11.0]);
+        assert_eq!(v.shape(), vec![1, 1, 4]);
+        assert_eq!(v.data_f32(), &[12.0, 13.0, 14.0, 15.0]);
     }
 
     #[test]
