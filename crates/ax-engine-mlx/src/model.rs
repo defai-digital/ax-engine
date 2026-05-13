@@ -191,9 +191,7 @@ fn record_linear_attention_profile_layer(tokens: i32) {
     let mut profile = linear_attention_profile().lock().unwrap();
     profile.enabled = 1;
     profile.layers = profile.layers.saturating_add(1);
-    profile.tokens = profile
-        .tokens
-        .saturating_add(tokens.max(0).min(u32::MAX as i32) as u32);
+    profile.tokens = profile.tokens.saturating_add(tokens.max(0) as u32);
 }
 
 fn record_linear_attention_profile_stage(stage: LinearAttentionProfileStage, wall_us: u32) {
@@ -1688,13 +1686,7 @@ pub fn forward_for_embedding_batch(
     let max_len = *actual_lens.iter().max().expect("non-empty batch");
     let batch = batch_token_ids.len();
 
-    let hidden = build_embedding_batch_hidden(
-        cfg,
-        weights,
-        batch_token_ids,
-        batch,
-        max_len,
-    );
+    let hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
     let out = forward_for_embedding_batch_body(cfg, weights, hidden, target_positions);
     (out, actual_lens)
 }
@@ -1810,12 +1802,8 @@ pub fn build_embedding_batch_forward_closure(
             return vec![];
         }
         let hidden = inputs.get(0);
-        let out = forward_for_embedding_batch_body(
-            &cfg,
-            &weights,
-            hidden,
-            target_positions.as_deref(),
-        );
+        let out =
+            forward_for_embedding_batch_body(&cfg, &weights, hidden, target_positions.as_deref());
         vec![out]
     });
     body_closure.compile(false)
@@ -5604,6 +5592,18 @@ mod tests {
         assert_eq!(attention_mask_key_len(1, 6, Some(4)), 4);
         assert_eq!(attention_mask_key_len(1, 6, None), 6);
         assert_eq!(attention_mask_key_len(2, 6, Some(4)), 6);
+    }
+
+    #[test]
+    fn linear_attention_profile_token_count_clamps_negative_shapes() {
+        let _ = take_linear_attention_profile_snapshot();
+
+        record_linear_attention_profile_layer(128);
+        record_linear_attention_profile_layer(-1);
+        let snapshot = take_linear_attention_profile_snapshot();
+
+        assert_eq!(snapshot.layers, 2);
+        assert_eq!(snapshot.tokens, 128);
     }
 
     #[test]
