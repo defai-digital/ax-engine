@@ -207,7 +207,20 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     // and conv1d weights in a different axis order than MLX expects. The MLX
     // community fork pre-applies these transforms; raw HF checkpoints need them
     // applied here. The manifest's `weight_sanitize` field selects the path.
-    match artifacts.manifest().weight_sanitize {
+    //
+    // When the manifest leaves `weight_sanitize=None` (the default emitted by
+    // `convert_hf_model_dir`), some mlx-community quantized hybrid models
+    // (e.g. `Qwen3-Coder-Next-4bit`) still ship unsanitized norm weights
+    // because mlx_lm runs `sanitize()` at load time rather than persisting
+    // the +1.0 baseline on disk. Re-running `mlx_lm.convert` on an already
+    // quantized checkpoint dequantizes → normalizes → re-quantizes and
+    // produces garbage weights, so auto-detection here is the only viable
+    // recovery path.
+    let effective_sanitize = match artifacts.manifest().weight_sanitize {
+        WeightSanitize::None => auto_detect_linear_attention_sanitize(specs, &name_map),
+        explicit => explicit,
+    };
+    match effective_sanitize {
         WeightSanitize::HfToMlx => apply_hf_sanitize_transforms(specs, &mut name_map, true),
         WeightSanitize::HfNormOnly => apply_hf_sanitize_transforms(specs, &mut name_map, false),
         WeightSanitize::None => {}
@@ -913,24 +926,137 @@ fn apply_hf_sanitize_transforms(
     eval(&refs);
 }
 
+/// Lower bound on `mean_abs` of a sanitized RMSNorm weight (post `+1.0` lift).
+///
+/// mlx_lm-sanitized norms cluster tightly around `1.0` (typically `1.0 ± 0.1`);
+/// the raw HF zero-centred-delta form clusters around `0.0` (typically `< 0.05`).
+/// `0.15` is comfortably between both modes — well above the deltas yet far
+/// below any plausible sanitized weight, so it doubles as the auto-detect
+/// trigger and the post-load fail-closed assertion.
+const SANITIZED_NORM_MIN_MEAN_ABS: f32 = 0.15;
+
 fn ensure_sanitized_linear_attention_norm(
     layer_index: usize,
     norm: &MlxArray,
 ) -> Result<(), WeightLoadError> {
+    if let Some(mean_abs) = linear_attention_norm_mean_abs(norm)
+        && mean_abs < SANITIZED_NORM_MIN_MEAN_ABS
+    {
+        return Err(WeightLoadError::UnsanitizedWeights(format!(
+            "linear attention layer {layer_index} norm mean_abs={mean_abs:.6}; \
+             expected ~1.0 after the HF→MLX +1.0 transform. \
+             Auto-detection should have caught this — if you see this error, \
+             the layer-0 linear-attention norm tensor was not sampled at load \
+             time (perhaps missing role tag in the manifest). Set the manifest \
+             `weight_sanitize` to `\"hf_norm_only\"` (conv1d already in MLX \
+             layout) or `\"hf_to_mlx\"` (raw HF conv1d) and reload."
+        )));
+    }
+    Ok(())
+}
+
+/// Compute mean_abs of a norm tensor as f32, or `None` if the sample is too
+/// small to draw a conclusion. Shared by load-time auto-detection and the
+/// post-sanitize verification.
+fn linear_attention_norm_mean_abs(norm: &MlxArray) -> Option<f32> {
     let f32_norm = astype(norm, MlxDtype::Float32, None);
     eval(&[&f32_norm]);
     let data = f32_norm.data_f32();
     if data.len() < 8 {
-        return Ok(());
+        return None;
     }
-    let mean_abs: f32 = data.iter().map(|v| v.abs()).sum::<f32>() / data.len() as f32;
-    if mean_abs < 0.15 {
-        return Err(WeightLoadError::UnsanitizedWeights(format!(
-            "linear attention layer {layer_index} norm mean_abs={mean_abs:.6}; expected ~1.0 for mlx_lm-sanitized weights. Raw HuggingFace Qwen3.5/Qwen3-Next checkpoints must be converted first: pip install mlx-lm && mlx_lm.convert ..."
-        )));
+    Some(data.iter().map(|v| v.abs()).sum::<f32>() / data.len() as f32)
+}
+
+/// When the manifest sets `weight_sanitize=None`, peek at the lowest-indexed
+/// linear-attention layer's norm and conv1d tensors to decide whether the
+/// weights on disk are actually pre-sanitized.
+///
+/// Returns the sanitize mode to apply:
+/// - `None`: weights look sanitized (norm baseline near 1.0, conv1d in MLX layout)
+/// - `HfNormOnly`: norm needs +1.0 but conv1d is already MLX layout (mlx-community
+///   quantized hybrid models: Qwen3-Coder-Next-4bit, Qwen3.5-9B-4bit, …)
+/// - `HfToMlx`: both norm and conv1d are raw HF (rare for distributed mlx checkpoints)
+///
+/// For non-hybrid models (no linear-attention layers) this returns `None`
+/// because there is no signal — and historically mlx-community pre-sanitizes
+/// the non-hybrid families before publishing, so leaving sanitize off is safe.
+fn auto_detect_linear_attention_sanitize(
+    specs: &[NativeTensorSpec],
+    name_map: &HashMap<String, MlxArray>,
+) -> WeightSanitize {
+    // Sample the lowest-indexed linear-attention norm rather than hardcoding
+    // layer 0 — hybrid architectures may interleave a full-attention layer at
+    // index 0, in which case there is no LinearAttentionNorm at that index.
+    let norm_spec = specs
+        .iter()
+        .filter(|s| matches!(s.role, NativeTensorRole::LinearAttentionNorm))
+        .min_by_key(|s| s.layer_index.unwrap_or(u32::MAX));
+    let Some(norm_spec) = norm_spec else {
+        return WeightSanitize::None;
+    };
+    let Some(norm) = name_map.get(&norm_spec.name) else {
+        return WeightSanitize::None;
+    };
+    let Some(mean_abs) = linear_attention_norm_mean_abs(norm) else {
+        return WeightSanitize::None;
+    };
+    let norm_needs_sanitize = mean_abs < SANITIZED_NORM_MIN_MEAN_ABS;
+
+    let sample_layer = norm_spec.layer_index;
+    let conv1d_spec = specs
+        .iter()
+        .find(|s| {
+            matches!(s.role, NativeTensorRole::LinearAttentionConv1d)
+                && s.layer_index == sample_layer
+        })
+        .or_else(|| {
+            specs
+                .iter()
+                .filter(|s| matches!(s.role, NativeTensorRole::LinearAttentionConv1d))
+                .min_by_key(|s| s.layer_index.unwrap_or(u32::MAX))
+        });
+    let conv1d_needs_swap = conv1d_spec
+        .and_then(|spec| name_map.get(&spec.name))
+        .map(|conv1d| {
+            let shape = conv1d.shape();
+            // HF layout: [conv_dim, in=1, kernel]. MLX layout: [conv_dim, kernel, in=1].
+            // Detect HF by `shape[1] == 1 && shape[2] != 1` to avoid the
+            // ambiguous all-ones edge case (a 1x1 conv has shape [_, 1, 1]).
+            shape.len() == 3 && shape[1] == 1 && shape[2] != 1
+        })
+        .unwrap_or(false);
+
+    let chosen = match (norm_needs_sanitize, conv1d_needs_swap) {
+        (false, false) => WeightSanitize::None,
+        (true, false) => WeightSanitize::HfNormOnly,
+        (true, true) => WeightSanitize::HfToMlx,
+        // Norm looks sanitized but conv1d is still HF layout. A partially
+        // transformed checkpoint should not be silently patched — let the
+        // downstream `ensure_conv1d_mlx_layout` check fire with its
+        // diagnostic.
+        (false, true) => WeightSanitize::None,
+    };
+
+    if !matches!(chosen, WeightSanitize::None) {
+        tracing::warn!(
+            target: "ax_mlx::weights",
+            mean_abs = mean_abs,
+            conv1d_needs_swap = conv1d_needs_swap,
+            sanitize = ?chosen,
+            "manifest weight_sanitize=None but on-disk linear-attention weights look unsanitized; \
+             applying {chosen:?}. Set weight_sanitize explicitly in model-manifest.json to silence \
+             this warning."
+        );
+        eprintln!(
+            "[ax_mlx::weights] auto-detected unsanitized linear-attention weights \
+             (norm mean_abs={mean_abs:.6}, conv1d_hf_layout={conv1d_needs_swap}); \
+             applying {chosen:?} sanitize transform. Set weight_sanitize in \
+             model-manifest.json to silence this warning."
+        );
     }
 
-    Ok(())
+    chosen
 }
 
 /// Verify conv1d is in MLX layout `[conv_dim, kernel, 1]` (last dim = 1).
@@ -944,7 +1070,9 @@ fn ensure_conv1d_mlx_layout(layer_index: usize, conv1d: &MlxArray) -> Result<(),
         return Err(WeightLoadError::UnsanitizedWeights(format!(
             "linear attention layer {layer_index} conv1d shape {shape:?}: expected \
              [conv_dim, kernel, 1] (MLX layout). Raw HuggingFace checkpoints store conv1d as \
-             [conv_dim, 1, kernel]; set weight_sanitize to \"hf\" or run mlx_lm.convert first."
+             [conv_dim, 1, kernel]; set weight_sanitize to \"hf_to_mlx\" or run \
+             mlx_lm.convert on the unquantized source weights first \
+             (re-running mlx_lm.convert on an already-quantized checkpoint corrupts the weights)."
         )));
     }
     Ok(())
@@ -1498,7 +1626,10 @@ mod tests {
         };
         assert!(message.contains("layer 2"));
         assert!(message.contains("mean_abs=0.000000"));
-        assert!(message.contains("mlx_lm.convert"));
+        assert!(
+            message.contains("weight_sanitize"),
+            "error should mention manifest weight_sanitize knob"
+        );
     }
 
     #[test]
@@ -1724,6 +1855,126 @@ mod tests {
                 "conv1d[{i}]: got {got}, want {want}"
             );
         }
+    }
+
+    /// Build a minimal `name_map` + spec list mimicking the layer-0 slice of
+    /// a hybrid (linear-attention) checkpoint, for auto-detection tests.
+    fn fixture_layer0_linear_attention(
+        norm_data: &[f32],
+        conv1d_shape: &[i32],
+    ) -> (Vec<NativeTensorSpec>, HashMap<String, MlxArray>) {
+        let norm = MlxArray::from_raw_data(
+            norm_data.as_ptr().cast(),
+            std::mem::size_of_val(norm_data),
+            &[norm_data.len() as i32],
+            MlxDtype::Float32,
+        );
+        let conv_elements: i32 = conv1d_shape.iter().product();
+        let conv_data = vec![0.0_f32; conv_elements as usize];
+        let conv1d = MlxArray::from_raw_data(
+            conv_data.as_ptr().cast(),
+            std::mem::size_of_val(conv_data.as_slice()),
+            conv1d_shape,
+            MlxDtype::Float32,
+        );
+        let mut name_map = HashMap::new();
+        name_map.insert("layers.0.linear_attn.norm".to_string(), norm);
+        name_map.insert("layers.0.linear_attn.conv1d".to_string(), conv1d);
+
+        let make_spec = |name: &str, role: NativeTensorRole| NativeTensorSpec {
+            name: name.to_string(),
+            role,
+            layer_index: Some(0),
+            dtype: NativeTensorDataType::F32,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantization: None,
+            quantized_source: None,
+            shape: vec![1],
+            file: PathBuf::from("model.safetensors"),
+            offset_bytes: 0,
+            length_bytes: 4,
+        };
+        let specs = vec![
+            make_spec(
+                "layers.0.linear_attn.norm",
+                NativeTensorRole::LinearAttentionNorm,
+            ),
+            make_spec(
+                "layers.0.linear_attn.conv1d",
+                NativeTensorRole::LinearAttentionConv1d,
+            ),
+        ];
+        (specs, name_map)
+    }
+
+    #[test]
+    fn auto_detect_picks_hf_norm_only_for_unsanitized_norm_with_mlx_conv1d() {
+        // Layer-0 fingerprint of mlx-community/Qwen3-Coder-Next-4bit: norm
+        // weights stored as zero-centred deltas (mean_abs ≈ 0.011), conv1d
+        // already in MLX layout (last dim = 1).
+        let norm_data: Vec<f32> = (0..256).map(|i| 0.01 * ((i as f32).sin())).collect();
+        let (specs, name_map) = fixture_layer0_linear_attention(&norm_data, &[64, 4, 1]);
+
+        let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
+
+        assert_eq!(
+            chosen,
+            WeightSanitize::HfNormOnly,
+            "unsanitized norm + MLX-layout conv1d ⇒ HfNormOnly"
+        );
+    }
+
+    #[test]
+    fn auto_detect_picks_hf_to_mlx_when_both_norm_and_conv1d_are_raw_hf() {
+        // Raw HF safetensors path: norm is zero-centred deltas AND conv1d
+        // is in HF layout `[conv_dim, in=1, kernel]`.
+        let norm_data: Vec<f32> = (0..256).map(|i| 0.01 * ((i as f32).cos())).collect();
+        let (specs, name_map) = fixture_layer0_linear_attention(&norm_data, &[64, 1, 4]);
+
+        let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
+
+        assert_eq!(
+            chosen,
+            WeightSanitize::HfToMlx,
+            "raw HF norm + HF conv1d ⇒ HfToMlx"
+        );
+    }
+
+    #[test]
+    fn auto_detect_returns_none_when_weights_already_sanitized() {
+        // Pre-sanitized norm clusters near 1.0; conv1d in MLX layout.
+        let norm_data = vec![1.0_f32; 256];
+        let (specs, name_map) = fixture_layer0_linear_attention(&norm_data, &[64, 4, 1]);
+
+        let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
+
+        assert_eq!(chosen, WeightSanitize::None);
+    }
+
+    #[test]
+    fn auto_detect_returns_none_for_non_hybrid_models() {
+        // No LinearAttentionNorm in the spec list: nothing to sample, fall
+        // through to manifest setting unchanged.
+        let specs: Vec<NativeTensorSpec> = Vec::new();
+        let name_map: HashMap<String, MlxArray> = HashMap::new();
+
+        let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
+
+        assert_eq!(chosen, WeightSanitize::None);
+    }
+
+    #[test]
+    fn auto_detect_returns_none_for_sanitized_norm_with_hf_conv1d() {
+        // Partially-transformed checkpoint (norm OK, conv1d not). Don't
+        // silently re-sanitize — let `ensure_conv1d_mlx_layout` fire with
+        // its specific diagnostic so the user sees the actual inconsistency.
+        let norm_data = vec![1.0_f32; 256];
+        let (specs, name_map) = fixture_layer0_linear_attention(&norm_data, &[64, 1, 4]);
+
+        let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
+
+        assert_eq!(chosen, WeightSanitize::None);
     }
 
     #[test]
