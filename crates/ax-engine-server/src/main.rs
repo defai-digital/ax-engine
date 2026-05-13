@@ -1893,11 +1893,26 @@ fn build_mlx_lm_chat_messages(
 }
 
 fn chat_template_kwargs_for_model_id(model_id: &str) -> Option<serde_json::Value> {
+    // Qwen3.6 / Qwen3-Next / Qwen3-Coder-Next are reasoning models: their chat
+    // templates inject `<think>\n\n</think>\n\n` when `enable_thinking=false`,
+    // forcing the model to skip the reasoning step it was trained to produce.
+    // On prompts that require reasoning (e.g. math), the model emits a short
+    // preamble followed by `<|im_end|>` (in the stop sequence list) and the
+    // response truncates after a handful of tokens. Leave the kwarg unset so
+    // the template's default (thinking enabled) applies.
+    if is_qwen_thinking_model(model_id) {
+        return None;
+    }
     matches!(
         ChatPromptTemplate::for_model_id(model_id),
         ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Glm47
     )
     .then(|| json!({"enable_thinking": false}))
+}
+
+fn is_qwen_thinking_model(model_id: &str) -> bool {
+    let m = model_id.to_ascii_lowercase();
+    m.contains("qwen") && (m.contains("3.6") || m.contains("3_6") || m.contains("next"))
 }
 
 fn openai_chat_stop_sequences(model_id: &str, stop: Option<OpenAiStopInput>) -> Vec<String> {
@@ -3326,6 +3341,30 @@ sys.stdout.write(f"server::{prompt}")
             Some(json!({"enable_thinking": false}))
         );
         assert_eq!(chat_template_kwargs_for_model_id("gemma4-e2b"), None);
+    }
+
+    #[test]
+    fn openai_chat_template_kwargs_omitted_for_qwen_reasoning_models() {
+        // Issue #13: Qwen3.6 / Qwen3-Next / Qwen3-Coder-Next must NOT receive
+        // enable_thinking=false — their chat templates inject an empty
+        // <think></think> block that breaks reasoning-required prompts (math,
+        // multi-step) by causing premature <|im_end|> emission.
+        assert_eq!(
+            chat_template_kwargs_for_model_id("Qwen3.6-35B-A3B-5bit"),
+            None
+        );
+        assert_eq!(
+            chat_template_kwargs_for_model_id("qwen3_6-35b-a3b-ud-mlx-4bit"),
+            None
+        );
+        assert_eq!(
+            chat_template_kwargs_for_model_id("mlx-community/Qwen3.6-35B-A3B-4bit"),
+            None
+        );
+        assert_eq!(
+            chat_template_kwargs_for_model_id("Qwen3-Coder-Next-4bit"),
+            None
+        );
     }
 
     #[test]
