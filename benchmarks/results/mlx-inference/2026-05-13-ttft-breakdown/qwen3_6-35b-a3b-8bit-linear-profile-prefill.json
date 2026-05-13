@@ -24,7 +24,7 @@
     "platform": "darwin"
   },
   "build": {
-    "commit": "18dcf26630f970f0aab203895c400f609d598ba2",
+    "commit": "a55f49d6cb1277d6b42c33117c6caa7e991d9535",
     "build_profile": "release",
     "server_binary": "/Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server"
   },
@@ -641,35 +641,35 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "prefill_tok_s": {
-        "mean": 773.1195979778091,
-        "median": 773.1195979778091,
-        "min": 773.1195979778091,
-        "max": 773.1195979778091
+        "mean": 701.0971074266997,
+        "median": 701.0971074266997,
+        "min": 701.0971074266997,
+        "max": 701.0971074266997
       },
       "decode_tok_s": {
-        "mean": 26.461299203952443,
-        "median": 26.461299203952443,
-        "min": 26.461299203952443,
-        "max": 26.461299203952443
+        "mean": 19.22312247989784,
+        "median": 19.22312247989784,
+        "min": 19.22312247989784,
+        "max": 19.22312247989784
       },
       "ttft_ms": {
-        "mean": 165.563,
-        "median": 165.563,
-        "min": 165.563,
-        "max": 165.563
+        "mean": 182.571,
+        "median": 182.571,
+        "min": 182.571,
+        "max": 182.571
       },
       "ttft_source": "ax_engine_runner_prefill_time",
       "prefill_s": {
-        "mean": 0.165563,
-        "median": 0.165563,
-        "min": 0.165563,
-        "max": 0.165563
+        "mean": 0.182571,
+        "median": 0.182571,
+        "min": 0.182571,
+        "max": 0.182571
       },
       "decode_s": {
-        "mean": 4.799462,
-        "median": 4.799462,
-        "min": 4.799462,
-        "max": 4.799462
+        "mean": 6.606627,
+        "median": 6.606627,
+        "min": 6.606627,
+        "max": 6.606627
       },
       "ngram_acceleration_telemetry": {
         "ax_ngram_draft_attempts": 0,
@@ -695,18 +695,18 @@
       },
       "ax_mlx_telemetry": {
         "ax_mlx_prefill_steps": 1,
-        "ax_mlx_prefill_wall_us": 165546,
-        "ax_mlx_prefill_forward_wall_us": 165514,
-        "ax_mlx_prefill_prefix_cache_wall_us": 11,
-        "ax_mlx_prefill_generation_state_wall_us": 18,
+        "ax_mlx_prefill_wall_us": 182551,
+        "ax_mlx_prefill_forward_wall_us": 182517,
+        "ax_mlx_prefill_prefix_cache_wall_us": 12,
+        "ax_mlx_prefill_generation_state_wall_us": 19,
         "ax_mlx_prefill_eval_barriers": 1,
         "ax_mlx_prefill_drain_async_evals": 0,
         "ax_mlx_decode_steps": 127,
-        "ax_mlx_decode_wall_us": 4796311,
+        "ax_mlx_decode_wall_us": 6603127,
         "ax_mlx_direct_bootstrap_steps": 1,
-        "ax_mlx_direct_bootstrap_wall_us": 41027,
+        "ax_mlx_direct_bootstrap_wall_us": 55946,
         "ax_mlx_direct_pipeline_steps": 127,
-        "ax_mlx_direct_pipeline_wall_us": 4755168,
+        "ax_mlx_direct_pipeline_wall_us": 6547059,
         "ax_mlx_single_decode_steps": 0,
         "ax_mlx_single_decode_wall_us": 0,
         "ax_mlx_ngram_decode_steps": 0,
@@ -728,10 +728,10 @@
       "ax_mlx_decode_route": {
         "classification": "direct_pipeline",
         "decode_steps": 127,
-        "decode_wall_us": 4796311,
+        "decode_wall_us": 6603127,
         "direct_pipeline_steps": 127,
         "direct_pipeline_step_share_micros": 1000000,
-        "direct_pipeline_wall_share_micros": 991422,
+        "direct_pipeline_wall_share_micros": 991509,
         "single_decode_steps": 0,
         "single_decode_step_share_micros": 0,
         "single_decode_wall_share_micros": 0,
@@ -752,21 +752,27 @@
         "ax_mlx_linear_attention_profile_enabled": 1,
         "ax_mlx_linear_attention_profile_layers": 30,
         "ax_mlx_linear_attention_profile_tokens": 3840,
-        "ax_mlx_linear_attention_profile_projection_wall_us": 119264,
-        "ax_mlx_linear_attention_profile_conv_wall_us": 9895,
-        "ax_mlx_linear_attention_profile_qk_norm_wall_us": 6243,
-        "ax_mlx_linear_attention_profile_recurrent_wall_us": 9933,
-        "ax_mlx_linear_attention_profile_output_wall_us": 13542
+        "ax_mlx_linear_attention_profile_projection_wall_us": 136716,
+        "ax_mlx_linear_attention_profile_projection_qkvz_wall_us": 0,
+        "ax_mlx_linear_attention_profile_projection_ba_wall_us": 0,
+        "ax_mlx_linear_attention_profile_projection_qkv_wall_us": 118199,
+        "ax_mlx_linear_attention_profile_projection_z_wall_us": 7592,
+        "ax_mlx_linear_attention_profile_projection_a_wall_us": 5680,
+        "ax_mlx_linear_attention_profile_projection_b_wall_us": 5177,
+        "ax_mlx_linear_attention_profile_conv_wall_us": 9761,
+        "ax_mlx_linear_attention_profile_qk_norm_wall_us": 6002,
+        "ax_mlx_linear_attention_profile_recurrent_wall_us": 9934,
+        "ax_mlx_linear_attention_profile_output_wall_us": 12846
       },
       "trials": [
         {
-          "prefill_s": 0.165563,
-          "decode_s": 4.799462,
-          "ttft_ms": 165.563,
-          "prefill_tok_s": 773.1195979778091,
-          "decode_tok_s": 26.461299203952443,
+          "prefill_s": 0.182571,
+          "decode_s": 6.606627,
+          "ttft_ms": 182.571,
+          "prefill_tok_s": 701.0971074266997,
+          "decode_tok_s": 19.22312247989784,
           "output_tokens": 128.0,
-          "peak_memory_gb": 68.70794677734375,
+          "peak_memory_gb": 68.73782348632812,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
             "ax_ngram_draft_tokens": 0,
@@ -791,18 +797,18 @@
           },
           "ax_mlx_telemetry": {
             "ax_mlx_prefill_steps": 1,
-            "ax_mlx_prefill_wall_us": 165546,
-            "ax_mlx_prefill_forward_wall_us": 165514,
-            "ax_mlx_prefill_prefix_cache_wall_us": 11,
-            "ax_mlx_prefill_generation_state_wall_us": 18,
+            "ax_mlx_prefill_wall_us": 182551,
+            "ax_mlx_prefill_forward_wall_us": 182517,
+            "ax_mlx_prefill_prefix_cache_wall_us": 12,
+            "ax_mlx_prefill_generation_state_wall_us": 19,
             "ax_mlx_prefill_eval_barriers": 1,
             "ax_mlx_prefill_drain_async_evals": 0,
             "ax_mlx_decode_steps": 127,
-            "ax_mlx_decode_wall_us": 4796311,
+            "ax_mlx_decode_wall_us": 6603127,
             "ax_mlx_direct_bootstrap_steps": 1,
-            "ax_mlx_direct_bootstrap_wall_us": 41027,
+            "ax_mlx_direct_bootstrap_wall_us": 55946,
             "ax_mlx_direct_pipeline_steps": 127,
-            "ax_mlx_direct_pipeline_wall_us": 4755168,
+            "ax_mlx_direct_pipeline_wall_us": 6547059,
             "ax_mlx_single_decode_steps": 0,
             "ax_mlx_single_decode_wall_us": 0,
             "ax_mlx_ngram_decode_steps": 0,
@@ -832,19 +838,25 @@
             "ax_mlx_linear_attention_profile_enabled": 1,
             "ax_mlx_linear_attention_profile_layers": 30,
             "ax_mlx_linear_attention_profile_tokens": 3840,
-            "ax_mlx_linear_attention_profile_projection_wall_us": 119264,
-            "ax_mlx_linear_attention_profile_conv_wall_us": 9895,
-            "ax_mlx_linear_attention_profile_qk_norm_wall_us": 6243,
-            "ax_mlx_linear_attention_profile_recurrent_wall_us": 9933,
-            "ax_mlx_linear_attention_profile_output_wall_us": 13542
+            "ax_mlx_linear_attention_profile_projection_wall_us": 136716,
+            "ax_mlx_linear_attention_profile_projection_qkvz_wall_us": 0,
+            "ax_mlx_linear_attention_profile_projection_ba_wall_us": 0,
+            "ax_mlx_linear_attention_profile_projection_qkv_wall_us": 118199,
+            "ax_mlx_linear_attention_profile_projection_z_wall_us": 7592,
+            "ax_mlx_linear_attention_profile_projection_a_wall_us": 5680,
+            "ax_mlx_linear_attention_profile_projection_b_wall_us": 5177,
+            "ax_mlx_linear_attention_profile_conv_wall_us": 9761,
+            "ax_mlx_linear_attention_profile_qk_norm_wall_us": 6002,
+            "ax_mlx_linear_attention_profile_recurrent_wall_us": 9934,
+            "ax_mlx_linear_attention_profile_output_wall_us": 12846
           }
         }
       ],
       "peak_memory_gb": {
-        "mean": 68.70794677734375,
-        "median": 68.70794677734375,
-        "min": 68.70794677734375,
-        "max": 68.70794677734375
+        "mean": 68.73782348632812,
+        "median": 68.73782348632812,
+        "min": 68.73782348632812,
+        "max": 68.73782348632812
       },
       "memory_source": "server_process_rss_after_stream",
       "prefill_step_size": 2048,
@@ -859,8 +871,8 @@
         "generation_tokens": 128,
         "prefill_tok_s": 406.448,
         "decode_tok_s": 105.078,
-        "prefill_ratio_to_mlx_lm": 1.9021365536988968,
-        "decode_ratio_to_mlx_lm": 0.2518253031457816
+        "prefill_ratio_to_mlx_lm": 1.7249367875514205,
+        "decode_ratio_to_mlx_lm": 0.18294145758291783
       }
     }
   ],
