@@ -302,6 +302,46 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 7)
 
+    def test_readme_can_validate_reference_and_ax_overlay_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            base_dir = root / "benchmarks/results/mlx-inference/local"
+            overlay_dir = root / "benchmarks/results/mlx-inference/ax-overlay"
+            overlay_dir.mkdir(parents=True)
+            overlay_path = overlay_dir / "gemma-4-e2b-it-4bit.json"
+            artifact = json.loads((base_dir / "gemma-4-e2b-it-4bit.json").read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx":
+                    row["prefill_tok_s"] = metric(85.0)
+                    row["decode_tok_s"] = metric(8.5)
+                elif row["engine"] == "ax_engine_mlx_ngram_accel":
+                    row["decode_tok_s"] = metric(12.5)
+            overlay_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            readme_path = root / "README.md"
+            readme_path.write_text(
+                readme_path.read_text()
+                .replace(
+                    "`benchmarks/results/mlx-inference/local/`",
+                    "<!-- readme-performance-artifacts: "
+                    "reference=benchmarks/results/mlx-inference/local/; "
+                    "ax-overlay=benchmarks/results/mlx-inference/ax-overlay/ -->\n"
+                    "`benchmarks/results/mlx-inference/local/`",
+                )
+                .replace("8.0 (-20.0%)", "8.5 (-15.0%)")
+                .replace("**12.0 (+20.0%)**", "**12.5 (+25.0%)**")
+                .replace("80.0 (-20.0%)", "85.0 (-15.0%)")
+            )
+
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=readme_path,
+                expected_metric_count=7,
+            )
+
+        self.assertEqual(len(checked), 7)
+
     def test_non_reference_rows_must_match_artifact_repetition_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
