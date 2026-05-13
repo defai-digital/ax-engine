@@ -56,6 +56,8 @@ jobs:
     name: Scripts and Bench Smoke
     runs-on: macos-14
     timeout-minutes: 25
+    env:
+      AX_CI_LOG_DIR: ${{ runner.temp }}/ax-ci-logs
 
     steps:
       - name: Check out repository
@@ -80,22 +82,43 @@ jobs:
       - name: Install native build dependencies
         run: brew install mlx-c protobuf
 
+      - name: Prepare CI log directory
+        run: mkdir -p "$AX_CI_LOG_DIR"
+
       - name: Run script hygiene smoke check
-        run: bash scripts/check-scripts.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-scripts.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-scripts.log"
 
       - name: Run benchmark doctor smoke check
-        run: bash scripts/check-bench-doctor.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-bench-doctor.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-bench-doctor.log"
 
       - name: Run Metal kernel contract smoke check
-        run: bash scripts/check-metal-kernel-contract.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-metal-kernel-contract.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-metal-kernel-contract.log"
 
       - name: Run benchmark preview smoke check
-        run: bash scripts/check-bench-preview.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-bench-preview.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-bench-preview.log"
+
+      - name: Upload script smoke logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-script-smoke-logs
+          path: ${{ runner.temp }}/ax-ci-logs
+          if-no-files-found: ignore
 
   python-package:
     name: Python Package
     runs-on: macos-14
     timeout-minutes: 20
+    env:
+      AX_CI_LOG_DIR: ${{ runner.temp }}/ax-ci-logs
 
     steps:
       - name: Check out repository
@@ -120,8 +143,21 @@ jobs:
       - name: Install native build dependencies
         run: brew install mlx-c protobuf
 
+      - name: Prepare CI log directory
+        run: mkdir -p "$AX_CI_LOG_DIR"
+
       - name: Run Python packaging smoke check
-        run: bash scripts/check-python-preview.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-python-preview.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-python-package.log"
+
+      - name: Upload Python package smoke logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-python-package-logs
+          path: ${{ runner.temp }}/ax-ci-logs
+          if-no-files-found: ignore
 
   sdk-clients:
     name: SDK Clients
@@ -164,6 +200,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     env:
+      AX_CI_LOG_DIR: ${{ runner.temp }}/ax-ci-logs
       AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR: ${{ inputs.mlx_model_artifacts_dir || vars.AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR }}
 
     steps:
@@ -214,26 +251,50 @@ jobs:
         if: steps.mlx-artifacts.outputs.available == 'true'
         run: brew install mlx-c protobuf
 
+      - name: Prepare CI log directory
+        if: steps.mlx-artifacts.outputs.available == 'true'
+        run: mkdir -p "$AX_CI_LOG_DIR"
+
       - name: Run server preview smoke check
         if: steps.mlx-artifacts.outputs.available == 'true'
-        run: bash scripts/check-server-preview.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-server-preview.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-server-preview.log"
 
       - name: Run frozen matrix benchmark smoke check
         if: steps.mlx-artifacts.outputs.available == 'true'
-        run: bash scripts/check-bench-matrix.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-bench-matrix.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-bench-matrix.log"
 
       - name: Run matrix compare benchmark smoke check
         if: steps.mlx-artifacts.outputs.available == 'true'
-        run: bash scripts/check-bench-matrix-compare.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-bench-matrix-compare.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-bench-matrix-compare.log"
 
       - name: Run trusted baseline benchmark smoke check
         if: steps.mlx-artifacts.outputs.available == 'true'
-        run: bash scripts/check-bench-baseline.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-bench-baseline.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-bench-baseline.log"
 
       - name: Run replay benchmark smoke check
         if: steps.mlx-artifacts.outputs.available == 'true'
-        run: bash scripts/check-bench-replay.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-bench-replay.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-bench-replay.log"
 
       - name: Run prefix-reuse equivalence regression gate
         if: steps.mlx-artifacts.outputs.available == 'true'
-        run: bash scripts/check-prefix-reuse-equivalence.sh
+        run: |
+          set -o pipefail
+          bash scripts/check-prefix-reuse-equivalence.sh 2>&1 | tee "$AX_CI_LOG_DIR/check-prefix-reuse-equivalence.log"
+
+      - name: Upload model smoke logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-model-smoke-logs
+          path: ${{ runner.temp }}/ax-ci-logs
+          if-no-files-found: ignore
