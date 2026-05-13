@@ -144,12 +144,43 @@ struct ErrorBody {
     message: String,
 }
 
+/// Pre-tokenized input for the embedding endpoint. Mirrors OpenAI's
+/// `input` shape support: one sequence (`[1,2,3]`) or a batch of
+/// sequences (`[[1,2,3],[4,5,6]]`). Raw text inputs (`str` / `List[str]`)
+/// are not accepted because the server does not run a tokenizer —
+/// callers tokenize client-side and send token IDs.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum EmbeddingInput {
+    /// A single sequence. Returns one embedding in `data[0]`.
+    Single(Vec<u32>),
+    /// A batch of sequences. Returns one embedding per input, in
+    /// `data[i]` with `index == i`. The batch is dispatched directly
+    /// to `embed_batch_flat`, bypassing the per-request microbatcher
+    /// (the batch is already coalesced by the caller).
+    Batch(Vec<Vec<u32>>),
+}
+
+impl EmbeddingInput {
+    fn into_batch(self) -> Vec<Vec<u32>> {
+        match self {
+            EmbeddingInput::Single(ids) => vec![ids],
+            EmbeddingInput::Batch(b) => b,
+        }
+    }
+    fn is_single(&self) -> bool {
+        matches!(self, EmbeddingInput::Single(_))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenAiEmbeddingRequest {
     #[serde(default)]
     model: Option<String>,
-    /// Pre-tokenized input — a single sequence of token IDs.
-    input: Vec<u32>,
+    /// Pre-tokenized input: a single sequence (`[1,2,3]`) or a batch
+    /// of sequences (`[[1,2,3],[4,5,6]]`). Raw text inputs are not
+    /// accepted; tokenize client-side and send token IDs.
+    input: EmbeddingInput,
     /// Ignored — always returns float32. Present for OpenAI API compatibility.
     #[serde(default)]
     #[allow(dead_code)]
@@ -628,33 +659,83 @@ async fn openai_embeddings(
 ) -> Result<Json<OpenAiEmbeddingResponse>, (StatusCode, Json<ErrorResponse>)> {
     validate_model(&state, request.model.as_deref())?;
 
-    if request.input.is_empty() {
+    let pooling = parse_embedding_pooling(request.pooling.as_deref())
+        .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))?;
+    let normalize = request.normalize.unwrap_or(true);
+    let model_id = state.model_id.as_ref().clone();
+    let was_single = request.input.is_single();
+    let batch = request.input.into_batch();
+
+    // Treat both `input: []` (Single empty) and `input: [[]]` / `input: []`
+    // (Batch empty / batch with empty inner) as the same user-facing
+    // error, with a per-index hint when the position is non-trivial.
+    if batch.is_empty() || (was_single && batch[0].is_empty()) {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "input must not be empty".into(),
         ));
     }
+    for (i, ids) in batch.iter().enumerate() {
+        if ids.is_empty() {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("input[{i}] must not be empty"),
+            ));
+        }
+    }
+    let token_count: usize = batch.iter().map(Vec::len).sum();
 
-    let pooling = parse_embedding_pooling(request.pooling.as_deref())
-        .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))?;
-    let normalize = request.normalize.unwrap_or(true);
-
-    let token_count = request.input.len();
-    let model_id = state.model_id.as_ref().clone();
-    let embedding = state
-        .embedding_batcher
-        .embed(request.input, pooling, normalize)
+    // Single input → microbatcher (lets concurrent callers coalesce into
+    // one batched runner call). Multi-input → direct `embed_batch_flat`
+    // since the caller already pre-batched; double-batching with the
+    // microbatcher would just add a queueing delay.
+    let embeddings: Vec<Vec<f32>> = if was_single {
+        let single = batch
+            .into_iter()
+            .next()
+            .expect("batch.len() == 1 because input was Single");
+        vec![state
+            .embedding_batcher
+            .embed(single, pooling, normalize)
+            .await
+            .map_err(map_session_error)?]
+    } else {
+        let session = state.request_session.clone();
+        tokio::task::spawn_blocking(move || {
+            let s = session.blocking_lock();
+            s.embed_batch_flat(&batch, pooling, normalize)
+        })
         .await
-        .map_err(map_session_error)?;
+        .map_err(|_| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "embedding worker join failed".into(),
+            )
+        })?
+        .map_err(map_session_error)
+        .map(|m| {
+            (0..m.batch_size)
+                .map(|i| m.row(i).to_vec())
+                .collect::<Vec<_>>()
+        })?
+    };
+
+    let data = embeddings
+        .into_iter()
+        .enumerate()
+        .map(|(index, embedding)| OpenAiEmbeddingObject {
+            object: "embedding",
+            embedding,
+            index: index as u32,
+        })
+        .collect();
 
     Ok(Json(OpenAiEmbeddingResponse {
         object: "list",
-        data: vec![OpenAiEmbeddingObject {
-            object: "embedding",
-            embedding,
-            index: 0,
-        }],
+        data,
         model: model_id,
         usage: OpenAiEmbeddingUsage {
             prompt_tokens: token_count,
@@ -804,10 +885,16 @@ async fn run_embedding_batch(
                 .map(|index| items[*index].input.clone())
                 .collect();
 
-            match session.embed_batch(&batch_inputs, pooling, key.normalize) {
-                Ok(vectors) if vectors.len() == indices.len() => {
-                    for (index, vector) in indices.iter().copied().zip(vectors) {
-                        outputs[index] = Some(Ok(vector));
+            // Prefer the contiguous `embed_batch_flat` path: it does
+            // one device-to-host read per group instead of B, so the
+            // microbatcher's response dispatch loop walks a `&[f32]`
+            // slice rather than allocating `B` separate `Vec<f32>`s.
+            // We still need a `Vec<f32>` per request for the JSON
+            // response, so slice + to_vec on the way out.
+            match session.embed_batch_flat(&batch_inputs, pooling, key.normalize) {
+                Ok(matrix) if matrix.batch_size == indices.len() => {
+                    for (index, sentence_idx) in indices.iter().copied().zip(0..matrix.batch_size) {
+                        outputs[index] = Some(Ok(matrix.row(sentence_idx).to_vec()));
                     }
                 }
                 Ok(_) | Err(_) => {
@@ -3048,6 +3135,62 @@ sys.stdout.write(f"server::{prompt}")
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_invalid_request_response(&json, "input must not be empty");
+    }
+
+    #[tokio::test]
+    async fn openai_embeddings_endpoint_accepts_batch_shape() {
+        // Verify the request body for `input: [[1,2,3],[4,5,6]]` round-trips
+        // through serde untagged enum into the Batch variant. We only check
+        // deserialization + early validation (model-not-found in
+        // llama_cpp_server_state), not the runtime — that needs a real MLX
+        // session. The shape contract is what we care about here.
+        let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+        let body = serde_json::json!({
+            "model": "qwen3-embedding",
+            "input": [[1, 2, 3], [4, 5, 6]],
+        });
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/embeddings")
+                .header("content-type", "application/json")
+                .body(Body::from(json_request_body(&body)))
+                .unwrap(),
+        )
+        .await;
+        // Model-mismatch in the test server (returns 400 model_mismatch),
+        // but the request shape parsed successfully — that's what we care
+        // about here. If the untagged enum had failed to deserialise
+        // `[[...], [...]]`, axum would have rejected the JSON body before
+        // reaching the handler and the model name in the error would not
+        // appear in the response.
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = json["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("model_id") && msg.contains("qwen3-embedding"),
+            "expected model-mismatch message containing the requested id, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_embeddings_endpoint_rejects_empty_batch_inner() {
+        let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+        let body = serde_json::json!({
+            "input": [[1, 2, 3], []],
+        });
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/embeddings")
+                .header("content-type", "application/json")
+                .body(Body::from(json_request_body(&body)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_invalid_request_response(&json, "input[1] must not be empty");
     }
 
     #[tokio::test]

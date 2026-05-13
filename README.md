@@ -430,13 +430,25 @@ of magnitude.
 
 ax-engine exposes the batched path through three equivalent entry points:
 
-- **Python:** `session.embed_batch_bytes(list_of_sentences, ...)` — one Rust
-  call, all sentences in one forward pass.
-- **Rust:** `EngineSession::embed_batch(&batch, pooling, normalize)` — direct
-  call, no PyO3 boundary.
-- **HTTP / serving:** issue `/v1/embeddings` requests concurrently;
-  `ax-engine-server`'s `EmbeddingMicroBatcher` coalesces them within a short
-  window into one batched runner call. No client-side batching required.
+- **Python:** `session.embed_batch_array(list_of_sentences, ...)` returns
+  a NumPy `(B, H)` `float32` ndarray ready for vector-DB / faiss / HNSW
+  ingest (`embed_batch_bytes` is also available for callers that want
+  raw f32 bytes).
+- **Rust:** `EngineSession::embed_batch_flat(&batch, pooling, normalize)`
+  returns one contiguous `EmbeddingMatrix { data, batch_size, hidden_size }`
+  with zero PyO3 boundary cost. This is the canonical fast path for Rust
+  callers.
+- **HTTP / serving:** two equivalent ways to send a batch.
+  1. **Explicit batch in one request** — POST `/v1/embeddings` with
+     `{"input": [[id, id, ...], [id, id, ...]]}`. The response's `data`
+     array contains one entry per input, in the same order. This bypasses
+     the microbatcher (the request is already pre-batched) and goes
+     straight to `embed_batch_flat`.
+  2. **Concurrent single-sentence requests** — many clients call
+     `{"input": [id, id, ...]}` concurrently and let
+     `ax-engine-server`'s `EmbeddingMicroBatcher` coalesce them within a
+     short window into one batched runner call. Use this when the client
+     can't see the batch boundary up front (e.g. one async task per doc).
 
 The tables below show what each of those paths buys you on the same Qwen3
 embedding corpus (10 sentences, lengths `[10,15,13,8,3,8,10,8,10,10]`, last-
