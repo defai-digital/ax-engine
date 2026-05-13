@@ -85,7 +85,11 @@ throughput baselines.
   `turboquant-fused-experimental` for AX rows and records TurboQuant KV
   compression route counters, including shadow-storage sync calls and wall time
   plus fused decode candidate/attempt/success/fallback counters and fallback
-  reason labels, when the runtime emits them.
+  reason labels, when the runtime emits them. It also supports opt-in
+  `--ax-decode-profile` rows that expose direct-decode stage counters for
+  Gemma per-layer-input, QKV projection, SDPA, post-attention/FFN, and lm-head
+  diagnosis; those profile rows insert eval barriers and are not headline
+  throughput evidence.
 - `test_bench_mlx_inference_stack.py`: unit tests for the MLX benchmark
   contract, parser, prompt artifact hash checks, and secondary adapter shape.
 - `render_readme_performance_charts.py`: renders the README prefill, decode,

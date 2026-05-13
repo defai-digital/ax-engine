@@ -403,6 +403,26 @@ inserts eval barriers around Gemma4 MoE decode-layer attention, dense, router,
 expert, and post-combine sections, so use it to localize bottlenecks, not as
 headline throughput evidence.
 
+For Gemma 4 E2B/E4B direct-decode investigation, enable the opt-in decode
+stage profile:
+
+```text
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-dir /path/to/gemma-4-e2b-it-4bit \
+  --prompt-tokens 128 \
+  --generation-tokens 128 \
+  --ax-direct \
+  --ax-decode-profile
+```
+
+This sets `AX_MLX_DECODE_PROFILE=1` for the AX server and records
+`ax_mlx_decode_profile` counters in AX trial and summary rows. The profile
+separates Gemma per-layer-input construction, QKV projection, dense-attention
+pre-SDPA work, SDPA, post-attention/FFN, and final lm-head work. It inserts
+eval barriers between stages and disables production decode pipelining, so use
+it to rank direct-decode hotspots before implementing cache or fusion work, not
+as headline throughput evidence.
+
 For internal TurboQuant evidence capture, the harness can pass through the
 server's experimental shadow policy:
 

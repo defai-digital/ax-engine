@@ -234,6 +234,19 @@ AX_MLX_LINEAR_ATTENTION_PROFILE_KEYS = [
     "ax_mlx_linear_attention_profile_output_wall_us",
 ]
 
+AX_MLX_DECODE_PROFILE_KEYS = [
+    "ax_mlx_decode_profile_enabled",
+    "ax_mlx_decode_profile_decode_steps",
+    "ax_mlx_decode_profile_layers",
+    "ax_mlx_decode_profile_per_layer_input_wall_us",
+    "ax_mlx_decode_profile_pre_sdpa_wall_us",
+    "ax_mlx_decode_profile_pre_sdpa_qkv_proj_wall_us",
+    "ax_mlx_decode_profile_sdpa_wall_us",
+    "ax_mlx_decode_profile_post_attn_wall_us",
+    "ax_mlx_decode_profile_post_attn_ffn_wall_us",
+    "ax_mlx_decode_profile_lm_head_wall_us",
+]
+
 AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
     "ax_mlx_kv_compression_request_snapshots",
     "ax_mlx_kv_compression_status",
@@ -890,6 +903,7 @@ def start_axengine(
     kv_compression_min_context_tokens: int | None = None,
     gemma4_moe_profile: bool = False,
     linear_attention_profile: bool = False,
+    decode_profile: bool = False,
 ) -> subprocess.Popen[Any]:
     cmd = [
         str(binary),
@@ -922,6 +936,8 @@ def start_axengine(
         env["AX_MLX_GEMMA4_MOE_PROFILE"] = "1"
     if linear_attention_profile:
         env["AX_MLX_LINEAR_ATTENTION_PROFILE"] = "1"
+    if decode_profile:
+        env["AX_MLX_DECODE_PROFILE"] = "1"
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
 
@@ -986,6 +1002,20 @@ def extract_ax_mlx_linear_attention_profile(
     }
 
 
+def extract_ax_mlx_decode_profile(
+    route: dict[str, Any] | None,
+) -> dict[str, int]:
+    if not route:
+        return {}
+    decisions = route.get("crossover_decisions") or {}
+    if "ax_mlx_decode_profile_enabled" not in decisions:
+        return {}
+    return {
+        key: int(decisions.get(key, 0))
+        for key in AX_MLX_DECODE_PROFILE_KEYS
+    }
+
+
 def extract_ax_mlx_kv_compression_telemetry(
     route: dict[str, Any] | None,
 ) -> dict[str, int]:
@@ -1021,6 +1051,7 @@ def route_with_more_decisions(
         "ax_mlx_ngram_decode_steps",
         "ax_mlx_ngram_decode_wall_us",
         "ax_mlx_bonus_tokens",
+        *AX_MLX_DECODE_PROFILE_KEYS,
     }
 
     def priority_score(decisions: dict[str, Any]) -> tuple[int, int, int, int]:
@@ -1301,6 +1332,17 @@ def summarize_ax_mlx_linear_attention_profile(
     return totals
 
 
+def summarize_ax_mlx_decode_profile(runs: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for run in runs:
+        for key, value in (run.get("ax_mlx_decode_profile") or {}).items():
+            if key == "ax_mlx_decode_profile_enabled":
+                totals[key] = max(totals.get(key, 0), int(value))
+            else:
+                totals[key] = totals.get(key, 0) + int(value)
+    return totals
+
+
 def summarize_ax_mlx_kv_compression_telemetry(
     runs: list[dict[str, Any]],
 ) -> dict[str, int]:
@@ -1475,6 +1517,9 @@ def axengine_one_run(
     )
     if linear_attention_profile:
         run["ax_mlx_linear_attention_profile"] = linear_attention_profile
+    decode_profile = extract_ax_mlx_decode_profile(final_route)
+    if decode_profile:
+        run["ax_mlx_decode_profile"] = decode_profile
     compression_telemetry = extract_ax_mlx_kv_compression_telemetry(final_route)
     if compression_telemetry:
         run["kv_compression_telemetry"] = compression_telemetry
@@ -1571,6 +1616,7 @@ def bench_axengine(
         "scheduler_telemetry": summarize_scheduler_telemetry(runs),
         "ax_mlx_gemma4_moe_profile": summarize_ax_mlx_gemma4_moe_profile(runs),
         "ax_mlx_linear_attention_profile": summarize_ax_mlx_linear_attention_profile(runs),
+        "ax_mlx_decode_profile": summarize_ax_mlx_decode_profile(runs),
         "trials": runs,
     }
     if all("peak_memory_gb" in run for run in runs):
@@ -2218,6 +2264,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-decode-profile",
+        action="store_true",
+        help=(
+            "Enable opt-in direct decode stage profiling for AX rows. This "
+            "materializes lazy graphs between stages, disables production decode "
+            "pipelining, and is intended for hotspot diagnosis only."
+        ),
+    )
+    parser.add_argument(
         "--gateddelta-prefill-profile",
         action="store_true",
         help=(
@@ -2502,6 +2557,7 @@ def main() -> None:
                     linear_attention_profile=(
                         args.gateddelta_prefill_profile or args.ax_linear_attention_profile
                     ),
+                    decode_profile=args.ax_decode_profile,
                 )
                 procs.append(proc)
                 if not wait_for_server(
@@ -2623,6 +2679,7 @@ def main() -> None:
         "ax_linear_attention_profile": bool(
             args.gateddelta_prefill_profile or args.ax_linear_attention_profile
         ),
+        "ax_decode_profile": bool(args.ax_decode_profile),
         "results": results,
     }
     if gateddelta_prefill_profile_contract:

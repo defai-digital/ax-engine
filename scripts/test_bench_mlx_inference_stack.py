@@ -1226,6 +1226,57 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             225,
         )
 
+    def test_ax_mlx_decode_profile_is_extracted_and_summarized(self) -> None:
+        profile = bench.extract_ax_mlx_decode_profile(
+            {
+                "crossover_decisions": {
+                    "ax_mlx_decode_profile_enabled": 1,
+                    "ax_mlx_decode_profile_decode_steps": 2,
+                    "ax_mlx_decode_profile_layers": 84,
+                    "ax_mlx_decode_profile_per_layer_input_wall_us": 100,
+                    "ax_mlx_decode_profile_pre_sdpa_wall_us": 200,
+                    "ax_mlx_decode_profile_pre_sdpa_qkv_proj_wall_us": 80,
+                    "ax_mlx_decode_profile_sdpa_wall_us": 300,
+                    "ax_mlx_decode_profile_post_attn_wall_us": 400,
+                    "ax_mlx_decode_profile_post_attn_ffn_wall_us": 250,
+                    "ax_mlx_decode_profile_lm_head_wall_us": 50,
+                    "unrelated": 99,
+                }
+            }
+        )
+
+        self.assertEqual(profile["ax_mlx_decode_profile_enabled"], 1)
+        self.assertEqual(profile["ax_mlx_decode_profile_decode_steps"], 2)
+        self.assertEqual(profile["ax_mlx_decode_profile_layers"], 84)
+        self.assertEqual(
+            profile["ax_mlx_decode_profile_per_layer_input_wall_us"],
+            100,
+        )
+        self.assertNotIn("unrelated", profile)
+
+        summary = bench.summarize_ax_mlx_decode_profile(
+            [
+                {"ax_mlx_decode_profile": profile},
+                {
+                    "ax_mlx_decode_profile": {
+                        "ax_mlx_decode_profile_enabled": 1,
+                        "ax_mlx_decode_profile_decode_steps": 3,
+                        "ax_mlx_decode_profile_layers": 126,
+                        "ax_mlx_decode_profile_per_layer_input_wall_us": 150,
+                        "ax_mlx_decode_profile_post_attn_wall_us": 600,
+                    }
+                },
+            ]
+        )
+        self.assertEqual(summary["ax_mlx_decode_profile_enabled"], 1)
+        self.assertEqual(summary["ax_mlx_decode_profile_decode_steps"], 5)
+        self.assertEqual(summary["ax_mlx_decode_profile_layers"], 210)
+        self.assertEqual(
+            summary["ax_mlx_decode_profile_per_layer_input_wall_us"],
+            250,
+        )
+        self.assertEqual(summary["ax_mlx_decode_profile_post_attn_wall_us"], 1000)
+
     def test_ax_mlx_kv_compression_telemetry_is_extracted_and_summarized(self) -> None:
         telemetry = bench.extract_ax_mlx_kv_compression_telemetry(
             {
@@ -1360,6 +1411,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             {},
         )
 
+    def test_absent_ax_mlx_decode_profile_stays_silent(self) -> None:
+        self.assertEqual(
+            bench.extract_ax_mlx_decode_profile(
+                {"crossover_decisions": {"ax_mlx_decode_steps": 2}}
+            ),
+            {},
+        )
+
     def test_ax_step_timing_classifies_chunked_prefill_by_scheduled_tokens(self) -> None:
         self.assertTrue(
             bench.is_ax_prefill_step({"scheduled_tokens": 1}, seen_prefill=False)
@@ -1449,6 +1508,19 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_LINEAR_ATTENTION_PROFILE"], "1")
+
+    def test_axengine_command_can_enable_decode_profile(self) -> None:
+        with patch.object(bench.subprocess, "Popen") as popen:
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                direct_mode=True,
+                decode_profile=True,
+            )
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["AX_MLX_DECODE_PROFILE"], "1")
 
     def test_route_with_more_decisions_keeps_step_telemetry_over_response_route(self) -> None:
         step_route = {
