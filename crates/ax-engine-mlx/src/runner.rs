@@ -1994,7 +1994,11 @@ impl ExecutionRunner for MlxRunner {
 
         let normalize_started = Instant::now();
         let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
-        let result = if normalize {
+        let cpu_normalize = normalize
+            && std::env::var("AX_EMBED_GPU_NORMALIZE")
+                .map(|v| v == "0" || v.is_empty())
+                .unwrap_or(true);
+        let result = if normalize && !cpu_normalize {
             l2_normalize_last_dim(&pooled_f32)
         } else {
             pooled_f32
@@ -2013,7 +2017,13 @@ impl ExecutionRunner for MlxRunner {
             eval_us,
             "embed_single stage timing"
         );
-        Ok(result.data_f32().to_vec())
+        let mut data = result.data_f32().to_vec();
+        if cpu_normalize {
+            // Single sentence → one row of length hidden_size.
+            let hs = data.len();
+            l2_normalize_rows_in_place(&mut data, hs);
+        }
+        Ok(data)
     }
 
     fn embed_batch(
@@ -2087,7 +2097,11 @@ impl ExecutionRunner for MlxRunner {
 
         let normalize_started = Instant::now();
         let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
-        let result = if normalize {
+        let cpu_normalize = normalize
+            && std::env::var("AX_EMBED_GPU_NORMALIZE")
+                .map(|v| v == "0" || v.is_empty())
+                .unwrap_or(true);
+        let result = if normalize && !cpu_normalize {
             l2_normalize_last_dim(&pooled_f32)
         } else {
             pooled_f32
@@ -2107,7 +2121,17 @@ impl ExecutionRunner for MlxRunner {
             "embed_batch stage timing"
         );
 
-        let data = result.data_f32();
+        let data_slice_ref = result.data_f32();
+        // Read once into a flat buffer; legacy API wants Vec<Vec<f32>> so we
+        // split-collect after optional CPU normalize. The B*H read itself is
+        // unavoidable in this legacy path; new callers should prefer
+        // embed_batch_flat which keeps the buffer contiguous.
+        let mut flat: Vec<f32> = data_slice_ref.to_vec();
+        if cpu_normalize {
+            l2_normalize_rows_in_place(&mut flat, hidden_size);
+        }
+        // Re-establish original Vec<Vec<f32>> output shape.
+        let data: &[f32] = &flat;
         let vecs = (0..batch.len())
             .map(|i| data[i * hidden_size..(i + 1) * hidden_size].to_vec())
             .collect();
@@ -2175,19 +2199,52 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
         let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
-        let result = if normalize {
+        // R3: when CPU normalize is enabled (default), skip the GPU
+        // sqrt + sum + divide ops and l2-normalize the result on the host
+        // after read-back. The data is being read back to a CPU `Vec<f32>`
+        // anyway, so doing the normalize on the same CPU side amortises a
+        // few MLX op dispatches. AX_EMBED_GPU_NORMALIZE=1 reverts.
+        let cpu_normalize = normalize
+            && std::env::var("AX_EMBED_GPU_NORMALIZE")
+                .map(|v| v == "0" || v.is_empty())
+                .unwrap_or(true);
+        let result = if normalize && !cpu_normalize {
             l2_normalize_last_dim(&pooled_f32)
         } else {
             pooled_f32
         };
         mlx_sys::eval(&[&result]);
         // Single contiguous read-back: B * H floats in one allocation.
-        let data = result.data_f32().to_vec();
+        let mut data = result.data_f32().to_vec();
+        if cpu_normalize {
+            l2_normalize_rows_in_place(&mut data, hidden_size);
+        }
         Ok(ax_engine_core::EmbeddingMatrix {
             data,
             batch_size: batch.len(),
             hidden_size,
         })
+    }
+}
+
+/// L2-normalize `data` in place, viewing it as `[B, hidden_size]` row-major.
+/// Auto-vectorises on Apple Silicon (Neon) and x86 (AVX2/SSE) for free —
+/// this is hot enough on the embedding read-back path that hand-rolling
+/// SIMD adds little vs the compiler's vectoriser, and keeps the code free
+/// of platform-specific intrinsics. Adds 1e-12 to the denominator for
+/// numerical stability on near-zero vectors (matches the MLX path's eps).
+#[inline]
+fn l2_normalize_rows_in_place(data: &mut [f32], hidden_size: usize) {
+    if hidden_size == 0 || data.is_empty() {
+        return;
+    }
+    debug_assert_eq!(data.len() % hidden_size, 0);
+    for row in data.chunks_exact_mut(hidden_size) {
+        let sum_sq: f32 = row.iter().map(|&x| x * x).sum();
+        let inv_norm = 1.0_f32 / (sum_sq.sqrt() + 1e-12);
+        for x in row {
+            *x *= inv_norm;
+        }
     }
 }
 
