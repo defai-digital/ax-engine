@@ -1750,6 +1750,32 @@ pub struct MlxRunner {
     /// `(batch_size, max_len, target_positions)`; same kill switch as the
     /// single-call cache (`AX_EMBED_NO_COMPILE`).
     embed_batch_compile_cache: Mutex<HashMap<EmbedBatchCompileKey, mlx_sys::MlxClosure>>,
+    /// Cumulative hit / miss counters for the two embedding compile
+    /// caches. Useful to confirm a workload is reusing compiled
+    /// closures vs trashing the cache with shape variation. Exported
+    /// via `MlxRunner::embed_compile_cache_stats()`.
+    embed_compile_stats: Mutex<EmbedCompileStats>,
+}
+
+/// Snapshot of the embedding compile-cache telemetry. `len()` is the
+/// current cache size (number of distinct compiled closures retained);
+/// `hits` / `misses` are cumulative since session creation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EmbedCompileCacheStats {
+    pub single_hits: u64,
+    pub single_misses: u64,
+    pub single_len: usize,
+    pub batched_hits: u64,
+    pub batched_misses: u64,
+    pub batched_len: usize,
+}
+
+#[derive(Default)]
+struct EmbedCompileStats {
+    single_hits: u64,
+    single_misses: u64,
+    batched_hits: u64,
+    batched_misses: u64,
 }
 
 impl fmt::Debug for MlxRunner {
@@ -1868,7 +1894,39 @@ impl MlxRunner {
             direct_clear_cache_cadence,
             embed_compile_cache: Mutex::new(HashMap::new()),
             embed_batch_compile_cache: Mutex::new(HashMap::new()),
+            embed_compile_stats: Mutex::new(EmbedCompileStats::default()),
         })
+    }
+
+    /// Snapshot the embedding compile-cache hit / miss / size counters.
+    /// Use this to diagnose fragmentation: a healthy ingest workload
+    /// has `single_hits + batched_hits` dominating the misses, and the
+    /// cache sizes stable. A growing cache with a low hit rate signals
+    /// the workload's shape distribution is too wide; consider length-
+    /// bucketing batches before submitting them.
+    pub fn embed_compile_cache_stats(&self) -> EmbedCompileCacheStats {
+        let stats = self
+            .embed_compile_stats
+            .lock()
+            .expect("embed_compile_stats mutex poisoned");
+        let single_len = self
+            .embed_compile_cache
+            .lock()
+            .map(|c| c.len())
+            .unwrap_or(0);
+        let batched_len = self
+            .embed_batch_compile_cache
+            .lock()
+            .map(|c| c.len())
+            .unwrap_or(0);
+        EmbedCompileCacheStats {
+            single_hits: stats.single_hits,
+            single_misses: stats.single_misses,
+            single_len,
+            batched_hits: stats.batched_hits,
+            batched_misses: stats.batched_misses,
+            batched_len,
+        }
     }
 
     fn turboquant_model_decode_context(&self) -> Option<TurboQuantModelDecodeContext<'_>> {
@@ -2317,7 +2375,8 @@ impl MlxRunner {
             .embed_compile_cache
             .lock()
             .expect("embed_compile_cache mutex poisoned");
-        if !cache.contains_key(&key) {
+        let was_present = cache.contains_key(&key);
+        if !was_present {
             match crate::model::build_embedding_forward_closure(
                 Arc::clone(&self.cfg_arc),
                 Arc::clone(&self.weights),
@@ -2335,6 +2394,17 @@ impl MlxRunner {
                         target_position,
                     );
                 }
+            }
+        }
+        {
+            let mut stats = self
+                .embed_compile_stats
+                .lock()
+                .expect("embed_compile_stats mutex poisoned");
+            if was_present {
+                stats.single_hits += 1;
+            } else {
+                stats.single_misses += 1;
             }
         }
         let cls = cache.get(&key).expect("just inserted");
@@ -2379,7 +2449,8 @@ impl MlxRunner {
             .embed_batch_compile_cache
             .lock()
             .expect("embed_batch_compile_cache mutex poisoned");
-        if !cache.contains_key(&key) {
+        let was_present = cache.contains_key(&key);
+        if !was_present {
             match crate::model::build_embedding_batch_forward_closure(
                 Arc::clone(&self.cfg_arc),
                 Arc::clone(&self.weights),
@@ -2397,6 +2468,17 @@ impl MlxRunner {
                         target_positions,
                     );
                 }
+            }
+        }
+        {
+            let mut stats = self
+                .embed_compile_stats
+                .lock()
+                .expect("embed_compile_stats mutex poisoned");
+            if was_present {
+                stats.batched_hits += 1;
+            } else {
+                stats.batched_misses += 1;
             }
         }
         let cls = cache.get(&key).expect("just inserted");
