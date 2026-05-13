@@ -22,13 +22,23 @@ Benchmark shape:
 - 5 repetitions per engine/model/prompt row
 - 15-second cooldown between trials and 45-second inter-model pause
 
-AX rows in the README were refreshed from
-`benchmarks/results/mlx-inference/2026-05-12-production-build-readme-refresh/`.
-Fresh AX rows completed for all 14 README generation models using a
-production-build server binary (`[profile.release]`: LTO thin,
-`codegen-units=1`, `panic=abort`, stripped debuginfo). The `mlx_lm` and
-`mlx_swift_lm` reference rows were reused from the 2026-05-11 full refresh
-under the same prompt-token contract.
+The current README generation-model tables are a provenance-tracked composite:
+
+- `mlx_lm` and `mlx_swift_lm` reference columns come from
+  `benchmarks/results/mlx-inference/2026-05-12-production-build-readme-refresh/`.
+- AX direct and AX n-gram columns use
+  `benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/` as
+  the base source.
+- The later AX-only refresh in
+  `benchmarks/results/mlx-inference/2026-05-13-ax-refresh/` is overlaid for the
+  models present in that directory.
+
+All three sources use the same prompt-token contract and generation=128 shape.
+The AX rows were produced with production-build server binaries
+(`[profile.release]`: LTO thin, `codegen-units=1`, `panic=abort`, stripped
+debuginfo). This composite is intentional: reference columns stay stable while
+AX-only refreshes can update current runtime behavior without rerunning the
+third-party baselines.
 
 `ax direct baseline` is the direct same-policy comparison against `mlx_lm`; the
 benchmark starts the AX server with n-gram acceleration disabled for this row.
@@ -77,7 +87,7 @@ systems such as vLLM or TensorRT-LLM.
 
 ## Interpretation
 
-The 2026-05-12 production-build refresh is not a universal direct-decode win.
+The current composite README table is not a universal direct-decode win.
 Direct AX is intentionally measured with n-gram acceleration disabled, and the
 direct column spans -19% to +26% versus `mlx_lm` across the README decode
 table. Those rows are the same-policy baseline rather than the default AX user

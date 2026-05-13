@@ -151,6 +151,12 @@ class ArtifactRow:
     row: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ArtifactSource:
+    artifact_dir: Path
+    include_engines: frozenset[str] | None = None
+
+
 def token_sha256(tokens: list[int]) -> str:
     payload = json.dumps(tokens, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
@@ -277,8 +283,45 @@ def parse_readme_metrics(readme_path: Path) -> list[ReadmeMetric]:
     ]
 
 
-def default_artifact_dir(readme_path: Path) -> Path:
+def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
     text = readme_path.read_text()
+    sources_match = re.search(
+        r"<!--\s*readme-performance-artifacts:\s*(?P<sources>.*?)\s*-->",
+        text,
+        flags=re.DOTALL,
+    )
+    if sources_match:
+        sources: list[ArtifactSource] = []
+        source_kinds = {
+            "base": None,
+            "reference": frozenset({"mlx_lm", "mlx_swift_lm"}),
+            "ax": frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"}),
+            "ax-base": frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"}),
+            "ax-overlay": frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"}),
+        }
+        for part in sources_match.group("sources").split(";"):
+            if not part.strip():
+                continue
+            if "=" not in part:
+                raise ArtifactCheckError(
+                    f"invalid readme-performance-artifacts entry: {part.strip()!r}"
+                )
+            kind, path_value = [value.strip() for value in part.split("=", 1)]
+            include_engines = source_kinds.get(kind)
+            if kind not in source_kinds:
+                raise ArtifactCheckError(
+                    f"unknown readme-performance-artifacts source kind: {kind!r}"
+                )
+            sources.append(
+                ArtifactSource(
+                    artifact_dir=(readme_path.parent / path_value).resolve(),
+                    include_engines=include_engines,
+                )
+            )
+        if not sources:
+            raise ArtifactCheckError("readme-performance-artifacts comment has no sources")
+        return sources
+
     match = re.search(
         r"`(benchmarks/results/mlx-inference/[^`]+/)`",
         text,
@@ -287,7 +330,7 @@ def default_artifact_dir(readme_path: Path) -> Path:
         raise ArtifactCheckError(
             "README does not name a benchmarks/results/mlx-inference artifact directory"
         )
-    return (readme_path.parent / match.group(1)).resolve()
+    return [ArtifactSource((readme_path.parent / match.group(1)).resolve())]
 
 
 def metric_median(row: dict[str, Any], table: str) -> float:
@@ -760,7 +803,9 @@ def row_uses_reused_reference_source(
 
 
 def collect_artifact_rows(
-    repo_root: Path, artifact_dir: Path
+    repo_root: Path,
+    artifact_dir: Path,
+    include_engines: frozenset[str] | None = None,
 ) -> dict[tuple[str, str, int, int, str], ArtifactRow]:
     if not artifact_dir.exists():
         raise ArtifactCheckError(f"artifact directory does not exist: {artifact_dir}")
@@ -801,6 +846,12 @@ def collect_artifact_rows(
                 "ax_engine_mlx_ngram_accel",
             }:
                 continue
+            if engine == "mlx_lm":
+                seen_reference_shapes.add(
+                    (int(row["prompt_tokens"]), int(row["generation_tokens"]))
+                )
+            if include_engines is not None and engine not in include_engines:
+                continue
             validate_artifact_row(
                 artifact_path=path,
                 artifact=artifact,
@@ -809,8 +860,6 @@ def collect_artifact_rows(
             )
             prompt_tokens = int(row["prompt_tokens"])
             generation_tokens = int(row["generation_tokens"])
-            if engine == "mlx_lm":
-                seen_reference_shapes.add((prompt_tokens, generation_tokens))
             key = (model, quantization, prompt_tokens, generation_tokens, str(engine))
             if key in rows:
                 raise ArtifactCheckError(
@@ -828,6 +877,20 @@ def collect_artifact_rows(
         missing_references = set(prompt_hashes) - seen_reference_shapes
         if missing_references:
             raise ArtifactCheckError(f"{path} lacks mlx_lm rows for {sorted(missing_references)}")
+    return rows
+
+
+def collect_artifact_rows_from_sources(
+    repo_root: Path, sources: list[ArtifactSource]
+) -> dict[tuple[str, str, int, int, str], ArtifactRow]:
+    rows: dict[tuple[str, str, int, int, str], ArtifactRow] = {}
+    for source in sources:
+        source_rows = collect_artifact_rows(
+            repo_root,
+            source.artifact_dir,
+            include_engines=source.include_engines,
+        )
+        rows.update(source_rows)
     return rows
 
 
@@ -880,9 +943,15 @@ def check_readme_performance(
     expected_metric_count: int | None = 196,
 ) -> list[str]:
     resolved_readme = readme_path.resolve()
-    resolved_artifact_dir = (artifact_dir or default_artifact_dir(resolved_readme)).resolve()
+    artifact_sources = (
+        [ArtifactSource(artifact_dir.resolve())]
+        if artifact_dir is not None
+        else default_artifact_sources(resolved_readme)
+    )
     metrics = parse_readme_metrics(resolved_readme)
-    artifact_rows = collect_artifact_rows(repo_root.resolve(), resolved_artifact_dir)
+    artifact_rows = collect_artifact_rows_from_sources(
+        repo_root.resolve(), artifact_sources
+    )
     checked: list[str] = []
 
     for metric in metrics:

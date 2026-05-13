@@ -497,13 +497,18 @@ def wait_for_server(
     proc: subprocess.Popen[Any] | None = None,
 ) -> bool:
     """Poll `url` (`/health`) until it returns < 500 or the process dies.
-    Returns True only after a *second* successful probe ~200 ms later,
-    so a transient one-shot 200 from a server that is about to crash
-    or lose its port (e.g. TIME_WAIT collision with a freshly-recycled
-    socket) does not pass the readiness gate. The cost of the extra
-    probe is one round-trip — negligible compared to the ~600 s budget,
-    and worth it to make per-model retries reliable on Mac kernels that
-    hold TIME_WAIT for up to two minutes.
+
+    Requires *two* consecutive 200s ~200 ms apart before declaring ready
+    (one-shot 200 from a server about to crash or lose its port to
+    TIME_WAIT does not count). Also probes once for "the spawned `proc`
+    is the actual listener" by checking the response includes our
+    server's signature and `proc.poll()` is still None — if the bench
+    `pkill`ed a previous server but left an orphan listener, the new
+    spawn would silently bind nothing while the orphan still owns the
+    port. In that case `proc.poll()` returns non-None (bind failure
+    exited the new process) and we bail out so the bench's retry path
+    can clean up properly instead of recording the wrong model's
+    numbers.
     """
     deadline = time.monotonic() + timeout
     consecutive_ok = 0
@@ -512,7 +517,8 @@ def wait_for_server(
             return False
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
-                if response.status < 500:
+                body = response.read().decode("utf-8", errors="replace")
+                if response.status < 500 and "ax-engine-server" in body:
                     consecutive_ok += 1
                     if consecutive_ok >= 2:
                         return True
