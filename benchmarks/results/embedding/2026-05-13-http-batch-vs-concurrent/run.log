@@ -1,0 +1,17 @@
+
+=== qwen3-embedding-0.6b-8bit ===
+  concurrent x10: med=30.48ms tok/s=3117
+  batched POST  : med=23.82ms tok/s=3989
+  batch vs concurrent: +28.0% (positive = batch is faster)
+
+=== qwen3-embedding-4b-4bit ===
+  concurrent x10: med=58.88ms tok/s=1614
+  batched POST  : med=52.86ms tok/s=1797
+  batch vs concurrent: +11.4% (positive = batch is faster)
+
+=== qwen3-embedding-8b-4bit-dwq ===
+  concurrent x10: med=86.22ms tok/s=1102
+  batched POST  : med=81.10ms tok/s=1171
+  batch vs concurrent: +6.3% (positive = batch is faster)
+
+All done.

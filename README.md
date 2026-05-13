@@ -510,14 +510,35 @@ Numbers here are below the sustained-batched table because each timed
 trial follows a 10 s GPU idle period; sustained loads do not pay that
 penalty.
 
-#### Server-side embedding micro-batcher
+#### Server-side embedding paths (`/v1/embeddings`)
 
-`ax-engine-server` automatically coalesces concurrent `/v1/embeddings`
-requests that arrive within a short window into a single batched runner
-call. Requests with different `pooling` / `normalize` options are grouped
-separately so semantics never change; serving callers get the batched-row
-per-sentence throughput automatically when their workload sends embeddings
-concurrently, with no client-side coalescing required.
+`ax-engine-server` accepts two equivalent request shapes:
+
+- **Explicit batch** — `{"input": [[ids], [ids], ...]}` returns one
+  embedding per input in `data[]`, in the same order. Goes directly to
+  `embed_batch_flat`, skipping the microbatcher (the request is already
+  pre-coalesced by the caller). Best when the caller has the batch up
+  front: vector-DB ingest, per-document indexing, batch evaluation.
+- **Concurrent single** — many clients post `{"input": [ids]}` in
+  parallel and let `EmbeddingMicroBatcher` coalesce them within a short
+  window into one batched runner call. Best when the batch boundary is
+  not visible to the client: per-document async workers, multi-tenant
+  request queues.
+
+Both are valid; they expose the same batched runner path through
+different serving contracts. On 2026-05-13 measurements (10-sentence
+corpus, 10 trials each), the explicit-batch POST is **+28% / +11% / +6%**
+faster than the concurrent-single path on 0.6B / 4B / 8B respectively —
+the win comes from avoiding the microbatcher collection window and from
+sending 1 HTTP request instead of 10. Source:
+`benchmarks/results/embedding/2026-05-13-http-batch-vs-concurrent/`.
+
+The microbatcher description below covers the concurrent-single path —
+it is the right serving model when callers can't pre-batch. Requests
+with different `pooling` / `normalize` options are grouped separately
+so semantics never change; serving callers get the batched-row
+per-sentence throughput automatically when their workload sends
+embeddings concurrently, with no client-side coalescing required.
 
 Tunables (server-side env vars):
 
