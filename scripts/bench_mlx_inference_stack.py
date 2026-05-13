@@ -1063,6 +1063,16 @@ def route_with_step_local_decisions(
     return merged
 
 
+def route_for_linear_attention_profile(
+    prefill_route: dict[str, Any] | None,
+    final_route: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    # The linear-attention profile is used for prefill/TTFT diagnosis. The final
+    # response route usually points at the last decode step, which would report
+    # seq=1 and hide prompt-length costs.
+    return prefill_route or final_route
+
+
 def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for run in runs:
@@ -1382,6 +1392,7 @@ def axengine_one_run(
     output_token_ids: list[int] = []
     current_event = ""
     final_route: dict[str, Any] | None = None
+    prefill_route: dict[str, Any] | None = None
     step_local_decisions: dict[str, int] = {}
 
     for raw in response:
@@ -1405,7 +1416,9 @@ def axengine_one_run(
                 step_route,
                 final_route,
             )
-            if is_ax_prefill_step(step, seen_prefill=seen_prefill):
+            prefill_step = is_ax_prefill_step(step, seen_prefill=seen_prefill)
+            if prefill_step:
+                prefill_route = route_with_more_decisions(step_route, prefill_route)
                 prefill_us += runner_us
                 seen_prefill = True
             else:
@@ -1451,7 +1464,9 @@ def axengine_one_run(
     gemma4_moe_profile = extract_ax_mlx_gemma4_moe_profile(final_route)
     if gemma4_moe_profile:
         run["ax_mlx_gemma4_moe_profile"] = gemma4_moe_profile
-    linear_attention_profile = extract_ax_mlx_linear_attention_profile(final_route)
+    linear_attention_profile = extract_ax_mlx_linear_attention_profile(
+        route_for_linear_attention_profile(prefill_route, final_route)
+    )
     if linear_attention_profile:
         run["ax_mlx_linear_attention_profile"] = linear_attention_profile
     compression_telemetry = extract_ax_mlx_kv_compression_telemetry(final_route)
