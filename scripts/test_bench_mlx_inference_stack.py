@@ -1562,6 +1562,36 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(decisions["ax_mlx_prefix_cache_entries"], 2)
         self.assertEqual(decisions["ax_mlx_prefix_cache_bytes_kib"], 64)
 
+    def test_linear_attention_profile_prefers_prefill_route(self) -> None:
+        prefill_route = {
+            "crossover_decisions": {
+                "ax_mlx_prefill_steps": 1,
+                "ax_mlx_linear_attention_profile_enabled": 1,
+                "ax_mlx_linear_attention_profile_layers": 30,
+                "ax_mlx_linear_attention_profile_tokens": 3840,
+                "ax_mlx_linear_attention_profile_recurrent_wall_us": 5000,
+            },
+        }
+        final_route = {
+            "crossover_decisions": {
+                "ax_mlx_decode_steps": 128,
+                "ax_mlx_linear_attention_profile_enabled": 1,
+                "ax_mlx_linear_attention_profile_layers": 30,
+                "ax_mlx_linear_attention_profile_tokens": 30,
+                "ax_mlx_linear_attention_profile_recurrent_wall_us": 90,
+            },
+        }
+
+        selected = bench.route_for_linear_attention_profile(prefill_route, final_route)
+        profile = bench.extract_ax_mlx_linear_attention_profile(selected)
+
+        self.assertIs(selected, prefill_route)
+        self.assertEqual(profile["ax_mlx_linear_attention_profile_tokens"], 3840)
+        self.assertEqual(
+            profile["ax_mlx_linear_attention_profile_recurrent_wall_us"],
+            5000,
+        )
+
     def test_attach_baseline_requires_matching_mlx_lm_row(self) -> None:
         results = [
             {
