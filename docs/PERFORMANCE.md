@@ -62,6 +62,16 @@ acceleration. They are included to show that review covered TTFT, prefill
 scaling, startup, queueing, memory, and concurrency boundaries beyond the
 README throughput table.
 
+## Latest Prefill Breakdown
+
+The 2026-05-13 short-prompt TTFT follow-up decomposes AX MLX prefill wall time
+for Qwen Coder Next, Qwen 3.6 35B A3B 8-bit, and GLM 4.7 Flash:
+[prefill breakdown](../benchmarks/results/mlx-inference/2026-05-13-ttft-breakdown/prefill-breakdown.md).
+It separates model forward time from prefix-cache snapshot storage and
+generation-state initialization. Diagnostic profile artifacts in the same
+directory are intentionally excluded from the default rendered report unless
+`scripts/render_mlx_prefill_breakdown_report.py --include-diagnostics` is used.
+
 ## Comprehensive Review Scope
 
 The current public table has been reviewed as a scoped MLX model-inference
