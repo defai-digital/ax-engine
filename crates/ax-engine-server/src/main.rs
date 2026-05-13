@@ -31,6 +31,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod args;
+mod grpc;
 
 use args::{ServerArgs, render_presets};
 
@@ -511,12 +512,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     let session = EngineSession::new(session_config.clone())?;
     let state = build_app_state(model_id.clone(), session)?;
-    let app = build_router(state);
+    let app = build_router(state.clone());
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
+
+    let grpc_bind_address = args.grpc_bind_address.clone();
 
     if tracing_enabled {
         info!(
             bind_address = %bind_address,
+            grpc_bind_address = ?grpc_bind_address,
             model_id = %model_id,
             support_tier = ?support_tier,
             "ax-engine-server preview listening"
@@ -526,11 +530,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "ax-engine-server preview listening on http://{} model_id={} support_tier={:?}",
             bind_address, model_id, support_tier
         );
+        if let Some(addr) = grpc_bind_address.as_deref() {
+            eprintln!("ax-engine-server gRPC listening on {addr}");
+        }
     }
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let http_server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+
+    if let Some(addr) = grpc_bind_address {
+        let parsed: std::net::SocketAddr = addr
+            .parse()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("invalid --grpc-bind-address {addr}: {e}")))?;
+        let grpc_service = grpc::AxEngineGrpcService::new(state).into_server();
+        let grpc_server = tonic::transport::Server::builder()
+            .add_service(grpc_service)
+            .serve_with_shutdown(parsed, shutdown_signal());
+        let http_handle = tokio::spawn(http_server.into_future());
+        let grpc_handle = tokio::spawn(grpc_server);
+        let (http_result, grpc_result) = tokio::join!(http_handle, grpc_handle);
+        http_result??;
+        grpc_result??;
+    } else {
+        http_server.await?;
+    }
     Ok(())
 }
 
@@ -2564,6 +2586,7 @@ mod tests {
                 ax_engine_sdk::MlxKvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS,
             experimental_mlx_kv_compression_min_context_tokens:
                 ax_engine_sdk::MlxKvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
+            grpc_bind_address: None,
         }
     }
 
