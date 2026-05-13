@@ -263,6 +263,11 @@ pub struct ServerArgs {
     /// Minimum context before experimental MLX KV compression becomes eligible.
     #[arg(long = "experimental-mlx-kv-compression-min-context-tokens", default_value_t = MlxKvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS)]
     pub experimental_mlx_kv_compression_min_context_tokens: usize,
+
+    /// When set, also bind a tonic gRPC server at this address. Omit to run
+    /// HTTP only. Format `host:port`, e.g. `127.0.0.1:50051`.
+    #[arg(long = "grpc-bind-address")]
+    pub grpc_bind_address: Option<String>,
 }
 
 impl ServerArgs {
@@ -639,6 +644,7 @@ mod tests {
                 MlxKvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS,
             experimental_mlx_kv_compression_min_context_tokens:
                 MlxKvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
+            grpc_bind_address: None,
         }
     }
 

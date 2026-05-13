@@ -1,18 +1,25 @@
+// `tonic::Status` is ~176 bytes — clippy::result_large_err fires on every helper
+// returning `Result<_, Status>`. The trait surface comes from tonic and the
+// helpers mirror that surface, so boxing per-call doesn't pay for itself. Allow
+// at the module level rather than peppering individual functions.
+#![allow(clippy::result_large_err)]
+
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionError, GenerateFinishReason, GenerateRequest,
-    GenerateSampling, GenerateStreamEvent, GenerateStreamState, StatelessGenerateContext,
+    GenerateSampling, GenerateStreamEvent, GenerateStreamState,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use super::{
-    AppState, ChatPromptTemplate, QWEN_CHATML_ASSISTANT_GENERATION_PROMPT, StreamStateSource,
-    default_chat_stop_sequences,
+    AppState, ChatPromptTemplate, QWEN_CHATML_ASSISTANT_GENERATION_PROMPT,
+    QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING, StreamStateSource,
+    default_chat_stop_sequences, is_qwen_thinking_model,
 };
 
 // Include the tonic-generated server code.
@@ -81,7 +88,16 @@ fn render_grpc_chat_prompt(model_id: &str, messages: &[(String, String)]) -> Res
         }
     }
     match template {
-        ChatPromptTemplate::QwenChatMl => prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT),
+        ChatPromptTemplate::QwenChatMl => {
+            // Mirror #13's main.rs fix: thinking-capable Qwen variants must end
+            // with `<think>\n` so the model can reason; older Qwen keeps the
+            // pre-closed `<think></think>` block.
+            if is_qwen_thinking_model(model_id) {
+                prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING);
+            } else {
+                prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT);
+            }
+        }
         ChatPromptTemplate::Llama3 => {
             prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
         }
@@ -245,7 +261,10 @@ fn unix_now() -> i64 {
 fn finish_reason_str(fr: GenerateFinishReason) -> String {
     match fr {
         GenerateFinishReason::Stop => "stop".to_string(),
-        GenerateFinishReason::Length => "length".to_string(),
+        GenerateFinishReason::MaxOutputTokens => "length".to_string(),
+        GenerateFinishReason::ContentFilter => "content_filter".to_string(),
+        GenerateFinishReason::Cancelled => "cancelled".to_string(),
+        GenerateFinishReason::Error => "error".to_string(),
     }
 }
 
@@ -741,10 +760,60 @@ impl AxEngine for AxEngineGrpcService {
                 index: 0,
             }],
             model: model_id,
-            usage: proto::EmbeddingUsage {
+            usage: Some(proto::EmbeddingUsage {
                 prompt_tokens,
                 total_tokens: prompt_tokens,
-            },
+            }),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(msg: &str) -> Vec<(String, String)> {
+        vec![("user".to_string(), msg.to_string())]
+    }
+
+    #[test]
+    fn grpc_chat_prompt_keeps_thinking_open_for_qwen_reasoning_models() {
+        // Mirror of `native_chat_renderer_keeps_thinking_open_for_qwen_reasoning_models`
+        // in main.rs. Without this branch the gRPC path would have reproduced
+        // #13 once gRPC was wired up: enable_thinking=false pre-closes the
+        // `<think>` block, which causes Qwen3.6 / Qwen3-Next / Qwen3-Coder-Next
+        // to truncate or loop on reasoning prompts.
+        let thinking =
+            render_grpc_chat_prompt("Qwen3.6-35B-A3B-5bit", &user("hi")).expect("render");
+        assert!(
+            thinking.ends_with("<|im_start|>assistant\n<think>\n"),
+            "thinking-enabled suffix should be `<think>\\n` only: {thinking}"
+        );
+        assert!(
+            !thinking.contains("</think>"),
+            "thinking-enabled suffix must not pre-close the think block: {thinking}"
+        );
+
+        let coder =
+            render_grpc_chat_prompt("Qwen3-Coder-Next-4bit", &user("hi")).expect("render");
+        assert!(
+            coder.ends_with("<|im_start|>assistant\n<think>\n"),
+            "Coder-Next must also leave thinking open: {coder}"
+        );
+    }
+
+    #[test]
+    fn grpc_chat_prompt_keeps_no_thinking_for_older_qwen() {
+        let prompt = render_grpc_chat_prompt("qwen3_dense", &user("hi")).expect("render");
+        assert!(
+            prompt.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+            "non-thinking Qwen must keep the pre-closed think block: {prompt}"
+        );
+    }
+
+    #[test]
+    fn grpc_chat_prompt_rejects_empty_messages() {
+        let err = render_grpc_chat_prompt("qwen3_dense", &[]).expect_err("empty must fail");
+        assert!(err.contains("at least one message"));
     }
 }
