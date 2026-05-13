@@ -1052,6 +1052,24 @@ impl LinearAttentionProfileSnapshot {
         self.projection_wall_us = self
             .projection_wall_us
             .saturating_add(other.projection_wall_us);
+        self.projection_qkvz_wall_us = self
+            .projection_qkvz_wall_us
+            .saturating_add(other.projection_qkvz_wall_us);
+        self.projection_ba_wall_us = self
+            .projection_ba_wall_us
+            .saturating_add(other.projection_ba_wall_us);
+        self.projection_qkv_wall_us = self
+            .projection_qkv_wall_us
+            .saturating_add(other.projection_qkv_wall_us);
+        self.projection_z_wall_us = self
+            .projection_z_wall_us
+            .saturating_add(other.projection_z_wall_us);
+        self.projection_a_wall_us = self
+            .projection_a_wall_us
+            .saturating_add(other.projection_a_wall_us);
+        self.projection_b_wall_us = self
+            .projection_b_wall_us
+            .saturating_add(other.projection_b_wall_us);
         self.conv_wall_us = self.conv_wall_us.saturating_add(other.conv_wall_us);
         self.qk_norm_wall_us = self.qk_norm_wall_us.saturating_add(other.qk_norm_wall_us);
         self.recurrent_wall_us = self
@@ -1072,6 +1090,30 @@ impl LinearAttentionProfileSnapshot {
             (
                 "ax_mlx_linear_attention_profile_projection_wall_us",
                 self.projection_wall_us,
+            ),
+            (
+                "ax_mlx_linear_attention_profile_projection_qkvz_wall_us",
+                self.projection_qkvz_wall_us,
+            ),
+            (
+                "ax_mlx_linear_attention_profile_projection_ba_wall_us",
+                self.projection_ba_wall_us,
+            ),
+            (
+                "ax_mlx_linear_attention_profile_projection_qkv_wall_us",
+                self.projection_qkv_wall_us,
+            ),
+            (
+                "ax_mlx_linear_attention_profile_projection_z_wall_us",
+                self.projection_z_wall_us,
+            ),
+            (
+                "ax_mlx_linear_attention_profile_projection_a_wall_us",
+                self.projection_a_wall_us,
+            ),
+            (
+                "ax_mlx_linear_attention_profile_projection_b_wall_us",
+                self.projection_b_wall_us,
             ),
             (
                 "ax_mlx_linear_attention_profile_conv_wall_us",
@@ -5506,6 +5548,12 @@ mod tests {
             layers: 2,
             tokens: 1024,
             projection_wall_us: 100,
+            projection_qkvz_wall_us: 70,
+            projection_ba_wall_us: 30,
+            projection_qkv_wall_us: 0,
+            projection_z_wall_us: 0,
+            projection_a_wall_us: 0,
+            projection_b_wall_us: 0,
             conv_wall_us: 80,
             qk_norm_wall_us: 30,
             recurrent_wall_us: 90,
@@ -5516,6 +5564,12 @@ mod tests {
             layers: 3,
             tokens: 2048,
             projection_wall_us: 150,
+            projection_qkvz_wall_us: 105,
+            projection_ba_wall_us: 45,
+            projection_qkv_wall_us: 0,
+            projection_z_wall_us: 0,
+            projection_a_wall_us: 0,
+            projection_b_wall_us: 0,
             conv_wall_us: 120,
             qk_norm_wall_us: 45,
             recurrent_wall_us: 135,
@@ -5543,6 +5597,14 @@ mod tests {
         assert_eq!(
             decisions.get("ax_mlx_linear_attention_profile_projection_wall_us"),
             Some(&250)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_profile_projection_qkvz_wall_us"),
+            Some(&175)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_profile_projection_ba_wall_us"),
+            Some(&75)
         );
         assert_eq!(
             decisions.get("ax_mlx_linear_attention_profile_recurrent_wall_us"),
