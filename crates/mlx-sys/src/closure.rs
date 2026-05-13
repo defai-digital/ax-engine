@@ -86,6 +86,12 @@ impl MlxVectorArray {
     }
 }
 
+impl Default for MlxVectorArray {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for MlxVectorArray {
     fn drop(&mut self) {
         if self.owned && !self.inner.ctx.is_null() {

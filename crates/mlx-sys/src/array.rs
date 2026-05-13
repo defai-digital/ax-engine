@@ -84,8 +84,10 @@ impl MlxArray {
     /// `payload` is passed through to `dtor` so the caller can carry
     /// arbitrary lifetime state (typically a boxed `Mmap` handle).
     ///
-    /// SAFETY: `data` must remain valid until `dtor(payload)` is called.
-    /// `byte_len` must cover the array's element count for `dtype`.
+    /// # Safety
+    ///
+    /// `data` must remain valid until `dtor(payload)` is called. `byte_len`
+    /// must cover the array's element count for `dtype`.
     pub unsafe fn from_managed_data(
         data: *const u8,
         byte_len: usize,
