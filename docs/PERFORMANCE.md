@@ -6,7 +6,7 @@ page carries methodology, artifact provenance, and caveats.
 
 ## Current Result Set
 
-The current public table was refreshed on 2026-05-12 on:
+The current public table was refreshed on 2026-05-13 on:
 
 - Apple M5 Max
 - 128 GB memory
@@ -22,23 +22,23 @@ Benchmark shape:
 - 5 repetitions per engine/model/prompt row
 - 15-second cooldown between trials and 45-second inter-model pause
 
-The current README generation-model tables are a provenance-tracked composite:
+The current README generation-model tables are a provenance-tracked composite
+from:
 
-- `mlx_lm` and `mlx_swift_lm` reference columns come from
-  `benchmarks/results/mlx-inference/2026-05-12-production-build-readme-refresh/`.
-- AX direct and AX n-gram columns use
-  `benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/` as
-  the base source.
-- The later AX-only refresh in
-  `benchmarks/results/mlx-inference/2026-05-13-ax-refresh/` is overlaid for the
-  models present in that directory.
+```text
+benchmarks/results/mlx-inference/2026-05-13-ax-direct-ngram-r2/
+```
 
-All three sources use the same prompt-token contract and generation=128 shape.
-The AX rows were produced with production-build server binaries
+This 14-model AX refresh reruns the direct and n-gram AX rows and carries
+forward the same-host `mlx_lm` / `mlx_swift_lm` reference rows from
+`benchmarks/results/mlx-inference/2026-05-13-full-fresh/` inside each artifact.
+All rows use the same prompt-token contract, prompt SHA checks, and
+generation=128 shape. The AX rows were produced with production-build server
+binaries
 (`[profile.release]`: LTO thin, `codegen-units=1`, `panic=abort`, stripped
-debuginfo). This composite is intentional: reference columns stay stable while
-AX-only refreshes can update current runtime behavior without rerunning the
-third-party baselines.
+debuginfo). This composite is intentional: the third-party reference rows stay
+attached to the same artifact contract while AX-only refreshes can update
+current runtime behavior without rerunning the reference adapters.
 
 `ax direct baseline` is the direct same-policy comparison against `mlx_lm`; the
 benchmark starts the AX server with n-gram acceleration disabled for this row.
@@ -89,20 +89,20 @@ systems such as vLLM or TensorRT-LLM.
 
 The current composite README table is not a universal direct-decode win.
 Direct AX is intentionally measured with n-gram acceleration disabled, and the
-direct column spans -19% to +26% versus `mlx_lm` across the README decode
+direct column spans -12.3% to +22.9% versus `mlx_lm` across the README decode
 table. Those rows are the same-policy baseline rather than the default AX user
 path.
 
 N-gram acceleration is the default AX user/server path and is the better
-headline row for decode-throughput expectations. In the current README table,
-the n-gram column spans +11% to +207% versus `mlx_lm`. Against AX direct decode,
-the n-gram median is about 2.48x. Artifact claim status is explicit:
-26 of 28 n-gram rows are labeled `ngram_acceleration_effective_throughput`;
-the two no-draft rows are labeled `ngram_no_draft_direct_fallback`. Those two
-rows, Qwen Coder Next at 128 prompt tokens and Qwen 3.5 9B at 512 prompt
-tokens, are still faster than `mlx_lm` but about 3% slower than their matching
-direct AX baseline, so public docs should keep direct baseline rows visible
-beside the default n-gram row.
+headline row for decode-throughput expectations when the workload produces
+draftable local repetition. In the current README table, the n-gram column spans
+-2.4% to +207.2% versus `mlx_lm`. Artifact claim status is explicit: 26 of 28
+n-gram rows are labeled `ngram_acceleration_effective_throughput`; the two
+no-draft rows are labeled `ngram_no_draft_direct_fallback`. Those two rows are
+Qwen Coder Next at 128 prompt tokens, which is -2.4% versus `mlx_lm` and -0.9%
+versus direct AX, and Qwen 3.5 9B at 512 prompt tokens, which is +20.1% versus
+`mlx_lm` but -2.2% versus direct AX. Public docs should keep direct baseline
+rows visible beside the default n-gram row.
 
 The strongest user-facing case for n-gram acceleration is coding-shaped output
 with repeated local structure: completion, edit loops, structured diffs,
@@ -293,6 +293,24 @@ cancellation, and regression behavior.
 End-to-end API latency should be labeled separately from raw runner throughput.
 
 ## Gemma Direct-Decode Follow-Ups
+
+The current 2026-05-13 README artifact keeps Gemma 4 direct decode below
+`mlx_lm` on every public Gemma row, while n-gram acceleration is strongly
+positive:
+
+| Model family | Direct AX vs `mlx_lm` | AX n-gram vs `mlx_lm` | Interpretation |
+|---|---:|---:|---|
+| Gemma 4 E2B 4/5/6/8-bit | -12.3% to -9.4% | +135.9% to +207.2% | Direct decode is still the weak path; user-default n-gram hides it for draftable outputs |
+| Gemma 4 E4B 4-bit | -10.8% to -10.7% | +158.6% to +165.6% | Similar direct gap at the next small dense size |
+| Gemma 4 26B A4B | -5.7% to -5.6% | +88.4% to +114.1% | MoE direct gap is smaller than E2B/E4B, but still below `mlx_lm` |
+| Gemma 4 31B | -4.0% to -3.9% | +125.2% to +125.6% | Large dense Gemma is close enough that smaller overheads matter |
+
+For the next Gemma E2B direct-decode optimization pass, prefer evidence that
+preserves lazy direct decode. Blocking profile modes are useful for bottleneck
+split diagnosis, but their token/s rows should not be compared directly against
+normal pipelined decode rows. Prior profile artifacts pointed at post-attention
+/ FFN and pre-SDPA tail work as higher-value follow-ups than per-layer-input
+path slimming alone.
 
 A follow-up Gemma 4 E2B 4-bit direct-decode refresh after the sliding-window
 decode KV view change is recorded in:
