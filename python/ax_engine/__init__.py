@@ -715,6 +715,54 @@ class Session:
             batch_token_ids, pooling=pooling, normalize=normalize
         )
 
+    def embed_batch_flat_bytes(
+        self,
+        batch_token_ids: list[list[int]],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ) -> tuple[bytes, int, int]:
+        """Batch embedding as one contiguous f32-bytes blob plus
+        ``(batch_size, hidden_size)``. Saves the ``B-1`` per-sequence
+        ``PyBytes`` allocations that :meth:`embed_batch_bytes` makes and
+        gives the caller a single row-major ``[B, H]`` buffer suited to
+        numpy / faiss / HNSW.
+        """
+        return self._inner.embed_batch_flat_bytes(
+            batch_token_ids, pooling=pooling, normalize=normalize
+        )
+
+    def embed_batch_array(
+        self,
+        batch_token_ids: list[list[int]],
+        *,
+        pooling: str = "last",
+        normalize: bool = True,
+    ):
+        """Batch embedding as a NumPy ``(B, H)`` ``float32`` ndarray.
+
+        Wraps :meth:`embed_batch_flat_bytes` with ``np.frombuffer`` for a
+        zero-copy view over the contiguous buffer Rust returned. Lazily
+        imports numpy so callers who do not need this method do not pay
+        the import cost. Returns a *read-only* view of bytes the Rust
+        side owns; copy with ``.copy()`` before mutating.
+
+        Example
+        -------
+        >>> arr = session.embed_batch_array([ids1, ids2, ids3])
+        >>> arr.shape, arr.dtype
+        ((3, 1024), dtype('float32'))
+        >>> # zero-copy hand off to faiss:
+        >>> # index.add(arr)
+        """
+        import numpy as np
+
+        blob, batch_size, hidden_size = self.embed_batch_flat_bytes(
+            batch_token_ids, pooling=pooling, normalize=normalize
+        )
+        arr = np.frombuffer(blob, dtype=np.float32).reshape(batch_size, hidden_size)
+        return arr
+
     def __enter__(self) -> Session:
         return self
 

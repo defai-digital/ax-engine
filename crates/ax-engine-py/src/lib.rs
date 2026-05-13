@@ -580,6 +580,40 @@ impl Session {
         vecs.iter().map(|v| floats_to_pybytes(py, v)).collect()
     }
 
+    /// Return the batch embedding as one contiguous ``bytes`` blob plus
+    /// ``(batch_size, hidden_size)``. Callers can wrap the buffer with
+    /// ``numpy.frombuffer(buf, dtype='f4').reshape(B, H)`` for a
+    /// zero-copy `[B, H]` ndarray. Saves the `B - 1` PyBytes allocations
+    /// that :meth:`embed_batch_bytes` does plus the matching number of
+    /// inner `Vec<f32>` allocations on the Rust side.
+    #[pyo3(signature = (batch_token_ids, *, pooling="last", normalize=true))]
+    fn embed_batch_flat_bytes<'py>(
+        &self,
+        py: Python<'py>,
+        batch_token_ids: Vec<Vec<u32>>,
+        pooling: &str,
+        normalize: bool,
+    ) -> PyResult<(Bound<'py, PyBytes>, usize, usize)> {
+        let pooling_mode = parse_pooling(pooling)?;
+        let inner = Arc::clone(&self.inner);
+        let matrix: ax_engine_sdk::EmbeddingMatrix = py.allow_threads(move || {
+            let slot = inner
+                .lock()
+                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
+            match &*slot {
+                SessionSlot::Ready(session) => session
+                    .embed_batch_flat(&batch_token_ids, pooling_mode, normalize)
+                    .map_err(to_py_runtime_error),
+                SessionSlot::Streaming => {
+                    Err(py_engine_state_error("session has an active stream"))
+                }
+                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
+            }
+        })?;
+        let blob = floats_to_pybytes(py, &matrix.data)?;
+        Ok((blob, matrix.batch_size, matrix.hidden_size))
+    }
+
     #[pyo3(signature = (_exc_type=None, _exc=None, _traceback=None))]
     fn __exit__(
         &mut self,

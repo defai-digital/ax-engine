@@ -534,6 +534,26 @@ Reading the rows:
   per-document indexing, async workers) gets this speedup for free with the
   default server configuration; no client changes required.
 
+#### Cold start (serverless / scale-to-zero)
+
+`AX_MMAP_WEIGHTS=1` selects a memory-mapped safetensors loader for the
+`MlxRunner` weight load step. The mmap path parses the safetensors
+header in Rust and constructs `MlxArray`s from mapped regions, skipping
+the userspace heap buffer + `read()` pipeline that the upstream C
+loader does. Measured on warm OS page cache (median of 3 runs of
+`EngineSession::new`):
+
+| Model | safetensors size | C loader | mmap (R4) | improvement |
+|---|---:|---:|---:|---:|
+| Qwen3-Embedding 0.6B 8-bit | 633 MB | 143 ms | **127 ms** | -11% |
+| Qwen3-Embedding 4B 4-bit | 2.2 GB | 197 ms | **139 ms** | -30% |
+| Qwen3-Embedding 8B 4-bit DWQ | 4.3 GB | 261 ms | **155 ms** | -41% |
+
+Output is bit-exact with the C loader. Default remains the C loader
+while the borrowed-data variant matures; opt in with the env var on
+serverless / Lambda-style cold paths where each saved 100 ms matters.
+Source: `benchmarks/results/embedding/2026-05-12-r4-mmap-loader/`.
+
 #### Methodology
 
 All backends end each call with the embedding materialized as a Python value
@@ -544,11 +564,18 @@ transfer that real callers pay.
 
 - `mlx-lm` path: `model.model(x)` → last-token slice → `astype(float32)` →
   l2-normalize → `.tolist()` (triggers eval + read-back).
-- `ax-engine-py` path: `session.embed_bytes(token_ids, ...)` or
-  `session.embed_batch_bytes(batch, ...)` (eval + `data_f32().to_vec()` +
-  `PyBytes` wrap).
-- `ax-engine` Rust path: `EngineSession::embed_batch(...)` returning
-  `Vec<Vec<f32>>` directly.
+- `ax-engine-py` path:
+  - `session.embed_bytes(token_ids, ...)` — single-sentence raw f32 bytes.
+  - `session.embed_batch_bytes(batch, ...)` — batched, one bytes blob per
+    sentence.
+  - `session.embed_batch_array(batch, ...)` — batched, returns a NumPy
+    `(B, H)` `float32` ndarray (zero-copy view via `np.frombuffer`); the
+    recommended API for vector-DB / faiss / HNSW ingest pipelines.
+- `ax-engine` Rust path:
+  - `EngineSession::embed_batch(...)` — `Vec<Vec<f32>>` (legacy).
+  - `EngineSession::embed_batch_flat(...)` — one contiguous `EmbeddingMatrix
+    { data: Vec<f32>, batch_size, hidden_size }`, saves `B - 1` heap
+    allocations and is the right API for downstream zero-copy consumers.
 
 Same prompts, same pooling (`last`), same normalization (`true`), same
 warmup. The sustained-batched and anti-pattern tables share the same input
