@@ -13,3 +13,5 @@ bindgen = "0.72"
 regex = "1"
 
 [dependencies]
+memmap2 = "0.9"
+serde_json = { workspace = true }

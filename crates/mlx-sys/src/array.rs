@@ -77,6 +77,51 @@ impl MlxArray {
         }
     }
 
+    /// Create an array that borrows an externally-owned data buffer (e.g.
+    /// a memory-mapped safetensors region). MLX does **not** copy the
+    /// data; the `dtor` callback is invoked when MLX no longer references
+    /// the array, at which point the caller's resource can be released.
+    /// `payload` is passed through to `dtor` so the caller can carry
+    /// arbitrary lifetime state (typically a boxed `Mmap` handle).
+    ///
+    /// SAFETY: `data` must remain valid until `dtor(payload)` is called.
+    /// `byte_len` must cover the array's element count for `dtype`.
+    pub unsafe fn from_managed_data(
+        data: *const u8,
+        byte_len: usize,
+        shape: &[i32],
+        dtype: MlxDtype,
+        payload: *mut std::ffi::c_void,
+        dtor: unsafe extern "C" fn(*mut std::ffi::c_void),
+    ) -> Self {
+        let element_count = shape
+            .iter()
+            .try_fold(1usize, |acc, dim| {
+                usize::try_from(*dim)
+                    .ok()
+                    .and_then(|dim| acc.checked_mul(dim))
+            })
+            .expect("shape dimensions must be non-negative and fit in usize");
+        let required_bytes = element_count
+            .checked_mul(dtype.size_bytes())
+            .expect("shape byte length must fit in usize");
+        assert!(
+            byte_len >= required_bytes,
+            "managed data byte length {byte_len} is smaller than required {required_bytes}"
+        );
+        unsafe {
+            let arr = ffi::mlx_array_new_data_managed_payload(
+                data as *mut _,
+                shape.as_ptr(),
+                shape.len() as i32,
+                dtype.to_ffi(),
+                payload,
+                Some(dtor),
+            );
+            Self::from_raw(arr)
+        }
+    }
+
     /// Create an array from a raw data pointer with explicit shape and dtype.
     pub fn from_raw_data(data: *const u8, byte_len: usize, shape: &[i32], dtype: MlxDtype) -> Self {
         let element_count = shape
