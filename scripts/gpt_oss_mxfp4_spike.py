@@ -77,58 +77,6 @@ def sanitize_mxfp4(
     return w, scales_u8
 
 
-def deinterleave_gate_up(w: mx.array, axis: int = -2) -> tuple[mx.array, mx.array]:
-    """gate_up_proj stores gate (even rows) + up (odd rows) interleaved along `axis`."""
-    if axis != -2:
-        raise NotImplementedError("only axis=-2 supported")
-    gate = mx.contiguous(w[..., ::2, :])
-    up = mx.contiguous(w[..., 1::2, :])
-    return gate, up
-
-
-def deinterleave_gate_up_scales(s: mx.array) -> tuple[mx.array, mx.array]:
-    """Scales share the same row interleaving as the packed weight."""
-    gate = mx.contiguous(s[..., ::2, :])
-    up = mx.contiguous(s[..., 1::2, :])
-    return gate, up
-
-
-def dequant_mxfp4(
-    weight_u32: mx.array, scales_u8: mx.array, group_size: int = 32
-) -> mx.array:
-    """Dequantize using MLX-core's native MXFP4 mode."""
-    return mx.dequantize(
-        weight_u32,
-        scales=scales_u8,
-        group_size=group_size,
-        bits=4,
-        mode="mxfp4",
-    )
-
-
-def reference_dequant_via_mlx_lm(model_id: str, layer: int, expert: int, which: str) -> mx.array:
-    """Use mlx-lm to load + sanitize, then dequantize to BF16. Returns the
-    same tensor our loader path should produce."""
-    from mlx_lm import load
-    model, _ = load(model_id)
-    layer_obj = model.layers[layer]
-    if which == "gate_proj":
-        lin = layer_obj.mlp.experts.gate_proj
-    elif which == "up_proj":
-        lin = layer_obj.mlp.experts.up_proj
-    elif which == "down_proj":
-        lin = layer_obj.mlp.experts.down_proj
-    else:
-        raise ValueError(which)
-    return mx.dequantize(
-        lin.weight[expert],
-        scales=lin.scales[expert],
-        group_size=lin.group_size,
-        bits=lin.bits,
-        mode=lin.mode,
-    )
-
-
 def own_dequant(
     shards: list[Path],
     layer: int,
