@@ -514,6 +514,33 @@ when the runtime emits them. It is artifact evidence only; promoted TurboQuant
 support still requires a long-context quality artifact validated by
 `scripts/check_turboquant_quality_artifact.py`.
 
+Offline policy search is the diagnostic planning layer for TurboQuant KV policy
+choices. It enumerates candidate policies such as `kv_preset`,
+`hot_window_tokens`, eligible-layer mask, fallback policy, and quality profile,
+then writes an `ax.offline_policy_search.v1` artifact under
+`benchmarks/results/offline-policy-search/<date>/`. This does not run a model,
+benchmark, or fused kernel. Candidate rows must remain
+`measurement_status=not_run` until a separate measurement harness supplies real
+evidence.
+
+Use the TurboQuant policy-grid harness to create a diagnostic artifact:
+
+```text
+python3 scripts/search_turboquant_kv_policy.py \
+  --metadata /path/to/metadata.json \
+  --baseline /path/to/baseline-shape.json \
+  --kv-presets disabled,TurboQuantK8V4 \
+  --hot-window-tokens 256,512 \
+  --fallback-policies fail_closed
+```
+
+When `--output` is omitted, the artifact is written to the canonical
+offline-policy-search result path. Validate checked-in search artifacts with:
+
+```text
+bash scripts/check-offline-policy-search-artifacts.sh
+```
+
 The quality artifact gate is stricter than telemetry collection. Quality/path
 evidence must use candidate mode `turboquant-fused-experimental`, route
 metadata schema `>= 2`, K8/V4, fused_compressed_decode path code `2`, fused
