@@ -5041,7 +5041,6 @@ mod tests {
             disk_inserts: 8,
             disk_insert_bytes: 8192,
             disk_evictions: 9,
-            ..MlxPrefixCacheTelemetry::default()
         };
         let mut decisions = Vec::new();
 
