@@ -188,6 +188,13 @@ throughput baselines.
 - `check_mlx_prefill_scaling_campaign.py`: validates a multi-model prefill
   scaling campaign by checking per-artifact contracts, required model-family
   coverage, host consistency, maximum context coverage, and first-bend summary.
+- `check_mlx_prefill_claim_cycle.py`: aggregate checked-in W0-W4 claim-cycle
+  gate. It runs the README public/narrative checker, the canonical P1
+  long-context boundary artifact, the canonical P2 concurrent-prefill boundary
+  artifact, and the W4 forward-profile diagnostic artifact without loading a
+  model.
+- `test_mlx_prefill_claim_cycle.py`: unit tests for the aggregate claim-cycle
+  gate.
 - `check_mlx_startup_latency_artifact.py`: validates P2 cold-vs-warm startup
   artifacts. It requires `process_cold`, `model_warm`, and `benchmark_warm`
   rows for the same prompt hash and direct AX policy, separates server-ready
