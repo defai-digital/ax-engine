@@ -88,7 +88,11 @@ Current status as of 2026-05-14:
   `attention_kind` blocker while also emitting subreason counters for
   linear-attention, GLM MLA, sliding-window, and KV-shared layers. New benchmark
   rows, quality artifacts, and readiness next actions can report those
-  subreasons without double-counting the aggregate blocked total;
+  subreasons without double-counting the aggregate blocked total. The fused
+  decode diagnostic surface now also accepts an all-or-none timing quartet for
+  `query_readback`, `cold_metal`, `hot_tail_merge`, and `output_staging`; legacy
+  artifacts without timing remain valid, but partially populated timing metadata
+  fails closed;
 - TurboQuant public/runtime promotion remains blocked. The latest Gemma 4 E2B
   real-runner artifact passes quality and real-runner truth-surface validation,
   but fails the performance promotion gate because fused decode regresses
@@ -680,6 +684,10 @@ Current evidence:
 - Runtime truth: `decode_path=fused_compressed_decode`,
   `fused_decode_successes=9`, `fused_decode_metal_successes=9`,
   `fused_decode_fallbacks=0`
+- The next artifact produced after the timing telemetry slice should include
+  `runtime_truth.fused_decode_timing_wall_us` so the performance blocker can be
+  assigned to query readback, cold Metal decode, hot-tail merge, or output
+  staging instead of only reporting aggregate decode throughput.
 - Quality: passed exact replay metrics (`max_abs_diff=0.0`,
   `mean_abs_diff=0.0`, `min_cosine_similarity=1.0`)
 - Performance blocker: `decode_tok_s_ratio_to_baseline=0.259`, below the

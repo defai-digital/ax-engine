@@ -50,6 +50,12 @@ BLOCKED_COUNTER_ZEROS = {
 BLOCKED_COUNTER_ZEROS.update(
     {key: 0 for key in checker.FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS.values()}
 )
+TIMING_COUNTERS = {
+    "ax_mlx_kv_compression_fused_decode_query_readback_wall_us": 11,
+    "ax_mlx_kv_compression_fused_decode_cold_metal_wall_us": 22,
+    "ax_mlx_kv_compression_fused_decode_hot_tail_merge_wall_us": 33,
+    "ax_mlx_kv_compression_fused_decode_output_staging_wall_us": 44,
+}
 
 
 def valid_artifact(root: Path) -> dict:
@@ -118,6 +124,7 @@ def valid_artifact(root: Path) -> dict:
                 "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                 "ax_mlx_kv_compression_fused_decode_fallback_reason": 0,
                 **BLOCKED_COUNTER_ZEROS,
+                **TIMING_COUNTERS,
             }
         },
         "artifacts": [
@@ -216,6 +223,7 @@ def benchmark_doc(
                     if decode_path_code == 2
                     else 1,
                     **BLOCKED_COUNTER_ZEROS,
+                    **TIMING_COUNTERS,
                 },
             }
         )
@@ -468,6 +476,42 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(checker.ArtifactValidationError, "missing required keys"):
                 checker.validate_artifact(artifact, root=root)
 
+    def test_artifact_without_fused_decode_timing_keeps_legacy_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            decisions = artifact["route_metadata"]["crossover_decisions"]
+            for key in checker.FUSED_DECODE_TIMING_COUNTERS.values():
+                decisions.pop(key)
+            artifact["runtime_truth"] = checker.route_truth_surface(artifact["route_metadata"])
+
+            checker.validate_artifact(artifact, root=root)
+            self.assertNotIn("fused_decode_timing_wall_us", artifact["runtime_truth"])
+
+    def test_partial_fused_decode_timing_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            del artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_fused_decode_output_staging_wall_us"
+            ]
+            artifact["runtime_truth"] = checker.route_truth_surface(artifact["route_metadata"])
+
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "timing keys"):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_negative_fused_decode_timing_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_fused_decode_hot_tail_merge_wall_us"
+            ] = -1
+            artifact["runtime_truth"] = checker.route_truth_surface(artifact["route_metadata"])
+
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "hot_tail_merge"):
+                checker.validate_artifact(artifact, root=root)
+
     def test_non_integer_fused_decode_blocked_counter_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -585,6 +629,23 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             self.assertEqual(
                 truth["fused_decode_blocked_attention_kind_counters"]["sliding_window"],
                 3,
+            )
+
+    def test_route_truth_surface_reports_fused_decode_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+
+            truth = checker.route_truth_surface(artifact["route_metadata"])
+
+            self.assertEqual(
+                truth["fused_decode_timing_wall_us"],
+                {
+                    "query_readback": 11,
+                    "cold_metal": 22,
+                    "hot_tail_merge": 33,
+                    "output_staging": 44,
+                },
             )
 
     def test_stale_runtime_production_blockers_fail_closed(self) -> None:
