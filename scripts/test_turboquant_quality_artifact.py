@@ -448,6 +448,45 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(checker.ArtifactValidationError, "zero fused decode fallbacks"):
                 checker.validate_artifact(artifact, root=root)
 
+    def test_route_truth_surface_names_real_fused_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+
+            truth = checker.route_truth_surface(artifact["route_metadata"])
+
+            self.assertEqual(truth["decode_path_code"], 2)
+            self.assertEqual(truth["decode_path_label"], "fused_compressed_decode")
+            self.assertEqual(truth["fused_decode_fallback_reason_label"], "none")
+            self.assertTrue(truth["fused_path_selected"])
+            self.assertTrue(truth["fused_success_observed"])
+            self.assertTrue(truth["zero_fallbacks"])
+            self.assertTrue(truth["promotion_path_ready"])
+
+    def test_route_truth_surface_names_shadow_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            decisions = artifact["route_metadata"]["crossover_decisions"]
+            decisions["ax_mlx_kv_compression_decode_path"] = 1
+            decisions["ax_mlx_kv_compression_fused_decode_attempts"] = 0
+            decisions["ax_mlx_kv_compression_fused_decode_successes"] = 0
+            decisions["ax_mlx_kv_compression_fused_decode_metal_successes"] = 0
+            decisions["ax_mlx_kv_compression_fused_decode_fallbacks"] = 0
+            decisions["ax_mlx_kv_compression_fused_decode_fallback_reason"] = 4
+
+            truth = checker.route_truth_surface(artifact["route_metadata"])
+
+            self.assertEqual(truth["decode_path_label"], "full_precision_shadow")
+            self.assertEqual(
+                truth["fused_decode_fallback_reason_label"],
+                "runner_not_integrated",
+            )
+            self.assertFalse(truth["fused_path_selected"])
+            self.assertFalse(truth["fused_success_observed"])
+            self.assertFalse(truth["zero_fallbacks"])
+            self.assertFalse(truth["promotion_path_ready"])
+
     def test_stale_runtime_production_blockers_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -511,6 +550,11 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             )
 
             self.assertEqual(artifact["candidate"]["decode_path"], "fused_compressed_decode")
+            self.assertEqual(
+                artifact["runtime_truth"]["decode_path_label"],
+                "fused_compressed_decode",
+            )
+            self.assertTrue(artifact["runtime_truth"]["promotion_path_ready"])
             self.assertEqual(artifact["metrics"]["decode_tok_s_ratio_to_baseline"], 0.9)
             self.assertEqual(
                 artifact["measurement"],
@@ -656,6 +700,13 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             self.assertTrue(report["quality_artifacts"][0]["passes_quality_gate"])
             self.assertFalse(report["quality_artifacts"][0]["passes_performance_gate"])
             self.assertEqual(
+                report["quality_artifacts"][0]["runtime_truth"]["decode_path_label"],
+                "fused_compressed_decode",
+            )
+            self.assertTrue(
+                report["quality_artifacts"][0]["runtime_truth"]["promotion_path_ready"]
+            )
+            self.assertEqual(
                 report["quality_artifacts"][0]["promotion_gap"],
                 {
                     "observed_decode_tok_s_ratio_to_baseline": 0.1,
@@ -775,6 +826,61 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                 report["quality_artifacts"][0]["promotion_gap"][
                     "repeated_measurement_ready"
                 ]
+            )
+
+    def test_readiness_reports_runtime_truth_even_when_artifact_fails_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models_root = root / "models"
+            model_dir = models_root / "gemma"
+            model_dir.mkdir(parents=True)
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "gemma4",
+                        "attention_head_dim": 256,
+                        "global_head_dim": 512,
+                        "attention_head_count": 8,
+                        "kv_head_count": 1,
+                        "layer_types": ["full_attention"],
+                    }
+                )
+            )
+            artifact = valid_artifact(root)
+            decisions = artifact["route_metadata"]["crossover_decisions"]
+            decisions["ax_mlx_kv_compression_decode_path"] = 1
+            decisions["ax_mlx_kv_compression_fused_decode_attempts"] = 0
+            decisions["ax_mlx_kv_compression_fused_decode_successes"] = 0
+            decisions["ax_mlx_kv_compression_fused_decode_metal_successes"] = 0
+            decisions["ax_mlx_kv_compression_fused_decode_fallback_reason"] = 4
+            artifact_path = root / "quality-gate.json"
+            artifact_path.write_text(json.dumps(artifact))
+
+            report = readiness.build_report(
+                models_root=models_root,
+                results_root=root / "empty-results",
+                artifacts=[artifact_path],
+                require_artifact_files=True,
+                root=root,
+            )
+
+            self.assertFalse(report["quality_artifacts"][0]["passes_quality_gate"])
+            self.assertIn(
+                "path code 2",
+                report["quality_artifacts"][0]["quality_blocker"],
+            )
+            self.assertEqual(
+                report["quality_artifacts"][0]["runtime_truth"]["decode_path_label"],
+                "full_precision_shadow",
+            )
+            self.assertEqual(
+                report["quality_artifacts"][0]["runtime_truth"][
+                    "fused_decode_fallback_reason_label"
+                ],
+                "runner_not_integrated",
+            )
+            self.assertFalse(
+                report["quality_artifacts"][0]["runtime_truth"]["promotion_path_ready"]
             )
 
     def test_readiness_derives_dense_full_attention_layers_from_tensor_roles(self) -> None:
