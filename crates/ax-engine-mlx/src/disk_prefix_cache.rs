@@ -1,13 +1,13 @@
-//! F3 M1 — minimal file-I/O wrapper over [`MlxKVCache::serialize_to_bytes`].
+//! F3 — disk-backed prefix cache over [`MlxKVCache::serialize_to_bytes`].
 //!
 //! This module owns the on-disk framing for the future durable
 //! prefix-cache layer scoped by
-//! `.internal/planning/MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md`. M1 ships
-//! only the file-level get / insert primitives plus the wire framing
-//! around the kv_cache payload; eviction (M3), the runner-side L2
-//! lookup wire-up (M2), and the cross-restart integration validation
-//! (M4) are explicitly deferred to follow-up sessions per the PRD's
-//! milestone breakdown.
+//! `.internal/planning/MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md`. The
+//! current implementation owns file-level get / insert primitives,
+//! wire framing around the kv_cache payload, runner-side L2 lookup,
+//! and best-effort post-insert eviction. Cross-process locking and
+//! full cross-restart promotion validation remain deferred follow-ups
+//! per the PRD's milestone breakdown.
 //!
 //! What is implemented here:
 //!   - On-disk file layout: outer magic + version + payload SHA256 +
@@ -25,17 +25,12 @@
 //!     down. The key bytes are also written into the file header for
 //!     hash-collision detection on load.
 //!
-//! What is explicitly out of scope for M1:
-//!   - Eviction (M3). The on-disk directory grows unbounded under M1
-//!     usage; this is acceptable because M1 has no runner wire-up, so
-//!     only operator-driven test runs touch the directory.
+//! What is explicitly out of scope for this layer:
 //!   - Multi-process concurrency / flock (M3). Atomic rename gives
 //!     readers a consistent file view; concurrent writers may
 //!     overwrite each other's files (harmless when content matches
 //!     the same key, and key collisions across writers are
 //!     vanishingly unlikely under SHA256).
-//!   - Telemetry counters (M2 will add `disk_hits` / `disk_misses`
-//!     into `MlxPrefixCacheTelemetry`).
 //!   - Network or mmap I/O (PRD §5.3 explicitly defers mmap to a
 //!     follow-up).
 
@@ -52,6 +47,61 @@ const FILE_VERSION: u32 = 1;
 /// Outer header byte count: magic(4) + version(4) + payload_sha256(32)
 /// + payload_length(8) + key_len(4) + reserved(4) = 56 bytes.
 const FIXED_HEADER_LEN: usize = 56;
+/// File extension for stored entries.
+const ENTRY_EXTENSION: &str = "axkv";
+
+/// Default per-process disk-cache size budget when no env override is
+/// set. Matches the value documented in
+/// `MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md` §3.5.
+const DEFAULT_DISK_CACHE_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024; // 8 GiB
+
+/// Default per-process disk-cache entry budget when no env override is
+/// set. PRD §3.5.
+const DEFAULT_DISK_CACHE_MAX_ENTRIES: usize = 1024;
+
+/// Eviction policy for the L2 disk prefix cache. Both budgets are
+/// enforced after every successful insert; whichever fires first
+/// drives eviction. Policies are immutable for the cache's lifetime.
+#[derive(Clone, Copy, Debug)]
+pub struct DiskPrefixCachePolicy {
+    /// Maximum aggregate bytes across all entries before eviction
+    /// trims the oldest files.
+    pub max_bytes: u64,
+    /// Maximum entry count before eviction trims the oldest files.
+    pub max_entries: usize,
+}
+
+impl Default for DiskPrefixCachePolicy {
+    fn default() -> Self {
+        Self {
+            max_bytes: DEFAULT_DISK_CACHE_MAX_BYTES,
+            max_entries: DEFAULT_DISK_CACHE_MAX_ENTRIES,
+        }
+    }
+}
+
+impl DiskPrefixCachePolicy {
+    /// Build a policy from env, falling back to the documented
+    /// defaults when an entry is unset, blank, or unparseable. Reads
+    /// `AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES` and
+    /// `AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES`.
+    pub fn from_env() -> Self {
+        let max_bytes = std::env::var("AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_DISK_CACHE_MAX_BYTES);
+        let max_entries = std::env::var("AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_DISK_CACHE_MAX_ENTRIES);
+        Self {
+            max_bytes,
+            max_entries,
+        }
+    }
+}
 
 /// Errors from [`DiskPrefixCache::insert`] and similar mutating calls.
 /// Read-side miss / corruption is signalled as `Ok(None)` instead of
@@ -140,15 +190,51 @@ fn payload_sha256(payload: &[u8]) -> [u8; 32] {
 /// (to defeat hash collisions), validate the payload checksum, and
 /// then return the payload bytes for the caller to feed to
 /// `MlxKVCache::try_deserialize_from_bytes`.
+///
+/// F3 M3 — the cache enforces byte and entry budgets on `insert`. When
+/// either budget is exceeded after a write, `evict_until_within_policy`
+/// walks the directory, sorts files by mtime ascending, and removes
+/// the oldest until both budgets are satisfied again. Eviction is
+/// best-effort: filesystem errors during stat / remove are logged but
+/// do not propagate, and the operator can always rotate the directory
+/// manually if eviction stalls.
+///
+/// Concurrency note: multi-process eviction is not yet protected by a
+/// `flock` (PRD §5.1). Two processes evicting concurrently may delete
+/// the same files (harmless — `fs::remove_file` on a missing path is
+/// gracefully handled) or evict slightly past the budget. The disk
+/// cache is correctness-safe under concurrent reads + concurrent
+/// writes regardless, because every entry write is atomic-renamed.
 pub struct DiskPrefixCache {
     dir: PathBuf,
+    policy: DiskPrefixCachePolicy,
+}
+
+/// Outcome of [`DiskPrefixCache::insert`], including how many entries
+/// were evicted after the write. Callers can plumb the eviction count
+/// into telemetry to observe cache pressure.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DiskPrefixCacheInsertOutcome {
+    /// Number of files removed by post-insert eviction.
+    pub evictions: u32,
 }
 
 impl DiskPrefixCache {
-    /// Open a disk cache rooted at `dir`. The directory is created if
-    /// it does not exist; failures to create or stat are returned as
-    /// `BadDirectory`.
+    /// Open a disk cache rooted at `dir` with the default policy.
+    /// Equivalent to [`DiskPrefixCache::with_policy`] with
+    /// `DiskPrefixCachePolicy::default()`. The directory is created
+    /// if it does not exist.
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, DiskPrefixCacheError> {
+        Self::with_policy(dir, DiskPrefixCachePolicy::default())
+    }
+
+    /// Open a disk cache rooted at `dir` with an explicit policy.
+    /// Failures to create or stat the directory are returned as
+    /// `BadDirectory`.
+    pub fn with_policy(
+        dir: impl Into<PathBuf>,
+        policy: DiskPrefixCachePolicy,
+    ) -> Result<Self, DiskPrefixCacheError> {
         let dir = dir.into();
         if let Err(e) = fs::create_dir_all(&dir) {
             return Err(match e.kind() {
@@ -156,7 +242,12 @@ impl DiskPrefixCache {
                 _ => e.into(),
             });
         }
-        Ok(Self { dir })
+        Ok(Self { dir, policy })
+    }
+
+    /// Active eviction policy for this cache instance.
+    pub fn policy(&self) -> &DiskPrefixCachePolicy {
+        &self.policy
     }
 
     /// Cache directory for inspection by callers / tests.
@@ -166,7 +257,8 @@ impl DiskPrefixCache {
 
     /// Filename for a given canonical key.
     pub fn path_for(&self, key_bytes: &[u8]) -> PathBuf {
-        self.dir.join(format!("{}.axkv", key_sha256_hex(key_bytes)))
+        self.dir
+            .join(format!("{}.{ENTRY_EXTENSION}", key_sha256_hex(key_bytes)))
     }
 
     /// Cheap existence check: returns `true` when a file for the given
@@ -201,7 +293,16 @@ impl DiskPrefixCache {
     /// readers cannot observe a partial write. The `payload` is
     /// expected to be the output of `MlxKVCache::serialize_to_bytes`,
     /// but the disk cache is content-agnostic and does not parse it.
-    pub fn insert(&self, key_bytes: &[u8], payload: &[u8]) -> Result<(), DiskPrefixCacheError> {
+    ///
+    /// After a successful rename, the cache enforces both byte and
+    /// entry budgets via `evict_until_within_policy`. The returned
+    /// outcome reports the number of evictions so callers can plumb
+    /// it into telemetry.
+    pub fn insert(
+        &self,
+        key_bytes: &[u8],
+        payload: &[u8],
+    ) -> Result<DiskPrefixCacheInsertOutcome, DiskPrefixCacheError> {
         let final_path = self.path_for(key_bytes);
         let tmp_path = self.dir.join(format!(
             "{}.tmp.{}",
@@ -229,8 +330,94 @@ impl DiskPrefixCache {
             f.sync_all()?;
         }
         fs::rename(&tmp_path, &final_path)?;
-        Ok(())
+
+        let evictions = self.evict_until_within_policy();
+        Ok(DiskPrefixCacheInsertOutcome { evictions })
     }
+
+    /// Walk the cache directory and remove `.axkv` entries until both
+    /// the byte and entry budgets are satisfied. Files are removed
+    /// oldest-mtime first. Errors stat'ing or removing individual
+    /// files are absorbed (best-effort eviction); the returned count
+    /// reflects how many were successfully removed.
+    ///
+    /// PRD §6 names this as the "after every insert" callback; calling
+    /// it independently (e.g. on demand during a low-traffic window)
+    /// is also safe.
+    pub fn evict_until_within_policy(&self) -> u32 {
+        let mut entries = match self.list_entries() {
+            Ok(e) => e,
+            Err(err) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::prefix_cache",
+                    error = %err,
+                    dir = %self.dir.display(),
+                    "disk prefix-cache directory walk failed during eviction; skipping",
+                );
+                return 0;
+            }
+        };
+
+        entries.sort_by_key(|entry| entry.mtime);
+        let mut total_bytes: u64 = entries.iter().map(|e| e.size).sum();
+        let mut total_entries = entries.len();
+        let mut evictions: u32 = 0;
+        let mut idx = 0;
+        while idx < entries.len()
+            && (total_bytes > self.policy.max_bytes || total_entries > self.policy.max_entries)
+        {
+            let entry = &entries[idx];
+            match fs::remove_file(&entry.path) {
+                Ok(()) => {
+                    total_bytes = total_bytes.saturating_sub(entry.size);
+                    total_entries = total_entries.saturating_sub(1);
+                    evictions = evictions.saturating_add(1);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Another writer may have evicted this entry
+                    // concurrently. Treat as already-gone.
+                    total_bytes = total_bytes.saturating_sub(entry.size);
+                    total_entries = total_entries.saturating_sub(1);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "ax_engine_mlx::prefix_cache",
+                        error = %e,
+                        path = %entry.path.display(),
+                        "disk prefix-cache failed to remove entry during eviction; skipping",
+                    );
+                }
+            }
+            idx += 1;
+        }
+        evictions
+    }
+
+    fn list_entries(&self) -> Result<Vec<EntryStat>, DiskPrefixCacheError> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let is_axkv = path.extension().is_some_and(|ext| ext == ENTRY_EXTENSION);
+            if !is_axkv {
+                continue;
+            }
+            let metadata = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let size = metadata.len();
+            let mtime = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+            out.push(EntryStat { path, size, mtime });
+        }
+        Ok(out)
+    }
+}
+
+struct EntryStat {
+    path: PathBuf,
+    size: u64,
+    mtime: std::time::SystemTime,
 }
 
 fn parse_file(raw: &[u8], expected_key: &[u8]) -> Option<Vec<u8>> {
@@ -387,6 +574,95 @@ mod tests {
             cache.get(&key_bytes).expect("get").is_none(),
             "get must surface corruption as a miss"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn eviction_drops_oldest_when_entry_budget_exceeded() {
+        let dir = unique_tempdir("evict-entries");
+        // Allow only 2 entries — third insert must evict the oldest.
+        let policy = DiskPrefixCachePolicy {
+            max_bytes: u64::MAX,
+            max_entries: 2,
+        };
+        let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
+
+        let key_a = canonical_key_bytes("m", "p", "l", 16, 1024, 0xa1);
+        let key_b = canonical_key_bytes("m", "p", "l", 16, 1024, 0xb2);
+        let key_c = canonical_key_bytes("m", "p", "l", 16, 1024, 0xc3);
+
+        // Insert in order a, b, c with sleeps so mtimes are strictly
+        // increasing (1-second filesystem resolution is the worst-case
+        // we need to defeat).
+        cache.insert(&key_a, b"payload-a").expect("insert a");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        cache.insert(&key_b, b"payload-b").expect("insert b");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let outcome = cache.insert(&key_c, b"payload-c").expect("insert c");
+
+        assert_eq!(
+            outcome.evictions, 1,
+            "third insert must evict exactly one entry"
+        );
+        assert!(!cache.contains(&key_a), "oldest entry (a) must be evicted");
+        assert!(cache.contains(&key_b), "b must survive");
+        assert!(cache.contains(&key_c), "c must survive");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn eviction_drops_oldest_when_byte_budget_exceeded() {
+        let dir = unique_tempdir("evict-bytes");
+        // Make the budget tighter than two payloads but bigger than
+        // one. The actual per-file size is the payload + header
+        // (~56 bytes), so we pick a budget that fits exactly one
+        // entry comfortably and not two.
+        let payload_size: usize = 4096;
+        let per_file = (FIXED_HEADER_LEN + 32 + payload_size) as u64;
+        let policy = DiskPrefixCachePolicy {
+            max_bytes: per_file + (per_file / 4), // ~1.25 × single file
+            max_entries: usize::MAX,
+        };
+        let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
+
+        let key_a = canonical_key_bytes("m", "p", "l", 16, 1024, 0xa1);
+        let key_b = canonical_key_bytes("m", "p", "l", 16, 1024, 0xb2);
+        let payload = vec![0u8; payload_size];
+
+        cache.insert(&key_a, &payload).expect("insert a");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let outcome = cache.insert(&key_b, &payload).expect("insert b");
+
+        assert_eq!(
+            outcome.evictions, 1,
+            "byte-budget overflow must evict exactly one entry"
+        );
+        assert!(!cache.contains(&key_a), "oldest entry must be evicted");
+        assert!(cache.contains(&key_b), "newest entry must survive");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn eviction_skips_non_axkv_files() {
+        // Operator-placed junk in the directory must not crash the
+        // walk and must not be counted toward the eviction budget.
+        let dir = unique_tempdir("evict-junk");
+        let policy = DiskPrefixCachePolicy {
+            max_bytes: u64::MAX,
+            max_entries: 1,
+        };
+        let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
+        fs::write(dir.join("NOTES.md"), b"hello").expect("write junk");
+
+        let key_a = canonical_key_bytes("m", "p", "l", 16, 1024, 0xaa);
+        cache.insert(&key_a, b"payload-a").expect("insert a");
+
+        // Junk file must remain untouched.
+        assert!(dir.join("NOTES.md").is_file());
+        assert!(cache.contains(&key_a));
+
         let _ = fs::remove_dir_all(&dir);
     }
 

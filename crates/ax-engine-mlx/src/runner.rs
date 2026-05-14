@@ -163,6 +163,8 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_MISSES: &str = "ax_mlx_prefix_cach
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERTS: &str = "ax_mlx_prefix_cache_disk_inserts";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERT_BYTES_KIB: &str =
     "ax_mlx_prefix_cache_disk_insert_bytes_kib";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_EVICTIONS: &str =
+    "ax_mlx_prefix_cache_disk_evictions";
 const COMMON_EOT_TOKEN_STRINGS: &[&str] = &[
     "<|eot_id|>",
     "<|im_end|>",
@@ -410,6 +412,7 @@ struct MlxPrefixCacheTelemetry {
     disk_misses: u32,
     disk_inserts: u32,
     disk_insert_bytes: u64,
+    disk_evictions: u32,
 }
 
 impl MlxPrefixCacheTelemetry {
@@ -443,6 +446,7 @@ impl MlxPrefixCacheTelemetry {
         self.disk_insert_bytes = self
             .disk_insert_bytes
             .saturating_add(other.disk_insert_bytes);
+        self.disk_evictions = self.disk_evictions.saturating_add(other.disk_evictions);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -494,6 +498,10 @@ impl MlxPrefixCacheTelemetry {
                 ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERT_BYTES_KIB,
                 kib_ceil(self.disk_insert_bytes),
             ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_EVICTIONS,
+                self.disk_evictions,
+            ),
         ];
 
         for (key, value) in entries {
@@ -524,9 +532,10 @@ impl MlxPrefixCacheTelemetry {
         self.disk_misses = self.disk_misses.saturating_add(1);
     }
 
-    fn record_disk_insert(&mut self, bytes: u64) {
+    fn record_disk_insert(&mut self, bytes: u64, evictions: u32) {
         self.disk_inserts = self.disk_inserts.saturating_add(1);
         self.disk_insert_bytes = self.disk_insert_bytes.saturating_add(bytes);
+        self.disk_evictions = self.disk_evictions.saturating_add(evictions);
     }
 }
 
@@ -2269,18 +2278,21 @@ impl MlxRunner {
             crate::fastpath::prefix_cache_dir(),
             crate::fastpath::prefix_cache_disk_disabled(),
         ) {
-            (Some(dir), false) => match crate::disk_prefix_cache::DiskPrefixCache::open(&dir) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    tracing::warn!(
-                        target: "ax_engine_mlx::prefix_cache",
-                        error = %e,
-                        dir = %dir.display(),
-                        "failed to open disk prefix cache; falling back to in-memory only",
-                    );
-                    None
+            (Some(dir), false) => {
+                let policy = crate::disk_prefix_cache::DiskPrefixCachePolicy::from_env();
+                match crate::disk_prefix_cache::DiskPrefixCache::with_policy(&dir, policy) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "ax_engine_mlx::prefix_cache",
+                            error = %e,
+                            dir = %dir.display(),
+                            "failed to open disk prefix cache; falling back to in-memory only",
+                        );
+                        None
+                    }
                 }
-            },
+            }
             _ => None,
         };
 
@@ -3623,7 +3635,9 @@ impl MlxRunner {
                         disk_key.token_hash,
                     );
                     match disk.insert(&key_bytes, &payload) {
-                        Ok(()) => telemetry.record_disk_insert(payload.len() as u64),
+                        Ok(outcome) => {
+                            telemetry.record_disk_insert(payload.len() as u64, outcome.evictions)
+                        }
                         Err(e) => {
                             tracing::warn!(
                                 target: "ax_engine_mlx::prefix_cache",
@@ -4995,12 +5009,16 @@ mod tests {
         let mut other = MlxPrefixCacheTelemetry::default();
         other.record_blocked_trim_failure();
         other.record_blocked_unsupported_layout();
+        other.record_disk_insert(8192, 2);
         telemetry.merge_from(other);
 
         assert_eq!(telemetry.blocked, 4);
         assert_eq!(telemetry.blocked_policy_disabled, 1);
         assert_eq!(telemetry.blocked_unsupported_layout, 2);
         assert_eq!(telemetry.blocked_trim_failure, 1);
+        assert_eq!(telemetry.disk_inserts, 1);
+        assert_eq!(telemetry.disk_insert_bytes, 8192);
+        assert_eq!(telemetry.disk_evictions, 2);
     }
 
     #[test]
@@ -5018,6 +5036,11 @@ mod tests {
             warmup_tokens: 8,
             entries: 2,
             bytes: 4096,
+            disk_hits: 6,
+            disk_misses: 7,
+            disk_inserts: 8,
+            disk_insert_bytes: 8192,
+            disk_evictions: 9,
             ..MlxPrefixCacheTelemetry::default()
         };
         let mut decisions = Vec::new();
@@ -5032,6 +5055,11 @@ mod tests {
         assert!(decisions.contains(&("ax_mlx_prefix_cache_blocked_trim_failure".into(), 1)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_evictions".into(), 5)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_bytes_kib".into(), 4)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_hits".into(), 6)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_misses".into(), 7)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_inserts".into(), 8)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_insert_bytes_kib".into(), 8)));
+        assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_evictions".into(), 9)));
     }
 
     #[test]
