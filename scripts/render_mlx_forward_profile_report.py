@@ -52,6 +52,7 @@ class ForwardProfileRow:
     projection_ms: dict[str, float | None]
     projection_layout: str | None
     offline_pack_candidate: bool | None
+    runtime_projection_pack: bool | None
     stage_total_ms: float
     dominant_stage: str
     dominant_share: float
@@ -176,12 +177,15 @@ def projection_decision_hint(
     *,
     projection_layout: str | None,
     offline_pack_candidate: bool | None,
+    runtime_projection_pack: bool | None,
 ) -> str:
     qkv = projection_ms.get("qkv") or 0.0
     qkvz = projection_ms.get("qkvz") or 0.0
     ba = projection_ms.get("ba") or 0.0
     split_total = sum((projection_ms.get(key) or 0.0) for key in ["qkv", "z", "a", "b"])
     packed_total = qkvz + ba
+    if runtime_projection_pack and packed_total > 0.0:
+        return "compare packed vs split projection delta"
     if offline_pack_candidate and projection_layout == "split_qkv_z_a_b" and split_total > 0.0:
         return "evaluate offline packed qkvz/ba projection"
     if packed_total > 0.0:
@@ -198,6 +202,7 @@ def decision_hint(
     projection_ms: dict[str, float | None],
     projection_layout: str | None,
     offline_pack_candidate: bool | None,
+    runtime_projection_pack: bool | None,
 ) -> str:
     if dominant_stage == "recurrent" and dominant_share >= 0.5:
         return "prioritize recurrent scan experiment"
@@ -206,6 +211,7 @@ def decision_hint(
             projection_ms,
             projection_layout=projection_layout,
             offline_pack_candidate=offline_pack_candidate,
+            runtime_projection_pack=runtime_projection_pack,
         )
     if dominant_stage == "output":
         return "inspect output projection fusion"
@@ -217,6 +223,11 @@ def decision_hint(
 def build_rows(artifact_path: Path) -> list[ForwardProfileRow]:
     artifact = load_json(artifact_path)
     model = str(artifact.get("model", artifact_path.stem))
+    artifact_runtime_projection_pack = (
+        bool(artifact.get("ax_linear_attention_projection_pack"))
+        if isinstance(artifact.get("ax_linear_attention_projection_pack"), bool)
+        else None
+    )
     model_config = artifact.get("model_config")
     projection_layout_payload = (
         model_config.get("linear_attention_projection_layout")
@@ -269,6 +280,11 @@ def build_rows(artifact_path: Path) -> list[ForwardProfileRow]:
             label: (value / 1000.0 if value is not None else None)
             for label, value in projection_us.items()
         }
+        runtime_projection_pack = (
+            bool(ax_row.get("ax_linear_attention_projection_pack"))
+            if isinstance(ax_row.get("ax_linear_attention_projection_pack"), bool)
+            else artifact_runtime_projection_pack
+        )
         dominant_stage = max(stage_us, key=lambda key: stage_us[key])
         dominant_share = stage_us[dominant_stage] / stage_total_us
         rows.append(
@@ -302,6 +318,7 @@ def build_rows(artifact_path: Path) -> list[ForwardProfileRow]:
                 projection_ms=projection_ms,
                 projection_layout=projection_layout,
                 offline_pack_candidate=offline_pack_candidate,
+                runtime_projection_pack=runtime_projection_pack,
                 stage_total_ms=stage_total_us / 1000.0,
                 dominant_stage=dominant_stage,
                 dominant_share=dominant_share,
@@ -311,6 +328,7 @@ def build_rows(artifact_path: Path) -> list[ForwardProfileRow]:
                     projection_ms=projection_ms,
                     projection_layout=projection_layout,
                     offline_pack_candidate=offline_pack_candidate,
+                    runtime_projection_pack=runtime_projection_pack,
                 ),
             )
         )
@@ -423,8 +441,8 @@ def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
             "",
             "## Projection Breakdown",
             "",
-            "| Model | Prompt tok | Layout | Offline pack candidate | Projection ms | QKVZ ms | BA ms | QKV ms | Z ms | A ms | B ms | QKV share | Split tail share |",
-            "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| Model | Prompt tok | Layout | Runtime pack | Offline pack candidate | Projection ms | QKVZ ms | BA ms | QKV ms | Z ms | A ms | B ms | QKV share | Split tail share |",
+            "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in sorted_rows:
@@ -436,6 +454,7 @@ def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
             f"{row.model} | "
             f"{row.prompt_tokens:,} | "
             f"{row.projection_layout or 'n/a'} | "
+            f"{fmt_bool(row.runtime_projection_pack)} | "
             f"{fmt_bool(row.offline_pack_candidate)} | "
             f"{fmt_number(projection_ms)} | "
             f"{fmt_number(row.projection_ms.get('qkvz'))} | "
@@ -466,6 +485,7 @@ def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
         [
             "- Compare this with the prefill breakdown report first: if forward is not dominant, do not use this report to justify kernel work.",
             "- Projection substage cells are `n/a` for artifacts captured before the projection split counters existed.",
+            "- `Runtime pack` means the AX row used `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS=1`; compare those rows against otherwise-identical split rows before making throughput claims.",
             "- `split_qkv_z_a_b` pack candidates need row-order equivalence tests; simple row-block concatenation can be shape-compatible but semantically wrong.",
             "- Reject stale artifacts with `ax_mlx_linear_attention_profile_tokens=4294967295`; that value came from an old signed/unsigned clamp bug.",
             "- Keep barrier-profile artifacts out of README headline tables.",
