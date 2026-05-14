@@ -14,6 +14,7 @@ import argparse
 import importlib.util
 import itertools
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,9 @@ DEFAULT_HOT_WINDOW_TOKENS = [128, 256, 512, 1024]
 DEFAULT_ELIGIBLE_LAYER_MASKS = ["full_attention_only"]
 DEFAULT_FALLBACK_POLICIES = ["fail_closed", "fallback_with_accounting"]
 DEFAULT_QUALITY_PROFILES = ["reference_k8v4"]
+DEFAULT_OUTPUT_ROOT = Path("benchmarks/results/offline-policy-search")
+DATE_PREFIX_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+SAFE_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class TurboQuantPolicySearchError(RuntimeError):
@@ -121,6 +125,42 @@ def validate_search_space(
     validate_string_values(eligible_layer_masks, "eligible_layer_masks")
     validate_string_values(fallback_policies, "fallback_policies")
     validate_string_values(quality_profiles, "quality_profiles")
+
+
+def safe_path_component(value: Any, field: str) -> str:
+    text = str(value).strip()
+    if not text:
+        raise TurboQuantPolicySearchError(f"{field} must be a non-empty string")
+    safe = SAFE_PATH_COMPONENT_RE.sub("-", text).strip("-._")
+    if not safe:
+        raise TurboQuantPolicySearchError(f"{field} must contain a safe path component")
+    return safe
+
+
+def artifact_date(created_at: Any) -> str:
+    match = DATE_PREFIX_RE.match(str(created_at).strip())
+    if not match:
+        raise TurboQuantPolicySearchError(
+            "artifact created_at must start with YYYY-MM-DD when --output is omitted"
+        )
+    return match.group(1)
+
+
+def artifact_output_path(
+    *,
+    explicit_output: Path | None,
+    output_root: Path,
+    artifact: dict[str, Any],
+) -> Path:
+    if explicit_output is not None:
+        return explicit_output
+    target = safe_path_component(artifact.get("target"), "target")
+    model = safe_path_component(
+        builder.require_mapping(artifact.get("model"), "artifact.model").get("id"),
+        "model.id",
+    )
+    date = artifact_date(artifact.get("created_at"))
+    return output_root / date / f"{target}-{model}.json"
 
 
 def policy_id(policy: dict[str, Any]) -> str:
@@ -269,7 +309,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metadata", type=Path, required=True)
     parser.add_argument("--baseline", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Exact artifact path. Overrides --output-root when set.",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=DEFAULT_OUTPUT_ROOT,
+        help=(
+            "Root for the canonical artifact path when --output is omitted "
+            "(default: benchmarks/results/offline-policy-search)."
+        ),
+    )
     parser.add_argument("--kv-presets", type=parse_csv, default=DEFAULT_KV_PRESETS)
     parser.add_argument(
         "--hot-window-tokens",
@@ -316,9 +369,14 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             repo=repo,
         )
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
-        checker.validate_offline_policy_search_artifact(args.output)
+        output = artifact_output_path(
+            explicit_output=args.output,
+            output_root=args.output_root,
+            artifact=artifact,
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+        checker.validate_offline_policy_search_artifact(output)
     except (
         TurboQuantPolicySearchError,
         builder.OfflinePolicySearchBuildError,
@@ -326,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
     ) as error:
         print(f"turboquant kv policy search failed: {error}", file=sys.stderr)
         return 1
-    print(f"wrote TurboQuant KV policy search artifact: {args.output}")
+    print(f"wrote TurboQuant KV policy search artifact: {output}")
     return 0
 
 

@@ -144,6 +144,63 @@ class TurboQuantKvPolicySearchTests(unittest.TestCase):
                 "diagnostic_only",
             )
 
+    def test_artifact_output_path_uses_canonical_result_layout(self) -> None:
+        artifact = search.build_search_artifact(
+            metadata=metadata(),
+            baseline=baseline(),
+            kv_presets=["disabled"],
+            hot_window_tokens=[256],
+            eligible_layer_masks=["full_attention_only"],
+            fallback_policies=["fail_closed"],
+            quality_profiles=["reference_k8v4"],
+            seed=7,
+            repo={"commit": "abc1234", "dirty": False},
+        )
+
+        path = search.artifact_output_path(
+            explicit_output=None,
+            output_root=Path("benchmarks/results/offline-policy-search"),
+            artifact=artifact,
+        )
+
+        self.assertEqual(
+            path,
+            Path(
+                "benchmarks/results/offline-policy-search/2026-05-14/"
+                "turboquant_kv_policy-gemma-4-e2b-it-4bit.json"
+            ),
+        )
+
+    def test_artifact_output_path_sanitizes_model_id(self) -> None:
+        payload = {
+            "created_at": "2026-05-14T00:00:00Z",
+            "target": "turboquant_kv_policy",
+            "model": {"id": "org/model v1"},
+        }
+
+        path = search.artifact_output_path(
+            explicit_output=None,
+            output_root=Path("out"),
+            artifact=payload,
+        )
+
+        self.assertEqual(path, Path("out/2026-05-14/turboquant_kv_policy-org-model-v1.json"))
+
+    def test_artifact_output_path_rejects_undated_artifact(self) -> None:
+        with self.assertRaisesRegex(
+            search.TurboQuantPolicySearchError,
+            "created_at must start with YYYY-MM-DD",
+        ):
+            search.artifact_output_path(
+                explicit_output=None,
+                output_root=Path("out"),
+                artifact={
+                    "created_at": "not-a-date",
+                    "target": "turboquant_kv_policy",
+                    "model": {"id": "gemma"},
+                },
+            )
+
     def test_cli_writes_valid_diagnostic_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -183,6 +240,50 @@ class TurboQuantKvPolicySearchTests(unittest.TestCase):
             )
             payload = json.loads(output_path.read_text())
             self.assertEqual(len(payload["candidates"]), 4)
+
+    def test_cli_output_root_writes_canonical_artifact_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata_path = root / "metadata.json"
+            baseline_path = root / "baseline.json"
+            output_root = root / "offline-policy-search"
+            write_json(metadata_path, metadata())
+            write_json(baseline_path, baseline())
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--metadata",
+                    str(metadata_path),
+                    "--baseline",
+                    str(baseline_path),
+                    "--output-root",
+                    str(output_root),
+                    "--kv-presets",
+                    "disabled",
+                    "--hot-window-tokens",
+                    "256",
+                    "--fallback-policies",
+                    "fail_closed",
+                    "--skip-git-repo-metadata",
+                ],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+
+            output_path = (
+                output_root
+                / "2026-05-14"
+                / "turboquant_kv_policy-gemma-4-e2b-it-4bit.json"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(str(output_path), result.stdout)
+            self.assertEqual(
+                checker.validate_offline_policy_search_artifact(output_path),
+                "diagnostic_only",
+            )
 
     def test_missing_baseline_token_shape_fails_closed(self) -> None:
         broken_baseline = baseline()
