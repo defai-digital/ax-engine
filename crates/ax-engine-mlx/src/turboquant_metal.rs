@@ -331,12 +331,26 @@ pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats(
     buffer: &TurboQuantCompressedBlockBuffer,
     queries: &[Vec<f32>],
 ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
-    turboquant_fused_cold_decode_metal_two_stage_stats(descriptor, buffer, queries)
+    let compressed = MlxArray::from_raw_data(
+        buffer.as_bytes().as_ptr(),
+        buffer.as_bytes().len(),
+        &[buffer.as_bytes().len() as i32],
+        MlxDtype::Uint8,
+    );
+    turboquant_fused_cold_decode_metal_two_stage_stats(descriptor, &compressed, queries)
+}
+
+pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    compressed: &MlxArray,
+    queries: &[Vec<f32>],
+) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+    turboquant_fused_cold_decode_metal_two_stage_stats(descriptor, compressed, queries)
 }
 
 fn turboquant_fused_cold_decode_metal_two_stage_stats(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
-    buffer: &TurboQuantCompressedBlockBuffer,
+    compressed: &MlxArray,
     queries: &[Vec<f32>],
 ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
     validate_fused_decode_launch(descriptor, queries)?;
@@ -354,12 +368,6 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
         rotated_queries.extend(rotated);
     }
 
-    let compressed = MlxArray::from_raw_data(
-        buffer.as_bytes().as_ptr(),
-        buffer.as_bytes().len(),
-        &[buffer.as_bytes().len() as i32],
-        MlxDtype::Uint8,
-    );
     let query = MlxArray::from_raw_data(
         rotated_queries.as_ptr().cast(),
         rotated_queries.len() * std::mem::size_of::<f32>(),
@@ -378,7 +386,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
         )
     });
     let score_outputs = score_kernel.apply_with_template(
-        &[&compressed, &query],
+        &[compressed, &query],
         &[KernelOutputSpec {
             shape: vec![
                 descriptor.n_query_heads as i32,
@@ -496,7 +504,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
         )
     });
     let value_outputs = value_sum_kernel.apply_with_template(
-        &[&compressed, &scores, &max_scores],
+        &[compressed, &scores, &max_scores],
         &[KernelOutputSpec {
             shape: vec![descriptor.n_query_heads as i32, descriptor.head_dim as i32],
             dtype: MlxDtype::Float32,
