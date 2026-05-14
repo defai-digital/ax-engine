@@ -467,6 +467,85 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertEqual(parsed["llama_cpp"]["backends"], "BLAS,MTL")
 
+    def test_parse_llama_cpp_decode_depth_json_requires_matching_depth(self) -> None:
+        parsed = bench.parse_llama_cpp_decode_depth_json(
+            json.dumps(
+                [
+                    {
+                        "build_commit": "abc123",
+                        "backends": "Metal",
+                        "n_prompt": 0,
+                        "n_gen": 128,
+                        "n_depth": 8192,
+                        "avg_ts": 42.0,
+                        "samples_ts": [40.0, 44.0],
+                    },
+                    {
+                        "backends": "Metal",
+                        "n_prompt": 0,
+                        "n_gen": 128,
+                        "n_depth": 4096,
+                        "avg_ts": 99.0,
+                        "samples_ts": [99.0],
+                    },
+                ]
+            ),
+            context_depth_tokens=8192,
+            generation_tokens=128,
+        )
+
+        self.assertEqual(parsed["decode_at_depth_tok_s"]["median"], 42.0)
+        self.assertEqual(parsed["decode_at_depth_trials"][0]["decode_at_depth_tok_s"], 40.0)
+        self.assertEqual(parsed["llama_cpp_depth"]["n_depth"], 8192)
+
+    def test_attach_llama_cpp_decode_at_depth_benchmark_records_depth_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "llama-bench"
+            gguf = root / "model.gguf"
+            binary.write_text("#!/bin/sh\n")
+            gguf.write_text("gguf")
+            row = {"engine": "llama_cpp_metal"}
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "build_commit": "abc123",
+                            "backends": "Metal",
+                            "n_prompt": 0,
+                            "n_gen": 2,
+                            "n_depth": 4096,
+                            "avg_ts": 20.0,
+                            "samples_ts": [18.0, 22.0],
+                        },
+                    ]
+                ),
+                stderr="",
+            )
+            with patch.object(bench.subprocess, "run", return_value=completed) as run:
+                bench.attach_llama_cpp_decode_at_depth_benchmark(
+                    row,
+                    binary,
+                    gguf,
+                    context_depth_tokens=4096,
+                    generation_tokens=2,
+                    repetitions=2,
+                    cooldown=0.0,
+                    n_gpu_layers=99,
+                    extra_args="-fa 1",
+                )
+
+        command_args = run.call_args.args[0]
+        self.assertEqual(command_args[command_args.index("-p") + 1], "0")
+        self.assertEqual(command_args[command_args.index("-d") + 1], "4096")
+        self.assertIn("-fa", command_args)
+        self.assertEqual(row["context_depth_tokens"], 4096)
+        self.assertEqual(row["decode_at_depth_contract"], "llama_bench_n_depth")
+        self.assertEqual(row["decode_at_depth_tok_s"]["median"], 20.0)
+        self.assertIn("not prompt-hash parity", row["decode_at_depth_claim_boundary"])
+
     def test_llama_cpp_metal_row_records_external_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

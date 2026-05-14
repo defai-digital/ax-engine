@@ -98,6 +98,26 @@ throughput baselines.
   throughput evidence.
 - `test_bench_mlx_inference_stack.py`: unit tests for the MLX benchmark
   contract, parser, prompt artifact hash checks, and secondary adapter shape.
+- `build_long_context_comparison_artifact.py`,
+  `check_long_context_comparison_artifact.py`, and
+  `render_long_context_comparison_report.py`: build, validate, and render
+  `ax.long_context_comparison.v1` artifacts from MLX inference-stack runs. Use
+  these when a long-prefill run includes AX, `mlx_lm`, and optional
+  `llama.cpp Metal`; the checker enforces AX-vs-`mlx_lm` prompt-hash parity
+  while keeping `llama.cpp` as a shape-compatible external GGUF baseline.
+- `test_long_context_comparison_artifact.py`: unit tests for the long-context
+  comparison artifact builder, checker, and renderer.
+- `build_long_context_decode_at_depth_artifact.py`,
+  `check_long_context_decode_at_depth_artifact.py`, and
+  `render_long_context_decode_at_depth_report.py`: build, validate, and render
+  `ax.long_context_decode_at_depth.v1` artifacts. These compare decode
+  throughput after a context depth already exists. `llama.cpp Metal` rows are
+  admitted only when they carry explicit `llama-bench n_depth` evidence.
+  Capture that evidence with `bench_mlx_inference_stack.py
+  --llama-cpp-decode-at-depth`, which attaches `decode_at_depth_tok_s` without
+  replacing the ordinary shape-compatible `llama.cpp` `pp`/`tg` metrics.
+- `test_long_context_decode_at_depth_artifact.py`: unit tests for the
+  decode-at-depth artifact builder, checker, and renderer.
 - `render_readme_performance_charts.py`: renders the README prefill, decode,
   and TTFT box-and-whisker SVG charts from the completed MLX inference-stack
   artifact directory. By default it reads the current README artifact directory

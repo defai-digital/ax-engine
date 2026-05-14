@@ -263,6 +263,56 @@ rather than a single-model result. By default it can require Gemma/Qwen/GLM
 coverage and one host identity, so mixed-host evidence must be labeled
 explicitly with `--allow-mixed-host`.
 
+When a long-prefill run also includes the optional `llama.cpp Metal` row, build
+the separate cross-engine artifact instead of extending the MLX parity scaling
+artifact:
+
+```text
+python3 scripts/build_long_context_comparison_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json \
+  --require-llama-cpp
+
+python3 scripts/check_long_context_comparison_artifact.py \
+  --require-llama-cpp \
+  benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json
+
+python3 scripts/render_long_context_comparison_report.py \
+  --require-llama-cpp \
+  benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.md
+```
+
+Saved artifacts use schema `ax.long_context_comparison.v1`. They enforce
+AX-vs-`mlx_lm` prompt-hash parity while labeling `llama.cpp Metal` as a
+shape-compatible external GGUF baseline. Use this artifact for cold long-prefill
+comparison across AX, `mlx_lm`, and `llama.cpp`; use separate decode-at-depth
+and serving artifacts for long-session decode or online concurrency claims.
+
+Decode-at-depth claims use a second artifact:
+
+```text
+python3 scripts/build_long_context_decode_at_depth_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json
+
+python3 scripts/check_long_context_decode_at_depth_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json
+
+python3 scripts/render_long_context_decode_at_depth_report.py \
+  benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.md
+```
+
+Saved artifacts use schema `ax.long_context_decode_at_depth.v1`. They compare
+decode throughput after a context depth already exists. AX and `mlx_lm` rows
+must share prompt hashes. `llama.cpp Metal` rows are admitted only when the
+source row carries explicit `llama-bench n_depth` evidence; ordinary
+shape-compatible `pp`/`tg` rows are not depth-aware enough for this claim. Add
+`--llama-cpp-decode-at-depth` to `bench_mlx_inference_stack.py` to capture the
+extra `llama-bench -p 0 -n <generation> -d <prompt>` pass needed for
+`--require-llama-cpp` decode-at-depth reports.
+
 The latest checked-in real-model P1 example is:
 
 - [Qwen3-4B-4bit prefill scaling, 2026-05-07](../benchmarks/results/mlx-inference/2026-05-07-real-p1/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md)

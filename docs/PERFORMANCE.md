@@ -232,6 +232,48 @@ the required Gemma/Qwen/GLM family coverage when requested, rejects mixed-host
 campaigns unless explicitly allowed, and renders the campaign summary table
 from already validated per-model artifacts.
 
+When the run also includes the optional `llama.cpp Metal` row, keep that row in
+a separate long-context comparison artifact instead of merging it into the
+prompt-hash-parity MLX scaling artifact:
+
+```text
+python3 scripts/build_long_context_comparison_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json \
+  --require-llama-cpp
+
+python3 scripts/render_long_context_comparison_report.py \
+  --require-llama-cpp \
+  benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.md
+```
+
+The resulting `ax.long_context_comparison.v1` artifact validates AX-vs-`mlx_lm`
+prompt-hash parity and keeps `llama.cpp Metal` as an external
+shape-compatible GGUF baseline. This is the right gate for cold long-prefill
+comparison across AX, `mlx_lm`, and `llama.cpp`; decode-at-depth and
+server-prefix reuse still require separate artifacts.
+
+For decode cost after an existing context depth, build the separate
+`ax.long_context_decode_at_depth.v1` artifact:
+
+```text
+python3 scripts/build_long_context_decode_at_depth_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json
+
+python3 scripts/render_long_context_decode_at_depth_report.py \
+  benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json \
+  --output benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.md
+```
+
+Use `--require-llama-cpp` only for sources with explicit `llama-bench n_depth`
+evidence. The existing shape-compatible `llama.cpp Metal` `pp`/`tg` rows remain
+valid external context for cold prefill, but they are not depth-aware decode
+evidence. Capture depth-aware rows with `bench_mlx_inference_stack.py
+--llama-cpp-decode-at-depth`, which runs an additional
+`llama-bench -p 0 -n <generation> -d <prompt>` pass for each prompt length.
+
 The P2 cold-vs-warm startup artifact gate is also executable for saved startup
 artifacts:
 
