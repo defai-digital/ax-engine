@@ -79,6 +79,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_probe_mlx_model_support.py \
   scripts/diagnose_server_rss.py \
   scripts/verify_prefix_reuse_equivalence.py \
+  scripts/test_verify_prefix_reuse_equivalence.py \
   scripts/profile_kv_long_context_evidence.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
@@ -87,7 +88,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_offline_policy_search_artifact.py \
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/test_search_turboquant_kv_policy.py \
-  scripts/test_run_turboquant_quality_artifact.py
+  scripts/test_run_turboquant_quality_artifact.py \
+  scripts/test_verify_prefix_reuse_equivalence.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-turboquant-quality-gate.sh
 bash scripts/check-turboquant-microbench-gate.sh

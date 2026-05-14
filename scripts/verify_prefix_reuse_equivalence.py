@@ -15,7 +15,8 @@ For each prompt in the corpus, the harness:
 
 The same seed and temperature=0 is mandatory — any deviation invalidates
 the comparison. The harness records the per-prompt result, an aggregate
-verdict, and route telemetry (`ax_mlx_prefix_cache_hits`,
+verdict, selected environment flags that can alter optimization behavior,
+and route telemetry (`ax_mlx_prefix_cache_hits`,
 `ax_mlx_prefix_cache_warmup_tokens`, `retained_cache_hits`,
 `prefix_reused_blocks`) for both calls so that a passing run on a
 loosened gate also proves the prefix cache actually fired.
@@ -39,12 +40,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
+
+PROVENANCE_ENV_FLAGS = [
+    "AX_ALLOW_MLA_PREFIX_RESTORE",
+    "AX_DISABLE_TURBOQUANT_FUSED_DECODE",
+    "AX_NO_SPEC",
+]
 
 # Default corpus — 5 prompts of varied lengths, picked so a per-prompt
 # regression bisects clearly when one diverges. Token counts are
@@ -171,6 +179,23 @@ PREFIX_TELEMETRY_KEYS = [
     "ax_mlx_prefix_cache_stores",
     "ax_mlx_prefix_cache_entries",
 ]
+
+
+def parse_truthy_env(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes"}
+
+
+def collect_environment_flags() -> dict[str, dict[str, object]]:
+    return {
+        name: {
+            "set": name in os.environ,
+            "value": os.environ.get(name),
+            "truthy": parse_truthy_env(os.environ.get(name)),
+        }
+        for name in PROVENANCE_ENV_FLAGS
+    }
 
 
 def run_generate(session, tokens: list[int], max_output_tokens: int, seed: int) -> dict:
@@ -353,6 +378,7 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
         "schema_version": SCHEMA_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "host": platform.platform(),
+        "environment_flags": collect_environment_flags(),
         "model": {
             "model_id": args.model_id,
             "artifacts_dir": str(args.mlx_artifacts_dir),
