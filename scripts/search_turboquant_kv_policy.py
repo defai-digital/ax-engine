@@ -73,7 +73,8 @@ def policy_id(policy: dict[str, Any]) -> str:
     preset = str(policy["kv_preset"]).lower().replace("turboquant", "tq")
     return (
         f"{preset}-hot{policy['hot_window_tokens']}-"
-        f"{policy['eligible_layer_mask']}-{policy['fallback_policy']}"
+        f"{policy['eligible_layer_mask']}-{policy['fallback_policy']}-"
+        f"{policy['quality_profile']}"
     )
 
 

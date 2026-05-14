@@ -84,11 +84,31 @@ class TurboQuantKvPolicySearchTests(unittest.TestCase):
         self.assertEqual(
             [search.policy_id(policy) for policy in policies[:3]],
             [
-                "disabled-hot128-full_attention_only-fail_closed",
-                "disabled-hot128-full_attention_only-fallback_with_accounting",
-                "disabled-hot256-full_attention_only-fail_closed",
+                "disabled-hot128-full_attention_only-fail_closed-reference_k8v4",
+                "disabled-hot128-full_attention_only-fallback_with_accounting-reference_k8v4",
+                "disabled-hot256-full_attention_only-fail_closed-reference_k8v4",
             ],
         )
+
+    def test_quality_profiles_produce_unique_policy_ids(self) -> None:
+        policies = search.enumerate_policies(
+            kv_presets=["TurboQuantK8V4"],
+            hot_window_tokens=[256],
+            eligible_layer_masks=["full_attention_only"],
+            fallback_policies=["fail_closed"],
+            quality_profiles=["reference_k8v4", "strict_k8v4"],
+        )
+
+        policy_ids = [search.policy_id(policy) for policy in policies]
+
+        self.assertEqual(
+            policy_ids,
+            [
+                "tqk8v4-hot256-full_attention_only-fail_closed-reference_k8v4",
+                "tqk8v4-hot256-full_attention_only-fail_closed-strict_k8v4",
+            ],
+        )
+        self.assertEqual(len(policy_ids), len(set(policy_ids)))
 
     def test_builds_valid_diagnostic_artifact_without_performance_claim(self) -> None:
         artifact = search.build_search_artifact(
@@ -109,7 +129,7 @@ class TurboQuantKvPolicySearchTests(unittest.TestCase):
         self.assertEqual(artifact["decision"]["classification"], "diagnostic_only")
         self.assertEqual(
             artifact["best_candidate"]["policy_id"],
-            "disabled-hot256-full_attention_only-fail_closed",
+            "disabled-hot256-full_attention_only-fail_closed-reference_k8v4",
         )
         for row in artifact["candidates"]:
             self.assertEqual(row["metrics"]["measurement_status"], "not_run")

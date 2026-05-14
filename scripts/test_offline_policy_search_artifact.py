@@ -249,6 +249,17 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
         ):
             checker.validate_offline_policy_search_artifact(path)
 
+    def test_duplicate_candidate_policy_ids_fail_closed(self) -> None:
+        path = self.write_fixture(
+            artifact(candidates=[candidate(policy_id="dup"), candidate(policy_id="dup")])
+        )
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "duplicates an earlier candidate",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
     def test_budget_must_cover_candidate_rows(self) -> None:
         payload = artifact(
             candidates=[candidate(policy_id="first"), candidate(policy_id="second")]
