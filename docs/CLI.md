@@ -173,6 +173,23 @@ full-precision MLX KV path. Only `fused_compressed_decode` route evidence with
 successful attempts and zero fallbacks can feed the internal quality artifact
 gate; shadow and CPU oracle rows are diagnostic only.
 
+For offline TurboQuant policy search, use the diagnostic grid harness:
+
+```text
+python3 scripts/search_turboquant_kv_policy.py \
+  --metadata /path/to/metadata.json \
+  --baseline /path/to/baseline-shape.json \
+  --kv-presets disabled,TurboQuantK8V4 \
+  --hot-window-tokens 256,512 \
+  --fallback-policies fail_closed
+```
+
+This writes an `ax.offline_policy_search.v1` artifact to
+`benchmarks/results/offline-policy-search/<date>/` when `--output` is omitted.
+It enumerates candidate policies only; it does not run inference, benchmarks,
+or promote TurboQuant support. Validate checked-in artifacts with
+`bash scripts/check-offline-policy-search-artifacts.sh`.
+
 ## Delegated llama.cpp Checks
 
 `ax-engine-bench` can run delegated llama.cpp scenario and replay manifests
