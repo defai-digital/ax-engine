@@ -36,11 +36,15 @@ class KvMultiturnEvidenceProvenanceTests(unittest.TestCase):
         self.assertFalse(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["set"])
         self.assertIsNone(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["value"])
         self.assertIsNone(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["truthy"])
+        self.assertFalse(flags["AX_MLX_MLA_PREFILL_CHUNK"]["set"])
+        self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["value"])
+        self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["truthy"])
 
         with patch.dict(
             os.environ,
             {
                 "AX_ALLOW_MLA_PREFIX_RESTORE": "yes",
+                "AX_MLX_MLA_PREFILL_CHUNK": "16",
                 "AX_MLX_PREFIX_CACHE_MAX_BYTES": "268435456",
                 "AX_MLX_PREFIX_CACHE_MAX_ENTRIES": "2",
                 "AX_NO_SPEC": "0",
@@ -52,6 +56,8 @@ class KvMultiturnEvidenceProvenanceTests(unittest.TestCase):
         self.assertEqual(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["value"], "268435456")
         self.assertTrue(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["set"])
         self.assertIsNone(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["truthy"])
+        self.assertEqual(flags["AX_MLX_MLA_PREFILL_CHUNK"]["value"], "16")
+        self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["truthy"])
         self.assertEqual(flags["AX_MLX_PREFIX_CACHE_MAX_ENTRIES"]["value"], "2")
         self.assertIsNone(flags["AX_MLX_PREFIX_CACHE_MAX_ENTRIES"]["truthy"])
         self.assertFalse(flags["AX_NO_SPEC"]["truthy"])

@@ -29,6 +29,12 @@ fn parse_bool_env(var: &str) -> bool {
         || trimmed.eq_ignore_ascii_case("yes")
 }
 
+fn parse_positive_usize_env(var: &str) -> Option<usize> {
+    let raw = std::env::var(var).ok()?;
+    let n: usize = raw.trim().parse().ok()?;
+    (n > 0).then_some(n)
+}
+
 macro_rules! env_flag {
     ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
         $(#[$meta])*
@@ -60,6 +66,18 @@ env_flag!(
     ngram_acceleration_disabled,
     "AX_NO_SPEC"
 );
+
+/// **Investigation tunable.** When set, overrides
+/// `DEFAULT_PREFILL_CHUNK` for MLA models. Smaller chunks let cold and
+/// warm-extend prefill paths produce the same SDPA Q/K shape sequence
+/// over the same absolute positions; the hypothesis is that
+/// shape-dependent SDPA kernel selection in MLX is the root cause of
+/// the warm_extend fp-drift on GLM-4.7-Flash. Returns `None` when the
+/// env var is unset or invalid. Value must be a positive integer.
+pub fn mla_prefill_chunk_override() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_positive_usize_env("AX_MLX_MLA_PREFILL_CHUNK"))
+}
 
 env_flag!(
     /// **Investigation override.** Engaged by `AX_ALLOW_MLA_PREFIX_RESTORE`,
@@ -119,5 +137,43 @@ mod tests {
     #[test]
     fn parse_bool_env_unset_is_false() {
         assert!(!parse_bool_env("AX_FASTPATH_TEST_DEFINITELY_UNSET"));
+    }
+
+    fn probe_usize(name: &str, value: &str) -> Option<usize> {
+        // SAFETY: each test owns a disjoint set of env-var names. Remove
+        // before asserting so a failing assert does not leak the var.
+        unsafe {
+            std::env::set_var(name, value);
+        }
+        let observed = parse_positive_usize_env(name);
+        unsafe {
+            std::env::remove_var(name);
+        }
+        observed
+    }
+
+    #[test]
+    fn parse_positive_usize_env_accepts_positive_values() {
+        assert_eq!(probe_usize("AX_FASTPATH_TEST_USIZE_16", "16"), Some(16));
+        assert_eq!(
+            probe_usize("AX_FASTPATH_TEST_USIZE_TRIMMED", " 32 "),
+            Some(32)
+        );
+    }
+
+    #[test]
+    fn parse_positive_usize_env_rejects_unset_zero_and_invalid_values() {
+        assert_eq!(
+            parse_positive_usize_env("AX_FASTPATH_TEST_USIZE_UNSET"),
+            None
+        );
+        for value in ["0", "", "no", "-1", "1.5"] {
+            let name = format!("AX_FASTPATH_TEST_BAD_USIZE_{}", value.replace('-', "neg"));
+            assert_eq!(
+                probe_usize(&name, value),
+                None,
+                "expected None for {value:?}"
+            );
+        }
     }
 }
