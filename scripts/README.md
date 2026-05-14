@@ -166,8 +166,10 @@ throughput baselines.
   `turboquant-fused-experimental` AX rows with output-token capture, extracts
   decode vectors, builds quality metrics, validates the quality artifact, and
   writes a promotion-readiness report. Its default repetitions match the
-  repeated-measurement readiness contract. Use `--dry-run` first to inspect
-  inferred metadata and planned commands without loading a model.
+  repeated-measurement readiness contract, and its preflight rejects short
+  context/generation shapes, zero-cooldown runs, and unsupported head dims
+  before loading a model. Use `--dry-run` first to inspect inferred metadata and
+  planned commands without loading a model.
 - `run-mlx-prefill-scaling-artifact.sh`: real-model P1 prefill/TTFT scaling
   runner. It runs the MLX inference-stack benchmark with direct AX rows, writes
   the raw `ax.mlx_inference_stack.v2` artifact, builds

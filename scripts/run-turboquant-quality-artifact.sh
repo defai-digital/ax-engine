@@ -33,15 +33,15 @@ Usage:
 Options:
   --model-dir PATH              Local MLX model artifact directory. Required unless AX_TURBOQUANT_MODEL_DIR is set.
   --output-root PATH            Output root. Defaults to benchmarks/results/turboquant/quality-runs.
-  --context-tokens N            Prompt token count. Defaults to 8192.
-  --generation-tokens N         Generated token count. Defaults to 256.
+  --context-tokens N            Prompt token count. Defaults to 8192; must be at least 8192 for the quality gate.
+  --generation-tokens N         Generated token count. Defaults to 256; must be at least 128 for the quality gate.
   --repetitions N               Timed AX repetitions. Defaults to 3; must be at least 2 for promotion readiness.
-  --cooldown SECONDS            Cooldown between repetitions. Defaults to 3.
+  --cooldown SECONDS            Cooldown between repetitions. Defaults to 3; must be positive for promotion readiness.
   --prefill-step-size N         MLX prefill step size. Defaults to 2048.
   --model-id ID                 Artifact model id. Defaults to model directory basename.
   --model-family FAMILY         Artifact model family. Defaults to model-manifest.json model_family.
   --model-revision REVISION     Artifact model revision. Defaults to local-quality-run.
-  --head-dim N                  Artifact fused attention head dimension. Defaults to global_head_dim when present, else attention_head_dim.
+  --head-dim N                  Artifact fused attention head dimension. Defaults to global_head_dim when present, else attention_head_dim; must be 128, 256, or 512.
   --run-label LABEL             Human-readable output directory label.
   --hot-window-tokens N         Pass fused experimental hot-window token count.
   --min-context-tokens N        Pass fused experimental minimum context token count.
@@ -189,10 +189,44 @@ if [[ -z "$MODEL_ID" || -z "$MODEL_FAMILY" || -z "$HEAD_DIM" ]]; then
     exit 2
 fi
 
+if [[ ! "$CONTEXT_TOKENS" =~ ^[0-9]+$ || "$CONTEXT_TOKENS" -lt 8192 ]]; then
+    echo "ERROR: --context-tokens must be an integer >= 8192 for the quality gate." >&2
+    exit 2
+fi
+
+if [[ ! "$GENERATION_TOKENS" =~ ^[0-9]+$ || "$GENERATION_TOKENS" -lt 128 ]]; then
+    echo "ERROR: --generation-tokens must be an integer >= 128 for the quality gate." >&2
+    exit 2
+fi
+
 if [[ ! "$REPETITIONS" =~ ^[0-9]+$ || "$REPETITIONS" -lt 2 ]]; then
     echo "ERROR: --repetitions must be an integer >= 2 for promotion readiness." >&2
     exit 2
 fi
+
+if [[ ! "$COOLDOWN" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "ERROR: --cooldown must be a positive number for promotion readiness." >&2
+    exit 2
+fi
+
+if ! "$PYTHON_BIN" - "$COOLDOWN" <<'PY'
+import sys
+
+raise SystemExit(0 if float(sys.argv[1]) > 0 else 1)
+PY
+then
+    echo "ERROR: --cooldown must be > 0 for promotion readiness." >&2
+    exit 2
+fi
+
+case "$HEAD_DIM" in
+    128|256|512)
+        ;;
+    *)
+        echo "ERROR: --head-dim must be 128, 256, or 512 for the quality gate." >&2
+        exit 2
+        ;;
+esac
 
 cd "$ROOT_DIR"
 
