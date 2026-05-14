@@ -993,6 +993,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_direct_pipeline_next_complete_wall_us": 9,
                     "ax_mlx_direct_pipeline_pending_eval_wall_us": 20,
                     "ax_mlx_direct_pipeline_pending_read_wall_us": 3,
+                    "ax_mlx_direct_pipeline_op_count": 84,
                     "ax_mlx_prefix_cache_hits": 1,
                     "ax_mlx_prefix_cache_blocked_policy_disabled": 2,
                     "ax_mlx_prefix_cache_reused_tokens": 16,
@@ -1018,6 +1019,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_next_complete_wall_us"], 9)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_pending_eval_wall_us"], 20)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_pending_read_wall_us"], 3)
+        self.assertEqual(telemetry["ax_mlx_direct_pipeline_op_count"], 84)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_hits"], 1)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_reused_tokens"], 16)
@@ -1065,6 +1067,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_direct_pipeline_next_complete_wall_us"], 9)
         self.assertEqual(summary["ax_mlx_direct_pipeline_pending_eval_wall_us"], 20)
         self.assertEqual(summary["ax_mlx_direct_pipeline_pending_read_wall_us"], 3)
+        self.assertEqual(summary["ax_mlx_direct_pipeline_op_count"], 84)
         self.assertEqual(summary["ax_mlx_prefix_cache_hits"], 1)
         self.assertEqual(summary["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(summary["ax_mlx_prefix_cache_reused_tokens"], 16)
@@ -1082,6 +1085,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 "ax_mlx_direct_pipeline_next_complete_wall_us": 600,
                 "ax_mlx_direct_pipeline_pending_eval_wall_us": 80,
                 "ax_mlx_direct_pipeline_pending_read_wall_us": 20,
+                "ax_mlx_direct_pipeline_op_count": 350,
             }
         )
         self.assertEqual(direct["classification"], "direct_pipeline")
@@ -1111,6 +1115,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             direct["direct_pipeline_pending_read_wall_share_micros"],
             22_222,
         )
+        self.assertEqual(direct["direct_pipeline_op_count"], 350)
+        self.assertEqual(direct["direct_pipeline_op_count_per_step"], 35)
 
         mixed = bench.summarize_ax_mlx_decode_route(
             {

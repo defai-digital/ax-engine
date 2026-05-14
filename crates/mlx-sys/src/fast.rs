@@ -18,6 +18,7 @@ pub fn rms_norm(
     eps: f32,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let weight_raw = weight.map(|w| w.inner).unwrap_or_else(null_ffi_array);
@@ -39,6 +40,7 @@ pub fn rope(
     freqs: Option<&MlxArray>,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let base_opt = ffi::mlx_optional_float_ {
@@ -91,6 +93,7 @@ pub fn scaled_dot_product_attention_with_mask(
     mask: ScaledDotProductAttentionMask<'_>,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mask_mode = match mask {

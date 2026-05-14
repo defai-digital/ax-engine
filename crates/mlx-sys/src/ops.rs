@@ -5,6 +5,7 @@ use crate::stream::{MlxStream, default_gpu_raw};
 macro_rules! unary_op {
     ($name:ident, $ffi_fn:ident) => {
         pub fn $name(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+            $crate::op_count::bump();
             unsafe {
                 let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
                 let mut res = MlxArray::empty();
@@ -18,6 +19,7 @@ macro_rules! unary_op {
 macro_rules! binary_op {
     ($name:ident, $ffi_fn:ident) => {
         pub fn $name(a: &MlxArray, b: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+            $crate::op_count::bump();
             unsafe {
                 let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
                 let mut res = MlxArray::empty();
@@ -85,6 +87,7 @@ pub fn gelu_approx(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -100,6 +103,7 @@ pub fn arange(
     dtype: MlxDtype,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -109,6 +113,7 @@ pub fn arange(
 }
 
 pub fn reshape(a: &MlxArray, shape: &[i32], s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -118,6 +123,7 @@ pub fn reshape(a: &MlxArray, shape: &[i32], s: Option<&MlxStream>) -> MlxArray {
 }
 
 pub fn broadcast_to(a: &MlxArray, shape: &[i32], s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -127,6 +133,7 @@ pub fn broadcast_to(a: &MlxArray, shape: &[i32], s: Option<&MlxStream>) -> MlxAr
 }
 
 pub fn transpose(a: &MlxArray, axes: &[i32], s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -136,6 +143,7 @@ pub fn transpose(a: &MlxArray, axes: &[i32], s: Option<&MlxStream>) -> MlxArray 
 }
 
 pub fn expand_dims(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -145,6 +153,7 @@ pub fn expand_dims(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
 }
 
 pub fn expand_dims_axes(a: &MlxArray, axes: &[i32], s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -154,6 +163,7 @@ pub fn expand_dims_axes(a: &MlxArray, axes: &[i32], s: Option<&MlxStream>) -> Ml
 }
 
 pub fn softmax(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -163,6 +173,7 @@ pub fn softmax(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
 }
 
 pub fn softmax_precise(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -172,6 +183,7 @@ pub fn softmax_precise(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArr
 }
 
 pub fn concatenate(arrays: &[&MlxArray], axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let vec = ffi::mlx_vector_array_new();
@@ -186,6 +198,7 @@ pub fn concatenate(arrays: &[&MlxArray], axis: i32, s: Option<&MlxStream>) -> Ml
 }
 
 pub fn stack(arrays: &[&MlxArray], axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let vec = ffi::mlx_vector_array_new();
@@ -201,6 +214,7 @@ pub fn stack(arrays: &[&MlxArray], axis: i32, s: Option<&MlxStream>) -> MlxArray
 
 /// Gather rows by integer indices along axis 0.
 pub fn take(a: &MlxArray, indices: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -215,6 +229,7 @@ pub fn take(a: &MlxArray, indices: &MlxArray, axis: i32, s: Option<&MlxStream>) 
 /// `axis=1` on `[1, n_kv_heads, seq, head_dim]` with `repeats=4` produces
 /// `[1, n_heads, seq, head_dim]` suitable for GQA head expansion.
 pub fn repeat_axis(a: &MlxArray, repeats: i32, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -233,6 +248,7 @@ pub fn slice(
     strides: &[i32],
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -265,6 +281,7 @@ pub fn as_strided(
     offset: usize,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -287,6 +304,7 @@ pub fn as_strided(
 /// Returns `num_splits` views of the original data (no copy when the split is
 /// uniform).  `a.shape()[axis]` must be divisible by `num_splits`.
 pub fn split(a: &MlxArray, num_splits: i32, axis: i32, s: Option<&MlxStream>) -> Vec<MlxArray> {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut out_vec = ffi::mlx_vector_array_new();
@@ -321,6 +339,7 @@ pub fn slice_last_dim(a: &MlxArray, start: i32, end: i32, s: Option<&MlxStream>)
 
 /// Allocate a zero-filled array with the given shape and dtype.
 pub fn zeros(shape: &[i32], dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -347,6 +366,7 @@ pub fn slice_update(
     strides: &[i32],
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -367,6 +387,7 @@ pub fn slice_update(
 }
 
 pub fn contiguous(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -376,6 +397,7 @@ pub fn contiguous(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
 }
 
 pub fn clip(a: &MlxArray, min: &MlxArray, max: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -390,6 +412,7 @@ pub fn where_cond(
     y: &MlxArray,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -407,6 +430,7 @@ pub fn conv1d(
     groups: i32,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -425,6 +449,7 @@ pub fn conv1d(
 }
 
 pub fn argmax(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let ndim = a.ndim();
@@ -437,6 +462,7 @@ pub fn argmax(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
 }
 
 pub fn argsort_axis(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -448,6 +474,7 @@ pub fn argsort_axis(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray 
 /// Argpartition along `axis`. Returns indices such that the element at position
 /// `kth` would be in its sorted position. Negative kth counts from the end.
 pub fn argpartition_axis(a: &MlxArray, kth: i32, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -462,6 +489,7 @@ pub fn take_along_axis(
     axis: i32,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -477,6 +505,7 @@ pub fn put_along_axis(
     axis: i32,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -493,6 +522,7 @@ pub fn put_along_axis(
 }
 
 pub fn sum_axis(a: &MlxArray, axis: i32, keepdims: bool, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -512,6 +542,7 @@ pub fn gather_mm(
     sorted_indices: bool,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let null_arr = null_ffi_array();
@@ -546,6 +577,7 @@ pub fn gather_qmm(
     sorted_indices: bool,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let biases_raw = biases.map(|b| b.inner).unwrap_or_else(null_ffi_array);
@@ -590,6 +622,7 @@ pub fn dequantize(
     bits: Option<i32>,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let biases_raw = biases.map(|b| b.inner).unwrap_or_else(null_ffi_array);
@@ -636,6 +669,7 @@ pub fn quantized_matmul(
     bits: Option<i32>,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let biases_raw = biases.map(|b| b.inner).unwrap_or_else(null_ffi_array);
