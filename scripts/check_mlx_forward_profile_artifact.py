@@ -46,6 +46,7 @@ class CheckedPackComparison:
 class ForwardProfileCheckResult:
     artifact_count: int
     diagnostic_count: int
+    pack_candidate_win_count: int
     pack_comparisons: list[CheckedPackComparison]
 
 
@@ -215,6 +216,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "verdict. Implies --require-pack-comparison."
         ),
     )
+    parser.add_argument(
+        "--min-pack-candidate-wins",
+        type=int,
+        default=None,
+        help=(
+            "Require at least this many candidate-win split/packed comparisons "
+            "across the provided artifacts. Implies --require-pack-comparison."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -232,20 +242,43 @@ def check_mlx_forward_profile_artifacts(
     *,
     require_pack_comparison: bool = False,
     require_pack_candidate_win: bool = False,
+    min_pack_candidate_wins: int | None = None,
 ) -> ForwardProfileCheckResult:
+    if min_pack_candidate_wins is not None and min_pack_candidate_wins < 0:
+        raise MlxForwardProfileArtifactError(
+            "--min-pack-candidate-wins must be non-negative"
+        )
+    require_comparison = (
+        require_pack_comparison
+        or require_pack_candidate_win
+        or (min_pack_candidate_wins is not None and min_pack_candidate_wins > 0)
+    )
     diagnostic_count = 0
     pack_comparisons: list[CheckedPackComparison] = []
     for artifact in artifacts:
         comparisons = validate_mlx_forward_profile_artifact(
             artifact,
-            require_pack_comparison=require_pack_comparison,
+            require_pack_comparison=require_comparison,
             require_pack_candidate_win=require_pack_candidate_win,
         )
         diagnostic_count += max(1, len(comparisons))
         pack_comparisons.extend(comparisons)
+    pack_candidate_win_count = sum(
+        1 for comparison in pack_comparisons if comparison.verdict == "candidate win"
+    )
+    if (
+        min_pack_candidate_wins is not None
+        and pack_candidate_win_count < min_pack_candidate_wins
+    ):
+        raise MlxForwardProfileArtifactError(
+            "pack comparison has "
+            f"{pack_candidate_win_count} candidate win(s), expected at least "
+            f"{min_pack_candidate_wins}"
+        )
     return ForwardProfileCheckResult(
         artifact_count=len(artifacts),
         diagnostic_count=diagnostic_count,
+        pack_candidate_win_count=pack_candidate_win_count,
         pack_comparisons=pack_comparisons,
     )
 
@@ -257,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
             args.artifacts,
             require_pack_comparison=args.require_pack_comparison,
             require_pack_candidate_win=args.require_pack_candidate_win,
+            min_pack_candidate_wins=args.min_pack_candidate_wins,
         )
     except MlxForwardProfileArtifactError as error:
         print(f"MLX forward profile artifact check failed: {error}", file=sys.stderr)
@@ -265,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         "MLX forward profile artifact check passed: "
         f"{checked.diagnostic_count} diagnostics validated across "
         f"{checked.artifact_count} artifact(s); "
+        f"{checked.pack_candidate_win_count} candidate win(s); "
         f"{summarize_pack_comparisons(checked.pack_comparisons)}"
     )
     return 0

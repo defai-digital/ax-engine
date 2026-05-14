@@ -399,6 +399,8 @@ artifact defines a separate public contract.
 Use `--require-pack-candidate-win` only for a promotion/default-enable gate. It
 keeps the diagnostic comparison contract above, and additionally fails the check
 unless every matched split/packed comparison has a `candidate win` verdict.
+Pair it with `--min-pack-candidate-wins <N>` when the promotion contract needs
+more than one passing prompt shape or artifact.
 
 The wrapper preflights `config.json` and `model-manifest.json` before building
 the release server. It fails closed unless the manifest is `qwen3_5` or

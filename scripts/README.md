@@ -224,7 +224,8 @@ throughput baselines.
   `AX_MLX_LINEAR_ATTENTION_PROFILE=1` artifacts and matched split/packed
   projection-pack comparisons. It keeps candidate wins diagnostic-only and
   rejects packed-projection public claim fields. Its stricter
-  `--require-pack-candidate-win` mode is for promotion/default-enable gates.
+  `--require-pack-candidate-win` and `--min-pack-candidate-wins` modes are for
+  promotion/default-enable gates.
 - `test_mlx_forward_profile_artifact.py`: unit tests for the forward-profile
   artifact validator.
 - `run_mlx_p2_latency_artifacts.py`: real-model P2 runner for startup and
