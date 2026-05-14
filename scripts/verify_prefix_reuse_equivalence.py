@@ -51,8 +51,15 @@ SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
 PROVENANCE_ENV_FLAGS = [
     "AX_ALLOW_MLA_PREFIX_RESTORE",
     "AX_DISABLE_TURBOQUANT_FUSED_DECODE",
+    "AX_MLX_MLA_PREFILL_CHUNK",
     "AX_NO_SPEC",
 ]
+
+BOOLEAN_PROVENANCE_ENV_FLAGS = {
+    "AX_ALLOW_MLA_PREFIX_RESTORE",
+    "AX_DISABLE_TURBOQUANT_FUSED_DECODE",
+    "AX_NO_SPEC",
+}
 
 # Default corpus — 5 prompts of varied lengths, picked so a per-prompt
 # regression bisects clearly when one diverges. Token counts are
@@ -192,7 +199,11 @@ def collect_environment_flags() -> dict[str, dict[str, object]]:
         name: {
             "set": name in os.environ,
             "value": os.environ.get(name),
-            "truthy": parse_truthy_env(os.environ.get(name)),
+            "truthy": (
+                parse_truthy_env(os.environ.get(name))
+                if name in BOOLEAN_PROVENANCE_ENV_FLAGS
+                else None
+            ),
         }
         for name in PROVENANCE_ENV_FLAGS
     }

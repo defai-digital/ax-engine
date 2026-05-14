@@ -39,11 +39,15 @@ class PrefixReuseEquivalenceProvenanceTests(unittest.TestCase):
         self.assertFalse(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["set"])
         self.assertIsNone(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["value"])
         self.assertFalse(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["truthy"])
+        self.assertFalse(flags["AX_MLX_MLA_PREFILL_CHUNK"]["set"])
+        self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["value"])
+        self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["truthy"])
 
         with patch.dict(
             os.environ,
             {
                 "AX_ALLOW_MLA_PREFIX_RESTORE": " yes ",
+                "AX_MLX_MLA_PREFILL_CHUNK": "16",
                 "AX_NO_SPEC": "0",
             },
             clear=True,
@@ -52,6 +56,9 @@ class PrefixReuseEquivalenceProvenanceTests(unittest.TestCase):
         self.assertTrue(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["set"])
         self.assertEqual(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["value"], " yes ")
         self.assertTrue(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["truthy"])
+        self.assertTrue(flags["AX_MLX_MLA_PREFILL_CHUNK"]["set"])
+        self.assertEqual(flags["AX_MLX_MLA_PREFILL_CHUNK"]["value"], "16")
+        self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["truthy"])
         self.assertTrue(flags["AX_NO_SPEC"]["set"])
         self.assertEqual(flags["AX_NO_SPEC"]["value"], "0")
         self.assertFalse(flags["AX_NO_SPEC"]["truthy"])

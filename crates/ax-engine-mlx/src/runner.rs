@@ -2119,6 +2119,18 @@ impl MlxRunner {
         // clones the cache for verification and recomputes the committed prefix on
         // partial accept, so n-gram acceleration is safe to enable for these models.
         let cfg_arc = Arc::new(cfg.clone());
+        // For MLA models, allow an env-driven smaller prefill_chunk so the
+        // chunked_prefill graph aligns the SDPA Q/K shape sequence between
+        // a cold full-prompt prefill and a warm-extend (snapshot + suffix)
+        // prefill. The hypothesis under investigation is that
+        // shape-dependent SDPA kernel selection in MLX is the root cause
+        // of the warm_extend fp-drift documented at runner.rs:3160+. Honor
+        // the override only for MLA; non-MLA tiers keep their tuned default.
+        let prefill_chunk = if cfg.glm_mla_attention.is_some() {
+            crate::fastpath::mla_prefill_chunk_override().unwrap_or(prefill_chunk)
+        } else {
+            prefill_chunk
+        };
         Ok(Self {
             cfg,
             cfg_arc,
