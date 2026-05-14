@@ -2087,6 +2087,21 @@ impl MlxRunner {
 
         let weights = Arc::new(weights);
 
+        // MLA models default to a smaller `prefill_chunk` so chunked_prefill
+        // produces the same SDPA Q/K shape sequence in cold (full-prompt)
+        // and warm-extend (snapshot + suffix) prefill paths. Without this,
+        // a single large cold chunk versus two smaller warm chunks would
+        // dispatch different SDPA kernels in MLX and accumulate slightly
+        // different fp results — that drift was the documented warm_extend
+        // correctness failure on GLM-4.7-Flash. Override with
+        // `AX_MLX_MLA_PREFILL_CHUNK=N` to trade correctness margin for
+        // prefill throughput; non-MLA tiers keep their tuned default.
+        let prefill_chunk = crate::fastpath::resolve_prefill_chunk(
+            cfg.glm_mla_attention.is_some(),
+            prefill_chunk,
+            crate::fastpath::mla_prefill_chunk_override(),
+        );
+
         // JIT warm-up: trigger Metal shader compilation for both decode and prefill paths.
         {
             let mut dummy_cache = MlxKVCache::new(cfg.layer_count);
@@ -2119,26 +2134,11 @@ impl MlxRunner {
         // clones the cache for verification and recomputes the committed prefix on
         // partial accept, so n-gram acceleration is safe to enable for these models.
         let cfg_arc = Arc::new(cfg.clone());
-        // MLA models default to a smaller `prefill_chunk` so chunked_prefill
-        // produces the same SDPA Q/K shape sequence in cold (full-prompt)
-        // and warm-extend (snapshot + suffix) prefill paths. Without this,
-        // a single large cold chunk versus two smaller warm chunks would
-        // dispatch different SDPA kernels in MLX and accumulate slightly
-        // different fp results — that drift was the documented warm_extend
-        // correctness failure on GLM-4.7-Flash. Override with
-        // `AX_MLX_MLA_PREFILL_CHUNK=N` to trade correctness margin for
-        // prefill throughput; non-MLA tiers keep their tuned default.
-        let prefill_chunk = if cfg.glm_mla_attention.is_some() {
-            crate::fastpath::mla_prefill_chunk_override()
-                .unwrap_or(crate::fastpath::MLA_DEFAULT_PREFILL_CHUNK)
-        } else {
-            prefill_chunk
-        };
         Ok(Self {
             cfg,
             cfg_arc,
             weights,
-            prefill_chunk: prefill_chunk.max(1),
+            prefill_chunk,
             kv_layer_windows,
             binding_summary,
             terminal_token_ids,
