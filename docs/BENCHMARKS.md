@@ -368,6 +368,22 @@ and emits projection/conv/QK-normalization/recurrent/output stage counters in
 before GatedDelta scan or fusion kernel changes. Do not infer n-gram, learned
 draft, tree-speculation, or KV-compression claims from this profile.
 
+For W4 linear-attention projection-pack diagnostics, compare matched split and
+packed direct AX rows only:
+
+```text
+python3 scripts/check_mlx_forward_profile_artifact.py \
+  benchmarks/results/mlx-inference/<date>/<model>-linear-profile.json \
+  --require-pack-comparison
+```
+
+The checker treats `candidate win` as diagnostic evidence, not as a public
+performance claim. It requires matched split/packed AX rows for the same prompt
+shape, direct AX decode policy, linear-attention profile counters, and the
+`ax_linear_attention_projection_pack_compare=true` artifact marker. It rejects
+packed-projection public claim fields unless a future repeated, cooled promotion
+artifact defines a separate public contract.
+
 The wrapper preflights `config.json` and `model-manifest.json` before building
 the release server. It fails closed unless the manifest is `qwen3_5` or
 `qwen3_next`, has enabled `linear_attention`, and includes the gated-delta kernel

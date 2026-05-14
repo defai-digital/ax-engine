@@ -213,6 +213,12 @@ throughput baselines.
   prefix counters, trace prefix-reuse items, and correctness/determinism gates.
 - `test_build_mlx_prefix_warmup_artifact.py`: unit tests for the prefix warmup
   artifact builder.
+- `check_mlx_forward_profile_artifact.py`: validates diagnostic
+  `AX_MLX_LINEAR_ATTENTION_PROFILE=1` artifacts and matched split/packed
+  projection-pack comparisons. It keeps candidate wins diagnostic-only and
+  rejects packed-projection public claim fields.
+- `test_mlx_forward_profile_artifact.py`: unit tests for the forward-profile
+  artifact validator.
 - `run_mlx_p2_latency_artifacts.py`: real-model P2 runner for startup and
   concurrent-prefill evidence. It starts the AX MLX server in direct mode,
   writes prompt-token artifacts, captures `ax.mlx_startup_latency.v1` and
