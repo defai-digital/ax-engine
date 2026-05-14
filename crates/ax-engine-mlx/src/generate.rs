@@ -18,6 +18,7 @@ pub const DEFAULT_PREFILL_CHUNK: usize = GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DirectPipelineTimings {
     pub forward_wall_us: u32,
+    pub argmax_wall_us: u32,
     pub async_eval_wall_us: u32,
     pub pending_eval_wall_us: u32,
     pub pending_read_wall_us: u32,
@@ -196,11 +197,13 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
     );
     let forward_wall_us = elapsed_us(forward_started);
     cache.seq_len += 1;
-    let async_eval_started = Instant::now();
+    let argmax_started = Instant::now();
     let next_token_arr = argmax(&logits, None);
+    let argmax_wall_us = elapsed_us(argmax_started);
     // Submit step N+1 to the GPU before waiting for step N.
     // KV cache is in next_token_arr's computation graph (via SDPA), so no extra
     // refs needed — they would only add one GPU command buffer per layer (≈85µs each).
+    let async_eval_started = Instant::now();
     async_eval(&[&next_token_arr]);
     let async_eval_wall_us = elapsed_us(async_eval_started);
 
@@ -220,6 +223,7 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
         next_pending: next_token_arr,
         timings: DirectPipelineTimings {
             forward_wall_us,
+            argmax_wall_us,
             async_eval_wall_us,
             pending_eval_wall_us,
             pending_read_wall_us,
