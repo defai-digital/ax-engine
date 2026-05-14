@@ -971,6 +971,7 @@ def start_axengine(
     gemma4_moe_profile: bool = False,
     linear_attention_profile: bool = False,
     decode_profile: bool = False,
+    pack_linear_attention_projections: bool = False,
 ) -> subprocess.Popen[Any]:
     cmd = [
         str(binary),
@@ -1005,6 +1006,8 @@ def start_axengine(
         env["AX_MLX_LINEAR_ATTENTION_PROFILE"] = "1"
     if decode_profile:
         env["AX_MLX_DECODE_PROFILE"] = "1"
+    if pack_linear_attention_projections:
+        env["AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"] = "1"
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
 
@@ -2331,6 +2334,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-pack-linear-attention-projections",
+        action="store_true",
+        help=(
+            "Enable experimental loader-time packing of split Qwen linear-attention "
+            "qkv/z/a/b projections into qkvz/ba for AX rows. This is an opt-in "
+            "diagnostic TTFT experiment and does not change the model artifact."
+        ),
+    )
+    parser.add_argument(
         "--ax-decode-profile",
         action="store_true",
         help=(
@@ -2625,6 +2637,9 @@ def main() -> None:
                         args.gateddelta_prefill_profile or args.ax_linear_attention_profile
                     ),
                     decode_profile=args.ax_decode_profile,
+                    pack_linear_attention_projections=(
+                        args.ax_pack_linear_attention_projections
+                    ),
                 )
                 procs.append(proc)
                 if not wait_for_server(
@@ -2656,6 +2671,9 @@ def main() -> None:
                     results[-1]["prefill_step_size"] = args.prefill_step_size
                     results[-1]["prompt_token_ids_path"] = prompt_doc["token_ids_path"]
                     results[-1]["prompt_token_ids_sha256"] = prompt_doc["token_ids_sha256"]
+                    results[-1]["ax_linear_attention_projection_pack"] = bool(
+                        args.ax_pack_linear_attention_projections
+                    )
                 kill_proc(proc)
                 procs.remove(proc)
                 if direct_mode and args.ax_compare_policies:
@@ -2745,6 +2763,9 @@ def main() -> None:
         "ax_gemma4_moe_profile": bool(args.ax_gemma4_moe_profile),
         "ax_linear_attention_profile": bool(
             args.gateddelta_prefill_profile or args.ax_linear_attention_profile
+        ),
+        "ax_linear_attention_projection_pack": bool(
+            args.ax_pack_linear_attention_projections
         ),
         "ax_decode_profile": bool(args.ax_decode_profile),
         "results": results,
