@@ -123,6 +123,11 @@ throughput baselines.
   review table. It is intentionally broader than the GatedDelta validator and
   is used after prefill-breakdown evidence shows model-forward dominance. Keep
   its timing-barrier output out of README headline throughput tables.
+- `render_mlx_decode_profile_report.py`: renders diagnostic
+  `AX_MLX_DECODE_PROFILE=1` inference-stack artifacts as a Markdown review
+  table with parent decode stages and available substage splits. It tolerates
+  older artifacts that predate the finer-grained counters by marking those cells
+  as `n/a`.
 - `check_gateddelta_prefill_model.py`: fail-closed preflight for real-model
   GatedDelta profile runs. It checks `config.json` plus `model-manifest.json`
   before release-server build and requires a `qwen3_5`/`qwen3_next`
