@@ -964,6 +964,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "ngram_acceleration_effective_throughput",
         )
 
+    def test_absent_ax_mlx_telemetry_stays_silent(self) -> None:
+        self.assertEqual(
+            bench.extract_ax_mlx_telemetry(
+                {"crossover_decisions": {"unrelated": 99}}
+            ),
+            {},
+        )
+
     def test_ax_mlx_telemetry_is_extracted_and_summarized(self) -> None:
         telemetry = bench.extract_ax_mlx_telemetry(
             {
@@ -1017,6 +1025,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_single_decode_steps"], 0)
         self.assertEqual(telemetry["ax_mlx_bonus_tokens"], 0)
         self.assertNotIn("unrelated", telemetry)
+
+        partial_telemetry = bench.extract_ax_mlx_telemetry(
+            {"crossover_decisions": {"ax_mlx_decode_steps": 2}}
+        )
+        self.assertEqual(partial_telemetry["ax_mlx_decode_steps"], 2)
+        self.assertEqual(partial_telemetry["ax_mlx_direct_pipeline_argmax_wall_us"], 0)
 
         summary = bench.summarize_ax_mlx_telemetry(
             [

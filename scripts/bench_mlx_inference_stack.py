@@ -1040,6 +1040,8 @@ def extract_ax_mlx_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
     if not route:
         return {}
     decisions = route.get("crossover_decisions") or {}
+    if not any(key in decisions for key in AX_MLX_TELEMETRY_KEYS):
+        return {}
     return {key: int(decisions.get(key, 0)) for key in AX_MLX_TELEMETRY_KEYS}
 
 
