@@ -4,12 +4,12 @@ use std::path::PathBuf;
 
 use mlx_sys::{
     MlxArray, MlxDtype, add, astype, concatenate, contiguous, dequantize, eval, load_safetensors,
-    multiply, transpose,
+    multiply, slice, transpose,
 };
 
 use ax_engine_core::{
-    NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
-    WeightSanitize,
+    NativeLinearAttentionConfig, NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole,
+    NativeTensorSpec, WeightSanitize,
 };
 
 /// All weight arrays for one model.
@@ -119,7 +119,6 @@ pub struct LinearAttentionWeights {
     pub out_proj: QuantizedWeight,
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LinearAttentionProjectionRowSource {
     Qkv(usize),
@@ -338,9 +337,12 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         };
         let linear_attn = match attention_layout {
             AttentionLayout::Full => None,
-            AttentionLayout::Linear => {
-                Some(load_linear_attention_weights(specs, &mut name_map, idx)?)
-            }
+            AttentionLayout::Linear => Some(load_linear_attention_weights(
+                specs,
+                &mut name_map,
+                idx,
+                &artifacts.manifest().linear_attention,
+            )?),
         };
         // When FfnNorm (pre_feedforward_layernorm) is present (Gemma4), AttentionPostNorm
         // is a genuine post-attention norm applied before the residual add.  When FfnNorm
@@ -1245,50 +1247,73 @@ fn load_linear_attention_weights(
     specs: &[NativeTensorSpec],
     name_map: &mut HashMap<String, MlxArray>,
     layer_index: Option<u32>,
+    config: &NativeLinearAttentionConfig,
 ) -> Result<LinearAttentionWeights, WeightLoadError> {
+    let mut in_proj_qkv = try_take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::LinearAttentionInProjQkv,
+        layer_index,
+        "linear_attention_in_proj_qkv",
+    )?;
+    let mut in_proj_z = try_take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::LinearAttentionInProjZ,
+        layer_index,
+        "linear_attention_in_proj_z",
+    )?;
+    let mut in_proj_a = try_take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::LinearAttentionInProjA,
+        layer_index,
+        "linear_attention_in_proj_a",
+    )?;
+    let mut in_proj_b = try_take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::LinearAttentionInProjB,
+        layer_index,
+        "linear_attention_in_proj_b",
+    )?;
+    let mut in_proj_qkvz = try_take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::LinearAttentionInProjQkvz,
+        layer_index,
+        "linear_attention_in_proj_qkvz",
+    )?;
+    let mut in_proj_ba = try_take_weight(
+        specs,
+        name_map,
+        NativeTensorRole::LinearAttentionInProjBa,
+        layer_index,
+        "linear_attention_in_proj_ba",
+    )?;
+
+    if linear_attention_projection_packing_enabled()
+        && in_proj_qkvz.is_none()
+        && in_proj_ba.is_none()
+        && let (Some(qkv), Some(z), Some(a), Some(b)) =
+            (&in_proj_qkv, &in_proj_z, &in_proj_a, &in_proj_b)
+    {
+        let (qkvz, ba) = pack_split_linear_attention_projections(config, qkv, z, a, b)?;
+        in_proj_qkvz = Some(qkvz);
+        in_proj_ba = Some(ba);
+        in_proj_qkv = None;
+        in_proj_z = None;
+        in_proj_a = None;
+        in_proj_b = None;
+    }
+
     Ok(LinearAttentionWeights {
-        in_proj_qkv: try_take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::LinearAttentionInProjQkv,
-            layer_index,
-            "linear_attention_in_proj_qkv",
-        )?,
-        in_proj_z: try_take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::LinearAttentionInProjZ,
-            layer_index,
-            "linear_attention_in_proj_z",
-        )?,
-        in_proj_a: try_take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::LinearAttentionInProjA,
-            layer_index,
-            "linear_attention_in_proj_a",
-        )?,
-        in_proj_b: try_take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::LinearAttentionInProjB,
-            layer_index,
-            "linear_attention_in_proj_b",
-        )?,
-        in_proj_qkvz: try_take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::LinearAttentionInProjQkvz,
-            layer_index,
-            "linear_attention_in_proj_qkvz",
-        )?,
-        in_proj_ba: try_take_weight(
-            specs,
-            name_map,
-            NativeTensorRole::LinearAttentionInProjBa,
-            layer_index,
-            "linear_attention_in_proj_ba",
-        )?,
+        in_proj_qkv,
+        in_proj_z,
+        in_proj_a,
+        in_proj_b,
+        in_proj_qkvz,
+        in_proj_ba,
         conv1d_dense: {
             let raw = take_weight(
                 specs,
@@ -1468,7 +1493,305 @@ fn concat_quantized_weight_rows(
     })
 }
 
-#[cfg(test)]
+fn linear_attention_projection_packing_enabled() -> bool {
+    // Experimental TTFT probe: materialize packed Qwen linear-attention
+    // projections at load time while keeping the default artifact contract
+    // unchanged until the benchmark delta is proven.
+    std::env::var("AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS")
+        .map(|value| !value.is_empty() && value != "0")
+        .unwrap_or(false)
+}
+
+fn pack_split_linear_attention_projections(
+    config: &NativeLinearAttentionConfig,
+    qkv: &QuantizedWeight,
+    z: &QuantizedWeight,
+    a: &QuantizedWeight,
+    b: &QuantizedWeight,
+) -> Result<(QuantizedWeight, QuantizedWeight), WeightLoadError> {
+    let num_key_heads = usize::try_from(config.num_key_heads.ok_or_else(|| {
+        WeightLoadError::InvalidLayer(
+            "linear attention projection pack requires num_key_heads".to_string(),
+        )
+    })?)
+    .map_err(|_| {
+        WeightLoadError::InvalidLayer(
+            "linear attention projection pack num_key_heads does not fit usize".to_string(),
+        )
+    })?;
+    let key_head_dim = usize::try_from(config.key_head_dim.ok_or_else(|| {
+        WeightLoadError::InvalidLayer(
+            "linear attention projection pack requires key_head_dim".to_string(),
+        )
+    })?)
+    .map_err(|_| {
+        WeightLoadError::InvalidLayer(
+            "linear attention projection pack key_head_dim does not fit usize".to_string(),
+        )
+    })?;
+    let num_value_heads = usize::try_from(config.num_value_heads.ok_or_else(|| {
+        WeightLoadError::InvalidLayer(
+            "linear attention projection pack requires num_value_heads".to_string(),
+        )
+    })?)
+    .map_err(|_| {
+        WeightLoadError::InvalidLayer(
+            "linear attention projection pack num_value_heads does not fit usize".to_string(),
+        )
+    })?;
+    let value_head_dim = usize::try_from(config.value_head_dim.ok_or_else(|| {
+        WeightLoadError::InvalidLayer(
+            "linear attention projection pack requires value_head_dim".to_string(),
+        )
+    })?)
+    .map_err(|_| {
+        WeightLoadError::InvalidLayer(
+            "linear attention projection pack value_head_dim does not fit usize".to_string(),
+        )
+    })?;
+
+    let qkvz_sources = linear_attention_qkvz_row_sources(
+        num_key_heads,
+        key_head_dim,
+        num_value_heads,
+        value_head_dim,
+    )?;
+    let ba_sources = linear_attention_ba_row_sources(num_key_heads, num_value_heads)?;
+    let qkvz = pack_linear_attention_projection_rows(
+        "linear_attention_in_proj_qkvz",
+        &qkvz_sources,
+        Some(qkv),
+        Some(z),
+        None,
+        None,
+    )?;
+    let ba = pack_linear_attention_projection_rows(
+        "linear_attention_in_proj_ba",
+        &ba_sources,
+        None,
+        None,
+        Some(b),
+        Some(a),
+    )?;
+    eval_packed_linear_attention_projection(&qkvz);
+    eval_packed_linear_attention_projection(&ba);
+    Ok((qkvz, ba))
+}
+
+fn eval_packed_linear_attention_projection(weight: &QuantizedWeight) {
+    let mut arrays = vec![&weight.weight];
+    if let Some(scales) = &weight.scales {
+        arrays.push(scales);
+    }
+    if let Some(biases) = &weight.biases {
+        arrays.push(biases);
+    }
+    eval(&arrays);
+}
+
+fn pack_linear_attention_projection_rows(
+    label: &str,
+    sources: &[LinearAttentionProjectionRowSource],
+    qkv: Option<&QuantizedWeight>,
+    z: Option<&QuantizedWeight>,
+    b: Option<&QuantizedWeight>,
+    a: Option<&QuantizedWeight>,
+) -> Result<QuantizedWeight, WeightLoadError> {
+    let first = qkv.or(z).or(b).or(a).ok_or_else(|| {
+        WeightLoadError::InvalidLayer(format!("cannot pack {label} without source projections"))
+    })?;
+    validate_linear_attention_pack_compatibility(label, &[qkv, z, b, a])?;
+
+    let scales = if first.scales.is_some() {
+        Some(gather_linear_attention_projection_arrays(
+            label,
+            sources,
+            qkv.and_then(|weight| weight.scales.as_ref()),
+            z.and_then(|weight| weight.scales.as_ref()),
+            b.and_then(|weight| weight.scales.as_ref()),
+            a.and_then(|weight| weight.scales.as_ref()),
+        )?)
+    } else {
+        None
+    };
+    let biases = if first.biases.is_some() {
+        Some(gather_linear_attention_projection_arrays(
+            label,
+            sources,
+            qkv.and_then(|weight| weight.biases.as_ref()),
+            z.and_then(|weight| weight.biases.as_ref()),
+            b.and_then(|weight| weight.biases.as_ref()),
+            a.and_then(|weight| weight.biases.as_ref()),
+        )?)
+    } else {
+        None
+    };
+
+    Ok(QuantizedWeight {
+        weight: gather_linear_attention_projection_arrays(
+            label,
+            sources,
+            qkv.map(|weight| &weight.weight),
+            z.map(|weight| &weight.weight),
+            b.map(|weight| &weight.weight),
+            a.map(|weight| &weight.weight),
+        )?,
+        scales,
+        biases,
+        group_size: first.group_size,
+        bits: first.bits,
+    })
+}
+
+fn validate_linear_attention_pack_compatibility(
+    label: &str,
+    weights: &[Option<&QuantizedWeight>],
+) -> Result<(), WeightLoadError> {
+    let first = weights.iter().flatten().next().ok_or_else(|| {
+        WeightLoadError::InvalidLayer(format!("cannot pack {label} without source projections"))
+    })?;
+    for weight in weights.iter().flatten().skip(1) {
+        if weight.group_size != first.group_size {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "cannot pack {label} projections with different group sizes: {} vs {}",
+                first.group_size, weight.group_size
+            )));
+        }
+        if weight.bits != first.bits {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "cannot pack {label} projections with different bit widths: {} vs {}",
+                first.bits, weight.bits
+            )));
+        }
+        if weight.scales.is_some() != first.scales.is_some() {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "cannot pack {label} projections where only one has quantization scales"
+            )));
+        }
+        if weight.biases.is_some() != first.biases.is_some() {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "cannot pack {label} projections where only one has quantization biases"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn gather_linear_attention_projection_arrays(
+    label: &str,
+    sources: &[LinearAttentionProjectionRowSource],
+    qkv: Option<&MlxArray>,
+    z: Option<&MlxArray>,
+    b: Option<&MlxArray>,
+    a: Option<&MlxArray>,
+) -> Result<MlxArray, WeightLoadError> {
+    if sources.is_empty() {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "cannot pack {label} with empty row sources"
+        )));
+    }
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < sources.len() {
+        let source_kind = sources[start].kind();
+        let slice_start = sources[start].index();
+        let mut next_index = slice_start + 1;
+        let mut end = start;
+        while end < sources.len()
+            && sources[end].kind() == source_kind
+            && sources[end].index() == next_index - 1
+        {
+            next_index += 1;
+            end += 1;
+        }
+        let source_array = match source_kind {
+            LinearAttentionProjectionRowKind::Qkv => qkv,
+            LinearAttentionProjectionRowKind::Z => z,
+            LinearAttentionProjectionRowKind::B => b,
+            LinearAttentionProjectionRowKind::A => a,
+        }
+        .ok_or_else(|| {
+            WeightLoadError::InvalidLayer(format!(
+                "cannot pack {label}; missing {source_kind:?} source projection"
+            ))
+        })?;
+        chunks.push(slice_linear_attention_projection_rows(
+            label,
+            source_array,
+            slice_start,
+            next_index - 1,
+        )?);
+        start = end;
+    }
+    let refs = chunks.iter().collect::<Vec<_>>();
+    Ok(concatenate(&refs, 0, None))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LinearAttentionProjectionRowKind {
+    Qkv,
+    Z,
+    B,
+    A,
+}
+
+impl LinearAttentionProjectionRowSource {
+    fn kind(self) -> LinearAttentionProjectionRowKind {
+        match self {
+            Self::Qkv(_) => LinearAttentionProjectionRowKind::Qkv,
+            Self::Z(_) => LinearAttentionProjectionRowKind::Z,
+            Self::B(_) => LinearAttentionProjectionRowKind::B,
+            Self::A(_) => LinearAttentionProjectionRowKind::A,
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Qkv(index) | Self::Z(index) | Self::B(index) | Self::A(index) => index,
+        }
+    }
+}
+
+fn slice_linear_attention_projection_rows(
+    label: &str,
+    array: &MlxArray,
+    start: usize,
+    end: usize,
+) -> Result<MlxArray, WeightLoadError> {
+    let shape = array.shape();
+    let Some(&row_count) = shape.first() else {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "cannot pack {label}; source projection has no row dimension"
+        )));
+    };
+    let row_count = usize::try_from(row_count).map_err(|_| {
+        WeightLoadError::InvalidLayer(format!(
+            "cannot pack {label}; source projection row count is negative"
+        ))
+    })?;
+    if start >= end || end > row_count {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "cannot pack {label}; row source exceeded input rows"
+        )));
+    }
+    let start_i32 = i32::try_from(start).map_err(|_| {
+        WeightLoadError::InvalidLayer(format!(
+            "cannot pack {label}; row slice start does not fit i32"
+        ))
+    })?;
+    let end_i32 = i32::try_from(end).map_err(|_| {
+        WeightLoadError::InvalidLayer(format!(
+            "cannot pack {label}; row slice end does not fit i32"
+        ))
+    })?;
+    let mut starts = vec![0; shape.len()];
+    let mut stops = shape;
+    let strides = vec![1; stops.len()];
+    starts[0] = start_i32;
+    stops[0] = end_i32;
+    Ok(slice(array, &starts, &stops, &strides, None))
+}
+
 fn linear_attention_qkvz_row_sources(
     num_key_heads: usize,
     key_head_dim: usize,
@@ -1512,7 +1835,6 @@ fn linear_attention_qkvz_row_sources(
     Ok(rows)
 }
 
-#[cfg(test)]
 fn linear_attention_ba_row_sources(
     num_key_heads: usize,
     num_value_heads: usize,
