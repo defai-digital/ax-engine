@@ -69,11 +69,12 @@ env_flag!(
 
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
 /// cold and warm-extend prefill paths produce the same SDPA Q/K shape
-/// sequence over the same absolute positions, eliminating the
-/// warm_extend fp-drift on GLM-4.7-Flash that was diagnosed via
-/// `verify_prefix_reuse_equivalence.py --mode warm_extend` (5/5 PASS at
-/// base lengths 32, 512, and 2048 after this change). `MlxRunner::from_artifacts`
-/// defaults to 16 for MLA models when this env is unset. Set
+/// sequence over the same absolute positions, avoiding the reproduced
+/// GLM-4.7-Flash warm_extend fp-drift diagnosed by
+/// `verify_prefix_reuse_equivalence.py --mode warm_extend`. The canonical
+/// default-path harness passes 5/5 with a real prefix-cache hit after this
+/// change. `MlxRunner::from_artifacts` defaults to 16 for MLA models when
+/// this env is unset. Set
 /// `AX_MLX_MLA_PREFILL_CHUNK=N` to override (larger N trades correctness
 /// margin for prefill throughput). Returns `None` when unset/invalid;
 /// callers supply their own MLA default.
@@ -95,13 +96,14 @@ env_flag!(
     /// `restore_reused_prefix_state` that refused to restore an MLA snapshot
     /// for Prefill-mode requests. The gate was originally added because
     /// post-restore `chunked_prefill` over a suffix drifted fp-wise from a
-    /// cold full-prefill on GLM-4.7-Flash. That drift was traced to
-    /// shape-dependent SDPA kernel selection in MLX and resolved by aligning
-    /// the chunked_prefill chunk size to the prefix-cache block size for MLA
-    /// models (default 16; see `MLA_DEFAULT_PREFILL_CHUNK`). The harness now
-    /// passes 5/5 across base lengths 32, 512, and 2048. This flag exists as
-    /// a fail-closed escape hatch if a future workload exposes a drift
-    /// vector the chunk-alignment fix does not cover.
+    /// cold full-prefill on GLM-4.7-Flash. Evidence points to
+    /// shape-dependent SDPA kernel selection in MLX, where cold and warm
+    /// paths dispatched different chunk shapes. Aligning the MLA prefill
+    /// chunk size to the prefix-cache block size (default 16; see
+    /// `MLA_DEFAULT_PREFILL_CHUNK`) makes the canonical default-path
+    /// warm_extend harness pass 5/5 with a real prefix-cache hit. This flag
+    /// exists as a fail-closed escape hatch if a future workload exposes a
+    /// drift vector the chunk-alignment fix does not cover.
     mla_prefix_restore_disabled,
     "AX_DISABLE_MLA_PREFIX_RESTORE"
 );

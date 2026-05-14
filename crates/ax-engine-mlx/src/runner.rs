@@ -3178,14 +3178,15 @@ impl MlxRunner {
         // Historical context: MLA + Prefill used to refuse a snapshot restore
         // because the post-restore chunked_prefill drifted fp-wise from a
         // cold full prefill (p2_medium_explain idx=13 divergence on
-        // GLM-4.7-Flash). Root cause was shape-dependent SDPA kernel
-        // selection in MLX — a single large cold chunk and the two smaller
-        // chunks of a warm-extend dispatched different kernels. The fix is
+        // GLM-4.7-Flash). Evidence points to shape-dependent SDPA kernel
+        // selection in MLX: a single large cold chunk and the smaller chunks
+        // of a warm-extend can dispatch different kernels. The fix is
         // upstream of this branch: MLA models now default to a small
         // chunked_prefill chunk size (see `MLA_DEFAULT_PREFILL_CHUNK`) that
         // makes cold and warm produce the same SDPA shape sequence at the
-        // same absolute positions. The equivalence harness now passes 5/5
-        // at base lengths 32, 512, and 2048. The kill-switch env
+        // same absolute positions. The canonical default-path equivalence
+        // harness now passes 5/5 with a real prefix-cache hit. The
+        // kill-switch env
         // `AX_DISABLE_MLA_PREFIX_RESTORE=1` re-engages the historical gate
         // if a future workload exposes a residual drift vector.
         let mla_extend_unsafe = self.cfg.glm_mla_attention.is_some()

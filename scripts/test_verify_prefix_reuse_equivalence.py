@@ -18,6 +18,11 @@ GLM_CHUNK16_ARTIFACT = (
     / "benchmarks/results/prefix-reuse-equivalence/"
     / "glm47-warm-extend-chunk16-provenance-2026-05-14.json"
 )
+GLM_DEFAULT_MLA_CHUNK16_ARTIFACT = (
+    REPO_ROOT
+    / "benchmarks/results/prefix-reuse-equivalence/"
+    / "glm47-warm-extend-default-mla-chunk16-2026-05-14.json"
+)
 MODULE_SPEC = importlib.util.spec_from_file_location(
     "verify_prefix_reuse_equivalence", SCRIPT_PATH
 )
@@ -46,6 +51,9 @@ class PrefixReuseEquivalenceProvenanceTests(unittest.TestCase):
         self.assertFalse(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["set"])
         self.assertIsNone(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["value"])
         self.assertFalse(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["truthy"])
+        self.assertFalse(flags["AX_DISABLE_MLA_PREFIX_RESTORE"]["set"])
+        self.assertIsNone(flags["AX_DISABLE_MLA_PREFIX_RESTORE"]["value"])
+        self.assertFalse(flags["AX_DISABLE_MLA_PREFIX_RESTORE"]["truthy"])
         self.assertFalse(flags["AX_MLX_MLA_PREFILL_CHUNK"]["set"])
         self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["value"])
         self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["truthy"])
@@ -54,6 +62,7 @@ class PrefixReuseEquivalenceProvenanceTests(unittest.TestCase):
             os.environ,
             {
                 "AX_ALLOW_MLA_PREFIX_RESTORE": " yes ",
+                "AX_DISABLE_MLA_PREFIX_RESTORE": "0",
                 "AX_MLX_MLA_PREFILL_CHUNK": "16",
                 "AX_NO_SPEC": "0",
             },
@@ -63,6 +72,9 @@ class PrefixReuseEquivalenceProvenanceTests(unittest.TestCase):
         self.assertTrue(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["set"])
         self.assertEqual(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["value"], " yes ")
         self.assertTrue(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["truthy"])
+        self.assertTrue(flags["AX_DISABLE_MLA_PREFIX_RESTORE"]["set"])
+        self.assertEqual(flags["AX_DISABLE_MLA_PREFIX_RESTORE"]["value"], "0")
+        self.assertFalse(flags["AX_DISABLE_MLA_PREFIX_RESTORE"]["truthy"])
         self.assertTrue(flags["AX_MLX_MLA_PREFILL_CHUNK"]["set"])
         self.assertEqual(flags["AX_MLX_MLA_PREFILL_CHUNK"]["value"], "16")
         self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["truthy"])
@@ -87,6 +99,32 @@ class PrefixReuseEquivalenceProvenanceTests(unittest.TestCase):
         flags = artifact["environment_flags"]
         self.assertTrue(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["truthy"])
         self.assertEqual(flags["AX_MLX_MLA_PREFILL_CHUNK"]["value"], "16")
+        self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["truthy"])
+        self.assertTrue(
+            any(
+                row["warm_telemetry"]["ax_mlx_prefix_cache_hits"] > 0
+                for row in artifact["per_prompt"]
+            )
+        )
+
+    def test_glm_default_mla_chunk16_artifact_has_no_opt_in_restore_flag(self) -> None:
+        artifact = json.loads(GLM_DEFAULT_MLA_CHUNK16_ARTIFACT.read_text())
+
+        self.assertEqual(artifact["schema_version"], verify_prefix.SCHEMA_VERSION)
+        self.assertEqual(artifact["config"]["mode"], "warm_extend")
+        self.assertEqual(artifact["config"]["pad_to_block_size"], 16)
+        self.assertEqual(
+            artifact["aggregate"],
+            {
+                "prompts_matching_exactly": 5,
+                "prompts_total": 5,
+                "verdict": "PASS",
+            },
+        )
+        flags = artifact["environment_flags"]
+        self.assertFalse(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["set"])
+        self.assertFalse(flags["AX_DISABLE_MLA_PREFIX_RESTORE"]["truthy"])
+        self.assertFalse(flags["AX_MLX_MLA_PREFILL_CHUNK"]["set"])
         self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["truthy"])
         self.assertTrue(
             any(
