@@ -78,7 +78,7 @@ class EmbeddingApiSurfaceTests(unittest.TestCase):
         # skip rather than fail (CI sometimes does not have a model).
         try:
             session = ax_engine.Session(
-                backend_policy="llama_cpp",
+                support_tier="llama_cpp",
                 llama_server_url="http://127.0.0.1:1",
             )
         except Exception as e:
