@@ -1,15 +1,17 @@
-//! Process-wide kill switches for ax-engine-mlx optimization fast paths.
+//! Process-wide environment flags for ax-engine-mlx optimization fast paths.
 //!
 //! Each accessor reads its environment variable once per process and caches
 //! the result in a `OnceLock`. The value is parsed case-insensitively after
 //! trimming ASCII whitespace; `1`, `true`, or `yes` (any casing) engages the
-//! kill switch and forces the slow fallback path. Any other value (including
-//! unset) leaves the fast path enabled.
+//! flag. Any other value (including unset) leaves the flag disabled. Most flags
+//! are conservative kill switches that force a fallback path, but investigation
+//! flags may explicitly opt into unsafe diagnostics and must document that
+//! behavior at the accessor.
 //!
 //! The pattern intentionally mirrors DS4's `ds4_metal_get_*` shape-gated
 //! pipeline cache: every fast path declares an explicit predicate, an
 //! explicit kill switch, and an explicit fallback. Co-locating the env-var
-//! names here gives a single grep target for "which optimizations does the
+//! names here gives a single grep target for "which optimization flags does the
 //! runtime expose?" and matches the W1.3 / W2.a audit conventions.
 //!
 //! See `.internal/planning/MLX-FASTPATH-AUDIT-2026-05-14.md` for the full
@@ -27,7 +29,7 @@ fn parse_bool_env(var: &str) -> bool {
         || trimmed.eq_ignore_ascii_case("yes")
 }
 
-macro_rules! kill_switch {
+macro_rules! env_flag {
     ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
         $(#[$meta])*
         pub fn $fn_name() -> bool {
@@ -37,7 +39,7 @@ macro_rules! kill_switch {
     };
 }
 
-kill_switch!(
+env_flag!(
     /// Engaged by `AX_DISABLE_TURBOQUANT_FUSED_DECODE` (truthy values per
     /// the module-level parser contract). Forces every layer's TurboQuant
     /// fused-decode candidate to `Disabled`, routing decode through the
@@ -48,7 +50,7 @@ kill_switch!(
     "AX_DISABLE_TURBOQUANT_FUSED_DECODE"
 );
 
-kill_switch!(
+env_flag!(
     /// Engaged by `AX_NO_SPEC` (the CLAUDE.md-documented convention for
     /// forcing greedy direct decode). When set, `MlxRunner::from_artifacts`
     /// ORs this value into the `disable_ngram_acceleration` parameter, so
@@ -57,6 +59,23 @@ kill_switch!(
     /// values follow the module-level parser contract.
     ngram_acceleration_disabled,
     "AX_NO_SPEC"
+);
+
+env_flag!(
+    /// **Investigation override.** Engaged by `AX_ALLOW_MLA_PREFIX_RESTORE`,
+    /// this bypasses the `mla_extend_unsafe` safety gate in
+    /// `restore_reused_prefix_state`. The gate normally refuses to
+    /// restore an MLA snapshot when the request mode is Prefill, because
+    /// the post-restore `chunked_prefill` over a suffix has been observed
+    /// to drift fp-wise from a cold full-prefill on GLM-4.7-Flash (see
+    /// `verify_prefix_reuse_equivalence.py --mode warm_extend` and the
+    /// audit comment in `runner.rs`). Setting this flag is intentionally
+    /// unsafe for production: it exists so the equivalence harness can
+    /// reproduce and isolate the drift, and so a future fix can be
+    /// regression-tested against the harness before relaxing the gate
+    /// by default.
+    mla_prefix_restore_forced,
+    "AX_ALLOW_MLA_PREFIX_RESTORE"
 );
 
 #[cfg(test)]
