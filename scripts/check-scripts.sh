@@ -68,6 +68,12 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/check_turboquant_promotion_readiness.py \
   scripts/test_turboquant_quality_artifact.py \
   scripts/test_turboquant_microbench_artifact.py \
+  scripts/check_offline_policy_search_artifact.py \
+  scripts/build_offline_policy_search_artifact.py \
+  scripts/search_turboquant_kv_policy.py \
+  scripts/test_offline_policy_search_artifact.py \
+  scripts/test_build_offline_policy_search_artifact.py \
+  scripts/test_search_turboquant_kv_policy.py \
   scripts/probe_mlx_model_support.py \
   scripts/test_probe_mlx_model_support.py \
   scripts/diagnose_server_rss.py \
@@ -76,8 +82,12 @@ bash -n scripts/*.sh scripts/lib/common.sh
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
   scripts/test_update_readme_from_bench.py \
-  scripts/test_update_readme_from_results.py
+  scripts/test_update_readme_from_results.py \
+  scripts/test_offline_policy_search_artifact.py \
+  scripts/test_build_offline_policy_search_artifact.py \
+  scripts/test_search_turboquant_kv_policy.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-turboquant-quality-gate.sh
 bash scripts/check-turboquant-microbench-gate.sh
+bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_turboquant_public_docs.py
