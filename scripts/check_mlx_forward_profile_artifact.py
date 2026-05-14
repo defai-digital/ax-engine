@@ -47,6 +47,7 @@ class ForwardProfileCheckResult:
     artifact_count: int
     diagnostic_count: int
     pack_candidate_win_count: int
+    pack_candidate_win_prompt_count: int
     pack_comparisons: list[CheckedPackComparison]
 
 
@@ -225,6 +226,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "across the provided artifacts. Implies --require-pack-comparison."
         ),
     )
+    parser.add_argument(
+        "--min-pack-candidate-win-prompts",
+        type=int,
+        default=None,
+        help=(
+            "Require candidate wins across at least this many distinct prompt-token "
+            "lengths. Implies --require-pack-comparison."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -243,15 +253,27 @@ def check_mlx_forward_profile_artifacts(
     require_pack_comparison: bool = False,
     require_pack_candidate_win: bool = False,
     min_pack_candidate_wins: int | None = None,
+    min_pack_candidate_win_prompts: int | None = None,
 ) -> ForwardProfileCheckResult:
     if min_pack_candidate_wins is not None and min_pack_candidate_wins < 0:
         raise MlxForwardProfileArtifactError(
             "--min-pack-candidate-wins must be non-negative"
         )
+    if (
+        min_pack_candidate_win_prompts is not None
+        and min_pack_candidate_win_prompts < 0
+    ):
+        raise MlxForwardProfileArtifactError(
+            "--min-pack-candidate-win-prompts must be non-negative"
+        )
     require_comparison = (
         require_pack_comparison
         or require_pack_candidate_win
         or (min_pack_candidate_wins is not None and min_pack_candidate_wins > 0)
+        or (
+            min_pack_candidate_win_prompts is not None
+            and min_pack_candidate_win_prompts > 0
+        )
     )
     diagnostic_count = 0
     pack_comparisons: list[CheckedPackComparison] = []
@@ -266,6 +288,13 @@ def check_mlx_forward_profile_artifacts(
     pack_candidate_win_count = sum(
         1 for comparison in pack_comparisons if comparison.verdict == "candidate win"
     )
+    pack_candidate_win_prompt_count = len(
+        {
+            comparison.prompt_tokens
+            for comparison in pack_comparisons
+            if comparison.verdict == "candidate win"
+        }
+    )
     if (
         min_pack_candidate_wins is not None
         and pack_candidate_win_count < min_pack_candidate_wins
@@ -275,10 +304,20 @@ def check_mlx_forward_profile_artifacts(
             f"{pack_candidate_win_count} candidate win(s), expected at least "
             f"{min_pack_candidate_wins}"
         )
+    if (
+        min_pack_candidate_win_prompts is not None
+        and pack_candidate_win_prompt_count < min_pack_candidate_win_prompts
+    ):
+        raise MlxForwardProfileArtifactError(
+            "pack comparison has candidate wins across "
+            f"{pack_candidate_win_prompt_count} prompt length(s), expected at least "
+            f"{min_pack_candidate_win_prompts}"
+        )
     return ForwardProfileCheckResult(
         artifact_count=len(artifacts),
         diagnostic_count=diagnostic_count,
         pack_candidate_win_count=pack_candidate_win_count,
+        pack_candidate_win_prompt_count=pack_candidate_win_prompt_count,
         pack_comparisons=pack_comparisons,
     )
 
@@ -291,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
             require_pack_comparison=args.require_pack_comparison,
             require_pack_candidate_win=args.require_pack_candidate_win,
             min_pack_candidate_wins=args.min_pack_candidate_wins,
+            min_pack_candidate_win_prompts=args.min_pack_candidate_win_prompts,
         )
     except MlxForwardProfileArtifactError as error:
         print(f"MLX forward profile artifact check failed: {error}", file=sys.stderr)
@@ -300,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{checked.diagnostic_count} diagnostics validated across "
         f"{checked.artifact_count} artifact(s); "
         f"{checked.pack_candidate_win_count} candidate win(s); "
+        f"{checked.pack_candidate_win_prompt_count} candidate-win prompt length(s); "
         f"{summarize_pack_comparisons(checked.pack_comparisons)}"
     )
     return 0
