@@ -3147,12 +3147,14 @@ fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
 /// **Why not wired**: the W2.a spike confirmed bit-exact correctness
 /// (`geglu_compiled_matches_imperative`) but production wiring crashed the
 /// server with `"There is no Stream(gpu, N) in current thread"` from
-/// `mlx_closure_apply` running on tokio worker threads. mlx-c's closure-apply
-/// path requires the calling thread to have an explicitly registered default
-/// GPU stream that matches the one baked into the compiled graph; we did
-/// not find a way to satisfy that contract cleanly from per-request worker
-/// threads. The helper is kept as a record of the math + the test as
-/// regression protection if the stream story is ever solved.
+/// `mlx_closure_apply` running on tokio worker threads. The follow-up source
+/// read found the relevant MLX 0.31 / mlx-c 0.6 contract: default streams,
+/// compiled-function cache entries, and Metal command encoders are all
+/// thread-local; `mlx_set_default_stream` does not register an existing stream
+/// index's encoder on another thread. The helper is kept as a record of the
+/// math + the test as regression protection if the stream story is ever solved.
+/// See
+/// `benchmarks/results/mlx-inference/2026-05-14-w2-stream-contract-source-read/stream-contract.md`.
 #[allow(dead_code)]
 fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
     static CACHED: OnceLock<Option<MlxClosure>> = OnceLock::new();
@@ -3217,11 +3219,14 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     //
     // mlx_lm wraps the gate-activation + multiply in `@partial(mx.compile,
     // shapeless=True) def geglu(gate, x)`. Wiring our equivalent
-    // `geglu` helper here was attempted under W2.a but reverted: mlx-c's
-    // `mlx_closure_apply` requires the calling thread to have an explicit
-    // default stream registered that matches the stream baked into the
-    // compiled graph, and we have not found a clean way to satisfy this
-    // contract for the tokio worker threads that drive decode requests.
+    // `geglu` helper here was attempted under W2.a but reverted. The source-read
+    // follow-up found that MLX default streams, compile cache entries, and Metal
+    // command encoders are thread-local; `mlx_set_default_stream` does not
+    // register an existing stream index's encoder on another thread. Running the
+    // compiled helper from per-request tokio worker threads therefore fails with
+    // `"There is no Stream(gpu, N) in current thread"`.
+    // See the tracked source-read artifact under
+    // `benchmarks/results/mlx-inference/2026-05-14-w2-stream-contract-source-read/`.
     // See `.internal/planning/MLX-DECODE-W2A-GEGLU-FINDINGS.md` for the
     // dead-end record (workarounds attempted + revert rationale). The
     // `geglu` helper is kept (and unit-tested) as a record of the math;
