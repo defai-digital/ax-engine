@@ -1135,10 +1135,6 @@ pub fn layer_forward_with_turboquant_context(
                     cfg.n_heads,
                     head_dim,
                     cfg.query_scale,
-                    turboquant_context
-                        .expect("ready TurboQuant candidate requires context")
-                        .config
-                        .hot_window_tokens,
                 );
                 let outcome = turboquant_out
                     .as_ref()
@@ -2298,7 +2294,6 @@ fn turboquant_decode_attention_experimental(
     n_heads: usize,
     head_dim: usize,
     query_scale: f32,
-    hot_window_tokens: usize,
 ) -> Option<TurboQuantExperimentalDecodeOutput> {
     if seq != 1 {
         return None;
@@ -2346,20 +2341,7 @@ fn turboquant_decode_attention_experimental(
         );
     }
 
-    let outputs = cache
-        .debug_turboquant_shadow_decode_attention_for_layer_with_total_tokens(
-            layer_idx,
-            &queries,
-            hot_window_tokens,
-            total_tokens,
-        )
-        .ok()?;
-    turboquant_attention_output_array(outputs, n_heads, head_dim, q_rope.dtype()).map(|attention| {
-        TurboQuantExperimentalDecodeOutput {
-            attention,
-            outcome: MlxKvCompressionDecodeOutcome::CpuOracle,
-        }
-    })
+    None
 }
 
 fn turboquant_attention_output_array(
@@ -3819,6 +3801,14 @@ mod tests {
     }
 
     fn turboquant_cache_with_runtime_storage_and_current_decode_token() -> MlxKVCache {
+        turboquant_cache_with_runtime_storage_and_current_decode_token_for_config(
+            turboquant_decode_config(),
+        )
+    }
+
+    fn turboquant_cache_with_runtime_storage_and_current_decode_token_for_config(
+        compression: MlxKvCompressionConfig,
+    ) -> MlxKVCache {
         let mut cache = MlxKVCache::new(1);
         let initial_elements = 2 * 6 * 128;
         let initial_k = zeros(&[1, 2, 6, 128], MlxDtype::Float32, None);
@@ -3833,7 +3823,7 @@ mod tests {
         );
         cache.append(0, initial_k, initial_v);
         cache.seq_len = 6;
-        cache.sync_turboquant_shadow_storage(&[None], turboquant_decode_config(), Some(&[true]));
+        cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
 
         let current_elements = 2 * 128;
         let current_k = zeros(&[1, 2, 1, 128], MlxDtype::Float32, None);
@@ -3968,7 +3958,6 @@ mod tests {
             2,
             128,
             (128.0_f32).sqrt().recip(),
-            turboquant_decode_config().hot_window_tokens,
         )
         .expect("ready TurboQuant decoder should decode from runtime storage");
         assert_eq!(actual.outcome, MlxKvCompressionDecodeOutcome::Metal);
@@ -4010,17 +3999,9 @@ mod tests {
             )
             .expect("runtime storage should decode scaled queries");
 
-        let actual = turboquant_decode_attention_experimental(
-            &cache,
-            0,
-            &q_rope,
-            1,
-            2,
-            128,
-            query_scale,
-            turboquant_decode_config().hot_window_tokens,
-        )
-        .expect("ready TurboQuant decoder should accept model-specific query scale");
+        let actual =
+            turboquant_decode_attention_experimental(&cache, 0, &q_rope, 1, 2, 128, query_scale)
+                .expect("ready TurboQuant decoder should accept model-specific query scale");
         assert_eq!(actual.outcome, MlxKvCompressionDecodeOutcome::Metal);
         eval(&[&actual.attention]);
 
@@ -4030,6 +4011,50 @@ mod tests {
         for (actual, expected) in actual_data.iter().zip(expected_data) {
             assert!((actual - expected).abs() <= 0.05);
         }
+    }
+
+    #[test]
+    fn turboquant_decode_attention_experimental_does_not_use_cpu_oracle_in_runtime_path() {
+        let mut compression = turboquant_decode_config();
+        compression.preset = MlxTurboQuantPreset::K4V4;
+        let cache =
+            turboquant_cache_with_runtime_storage_and_current_decode_token_for_config(compression);
+        let q_data = (0..(2 * 128))
+            .map(|idx| ((idx % 29) as f32 - 14.0) / 41.0)
+            .collect::<Vec<_>>();
+        let q_rope = MlxArray::from_raw_data(
+            q_data.as_ptr().cast(),
+            q_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 1, 128],
+            MlxDtype::Float32,
+        );
+        let queries = q_data
+            .chunks_exact(128)
+            .map(|chunk| chunk.to_vec())
+            .collect::<Vec<_>>();
+        cache
+            .debug_turboquant_shadow_decode_attention_for_layer_with_total_tokens(
+                0,
+                &queries,
+                compression.hot_window_tokens,
+                7,
+            )
+            .expect("CPU oracle remains available for debug comparisons");
+
+        let actual = turboquant_decode_attention_experimental(
+            &cache,
+            0,
+            &q_rope,
+            1,
+            2,
+            128,
+            (128.0_f32).sqrt().recip(),
+        );
+
+        assert!(
+            actual.is_none(),
+            "runtime path should fall back to full-precision SDPA instead of CPU oracle"
+        );
     }
 
     fn gemma4_interleaved_manifest() -> NativeModelManifest {
