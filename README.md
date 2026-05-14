@@ -864,7 +864,14 @@ cargo clippy --all-targets --all-features -- -D warnings         # lint (CI gate
 cargo fmt                                                         # format
 maturin develop                                                   # rebuild Python extension
 python -m unittest discover -s python/tests -v                   # Python tests
+bash scripts/check-mlx-telemetry.sh                              # Gemma/AX MLX telemetry gate
 ```
+
+For Gemma/AX MLX telemetry and decode-profile changes, prefer the targeted
+`scripts/check-mlx-telemetry.sh` gate. Use
+`scripts/check-mlx-telemetry.sh --full-workspace` when the change touches shared
+Rust contracts; that protected path compiles the workspace with
+`cargo test --workspace --no-run --jobs 1` before running crate-by-crate tests.
 
 Coverage is collected by the report-only GitHub Actions workflow in
 `.github/workflows/coverage.yml`. It publishes Rust `cargo llvm-cov` and Python
