@@ -54,6 +54,12 @@ FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS = {
     "sliding_window": "ax_mlx_kv_compression_fused_decode_blocked_sliding_window",
     "kv_shared": "ax_mlx_kv_compression_fused_decode_blocked_kv_shared",
 }
+FUSED_DECODE_TIMING_COUNTERS = {
+    "query_readback": "ax_mlx_kv_compression_fused_decode_query_readback_wall_us",
+    "cold_metal": "ax_mlx_kv_compression_fused_decode_cold_metal_wall_us",
+    "hot_tail_merge": "ax_mlx_kv_compression_fused_decode_hot_tail_merge_wall_us",
+    "output_staging": "ax_mlx_kv_compression_fused_decode_output_staging_wall_us",
+}
 
 QUALITY_GATES = {
     "reference_k8v4": {
@@ -200,6 +206,11 @@ def route_truth_surface(route_metadata: dict[str, Any]) -> dict[str, Any]:
         label: _optional_int(decisions, key)
         for label, key in FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS.items()
     }
+    timing_counters = {
+        label: _optional_int(decisions, key)
+        for label, key in FUSED_DECODE_TIMING_COUNTERS.items()
+        if key in decisions
+    }
     blocked_total = sum(value for value in blocked_counters.values() if isinstance(value, int))
     blocked_reasons = [
         label
@@ -220,7 +231,7 @@ def route_truth_surface(route_metadata: dict[str, Any]) -> dict[str, Any]:
     )
     zero_fallbacks = fallbacks == 0 and fallback_reason == 0
 
-    return {
+    truth = {
         "decode_path_code": decode_path,
         "decode_path_label": DECODE_PATH_LABELS.get(
             decode_path,
@@ -245,6 +256,9 @@ def route_truth_surface(route_metadata: dict[str, Any]) -> dict[str, Any]:
         "zero_fallbacks": zero_fallbacks,
         "promotion_path_ready": fused_path_selected and fused_success_observed and zero_fallbacks,
     }
+    if timing_counters:
+        truth["fused_decode_timing_wall_us"] = timing_counters
+    return truth
 
 
 def performance_gate_blockers(metrics: dict[str, Any]) -> list[str]:
@@ -379,6 +393,20 @@ def _validate_route_metadata(route_metadata: dict[str, Any]) -> None:
             _integer(decisions[key], f"fused decode blocked attention kind {label}") >= 0,
             f"route metadata attention-kind blocked counter {label} must be non-negative",
         )
+    present_timing_keys = {
+        key for key in FUSED_DECODE_TIMING_COUNTERS.values() if key in decisions
+    }
+    if present_timing_keys:
+        missing = sorted(set(FUSED_DECODE_TIMING_COUNTERS.values()) - present_timing_keys)
+        _require(
+            not missing,
+            "route metadata missing fused decode timing keys: " + ", ".join(missing),
+        )
+        for label, key in FUSED_DECODE_TIMING_COUNTERS.items():
+            _require(
+                _integer(decisions[key], f"fused decode timing {label}") >= 0,
+                f"route metadata fused decode timing {label} must be non-negative",
+            )
 
 
 def _validate_runtime_truth(doc: dict[str, Any], route_metadata: dict[str, Any]) -> None:
