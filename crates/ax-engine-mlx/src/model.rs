@@ -12,6 +12,7 @@ use std::time::Instant;
 use ax_engine_core::{MlxKvCompressionConfig, MlxTurboQuantPreset, NativeModelManifest};
 
 use crate::attention_mask::create_causal_mask;
+use crate::fastpath;
 use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeCandidate, MlxKvCompressionDecodeOutcome};
 use crate::linear_attention::{
     gated_delta_kernel, linear_attention_conv1d, normalize_linear_attention_qk, rms_norm_gated,
@@ -423,7 +424,13 @@ impl<'a> TurboQuantModelDecodeContext<'a> {
         kv_source: Option<usize>,
         has_glm_mla_attention: bool,
     ) -> TurboQuantModelDecodeCandidate {
-        let status = if !self.config.requests_fused_decode() {
+        let status = if !self.config.requests_fused_decode()
+            || fastpath::turboquant_fused_decode_disabled()
+        {
+            // AX_DISABLE_TURBOQUANT_FUSED_DECODE collapses to the same
+            // `Disabled` telemetry bucket as a config-time disable; the env
+            // path exists so same-session A/B benchmarks can flip the
+            // optimization without rebuilding the manifest.
             TurboQuantModelDecodeCandidateStatus::Disabled
         } else if seq != 1 {
             TurboQuantModelDecodeCandidateStatus::PrefillOnly
