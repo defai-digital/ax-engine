@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode};
 use mlx_sys::{MlxArray, MlxDtype, astype, eval, slice, slice_update, zeros};
 
@@ -16,6 +18,10 @@ use crate::turboquant_metal::{
 /// the logical sequence length exceeds capacity, so the number of grow operations
 /// per session is at most ceil(total_tokens / CHUNK).
 const KV_CHUNK_TOKENS: usize = 256;
+
+fn elapsed_us_u64(started: Instant) -> u64 {
+    started.elapsed().as_micros().min(u64::MAX as u128) as u64
+}
 
 fn chunk_ceiling(n: usize) -> usize {
     n.div_ceil(KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS
@@ -386,6 +392,10 @@ pub struct MlxKvCompressionUsage {
     pub fused_decode_blocked_unsupported_head_dim: u64,
     pub fused_decode_blocked_gqa: u64,
     pub fused_decode_blocked_missing_storage: u64,
+    pub fused_decode_query_readback_wall_us: u64,
+    pub fused_decode_cold_metal_wall_us: u64,
+    pub fused_decode_hot_tail_merge_wall_us: u64,
+    pub fused_decode_output_staging_wall_us: u64,
     /// 0 disabled, 1 compression storage active, 2 short context, 3 no eligible layer.
     pub status_code: u32,
     pub preset_code: u32,
@@ -422,6 +432,10 @@ pub struct MlxKvCompressionDecodeUsage {
     pub fused_decode_blocked_unsupported_head_dim: u64,
     pub fused_decode_blocked_gqa: u64,
     pub fused_decode_blocked_missing_storage: u64,
+    pub fused_decode_query_readback_wall_us: u64,
+    pub fused_decode_cold_metal_wall_us: u64,
+    pub fused_decode_hot_tail_merge_wall_us: u64,
+    pub fused_decode_output_staging_wall_us: u64,
 }
 
 impl MlxKvCompressionUsage {
@@ -474,7 +488,33 @@ impl MlxKvCompressionUsage {
         self.fused_decode_blocked_missing_storage = self
             .fused_decode_blocked_missing_storage
             .saturating_add(usage.fused_decode_blocked_missing_storage);
+        self.fused_decode_query_readback_wall_us = self
+            .fused_decode_query_readback_wall_us
+            .saturating_add(usage.fused_decode_query_readback_wall_us);
+        self.fused_decode_cold_metal_wall_us = self
+            .fused_decode_cold_metal_wall_us
+            .saturating_add(usage.fused_decode_cold_metal_wall_us);
+        self.fused_decode_hot_tail_merge_wall_us = self
+            .fused_decode_hot_tail_merge_wall_us
+            .saturating_add(usage.fused_decode_hot_tail_merge_wall_us);
+        self.fused_decode_output_staging_wall_us = self
+            .fused_decode_output_staging_wall_us
+            .saturating_add(usage.fused_decode_output_staging_wall_us);
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MlxKvCompressionFusedDecodeTiming {
+    pub query_readback_wall_us: u64,
+    pub cold_metal_wall_us: u64,
+    pub hot_tail_merge_wall_us: u64,
+    pub output_staging_wall_us: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MlxTurboQuantFusedDecodeAttention {
+    pub outputs: Vec<Vec<f32>>,
+    pub timing: MlxKvCompressionFusedDecodeTiming,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1154,6 +1194,31 @@ impl MlxKVCache {
         }
     }
 
+    pub fn record_turboquant_fused_decode_timing(
+        &mut self,
+        timing: MlxKvCompressionFusedDecodeTiming,
+    ) {
+        self.turboquant_decode_usage
+            .fused_decode_query_readback_wall_us = self
+            .turboquant_decode_usage
+            .fused_decode_query_readback_wall_us
+            .saturating_add(timing.query_readback_wall_us);
+        self.turboquant_decode_usage.fused_decode_cold_metal_wall_us = self
+            .turboquant_decode_usage
+            .fused_decode_cold_metal_wall_us
+            .saturating_add(timing.cold_metal_wall_us);
+        self.turboquant_decode_usage
+            .fused_decode_hot_tail_merge_wall_us = self
+            .turboquant_decode_usage
+            .fused_decode_hot_tail_merge_wall_us
+            .saturating_add(timing.hot_tail_merge_wall_us);
+        self.turboquant_decode_usage
+            .fused_decode_output_staging_wall_us = self
+            .turboquant_decode_usage
+            .fused_decode_output_staging_wall_us
+            .saturating_add(timing.output_staging_wall_us);
+    }
+
     pub fn record_turboquant_decode_candidate(
         &mut self,
         candidate: MlxKvCompressionDecodeCandidate,
@@ -1816,14 +1881,42 @@ impl MlxKVCache {
         queries: &[Vec<f32>],
         total_tokens: usize,
     ) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
+        self.debug_turboquant_shadow_decode_attention_metal_timed_for_layer_with_total_tokens(
+            layer,
+            queries,
+            total_tokens,
+        )
+        .map(|attention| attention.outputs)
+    }
+
+    pub fn debug_turboquant_shadow_decode_attention_metal_timed_for_layer_with_total_tokens(
+        &self,
+        layer: usize,
+        queries: &[Vec<f32>],
+        total_tokens: usize,
+    ) -> Result<MlxTurboQuantFusedDecodeAttention, TurboQuantCodecError> {
+        let cold_started = Instant::now();
         let cold_stats =
             self.debug_turboquant_shadow_decode_cold_stats_metal(layer, queries, total_tokens)?;
-        self.merge_turboquant_shadow_decode_cold_stats_with_hot_tail(
+        let cold_metal_wall_us = elapsed_us_u64(cold_started);
+
+        let merge_started = Instant::now();
+        let outputs = self.merge_turboquant_shadow_decode_cold_stats_with_hot_tail(
             layer,
             queries,
             total_tokens,
             &cold_stats,
-        )
+        )?;
+        let hot_tail_merge_wall_us = elapsed_us_u64(merge_started);
+
+        Ok(MlxTurboQuantFusedDecodeAttention {
+            outputs,
+            timing: MlxKvCompressionFusedDecodeTiming {
+                cold_metal_wall_us,
+                hot_tail_merge_wall_us,
+                ..MlxKvCompressionFusedDecodeTiming::default()
+            },
+        })
     }
 
     fn debug_turboquant_shadow_decode_cold_stats_cpu(
@@ -2389,6 +2482,10 @@ mod tests {
             fused_decode_blocked_unsupported_head_dim: 15,
             fused_decode_blocked_gqa: 16,
             fused_decode_blocked_missing_storage: 17,
+            fused_decode_query_readback_wall_us: 18,
+            fused_decode_cold_metal_wall_us: 19,
+            fused_decode_hot_tail_merge_wall_us: 20,
+            fused_decode_output_staging_wall_us: 21,
         });
 
         assert_eq!(usage.fused_decode_attempts, 7);
@@ -2407,6 +2504,10 @@ mod tests {
         assert_eq!(usage.fused_decode_blocked_unsupported_head_dim, 15);
         assert_eq!(usage.fused_decode_blocked_gqa, 16);
         assert_eq!(usage.fused_decode_blocked_missing_storage, 17);
+        assert_eq!(usage.fused_decode_query_readback_wall_us, 18);
+        assert_eq!(usage.fused_decode_cold_metal_wall_us, 19);
+        assert_eq!(usage.fused_decode_hot_tail_merge_wall_us, 20);
+        assert_eq!(usage.fused_decode_output_staging_wall_us, 21);
     }
 
     #[test]
