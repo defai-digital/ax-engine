@@ -1,0 +1,223 @@
+{
+  "baseline": {
+    "generation_tokens": 256,
+    "metrics": {
+      "measurement_reason": "diagnostic grid baseline shape only",
+      "measurement_status": "not_run"
+    },
+    "policy_id": "disabled",
+    "prompt_tokens": 8192,
+    "route": {
+      "selected_backend": "mlx",
+      "support_tier": "repo_owned_runtime"
+    }
+  },
+  "best_candidate": {
+    "policy_id": "disabled-hot256-full_attention_only-fail_closed-reference_k8v4"
+  },
+  "candidates": [
+    {
+      "deterministic_replay_passed": false,
+      "fallback_count": 0,
+      "fallback_tokens": 0,
+      "generation_tokens": 256,
+      "metrics": {
+        "measurement_reason": "grid enumeration only",
+        "measurement_status": "not_run"
+      },
+      "policy": {
+        "eligible_layer_mask": "full_attention_only",
+        "fallback_policy": "fail_closed",
+        "hot_window_tokens": 256,
+        "kv_preset": "disabled",
+        "quality_profile": "reference_k8v4"
+      },
+      "policy_id": "disabled-hot256-full_attention_only-fail_closed-reference_k8v4",
+      "prompt_tokens": 8192,
+      "quality_gate_passed": false,
+      "route": {
+        "selected_backend": "mlx",
+        "support_tier": "repo_owned_runtime"
+      },
+      "route_metadata": {
+        "candidate_source": "turboquant_kv_policy_grid",
+        "eligible_layer_mask": "full_attention_only",
+        "fallback_policy": "fail_closed",
+        "hot_window_tokens": 256,
+        "kv_preset": "disabled",
+        "quality_profile": "reference_k8v4"
+      },
+      "seed": 42
+    },
+    {
+      "deterministic_replay_passed": false,
+      "fallback_count": 0,
+      "fallback_tokens": 0,
+      "generation_tokens": 256,
+      "metrics": {
+        "measurement_reason": "grid enumeration only",
+        "measurement_status": "not_run"
+      },
+      "policy": {
+        "eligible_layer_mask": "full_attention_only",
+        "fallback_policy": "fail_closed",
+        "hot_window_tokens": 512,
+        "kv_preset": "disabled",
+        "quality_profile": "reference_k8v4"
+      },
+      "policy_id": "disabled-hot512-full_attention_only-fail_closed-reference_k8v4",
+      "prompt_tokens": 8192,
+      "quality_gate_passed": false,
+      "route": {
+        "selected_backend": "mlx",
+        "support_tier": "repo_owned_runtime"
+      },
+      "route_metadata": {
+        "candidate_source": "turboquant_kv_policy_grid",
+        "eligible_layer_mask": "full_attention_only",
+        "fallback_policy": "fail_closed",
+        "hot_window_tokens": 512,
+        "kv_preset": "disabled",
+        "quality_profile": "reference_k8v4"
+      },
+      "seed": 42
+    },
+    {
+      "deterministic_replay_passed": false,
+      "fallback_count": 0,
+      "fallback_tokens": 0,
+      "generation_tokens": 256,
+      "metrics": {
+        "measurement_reason": "grid enumeration only",
+        "measurement_status": "not_run"
+      },
+      "policy": {
+        "eligible_layer_mask": "full_attention_only",
+        "fallback_policy": "fail_closed",
+        "hot_window_tokens": 256,
+        "kv_preset": "TurboQuantK8V4",
+        "quality_profile": "reference_k8v4"
+      },
+      "policy_id": "tqk8v4-hot256-full_attention_only-fail_closed-reference_k8v4",
+      "prompt_tokens": 8192,
+      "quality_gate_passed": false,
+      "route": {
+        "selected_backend": "mlx",
+        "support_tier": "repo_owned_runtime"
+      },
+      "route_metadata": {
+        "candidate_source": "turboquant_kv_policy_grid",
+        "eligible_layer_mask": "full_attention_only",
+        "fallback_policy": "fail_closed",
+        "hot_window_tokens": 256,
+        "kv_preset": "TurboQuantK8V4",
+        "quality_profile": "reference_k8v4"
+      },
+      "seed": 42
+    },
+    {
+      "deterministic_replay_passed": false,
+      "fallback_count": 0,
+      "fallback_tokens": 0,
+      "generation_tokens": 256,
+      "metrics": {
+        "measurement_reason": "grid enumeration only",
+        "measurement_status": "not_run"
+      },
+      "policy": {
+        "eligible_layer_mask": "full_attention_only",
+        "fallback_policy": "fail_closed",
+        "hot_window_tokens": 512,
+        "kv_preset": "TurboQuantK8V4",
+        "quality_profile": "reference_k8v4"
+      },
+      "policy_id": "tqk8v4-hot512-full_attention_only-fail_closed-reference_k8v4",
+      "prompt_tokens": 8192,
+      "quality_gate_passed": false,
+      "route": {
+        "selected_backend": "mlx",
+        "support_tier": "repo_owned_runtime"
+      },
+      "route_metadata": {
+        "candidate_source": "turboquant_kv_policy_grid",
+        "eligible_layer_mask": "full_attention_only",
+        "fallback_policy": "fail_closed",
+        "hot_window_tokens": 512,
+        "kv_preset": "TurboQuantK8V4",
+        "quality_profile": "reference_k8v4"
+      },
+      "seed": 42
+    }
+  ],
+  "created_at": "2026-05-14T00:00:00Z",
+  "decision": {
+    "classification": "diagnostic_only",
+    "reason": "TurboQuant KV policy grid enumerated for later measurement; candidate metrics are not performance evidence"
+  },
+  "model": {
+    "artifacts_dir": ".internal/models/gemma-4-e2b-it-4bit",
+    "family": "gemma4",
+    "id": "gemma-4-e2b-it-4bit",
+    "manifest_digest": "sha256:df579eb10d3812e1c0f9dd545bda80a9da545249d49c91691c56648143662a47"
+  },
+  "objective": {
+    "hard_constraints": [
+      "quality_gate_pass",
+      "deterministic_replay_pass",
+      "selected_backend_mlx"
+    ],
+    "maximize": [
+      "decode_tok_s",
+      "kv_saved_bytes"
+    ],
+    "minimize": [
+      "ttft_ms",
+      "fallback_tokens"
+    ]
+  },
+  "repo": {
+    "changed_files": [
+      "README.md",
+      "docs/assets/perf-decode-box-whisker.svg",
+      "docs/assets/perf-prefill-box-whisker.svg",
+      "docs/assets/perf-ttft-box-whisker.svg",
+      "benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r3/"
+    ],
+    "commit": "85646f66",
+    "dirty": true
+  },
+  "route": {
+    "selected_backend": "mlx",
+    "support_tier": "repo_owned_runtime"
+  },
+  "schema": "ax.offline_policy_search.v1",
+  "search": {
+    "algorithm": "grid",
+    "budget": {
+      "max_candidates": 4,
+      "max_wall_time_seconds": 3600
+    },
+    "seed": 42,
+    "space": {
+      "eligible_layer_mask": [
+        "full_attention_only"
+      ],
+      "fallback_policy": [
+        "fail_closed"
+      ],
+      "hot_window_tokens": [
+        256,
+        512
+      ],
+      "kv_preset": [
+        "disabled",
+        "TurboQuantK8V4"
+      ],
+      "quality_profile": [
+        "reference_k8v4"
+      ]
+    }
+  },
+  "status": "diagnostic_only",
+  "target": "turboquant_kv_policy"
+}
