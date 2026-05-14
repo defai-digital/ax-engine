@@ -47,6 +47,9 @@ SHA = "a" * 64
 BLOCKED_COUNTER_ZEROS = {
     key: 0 for key in checker.FUSED_DECODE_BLOCKED_COUNTERS.values()
 }
+BLOCKED_COUNTER_ZEROS.update(
+    {key: 0 for key in checker.FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS.values()}
+)
 
 
 def valid_artifact(root: Path) -> dict:
@@ -553,6 +556,37 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             self.assertFalse(truth["zero_fallbacks"])
             self.assertFalse(truth["promotion_path_ready"])
 
+    def test_route_truth_surface_reports_attention_kind_subreasons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            decisions = artifact["route_metadata"]["crossover_decisions"]
+            decisions["ax_mlx_kv_compression_decode_path"] = 1
+            decisions["ax_mlx_kv_compression_fused_decode_attempts"] = 0
+            decisions["ax_mlx_kv_compression_fused_decode_successes"] = 0
+            decisions["ax_mlx_kv_compression_fused_decode_metal_successes"] = 0
+            decisions["ax_mlx_kv_compression_fused_decode_fallback_reason"] = 4
+            decisions["ax_mlx_kv_compression_fused_decode_blocked_attention_kind"] = 5
+            decisions["ax_mlx_kv_compression_fused_decode_blocked_glm_mla"] = 2
+            decisions["ax_mlx_kv_compression_fused_decode_blocked_sliding_window"] = 3
+
+            truth = checker.route_truth_surface(artifact["route_metadata"])
+
+            self.assertEqual(truth["fused_decode_blocked_total"], 5)
+            self.assertEqual(truth["fused_decode_blocked_reasons"], ["attention_kind"])
+            self.assertEqual(
+                truth["fused_decode_blocked_attention_kind_reasons"],
+                ["glm_mla", "sliding_window"],
+            )
+            self.assertEqual(
+                truth["fused_decode_blocked_attention_kind_counters"]["glm_mla"],
+                2,
+            )
+            self.assertEqual(
+                truth["fused_decode_blocked_attention_kind_counters"]["sliding_window"],
+                3,
+            )
+
     def test_stale_runtime_production_blockers_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1002,6 +1036,26 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                     "decode successes are captured"
                 ),
             )
+
+    def test_readiness_next_action_includes_attention_kind_subreasons(self) -> None:
+        self.assertEqual(
+            readiness.runtime_truth_next_action(
+                {
+                    "fused_decode_blocked_reasons": [
+                        "attention_kind",
+                        "missing_storage",
+                    ],
+                    "fused_decode_blocked_attention_kind_reasons": [
+                        "glm_mla",
+                        "sliding_window",
+                    ],
+                }
+            ),
+            (
+                "fix fused decode blockers before rerun: "
+                "attention_kind (glm_mla, sliding_window), missing_storage"
+            ),
+        )
 
     def test_readiness_derives_dense_full_attention_layers_from_tensor_roles(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

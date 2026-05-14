@@ -83,7 +83,12 @@ Current status as of 2026-05-14:
   `kv_compression_fused_decode_blocked_reasons`, so raw benchmark output,
   quality artifacts, and readiness summaries use the same blocker vocabulary.
   Follow-up guardrails now test the final benchmark row output and assert that
-  benchmark blocker keys stay aligned with the quality-gate checker contract;
+  benchmark blocker keys stay aligned with the quality-gate checker contract.
+  R2 Phase 2a is now implemented: the runtime keeps the existing aggregate
+  `attention_kind` blocker while also emitting subreason counters for
+  linear-attention, GLM MLA, sliding-window, and KV-shared layers. New benchmark
+  rows, quality artifacts, and readiness next actions can report those
+  subreasons without double-counting the aggregate blocked total;
 - TurboQuant public/runtime promotion remains blocked because no artifact passes
   the stricter long-context fused-path quality gate with the full real-runner
   truth surface.
@@ -374,11 +379,15 @@ Implementation sequence:
 2. Add a real-runner selection point that can report whether an eligible decode
    step selected `fused_compressed_decode`, `full_precision_hot_window`, or a
    named fallback.
-3. Validate kernel output against the CPU all-head oracle for the same compressed
+3. Split coarse blocker counters into actionable subreasons before rerunning the
+   promotion artifact. In particular, `attention_kind` must identify whether the
+   blocker came from linear attention, GLM MLA, sliding-window attention, or
+   KV-shared layers while preserving the aggregate counter for compatibility.
+4. Validate kernel output against the CPU all-head oracle for the same compressed
    buffer and query shape.
-4. Add long-context repeated benchmarks for one conservative shape, initially
+5. Add long-context repeated benchmarks for one conservative shape, initially
    `K8V4`, `head_dim=128`, full-attention layers only.
-5. Promote only if fused compressed decode is selected on the real runner path
+6. Promote only if fused compressed decode is selected on the real runner path
    with zero unexplained fallbacks and a measured long-context capacity or decode
    win.
 
@@ -476,8 +485,8 @@ The recommended order is:
    TurboQuant promotion**).
 4. README/Python provenance and smoke-test guardrails (**done**).
 5. R2 conservative fused compressed decode real-runner gate (**active
-   blocker; Phase 1 truth surface is done, Phase 2 real-runner kernel gate
-   remains**).
+   blocker; Phase 1 truth surface and Phase 2a actionable blocker subreason
+   telemetry are done, and Phase 2b real-runner kernel gate remains**).
 6. R4 adaptive n-gram policy search once telemetry is complete (**deferred**).
 7. R5 MoE locality profiling, then search only if profiling identifies a real
    locality bottleneck.
@@ -753,7 +762,7 @@ Current readiness probe result:
   ],
   "performance_blocker_summary": [
     {
-      "quality_blocker": "route metadata missing required keys: ax_mlx_kv_compression_fused_decode_metal_successes",
+      "quality_blocker": "route metadata missing required keys: ax_mlx_kv_compression_fused_decode_blocked_glm_mla, ax_mlx_kv_compression_fused_decode_blocked_kv_shared, ax_mlx_kv_compression_fused_decode_blocked_linear_attention, ax_mlx_kv_compression_fused_decode_blocked_sliding_window, ax_mlx_kv_compression_fused_decode_metal_successes",
       "next_action": "fix fused decode blockers before rerun: attention_kind",
       "runtime_truth": {
         "decode_path_label": "fused_compressed_decode",
@@ -763,6 +772,7 @@ Current readiness probe result:
         "fused_decode_blocked_reasons": [
           "attention_kind"
         ],
+        "fused_decode_blocked_attention_kind_reasons": [],
         "promotion_path_ready": false
       }
     }

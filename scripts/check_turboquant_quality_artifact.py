@@ -48,6 +48,12 @@ FUSED_DECODE_BLOCKED_COUNTERS = {
     "gqa": "ax_mlx_kv_compression_fused_decode_blocked_gqa",
     "missing_storage": "ax_mlx_kv_compression_fused_decode_blocked_missing_storage",
 }
+FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS = {
+    "linear_attention": "ax_mlx_kv_compression_fused_decode_blocked_linear_attention",
+    "glm_mla": "ax_mlx_kv_compression_fused_decode_blocked_glm_mla",
+    "sliding_window": "ax_mlx_kv_compression_fused_decode_blocked_sliding_window",
+    "kv_shared": "ax_mlx_kv_compression_fused_decode_blocked_kv_shared",
+}
 
 QUALITY_GATES = {
     "reference_k8v4": {
@@ -75,7 +81,9 @@ REQUIRED_ROUTE_KEYS = {
     "ax_mlx_kv_compression_fused_decode_metal_successes",
     "ax_mlx_kv_compression_fused_decode_fallbacks",
     "ax_mlx_kv_compression_fused_decode_fallback_reason",
-} | set(FUSED_DECODE_BLOCKED_COUNTERS.values())
+} | set(FUSED_DECODE_BLOCKED_COUNTERS.values()) | set(
+    FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS.values()
+)
 
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -188,10 +196,19 @@ def route_truth_surface(route_metadata: dict[str, Any]) -> dict[str, Any]:
         label: _optional_int(decisions, key)
         for label, key in FUSED_DECODE_BLOCKED_COUNTERS.items()
     }
+    attention_kind_counters = {
+        label: _optional_int(decisions, key)
+        for label, key in FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS.items()
+    }
     blocked_total = sum(value for value in blocked_counters.values() if isinstance(value, int))
     blocked_reasons = [
         label
         for label, value in blocked_counters.items()
+        if isinstance(value, int) and value > 0
+    ]
+    attention_kind_reasons = [
+        label
+        for label, value in attention_kind_counters.items()
         if isinstance(value, int) and value > 0
     ]
     fused_path_selected = decode_path == 2
@@ -221,6 +238,8 @@ def route_truth_surface(route_metadata: dict[str, Any]) -> dict[str, Any]:
         "fused_decode_blocked_counters": blocked_counters,
         "fused_decode_blocked_total": blocked_total,
         "fused_decode_blocked_reasons": blocked_reasons,
+        "fused_decode_blocked_attention_kind_counters": attention_kind_counters,
+        "fused_decode_blocked_attention_kind_reasons": attention_kind_reasons,
         "fused_path_selected": fused_path_selected,
         "fused_success_observed": fused_success_observed,
         "zero_fallbacks": zero_fallbacks,
@@ -354,6 +373,11 @@ def _validate_route_metadata(route_metadata: dict[str, Any]) -> None:
         _require(
             _integer(decisions[key], f"fused decode blocked {label}") >= 0,
             f"route metadata blocked counter {label} must be non-negative",
+        )
+    for label, key in FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS.items():
+        _require(
+            _integer(decisions[key], f"fused decode blocked attention kind {label}") >= 0,
+            f"route metadata attention-kind blocked counter {label} must be non-negative",
         )
 
 

@@ -384,11 +384,17 @@ impl TurboQuantModelDecodeCandidate {
             TurboQuantModelDecodeCandidateStatus::PrefillOnly => {
                 MlxKvCompressionDecodeCandidate::PrefillOnly
             }
-            TurboQuantModelDecodeCandidateStatus::LinearAttentionLayer
-            | TurboQuantModelDecodeCandidateStatus::GlmMlaLayer
-            | TurboQuantModelDecodeCandidateStatus::SlidingWindowLayer
-            | TurboQuantModelDecodeCandidateStatus::KvSharedLayer => {
-                MlxKvCompressionDecodeCandidate::AttentionKind
+            TurboQuantModelDecodeCandidateStatus::LinearAttentionLayer => {
+                MlxKvCompressionDecodeCandidate::LinearAttention
+            }
+            TurboQuantModelDecodeCandidateStatus::GlmMlaLayer => {
+                MlxKvCompressionDecodeCandidate::GlmMla
+            }
+            TurboQuantModelDecodeCandidateStatus::SlidingWindowLayer => {
+                MlxKvCompressionDecodeCandidate::SlidingWindow
+            }
+            TurboQuantModelDecodeCandidateStatus::KvSharedLayer => {
+                MlxKvCompressionDecodeCandidate::KvShared
             }
             TurboQuantModelDecodeCandidateStatus::IneligibleLayer => {
                 MlxKvCompressionDecodeCandidate::IneligibleLayer

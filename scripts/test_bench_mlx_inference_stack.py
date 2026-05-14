@@ -61,6 +61,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             bench.KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS,
             turboquant_checker.FUSED_DECODE_BLOCKED_COUNTERS,
         )
+        self.assertEqual(
+            bench.KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS,
+            turboquant_checker.FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS,
+        )
 
     def test_parse_mlx_lm_trials_and_reported_averages(self) -> None:
         parsed = bench.parse_mlx_lm_benchmark_output(
@@ -241,6 +245,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 "ax_mlx_kv_compression_decode_path": 1,
                 "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
                 "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 2,
+                "ax_mlx_kv_compression_fused_decode_blocked_glm_mla": 2,
                 "ax_mlx_kv_compression_fused_decode_blocked_missing_storage": 1,
             },
         }
@@ -268,6 +273,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(
             row["kv_compression_fused_decode_blocked_reasons"],
             ["attention_kind", "missing_storage"],
+        )
+        self.assertEqual(
+            row["kv_compression_fused_decode_blocked_attention_kind_total"],
+            2,
+        )
+        self.assertEqual(
+            row["kv_compression_fused_decode_blocked_attention_kind_reasons"],
+            ["glm_mla"],
         )
 
     def test_axengine_summary_can_label_linear_attention_pack_row(self) -> None:
@@ -1498,6 +1511,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                     "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
                     "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 2,
+                    "ax_mlx_kv_compression_fused_decode_blocked_glm_mla": 2,
                     "ax_mlx_kv_compression_fused_decode_blocked_missing_storage": 1,
                     "unrelated": 99,
                 }
@@ -1519,6 +1533,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1)
         self.assertEqual(
             telemetry["ax_mlx_kv_compression_fused_decode_blocked_attention_kind"],
+            2,
+        )
+        self.assertEqual(
+            telemetry["ax_mlx_kv_compression_fused_decode_blocked_glm_mla"],
             2,
         )
         self.assertEqual(
@@ -1546,6 +1564,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                         "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
                         "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 3,
+                        "ax_mlx_kv_compression_fused_decode_blocked_glm_mla": 1,
+                        "ax_mlx_kv_compression_fused_decode_blocked_sliding_window": 2,
                         "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim": 4,
                     }
                 },
@@ -1575,6 +1595,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             5,
         )
         self.assertEqual(
+            summary["ax_mlx_kv_compression_fused_decode_blocked_glm_mla"],
+            3,
+        )
+        self.assertEqual(
+            summary["ax_mlx_kv_compression_fused_decode_blocked_sliding_window"],
+            2,
+        )
+        self.assertEqual(
             summary["ax_mlx_kv_compression_fused_decode_blocked_missing_storage"],
             1,
         )
@@ -1599,6 +1627,22 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "unsupported_head_dim": 4,
                     "gqa": 0,
                     "missing_storage": 1,
+                },
+            },
+        )
+        self.assertEqual(
+            bench.kv_compression_fused_decode_blocked_attention_kind_summary(summary),
+            {
+                "total": 5,
+                "reasons": [
+                    "glm_mla",
+                    "sliding_window",
+                ],
+                "counters": {
+                    "linear_attention": 0,
+                    "glm_mla": 3,
+                    "sliding_window": 2,
+                    "kv_shared": 0,
                 },
             },
         )
