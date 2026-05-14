@@ -20,6 +20,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
 "$PYTHON_BIN" -m py_compile \
   scripts/bench_ax_serving.py \
   scripts/test_bench_ax_serving.py \
+  scripts/check_ax_serving_benchmark_artifact.py \
+  scripts/test_ax_serving_benchmark_artifact.py \
   scripts/bench_mlx_inference_stack.py \
   scripts/test_bench_mlx_inference_stack.py \
   scripts/build_mlx_prefill_scaling_artifact.py \
@@ -93,6 +95,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_profile_kv_multiturn_chat_evidence.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
+  scripts/test_ax_serving_benchmark_artifact.py \
   scripts/test_update_readme_from_bench.py \
   scripts/test_update_readme_from_results.py \
   scripts/test_offline_policy_search_artifact.py \

@@ -313,6 +313,17 @@ shape-compatible `pp`/`tg` rows are not depth-aware enough for this claim. Add
 extra `llama-bench -p 0 -n <generation> -d <prompt>` pass needed for
 `--require-llama-cpp` decode-at-depth reports.
 
+Online long-prompt serving claims use `ax.serving_benchmark.v1`, not the
+fixed-shape inference-stack artifacts. Validate them with:
+
+```text
+python3 scripts/check_ax_serving_benchmark_artifact.py \
+  benchmarks/results/serving/<artifact>.json \
+  --min-input-tokens-p95 8192 \
+  --require-slo \
+  --min-goodput-ratio 0.95
+```
+
 The latest checked-in real-model P1 example is:
 
 - [Qwen3-4B-4bit prefill scaling, 2026-05-07](../benchmarks/results/mlx-inference/2026-05-07-real-p1/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md)
