@@ -1,8 +1,8 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask, add,
-    argpartition_axis, argsort_axis, astype, broadcast_to, concatenate, dequantize, divide, eval,
-    expand_dims, expand_dims_axes, gather_mm, gather_qmm, gelu_approx, matmul, multiply,
-    put_along_axis, quantized_matmul, reshape, rms_norm, rope,
+    argpartition_axis, argsort_axis, as_strided, astype, broadcast_to, concatenate, dequantize,
+    divide, eval, expand_dims, expand_dims_axes, gather_mm, gather_qmm, gelu_approx, matmul,
+    multiply, put_along_axis, quantized_matmul, reshape, rms_norm, rope,
     scaled_dot_product_attention_with_mask, slice, slice_last_dim, softmax, split, sum_axis, take,
     take_along_axis, tanh, transpose, zeros,
 };
@@ -2119,6 +2119,44 @@ fn compute_per_layer_inputs_arr(
 }
 
 /// Apply optional per-head RMS norm in BSHD [1, seq, n_heads, head_dim] space.
+/// SPIKE ARTIFACT (W1.3 C5, 2026-05-14) — currently NOT WIRED into the
+/// production hot path.
+///
+/// One-op view that reinterprets a contiguous `[1, seq, n_heads * head_dim]`
+/// projection output directly as the BHSD `[1, n_heads, seq, head_dim]`
+/// layout that SDPA / RoPE / KV-append consume. Stride math:
+///
+/// - source contiguous strides (elements): `[seq*n_heads*head_dim,
+///   n_heads*head_dim, 1]`
+/// - target index `(0, h, s, d)` resolves to source linear offset
+///   `s * (n_heads*head_dim) + h * head_dim + d`
+/// - hence target strides `[seq*n_heads*head_dim, head_dim, n_heads*head_dim,
+///   1]` (dim 0 is size 1 so its stride is irrelevant; we keep the
+///   contiguous-equivalent value for clarity).
+///
+/// **Why not wired**: spike confirmed bit-exact correctness
+/// (`bhsd_view_from_proj_matches_reshape_transpose`) and op-count savings
+/// matched prediction (-65 ops/step on Gemma 4 E2B: 15 Normal-branch Q + 15
+/// K + 15 V + 20 KV-shared Q). But apples-to-apples 3-rep A/Bs showed
+/// **wall-time +27 µs/step and decode tok/s -0.9%** vs the imperative
+/// baseline — confirming the W1.3 audit's stated risk that downstream MLX
+/// ops (RoPE, slice_update, SDPA, rms_norm) silently insert
+/// `contiguous()` to materialise the strided view, and the inserted work
+/// outweighs the saved dispatches. PRD W1.3 C5 kill criterion triggered;
+/// the helper + unit test are kept as a record of the math for any future
+/// retry that finds a way to suppress the contiguous() insertion. See
+/// `MLX-DECODE-W13-C5-FINDINGS.md` for the full A/B record.
+#[allow(dead_code)]
+fn bhsd_view_from_proj(qw_out: &MlxArray, n_heads: usize, head_dim: usize, seq: usize) -> MlxArray {
+    let n_heads_i32 = n_heads as i32;
+    let head_dim_i64 = head_dim as i64;
+    let n_heads_head_dim = (n_heads * head_dim) as i64;
+    let seq_n_heads_head_dim = (seq * n_heads * head_dim) as i64;
+    let shape = [1_i32, n_heads_i32, seq as i32, head_dim as i32];
+    let strides = [seq_n_heads_head_dim, head_dim_i64, n_heads_head_dim, 1_i64];
+    as_strided(qw_out, &shape, &strides, 0, None)
+}
+
 fn qk_norm_bshd(
     x: MlxArray,
     norm: Option<&MlxArray>,
@@ -5843,6 +5881,57 @@ mod tests {
         assert!(
             masks.iter().all(|m| m.is_none()),
             "all decode masks must be None for seq==1"
+        );
+    }
+
+    #[test]
+    fn bhsd_view_from_proj_matches_reshape_transpose() {
+        // Synthetic Q/K/V projection output shape and values (Gemma 4 E2B
+        // sliding layer: n_heads=8, head_dim=256, but use small dims here).
+        let n_heads = 4_usize;
+        let head_dim = 3_usize;
+        let seq = 2_usize;
+        let total = seq * n_heads * head_dim;
+        let data: Vec<f32> = (0..total).map(|i| i as f32).collect();
+        let proj = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[1, seq as i32, (n_heads * head_dim) as i32],
+            MlxDtype::Float32,
+        );
+
+        // Reference: reshape [1, seq, n_heads*head_dim] -> [1, seq, n_heads, head_dim]
+        // then transpose [0, 2, 1, 3] -> [1, n_heads, seq, head_dim].
+        let reference_bsh = reshape(
+            &proj,
+            &[1, seq as i32, n_heads as i32, head_dim as i32],
+            None,
+        );
+        let reference = transpose(&reference_bsh, &[0, 2, 1, 3], None);
+
+        // Candidate: single as_strided view directly to BHSD.
+        let candidate = bhsd_view_from_proj(&proj, n_heads, head_dim, seq);
+
+        eval(&[&reference, &candidate]);
+
+        // Both must report the same shape.
+        assert_eq!(
+            reference.shape(),
+            vec![1, n_heads as i32, seq as i32, head_dim as i32]
+        );
+        assert_eq!(
+            candidate.shape(),
+            vec![1, n_heads as i32, seq as i32, head_dim as i32]
+        );
+
+        // Bit-exact element comparison via contiguous + read-back.
+        let reference_contig = mlx_sys::ops::contiguous(&reference, None);
+        let candidate_contig = mlx_sys::ops::contiguous(&candidate, None);
+        eval(&[&reference_contig, &candidate_contig]);
+        assert_eq!(
+            reference_contig.data_f32().to_vec(),
+            candidate_contig.data_f32().to_vec(),
+            "as_strided BHSD view must produce the same elementwise data as reshape+transpose"
         );
     }
 
