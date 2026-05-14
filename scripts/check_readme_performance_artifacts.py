@@ -58,6 +58,7 @@ PREFILL_TABLE_COLUMNS = {
 TTFT_TABLE_COLUMNS = PREFILL_TABLE_COLUMNS
 
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
+PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
 REUSED_REFERENCE_MIN_REPETITIONS = 3
 
 AX_NGRAM_TELEMETRY_COUNTERS = {
@@ -351,6 +352,26 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
     return [ArtifactSource((readme_path.parent / match.group(1)).resolve())]
 
 
+def default_hot_prefix_artifact_paths(readme_path: Path) -> list[Path]:
+    text = readme_path.read_text()
+    artifacts_match = re.search(
+        r"<!--\s*readme-hot-prefix-artifact:\s*(?P<paths>.*?)\s*-->",
+        text,
+        flags=re.DOTALL,
+    )
+    if artifacts_match is None:
+        return []
+    paths: list[Path] = []
+    for path_value in artifacts_match.group("paths").split(";"):
+        path_value = path_value.strip()
+        if not path_value:
+            continue
+        paths.append((readme_path.parent / path_value).resolve())
+    if not paths:
+        raise ArtifactCheckError("readme-hot-prefix-artifact comment has no paths")
+    return paths
+
+
 def metric_median(row: dict[str, Any], table: str) -> float:
     if table == "ttft":
         if row.get("engine") in {"mlx_lm", "mlx_swift_lm"}:
@@ -430,6 +451,106 @@ def validate_public_claim_evidence(
                 raise ArtifactCheckError(
                     f"{artifact_path} claims prefix_reuse without physical snapshot hit evidence"
                 )
+
+
+@dataclass(frozen=True)
+class HotPrefixClaimSummary:
+    artifact_path: Path
+    prompts_matching: int
+    prompts_total: int
+    hit_count: int
+    reused_token_count: int
+    warmup_token_count: int
+    miss_count: int
+    blocked_count: int
+
+
+def validate_hot_prefix_equivalence_artifact(
+    *, artifact_path: Path
+) -> HotPrefixClaimSummary:
+    if not artifact_path.exists():
+        raise ArtifactCheckError(f"hot-prefix artifact does not exist: {artifact_path}")
+    artifact = json.loads(artifact_path.read_text())
+    if artifact.get("schema_version") != PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION:
+        raise ArtifactCheckError(f"{artifact_path} has unexpected schema_version")
+    config = artifact.get("config")
+    if not isinstance(config, dict) or config.get("mode") != "warm_repeat":
+        raise ArtifactCheckError(f"{artifact_path} is not a warm_repeat artifact")
+    aggregate = artifact.get("aggregate")
+    if not isinstance(aggregate, dict) or aggregate.get("verdict") != "PASS":
+        raise ArtifactCheckError(f"{artifact_path} hot-prefix verdict is not PASS")
+    prompts_matching = int(aggregate.get("prompts_matching_exactly", -1))
+    prompts_total = int(aggregate.get("prompts_total", -1))
+    if prompts_total <= 0 or prompts_matching != prompts_total:
+        raise ArtifactCheckError(f"{artifact_path} does not have token-exact parity")
+    per_prompt = artifact.get("per_prompt")
+    if not isinstance(per_prompt, list) or len(per_prompt) != prompts_total:
+        raise ArtifactCheckError(f"{artifact_path} per_prompt count does not match aggregate")
+
+    hit_count = 0
+    reused_token_count = 0
+    warmup_token_count = 0
+    miss_count = 0
+    blocked_count = 0
+    for item in per_prompt:
+        if not isinstance(item, dict) or item.get("tokens_match") is not True:
+            raise ArtifactCheckError(f"{artifact_path} has a non-matching prompt")
+        telemetry = item.get("warm_telemetry")
+        if not isinstance(telemetry, dict):
+            raise ArtifactCheckError(f"{artifact_path} prompt lacks warm telemetry")
+        hit_count += int(telemetry.get("ax_mlx_prefix_cache_hits", 0))
+        reused_token_count += int(telemetry.get("ax_mlx_prefix_cache_reused_tokens", 0))
+        warmup_token_count += int(telemetry.get("ax_mlx_prefix_cache_warmup_tokens", 0))
+        miss_count += int(telemetry.get("ax_mlx_prefix_cache_misses", 0))
+        blocked_count += int(telemetry.get("ax_mlx_prefix_cache_blocked", 0))
+
+    if hit_count <= 0 or reused_token_count <= 0:
+        raise ArtifactCheckError(
+            f"{artifact_path} lacks physical hot-prefix hit evidence"
+        )
+    if warmup_token_count != 0 or miss_count != 0 or blocked_count != 0:
+        raise ArtifactCheckError(
+            f"{artifact_path} hot-prefix claim is not hit-only physical reuse"
+        )
+    return HotPrefixClaimSummary(
+        artifact_path=artifact_path,
+        prompts_matching=prompts_matching,
+        prompts_total=prompts_total,
+        hit_count=hit_count,
+        reused_token_count=reused_token_count,
+        warmup_token_count=warmup_token_count,
+        miss_count=miss_count,
+        blocked_count=blocked_count,
+    )
+
+
+def validate_readme_hot_prefix_claim_text(
+    *, readme_text: str, summary: HotPrefixClaimSummary
+) -> None:
+    expected_snippets = {
+        f"{summary.prompts_matching}/{summary.prompts_total} prompts": "prompt match count",
+        f"reused {summary.reused_token_count} tokens": "reused token count",
+        f"{summary.warmup_token_count} warmup": "warmup token count",
+    }
+    for snippet, label in expected_snippets.items():
+        if snippet not in readme_text:
+            raise ArtifactCheckError(
+                f"README hot-prefix claim has stale {label}; expected {snippet!r}"
+            )
+
+
+def validate_readme_hot_prefix_claims(
+    *, readme_path: Path, artifact_paths: list[Path]
+) -> None:
+    if not artifact_paths:
+        return
+    readme_text = readme_path.read_text()
+    for artifact_path in artifact_paths:
+        summary = validate_hot_prefix_equivalence_artifact(artifact_path=artifact_path)
+        validate_readme_hot_prefix_claim_text(
+            readme_text=readme_text,
+            summary=summary,
+        )
 
 
 def validate_concurrent_prefill_overlap_classification(
@@ -1014,9 +1135,14 @@ def check_readme_performance(
         if artifact_dir is not None
         else default_artifact_sources(resolved_readme)
     )
+    hot_prefix_artifact_paths = default_hot_prefix_artifact_paths(resolved_readme)
     metrics = parse_readme_metrics(resolved_readme)
     artifact_rows = collect_artifact_rows_from_sources(
         repo_root.resolve(), artifact_sources
+    )
+    validate_readme_hot_prefix_claims(
+        readme_path=resolved_readme,
+        artifact_paths=hot_prefix_artifact_paths,
     )
     checked: list[str] = []
 

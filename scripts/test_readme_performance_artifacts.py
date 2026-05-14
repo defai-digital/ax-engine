@@ -56,6 +56,68 @@ def ax_mlx_telemetry() -> dict[str, int]:
     }
 
 
+def write_hot_prefix_artifact(
+    root: Path,
+    *,
+    warmup_tokens: int = 0,
+    miss_count: int = 0,
+    blocked_count: int = 0,
+    tokens_match: bool = True,
+) -> Path:
+    artifact_path = (
+        root
+        / "benchmarks/results/mlx-inference/local-hot-prefix/qwen3-5-9b.json"
+    )
+    artifact_path.parent.mkdir(parents=True)
+    per_prompt = []
+    for index, reused_tokens in enumerate([16, 32, 48, 32, 48], start=1):
+        per_prompt.append(
+            {
+                "id": f"p{index}",
+                "tokens_match": tokens_match,
+                "warm_telemetry": {
+                    "ax_mlx_prefix_cache_hits": 1,
+                    "ax_mlx_prefix_cache_reused_tokens": reused_tokens,
+                    "ax_mlx_prefix_cache_warmup_tokens": warmup_tokens,
+                    "ax_mlx_prefix_cache_misses": miss_count,
+                    "ax_mlx_prefix_cache_blocked": blocked_count,
+                },
+            }
+        )
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema_version": checker.PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION,
+                "config": {"mode": "warm_repeat"},
+                "aggregate": {
+                    "prompts_matching_exactly": 5 if tokens_match else 4,
+                    "prompts_total": 5,
+                    "verdict": "PASS",
+                },
+                "per_prompt": per_prompt,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return artifact_path
+
+
+def add_hot_prefix_readme_claim(root: Path, artifact_path: Path, text: str | None = None) -> None:
+    readme_path = root / "README.md"
+    relative_path = artifact_path.relative_to(root)
+    claim_text = text or (
+        "Hot-prefix physical reuse restored physical prefix snapshots on "
+        "5/5 prompts, reused 176 tokens, and used 0 warmup-substitution tokens."
+    )
+    readme_path.write_text(
+        readme_path.read_text()
+        + f"<!-- readme-hot-prefix-artifact: {relative_path} -->\n"
+        + claim_text
+        + "\n"
+    )
+
+
 class ReadmePerformanceArtifactTests(unittest.TestCase):
     def write_fixture(
         self,
@@ -475,6 +537,62 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 checker.ArtifactCheckError,
                 "physical snapshot hit evidence",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=10,
+                )
+
+    def test_readme_hot_prefix_artifact_accepts_physical_hit_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = write_hot_prefix_artifact(root)
+            add_hot_prefix_readme_claim(root, artifact_path)
+
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=root / "README.md",
+                expected_metric_count=10,
+            )
+
+        self.assertEqual(len(checked), 10)
+
+    def test_readme_hot_prefix_artifact_rejects_warmup_substitution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = write_hot_prefix_artifact(root, warmup_tokens=1)
+            add_hot_prefix_readme_claim(root, artifact_path)
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "not hit-only physical reuse",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=10,
+                )
+
+    def test_readme_hot_prefix_claim_rejects_stale_reused_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = write_hot_prefix_artifact(root)
+            add_hot_prefix_readme_claim(
+                root,
+                artifact_path,
+                text=(
+                    "Hot-prefix physical reuse restored physical prefix snapshots "
+                    "on 5/5 prompts, reused 175 tokens, and used 0 warmup tokens."
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "stale reused token count",
             ):
                 checker.check_readme_performance(
                     repo_root=root,

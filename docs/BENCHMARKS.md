@@ -151,6 +151,14 @@ be useful diagnostics, but they do not prove a physical prefix-cache reuse
 claim. Unknown `public_claims` entries are rejected; new public claim names must
 first add an explicit evidence mapping and checker coverage.
 
+README hot-prefix product claims use a separate
+`readme-hot-prefix-artifact` marker because the token-exact equivalence artifact
+has schema `ax.prefix_reuse_equivalence.v1`, not the inference-stack table
+schema. `scripts/check_readme_performance_artifacts.py` validates that marked
+artifact as a `warm_repeat` PASS with token-exact parity, physical snapshot
+hits, reused tokens, and zero warmup/miss/block counters before trusting the
+README text.
+
 Physical prefix snapshot miss/warmup correctness uses a separate artifact
 contract:
 
