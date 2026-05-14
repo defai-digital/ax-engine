@@ -3,7 +3,7 @@ use mlx_sys::{
     argpartition_axis, argsort_axis, astype, broadcast_to, concatenate, dequantize, divide, eval,
     expand_dims, expand_dims_axes, gather_mm, gather_qmm, gelu_approx, matmul, multiply,
     put_along_axis, quantized_matmul, reshape, rms_norm, rope,
-    scaled_dot_product_attention_with_mask, slice, slice_last_dim, softmax, sum_axis, take,
+    scaled_dot_product_attention_with_mask, slice, slice_last_dim, softmax, split, sum_axis, take,
     take_along_axis, tanh, transpose, zeros,
 };
 use std::sync::{Arc, Mutex, OnceLock};
@@ -2100,22 +2100,16 @@ fn compute_per_layer_inputs_arr(
     let combined = scale_hidden(&combined, combined_scale);
     // combined shape: [1, seq, num_layers, per_layer_dim]
 
-    // 4. Split per layer using direct slice on axis 2.
+    // 4. Split per layer along axis 2.
     // combined: [1, seq, num_layers, per_layer_dim] — contiguous after add + scale.
-    // slice(li..li+1) creates a strided view ([1, seq, 1, per_layer_dim]) with no GPU gather
-    // dispatch, matching Python's arr[:, :, i, :] behaviour. The 35 gather+upload overhead
-    // from take(MlxArray::from_raw_data(li)) adds ~0.5 ms/step on fast small models (E2B).
-    let per_layer = (0..num_layers)
-        .map(|li| {
-            let s = slice(
-                &combined,
-                &[0, 0, li as i32, 0],
-                &[1, seq, li as i32 + 1, per_layer_dim as i32],
-                &[1, 1, 1, 1],
-                None,
-            );
-            reshape(&s, &[1, seq, per_layer_dim as i32], None)
-        })
+    // One `split` collapses the previous `num_layers` separate `slice` dispatches
+    // into a single MLX op (saves ~34 ops/step on Gemma 4 E2B). Each part is a
+    // strided view shaped `[1, seq, 1, per_layer_dim]`; the per-layer reshape
+    // drops the singleton index dim that downstream consumers do not expect.
+    let parts = split(&combined, num_layers as i32, 2, None);
+    let per_layer = parts
+        .into_iter()
+        .map(|s| reshape(&s, &[1, seq, per_layer_dim as i32], None))
         .collect();
 
     Some(per_layer)
