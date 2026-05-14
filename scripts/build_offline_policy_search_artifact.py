@@ -206,6 +206,8 @@ def build_offline_policy_search_artifact(
     }
     if "promotion_evidence" in metadata:
         artifact["promotion_evidence"] = metadata["promotion_evidence"]
+    if "confirmation_evidence" in metadata:
+        artifact["confirmation_evidence"] = metadata["confirmation_evidence"]
     return artifact
 
 
