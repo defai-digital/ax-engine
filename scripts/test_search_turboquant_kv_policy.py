@@ -186,6 +186,21 @@ class TurboQuantKvPolicySearchTests(unittest.TestCase):
 
         self.assertEqual(path, Path("out/2026-05-14/turboquant_kv_policy-org-model-v1.json"))
 
+    def test_artifact_output_path_rejects_missing_model_id(self) -> None:
+        with self.assertRaisesRegex(
+            search.TurboQuantPolicySearchError,
+            "model.id must be a non-empty string",
+        ):
+            search.artifact_output_path(
+                explicit_output=None,
+                output_root=Path("out"),
+                artifact={
+                    "created_at": "2026-05-14T00:00:00Z",
+                    "target": "turboquant_kv_policy",
+                    "model": {},
+                },
+            )
+
     def test_artifact_output_path_rejects_undated_artifact(self) -> None:
         with self.assertRaisesRegex(
             search.TurboQuantPolicySearchError,
@@ -284,6 +299,49 @@ class TurboQuantKvPolicySearchTests(unittest.TestCase):
                 checker.validate_offline_policy_search_artifact(output_path),
                 "diagnostic_only",
             )
+
+    def test_cli_validation_failure_does_not_leave_output_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata_path = root / "metadata.json"
+            baseline_path = root / "baseline.json"
+            output_path = root / "artifact.json"
+            broken_metadata = metadata()
+            broken_metadata["model"] = {
+                "id": "gemma-4-e2b-it-4bit",
+                "family": "gemma4",
+                "artifacts_dir": ".internal/models/gemma-4-e2b-it-4bit",
+            }
+            write_json(metadata_path, broken_metadata)
+            write_json(baseline_path, baseline())
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--metadata",
+                    str(metadata_path),
+                    "--baseline",
+                    str(baseline_path),
+                    "--output",
+                    str(output_path),
+                    "--kv-presets",
+                    "disabled",
+                    "--hot-window-tokens",
+                    "256",
+                    "--fallback-policies",
+                    "fail_closed",
+                    "--skip-git-repo-metadata",
+                ],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("model.manifest_digest", result.stderr)
+            self.assertFalse(output_path.exists())
+            self.assertEqual(list(root.glob(".*.tmp")), [])
 
     def test_missing_baseline_token_shape_fails_closed(self) -> None:
         broken_baseline = baseline()

@@ -16,6 +16,7 @@ import itertools
 import json
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -128,9 +129,9 @@ def validate_search_space(
 
 
 def safe_path_component(value: Any, field: str) -> str:
-    text = str(value).strip()
-    if not text:
+    if not isinstance(value, str) or not value.strip():
         raise TurboQuantPolicySearchError(f"{field} must be a non-empty string")
+    text = value.strip()
     safe = SAFE_PATH_COMPONENT_RE.sub("-", text).strip("-._")
     if not safe:
         raise TurboQuantPolicySearchError(f"{field} must contain a safe path component")
@@ -161,6 +162,28 @@ def artifact_output_path(
     )
     date = artifact_date(artifact.get("created_at"))
     return output_root / date / f"{target}-{model}.json"
+
+
+def write_validated_artifact(output: Path, artifact: dict[str, Any]) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            json.dump(artifact, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            temp_path = Path(handle.name)
+        checker.validate_offline_policy_search_artifact(temp_path)
+        temp_path.replace(output)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def policy_id(policy: dict[str, Any]) -> str:
@@ -374,9 +397,7 @@ def main(argv: list[str] | None = None) -> int:
             output_root=args.output_root,
             artifact=artifact,
         )
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
-        checker.validate_offline_policy_search_artifact(output)
+        write_validated_artifact(output, artifact)
     except (
         TurboQuantPolicySearchError,
         builder.OfflinePolicySearchBuildError,
