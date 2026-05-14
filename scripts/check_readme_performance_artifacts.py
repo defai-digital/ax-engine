@@ -59,6 +59,8 @@ TTFT_TABLE_COLUMNS = PREFILL_TABLE_COLUMNS
 
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
 PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
+PREFILL_SCALING_SCHEMA_VERSION = "ax.mlx_prefill_scaling.v1"
+CONCURRENT_PREFILL_SCHEMA_VERSION = "ax.mlx_concurrent_prefill.v1"
 REUSED_REFERENCE_MIN_REPETITIONS = 3
 
 AX_NGRAM_TELEMETRY_COUNTERS = {
@@ -353,9 +355,30 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
 
 
 def default_hot_prefix_artifact_paths(readme_path: Path) -> list[Path]:
+    return default_marker_artifact_paths(
+        readme_path,
+        marker_name="readme-hot-prefix-artifact",
+    )
+
+
+def default_long_context_boundary_artifact_paths(readme_path: Path) -> list[Path]:
+    return default_marker_artifact_paths(
+        readme_path,
+        marker_name="readme-long-context-boundary-artifact",
+    )
+
+
+def default_concurrent_prefill_boundary_artifact_paths(readme_path: Path) -> list[Path]:
+    return default_marker_artifact_paths(
+        readme_path,
+        marker_name="readme-concurrent-prefill-boundary-artifact",
+    )
+
+
+def default_marker_artifact_paths(readme_path: Path, *, marker_name: str) -> list[Path]:
     text = readme_path.read_text()
     artifacts_match = re.search(
-        r"<!--\s*readme-hot-prefix-artifact:\s*(?P<paths>.*?)\s*-->",
+        rf"<!--\s*{re.escape(marker_name)}:\s*(?P<paths>.*?)\s*-->",
         text,
         flags=re.DOTALL,
     )
@@ -368,7 +391,7 @@ def default_hot_prefix_artifact_paths(readme_path: Path) -> list[Path]:
             continue
         paths.append((readme_path.parent / path_value).resolve())
     if not paths:
-        raise ArtifactCheckError("readme-hot-prefix-artifact comment has no paths")
+        raise ArtifactCheckError(f"{marker_name} comment has no paths")
     return paths
 
 
@@ -551,6 +574,117 @@ def validate_readme_hot_prefix_claims(
             readme_text=readme_text,
             summary=summary,
         )
+
+
+@dataclass(frozen=True)
+class LongContextBoundarySummary:
+    artifact_path: Path
+    context_tokens: int
+    prefill_ratio: float
+
+
+def validate_long_context_boundary_artifact(
+    *, artifact_path: Path
+) -> LongContextBoundarySummary:
+    if not artifact_path.exists():
+        raise ArtifactCheckError(f"long-context artifact does not exist: {artifact_path}")
+    artifact = json.loads(artifact_path.read_text())
+    if artifact.get("schema_version") != PREFILL_SCALING_SCHEMA_VERSION:
+        raise ArtifactCheckError(f"{artifact_path} has unexpected schema_version")
+    rows = artifact.get("rows")
+    if not isinstance(rows, list):
+        raise ArtifactCheckError(f"{artifact_path} lacks rows")
+    candidates = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("engine") == "ax_engine_mlx"
+        and row.get("context_tokens") == 8192
+    ]
+    if len(candidates) != 1:
+        raise ArtifactCheckError(f"{artifact_path} must have one AX 8k context row")
+    ratios = candidates[0].get("ratios_to_mlx_lm")
+    if not isinstance(ratios, dict) or not isinstance(
+        ratios.get("prefill_tok_s"), (int, float)
+    ):
+        raise ArtifactCheckError(f"{artifact_path} AX 8k row lacks prefill ratio")
+    return LongContextBoundarySummary(
+        artifact_path=artifact_path,
+        context_tokens=8192,
+        prefill_ratio=float(ratios["prefill_tok_s"]),
+    )
+
+
+@dataclass(frozen=True)
+class ConcurrentPrefillBoundarySummary:
+    artifact_path: Path
+    concurrent_requests: int
+    classification: str
+
+
+def validate_concurrent_prefill_boundary_artifact(
+    *, artifact_path: Path
+) -> ConcurrentPrefillBoundarySummary:
+    if not artifact_path.exists():
+        raise ArtifactCheckError(
+            f"concurrent-prefill artifact does not exist: {artifact_path}"
+        )
+    artifact = json.loads(artifact_path.read_text())
+    if artifact.get("schema_version") != CONCURRENT_PREFILL_SCHEMA_VERSION:
+        raise ArtifactCheckError(f"{artifact_path} has unexpected schema_version")
+    rows = artifact.get("rows")
+    if not isinstance(rows, list):
+        raise ArtifactCheckError(f"{artifact_path} lacks rows")
+    candidates = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("engine") == "ax_engine_mlx"
+        and row.get("concurrent_requests") == 4
+    ]
+    if len(candidates) != 1:
+        raise ArtifactCheckError(f"{artifact_path} must have one AX 4-request row")
+    overlap = candidates[0].get("prefill_overlap")
+    if not isinstance(overlap, dict) or not isinstance(overlap.get("classification"), str):
+        raise ArtifactCheckError(f"{artifact_path} AX 4-request row lacks classification")
+    return ConcurrentPrefillBoundarySummary(
+        artifact_path=artifact_path,
+        concurrent_requests=4,
+        classification=overlap["classification"],
+    )
+
+
+def normalized_markdown_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text)
+
+
+def validate_readme_boundary_claims(
+    *,
+    readme_path: Path,
+    long_context_artifact_paths: list[Path],
+    concurrent_prefill_artifact_paths: list[Path],
+) -> None:
+    readme_text = readme_path.read_text()
+    normalized = normalized_markdown_text(readme_text)
+    for artifact_path in long_context_artifact_paths:
+        summary = validate_long_context_boundary_artifact(artifact_path=artifact_path)
+        snippet = f"The 8k P1 AX/MLX prefill ratio was {summary.prefill_ratio:.3f}x"
+        if snippet not in normalized:
+            raise ArtifactCheckError(
+                f"README long-context boundary claim is stale; expected {snippet!r}"
+            )
+    for artifact_path in concurrent_prefill_artifact_paths:
+        summary = validate_concurrent_prefill_boundary_artifact(
+            artifact_path=artifact_path,
+        )
+        snippet = (
+            f"the {summary.concurrent_requests}-request P2 concurrent prefill row "
+            f"was classified as {summary.classification}"
+        )
+        if snippet not in normalized:
+            raise ArtifactCheckError(
+                f"README concurrent-prefill boundary claim is stale; expected {snippet!r}"
+            )
 
 
 def validate_concurrent_prefill_overlap_classification(
@@ -1136,6 +1270,12 @@ def check_readme_performance(
         else default_artifact_sources(resolved_readme)
     )
     hot_prefix_artifact_paths = default_hot_prefix_artifact_paths(resolved_readme)
+    long_context_artifact_paths = default_long_context_boundary_artifact_paths(
+        resolved_readme
+    )
+    concurrent_prefill_artifact_paths = (
+        default_concurrent_prefill_boundary_artifact_paths(resolved_readme)
+    )
     metrics = parse_readme_metrics(resolved_readme)
     artifact_rows = collect_artifact_rows_from_sources(
         repo_root.resolve(), artifact_sources
@@ -1143,6 +1283,11 @@ def check_readme_performance(
     validate_readme_hot_prefix_claims(
         readme_path=resolved_readme,
         artifact_paths=hot_prefix_artifact_paths,
+    )
+    validate_readme_boundary_claims(
+        readme_path=resolved_readme,
+        long_context_artifact_paths=long_context_artifact_paths,
+        concurrent_prefill_artifact_paths=concurrent_prefill_artifact_paths,
     )
     checked: list[str] = []
 

@@ -118,6 +118,75 @@ def add_hot_prefix_readme_claim(root: Path, artifact_path: Path, text: str | Non
     )
 
 
+def write_prefill_scaling_artifact(root: Path, *, ratio: float = 0.84) -> Path:
+    artifact_path = root / "benchmarks/results/mlx-inference/local-p1/prefill-scaling.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema_version": checker.PREFILL_SCALING_SCHEMA_VERSION,
+                "rows": [
+                    {
+                        "engine": "ax_engine_mlx",
+                        "context_tokens": 8192,
+                        "ratios_to_mlx_lm": {"prefill_tok_s": ratio},
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return artifact_path
+
+
+def write_concurrent_prefill_artifact(
+    root: Path, *, classification: str = "serialized"
+) -> Path:
+    artifact_path = (
+        root / "benchmarks/results/mlx-inference/local-p2/concurrent-prefill.json"
+    )
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema_version": checker.CONCURRENT_PREFILL_SCHEMA_VERSION,
+                "rows": [
+                    {
+                        "engine": "ax_engine_mlx",
+                        "concurrent_requests": 4,
+                        "prefill_overlap": {"classification": classification},
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return artifact_path
+
+
+def add_boundary_readme_claims(
+    root: Path,
+    *,
+    prefill_artifact_path: Path,
+    concurrent_artifact_path: Path,
+    prefill_ratio_text: str = "0.840x",
+    concurrent_classification: str = "serialized",
+) -> None:
+    readme_path = root / "README.md"
+    prefill_relative_path = prefill_artifact_path.relative_to(root)
+    concurrent_relative_path = concurrent_artifact_path.relative_to(root)
+    readme_path.write_text(
+        readme_path.read_text()
+        + f"<!-- readme-long-context-boundary-artifact: {prefill_relative_path} -->\n"
+        + f"<!-- readme-concurrent-prefill-boundary-artifact: {concurrent_relative_path} -->\n"
+        + f"The 8k P1 AX/MLX prefill ratio was {prefill_ratio_text}, and "
+        + "the 4-request P2 concurrent prefill row was classified as "
+        + f"{concurrent_classification}.\n"
+    )
+
+
 class ReadmePerformanceArtifactTests(unittest.TestCase):
     def write_fixture(
         self,
@@ -593,6 +662,73 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 checker.ArtifactCheckError,
                 "stale reused token count",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=10,
+                )
+
+    def test_readme_boundary_artifacts_accept_current_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            prefill_artifact_path = write_prefill_scaling_artifact(root)
+            concurrent_artifact_path = write_concurrent_prefill_artifact(root)
+            add_boundary_readme_claims(
+                root,
+                prefill_artifact_path=prefill_artifact_path,
+                concurrent_artifact_path=concurrent_artifact_path,
+            )
+
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=root / "README.md",
+                expected_metric_count=10,
+            )
+
+        self.assertEqual(len(checked), 10)
+
+    def test_readme_boundary_artifacts_reject_stale_prefill_ratio(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            prefill_artifact_path = write_prefill_scaling_artifact(root, ratio=0.913)
+            concurrent_artifact_path = write_concurrent_prefill_artifact(root)
+            add_boundary_readme_claims(
+                root,
+                prefill_artifact_path=prefill_artifact_path,
+                concurrent_artifact_path=concurrent_artifact_path,
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "long-context boundary claim is stale",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=10,
+                )
+
+    def test_readme_boundary_artifacts_reject_stale_concurrency_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            prefill_artifact_path = write_prefill_scaling_artifact(root)
+            concurrent_artifact_path = write_concurrent_prefill_artifact(
+                root,
+                classification="partial_overlap",
+            )
+            add_boundary_readme_claims(
+                root,
+                prefill_artifact_path=prefill_artifact_path,
+                concurrent_artifact_path=concurrent_artifact_path,
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "concurrent-prefill boundary claim is stale",
             ):
                 checker.check_readme_performance(
                     repo_root=root,

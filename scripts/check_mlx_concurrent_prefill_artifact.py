@@ -154,6 +154,7 @@ def parse_row(
     *,
     expected_context_tokens: int,
     expected_generation_tokens: int,
+    require_scheduler_evidence: bool,
 ) -> ConcurrentPrefillRow:
     owner = f"{path}.rows[{index}]"
     if require_non_empty_str(row, "engine", owner=owner) != "ax_engine_mlx":
@@ -194,13 +195,18 @@ def parse_row(
             f"{owner}.prefill_overlap.classification must be one of {sorted(OVERLAP_CLASSIFICATIONS)}"
         )
     require_metric(overlap, "overlap_efficiency", "median", owner=f"{owner}.prefill_overlap", positive=False)
-    scheduler_evidence = require_mapping(row, "scheduler_evidence", owner=owner)
-    for key in sorted(SCHEDULER_EVIDENCE_KEYS):
-        value = scheduler_evidence.get(key)
-        if not isinstance(value, int) or value < 0:
-            raise ConcurrentPrefillArtifactError(
-                f"{owner}.scheduler_evidence.{key} must be a non-negative integer"
-            )
+    scheduler_evidence = row.get("scheduler_evidence")
+    if scheduler_evidence is None and not require_scheduler_evidence:
+        scheduler_evidence = {}
+    elif not isinstance(scheduler_evidence, dict):
+        raise ConcurrentPrefillArtifactError(f"{owner} lacks object field 'scheduler_evidence'")
+    if require_scheduler_evidence:
+        for key in sorted(SCHEDULER_EVIDENCE_KEYS):
+            value = scheduler_evidence.get(key)
+            if not isinstance(value, int) or value < 0:
+                raise ConcurrentPrefillArtifactError(
+                    f"{owner}.scheduler_evidence.{key} must be a non-negative integer"
+                )
 
     return ConcurrentPrefillRow(
         artifact_path=path,
@@ -303,6 +309,7 @@ def validate_mlx_concurrent_prefill_artifact(
     min_concurrency_levels: int = 2,
     min_max_concurrent_requests: int = 2,
     ratio_tolerance: float = 0.0005,
+    require_scheduler_evidence: bool = True,
 ) -> list[str]:
     artifact = load_json(path)
     context_tokens, generation_tokens = validate_top_level(path, artifact)
@@ -317,6 +324,7 @@ def validate_mlx_concurrent_prefill_artifact(
             index,
             expected_context_tokens=context_tokens,
             expected_generation_tokens=generation_tokens,
+            require_scheduler_evidence=require_scheduler_evidence,
         )
         for index, row in enumerate(rows_payload)
         if isinstance(row, dict)
@@ -340,6 +348,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-concurrency-levels", type=int, default=2)
     parser.add_argument("--min-max-concurrent-requests", type=int, default=2)
     parser.add_argument("--ratio-tolerance", type=float, default=0.0005)
+    parser.add_argument(
+        "--allow-missing-scheduler-evidence",
+        action="store_true",
+        help=(
+            "Validate older boundary artifacts that predate scheduler_evidence. "
+            "Fresh gate artifacts should keep the default fail-closed behavior."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -348,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
             min_concurrency_levels=args.min_concurrency_levels,
             min_max_concurrent_requests=args.min_max_concurrent_requests,
             ratio_tolerance=args.ratio_tolerance,
+            require_scheduler_evidence=not args.allow_missing_scheduler_evidence,
         )
     except ConcurrentPrefillArtifactError as error:
         print(f"error: {error}", file=sys.stderr)
