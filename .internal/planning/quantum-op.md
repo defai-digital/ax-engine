@@ -44,10 +44,13 @@ Current status as of 2026-05-14:
   The fix is validated by checked-in before/after artifacts for Gemma 4 E2B
   4-bit and Qwen 3.5 9B 4-bit, plus checked-in post-fix positive evidence for
   Qwen 3.6 35B-A3B 4-bit (`ttft_growth_ratio=0.88`, 10/10 prefix-cache hits).
-  GLM-4.7-Flash MLA post-fix evidence is also checked in, but it is
-  negative/boundary evidence: snapshot reuse is still intentionally blocked for
-  MLA iterative-chat prefill because of the existing MLA warm-extend drift
-  guard. This remains separate from TurboQuant promotion;
+  GLM-4.7-Flash MLA post-fix evidence is also checked in as boundary evidence:
+  default snapshot reuse is still intentionally blocked for MLA iterative-chat
+  prefill because of the MLA warm-extend drift guard. A separate investigation
+  artifact shows the canonical GLM warm-extend equivalence corpus can pass 5/5
+  when both unsafe MLA restore and `AX_MLX_MLA_PREFILL_CHUNK=16` are enabled,
+  but that remains an opt-in diagnostic path until broader correctness and
+  throughput evidence exists. This remains separate from TurboQuant promotion;
 - README performance provenance was refreshed to
   `benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r3/` and the
   README artifact checker validates 280 metrics plus three narrative claims;
