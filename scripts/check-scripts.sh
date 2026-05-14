@@ -46,6 +46,10 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_render_mlx_decode_profile_report.py \
   scripts/render_mlx_forward_profile_report.py \
   scripts/test_render_mlx_forward_profile_report.py \
+  scripts/check_mlx_forward_profile_artifact.py \
+  scripts/test_mlx_forward_profile_artifact.py \
+  scripts/check_mlx_prefill_claim_cycle.py \
+  scripts/test_mlx_prefill_claim_cycle.py \
   scripts/check_gateddelta_prefill_model.py \
   scripts/test_gateddelta_prefill_model.py \
   scripts/test_run_gateddelta_prefill_profile.py \
