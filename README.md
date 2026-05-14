@@ -261,6 +261,7 @@ and runtime path are all present.
 ## Performance ([methodology](docs/PERFORMANCE.md))
 
 <!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-13-ax-direct-ngram-r2/ -->
+<!-- readme-hot-prefix-artifact: benchmarks/results/mlx-inference/2026-05-13-hot-prefix-w2/equivalence-gate/warm_repeat/qwen3-5-9b-2026-05-13.json -->
 The README generation-model tables are a provenance-tracked composite from
 `benchmarks/results/mlx-inference/2026-05-13-ax-direct-ngram-r2/`. This 14-model
 AX refresh reruns the direct and n-gram AX rows and carries forward the same-host
