@@ -1,0 +1,449 @@
+{
+  "args": {
+    "base_tokens": 32,
+    "chunk_size": 512,
+    "mlx_artifacts_dir": ".internal/models/GLM-4.7-Flash-4bit",
+    "suffix_tokens": 32,
+    "tolerance_abs_diff": 0.0010000000474974513
+  },
+  "first_divergence": {
+    "abs_diff": 0.0625,
+    "cold_value": -1.4609375,
+    "layer_idx": 0,
+    "position": 2,
+    "tensor": "k_pe",
+    "ulps_diff": 30081024,
+    "warm_value": -1.46875
+  },
+  "layers": [
+    {
+      "k_pe_first_divergence_position": 2,
+      "k_pe_max_abs_diff": 0.0625,
+      "k_pe_max_ulps_diff": 30081024,
+      "kv_latent_first_divergence_position": 2,
+      "kv_latent_max_abs_diff": 0.00048828125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 0
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.03125,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.0009765625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 1
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.046875,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.002349853515625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 2
+    },
+    {
+      "k_pe_first_divergence_position": 1,
+      "k_pe_max_abs_diff": 0.03125,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.042236328125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 3
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.0625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.038330078125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 4
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.0625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.064697265625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 5
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.0625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.044921875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 6
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.078125,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.0875244140625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 7
+    },
+    {
+      "k_pe_first_divergence_position": 1,
+      "k_pe_max_abs_diff": 0.0625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.0419921875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 8
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.0625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.06689453125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 9
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.0625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.0478515625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 10
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.125,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.0859375,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 11
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.09765625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.06787109375,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 12
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.109375,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.07421875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 13
+    },
+    {
+      "k_pe_first_divergence_position": 1,
+      "k_pe_max_abs_diff": 0.0625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.087646484375,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 14
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.212890625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.1763916015625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 15
+    },
+    {
+      "k_pe_first_divergence_position": 1,
+      "k_pe_max_abs_diff": 0.15625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.22137451171875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 16
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.109375,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.224609375,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 17
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.15625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.154296875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 18
+    },
+    {
+      "k_pe_first_divergence_position": 1,
+      "k_pe_max_abs_diff": 0.125,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.1905517578125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 19
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.15625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.154296875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 20
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.171875,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.171875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 21
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.1875,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.1640625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 22
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.21875,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.232421875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 23
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.15625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.21533203125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 24
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.125,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.155517578125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 25
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.1875,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.23699951171875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 26
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.21875,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 1,
+      "kv_latent_max_abs_diff": 0.26171875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 27
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.1484375,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.236328125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 28
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.21875,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.2041015625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 29
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.234375,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.23046875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 30
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.15625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.1591796875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 31
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.1171875,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.1640625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 32
+    },
+    {
+      "k_pe_first_divergence_position": 1,
+      "k_pe_max_abs_diff": 0.3125,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.212890625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 33
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.203125,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 1,
+      "kv_latent_max_abs_diff": 0.28021240234375,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 34
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.15625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.1600341796875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 35
+    },
+    {
+      "k_pe_first_divergence_position": 1,
+      "k_pe_max_abs_diff": 0.171875,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.208251953125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 36
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.125,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.1953125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 37
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.125,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.185546875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 38
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.0625,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 39
+    },
+    {
+      "k_pe_first_divergence_position": 2,
+      "k_pe_max_abs_diff": 0.0859375,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.18310546875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 40
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 1.0,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.24609375,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 41
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 1.1484375,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.23046875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 42
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.08984375,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.1841278076171875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 43
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.4609375,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.23046875,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 44
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.421875,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.3798828125,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 45
+    },
+    {
+      "k_pe_first_divergence_position": 0,
+      "k_pe_max_abs_diff": 0.3984375,
+      "k_pe_max_ulps_diff": 4294967295,
+      "kv_latent_first_divergence_position": 0,
+      "kv_latent_max_abs_diff": 0.197265625,
+      "kv_latent_max_ulps_diff": 4294967295,
+      "layer_idx": 46
+    }
+  ],
+  "model": {
+    "layer_count": 47,
+    "mla_layer_count": 47
+  },
+  "schema_version": "ax.mla_drift_bisect.v1",
+  "verdict": "divergent"
+}
