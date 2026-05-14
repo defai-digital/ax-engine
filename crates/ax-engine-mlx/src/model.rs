@@ -1977,7 +1977,9 @@ pub fn forward_lazy_single_with_turboquant_context(
     let tok_1d = reshape(token_arr, &[1_i32], None);
 
     let mut hidden = embed_tokens_arr(&tok_1d, &weights.token_embedding, cfg.hidden_size);
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if hidden.dtype() != MlxDtype::Bfloat16 {
+        hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    }
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -2063,7 +2065,11 @@ fn compute_per_layer_inputs_arr(
     // 1. Per-layer token embeddings: [1, seq, num_layers * per_layer_dim]
     //    embed_tokens_per_layer(input_ids) * sqrt(per_layer_dim)
     let embed_out = embed_tokens_arr(ids_1d, embed_w, num_layers * per_layer_dim);
-    let embed_out = astype(&embed_out, dtype, None);
+    let embed_out = if embed_out.dtype() != dtype {
+        astype(&embed_out, dtype, None)
+    } else {
+        embed_out
+    };
     let embed_scale = (per_layer_dim as f32).sqrt();
     let embed_out = scale_hidden(&embed_out, embed_scale);
     // Reshape to [1, seq, num_layers, per_layer_dim]
