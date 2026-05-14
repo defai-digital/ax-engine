@@ -979,6 +979,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_decode_wall_us": 80,
                     "ax_mlx_direct_pipeline_steps": 2,
                     "ax_mlx_direct_pipeline_wall_us": 70,
+                    "ax_mlx_direct_pipeline_forward_wall_us": 40,
+                    "ax_mlx_direct_pipeline_async_eval_wall_us": 5,
+                    "ax_mlx_direct_pipeline_pending_eval_wall_us": 20,
+                    "ax_mlx_direct_pipeline_pending_read_wall_us": 3,
                     "ax_mlx_prefix_cache_hits": 1,
                     "ax_mlx_prefix_cache_blocked_policy_disabled": 2,
                     "ax_mlx_prefix_cache_reused_tokens": 16,
@@ -998,6 +1002,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_decode_wall_us"], 80)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_steps"], 2)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_wall_us"], 70)
+        self.assertEqual(telemetry["ax_mlx_direct_pipeline_forward_wall_us"], 40)
+        self.assertEqual(telemetry["ax_mlx_direct_pipeline_async_eval_wall_us"], 5)
+        self.assertEqual(telemetry["ax_mlx_direct_pipeline_pending_eval_wall_us"], 20)
+        self.assertEqual(telemetry["ax_mlx_direct_pipeline_pending_read_wall_us"], 3)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_hits"], 1)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_reused_tokens"], 16)
@@ -1044,11 +1052,32 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 "ax_mlx_decode_wall_us": 1000,
                 "ax_mlx_direct_pipeline_steps": 10,
                 "ax_mlx_direct_pipeline_wall_us": 900,
+                "ax_mlx_direct_pipeline_forward_wall_us": 300,
+                "ax_mlx_direct_pipeline_async_eval_wall_us": 500,
+                "ax_mlx_direct_pipeline_pending_eval_wall_us": 80,
+                "ax_mlx_direct_pipeline_pending_read_wall_us": 20,
             }
         )
         self.assertEqual(direct["classification"], "direct_pipeline")
         self.assertEqual(direct["direct_pipeline_step_share_micros"], 1_000_000)
         self.assertEqual(direct["direct_pipeline_wall_share_micros"], 900_000)
+        self.assertEqual(direct["direct_pipeline_forward_wall_us"], 300)
+        self.assertEqual(direct["direct_pipeline_forward_wall_share_micros"], 333_333)
+        self.assertEqual(direct["direct_pipeline_async_eval_wall_us"], 500)
+        self.assertEqual(
+            direct["direct_pipeline_async_eval_wall_share_micros"],
+            555_556,
+        )
+        self.assertEqual(direct["direct_pipeline_pending_eval_wall_us"], 80)
+        self.assertEqual(
+            direct["direct_pipeline_pending_eval_wall_share_micros"],
+            88_889,
+        )
+        self.assertEqual(direct["direct_pipeline_pending_read_wall_us"], 20)
+        self.assertEqual(
+            direct["direct_pipeline_pending_read_wall_share_micros"],
+            22_222,
+        )
 
         mixed = bench.summarize_ax_mlx_decode_route(
             {

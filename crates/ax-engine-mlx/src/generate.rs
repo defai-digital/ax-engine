@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
 
 use crate::kv_cache::MlxKVCache;
@@ -12,6 +14,24 @@ use crate::weights::ModelWeights;
 /// Default chunk size for chunked prefill, matching SwiftLM's default and the
 /// GatedDelta Metal kernel's threadgroup cache capacity.
 pub const DEFAULT_PREFILL_CHUNK: usize = GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DirectPipelineTimings {
+    pub forward_wall_us: u32,
+    pub async_eval_wall_us: u32,
+    pub pending_eval_wall_us: u32,
+    pub pending_read_wall_us: u32,
+}
+
+pub struct DirectPipelineAdvance {
+    pub token: u32,
+    pub next_pending: MlxArray,
+    pub timings: DirectPipelineTimings,
+}
+
+fn elapsed_us(started: Instant) -> u32 {
+    started.elapsed().as_micros().min(u32::MAX as u128) as u32
+}
 
 /// Process the full prompt in chunks of `chunk_size` tokens.
 ///
@@ -144,10 +164,28 @@ pub fn advance_direct_pipeline_with_turboquant_context(
     cache: &mut MlxKVCache,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> (u32, MlxArray) {
+    let advanced = advance_direct_pipeline_with_timings_and_turboquant_context(
+        cfg,
+        weights,
+        pending,
+        cache,
+        turboquant_context,
+    );
+    (advanced.token, advanced.next_pending)
+}
+
+pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
+    cache: &mut MlxKVCache,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> DirectPipelineAdvance {
     // Build next step's graph using the lazy pending token.
     // forward_lazy_single accepts an unevaluated MlxArray, so this runs entirely
     // on the CPU without waiting for `pending` to be materialised.
     let token_offset = cache.seq_len;
+    let forward_started = Instant::now();
     let logits = forward_lazy_single_with_turboquant_context(
         cfg,
         weights,
@@ -156,21 +194,37 @@ pub fn advance_direct_pipeline_with_turboquant_context(
         token_offset,
         turboquant_context,
     );
+    let forward_wall_us = elapsed_us(forward_started);
     cache.seq_len += 1;
+    let async_eval_started = Instant::now();
     let next_token_arr = argmax(&logits, None);
     // Submit step N+1 to the GPU before waiting for step N.
     // KV cache is in next_token_arr's computation graph (via SDPA), so no extra
     // refs needed — they would only add one GPU command buffer per layer (≈85µs each).
     async_eval(&[&next_token_arr]);
+    let async_eval_wall_us = elapsed_us(async_eval_started);
 
     // Materialise the pending (step N) token.  Because `async_eval` was called
     // in the previous `start_direct_pipeline` / `advance_direct_pipeline`, the GPU
     // has been working on this token the entire time the CPU was building N+1's
     // graph above — so `eval` is typically a no-op barrier.
+    let pending_eval_started = Instant::now();
     eval(&[pending]);
+    let pending_eval_wall_us = elapsed_us(pending_eval_started);
+    let pending_read_started = Instant::now();
     let tok = pending.data_u32().first().copied().unwrap_or(0);
+    let pending_read_wall_us = elapsed_us(pending_read_started);
 
-    (tok, next_token_arr)
+    DirectPipelineAdvance {
+        token: tok,
+        next_pending: next_token_arr,
+        timings: DirectPipelineTimings {
+            forward_wall_us,
+            async_eval_wall_us,
+            pending_eval_wall_us,
+            pending_read_wall_us,
+        },
+    }
 }
 
 /// Decode one token: forward pass for a single token and return sampled ID.
