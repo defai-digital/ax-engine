@@ -1,11 +1,13 @@
 # MLX Prefill Improvement PRD
 
-Status: Proposed
+Status: Closed for W0-W4 current evidence cycle
 Date: 2026-05-13
 Owner: AX Engine
 Depends on: MLX-RUNTIME-PERFORMANCE-PRD.md, GEMMA-QWEN-MLX-PERFORMANCE-PRD.md, KV-SCHEDULER-REVAMP-PRD.md, ../benchmark/BENCHMARK-LAB-PRD.md
 Related ADRs: ../adr/0017-mlx-runtime-optimization-governance.md, ../adr/0018-kv-cache-and-scheduler-revamp-strategy.md, ../adr/0021-continuous-batching-contract-v2.md, ../adr/0024-gemma-qwen-mlx-performance-strategy.md
 Latest evidence: 2026-05-13 W4 forward-path trigger
+
+Closure report: ../reports/MLX-PREFILL-PRD-CLOSURE-2026-05-14.md
 
 ## 1. Summary
 
@@ -23,6 +25,18 @@ to users:
 
 The best-practice strategy is to separate these surfaces. A win in one surface
 must not be presented as a win in another without the matching artifact gate.
+
+As of the 2026-05-14 closure report, W0-W4 are closed for the current evidence
+cycle:
+
+- W0 has a validator-backed public README refresh.
+- W1 is closed as bounded Qwen long-context evidence, not a broad
+  Gemma/Qwen/GLM win.
+- W2 has a positive Qwen warm-repeat physical prefix snapshot claim.
+- W3 is closed as a serialized/partial-overlap concurrency boundary, not a
+  continuous-batching claim.
+- W4 has diagnostic packed-projection plumbing and remains opt-in until a
+  matched artifact proves a repeatable win.
 
 ## 2. Problem Statement
 

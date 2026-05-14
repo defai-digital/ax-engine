@@ -298,6 +298,14 @@ The 8k P1 AX/MLX prefill ratio was 0.840x, and the 4-request P2 concurrent
 prefill row was classified as serialized. Use them to set expectations for
 long-context serving; they do not prove continuous batching.
 
+Hot-prefix physical reuse is validated separately from cold-prefill throughput.
+On Qwen3.5 9B, the 2026-05-13 warm-repeat equivalence artifact restored physical
+prefix snapshots on 5/5 prompts, reused 176 tokens, used 0 warmup-substitution
+tokens on the claimed hit path, and passed token-exact equivalence. See
+[KV cache documentation](docs/KV-CACHE.md#validated-hot-prefix-evidence) for
+the product-claim boundary; this is a physical reuse claim, not a long-prompt
+TTFT headline.
+
 <!-- llama-cpp-column-disclaimer -->
 **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are NOT prompt-hash parity with the other columns. The intent is rough side-by-side context against a well-known third-party Metal runtime, not head-to-head comparison. MLX bit-widths are mapped to the nearest standard GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0; UD-MLX → unsloth UD-Q4_K_XL). No percentage delta is shown for this column because the prompt is not shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
 
