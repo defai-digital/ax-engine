@@ -286,6 +286,7 @@ AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
     "ax_mlx_kv_compression_fused_decode_candidates",
     "ax_mlx_kv_compression_fused_decode_attempts",
     "ax_mlx_kv_compression_fused_decode_successes",
+    "ax_mlx_kv_compression_fused_decode_metal_successes",
     "ax_mlx_kv_compression_fused_decode_fallbacks",
     "ax_mlx_kv_compression_fused_decode_fallback_reason",
     "ax_mlx_kv_compression_fused_decode_ready_candidates",

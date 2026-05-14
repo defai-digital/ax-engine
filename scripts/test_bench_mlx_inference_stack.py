@@ -1438,6 +1438,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_kv_compression_fused_decode_candidates": 1,
                     "ax_mlx_kv_compression_fused_decode_attempts": 0,
                     "ax_mlx_kv_compression_fused_decode_successes": 0,
+                    "ax_mlx_kv_compression_fused_decode_metal_successes": 0,
                     "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                     "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
                     "unrelated": 99,
@@ -1475,6 +1476,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_mlx_kv_compression_fused_decode_candidates": 1,
                         "ax_mlx_kv_compression_fused_decode_attempts": 0,
                         "ax_mlx_kv_compression_fused_decode_successes": 0,
+                        "ax_mlx_kv_compression_fused_decode_metal_successes": 0,
                         "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                         "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
                     }
@@ -1495,6 +1497,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_candidates"], 2)
         self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_attempts"], 0)
         self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_successes"], 0)
+        self.assertEqual(
+            summary["ax_mlx_kv_compression_fused_decode_metal_successes"], 0
+        )
         self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_fallbacks"], 0)
         self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1)
         self.assertEqual(

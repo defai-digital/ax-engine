@@ -95,6 +95,7 @@ cat > "$TMP_DIR/candidate-benchmark.json" <<'JSON'
         "ax_mlx_kv_compression_fused_decode_candidates": 1,
         "ax_mlx_kv_compression_fused_decode_attempts": 1,
         "ax_mlx_kv_compression_fused_decode_successes": 1,
+        "ax_mlx_kv_compression_fused_decode_metal_successes": 1,
         "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
         "ax_mlx_kv_compression_fused_decode_fallback_reason": 0
       }
@@ -147,6 +148,7 @@ cat > "$TMP_DIR/shadow-candidate-benchmark.json" <<'JSON'
         "ax_mlx_kv_compression_fused_decode_candidates": 1,
         "ax_mlx_kv_compression_fused_decode_attempts": 0,
         "ax_mlx_kv_compression_fused_decode_successes": 0,
+        "ax_mlx_kv_compression_fused_decode_metal_successes": 0,
         "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
         "ax_mlx_kv_compression_fused_decode_fallback_reason": 1
       }
