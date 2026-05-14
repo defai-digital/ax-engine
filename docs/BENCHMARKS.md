@@ -496,10 +496,11 @@ Use `--experimental-mlx-kv-compression turboquant-fused-experimental` only for
 runner-route selection evidence. It requests compressed decode and can report
 `fused_compressed_decode` when the eligible K8/V4 single-token path uses the
 two-stage Metal cold decode plus full-precision hot tail. If Metal is
-unavailable but the reference fallback works, the path is
-`cpu_oracle_compressed_decode`. Fallback reason label `runner_not_integrated`
-means no runtime decode attempt was observed yet; `cpu_oracle_unavailable`
-means both compressed-decode attempts fell back to full-precision generation.
+unavailable, the runtime falls back to full-precision generation instead of
+using the CPU oracle. Fallback reason label `runner_not_integrated` means no
+runtime decode attempt was observed yet; `cpu_oracle_unavailable` identifies
+legacy/debug artifacts where the compressed-decode oracle path was not
+available.
 The TurboQuant reference codec and microbench artifacts include a split-softmax
 oracle for the hot-window merge: cold and hot partitions must be combined
 through shared log-sum-exp normalization, not by adding independently normalized
@@ -545,10 +546,11 @@ The quality artifact gate is stricter than telemetry collection. Quality/path
 evidence must use candidate mode `turboquant-fused-experimental`, route
 metadata schema `>= 2`, K8/V4, fused_compressed_decode path code `2`, fused
 decode attempts and successes greater than zero, and zero fused decode
-fallbacks. Shadow rows and cpu_oracle_compressed_decode rows are useful for
-diagnosis, but they are rejected as quality evidence. Public-support promotion
-also requires the readiness report's decode-throughput performance gate to
-pass; a quality artifact can pass while public docs remain experimental.
+fallbacks. Shadow rows and legacy cpu_oracle_compressed_decode rows are useful
+for diagnosis, but they are rejected as quality evidence. Public-support
+promotion also requires the readiness report's decode-throughput performance
+gate to pass; a quality artifact can pass while public docs remain
+experimental.
 For model-level quality evidence, run the baseline and fused candidate AX rows
 with `bench_mlx_inference_stack.py --capture-output-token-ids`, then extract
 same-shaped output vectors with `scripts/build_turboquant_decode_outputs.py`
