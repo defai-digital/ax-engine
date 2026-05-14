@@ -42,10 +42,12 @@ Current status as of 2026-05-14:
 - runner-side prefix-cache reuse was fixed for iterative-chat workloads where
   `ax-engine-core` and the MLX runner had different views of reusable prefixes.
   The fix is validated by checked-in before/after artifacts for Gemma 4 E2B
-  4-bit and Qwen 3.5 9B 4-bit. GLM-4.7-Flash MLA post-fix evidence is also
-  checked in, but it is negative/boundary evidence: snapshot reuse is still
-  intentionally blocked for MLA iterative-chat prefill because of the existing
-  MLA warm-extend drift guard. This remains separate from TurboQuant promotion;
+  4-bit and Qwen 3.5 9B 4-bit, plus checked-in post-fix positive evidence for
+  Qwen 3.6 35B-A3B 4-bit (`ttft_growth_ratio=0.88`, 10/10 prefix-cache hits).
+  GLM-4.7-Flash MLA post-fix evidence is also checked in, but it is
+  negative/boundary evidence: snapshot reuse is still intentionally blocked for
+  MLA iterative-chat prefill because of the existing MLA warm-extend drift
+  guard. This remains separate from TurboQuant promotion;
 - README performance provenance was refreshed to
   `benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r3/` and the
   README artifact checker validates 280 metrics plus three narrative claims;
@@ -436,9 +438,9 @@ The recommended order is:
 2. R1/R3 diagnostic TurboQuant KV policy search, no runtime default changes
    (**done for diagnostic enumeration**).
 3. Phase C runner-side prefix-cache bug fix for iterative chat (**done for
-   Gemma 4 E2B 4-bit and Qwen 3.5 9B 4-bit positive evidence; GLM-4.7-Flash
-   MLA negative/boundary evidence checked in and kept out of TurboQuant
-   promotion**).
+   Gemma 4 E2B 4-bit, Qwen 3.5 9B 4-bit, and Qwen 3.6 35B-A3B 4-bit positive
+   evidence; GLM-4.7-Flash MLA negative/boundary evidence checked in and kept
+   out of TurboQuant promotion**).
 4. README/Python provenance and smoke-test guardrails (**done**).
 5. R2 conservative fused compressed decode real-runner gate (**active
    blocker**).
