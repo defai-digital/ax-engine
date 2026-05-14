@@ -70,9 +70,10 @@ Current status as of 2026-05-14:
   uses the same effective chunk shape as runtime prefill;
 - TurboQuant promotion artifacts now expose a `runtime_truth` surface that
   labels the real decode path, fused successes, Metal successes, fallback
-  counts, and fallback reason. The builder records this surface and the
-  readiness checker reports it even for artifacts that fail the quality gate, so
-  false "fused" claims are easier to diagnose;
+  counts, fallback reason, and blocked-reason counters. The builder records this
+  surface and the readiness checker reports it even for artifacts that fail the
+  quality gate, so false "fused" claims and blocked runner gates are easier to
+  diagnose;
 - TurboQuant public/runtime promotion remains blocked because no passing
   long-context fused-path performance promotion artifact has been produced.
 

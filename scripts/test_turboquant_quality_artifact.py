@@ -458,6 +458,8 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             self.assertEqual(truth["decode_path_code"], 2)
             self.assertEqual(truth["decode_path_label"], "fused_compressed_decode")
             self.assertEqual(truth["fused_decode_fallback_reason_label"], "none")
+            self.assertEqual(truth["fused_decode_blocked_total"], 0)
+            self.assertEqual(truth["fused_decode_blocked_reasons"], [])
             self.assertTrue(truth["fused_path_selected"])
             self.assertTrue(truth["fused_success_observed"])
             self.assertTrue(truth["zero_fallbacks"])
@@ -474,6 +476,8 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             decisions["ax_mlx_kv_compression_fused_decode_metal_successes"] = 0
             decisions["ax_mlx_kv_compression_fused_decode_fallbacks"] = 0
             decisions["ax_mlx_kv_compression_fused_decode_fallback_reason"] = 4
+            decisions["ax_mlx_kv_compression_fused_decode_blocked_missing_storage"] = 3
+            decisions["ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim"] = 2
 
             truth = checker.route_truth_surface(artifact["route_metadata"])
 
@@ -481,6 +485,19 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             self.assertEqual(
                 truth["fused_decode_fallback_reason_label"],
                 "runner_not_integrated",
+            )
+            self.assertEqual(
+                truth["fused_decode_blocked_counters"]["missing_storage"],
+                3,
+            )
+            self.assertEqual(
+                truth["fused_decode_blocked_counters"]["unsupported_head_dim"],
+                2,
+            )
+            self.assertEqual(truth["fused_decode_blocked_total"], 5)
+            self.assertEqual(
+                truth["fused_decode_blocked_reasons"],
+                ["unsupported_head_dim", "missing_storage"],
             )
             self.assertFalse(truth["fused_path_selected"])
             self.assertFalse(truth["fused_success_observed"])
