@@ -13,7 +13,10 @@ use ax_engine_core::{MlxKvCompressionConfig, MlxTurboQuantPreset, NativeModelMan
 
 use crate::attention_mask::create_causal_mask;
 use crate::fastpath;
-use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeCandidate, MlxKvCompressionDecodeOutcome};
+use crate::kv_cache::{
+    MlxKVCache, MlxKvCompressionDecodeCandidate, MlxKvCompressionDecodeOutcome,
+    MlxKvCompressionFusedDecodeTiming,
+};
 use crate::linear_attention::{
     gated_delta_kernel, linear_attention_conv1d, normalize_linear_attention_qk, rms_norm_gated,
     split_linear_attention_qkv,
@@ -1147,6 +1150,9 @@ pub fn layer_forward_with_turboquant_context(
                     .map(|output| output.outcome)
                     .unwrap_or(MlxKvCompressionDecodeOutcome::Fallback);
                 cache.record_turboquant_fused_decode_attempt(outcome);
+                if let Some(output) = turboquant_out.as_ref() {
+                    cache.record_turboquant_fused_decode_timing(output.timing);
+                }
                 turboquant_out
                     .map(|output| output.attention)
                     .unwrap_or_else(|| {
@@ -2289,6 +2295,7 @@ fn full_precision_attention(
 struct TurboQuantExperimentalDecodeOutput {
     attention: MlxArray,
     outcome: MlxKvCompressionDecodeOutcome,
+    timing: MlxKvCompressionFusedDecodeTiming,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2309,9 +2316,11 @@ fn turboquant_decode_attention_experimental(
         return None;
     }
 
+    let query_readback_started = Instant::now();
     let q_f32 = astype(q_rope, MlxDtype::Float32, None);
     eval(&[&q_f32]);
     let q_data = q_f32.data_f32();
+    let query_readback_wall_us = saturating_profile_us(query_readback_started) as u64;
     if q_data.len() != n_heads.saturating_mul(head_dim) {
         return None;
     }
@@ -2332,19 +2341,30 @@ fn turboquant_decode_attention_experimental(
     }
 
     let total_tokens = cache.seq_len.saturating_add(seq);
-    if let Ok(outputs) = cache
-        .debug_turboquant_shadow_decode_attention_metal_for_layer_with_total_tokens(
+    if let Ok(decoded) = cache
+        .debug_turboquant_shadow_decode_attention_metal_timed_for_layer_with_total_tokens(
             layer_idx,
             &queries,
             total_tokens,
         )
     {
-        return turboquant_attention_output_array(outputs, n_heads, head_dim, q_rope.dtype()).map(
-            |attention| TurboQuantExperimentalDecodeOutput {
+        let output_started = Instant::now();
+        return turboquant_attention_output_array(
+            decoded.outputs,
+            n_heads,
+            head_dim,
+            q_rope.dtype(),
+        )
+        .map(|attention| {
+            let mut timing = decoded.timing;
+            timing.query_readback_wall_us = query_readback_wall_us;
+            timing.output_staging_wall_us = saturating_profile_us(output_started) as u64;
+            TurboQuantExperimentalDecodeOutput {
                 attention,
                 outcome: MlxKvCompressionDecodeOutcome::Metal,
-            },
-        );
+                timing,
+            }
+        });
     }
 
     None
