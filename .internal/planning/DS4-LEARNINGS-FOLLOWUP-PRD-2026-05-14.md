@@ -350,6 +350,13 @@ This PRD closes when:
 - Each of F3, F4, F5 has its own follow-up PRD (split off from this
   one) or an explicit "not pursuing" decision recorded.
 
+### Follow-up PRDs landed alongside this one
+
+- F3 → `MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md` (week-scale).
+- F4 → `MLX-MLA-DRIFT-BISECT-PRD-2026-05-14.md` (~2.5 days).
+- F1, F2, F5 do not yet have follow-up PRDs; §4 / §5 / §8 in this
+  document are the design references for picking them up.
+
 The five items are independent. Closing this PRD does not require
 all five to ship; it requires each to have a recorded decision.
 
