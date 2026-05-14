@@ -90,11 +90,8 @@ pub fn load_safetensors(
 /// - Quantized tensor groups (`weight` + `scales` + `biases`) are
 ///   returned as separate top-level names, identical to the C loader.
 pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, String> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("open {}: {}", path.display(), e))?;
-    let mmap = unsafe {
-        Mmap::map(&file).map_err(|e| format!("mmap {}: {}", path.display(), e))?
-    };
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
+    let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("mmap {}: {}", path.display(), e))? };
     let mmap = Arc::new(mmap);
 
     if mmap.len() < 8 {
@@ -119,9 +116,12 @@ pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, S
 
     let header: serde_json::Value = serde_json::from_slice(json_bytes)
         .map_err(|e| format!("parse safetensors header in {}: {}", path.display(), e))?;
-    let obj = header
-        .as_object()
-        .ok_or_else(|| format!("safetensors header is not a JSON object in {}", path.display()))?;
+    let obj = header.as_object().ok_or_else(|| {
+        format!(
+            "safetensors header is not a JSON object in {}",
+            path.display()
+        )
+    })?;
 
     let mut result: HashMap<String, MlxArray> = HashMap::new();
     for (name, entry) in obj {
@@ -154,14 +154,18 @@ pub fn load_safetensors_mmap(path: &Path) -> Result<HashMap<String, MlxArray>, S
             .and_then(|v| v.as_array())
             .ok_or_else(|| format!("tensor entry {name} missing data_offsets"))?;
         if offsets.len() != 2 {
-            return Err(format!("tensor entry {name} data_offsets must have 2 elements"));
+            return Err(format!(
+                "tensor entry {name} data_offsets must have 2 elements"
+            ));
         }
-        let start = offsets[0].as_u64().ok_or_else(|| {
-            format!("tensor entry {name} data_offsets[0] not u64")
-        })? as usize;
-        let end = offsets[1].as_u64().ok_or_else(|| {
-            format!("tensor entry {name} data_offsets[1] not u64")
-        })? as usize;
+        let start = offsets[0]
+            .as_u64()
+            .ok_or_else(|| format!("tensor entry {name} data_offsets[0] not u64"))?
+            as usize;
+        let end = offsets[1]
+            .as_u64()
+            .ok_or_else(|| format!("tensor entry {name} data_offsets[1] not u64"))?
+            as usize;
         let absolute_start = data_base + start;
         let absolute_end = data_base + end;
         if absolute_end > mmap.len() {

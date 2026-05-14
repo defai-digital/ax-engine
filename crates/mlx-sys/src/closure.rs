@@ -56,7 +56,10 @@ impl MlxVectorArray {
     /// Wrap an externally-owned vector array (e.g. inputs from MLX). Drop
     /// will not free it.
     fn from_borrowed(inner: ffi::mlx_vector_array) -> Self {
-        Self { inner, owned: false }
+        Self {
+            inner,
+            owned: false,
+        }
     }
 
     pub fn len(&self) -> usize {

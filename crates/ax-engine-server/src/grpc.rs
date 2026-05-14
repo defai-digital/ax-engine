@@ -32,7 +32,10 @@ use proto::ax_engine_server::AxEngine;
 const GRPC_CHANNEL_CAPACITY: usize = 128;
 
 /// Render a chat prompt from plain (role, content) pairs.
-fn render_grpc_chat_prompt(model_id: &str, messages: &[(String, String)]) -> Result<String, String> {
+fn render_grpc_chat_prompt(
+    model_id: &str,
+    messages: &[(String, String)],
+) -> Result<String, String> {
     if messages.is_empty() {
         return Err("chat.completions requires at least one message".to_string());
     }
@@ -210,9 +213,7 @@ fn sdk_response_to_proto(r: ax_engine_sdk::GenerateResponse) -> proto::GenerateR
     }
 }
 
-fn sdk_request_report_to_proto(
-    r: &ax_engine_sdk::SessionRequestReport,
-) -> proto::RequestReport {
+fn sdk_request_report_to_proto(r: &ax_engine_sdk::SessionRequestReport) -> proto::RequestReport {
     proto::RequestReport {
         request_id: r.request_id,
         model_id: r.model_id.clone(),
@@ -313,10 +314,8 @@ async fn build_grpc_stream_state(
     {
         let ctx = Arc::clone(&state.stateless_generate_context);
         let stream_ctx = Arc::clone(&ctx);
-        let ss = run_blocking(move || {
-            stream_ctx.stream_state_with_request_id(request_id, request)
-        })
-        .await?;
+        let ss = run_blocking(move || stream_ctx.stream_state_with_request_id(request_id, request))
+            .await?;
         return Ok((ss, StreamStateSource::Stateless(ctx)));
     }
 
@@ -367,7 +366,10 @@ where
     loop {
         match next(state) {
             Ok(Some(event)) => {
-                if tx.blocking_send(Ok(sdk_stream_event_to_proto(event))).is_err() {
+                if tx
+                    .blocking_send(Ok(sdk_stream_event_to_proto(event)))
+                    .is_err()
+                {
                     return Ok(());
                 }
             }
@@ -389,20 +391,16 @@ fn spawn_grpc_chat_stream(
         let mut ss = stream_state;
         let mut chat_role_emitted = false;
         let result = match stream_context {
-            StreamStateSource::Stateless(ctx) => drive_grpc_chat_events(
-                &mut ss,
-                &model_id,
-                &mut chat_role_emitted,
-                &tx,
-                |s| ctx.next_stream_event(s),
-            ),
-            StreamStateSource::Stateful(mut session) => drive_grpc_chat_events(
-                &mut ss,
-                &model_id,
-                &mut chat_role_emitted,
-                &tx,
-                |s| session.next_stream_event(s),
-            ),
+            StreamStateSource::Stateless(ctx) => {
+                drive_grpc_chat_events(&mut ss, &model_id, &mut chat_role_emitted, &tx, |s| {
+                    ctx.next_stream_event(s)
+                })
+            }
+            StreamStateSource::Stateful(mut session) => {
+                drive_grpc_chat_events(&mut ss, &model_id, &mut chat_role_emitted, &tx, |s| {
+                    session.next_stream_event(s)
+                })
+            }
         };
         if let Err(status) = result {
             let _ = tx.blocking_send(Err(status));
@@ -445,7 +443,10 @@ where
                     model: model_id.to_string(),
                     choices: vec![proto::ChatCompletionChunkChoice {
                         index: 0,
-                        delta: Some(proto::ChatDelta { role, content: delta_text }),
+                        delta: Some(proto::ChatDelta {
+                            role,
+                            content: delta_text,
+                        }),
                         finish_reason: String::new(),
                     }],
                 };
@@ -471,12 +472,11 @@ fn spawn_grpc_completion_stream(
             StreamStateSource::Stateless(ctx) => {
                 drive_grpc_completion_events(&mut ss, &model_id, &tx, |s| ctx.next_stream_event(s))
             }
-            StreamStateSource::Stateful(mut session) => drive_grpc_completion_events(
-                &mut ss,
-                &model_id,
-                &tx,
-                |s| session.next_stream_event(s),
-            ),
+            StreamStateSource::Stateful(mut session) => {
+                drive_grpc_completion_events(&mut ss, &model_id, &tx, |s| {
+                    session.next_stream_event(s)
+                })
+            }
         };
         if let Err(status) = result {
             let _ = tx.blocking_send(Err(status));
@@ -537,7 +537,11 @@ fn build_chat_generate_request(
         .collect();
     let input_text = render_grpc_chat_prompt(state.model_id.as_ref(), &pairs)
         .map_err(Status::invalid_argument)?;
-    let max_output_tokens = if req.max_tokens == 0 { 256 } else { req.max_tokens };
+    let max_output_tokens = if req.max_tokens == 0 {
+        256
+    } else {
+        req.max_tokens
+    };
     let sampling = GenerateSampling {
         temperature: req.temperature,
         top_p: 1.0,
@@ -565,7 +569,11 @@ fn build_completion_generate_request(
     state: &AppState,
     req: &proto::CompletionRequest,
 ) -> GenerateRequest {
-    let max_output_tokens = if req.max_tokens == 0 { 256 } else { req.max_tokens };
+    let max_output_tokens = if req.max_tokens == 0 {
+        256
+    } else {
+        req.max_tokens
+    };
     let sampling = GenerateSampling {
         temperature: req.temperature,
         top_p: 1.0,
@@ -625,8 +633,7 @@ impl AxEngine for AxEngineGrpcService {
         let req = proto_to_generate_request(&self.state, request.into_inner());
         let request_id = next_request_id(&self.state);
         let ctx = Arc::clone(&self.state.stateless_generate_context);
-        let response =
-            run_blocking(move || ctx.generate_with_request_id(request_id, req)).await?;
+        let response = run_blocking(move || ctx.generate_with_request_id(request_id, req)).await?;
         Ok(Response::new(sdk_response_to_proto(response)))
     }
 
@@ -655,7 +662,8 @@ impl AxEngine for AxEngineGrpcService {
         let generate_req = build_chat_generate_request(&self.state, &req)?;
         let request_id = next_request_id(&self.state);
         let ctx = Arc::clone(&self.state.stateless_generate_context);
-        let r = run_blocking(move || ctx.generate_with_request_id(request_id, generate_req)).await?;
+        let r =
+            run_blocking(move || ctx.generate_with_request_id(request_id, generate_req)).await?;
         let content = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::ChatCompletionResponse {
@@ -706,7 +714,8 @@ impl AxEngine for AxEngineGrpcService {
         let generate_req = build_completion_generate_request(&self.state, &req);
         let request_id = next_request_id(&self.state);
         let ctx = Arc::clone(&self.state.stateless_generate_context);
-        let r = run_blocking(move || ctx.generate_with_request_id(request_id, generate_req)).await?;
+        let r =
+            run_blocking(move || ctx.generate_with_request_id(request_id, generate_req)).await?;
         let text = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::CompletionResponse {
@@ -807,8 +816,7 @@ mod tests {
             "thinking-enabled suffix must not pre-close the think block: {thinking}"
         );
 
-        let coder =
-            render_grpc_chat_prompt("Qwen3-Coder-Next-4bit", &user("hi")).expect("render");
+        let coder = render_grpc_chat_prompt("Qwen3-Coder-Next-4bit", &user("hi")).expect("render");
         assert!(
             coder.ends_with("<|im_start|>assistant\n<think>\n"),
             "Coder-Next must also leave thinking open: {coder}"
@@ -865,8 +873,8 @@ mod tests {
             ("tool".to_string(), "tool result".to_string()),
             ("user".to_string(), "continue".to_string()),
         ];
-        let prompt = render_grpc_chat_prompt("mlx-community/GLM-4.7-Flash-4bit", &messages)
-            .expect("render");
+        let prompt =
+            render_grpc_chat_prompt("mlx-community/GLM-4.7-Flash-4bit", &messages).expect("render");
         assert_eq!(
             prompt,
             "[gMASK]<sop>\

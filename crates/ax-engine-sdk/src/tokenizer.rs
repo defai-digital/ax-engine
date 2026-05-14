@@ -78,11 +78,7 @@ impl EngineTokenizer {
 
     /// Encode a single string. When `add_eos` is true and the model has
     /// an EOS id, it is appended (Qwen3-Embedding convention).
-    pub fn encode(
-        &self,
-        text: &str,
-        add_eos: bool,
-    ) -> Result<Vec<u32>, EngineTokenizerError> {
+    pub fn encode(&self, text: &str, add_eos: bool) -> Result<Vec<u32>, EngineTokenizerError> {
         let encoding = self
             .inner
             .encode(text, false)

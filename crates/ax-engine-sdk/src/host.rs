@@ -39,11 +39,7 @@ pub(crate) fn validate_local_host() -> Result<(), String> {
 pub(crate) fn runtime_host_report() -> HostReport {
     let detection = soc_detection_cached().clone();
     let supported_mlx_runtime = matches!(
-        classify_host(
-            env::consts::OS,
-            env::consts::ARCH,
-            detection.soc.as_deref(),
-        ),
+        classify_host(env::consts::OS, env::consts::ARCH, detection.soc.as_deref(),),
         HostSupport::Supported { .. }
     );
 
