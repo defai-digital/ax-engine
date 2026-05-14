@@ -20,3 +20,5 @@ ax-code.json
 # benchmark result directories without these suffixes.
 benchmarks/results/mlx-inference/*-investigate/
 benchmarks/results/mlx-inference/*-rerun/
+benchmarks/results/**/*.pid
+benchmarks/results/**/rust_sustained.txt.err
