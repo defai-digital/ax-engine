@@ -581,6 +581,58 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             )
             self.assertTrue(report["quality_artifacts"][0]["passes_quality_gate"])
             self.assertFalse(report["quality_artifacts"][0]["passes_performance_gate"])
+            self.assertEqual(
+                report["quality_artifacts"][0]["promotion_gap"],
+                {
+                    "observed_decode_tok_s_ratio_to_baseline": 0.1,
+                    "required_min_decode_tok_s_ratio_to_baseline": 0.85,
+                    "performance_promotion_ready": False,
+                    "next_action": (
+                        "rerun or improve fused compressed decode until "
+                        "performance blockers clear"
+                    ),
+                },
+            )
+
+    def test_readiness_reports_passing_promotion_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models_root = root / "models"
+            model_dir = models_root / "gemma"
+            model_dir.mkdir(parents=True)
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "gemma4",
+                        "attention_head_dim": 256,
+                        "global_head_dim": 512,
+                        "attention_head_count": 8,
+                        "kv_head_count": 1,
+                        "layer_types": ["full_attention"],
+                    }
+                )
+            )
+            artifact_path = root / "quality-gate.json"
+            artifact_path.write_text(json.dumps(valid_artifact(root)))
+
+            report = readiness.build_report(
+                models_root=models_root,
+                results_root=root / "empty-results",
+                artifacts=[artifact_path],
+                require_artifact_files=True,
+                root=root,
+            )
+
+            self.assertTrue(report["decision"]["can_make_public_support_claim"])
+            self.assertEqual(
+                report["quality_artifacts"][0]["promotion_gap"]["next_action"],
+                "ready_for_companion_prd_review",
+            )
+            self.assertTrue(
+                report["quality_artifacts"][0]["promotion_gap"][
+                    "performance_promotion_ready"
+                ]
+            )
 
     def test_readiness_derives_dense_full_attention_layers_from_tensor_roles(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
