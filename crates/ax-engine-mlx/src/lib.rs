@@ -1,4 +1,5 @@
 pub mod attention_mask;
+pub mod disk_prefix_cache;
 pub mod fastpath;
 pub mod generate;
 pub mod kv_cache;
