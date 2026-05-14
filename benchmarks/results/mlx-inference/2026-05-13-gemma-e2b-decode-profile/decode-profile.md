@@ -7,7 +7,7 @@ This diagnostic run captures AX direct decode stage counters for
 - Prompt shape: 128 prompt tokens, 128 generation tokens
 - AX policy: `direct_no_ngram_acceleration`
 - Repetitions: 1 measured run after 1 AX warmup
-- Build commit: `9b14733778b2b28c279b1ae5e3aaf8d2763bf242`
+- Build commit: `89a5cf24787970c749d2a95455b681bfaf512d3a`
 
 `--ax-decode-profile` sets `AX_MLX_DECODE_PROFILE=1`. The profile materializes
 lazy graphs between stages, so decode throughput is intentionally slower than
@@ -16,27 +16,29 @@ headline throughput evidence.
 
 | Stage | Wall us | Share of profiled stage time |
 |---|---:|---:|
-| Per-layer input | 42,180 | 1.0% |
-| Pre-SDPA | 1,145,132 | 26.3% |
-| SDPA | 790,848 | 18.2% |
-| Post-attention | 2,302,256 | 52.8% |
-| LM head | 75,988 | 1.7% |
+| Per-layer input | 43,957 | 0.7% |
+| Pre-SDPA | 1,819,034 | 28.4% |
+| SDPA | 770,235 | 12.0% |
+| Post-attention | 3,687,381 | 57.6% |
+| LM head | 81,065 | 1.3% |
 
 Additional breakdown:
 
 | Substage | Wall us | Parent share | Total profile share |
 |---|---:|---:|---:|
-| QKV projection | 345,650 | 30.2% of pre-SDPA | 7.9% |
-| Pre-SDPA tail | 799,482 | 69.8% of pre-SDPA | 18.4% |
-| FFN | 1,311,116 | 56.9% of post-attention | 30.1% |
-| Post-attention non-FFN | 991,140 | 43.1% of post-attention | 22.8% |
+| QKV projection | 336,442 | 18.5% of pre-SDPA | 5.3% |
+| QK norm | 745,856 | 41.0% of pre-SDPA | 11.7% |
+| RoPE + KV append | 726,504 | 39.9% of pre-SDPA | 11.3% |
+| FFN | 1,239,538 | 33.6% of post-attention | 19.4% |
+| Attention output projection | 769,014 | 20.9% of post-attention | 12.0% |
+| Attention residual + pre-FFN norm | 715,806 | 19.4% of post-attention | 11.2% |
+| FFN residual + per-layer gate | 951,826 | 25.8% of post-attention | 14.9% |
 
 Initial reading:
 
 - The per-layer-input path is measurable but not the dominant direct-decode
   bottleneck in this profiled 4-bit E2B run.
-- The best next investigation target is post-attention, especially FFN and the
-  non-FFN tail around attention output, residual, gating, and layer scalar work.
-- The second target is the pre-SDPA tail after QKV projection: QK/V norm,
-  reshape/transpose, RoPE, and KV append account for more profiled time than
-  QKV projection itself.
+- The best next investigation target is post-attention, especially the FFN
+  residual + per-layer gate path and FFN itself.
+- The second target is the pre-SDPA tail after QKV projection: QK norm and
+  RoPE/KV append each account for more profiled time than QKV projection.
