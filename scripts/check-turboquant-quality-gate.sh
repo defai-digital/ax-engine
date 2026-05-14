@@ -52,6 +52,8 @@ JSON
 cat > "$TMP_DIR/baseline-benchmark.json" <<'JSON'
 {
   "schema_version": "ax.mlx_inference_stack.v2",
+  "repetitions": 3,
+  "cooldown": 20.0,
   "results": [
     {
       "engine": "ax_engine_mlx",
@@ -67,6 +69,8 @@ JSON
 cat > "$TMP_DIR/candidate-benchmark.json" <<'JSON'
 {
   "schema_version": "ax.mlx_inference_stack.v2",
+  "repetitions": 3,
+  "cooldown": 20.0,
   "results": [
     {
       "engine": "ax_engine_mlx",
@@ -117,6 +121,8 @@ JSON
 cat > "$TMP_DIR/shadow-candidate-benchmark.json" <<'JSON'
 {
   "schema_version": "ax.mlx_inference_stack.v2",
+  "repetitions": 3,
+  "cooldown": 20.0,
   "results": [
     {
       "engine": "ax_engine_mlx",
