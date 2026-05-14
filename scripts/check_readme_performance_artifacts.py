@@ -62,6 +62,9 @@ PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
 PREFILL_SCALING_SCHEMA_VERSION = "ax.mlx_prefill_scaling.v1"
 CONCURRENT_PREFILL_SCHEMA_VERSION = "ax.mlx_concurrent_prefill.v1"
 REUSED_REFERENCE_MIN_REPETITIONS = 3
+LONG_CONTEXT_CAMPAIGN_BOUNDARY_SNIPPET = (
+    "single-model long-context boundary, not a Gemma/Qwen/GLM-wide campaign"
+)
 
 AX_NGRAM_TELEMETRY_COUNTERS = {
     "ax_ngram_draft_attempts",
@@ -687,6 +690,11 @@ def validate_readme_boundary_claims(
         if snippet not in normalized:
             raise ArtifactCheckError(
                 f"README long-context boundary claim is stale; expected {snippet!r}"
+            )
+        if LONG_CONTEXT_CAMPAIGN_BOUNDARY_SNIPPET not in normalized:
+            raise ArtifactCheckError(
+                "README long-context boundary must not imply a family-wide campaign; "
+                f"expected {LONG_CONTEXT_CAMPAIGN_BOUNDARY_SNIPPET!r}"
             )
         checked.append(
             "long-context-boundary:"
