@@ -154,7 +154,8 @@ throughput baselines.
 - `build_turboquant_quality_artifact.py`: compiles a TurboQuant quality artifact
   from MLX inference-stack benchmark output and a quality-metrics JSON file,
   then validates it through the same fail-closed gate. Full-precision shadow
-  and legacy CPU oracle rows are rejected as promotion evidence.
+  and legacy CPU oracle rows are rejected as promotion evidence; promoted
+  runtime rows must report Metal fused decode successes.
 - `build_turboquant_decode_outputs.py`: extracts opt-in AX response
   `output_token_ids` from MLX inference-stack benchmark artifacts into the
   `decode_outputs` vector format consumed by TurboQuant quality metrics. Rerun

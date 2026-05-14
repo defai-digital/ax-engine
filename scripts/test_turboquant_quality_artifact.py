@@ -108,6 +108,7 @@ def valid_artifact(root: Path) -> dict:
                 "ax_mlx_kv_compression_fused_decode_candidates": 1,
                 "ax_mlx_kv_compression_fused_decode_attempts": 1,
                 "ax_mlx_kv_compression_fused_decode_successes": 1,
+                "ax_mlx_kv_compression_fused_decode_metal_successes": 1,
                 "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                 "ax_mlx_kv_compression_fused_decode_fallback_reason": 0,
             }
@@ -196,6 +197,9 @@ def benchmark_doc(
                     if decode_path_code == 2
                     else 0,
                     "ax_mlx_kv_compression_fused_decode_successes": 1
+                    if decode_path_code == 2
+                    else 0,
+                    "ax_mlx_kv_compression_fused_decode_metal_successes": 1
                     if decode_path_code == 2
                     else 0,
                     "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
@@ -419,6 +423,16 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                 "ax_mlx_kv_compression_fused_decode_successes"
             ] = 0
             with self.assertRaisesRegex(checker.ArtifactValidationError, "successes"):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_missing_metal_fused_decode_success_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_fused_decode_metal_successes"
+            ] = 0
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "Metal"):
                 checker.validate_artifact(artifact, root=root)
 
     def test_fused_decode_fallback_fails_closed(self) -> None:

@@ -32,6 +32,7 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_READY_CANDIDATES,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
@@ -1359,6 +1360,7 @@ struct KvCacheTelemetry {
     compression_fused_decode_candidates: u64,
     compression_fused_decode_attempts: u64,
     compression_fused_decode_successes: u64,
+    compression_fused_decode_metal_successes: u64,
     compression_fused_decode_fallbacks: u64,
     compression_fused_decode_fallback_reason: u32,
     compression_fused_decode_ready_candidates: u64,
@@ -1512,6 +1514,9 @@ impl KvCacheTelemetry {
                     self.compression_fused_decode_successes = self
                         .compression_fused_decode_successes
                         .saturating_add(compression.fused_decode_successes);
+                    self.compression_fused_decode_metal_successes = self
+                        .compression_fused_decode_metal_successes
+                        .saturating_add(compression.fused_decode_metal_successes);
                     self.compression_fused_decode_fallbacks = self
                         .compression_fused_decode_fallbacks
                         .saturating_add(compression.fused_decode_fallbacks);
@@ -1725,6 +1730,10 @@ impl KvCacheTelemetry {
                 (
                     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES,
                     saturating_u32_from_u64(self.compression_fused_decode_successes),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES,
+                    saturating_u32_from_u64(self.compression_fused_decode_metal_successes),
                 ),
                 (
                     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS,
@@ -6280,6 +6289,10 @@ mod tests {
             Some(&0)
         );
         assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES),
+            Some(&0)
+        );
+        assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS),
             Some(&0)
         );
@@ -6472,6 +6485,10 @@ mod tests {
             Some(&2)
         );
         assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES),
+            Some(&0)
+        );
+        assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS),
             Some(&0)
         );
@@ -6523,6 +6540,10 @@ mod tests {
             Some(&2)
         );
         assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES),
+            Some(&2)
+        );
+        assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS),
             Some(&0)
         );
@@ -6571,6 +6592,10 @@ mod tests {
         );
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES),
             Some(&0)
         );
         assert_eq!(

@@ -50,6 +50,7 @@ REQUIRED_ROUTE_KEYS = {
     "ax_mlx_kv_compression_fused_decode_candidates",
     "ax_mlx_kv_compression_fused_decode_attempts",
     "ax_mlx_kv_compression_fused_decode_successes",
+    "ax_mlx_kv_compression_fused_decode_metal_successes",
     "ax_mlx_kv_compression_fused_decode_fallbacks",
     "ax_mlx_kv_compression_fused_decode_fallback_reason",
 }
@@ -230,6 +231,14 @@ def _validate_route_metadata(route_metadata: dict[str, Any]) -> None:
         )
         > 0,
         "route metadata must show fused decode successes",
+    )
+    _require(
+        _integer(
+            decisions["ax_mlx_kv_compression_fused_decode_metal_successes"],
+            "fused decode Metal successes",
+        )
+        > 0,
+        "route metadata must show Metal fused decode successes",
     )
     _require(
         _integer(
