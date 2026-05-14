@@ -48,6 +48,17 @@ kill_switch!(
     "AX_DISABLE_TURBOQUANT_FUSED_DECODE"
 );
 
+kill_switch!(
+    /// Engaged by `AX_NO_SPEC` (the CLAUDE.md-documented convention for
+    /// forcing greedy direct decode). When set, `MlxRunner::from_artifacts`
+    /// ORs this value into the `disable_ngram_acceleration` parameter, so
+    /// the env switch is honored uniformly from CLI, server, and SDK entry
+    /// points — not just from the bench CLI's argument parsing path. Truthy
+    /// values follow the module-level parser contract.
+    ngram_acceleration_disabled,
+    "AX_NO_SPEC"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
