@@ -1441,6 +1441,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_kv_compression_fused_decode_metal_successes": 0,
                     "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                     "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
+                    "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 2,
+                    "ax_mlx_kv_compression_fused_decode_blocked_missing_storage": 1,
                     "unrelated": 99,
                 }
             }
@@ -1459,6 +1461,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_attempts"], 0)
         self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_fallbacks"], 0)
         self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1)
+        self.assertEqual(
+            telemetry["ax_mlx_kv_compression_fused_decode_blocked_attention_kind"],
+            2,
+        )
+        self.assertEqual(
+            telemetry["ax_mlx_kv_compression_fused_decode_blocked_missing_storage"],
+            1,
+        )
         self.assertNotIn("unrelated", telemetry)
 
         summary = bench.summarize_ax_mlx_kv_compression_telemetry(
@@ -1479,6 +1489,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_mlx_kv_compression_fused_decode_metal_successes": 0,
                         "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                         "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
+                        "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 3,
+                        "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim": 4,
                     }
                 },
             ]
@@ -1502,6 +1514,38 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_fallbacks"], 0)
         self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1)
+        self.assertEqual(
+            summary["ax_mlx_kv_compression_fused_decode_blocked_attention_kind"],
+            5,
+        )
+        self.assertEqual(
+            summary["ax_mlx_kv_compression_fused_decode_blocked_missing_storage"],
+            1,
+        )
+        self.assertEqual(
+            summary["ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim"],
+            4,
+        )
+        self.assertEqual(
+            bench.kv_compression_fused_decode_blocked_summary(summary),
+            {
+                "total": 10,
+                "reasons": [
+                    "attention_kind",
+                    "unsupported_head_dim",
+                    "missing_storage",
+                ],
+                "counters": {
+                    "prefill_only": 0,
+                    "attention_kind": 5,
+                    "ineligible_layer": 0,
+                    "unsupported_preset": 0,
+                    "unsupported_head_dim": 4,
+                    "gqa": 0,
+                    "missing_storage": 1,
+                },
+            },
+        )
         self.assertEqual(
             bench.kv_compression_decode_path_label(summary),
             "full_precision_shadow",

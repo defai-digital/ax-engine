@@ -78,7 +78,10 @@ Current status as of 2026-05-14:
   includes stale `runtime_truth` that disagrees with route metadata, validation
   fails closed. The readiness summary now uses `runtime_truth` to recommend the
   next concrete fix, such as resolving attention-kind blockers or rerunning with
-  current Metal-success telemetry;
+  current Metal-success telemetry. Benchmark rows now also expose
+  `kv_compression_fused_decode_blocked_total` and
+  `kv_compression_fused_decode_blocked_reasons`, so raw benchmark output,
+  quality artifacts, and readiness summaries use the same blocker vocabulary;
 - TurboQuant public/runtime promotion remains blocked because no artifact passes
   the stricter long-context fused-path quality gate with the full real-runner
   truth surface.
