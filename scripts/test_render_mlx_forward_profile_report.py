@@ -213,6 +213,7 @@ class MlxForwardProfileReportTests(unittest.TestCase):
             ax_row(
                 128,
                 128,
+                projection_wall_us=7000,
                 projection_pack=True,
                 engine="ax_engine_mlx_linear_pack",
             )
@@ -232,6 +233,46 @@ class MlxForwardProfileReportTests(unittest.TestCase):
 
         self.assertEqual({row.engine for row in rows}, {"ax_engine_mlx", "ax_engine_mlx_linear_pack"})
         self.assertIn("ax_engine_mlx_linear_pack", report)
+        self.assertIn("## Pack Comparison", report)
+        self.assertIn(
+            "| qwen3_6_35b_a3b_8bit | 128 | 1,800.0 | 1,800.0 | 1.000x | 9.0 | 7.0 | 0.778x | n/a | 7.0 | n/a | neutral/noisy |",
+            report,
+        )
+
+    def test_pack_comparison_marks_candidate_win(self) -> None:
+        payload = artifact(projection_layout=True, projection_split=True)
+        payload["results"].append(
+            ax_row(
+                128,
+                128,
+                projection_wall_us=6000,
+                projection_pack=True,
+                engine="ax_engine_mlx_linear_pack",
+            )
+        )
+        packed = payload["results"][-1]
+        assert isinstance(packed, dict)
+        packed["prefill_tok_s"] = metric(1900.0)
+        profile = packed["ax_mlx_linear_attention_profile"]
+        assert isinstance(profile, dict)
+        profile.update(
+            {
+                "ax_mlx_linear_attention_profile_projection_qkvz_wall_us": 4000,
+                "ax_mlx_linear_attention_profile_projection_ba_wall_us": 2000,
+                "ax_mlx_linear_attention_profile_projection_qkv_wall_us": 0,
+                "ax_mlx_linear_attention_profile_projection_z_wall_us": 0,
+                "ax_mlx_linear_attention_profile_projection_a_wall_us": 0,
+                "ax_mlx_linear_attention_profile_projection_b_wall_us": 0,
+            }
+        )
+        path = self.write_artifact(payload)
+
+        report = renderer.render_report(renderer.build_rows(path), title="Forward Profile")
+
+        self.assertIn(
+            "| qwen3_6_35b_a3b_8bit | 128 | 1,800.0 | 1,900.0 | 1.056x | 9.0 | 6.0 | 0.667x | 9.0 | 6.0 | 0.667x | candidate win |",
+            report,
+        )
 
     def test_rejects_stale_profile_token_sentinel(self) -> None:
         path = self.write_artifact(artifact(profile_tokens=4_294_967_295))
