@@ -2011,6 +2011,12 @@ impl MlxRunner {
         disable_ngram_acceleration: bool,
         kv_compression: MlxKvCompressionConfig,
     ) -> Result<Self, MlxRunnerError> {
+        // AX_NO_SPEC is the CLAUDE.md-documented kill switch. Honor it at
+        // the runner boundary so server and SDK paths behave the same as
+        // the bench CLI, which already reads the env before constructing
+        // the runner.
+        let disable_ngram_acceleration =
+            disable_ngram_acceleration || crate::fastpath::ngram_acceleration_disabled();
         // Enable MLX compute-graph compilation globally.
         // This caches and reuses compiled Metal shaders across calls with the same
         // graph structure — the equivalent of mlx_lm's per-step mx.compile() JIT.
