@@ -30,6 +30,8 @@ cd "$ROOT_DIR"
   scripts/test_render_gateddelta_prefill_profile_report.py \
   scripts/test_render_mlx_decode_profile_report.py \
   scripts/test_render_mlx_forward_profile_report.py \
+  scripts/test_mlx_forward_profile_artifact.py \
+  scripts/test_mlx_prefill_claim_cycle.py \
   scripts/test_gateddelta_prefill_model.py \
   scripts/test_run_gateddelta_prefill_profile.py \
   scripts/test_readme_performance_artifacts.py \
@@ -38,3 +40,4 @@ cd "$ROOT_DIR"
   scripts/test_probe_mlx_model_support.py \
   -v
 "$PYTHON_BIN" scripts/check_readme_performance_artifacts.py
+"$PYTHON_BIN" scripts/check_mlx_prefill_claim_cycle.py
