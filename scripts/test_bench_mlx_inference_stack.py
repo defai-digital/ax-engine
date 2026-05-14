@@ -18,6 +18,15 @@ assert MODULE_SPEC and MODULE_SPEC.loader
 bench = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(bench)
 
+CHECKER_PATH = Path(__file__).with_name("check_turboquant_quality_artifact.py")
+CHECKER_SPEC = importlib.util.spec_from_file_location(
+    "check_turboquant_quality_artifact",
+    CHECKER_PATH,
+)
+assert CHECKER_SPEC and CHECKER_SPEC.loader
+turboquant_checker = importlib.util.module_from_spec(CHECKER_SPEC)
+CHECKER_SPEC.loader.exec_module(turboquant_checker)
+
 
 def write_gateddelta_model(
     root: Path,
@@ -47,6 +56,12 @@ def write_gateddelta_model(
 
 
 class MlxInferenceStackBenchTests(unittest.TestCase):
+    def test_kv_compression_blocker_keys_match_quality_gate_contract(self) -> None:
+        self.assertEqual(
+            bench.KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS,
+            turboquant_checker.FUSED_DECODE_BLOCKED_COUNTERS,
+        )
+
     def test_parse_mlx_lm_trials_and_reported_averages(self) -> None:
         parsed = bench.parse_mlx_lm_benchmark_output(
             "\n".join(
