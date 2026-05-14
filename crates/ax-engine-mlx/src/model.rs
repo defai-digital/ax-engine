@@ -3184,12 +3184,18 @@ pub(crate) fn scale_hidden_pub(hidden: &MlxArray, scale: f32) -> MlxArray {
 }
 
 fn scale_hidden(hidden: &MlxArray, scale: f32) -> MlxArray {
-    let dtype = hidden.dtype();
-    let s_arr = scalar_like(scale, dtype);
+    // `cached_scalar` deduplicates the (value, dtype) pair across the process,
+    // so steady-state decode pays one `multiply` op per call instead of
+    // (astype + multiply). Saves ~4 ops/step on Gemma 4 E2B (one per scale
+    // site: hidden_states_scale + 3 inside compute_per_layer_inputs_arr).
+    let s_arr = mlx_sys::ops::cached_scalar(scale, hidden.dtype());
     multiply(hidden, &s_arr, None)
 }
 
 fn scalar_like(value: f32, dtype: MlxDtype) -> MlxArray {
+    // Retained for callers outside the steady-state decode hot path
+    // (e.g. MoE router masking, test fixtures) where the per-call astype is
+    // not the bottleneck and value uniqueness is not guaranteed.
     let scalar = MlxArray::from_raw_data(
         &value as *const f32 as *const u8,
         std::mem::size_of::<f32>(),
