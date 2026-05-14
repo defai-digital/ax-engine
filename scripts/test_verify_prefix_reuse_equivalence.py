@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import unittest
@@ -11,6 +12,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 SCRIPT_PATH = Path(__file__).with_name("verify_prefix_reuse_equivalence.py")
+REPO_ROOT = SCRIPT_PATH.resolve().parents[1]
+GLM_CHUNK16_ARTIFACT = (
+    REPO_ROOT
+    / "benchmarks/results/prefix-reuse-equivalence/"
+    / "glm47-warm-extend-chunk16-provenance-2026-05-14.json"
+)
 MODULE_SPEC = importlib.util.spec_from_file_location(
     "verify_prefix_reuse_equivalence", SCRIPT_PATH
 )
@@ -62,6 +69,31 @@ class PrefixReuseEquivalenceProvenanceTests(unittest.TestCase):
         self.assertTrue(flags["AX_NO_SPEC"]["set"])
         self.assertEqual(flags["AX_NO_SPEC"]["value"], "0")
         self.assertFalse(flags["AX_NO_SPEC"]["truthy"])
+
+    def test_glm_chunk16_investigation_artifact_has_provenance_and_real_hit(self) -> None:
+        artifact = json.loads(GLM_CHUNK16_ARTIFACT.read_text())
+
+        self.assertEqual(artifact["schema_version"], verify_prefix.SCHEMA_VERSION)
+        self.assertEqual(artifact["config"]["mode"], "warm_extend")
+        self.assertEqual(artifact["config"]["pad_to_block_size"], 16)
+        self.assertEqual(
+            artifact["aggregate"],
+            {
+                "prompts_matching_exactly": 5,
+                "prompts_total": 5,
+                "verdict": "PASS",
+            },
+        )
+        flags = artifact["environment_flags"]
+        self.assertTrue(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["truthy"])
+        self.assertEqual(flags["AX_MLX_MLA_PREFILL_CHUNK"]["value"], "16")
+        self.assertIsNone(flags["AX_MLX_MLA_PREFILL_CHUNK"]["truthy"])
+        self.assertTrue(
+            any(
+                row["warm_telemetry"]["ax_mlx_prefix_cache_hits"] > 0
+                for row in artifact["per_prompt"]
+            )
+        )
 
 
 if __name__ == "__main__":
