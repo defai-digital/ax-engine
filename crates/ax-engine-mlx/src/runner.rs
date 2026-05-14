@@ -60,8 +60,8 @@ use ax_engine_core::{
 };
 
 use crate::generate::{
-    advance_direct_pipeline_with_turboquant_context, chunked_prefill, decode_step,
-    start_direct_pipeline_with_turboquant_context,
+    DirectPipelineTimings, advance_direct_pipeline_with_timings_and_turboquant_context,
+    chunked_prefill, decode_step, start_direct_pipeline_with_turboquant_context,
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
@@ -801,6 +801,10 @@ struct DecodeTelemetry {
     direct_bootstrap_wall_us: u32,
     direct_pipeline_steps: u32,
     direct_pipeline_wall_us: u32,
+    direct_pipeline_forward_wall_us: u32,
+    direct_pipeline_async_eval_wall_us: u32,
+    direct_pipeline_pending_eval_wall_us: u32,
+    direct_pipeline_pending_read_wall_us: u32,
     single_decode_steps: u32,
     single_decode_wall_us: u32,
     ngram_decode_steps: u32,
@@ -848,6 +852,21 @@ impl DecodeTelemetry {
     fn record_direct_pipeline(&mut self, wall_us: u32) {
         self.direct_pipeline_steps = self.direct_pipeline_steps.saturating_add(1);
         self.direct_pipeline_wall_us = self.direct_pipeline_wall_us.saturating_add(wall_us);
+    }
+
+    fn record_direct_pipeline_timings(&mut self, timings: DirectPipelineTimings) {
+        self.direct_pipeline_forward_wall_us = self
+            .direct_pipeline_forward_wall_us
+            .saturating_add(timings.forward_wall_us);
+        self.direct_pipeline_async_eval_wall_us = self
+            .direct_pipeline_async_eval_wall_us
+            .saturating_add(timings.async_eval_wall_us);
+        self.direct_pipeline_pending_eval_wall_us = self
+            .direct_pipeline_pending_eval_wall_us
+            .saturating_add(timings.pending_eval_wall_us);
+        self.direct_pipeline_pending_read_wall_us = self
+            .direct_pipeline_pending_read_wall_us
+            .saturating_add(timings.pending_read_wall_us);
     }
 
     fn record_single_decode(&mut self, wall_us: u32) {
@@ -902,6 +921,18 @@ impl DecodeTelemetry {
         self.direct_pipeline_wall_us = self
             .direct_pipeline_wall_us
             .saturating_add(other.direct_pipeline_wall_us);
+        self.direct_pipeline_forward_wall_us = self
+            .direct_pipeline_forward_wall_us
+            .saturating_add(other.direct_pipeline_forward_wall_us);
+        self.direct_pipeline_async_eval_wall_us = self
+            .direct_pipeline_async_eval_wall_us
+            .saturating_add(other.direct_pipeline_async_eval_wall_us);
+        self.direct_pipeline_pending_eval_wall_us = self
+            .direct_pipeline_pending_eval_wall_us
+            .saturating_add(other.direct_pipeline_pending_eval_wall_us);
+        self.direct_pipeline_pending_read_wall_us = self
+            .direct_pipeline_pending_read_wall_us
+            .saturating_add(other.direct_pipeline_pending_read_wall_us);
         self.single_decode_steps = self
             .single_decode_steps
             .saturating_add(other.single_decode_steps);
@@ -953,6 +984,22 @@ impl DecodeTelemetry {
             (
                 "ax_mlx_direct_pipeline_wall_us",
                 self.direct_pipeline_wall_us,
+            ),
+            (
+                "ax_mlx_direct_pipeline_forward_wall_us",
+                self.direct_pipeline_forward_wall_us,
+            ),
+            (
+                "ax_mlx_direct_pipeline_async_eval_wall_us",
+                self.direct_pipeline_async_eval_wall_us,
+            ),
+            (
+                "ax_mlx_direct_pipeline_pending_eval_wall_us",
+                self.direct_pipeline_pending_eval_wall_us,
+            ),
+            (
+                "ax_mlx_direct_pipeline_pending_read_wall_us",
+                self.direct_pipeline_pending_read_wall_us,
             ),
             ("ax_mlx_single_decode_steps", self.single_decode_steps),
             ("ax_mlx_single_decode_wall_us", self.single_decode_wall_us),
@@ -3246,7 +3293,7 @@ impl MlxRunner {
     fn run_direct_pipeline_once(&self, state: &mut RequestState, bootstrap_token: MlxArray) -> u32 {
         let branch_started = Instant::now();
         let turboquant_context = self.turboquant_model_decode_context();
-        let (tok, next_pending) = advance_direct_pipeline_with_turboquant_context(
+        let advanced = advance_direct_pipeline_with_timings_and_turboquant_context(
             &self.cfg,
             &self.weights,
             &bootstrap_token,
@@ -3256,10 +3303,13 @@ impl MlxRunner {
         state
             .decode_telemetry
             .record_direct_pipeline(elapsed_us(branch_started));
+        state
+            .decode_telemetry
+            .record_direct_pipeline_timings(advanced.timings);
         state.decode_telemetry.record_production_decode_eval();
-        state.pending_direct = Some(next_pending);
+        state.pending_direct = Some(advanced.next_pending);
         self.maybe_clear_direct_pipeline_cache(state);
-        tok
+        advanced.token
     }
 
     fn run_request_disabled_decode(
@@ -5824,6 +5874,12 @@ mod tests {
         telemetry.record_decode(40);
         telemetry.record_direct_bootstrap(7);
         telemetry.record_direct_pipeline(11);
+        telemetry.record_direct_pipeline_timings(DirectPipelineTimings {
+            forward_wall_us: 3,
+            async_eval_wall_us: 2,
+            pending_eval_wall_us: 5,
+            pending_read_wall_us: 1,
+        });
         telemetry.record_single_decode(13);
         telemetry.record_ngram_decode(17);
         telemetry.record_bonus_token();
@@ -5858,6 +5914,22 @@ mod tests {
         assert_eq!(decisions.get("ax_mlx_direct_bootstrap_wall_us"), Some(&7));
         assert_eq!(decisions.get("ax_mlx_direct_pipeline_steps"), Some(&1));
         assert_eq!(decisions.get("ax_mlx_direct_pipeline_wall_us"), Some(&11));
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_forward_wall_us"),
+            Some(&3)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_async_eval_wall_us"),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_pending_eval_wall_us"),
+            Some(&5)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_pending_read_wall_us"),
+            Some(&1)
+        );
         assert_eq!(decisions.get("ax_mlx_single_decode_steps"), Some(&1));
         assert_eq!(decisions.get("ax_mlx_single_decode_wall_us"), Some(&13));
         assert_eq!(decisions.get("ax_mlx_ngram_decode_steps"), Some(&1));
