@@ -88,6 +88,10 @@ def valid_artifact(root: Path) -> dict:
             "decode_tok_s_ratio_to_baseline": 0.9,
             "kv_saved_kib": 1024,
         },
+        "measurement": {
+            "repetitions": 3,
+            "cooldown_seconds": 20.0,
+        },
         "route_metadata": {
             "crossover_decisions": {
                 "ax_mlx_kv_compression_route_metadata_schema": 2,
@@ -137,6 +141,8 @@ def benchmark_doc(
     compression_mode: str = checker.REQUIRED_CANDIDATE_COMPRESSION_MODE,
     output_token_ids: list[int] | None = None,
     decode_tok_s: float | None = None,
+    repetitions: int = 3,
+    cooldown: float = 20.0,
 ) -> dict:
     resolved_decode_path = decode_path or "fused_compressed_decode"
     decode_path_code = {
@@ -201,6 +207,8 @@ def benchmark_doc(
         )
     return {
         "schema_version": "ax.mlx_inference_stack.v2",
+        "repetitions": repetitions,
+        "cooldown": cooldown,
         "results": [row],
     }
 
@@ -490,8 +498,56 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
 
             self.assertEqual(artifact["candidate"]["decode_path"], "fused_compressed_decode")
             self.assertEqual(artifact["metrics"]["decode_tok_s_ratio_to_baseline"], 0.9)
+            self.assertEqual(
+                artifact["measurement"],
+                {
+                    "repetitions": 3,
+                    "cooldown_seconds": 20.0,
+                },
+            )
             self.assertTrue(artifact["decision"]["performance_promotion_ready"])
             checker.validate_artifact(artifact, root=root)
+
+    def test_builder_requires_matching_measurement_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "benchmarks/manifests/scenario/long_context_qwen_8k.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}")
+            baseline = root / "baseline.json"
+            candidate = root / "candidate.json"
+            metrics = root / "metrics.json"
+            baseline.write_text(json.dumps(benchmark_doc(compressed=False, repetitions=3)))
+            candidate.write_text(json.dumps(benchmark_doc(compressed=True, repetitions=1)))
+            metrics.write_text(
+                json.dumps(
+                    {
+                        "max_abs_diff": 0.03,
+                        "mean_abs_diff": 0.01,
+                        "min_cosine_similarity": 0.999,
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                builder.QualityArtifactBuildError,
+                "repetitions differ",
+            ):
+                builder.build_quality_artifact(
+                    baseline_benchmark=baseline,
+                    candidate_benchmark=candidate,
+                    quality_metrics=metrics,
+                    manifest=manifest,
+                    model_id="qwen3_5_9b_q4",
+                    model_family="qwen3_dense",
+                    model_revision="test",
+                    head_dim=128,
+                    context_tokens=8192,
+                    generation_tokens=256,
+                    baseline_engine="ax_engine_mlx",
+                    candidate_engine="ax_engine_mlx",
+                    root=root,
+                )
 
     def test_builder_compiles_quality_artifact_when_performance_is_not_promoted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -586,6 +642,9 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                 {
                     "observed_decode_tok_s_ratio_to_baseline": 0.1,
                     "required_min_decode_tok_s_ratio_to_baseline": 0.85,
+                    "repetitions": 3,
+                    "cooldown_seconds": 20.0,
+                    "repeated_measurement_ready": True,
                     "performance_promotion_ready": False,
                     "next_action": (
                         "rerun or improve fused compressed decode until "
@@ -631,6 +690,55 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             self.assertTrue(
                 report["quality_artifacts"][0]["promotion_gap"][
                     "performance_promotion_ready"
+                ]
+            )
+            self.assertTrue(
+                report["quality_artifacts"][0]["promotion_gap"][
+                    "repeated_measurement_ready"
+                ]
+            )
+
+    def test_readiness_reports_missing_repeated_measurement_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models_root = root / "models"
+            model_dir = models_root / "gemma"
+            model_dir.mkdir(parents=True)
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "gemma4",
+                        "attention_head_dim": 256,
+                        "global_head_dim": 512,
+                        "attention_head_count": 8,
+                        "kv_head_count": 1,
+                        "layer_types": ["full_attention"],
+                    }
+                )
+            )
+            artifact = valid_artifact(root)
+            artifact["measurement"] = {
+                "repetitions": 1,
+                "cooldown_seconds": 20.0,
+            }
+            artifact_path = root / "quality-gate.json"
+            artifact_path.write_text(json.dumps(artifact))
+
+            report = readiness.build_report(
+                models_root=models_root,
+                results_root=root / "empty-results",
+                artifacts=[artifact_path],
+                require_artifact_files=True,
+                root=root,
+            )
+
+            self.assertEqual(
+                report["quality_artifacts"][0]["promotion_gap"]["next_action"],
+                "repeat candidate and baseline with cooled measurements",
+            )
+            self.assertFalse(
+                report["quality_artifacts"][0]["promotion_gap"][
+                    "repeated_measurement_ready"
                 ]
             )
 

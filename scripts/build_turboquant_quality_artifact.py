@@ -59,6 +59,40 @@ def _metric_median(row: dict[str, Any], metric: str) -> float:
     return float(value)
 
 
+def _number_field(doc: dict[str, Any], field: str, source: str) -> float:
+    value = doc.get(field)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise QualityArtifactBuildError(f"{source}.{field} must be numeric")
+    return float(value)
+
+
+def _integer_field(doc: dict[str, Any], field: str, source: str) -> int:
+    value = doc.get(field)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise QualityArtifactBuildError(f"{source}.{field} must be an integer")
+    return value
+
+
+def _measurement_evidence(
+    baseline_doc: dict[str, Any],
+    candidate_doc: dict[str, Any],
+) -> dict[str, Any]:
+    baseline_repetitions = _integer_field(baseline_doc, "repetitions", "baseline")
+    candidate_repetitions = _integer_field(candidate_doc, "repetitions", "candidate")
+    if baseline_repetitions != candidate_repetitions:
+        raise QualityArtifactBuildError("baseline and candidate repetitions differ")
+
+    baseline_cooldown = _number_field(baseline_doc, "cooldown", "baseline")
+    candidate_cooldown = _number_field(candidate_doc, "cooldown", "candidate")
+    if baseline_cooldown != candidate_cooldown:
+        raise QualityArtifactBuildError("baseline and candidate cooldown differ")
+
+    return {
+        "repetitions": baseline_repetitions,
+        "cooldown_seconds": baseline_cooldown,
+    }
+
+
 def _matching_rows(
     doc: dict[str, Any],
     *,
@@ -163,6 +197,7 @@ def build_quality_artifact(
     baseline_doc = _load_json(baseline_benchmark)
     candidate_doc = _load_json(candidate_benchmark)
     metrics_doc = _load_json(quality_metrics)
+    measurement = _measurement_evidence(baseline_doc, candidate_doc)
     baseline_row = _select_baseline_row(
         baseline_doc,
         engine=baseline_engine,
@@ -234,6 +269,7 @@ def build_quality_artifact(
             "decode_tok_s": candidate_decode,
         },
         "metrics": metrics,
+        "measurement": measurement,
         "route_metadata": {"crossover_decisions": route_decisions},
         "artifacts": [
             {

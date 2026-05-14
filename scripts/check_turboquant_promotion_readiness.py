@@ -145,10 +145,23 @@ def inspect_quality_artifact(
         }
     performance_blockers = checker.performance_gate_blockers(doc.get("metrics", {}))
     metrics = doc.get("metrics", {})
+    measurement = doc.get("measurement", {})
     observed_decode_ratio = (
         metrics.get("decode_tok_s_ratio_to_baseline")
         if isinstance(metrics, dict)
         else None
+    )
+    repetitions = measurement.get("repetitions") if isinstance(measurement, dict) else None
+    cooldown_seconds = (
+        measurement.get("cooldown_seconds") if isinstance(measurement, dict) else None
+    )
+    repeated_measurement_ready = (
+        isinstance(repetitions, int)
+        and not isinstance(repetitions, bool)
+        and repetitions >= 2
+        and isinstance(cooldown_seconds, (int, float))
+        and not isinstance(cooldown_seconds, bool)
+        and cooldown_seconds > 0
     )
     return {
         "path": _relative(path),
@@ -159,11 +172,16 @@ def inspect_quality_artifact(
         "promotion_gap": {
             "observed_decode_tok_s_ratio_to_baseline": observed_decode_ratio,
             "required_min_decode_tok_s_ratio_to_baseline": checker.MIN_DECODE_RATIO_TO_BASELINE,
+            "repetitions": repetitions,
+            "cooldown_seconds": cooldown_seconds,
+            "repeated_measurement_ready": repeated_measurement_ready,
             "performance_promotion_ready": not performance_blockers,
             "next_action": (
                 "ready_for_companion_prd_review"
-                if not performance_blockers
+                if not performance_blockers and repeated_measurement_ready
                 else "rerun or improve fused compressed decode until performance blockers clear"
+                if performance_blockers
+                else "repeat candidate and baseline with cooled measurements"
             ),
         },
     }
