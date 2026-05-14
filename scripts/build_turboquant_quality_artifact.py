@@ -271,6 +271,9 @@ def build_quality_artifact(
         "metrics": metrics,
         "measurement": measurement,
         "route_metadata": {"crossover_decisions": route_decisions},
+        "runtime_truth": checker.route_truth_surface(
+            {"crossover_decisions": route_decisions}
+        ),
         "artifacts": [
             {
                 "role": "baseline",

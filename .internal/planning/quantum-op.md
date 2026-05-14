@@ -68,6 +68,11 @@ Current status as of 2026-05-14:
   restore behavior after the GLM-4.7-Flash warm-extend drift was avoided by
   chunk-aligned MLA prefill. Follow-up guardrails ensure constructor JIT warm-up
   uses the same effective chunk shape as runtime prefill;
+- TurboQuant promotion artifacts now expose a `runtime_truth` surface that
+  labels the real decode path, fused successes, Metal successes, fallback
+  counts, and fallback reason. The builder records this surface and the
+  readiness checker reports it even for artifacts that fail the quality gate, so
+  false "fused" claims are easier to diagnose;
 - TurboQuant public/runtime promotion remains blocked because no passing
   long-context fused-path performance promotion artifact has been produced.
 
@@ -459,7 +464,8 @@ The recommended order is:
    TurboQuant promotion**).
 4. README/Python provenance and smoke-test guardrails (**done**).
 5. R2 conservative fused compressed decode real-runner gate (**active
-   blocker**).
+   blocker; Phase 1 truth surface is done, Phase 2 real-runner kernel gate
+   remains**).
 6. R4 adaptive n-gram policy search once telemetry is complete (**deferred**).
 7. R5 MoE locality profiling, then search only if profiling identifies a real
    locality bottleneck.

@@ -26,6 +26,19 @@ MIN_SAVED_KIB = 1
 MAX_RUNTIME_PRODUCTION_BLOCKERS = 1
 REQUIRED_CANDIDATE_COMPRESSION_MODE = "turboquant-fused-experimental"
 SUPPORTED_HEAD_DIMS = {128, 256, 512}
+DECODE_PATH_LABELS = {
+    1: "full_precision_shadow",
+    2: "fused_compressed_decode",
+    3: "cpu_oracle_compressed_decode",
+}
+FUSED_DECODE_FALLBACK_REASON_LABELS = {
+    0: "none",
+    1: "shadow_only",
+    2: "missing_runtime_storage",
+    3: "unsupported_preset",
+    4: "runner_not_integrated",
+    5: "cpu_oracle_unavailable",
+}
 
 QUALITY_GATES = {
     "reference_k8v4": {
@@ -133,6 +146,66 @@ def _validate_quality_gate(metrics: dict[str, Any], profile: str) -> None:
     )
 
 
+def _decisions_from_route_metadata(route_metadata: dict[str, Any]) -> dict[str, Any]:
+    decisions = route_metadata.get("crossover_decisions", route_metadata)
+    _require(isinstance(decisions, dict), "route_metadata.crossover_decisions must be an object")
+    return decisions
+
+
+def _optional_int(decisions: dict[str, Any], key: str) -> int | None:
+    value = decisions.get(key)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def route_truth_surface(route_metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return promotion-facing labels for the real TurboQuant decode route."""
+
+    decisions = _decisions_from_route_metadata(route_metadata)
+    decode_path = _optional_int(decisions, "ax_mlx_kv_compression_decode_path")
+    attempts = _optional_int(decisions, "ax_mlx_kv_compression_fused_decode_attempts")
+    successes = _optional_int(decisions, "ax_mlx_kv_compression_fused_decode_successes")
+    metal_successes = _optional_int(
+        decisions,
+        "ax_mlx_kv_compression_fused_decode_metal_successes",
+    )
+    fallbacks = _optional_int(decisions, "ax_mlx_kv_compression_fused_decode_fallbacks")
+    fallback_reason = _optional_int(
+        decisions,
+        "ax_mlx_kv_compression_fused_decode_fallback_reason",
+    )
+    fused_path_selected = decode_path == 2
+    fused_success_observed = (
+        isinstance(successes, int)
+        and successes > 0
+        and isinstance(metal_successes, int)
+        and metal_successes > 0
+    )
+    zero_fallbacks = fallbacks == 0 and fallback_reason == 0
+
+    return {
+        "decode_path_code": decode_path,
+        "decode_path_label": DECODE_PATH_LABELS.get(
+            decode_path,
+            f"unknown_{decode_path}" if decode_path is not None else "missing",
+        ),
+        "fused_decode_attempts": attempts,
+        "fused_decode_successes": successes,
+        "fused_decode_metal_successes": metal_successes,
+        "fused_decode_fallbacks": fallbacks,
+        "fused_decode_fallback_reason_code": fallback_reason,
+        "fused_decode_fallback_reason_label": FUSED_DECODE_FALLBACK_REASON_LABELS.get(
+            fallback_reason,
+            f"unknown_{fallback_reason}" if fallback_reason is not None else "missing",
+        ),
+        "fused_path_selected": fused_path_selected,
+        "fused_success_observed": fused_success_observed,
+        "zero_fallbacks": zero_fallbacks,
+        "promotion_path_ready": fused_path_selected and fused_success_observed and zero_fallbacks,
+    }
+
+
 def performance_gate_blockers(metrics: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
     try:
@@ -151,8 +224,7 @@ def performance_gate_blockers(metrics: dict[str, Any]) -> list[str]:
 
 
 def _validate_route_metadata(route_metadata: dict[str, Any]) -> None:
-    decisions = route_metadata.get("crossover_decisions", route_metadata)
-    _require(isinstance(decisions, dict), "route_metadata.crossover_decisions must be an object")
+    decisions = _decisions_from_route_metadata(route_metadata)
 
     missing = sorted(REQUIRED_ROUTE_KEYS - decisions.keys())
     _require(not missing, f"route metadata missing required keys: {', '.join(missing)}")

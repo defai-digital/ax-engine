@@ -132,8 +132,13 @@ def inspect_quality_artifact(
     require_files: bool,
     root: Path = REPO_ROOT,
 ) -> dict[str, Any]:
+    doc: dict[str, Any] | None = None
+    runtime_truth: dict[str, Any] | None = None
     try:
         doc = _load_json(path)
+        route_metadata = doc.get("route_metadata")
+        if isinstance(route_metadata, dict):
+            runtime_truth = checker.route_truth_surface(route_metadata)
         checker.validate_artifact(doc, root=root, require_files=require_files)
     except Exception as exc:  # noqa: BLE001 - report fail-closed reason verbatim.
         return {
@@ -142,6 +147,7 @@ def inspect_quality_artifact(
             "passes_performance_gate": False,
             "quality_blocker": str(exc),
             "performance_blockers": [],
+            "runtime_truth": runtime_truth,
         }
     performance_blockers = checker.performance_gate_blockers(doc.get("metrics", {}))
     metrics = doc.get("metrics", {})
@@ -169,6 +175,7 @@ def inspect_quality_artifact(
         "passes_performance_gate": not performance_blockers,
         "quality_blocker": None,
         "performance_blockers": performance_blockers,
+        "runtime_truth": runtime_truth,
         "promotion_gap": {
             "observed_decode_tok_s_ratio_to_baseline": observed_decode_ratio,
             "required_min_decode_tok_s_ratio_to_baseline": checker.MIN_DECODE_RATIO_TO_BASELINE,
