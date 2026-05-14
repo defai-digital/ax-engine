@@ -1551,6 +1551,41 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             )
         )
 
+    def test_ax_sse_parser_resets_event_after_each_frame(self) -> None:
+        events = list(
+            bench.iter_sse_json_events_from_lines(
+                [
+                    "event: step\n",
+                    'data: {"step":{"runner_time_us":100,"scheduled_tokens":1}}\n',
+                    "\n",
+                    'data: {"response":{"output_tokens":[42]}}\n',
+                    "\n",
+                ]
+            )
+        )
+
+        self.assertEqual(events[0][0], "step")
+        self.assertEqual(events[1][0], "")
+        self.assertIn("response", events[1][1])
+
+    def test_ax_sse_parser_supports_multiline_data_without_stale_event(self) -> None:
+        events = list(
+            bench.iter_sse_json_events_from_lines(
+                [
+                    "event: response\n",
+                    'data: {"response":\n',
+                    'data: {"output_tokens":[7]}}\n',
+                    "\n",
+                    "data: [DONE]\n",
+                    "\n",
+                ]
+            )
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0], "response")
+        self.assertEqual(events[0][1]["response"]["output_tokens"], [7])
+
     def test_axengine_command_can_enable_experimental_kv_compression(self) -> None:
         with patch.object(bench.subprocess, "Popen") as popen:
             bench.start_axengine(

@@ -71,7 +71,7 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AX_ENGINE_SERVER = REPO_ROOT / "target/release/ax-engine-server"
@@ -1517,6 +1517,44 @@ def is_ax_prefill_step(step: dict[str, Any], *, seen_prefill: bool) -> bool:
     return not seen_prefill or scheduled_tokens > 1
 
 
+def iter_sse_json_events_from_lines(lines: Iterable[str]) -> Iterator[tuple[str, Any]]:
+    current_event = ""
+    data_parts: list[str] = []
+
+    def flush_frame() -> tuple[str, Any] | None:
+        nonlocal current_event, data_parts
+        event_name = current_event
+        data = "\n".join(data_parts)
+        current_event = ""
+        data_parts = []
+        if not data:
+            return None
+        try:
+            return event_name, json.loads(data)
+        except json.JSONDecodeError:
+            return None
+
+    for raw_line in lines:
+        line = raw_line.rstrip("\r\n")
+        if line == "":
+            frame = flush_frame()
+            if frame is not None:
+                yield frame
+            continue
+        if line.startswith("event:"):
+            current_event = line[len("event:") :].strip()
+            continue
+        if line.startswith("data:"):
+            value = line[len("data:") :]
+            if value.startswith(" "):
+                value = value[1:]
+            data_parts.append(value)
+
+    frame = flush_frame()
+    if frame is not None:
+        yield frame
+
+
 def axengine_one_run(
     port: int,
     tokens: list[int],
@@ -1549,22 +1587,12 @@ def axengine_one_run(
     decode_us = 0
     output_tokens = 0
     output_token_ids: list[int] = []
-    current_event = ""
     final_route: dict[str, Any] | None = None
     prefill_route: dict[str, Any] | None = None
     step_local_decisions: dict[str, int] = {}
 
-    for raw in response:
-        line = raw.decode("utf-8", errors="replace").strip()
-        if line.startswith("event:"):
-            current_event = line[len("event:") :].strip()
-            continue
-        if not line.startswith("data:"):
-            continue
-        try:
-            obj = json.loads(line[5:].strip())
-        except json.JSONDecodeError:
-            continue
+    decoded_lines = (raw.decode("utf-8", errors="replace") for raw in response)
+    for current_event, obj in iter_sse_json_events_from_lines(decoded_lines):
         if current_event == "step":
             step = obj.get("step", {})
             runner_us = int(step.get("runner_time_us", 0))
