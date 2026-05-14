@@ -299,7 +299,8 @@ startup/concurrent-prefill gate:
 These artifacts measure direct AX MLX behavior, not n-gram decode acceleration.
 The 8k P1 AX/MLX prefill ratio was 0.840x, and the 4-request P2 concurrent
 prefill row was classified as serialized. Use them to set expectations for
-long-context serving; they do not prove continuous batching.
+long-context serving; they do not prove continuous batching. This is a
+single-model long-context boundary, not a Gemma/Qwen/GLM-wide campaign.
 
 Hot-prefix physical reuse is validated separately from cold-prefill throughput.
 On Qwen3.5 9B, the 2026-05-13 warm-repeat equivalence artifact restored physical

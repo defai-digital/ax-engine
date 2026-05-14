@@ -183,7 +183,8 @@ def add_boundary_readme_claims(
         + f"<!-- readme-concurrent-prefill-boundary-artifact: {concurrent_relative_path} -->\n"
         + f"The 8k P1 AX/MLX prefill ratio was {prefill_ratio_text}, and "
         + "the 4-request P2 concurrent prefill row was classified as "
-        + f"{concurrent_classification}.\n"
+        + f"{concurrent_classification}. This is a single-model long-context "
+        + "boundary, not a Gemma/Qwen/GLM-wide campaign.\n"
     )
 
 
@@ -819,6 +820,36 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 checker.check_readme_performance(
                     repo_root=root,
                     readme_path=root / "README.md",
+                    expected_metric_count=10,
+                )
+
+    def test_readme_boundary_artifacts_reject_missing_campaign_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            prefill_artifact_path = write_prefill_scaling_artifact(root)
+            concurrent_artifact_path = write_concurrent_prefill_artifact(root)
+            add_boundary_readme_claims(
+                root,
+                prefill_artifact_path=prefill_artifact_path,
+                concurrent_artifact_path=concurrent_artifact_path,
+            )
+            readme_path = root / "README.md"
+            readme_path.write_text(
+                readme_path.read_text().replace(
+                    "This is a single-model long-context boundary, not a "
+                    "Gemma/Qwen/GLM-wide campaign.",
+                    "",
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "must not imply a family-wide campaign",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=readme_path,
                     expected_metric_count=10,
                 )
 
