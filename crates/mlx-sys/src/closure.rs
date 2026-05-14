@@ -203,6 +203,12 @@ impl MlxClosure {
     /// `Vec<MlxArray>`. Each output is a refcounted handle owned by the
     /// caller.
     pub fn apply(&self, inputs: &[&MlxArray]) -> Vec<MlxArray> {
+        // Count one MLX dispatch per closure invocation. For a compiled
+        // closure this is the single underlying graph dispatch; for an
+        // uncompiled closure it is the trampoline call. Either way, this
+        // mirrors the per-op accounting used by every direct-FFI wrapper
+        // so op-count A/Bs across compile vs imperative paths are fair.
+        crate::op_count::bump();
         let in_vec = MlxVectorArray::from_arrays(inputs);
         let mut out_raw = null_vector_array();
         unsafe {
