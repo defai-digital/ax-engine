@@ -3218,8 +3218,17 @@ impl MlxRunner {
     ///
     /// Returns `None` when no aligned prefix hits, when `input` is shorter
     /// than one block, or when the cache is disabled. The probe is O(input.len() /
-    /// block_size) hash-map lookups, all read-only, and verifies exact token
-    /// equality so a longer hash collision cannot hide a shorter valid prefix.
+    /// block_size) hash-map lookups in the L1 cache, all read-only and
+    /// verifying exact token equality.
+    ///
+    /// F3 M2 — when the L1 cache has no matching prefix, the probe also
+    /// consults the L2 disk cache via the cheap `contains` existence
+    /// check. This unlocks the cross-process / cross-restart case the
+    /// L1-only probe couldn't reach (process B opens a fresh L1, the
+    /// scheduler hasn't annotated a reused-prefix slice, but the disk
+    /// holds a snapshot from process A). The disk check is `fs::stat`
+    /// per candidate prefix — cheap; the eventual full read + SHA256
+    /// validate happens once at restore time, not per probe step.
     fn probe_runner_snapshot_for_prefix(
         &self,
         model_id: &str,
@@ -3229,7 +3238,23 @@ impl MlxRunner {
         let cache = self.prefix_cache.lock().unwrap();
         Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
             let key = self.prefix_cache_key(model_id, block_size_tokens, prefix);
-            cache.contains_exact_tokens(&key, prefix)
+            if cache.contains_exact_tokens(&key, prefix) {
+                return true;
+            }
+            if let Some(disk) = self.disk_prefix_cache.as_ref() {
+                let key_bytes = crate::disk_prefix_cache::canonical_key_bytes(
+                    &key.model_id,
+                    &key.route_policy,
+                    &key.layer_layout,
+                    key.block_size_tokens,
+                    key.token_count,
+                    key.token_hash,
+                );
+                if disk.contains(&key_bytes) {
+                    return true;
+                }
+            }
+            false
         })
     }
 
@@ -3559,8 +3584,13 @@ impl MlxRunner {
             } else {
                 None
             };
+            // Only clone the key when we'll need it again post-insert
+            // (i.e. when the disk path will fire). For the L1-only
+            // configuration the original `key` moves cleanly into
+            // `cache.insert`, no extra allocation.
+            let key_for_disk = snapshot_payload.as_ref().map(|_| key.clone());
             let outcome = cache.insert(
-                key.clone(),
+                key,
                 MlxPrefixSnapshot {
                     cache: snapshot_cache,
                     tokens: tokens.to_vec(),
@@ -3579,16 +3609,18 @@ impl MlxRunner {
                 // (c) L1 actually stored it. A disk-write failure does
                 // not back out the L1 store — the in-memory layer
                 // alone is still useful and disk is strictly additive.
-                if let (Some(disk), Some(payload)) =
-                    (self.disk_prefix_cache.as_ref(), snapshot_payload)
-                {
+                if let (Some(disk), Some(payload), Some(disk_key)) = (
+                    self.disk_prefix_cache.as_ref(),
+                    snapshot_payload,
+                    key_for_disk,
+                ) {
                     let key_bytes = crate::disk_prefix_cache::canonical_key_bytes(
-                        &key.model_id,
-                        &key.route_policy,
-                        &key.layer_layout,
-                        key.block_size_tokens,
-                        key.token_count,
-                        key.token_hash,
+                        &disk_key.model_id,
+                        &disk_key.route_policy,
+                        &disk_key.layer_layout,
+                        disk_key.block_size_tokens,
+                        disk_key.token_count,
+                        disk_key.token_hash,
                     );
                     match disk.insert(&key_bytes, &payload) {
                         Ok(()) => telemetry.record_disk_insert(payload.len() as u64),
