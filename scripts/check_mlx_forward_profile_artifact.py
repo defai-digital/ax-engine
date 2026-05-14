@@ -54,6 +54,8 @@ class ForwardProfileCheckResult:
 def load_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text())
+    except OSError as error:
+        raise MlxForwardProfileArtifactError(f"failed to read {path}: {error}") from error
     except json.JSONDecodeError as error:
         raise MlxForwardProfileArtifactError(f"{path} is not valid JSON: {error}") from error
     if not isinstance(payload, dict):

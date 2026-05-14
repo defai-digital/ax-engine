@@ -279,6 +279,26 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
             completed.stdout,
         )
 
+    def test_cli_reports_missing_file_without_traceback(self) -> None:
+        missing = Path(tempfile.mkdtemp()) / "missing.json"
+        self.addCleanup(lambda: missing.parent.rmdir())
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                str(missing),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("failed to read", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+
     def test_cli_accepts_min_pack_candidate_wins(self) -> None:
         path = self.write_fixture(artifact())
 
