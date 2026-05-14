@@ -357,6 +357,15 @@ def _validate_route_metadata(route_metadata: dict[str, Any]) -> None:
         )
 
 
+def _validate_runtime_truth(doc: dict[str, Any], route_metadata: dict[str, Any]) -> None:
+    runtime_truth = _mapping(doc.get("runtime_truth"), "runtime_truth")
+    expected = route_truth_surface(route_metadata)
+    _require(
+        runtime_truth == expected,
+        "runtime_truth must match route_metadata-derived truth surface",
+    )
+
+
 def validate_artifact(doc: dict[str, Any], *, root: Path = REPO_ROOT, require_files: bool = True) -> None:
     _require(doc.get("schema_version") == SCHEMA_VERSION, f"schema_version must be {SCHEMA_VERSION}")
 
@@ -423,6 +432,7 @@ def validate_artifact(doc: dict[str, Any], *, root: Path = REPO_ROOT, require_fi
 
     route_metadata = _mapping(doc.get("route_metadata"), "route_metadata")
     _validate_route_metadata(route_metadata)
+    _validate_runtime_truth(doc, route_metadata)
 
     artifacts = doc.get("artifacts")
     _require(isinstance(artifacts, list) and artifacts, "artifacts must be a non-empty array")
