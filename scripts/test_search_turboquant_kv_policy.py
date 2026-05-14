@@ -204,6 +204,88 @@ class TurboQuantKvPolicySearchTests(unittest.TestCase):
                 repo={"commit": "abc1234", "dirty": False},
             )
 
+    def test_duplicate_dimension_values_fail_before_artifact_build(self) -> None:
+        with self.assertRaisesRegex(
+            search.TurboQuantPolicySearchError,
+            "kv_presets\\[1\\] duplicates",
+        ):
+            search.build_search_artifact(
+                metadata=metadata(),
+                baseline=baseline(),
+                kv_presets=["TurboQuantK8V4", "TurboQuantK8V4"],
+                hot_window_tokens=[256],
+                eligible_layer_masks=["full_attention_only"],
+                fallback_policies=["fail_closed"],
+                quality_profiles=["reference_k8v4"],
+                seed=42,
+                repo={"commit": "abc1234", "dirty": False},
+            )
+
+    def test_invalid_direct_search_space_values_fail_closed(self) -> None:
+        with self.assertRaisesRegex(
+            search.TurboQuantPolicySearchError,
+            "hot_window_tokens\\[0\\] must be non-negative",
+        ):
+            search.build_search_artifact(
+                metadata=metadata(),
+                baseline=baseline(),
+                kv_presets=["TurboQuantK8V4"],
+                hot_window_tokens=[-1],
+                eligible_layer_masks=["full_attention_only"],
+                fallback_policies=["fail_closed"],
+                quality_profiles=["reference_k8v4"],
+                seed=42,
+                repo={"commit": "abc1234", "dirty": False},
+            )
+
+        with self.assertRaisesRegex(
+            search.TurboQuantPolicySearchError,
+            "quality_profiles\\[0\\] must be a non-empty string",
+        ):
+            search.build_search_artifact(
+                metadata=metadata(),
+                baseline=baseline(),
+                kv_presets=["TurboQuantK8V4"],
+                hot_window_tokens=[256],
+                eligible_layer_masks=["full_attention_only"],
+                fallback_policies=["fail_closed"],
+                quality_profiles=[""],
+                seed=42,
+                repo={"commit": "abc1234", "dirty": False},
+            )
+
+    def test_cli_duplicate_dimension_values_fail_without_writing_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata_path = root / "metadata.json"
+            baseline_path = root / "baseline.json"
+            output_path = root / "artifact.json"
+            write_json(metadata_path, metadata())
+            write_json(baseline_path, baseline())
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--metadata",
+                    str(metadata_path),
+                    "--baseline",
+                    str(baseline_path),
+                    "--output",
+                    str(output_path),
+                    "--kv-presets",
+                    "TurboQuantK8V4,TurboQuantK8V4",
+                    "--skip-git-repo-metadata",
+                ],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("duplicates", result.stderr)
+            self.assertFalse(output_path.exists())
+
     def test_rejects_negative_hot_window_tokens(self) -> None:
         with self.assertRaisesRegex(
             search.argparse.ArgumentTypeError,

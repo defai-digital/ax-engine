@@ -69,6 +69,60 @@ def parse_int_csv(value: str) -> list[int]:
     return parsed
 
 
+def require_unique_values(values: list[Any], field: str) -> None:
+    seen: set[Any] = set()
+    for index, value in enumerate(values):
+        if value in seen:
+            raise TurboQuantPolicySearchError(
+                f"{field}[{index}] duplicates an earlier value: {value!r}"
+            )
+        seen.add(value)
+
+
+def validate_string_values(values: list[str], field: str) -> None:
+    for index, value in enumerate(values):
+        if not isinstance(value, str) or not value.strip():
+            raise TurboQuantPolicySearchError(f"{field}[{index}] must be a non-empty string")
+
+
+def validate_hot_window_tokens(values: list[int]) -> None:
+    for index, value in enumerate(values):
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise TurboQuantPolicySearchError(
+                f"hot_window_tokens[{index}] must be an integer"
+            )
+        if value < 0:
+            raise TurboQuantPolicySearchError(
+                f"hot_window_tokens[{index}] must be non-negative"
+            )
+
+
+def validate_search_space(
+    *,
+    kv_presets: list[str],
+    hot_window_tokens: list[int],
+    eligible_layer_masks: list[str],
+    fallback_policies: list[str],
+    quality_profiles: list[str],
+) -> None:
+    dimensions: dict[str, list[Any]] = {
+        "kv_presets": kv_presets,
+        "hot_window_tokens": hot_window_tokens,
+        "eligible_layer_masks": eligible_layer_masks,
+        "fallback_policies": fallback_policies,
+        "quality_profiles": quality_profiles,
+    }
+    for field, values in dimensions.items():
+        if not values:
+            raise TurboQuantPolicySearchError(f"{field} must not be empty")
+        require_unique_values(values, field)
+    validate_string_values(kv_presets, "kv_presets")
+    validate_hot_window_tokens(hot_window_tokens)
+    validate_string_values(eligible_layer_masks, "eligible_layer_masks")
+    validate_string_values(fallback_policies, "fallback_policies")
+    validate_string_values(quality_profiles, "quality_profiles")
+
+
 def policy_id(policy: dict[str, Any]) -> str:
     preset = str(policy["kv_preset"]).lower().replace("turboquant", "tq")
     return (
@@ -159,6 +213,13 @@ def build_search_artifact(
     seed: int,
     repo: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    validate_search_space(
+        kv_presets=kv_presets,
+        hot_window_tokens=hot_window_tokens,
+        eligible_layer_masks=eligible_layer_masks,
+        fallback_policies=fallback_policies,
+        quality_profiles=quality_profiles,
+    )
     policies = enumerate_policies(
         kv_presets=kv_presets,
         hot_window_tokens=hot_window_tokens,
