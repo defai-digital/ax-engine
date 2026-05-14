@@ -2115,7 +2115,11 @@ impl MlxRunner {
                 &mut dummy_rng,
             );
             dummy_cache.reset();
-            let dummy_tokens: Vec<u32> = vec![0u32; 8];
+            let dummy_token_count = crate::fastpath::prefill_warmup_token_count(
+                cfg.glm_mla_attention.is_some(),
+                prefill_chunk,
+            );
+            let dummy_tokens: Vec<u32> = vec![0u32; dummy_token_count];
             chunked_prefill(
                 &cfg,
                 &weights,

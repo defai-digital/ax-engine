@@ -107,6 +107,20 @@ pub fn resolve_prefill_chunk(
     resolved.max(1)
 }
 
+/// Token count for constructor JIT warm-up. Non-MLA models keep the historical
+/// small warm-up prompt. MLA models warm at least one full effective chunk so
+/// the compiled prefill graph matches the default chunk-aligned runtime path.
+pub fn prefill_warmup_token_count(
+    has_mla_attention: bool,
+    effective_prefill_chunk: usize,
+) -> usize {
+    if has_mla_attention {
+        effective_prefill_chunk.max(1)
+    } else {
+        8
+    }
+}
+
 env_flag!(
     /// **Defensive kill switch.** Engaged by `AX_DISABLE_MLA_PREFIX_RESTORE`,
     /// this re-engages the historical `mla_extend_unsafe` safety gate in
@@ -228,5 +242,24 @@ mod tests {
     fn resolve_prefill_chunk_clamps_zero_for_all_models() {
         assert_eq!(resolve_prefill_chunk(false, 0, None), 1);
         assert_eq!(resolve_prefill_chunk(true, 0, Some(0)), 1);
+    }
+
+    #[test]
+    fn prefill_warmup_token_count_preserves_non_mla_lightweight_warmup() {
+        assert_eq!(prefill_warmup_token_count(false, 256), 8);
+    }
+
+    #[test]
+    fn prefill_warmup_token_count_uses_effective_mla_chunk() {
+        assert_eq!(
+            prefill_warmup_token_count(true, MLA_DEFAULT_PREFILL_CHUNK),
+            MLA_DEFAULT_PREFILL_CHUNK
+        );
+        assert_eq!(prefill_warmup_token_count(true, 32), 32);
+    }
+
+    #[test]
+    fn prefill_warmup_token_count_clamps_mla_zero() {
+        assert_eq!(prefill_warmup_token_count(true, 0), 1);
     }
 }
