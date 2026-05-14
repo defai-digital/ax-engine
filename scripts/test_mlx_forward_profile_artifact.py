@@ -45,11 +45,12 @@ def ax_row(
     projection_wall_us: int,
     pack: bool,
     prompt_tokens: int = 128,
+    generation_tokens: int = 128,
 ) -> dict[str, object]:
     return {
         "engine": engine,
         "prompt_tokens": prompt_tokens,
-        "generation_tokens": 128,
+        "generation_tokens": generation_tokens,
         "ax_decode_policy": "direct_no_ngram_acceleration",
         "ax_linear_attention_projection_pack": pack,
         "prefill_tok_s": metric(prefill_tok_s),
@@ -59,7 +60,11 @@ def ax_row(
     }
 
 
-def artifact(*, prompt_tokens: int = 128) -> dict[str, object]:
+def artifact(
+    *,
+    prompt_tokens: int = 128,
+    generation_tokens: int = 128,
+) -> dict[str, object]:
     return {
         "schema_version": checker.SCHEMA_VERSION,
         "model": "qwen3_6_35b_a3b_8bit",
@@ -72,6 +77,7 @@ def artifact(*, prompt_tokens: int = 128) -> dict[str, object]:
                 projection_wall_us=9000,
                 pack=False,
                 prompt_tokens=prompt_tokens,
+                generation_tokens=generation_tokens,
             ),
             ax_row(
                 engine="ax_engine_mlx_linear_pack",
@@ -79,6 +85,7 @@ def artifact(*, prompt_tokens: int = 128) -> dict[str, object]:
                 projection_wall_us=6000,
                 pack=True,
                 prompt_tokens=prompt_tokens,
+                generation_tokens=generation_tokens,
             ),
         ],
     }
@@ -117,8 +124,21 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
         self.assertEqual(checked.pack_candidate_win_prompt_count, 1)
         self.assertEqual(
             checker.summarize_pack_comparisons(checked.pack_comparisons),
-            "qwen3_6_35b_a3b_8bit prompt=128: candidate win",
+            "qwen3_6_35b_a3b_8bit prompt=128 gen=128: candidate win",
         )
+
+    def test_summary_disambiguates_generation_tokens(self) -> None:
+        first = self.write_fixture(artifact(prompt_tokens=128, generation_tokens=64))
+        second = self.write_fixture(artifact(prompt_tokens=128, generation_tokens=128))
+
+        checked = checker.check_mlx_forward_profile_artifacts(
+            [first, second],
+            require_pack_comparison=True,
+        )
+
+        summary = checker.summarize_pack_comparisons(checked.pack_comparisons)
+        self.assertIn("prompt=128 gen=64: candidate win", summary)
+        self.assertIn("prompt=128 gen=128: candidate win", summary)
 
     def test_public_packed_claim_fails_closed(self) -> None:
         payload = artifact()
@@ -275,7 +295,7 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
         self.assertIn("1 candidate win", completed.stdout)
         self.assertIn("1 candidate-win prompt length", completed.stdout)
         self.assertIn(
-            "qwen3_6_35b_a3b_8bit prompt=128: candidate win",
+            "qwen3_6_35b_a3b_8bit prompt=128 gen=128: candidate win",
             completed.stdout,
         )
 
