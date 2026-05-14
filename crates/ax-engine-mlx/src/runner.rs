@@ -3175,8 +3175,9 @@ impl MlxRunner {
         // surfacing it as `blocked_unsupported_layout` so cee4227e's full-prompt
         // recompute path (`full_prefill_recompute_tokens_for_warmup_fallback`)
         // takes over. warm_repeat hits remain unaffected.
-        let mla_extend_unsafe =
-            self.cfg.glm_mla_attention.is_some() && item.mode == ExecutionMode::Prefill;
+        let mla_extend_unsafe = self.cfg.glm_mla_attention.is_some()
+            && item.mode == ExecutionMode::Prefill
+            && !crate::fastpath::mla_prefix_restore_forced();
 
         if let Some(snapshot) = hit {
             if !mla_extend_unsafe {
