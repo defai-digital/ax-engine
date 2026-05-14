@@ -144,12 +144,28 @@ def inspect_quality_artifact(
             "performance_blockers": [],
         }
     performance_blockers = checker.performance_gate_blockers(doc.get("metrics", {}))
+    metrics = doc.get("metrics", {})
+    observed_decode_ratio = (
+        metrics.get("decode_tok_s_ratio_to_baseline")
+        if isinstance(metrics, dict)
+        else None
+    )
     return {
         "path": _relative(path),
         "passes_quality_gate": True,
         "passes_performance_gate": not performance_blockers,
         "quality_blocker": None,
         "performance_blockers": performance_blockers,
+        "promotion_gap": {
+            "observed_decode_tok_s_ratio_to_baseline": observed_decode_ratio,
+            "required_min_decode_tok_s_ratio_to_baseline": checker.MIN_DECODE_RATIO_TO_BASELINE,
+            "performance_promotion_ready": not performance_blockers,
+            "next_action": (
+                "ready_for_companion_prd_review"
+                if not performance_blockers
+                else "rerun or improve fused compressed decode until performance blockers clear"
+            ),
+        },
     }
 
 
