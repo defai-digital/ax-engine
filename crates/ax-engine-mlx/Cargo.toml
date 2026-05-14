@@ -25,3 +25,7 @@ path = "src/bench_main.rs"
 [[bin]]
 name = "rmsnorm-fused-probe"
 path = "src/bin/rmsnorm_fused_probe.rs"
+
+[[bin]]
+name = "kernel-chain-batching-probe"
+path = "src/bin/kernel_chain_batching_probe.rs"
