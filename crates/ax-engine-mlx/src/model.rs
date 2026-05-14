@@ -3092,6 +3092,47 @@ fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     }
 }
 
+/// SPIKE ARTIFACT (W2.a, 2026-05-14) — currently NOT WIRED into the production
+/// hot path.
+///
+/// `geglu(gate, x) = gelu_approx(gate) * x` collapsed into one compiled-closure
+/// dispatch via `MlxClosure::compile(shapeless=true)`. Mirrors mlx_lm's
+/// `@partial(mx.compile, shapeless=True) def geglu(gate, x)` in
+/// `mlx_lm.models.gemma4_text`. Uncompiled this expands to 9 ops from
+/// `gelu_approx` plus 1 multiply; compiled, the fused graph dispatches as a
+/// single MLX op.
+///
+/// **Why not wired**: the W2.a spike confirmed bit-exact correctness
+/// (`geglu_compiled_matches_imperative`) but production wiring crashed the
+/// server with `"There is no Stream(gpu, N) in current thread"` from
+/// `mlx_closure_apply` running on tokio worker threads. mlx-c's closure-apply
+/// path requires the calling thread to have an explicitly registered default
+/// GPU stream that matches the one baked into the compiled graph; we did
+/// not find a way to satisfy that contract cleanly from per-request worker
+/// threads. The helper is kept as a record of the math + the test as
+/// regression protection if the stream story is ever solved.
+#[allow(dead_code)]
+fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
+    static CACHED: OnceLock<Option<MlxClosure>> = OnceLock::new();
+    let cls = CACHED.get_or_init(|| {
+        MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
+            let gate = inputs.get(0);
+            let x = inputs.get(1);
+            let activated = gelu_approx(&gate, None);
+            vec![multiply(&activated, &x, None)]
+        })
+        .compile(true)
+        .ok()
+    });
+    if let Some(cls) = cls {
+        let mut out = cls.apply(&[gate, x]);
+        if let Some(out) = out.pop() {
+            return out;
+        }
+    }
+    multiply(&gelu_approx(gate, None), x, None)
+}
+
 fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     // Insert the rotation per `AX_MLX_EXPERIMENTAL_WEIGHT_ROTATION` mode:
     //   Enable mode (P1):  R(R(x)) ≈ x (identity sandwich)
@@ -3131,6 +3172,17 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
 
     // Gemma4 uses GEGLU with fast-approx GELU gate (matches mlx_lm's `nn.gelu_approx`).
     // Qwen3 uses SwiGLU (SiLU gate).
+    //
+    // mlx_lm wraps the gate-activation + multiply in `@partial(mx.compile,
+    // shapeless=True) def geglu(gate, x)`. Wiring our equivalent
+    // `geglu` helper here was attempted under W2.a but reverted: mlx-c's
+    // `mlx_closure_apply` requires the calling thread to have an explicit
+    // default stream registered that matches the stream baked into the
+    // compiled graph, and we have not found a clean way to satisfy this
+    // contract for the tokio worker threads that drive decode requests.
+    // See `.internal/planning/MLX-DECODE-W2-PHASE0-FINDINGS.md` for the
+    // dead-end record. The `geglu` helper is kept (and unit-tested) as a
+    // record of the math; the production hot path stays imperative.
     let gate_act = if cfg.uses_geglu {
         gelu_approx(&gate_out, None)
     } else {
@@ -5790,6 +5842,55 @@ mod tests {
         assert!(
             masks.iter().all(|m| m.is_none()),
             "all decode masks must be None for seq==1"
+        );
+    }
+
+    #[test]
+    fn geglu_compiled_matches_imperative() {
+        // Same shape and dtype the Gemma 4 FFN call site produces:
+        // gate_proj output and up_proj output, both bf16.
+        let gate_f32: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.05).collect();
+        let x_f32: Vec<f32> = (0..32).map(|i| ((i as f32) + 1.0) * 0.07).collect();
+        let gate_src = MlxArray::from_raw_data(
+            gate_f32.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_f32.as_slice()),
+            &[1, 4, 8],
+            MlxDtype::Float32,
+        );
+        let x_src = MlxArray::from_raw_data(
+            x_f32.as_ptr() as *const u8,
+            std::mem::size_of_val(x_f32.as_slice()),
+            &[1, 4, 8],
+            MlxDtype::Float32,
+        );
+        let gate = astype(&gate_src, MlxDtype::Bfloat16, None);
+        let x = astype(&x_src, MlxDtype::Bfloat16, None);
+
+        // Imperative reference: gelu_approx(gate) * x
+        let imperative = multiply(&gelu_approx(&gate, None), &x, None);
+        let imperative_f32 = astype(&imperative, MlxDtype::Float32, None);
+
+        // Compiled fusion via the geglu helper.
+        let compiled = geglu(&gate, &x);
+        let compiled_f32 = astype(&compiled, MlxDtype::Float32, None);
+
+        eval(&[&imperative_f32, &compiled_f32]);
+
+        let imp = imperative_f32.data_f32().to_vec();
+        let cmp = compiled_f32.data_f32().to_vec();
+        assert_eq!(
+            imp, cmp,
+            "compiled geglu must produce bit-identical output to the imperative fallback"
+        );
+
+        // Second invocation hits the cached compiled closure and must still match.
+        let compiled_again = geglu(&gate, &x);
+        let compiled_again_f32 = astype(&compiled_again, MlxDtype::Float32, None);
+        eval(&[&compiled_again_f32]);
+        assert_eq!(
+            cmp,
+            compiled_again_f32.data_f32().to_vec(),
+            "cached compiled geglu must remain stable across invocations"
         );
     }
 }
