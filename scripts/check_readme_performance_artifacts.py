@@ -163,6 +163,12 @@ class ArtifactSource:
     include_engines: frozenset[str] | None = None
 
 
+@dataclass(frozen=True)
+class ReadmeCheckResult:
+    metric_checks: list[str]
+    narrative_claim_checks: list[str]
+
+
 def token_sha256(tokens: list[int]) -> str:
     payload = json.dumps(tokens, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
@@ -564,16 +570,24 @@ def validate_readme_hot_prefix_claim_text(
 
 def validate_readme_hot_prefix_claims(
     *, readme_path: Path, artifact_paths: list[Path]
-) -> None:
+) -> list[str]:
     if not artifact_paths:
-        return
+        return []
     readme_text = readme_path.read_text()
+    checked: list[str] = []
     for artifact_path in artifact_paths:
         summary = validate_hot_prefix_equivalence_artifact(artifact_path=artifact_path)
         validate_readme_hot_prefix_claim_text(
             readme_text=readme_text,
             summary=summary,
         )
+        checked.append(
+            "hot-prefix:"
+            f"{artifact_path.name}:"
+            f"{summary.prompts_matching}/{summary.prompts_total}:"
+            f"{summary.reused_token_count}"
+        )
+    return checked
 
 
 @dataclass(frozen=True)
@@ -663,9 +677,10 @@ def validate_readme_boundary_claims(
     readme_path: Path,
     long_context_artifact_paths: list[Path],
     concurrent_prefill_artifact_paths: list[Path],
-) -> None:
+) -> list[str]:
     readme_text = readme_path.read_text()
     normalized = normalized_markdown_text(readme_text)
+    checked: list[str] = []
     for artifact_path in long_context_artifact_paths:
         summary = validate_long_context_boundary_artifact(artifact_path=artifact_path)
         snippet = f"The 8k P1 AX/MLX prefill ratio was {summary.prefill_ratio:.3f}x"
@@ -673,6 +688,12 @@ def validate_readme_boundary_claims(
             raise ArtifactCheckError(
                 f"README long-context boundary claim is stale; expected {snippet!r}"
             )
+        checked.append(
+            "long-context-boundary:"
+            f"{artifact_path.name}:"
+            f"{summary.context_tokens}:"
+            f"{summary.prefill_ratio:.3f}"
+        )
     for artifact_path in concurrent_prefill_artifact_paths:
         summary = validate_concurrent_prefill_boundary_artifact(
             artifact_path=artifact_path,
@@ -685,6 +706,13 @@ def validate_readme_boundary_claims(
             raise ArtifactCheckError(
                 f"README concurrent-prefill boundary claim is stale; expected {snippet!r}"
             )
+        checked.append(
+            "concurrent-prefill-boundary:"
+            f"{artifact_path.name}:"
+            f"{summary.concurrent_requests}:"
+            f"{summary.classification}"
+        )
+    return checked
 
 
 def validate_concurrent_prefill_overlap_classification(
@@ -1263,6 +1291,21 @@ def check_readme_performance(
     artifact_dir: Path | None = None,
     expected_metric_count: int | None = 280,
 ) -> list[str]:
+    return check_readme_performance_summary(
+        repo_root=repo_root,
+        readme_path=readme_path,
+        artifact_dir=artifact_dir,
+        expected_metric_count=expected_metric_count,
+    ).metric_checks
+
+
+def check_readme_performance_summary(
+    *,
+    repo_root: Path,
+    readme_path: Path,
+    artifact_dir: Path | None = None,
+    expected_metric_count: int | None = 280,
+) -> ReadmeCheckResult:
     resolved_readme = readme_path.resolve()
     artifact_sources = (
         [ArtifactSource(artifact_dir.resolve())]
@@ -1280,15 +1323,17 @@ def check_readme_performance(
     artifact_rows = collect_artifact_rows_from_sources(
         repo_root.resolve(), artifact_sources
     )
-    validate_readme_hot_prefix_claims(
-        readme_path=resolved_readme,
-        artifact_paths=hot_prefix_artifact_paths,
-    )
-    validate_readme_boundary_claims(
-        readme_path=resolved_readme,
-        long_context_artifact_paths=long_context_artifact_paths,
-        concurrent_prefill_artifact_paths=concurrent_prefill_artifact_paths,
-    )
+    narrative_claim_checks = [
+        *validate_readme_hot_prefix_claims(
+            readme_path=resolved_readme,
+            artifact_paths=hot_prefix_artifact_paths,
+        ),
+        *validate_readme_boundary_claims(
+            readme_path=resolved_readme,
+            long_context_artifact_paths=long_context_artifact_paths,
+            concurrent_prefill_artifact_paths=concurrent_prefill_artifact_paths,
+        ),
+    ]
     checked: list[str] = []
 
     for metric in metrics:
@@ -1310,7 +1355,10 @@ def check_readme_performance(
         raise ArtifactCheckError(
             f"checked {len(checked)} README metrics, expected {expected_metric_count}"
         )
-    return checked
+    return ReadmeCheckResult(
+        metric_checks=checked,
+        narrative_claim_checks=narrative_claim_checks,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1327,7 +1375,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        checked = check_readme_performance(
+        checked = check_readme_performance_summary(
             repo_root=args.repo_root,
             readme_path=args.readme,
             artifact_dir=args.artifact_dir,
@@ -1335,7 +1383,11 @@ def main() -> int:
     except ArtifactCheckError as error:
         print(f"README performance artifact check failed: {error}", file=sys.stderr)
         return 1
-    print(f"README performance artifact check passed: {len(checked)} metrics validated")
+    print(
+        "README performance artifact check passed: "
+        f"{len(checked.metric_checks)} metrics validated; "
+        f"{len(checked.narrative_claim_checks)} narrative claims validated"
+    )
     return 0
 
 

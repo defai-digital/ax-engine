@@ -689,6 +689,41 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 10)
 
+    def test_summary_reports_narrative_claim_checks_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            hot_prefix_artifact_path = write_hot_prefix_artifact(root)
+            prefill_artifact_path = write_prefill_scaling_artifact(root)
+            concurrent_artifact_path = write_concurrent_prefill_artifact(root)
+            add_hot_prefix_readme_claim(root, hot_prefix_artifact_path)
+            add_boundary_readme_claims(
+                root,
+                prefill_artifact_path=prefill_artifact_path,
+                concurrent_artifact_path=concurrent_artifact_path,
+            )
+
+            checked = checker.check_readme_performance_summary(
+                repo_root=root,
+                readme_path=root / "README.md",
+                expected_metric_count=10,
+            )
+
+        self.assertEqual(len(checked.metric_checks), 10)
+        self.assertEqual(len(checked.narrative_claim_checks), 3)
+        self.assertIn(
+            "hot-prefix:qwen3-5-9b.json:5/5:176",
+            checked.narrative_claim_checks,
+        )
+        self.assertIn(
+            "long-context-boundary:prefill-scaling.json:8192:0.840",
+            checked.narrative_claim_checks,
+        )
+        self.assertIn(
+            "concurrent-prefill-boundary:concurrent-prefill.json:4:serialized",
+            checked.narrative_claim_checks,
+        )
+
     def test_readme_boundary_artifacts_reject_stale_prefill_ratio(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
