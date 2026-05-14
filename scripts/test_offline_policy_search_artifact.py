@@ -249,6 +249,49 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
         ):
             checker.validate_offline_policy_search_artifact(path)
 
+    def test_search_space_must_define_dimensions(self) -> None:
+        payload = artifact()
+        payload["search"]["space"] = {}  # type: ignore[index]
+        path = self.write_fixture(payload)
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "search.space must define at least one search dimension",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+    def test_search_space_dimension_must_be_non_empty_list(self) -> None:
+        payload = artifact()
+        payload["search"]["space"] = {"kv_preset": []}  # type: ignore[index]
+        path = self.write_fixture(payload)
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "search.space.kv_preset must not be empty",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+    def test_search_space_dimension_values_must_be_unique_scalars(self) -> None:
+        payload = artifact()
+        payload["search"]["space"] = {"kv_preset": ["TurboQuantK8V4", "TurboQuantK8V4"]}  # type: ignore[index]
+        path = self.write_fixture(payload)
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "duplicates an earlier value",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+        payload = artifact()
+        payload["search"]["space"] = {"kv_preset": [True]}  # type: ignore[index]
+        path = self.write_fixture(payload)
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "must be a non-empty string or integer",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
     def test_duplicate_candidate_policy_ids_fail_closed(self) -> None:
         path = self.write_fixture(
             artifact(candidates=[candidate(policy_id="dup"), candidate(policy_id="dup")])

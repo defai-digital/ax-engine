@@ -120,7 +120,27 @@ def _validate_model(model: dict[str, Any]) -> None:
 def _validate_search(search: dict[str, Any]) -> None:
     _string(search.get("algorithm"), "search.algorithm")
     _integer(search.get("seed"), "search.seed")
-    _mapping(search.get("space"), "search.space")
+    space = _mapping(search.get("space"), "search.space")
+    _require(space, "search.space must define at least one search dimension")
+    for field, value in space.items():
+        field_name = _string(field, "search.space key")
+        values = _list(value, f"search.space.{field_name}")
+        _require(values, f"search.space.{field_name} must not be empty")
+        seen: set[str] = set()
+        for index, item in enumerate(values):
+            if isinstance(item, str):
+                normalized = _string(item, f"search.space.{field_name}[{index}]")
+            elif isinstance(item, int) and not isinstance(item, bool):
+                normalized = str(item)
+            else:
+                raise OfflinePolicySearchArtifactError(
+                    f"search.space.{field_name}[{index}] must be a non-empty string or integer"
+                )
+            _require(
+                normalized not in seen,
+                f"search.space.{field_name}[{index}] duplicates an earlier value",
+            )
+            seen.add(normalized)
     budget = _mapping(search.get("budget"), "search.budget")
     _require(
         _integer(budget.get("max_candidates"), "search.budget.max_candidates") > 0,
