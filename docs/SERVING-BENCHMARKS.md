@@ -53,6 +53,26 @@ python3 scripts/bench_ax_serving.py \
   --output benchmarks/results/serving/$(date +%F)-qwen3-dense-smoke.json
 ```
 
+Validate the artifact before citing it:
+
+```text
+python3 scripts/check_ax_serving_benchmark_artifact.py \
+  benchmarks/results/serving/<artifact>.json \
+  --min-requests 12 \
+  --min-concurrency 2 \
+  --require-slo \
+  --min-goodput-ratio 0.95
+```
+
+For long-prompt serving claims, also require the corpus shape explicitly:
+
+```text
+python3 scripts/check_ax_serving_benchmark_artifact.py \
+  benchmarks/results/serving/<artifact>.json \
+  --min-input-tokens-p95 8192 \
+  --require-slo
+```
+
 Use `--request-rate-rps` when the claim is open-loop serving behavior. Without
 it, the harness uses closed-loop concurrency.
 
