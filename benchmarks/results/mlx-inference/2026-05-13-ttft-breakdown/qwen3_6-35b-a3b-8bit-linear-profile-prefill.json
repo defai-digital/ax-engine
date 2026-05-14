@@ -24,7 +24,7 @@
     "platform": "darwin"
   },
   "build": {
-    "commit": "a55f49d6cb1277d6b42c33117c6caa7e991d9535",
+    "commit": "4378c991d0d1a77e6538852087f3f3e62b123435",
     "build_profile": "release",
     "server_binary": "/Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server"
   },
@@ -366,6 +366,20 @@
       "key_head_dim": 128,
       "value_head_dim": 128,
       "conv_kernel_dim": 4
+    },
+    "linear_attention_projection_layout": {
+      "schema_version": "ax.linear_attention_projection_layout.v1",
+      "layout": "split_qkv_z_a_b",
+      "linear_layers": 30,
+      "packed_layers": 0,
+      "split_layers": 30,
+      "role_counts": {
+        "linear_attention_in_proj_a": 30,
+        "linear_attention_in_proj_b": 30,
+        "linear_attention_in_proj_qkv": 30,
+        "linear_attention_in_proj_z": 30
+      },
+      "offline_pack_candidate": true
     }
   },
   "reference_contract": {
@@ -440,6 +454,7 @@
   },
   "ax_gemma4_moe_profile": false,
   "ax_linear_attention_profile": true,
+  "ax_decode_profile": false,
   "results": [
     {
       "prefill_tok_s": {
@@ -641,35 +656,35 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "prefill_tok_s": {
-        "mean": 701.0971074266997,
-        "median": 701.0971074266997,
-        "min": 701.0971074266997,
-        "max": 701.0971074266997
+        "mean": 731.3282749794313,
+        "median": 731.3282749794313,
+        "min": 731.3282749794313,
+        "max": 731.3282749794313
       },
       "decode_tok_s": {
-        "mean": 19.22312247989784,
-        "median": 19.22312247989784,
-        "min": 19.22312247989784,
-        "max": 19.22312247989784
+        "mean": 19.28865564297215,
+        "median": 19.28865564297215,
+        "min": 19.28865564297215,
+        "max": 19.28865564297215
       },
       "ttft_ms": {
-        "mean": 182.571,
-        "median": 182.571,
-        "min": 182.571,
-        "max": 182.571
+        "mean": 175.024,
+        "median": 175.024,
+        "min": 175.024,
+        "max": 175.024
       },
       "ttft_source": "ax_engine_runner_prefill_time",
       "prefill_s": {
-        "mean": 0.182571,
-        "median": 0.182571,
-        "min": 0.182571,
-        "max": 0.182571
+        "mean": 0.175024,
+        "median": 0.175024,
+        "min": 0.175024,
+        "max": 0.175024
       },
       "decode_s": {
-        "mean": 6.606627,
-        "median": 6.606627,
-        "min": 6.606627,
-        "max": 6.606627
+        "mean": 6.584181,
+        "median": 6.584181,
+        "min": 6.584181,
+        "max": 6.584181
       },
       "ngram_acceleration_telemetry": {
         "ax_ngram_draft_attempts": 0,
@@ -695,18 +710,18 @@
       },
       "ax_mlx_telemetry": {
         "ax_mlx_prefill_steps": 1,
-        "ax_mlx_prefill_wall_us": 182551,
-        "ax_mlx_prefill_forward_wall_us": 182517,
-        "ax_mlx_prefill_prefix_cache_wall_us": 12,
+        "ax_mlx_prefill_wall_us": 175002,
+        "ax_mlx_prefill_forward_wall_us": 174971,
+        "ax_mlx_prefill_prefix_cache_wall_us": 10,
         "ax_mlx_prefill_generation_state_wall_us": 19,
         "ax_mlx_prefill_eval_barriers": 1,
         "ax_mlx_prefill_drain_async_evals": 0,
         "ax_mlx_decode_steps": 127,
-        "ax_mlx_decode_wall_us": 6603127,
+        "ax_mlx_decode_wall_us": 6580569,
         "ax_mlx_direct_bootstrap_steps": 1,
-        "ax_mlx_direct_bootstrap_wall_us": 55946,
+        "ax_mlx_direct_bootstrap_wall_us": 54798,
         "ax_mlx_direct_pipeline_steps": 127,
-        "ax_mlx_direct_pipeline_wall_us": 6547059,
+        "ax_mlx_direct_pipeline_wall_us": 6525671,
         "ax_mlx_single_decode_steps": 0,
         "ax_mlx_single_decode_wall_us": 0,
         "ax_mlx_ngram_decode_steps": 0,
@@ -728,10 +743,10 @@
       "ax_mlx_decode_route": {
         "classification": "direct_pipeline",
         "decode_steps": 127,
-        "decode_wall_us": 6603127,
+        "decode_wall_us": 6580569,
         "direct_pipeline_steps": 127,
         "direct_pipeline_step_share_micros": 1000000,
-        "direct_pipeline_wall_share_micros": 991509,
+        "direct_pipeline_wall_share_micros": 991658,
         "single_decode_steps": 0,
         "single_decode_step_share_micros": 0,
         "single_decode_wall_share_micros": 0,
@@ -752,27 +767,28 @@
         "ax_mlx_linear_attention_profile_enabled": 1,
         "ax_mlx_linear_attention_profile_layers": 30,
         "ax_mlx_linear_attention_profile_tokens": 3840,
-        "ax_mlx_linear_attention_profile_projection_wall_us": 136716,
+        "ax_mlx_linear_attention_profile_projection_wall_us": 129130,
         "ax_mlx_linear_attention_profile_projection_qkvz_wall_us": 0,
         "ax_mlx_linear_attention_profile_projection_ba_wall_us": 0,
-        "ax_mlx_linear_attention_profile_projection_qkv_wall_us": 118199,
-        "ax_mlx_linear_attention_profile_projection_z_wall_us": 7592,
-        "ax_mlx_linear_attention_profile_projection_a_wall_us": 5680,
-        "ax_mlx_linear_attention_profile_projection_b_wall_us": 5177,
-        "ax_mlx_linear_attention_profile_conv_wall_us": 9761,
-        "ax_mlx_linear_attention_profile_qk_norm_wall_us": 6002,
-        "ax_mlx_linear_attention_profile_recurrent_wall_us": 9934,
-        "ax_mlx_linear_attention_profile_output_wall_us": 12846
+        "ax_mlx_linear_attention_profile_projection_qkv_wall_us": 110685,
+        "ax_mlx_linear_attention_profile_projection_z_wall_us": 7659,
+        "ax_mlx_linear_attention_profile_projection_a_wall_us": 5624,
+        "ax_mlx_linear_attention_profile_projection_b_wall_us": 5105,
+        "ax_mlx_linear_attention_profile_conv_wall_us": 8712,
+        "ax_mlx_linear_attention_profile_qk_norm_wall_us": 5647,
+        "ax_mlx_linear_attention_profile_recurrent_wall_us": 10148,
+        "ax_mlx_linear_attention_profile_output_wall_us": 14348
       },
+      "ax_mlx_decode_profile": {},
       "trials": [
         {
-          "prefill_s": 0.182571,
-          "decode_s": 6.606627,
-          "ttft_ms": 182.571,
-          "prefill_tok_s": 701.0971074266997,
-          "decode_tok_s": 19.22312247989784,
+          "prefill_s": 0.175024,
+          "decode_s": 6.584181,
+          "ttft_ms": 175.024,
+          "prefill_tok_s": 731.3282749794313,
+          "decode_tok_s": 19.28865564297215,
           "output_tokens": 128.0,
-          "peak_memory_gb": 68.73782348632812,
+          "peak_memory_gb": 68.73828125,
           "ngram_acceleration_telemetry": {
             "ax_ngram_draft_attempts": 0,
             "ax_ngram_draft_tokens": 0,
@@ -797,18 +813,18 @@
           },
           "ax_mlx_telemetry": {
             "ax_mlx_prefill_steps": 1,
-            "ax_mlx_prefill_wall_us": 182551,
-            "ax_mlx_prefill_forward_wall_us": 182517,
-            "ax_mlx_prefill_prefix_cache_wall_us": 12,
+            "ax_mlx_prefill_wall_us": 175002,
+            "ax_mlx_prefill_forward_wall_us": 174971,
+            "ax_mlx_prefill_prefix_cache_wall_us": 10,
             "ax_mlx_prefill_generation_state_wall_us": 19,
             "ax_mlx_prefill_eval_barriers": 1,
             "ax_mlx_prefill_drain_async_evals": 0,
             "ax_mlx_decode_steps": 127,
-            "ax_mlx_decode_wall_us": 6603127,
+            "ax_mlx_decode_wall_us": 6580569,
             "ax_mlx_direct_bootstrap_steps": 1,
-            "ax_mlx_direct_bootstrap_wall_us": 55946,
+            "ax_mlx_direct_bootstrap_wall_us": 54798,
             "ax_mlx_direct_pipeline_steps": 127,
-            "ax_mlx_direct_pipeline_wall_us": 6547059,
+            "ax_mlx_direct_pipeline_wall_us": 6525671,
             "ax_mlx_single_decode_steps": 0,
             "ax_mlx_single_decode_wall_us": 0,
             "ax_mlx_ngram_decode_steps": 0,
@@ -838,25 +854,25 @@
             "ax_mlx_linear_attention_profile_enabled": 1,
             "ax_mlx_linear_attention_profile_layers": 30,
             "ax_mlx_linear_attention_profile_tokens": 3840,
-            "ax_mlx_linear_attention_profile_projection_wall_us": 136716,
+            "ax_mlx_linear_attention_profile_projection_wall_us": 129130,
             "ax_mlx_linear_attention_profile_projection_qkvz_wall_us": 0,
             "ax_mlx_linear_attention_profile_projection_ba_wall_us": 0,
-            "ax_mlx_linear_attention_profile_projection_qkv_wall_us": 118199,
-            "ax_mlx_linear_attention_profile_projection_z_wall_us": 7592,
-            "ax_mlx_linear_attention_profile_projection_a_wall_us": 5680,
-            "ax_mlx_linear_attention_profile_projection_b_wall_us": 5177,
-            "ax_mlx_linear_attention_profile_conv_wall_us": 9761,
-            "ax_mlx_linear_attention_profile_qk_norm_wall_us": 6002,
-            "ax_mlx_linear_attention_profile_recurrent_wall_us": 9934,
-            "ax_mlx_linear_attention_profile_output_wall_us": 12846
+            "ax_mlx_linear_attention_profile_projection_qkv_wall_us": 110685,
+            "ax_mlx_linear_attention_profile_projection_z_wall_us": 7659,
+            "ax_mlx_linear_attention_profile_projection_a_wall_us": 5624,
+            "ax_mlx_linear_attention_profile_projection_b_wall_us": 5105,
+            "ax_mlx_linear_attention_profile_conv_wall_us": 8712,
+            "ax_mlx_linear_attention_profile_qk_norm_wall_us": 5647,
+            "ax_mlx_linear_attention_profile_recurrent_wall_us": 10148,
+            "ax_mlx_linear_attention_profile_output_wall_us": 14348
           }
         }
       ],
       "peak_memory_gb": {
-        "mean": 68.73782348632812,
-        "median": 68.73782348632812,
-        "min": 68.73782348632812,
-        "max": 68.73782348632812
+        "mean": 68.73828125,
+        "median": 68.73828125,
+        "min": 68.73828125,
+        "max": 68.73828125
       },
       "memory_source": "server_process_rss_after_stream",
       "prefill_step_size": 2048,
@@ -871,8 +887,8 @@
         "generation_tokens": 128,
         "prefill_tok_s": 406.448,
         "decode_tok_s": 105.078,
-        "prefill_ratio_to_mlx_lm": 1.7249367875514205,
-        "decode_ratio_to_mlx_lm": 0.18294145758291783
+        "prefill_ratio_to_mlx_lm": 1.7993157180732378,
+        "decode_ratio_to_mlx_lm": 0.18356511965370628
       }
     }
   ],
