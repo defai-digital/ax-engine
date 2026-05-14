@@ -2144,8 +2144,12 @@ fn compute_per_layer_inputs_arr(
 /// `contiguous()` to materialise the strided view, and the inserted work
 /// outweighs the saved dispatches. PRD W1.3 C5 kill criterion triggered;
 /// the helper + unit test are kept as a record of the math for any future
-/// retry that finds a way to suppress the contiguous() insertion. See
-/// `MLX-DECODE-W13-C5-FINDINGS.md` for the full A/B record.
+/// retry that finds a way to suppress the contiguous() insertion. Full A/B
+/// record:
+/// `benchmarks/results/mlx-inference/2026-05-14-w13-c5-bhsd-fusion/c5-findings.md`.
+/// Closing rationale is also recorded in
+/// `.internal/planning/MLX-DECODE-W13-CAST-RESHAPE-AUDIT.md` (C5 section,
+/// marked CLOSED — NO-GO).
 #[allow(dead_code)]
 fn bhsd_view_from_proj(qw_out: &MlxArray, n_heads: usize, head_dim: usize, seq: usize) -> MlxArray {
     let n_heads_i32 = n_heads as i32;
