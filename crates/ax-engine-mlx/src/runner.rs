@@ -256,6 +256,18 @@ impl MlxPrefixCache {
         Some(snapshot)
     }
 
+    /// Non-mutating exact membership check. Used by the iterative-chat probe
+    /// in `restore_reused_prefix_state` to ask "do we already have a snapshot
+    /// for these tokens?" without changing LRU touch ordering. The actual hit
+    /// (which does touch the entry) goes through `get`.
+    fn contains_exact_tokens(&self, key: &MlxPrefixCacheKey, tokens: &[u32]) -> bool {
+        self.policy.enabled()
+            && self
+                .entries
+                .get(key)
+                .is_some_and(|entry| entry.snapshot.tokens == tokens)
+    }
+
     fn insert(
         &mut self,
         key: MlxPrefixCacheKey,
@@ -3007,6 +3019,53 @@ impl MlxRunner {
         }
     }
 
+    fn longest_block_aligned_prefix_by_probe<F>(
+        block_size_tokens: u32,
+        input: &[u32],
+        mut has_snapshot: F,
+    ) -> Option<Vec<u32>>
+    where
+        F: FnMut(&[u32]) -> bool,
+    {
+        let block_size = block_size_tokens as usize;
+        if block_size == 0 || input.len() < block_size {
+            return None;
+        }
+        let mut prefix_len = (input.len() / block_size) * block_size;
+        while prefix_len >= block_size {
+            let prefix = &input[..prefix_len];
+            if has_snapshot(prefix) {
+                return Some(prefix.to_vec());
+            }
+            prefix_len -= block_size;
+        }
+        None
+    }
+
+    /// Probe the runner-side snapshot cache for the longest block-aligned
+    /// prefix of `input` that has a stored entry, returning that prefix as
+    /// a fresh `Vec<u32>`. Used when the scheduler did not annotate
+    /// `reused_prefix_token_slice` (e.g. iterative-chat turn 3+ where the
+    /// scheduler's per-request block table no longer tracks the original
+    /// prompt, but the runner-side snapshot from turn 1 is still resident).
+    ///
+    /// Returns `None` when no aligned prefix hits, when `input` is shorter
+    /// than one block, or when the cache is disabled. The probe is O(input.len() /
+    /// block_size) hash-map lookups, all read-only, and verifies exact token
+    /// equality so a longer hash collision cannot hide a shorter valid prefix.
+    fn probe_runner_snapshot_for_prefix(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        input: &[u32],
+    ) -> Option<Vec<u32>> {
+        let cache = self.prefix_cache.lock().unwrap();
+        Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
+            let key = self.prefix_cache_key(model_id, block_size_tokens, prefix);
+            cache.contains_exact_tokens(&key, prefix)
+        })
+    }
+
     fn restore_reused_prefix_state(
         &self,
         state: &mut RequestState,
@@ -3017,7 +3076,41 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
-        let reused_tokens = &item.reused_prefix_token_slice;
+        // Scheduler annotation comes from `ax-engine-core`'s prefix-lookup
+        // table, which is keyed on the scheduler-side block table. That
+        // table can disagree with the runner-side `MlxPrefixCache` in two
+        // ways: (a) it can be empty for a fresh request even when the
+        // runner's cache still holds a valid snapshot from an earlier
+        // request, and (b) it can over-report — claim `reused_tokens.len()`
+        // larger than any snapshot the runner actually stored, because the
+        // scheduler tracks logical block reuse cumulatively across turns
+        // while the runner stored only the original prompt.
+        //
+        // Probe the runner-side cache to find the longest block-aligned
+        // prefix that is *actually* in the snapshot map, capped at the
+        // scheduler's annotation when one exists (so the probe never
+        // claims more tokens than core does). Cache `get` below still
+        // bit-equality-checks the tokens, so a wrong probe cannot produce
+        // a stale restore.
+        let probe_upper_bound = if !item.reused_prefix_token_slice.is_empty() {
+            &item.reused_prefix_token_slice[..]
+        } else {
+            &item.input_token_slice[..]
+        };
+        let probed_tokens: Vec<u32> = if state.cache.seq_len == 0
+            && !probe_upper_bound.is_empty()
+            && matches!(item.mode, ExecutionMode::Prefill)
+        {
+            self.probe_runner_snapshot_for_prefix(model_id, block_size_tokens, probe_upper_bound)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let reused_tokens: &[u32] = if !probed_tokens.is_empty() {
+            &probed_tokens
+        } else {
+            &item.reused_prefix_token_slice
+        };
         if reused_tokens.is_empty() || state.cache.seq_len != 0 {
             return telemetry;
         }
@@ -4556,6 +4649,42 @@ mod tests {
         );
         assert_eq!(cache.stats().entries, 1);
         assert!(cache.get(&key, &[1; 4]).is_some());
+    }
+
+    #[test]
+    fn prefix_cache_exact_membership_rejects_collision_tokens_without_touching_lru() {
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 4,
+        });
+        let key = test_prefix_key(1);
+        cache.insert(key.clone(), test_prefix_snapshot(1, 4, 128));
+
+        assert!(cache.contains_exact_tokens(&key, &[1; 4]));
+        assert!(!cache.contains_exact_tokens(&key, &[9; 4]));
+        assert_eq!(
+            cache.lru.len(),
+            1,
+            "read-only membership probe must not touch LRU state"
+        );
+    }
+
+    #[test]
+    fn prefix_probe_continues_past_longer_miss_to_shorter_match() {
+        let input = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let mut probed_lengths = Vec::new();
+
+        let prefix = MlxRunner::longest_block_aligned_prefix_by_probe(4, &input, |tokens| {
+            probed_lengths.push(tokens.len());
+            tokens == [1, 2, 3, 4]
+        });
+
+        assert_eq!(prefix, Some(vec![1, 2, 3, 4]));
+        assert_eq!(
+            probed_lengths,
+            vec![8, 4],
+            "probe must keep searching after a longer non-exact entry"
+        );
     }
 
     #[test]
