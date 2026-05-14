@@ -13,7 +13,14 @@ Re-run after every `maturin develop` to catch a stale extension; a
 clean build should pass this in <100 ms.
 """
 import inspect
+import sys
 import unittest
+from pathlib import Path
+
+
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 
 class EmbeddingApiSurfaceTests(unittest.TestCase):
