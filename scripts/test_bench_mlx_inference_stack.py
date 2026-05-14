@@ -214,6 +214,47 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(row["peak_memory_gb"]["max"], 13.0)
         self.assertEqual(row["memory_source"], "server_process_rss_after_stream")
 
+    def test_axengine_summary_exposes_kv_compression_blocker_row_fields(self) -> None:
+        run = {
+            "prefill_s": 0.3,
+            "decode_s": 0.1,
+            "ttft_ms": 300.0,
+            "prefill_tok_s": 10.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+            "kv_compression_telemetry": {
+                "ax_mlx_kv_compression_decode_path": 1,
+                "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
+                "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 2,
+                "ax_mlx_kv_compression_fused_decode_blocked_missing_storage": 1,
+            },
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[run, run]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+                kv_compression="turboquant-fused-experimental",
+            )
+
+        self.assertEqual(
+            row["kv_compression_claim_status"],
+            "telemetry_only_full_precision_generation",
+        )
+        self.assertEqual(
+            row["kv_compression_fused_decode_fallback_reason_label"],
+            "shadow_only",
+        )
+        self.assertEqual(row["kv_compression_fused_decode_blocked_total"], 3)
+        self.assertEqual(
+            row["kv_compression_fused_decode_blocked_reasons"],
+            ["attention_kind", "missing_storage"],
+        )
+
     def test_axengine_summary_can_label_linear_attention_pack_row(self) -> None:
         runs = [
             {"prefill_s": 0.2, "decode_s": 0.1, "ttft_ms": 200.0, "prefill_tok_s": 15.0, "decode_tok_s": 20.0, "output_tokens": 3.0},
