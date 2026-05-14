@@ -90,6 +90,23 @@ pub fn mla_prefill_chunk_override() -> Option<usize> {
 /// snapshot and extended.
 pub const MLA_DEFAULT_PREFILL_CHUNK: usize = 16;
 
+/// Resolve the effective prefill chunk before any caller performs prefill
+/// work. MLA models use the MLA-specific default/override; other models keep
+/// the caller-selected value. The result is always at least one token so the
+/// chunked-prefill loop cannot receive a zero-sized chunk.
+pub fn resolve_prefill_chunk(
+    has_mla_attention: bool,
+    requested_prefill_chunk: usize,
+    mla_override: Option<usize>,
+) -> usize {
+    let resolved = if has_mla_attention {
+        mla_override.unwrap_or(MLA_DEFAULT_PREFILL_CHUNK)
+    } else {
+        requested_prefill_chunk
+    };
+    resolved.max(1)
+}
+
 env_flag!(
     /// **Defensive kill switch.** Engaged by `AX_DISABLE_MLA_PREFIX_RESTORE`,
     /// this re-engages the historical `mla_extend_unsafe` safety gate in
@@ -187,5 +204,29 @@ mod tests {
                 "expected None for {value:?}"
             );
         }
+    }
+
+    #[test]
+    fn resolve_prefill_chunk_defaults_mla_to_chunk_aligned_size() {
+        assert_eq!(
+            resolve_prefill_chunk(true, 256, None),
+            MLA_DEFAULT_PREFILL_CHUNK
+        );
+    }
+
+    #[test]
+    fn resolve_prefill_chunk_allows_mla_override() {
+        assert_eq!(resolve_prefill_chunk(true, 256, Some(32)), 32);
+    }
+
+    #[test]
+    fn resolve_prefill_chunk_preserves_non_mla_request() {
+        assert_eq!(resolve_prefill_chunk(false, 256, Some(32)), 256);
+    }
+
+    #[test]
+    fn resolve_prefill_chunk_clamps_zero_for_all_models() {
+        assert_eq!(resolve_prefill_chunk(false, 0, None), 1);
+        assert_eq!(resolve_prefill_chunk(true, 0, Some(0)), 1);
     }
 }
