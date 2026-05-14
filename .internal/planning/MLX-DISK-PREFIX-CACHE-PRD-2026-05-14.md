@@ -427,18 +427,19 @@ state the local-filesystem assumption.
 
 ## 11. Milestones
 
-M1. **Serialization library + unit tests** (2–3 days).
-  - `disk_prefix_cache.rs` write / read paths; no eviction yet.
+M1. **Serialization library + unit tests** (2–3 days). **Landed.**
+  - `disk_prefix_cache.rs` write / read paths.
   - All four architecture variants round-trip.
 
-M2. **Integration with runner** (1–2 days).
+M2. **Integration with runner** (1–2 days). **Landed.**
   - L2 wire-up in `restore_reused_prefix_state` and
     `store_prompt_prefix_snapshots`.
   - Telemetry counters land.
 
-M3. **Eviction + locking** (1–2 days).
-  - LRU eviction under byte/entry budgets.
-  - Concurrency tests.
+M3. **Eviction + locking** (1–2 days). **Partially landed.**
+  - Best-effort post-insert eviction under byte/entry budgets is
+    implemented and emits `disk_evictions`.
+  - Cross-process locking and concurrency stress tests remain open.
 
 M4. **Integration validation** (1 day).
   - Cross-restart `verify_prefix_reuse_equivalence.py` run on all
