@@ -303,6 +303,27 @@ single string: `retained_prompt_prefix_cache` for snapshot hits,
 string; the cheat sheet is for triaging unexpected `metadata_lookup`
 results when a hit was expected.
 
+### Validated hot-prefix evidence
+
+The current positive physical-reuse artifact is the Qwen3.5 9B warm-repeat
+equivalence run:
+
+- Artifact:
+  `benchmarks/results/mlx-inference/2026-05-13-hot-prefix-w2/equivalence-gate/warm_repeat/qwen3-5-9b-2026-05-13.json`
+- Schema: `ax.prefix_reuse_equivalence.v1`
+- Model: `Qwen3.5-9B-MLX-4bit`
+- Result: PASS, 5/5 prompts matched token-exactly.
+- Warm physical snapshot hits: 5.
+- Warm physical reused tokens: 176.
+- Warmup tokens on the claimed hit path: 0.
+- Warm misses: 0.
+
+This supports a positive product claim that AX Engine restores physical MLX
+prefix snapshots on the Qwen warm-repeat path. It does not claim a long-prompt
+TTFT win by itself: the equivalence corpus is intentionally short and
+correctness-focused. Longer hot-prefix TTFT claims need a separate latency
+artifact with the same physical-hit counters.
+
 ### Correctness regression gate
 
 Any change that loosens `prefix_cache_supported()`, modifies
