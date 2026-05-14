@@ -980,6 +980,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_direct_pipeline_steps": 2,
                     "ax_mlx_direct_pipeline_wall_us": 70,
                     "ax_mlx_direct_pipeline_forward_wall_us": 40,
+                    "ax_mlx_direct_pipeline_argmax_wall_us": 2,
                     "ax_mlx_direct_pipeline_async_eval_wall_us": 5,
                     "ax_mlx_direct_pipeline_pending_eval_wall_us": 20,
                     "ax_mlx_direct_pipeline_pending_read_wall_us": 3,
@@ -1003,6 +1004,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_steps"], 2)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_wall_us"], 70)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_forward_wall_us"], 40)
+        self.assertEqual(telemetry["ax_mlx_direct_pipeline_argmax_wall_us"], 2)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_async_eval_wall_us"], 5)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_pending_eval_wall_us"], 20)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_pending_read_wall_us"], 3)
@@ -1053,7 +1055,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 "ax_mlx_direct_pipeline_steps": 10,
                 "ax_mlx_direct_pipeline_wall_us": 900,
                 "ax_mlx_direct_pipeline_forward_wall_us": 300,
-                "ax_mlx_direct_pipeline_async_eval_wall_us": 500,
+                "ax_mlx_direct_pipeline_argmax_wall_us": 100,
+                "ax_mlx_direct_pipeline_async_eval_wall_us": 400,
                 "ax_mlx_direct_pipeline_pending_eval_wall_us": 80,
                 "ax_mlx_direct_pipeline_pending_read_wall_us": 20,
             }
@@ -1063,10 +1066,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(direct["direct_pipeline_wall_share_micros"], 900_000)
         self.assertEqual(direct["direct_pipeline_forward_wall_us"], 300)
         self.assertEqual(direct["direct_pipeline_forward_wall_share_micros"], 333_333)
-        self.assertEqual(direct["direct_pipeline_async_eval_wall_us"], 500)
+        self.assertEqual(direct["direct_pipeline_argmax_wall_us"], 100)
+        self.assertEqual(direct["direct_pipeline_argmax_wall_share_micros"], 111_111)
+        self.assertEqual(direct["direct_pipeline_async_eval_wall_us"], 400)
         self.assertEqual(
             direct["direct_pipeline_async_eval_wall_share_micros"],
-            555_556,
+            444_444,
         )
         self.assertEqual(direct["direct_pipeline_pending_eval_wall_us"], 80)
         self.assertEqual(
