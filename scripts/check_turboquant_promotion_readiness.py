@@ -240,6 +240,7 @@ def build_report(
             "head_dim": sorted(checker.SUPPORTED_HEAD_DIMS),
             "decode_path": "fused_compressed_decode",
             "fused_decode_successes": "> 0",
+            "fused_decode_metal_successes": "> 0",
             "fused_decode_fallbacks": 0,
             "minimum_context_tokens": checker.MIN_CONTEXT_TOKENS,
             "minimum_generation_tokens": checker.MIN_GENERATION_TOKENS,
