@@ -363,6 +363,10 @@ pub struct MlxKvCompressionUsage {
     pub fused_decode_ready_candidates: u64,
     pub fused_decode_blocked_prefill_only: u64,
     pub fused_decode_blocked_attention_kind: u64,
+    pub fused_decode_blocked_linear_attention: u64,
+    pub fused_decode_blocked_glm_mla: u64,
+    pub fused_decode_blocked_sliding_window: u64,
+    pub fused_decode_blocked_kv_shared: u64,
     pub fused_decode_blocked_ineligible_layer: u64,
     pub fused_decode_blocked_unsupported_preset: u64,
     pub fused_decode_blocked_unsupported_head_dim: u64,
@@ -395,6 +399,10 @@ pub struct MlxKvCompressionDecodeUsage {
     pub fused_decode_ready_candidates: u64,
     pub fused_decode_blocked_prefill_only: u64,
     pub fused_decode_blocked_attention_kind: u64,
+    pub fused_decode_blocked_linear_attention: u64,
+    pub fused_decode_blocked_glm_mla: u64,
+    pub fused_decode_blocked_sliding_window: u64,
+    pub fused_decode_blocked_kv_shared: u64,
     pub fused_decode_blocked_ineligible_layer: u64,
     pub fused_decode_blocked_unsupported_preset: u64,
     pub fused_decode_blocked_unsupported_head_dim: u64,
@@ -425,6 +433,18 @@ impl MlxKvCompressionUsage {
         self.fused_decode_blocked_attention_kind = self
             .fused_decode_blocked_attention_kind
             .saturating_add(usage.fused_decode_blocked_attention_kind);
+        self.fused_decode_blocked_linear_attention = self
+            .fused_decode_blocked_linear_attention
+            .saturating_add(usage.fused_decode_blocked_linear_attention);
+        self.fused_decode_blocked_glm_mla = self
+            .fused_decode_blocked_glm_mla
+            .saturating_add(usage.fused_decode_blocked_glm_mla);
+        self.fused_decode_blocked_sliding_window = self
+            .fused_decode_blocked_sliding_window
+            .saturating_add(usage.fused_decode_blocked_sliding_window);
+        self.fused_decode_blocked_kv_shared = self
+            .fused_decode_blocked_kv_shared
+            .saturating_add(usage.fused_decode_blocked_kv_shared);
         self.fused_decode_blocked_ineligible_layer = self
             .fused_decode_blocked_ineligible_layer
             .saturating_add(usage.fused_decode_blocked_ineligible_layer);
@@ -455,6 +475,10 @@ pub enum MlxKvCompressionDecodeCandidate {
     Disabled,
     PrefillOnly,
     AttentionKind,
+    LinearAttention,
+    GlmMla,
+    SlidingWindow,
+    KvShared,
     IneligibleLayer,
     UnsupportedPreset,
     UnsupportedHeadDim,
@@ -526,6 +550,22 @@ struct LinearLayerState {
     recurrent_state: Option<MlxArray>,
 }
 
+/// Borrowed view of a GLM-MLA layer's cached KV state. Returned by
+/// [`MlxKVCache::glm_mla_layer_state`] for debug tooling that needs to
+/// inspect per-layer cache contents without taking ownership.
+pub struct GlmMlaLayerStateView<'a> {
+    /// The full backing buffer for the latent KV cache; shape
+    /// `[1, 1, capacity, latent_dim]`. Valid region is `[0..seq_len]`.
+    pub kv_latent: &'a MlxArray,
+    /// The full backing buffer for the RoPE key cache; shape
+    /// `[1, 1, capacity, rope_dim]`. Valid region is `[0..seq_len]`.
+    pub k_pe: &'a MlxArray,
+    /// Inner dim of `kv_latent` — equal to the model's `kv_lora_rank`.
+    pub latent_dim: i32,
+    /// Inner dim of `k_pe` — equal to the model's `qk_rope_head_dim`.
+    pub rope_dim: i32,
+}
+
 /// Per-request attention cache with chunked KV pre-allocation.
 ///
 /// Full-attention KV shape convention:
@@ -591,6 +631,18 @@ impl MlxKVCache {
             MlxKvCompressionDecodeCandidate::AttentionKind => {
                 Some(&mut usage.fused_decode_blocked_attention_kind)
             }
+            MlxKvCompressionDecodeCandidate::LinearAttention => {
+                Some(&mut usage.fused_decode_blocked_linear_attention)
+            }
+            MlxKvCompressionDecodeCandidate::GlmMla => {
+                Some(&mut usage.fused_decode_blocked_glm_mla)
+            }
+            MlxKvCompressionDecodeCandidate::SlidingWindow => {
+                Some(&mut usage.fused_decode_blocked_sliding_window)
+            }
+            MlxKvCompressionDecodeCandidate::KvShared => {
+                Some(&mut usage.fused_decode_blocked_kv_shared)
+            }
             MlxKvCompressionDecodeCandidate::IneligibleLayer => {
                 Some(&mut usage.fused_decode_blocked_ineligible_layer)
             }
@@ -650,6 +702,19 @@ impl MlxKVCache {
         &mut self,
         candidate: MlxKvCompressionDecodeCandidate,
     ) {
+        if matches!(
+            candidate,
+            MlxKvCompressionDecodeCandidate::LinearAttention
+                | MlxKvCompressionDecodeCandidate::GlmMla
+                | MlxKvCompressionDecodeCandidate::SlidingWindow
+                | MlxKvCompressionDecodeCandidate::KvShared
+        ) {
+            Self::bump_counter(
+                &mut self
+                    .turboquant_decode_usage
+                    .fused_decode_blocked_attention_kind,
+            );
+        }
         if let Some(counter) =
             Self::turboquant_candidate_counter(&mut self.turboquant_decode_usage, candidate)
         {
@@ -1510,6 +1575,25 @@ impl MlxKVCache {
         refs
     }
 
+    /// Read-only access to a single GLM-MLA layer's cached `kv_latent` and
+    /// `k_pe` arrays plus their inner dims. Used by debug bins (notably the
+    /// F4 warm-extend drift probe) to compare per-layer KV state between
+    /// cold and warm prefill paths.
+    ///
+    /// Returns `None` when the layer index is out of range or when this
+    /// model has no GLM-MLA layer at that index. The arrays are over-
+    /// allocated to capacity; callers that want only the valid region must
+    /// slice to `[0..self.seq_len]` themselves using `self.seq_len`.
+    pub fn glm_mla_layer_state(&self, layer: usize) -> Option<GlmMlaLayerStateView<'_>> {
+        let entry = self.glm_mla_layers.get(layer)?.as_ref()?;
+        Some(GlmMlaLayerStateView {
+            kv_latent: &entry.kv_latent,
+            k_pe: &entry.k_pe,
+            latent_dim: entry.latent_dim,
+            rope_dim: entry.rope_dim,
+        })
+    }
+
     pub fn usage_snapshot(&self) -> MlxKVCacheUsage {
         self.usage_snapshot_with_layer_windows(&[])
     }
@@ -1830,11 +1914,15 @@ mod tests {
             fused_decode_ready_candidates: 6,
             fused_decode_blocked_prefill_only: 7,
             fused_decode_blocked_attention_kind: 8,
-            fused_decode_blocked_ineligible_layer: 9,
-            fused_decode_blocked_unsupported_preset: 10,
-            fused_decode_blocked_unsupported_head_dim: 11,
-            fused_decode_blocked_gqa: 12,
-            fused_decode_blocked_missing_storage: 13,
+            fused_decode_blocked_linear_attention: 9,
+            fused_decode_blocked_glm_mla: 10,
+            fused_decode_blocked_sliding_window: 11,
+            fused_decode_blocked_kv_shared: 12,
+            fused_decode_blocked_ineligible_layer: 13,
+            fused_decode_blocked_unsupported_preset: 14,
+            fused_decode_blocked_unsupported_head_dim: 15,
+            fused_decode_blocked_gqa: 16,
+            fused_decode_blocked_missing_storage: 17,
         });
 
         assert_eq!(usage.fused_decode_attempts, 7);
@@ -1844,11 +1932,32 @@ mod tests {
         assert_eq!(usage.fused_decode_ready_candidates, 6);
         assert_eq!(usage.fused_decode_blocked_prefill_only, 7);
         assert_eq!(usage.fused_decode_blocked_attention_kind, 8);
-        assert_eq!(usage.fused_decode_blocked_ineligible_layer, 9);
-        assert_eq!(usage.fused_decode_blocked_unsupported_preset, 10);
-        assert_eq!(usage.fused_decode_blocked_unsupported_head_dim, 11);
-        assert_eq!(usage.fused_decode_blocked_gqa, 12);
-        assert_eq!(usage.fused_decode_blocked_missing_storage, 13);
+        assert_eq!(usage.fused_decode_blocked_linear_attention, 9);
+        assert_eq!(usage.fused_decode_blocked_glm_mla, 10);
+        assert_eq!(usage.fused_decode_blocked_sliding_window, 11);
+        assert_eq!(usage.fused_decode_blocked_kv_shared, 12);
+        assert_eq!(usage.fused_decode_blocked_ineligible_layer, 13);
+        assert_eq!(usage.fused_decode_blocked_unsupported_preset, 14);
+        assert_eq!(usage.fused_decode_blocked_unsupported_head_dim, 15);
+        assert_eq!(usage.fused_decode_blocked_gqa, 16);
+        assert_eq!(usage.fused_decode_blocked_missing_storage, 17);
+    }
+
+    #[test]
+    fn turboquant_attention_kind_subreason_candidates_keep_aggregate_counter() {
+        let mut cache = MlxKVCache::new(1);
+
+        cache.record_turboquant_decode_candidate(MlxKvCompressionDecodeCandidate::LinearAttention);
+        cache.record_turboquant_decode_candidate(MlxKvCompressionDecodeCandidate::GlmMla);
+        cache.record_turboquant_decode_candidate(MlxKvCompressionDecodeCandidate::SlidingWindow);
+        cache.record_turboquant_decode_candidate(MlxKvCompressionDecodeCandidate::KvShared);
+
+        let usage = cache.take_turboquant_decode_usage();
+        assert_eq!(usage.fused_decode_blocked_attention_kind, 4);
+        assert_eq!(usage.fused_decode_blocked_linear_attention, 1);
+        assert_eq!(usage.fused_decode_blocked_glm_mla, 1);
+        assert_eq!(usage.fused_decode_blocked_sliding_window, 1);
+        assert_eq!(usage.fused_decode_blocked_kv_shared, 1);
     }
 
     #[test]

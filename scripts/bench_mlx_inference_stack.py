@@ -292,6 +292,10 @@ AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
     "ax_mlx_kv_compression_fused_decode_ready_candidates",
     "ax_mlx_kv_compression_fused_decode_blocked_prefill_only",
     "ax_mlx_kv_compression_fused_decode_blocked_attention_kind",
+    "ax_mlx_kv_compression_fused_decode_blocked_linear_attention",
+    "ax_mlx_kv_compression_fused_decode_blocked_glm_mla",
+    "ax_mlx_kv_compression_fused_decode_blocked_sliding_window",
+    "ax_mlx_kv_compression_fused_decode_blocked_kv_shared",
     "ax_mlx_kv_compression_fused_decode_blocked_ineligible_layer",
     "ax_mlx_kv_compression_fused_decode_blocked_unsupported_preset",
     "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim",
@@ -307,6 +311,13 @@ KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS = {
     "unsupported_head_dim": "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim",
     "gqa": "ax_mlx_kv_compression_fused_decode_blocked_gqa",
     "missing_storage": "ax_mlx_kv_compression_fused_decode_blocked_missing_storage",
+}
+
+KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS = {
+    "linear_attention": "ax_mlx_kv_compression_fused_decode_blocked_linear_attention",
+    "glm_mla": "ax_mlx_kv_compression_fused_decode_blocked_glm_mla",
+    "sliding_window": "ax_mlx_kv_compression_fused_decode_blocked_sliding_window",
+    "kv_shared": "ax_mlx_kv_compression_fused_decode_blocked_kv_shared",
 }
 
 
@@ -1559,6 +1570,21 @@ def kv_compression_fused_decode_blocked_summary(
     }
 
 
+def kv_compression_fused_decode_blocked_attention_kind_summary(
+    telemetry: dict[str, int],
+) -> dict[str, Any]:
+    counters = {
+        label: int(telemetry.get(key, 0))
+        for label, key in KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS.items()
+    }
+    reasons = [label for label, value in counters.items() if value > 0]
+    return {
+        "total": sum(counters.values()),
+        "reasons": reasons,
+        "counters": counters,
+    }
+
+
 def is_ax_prefill_step(step: dict[str, Any], *, seen_prefill: bool) -> bool:
     route = step.get("route") or {}
     route_labels = [
@@ -1841,6 +1867,17 @@ def bench_axengine(
         row["kv_compression_fused_decode_blocked_reasons"] = blocked_summary[
             "reasons"
         ]
+        attention_kind_blocked_summary = (
+            kv_compression_fused_decode_blocked_attention_kind_summary(
+                compression_summary
+            )
+        )
+        row["kv_compression_fused_decode_blocked_attention_kind_total"] = (
+            attention_kind_blocked_summary["total"]
+        )
+        row["kv_compression_fused_decode_blocked_attention_kind_reasons"] = (
+            attention_kind_blocked_summary["reasons"]
+        )
     if compression_summary:
         row["kv_compression_telemetry"] = compression_summary
     return row

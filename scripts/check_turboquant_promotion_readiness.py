@@ -222,8 +222,22 @@ def runtime_truth_next_action(runtime_truth: dict[str, Any] | None) -> str:
         return "fix quality artifact before performance promotion review"
     blocked_reasons = runtime_truth.get("fused_decode_blocked_reasons")
     if isinstance(blocked_reasons, list) and blocked_reasons:
-        labels = ", ".join(str(label) for label in blocked_reasons)
-        return f"fix fused decode blockers before rerun: {labels}"
+        labels = []
+        attention_kind_reasons = runtime_truth.get(
+            "fused_decode_blocked_attention_kind_reasons"
+        )
+        for label in blocked_reasons:
+            if (
+                label == "attention_kind"
+                and isinstance(attention_kind_reasons, list)
+                and attention_kind_reasons
+            ):
+                sublabels = ", ".join(str(item) for item in attention_kind_reasons)
+                labels.append(f"attention_kind ({sublabels})")
+            else:
+                labels.append(str(label))
+        labels_text = ", ".join(labels)
+        return f"fix fused decode blockers before rerun: {labels_text}"
     if runtime_truth.get("fused_path_selected") is not True:
         observed = runtime_truth.get("decode_path_label", "unknown")
         reason = runtime_truth.get("fused_decode_fallback_reason_label", "unknown")
