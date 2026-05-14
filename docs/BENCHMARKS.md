@@ -151,6 +151,18 @@ be useful diagnostics, but they do not prove a physical prefix-cache reuse
 claim. Unknown `public_claims` entries are rejected; new public claim names must
 first add an explicit evidence mapping and checker coverage.
 
+The current checked-in W0-W4 MLX prefill claim cycle can be revalidated without
+loading a model:
+
+```text
+python3 scripts/check_mlx_prefill_claim_cycle.py
+```
+
+This aggregate gate runs the README public/narrative checker, the canonical P1
+long-context boundary artifact, the canonical P2 concurrent-prefill boundary
+artifact, and the W4 forward-profile diagnostic artifact. It is a provenance
+and claim-hygiene check, not a fresh benchmark run.
+
 README hot-prefix product claims use a separate
 `readme-hot-prefix-artifact` marker because the token-exact equivalence artifact
 has schema `ax.prefix_reuse_equivalence.v1`, not the inference-stack table
