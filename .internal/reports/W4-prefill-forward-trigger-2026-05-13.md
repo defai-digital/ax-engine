@@ -41,6 +41,38 @@ The report must:
   and output work;
 - produce a clear next-action hint, but not a public performance claim.
 
+## 2026-05-13 Follow-Up: Qwen Projection Split
+
+After adding projection substage counters and refreshing the Qwen profile
+artifact, the concrete slow row now reads:
+
+| Model | Prompt tok | Layout | Offline pack candidate | Projection ms | QKV ms | Z ms | A ms | B ms | QKV share | Split tail share |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `qwen3_6_35b_a3b_8bit` | 128 | `split_qkv_z_a_b` | yes | 129.1 | 110.7 | 7.7 | 5.6 | 5.1 | 85.7% | 14.2% |
+
+Interpretation:
+
+- Projection remains the dominant profiled forward stage at 76.9% of diagnostic
+  stage time.
+- The QKV matmul is the dominant projection substage. The separate Z/A/B
+  projections are measurable but are not the majority of projection time.
+- Offline packing is still a valid experiment because the artifact marks the
+  model as `offline_pack_candidate=true`, but the expected packed layout is not a
+  simple row-block concat.
+
+Decision:
+
+- Do not implement ad hoc loader-time packing by simply concatenating
+  `in_proj_qkv` with `in_proj_z`, or `in_proj_b` with `in_proj_a`.
+- The packed path expects `qkvz` arranged per key head as `q,k,v,z`, and `ba`
+  arranged per key head as `b,a`. A row-block concat can be shape-compatible
+  while still semantically wrong.
+- Any pack implementation must be a converter or loader helper with explicit
+  layout tests for row order, quantization sidecar order, group size, bit width,
+  and bias presence.
+- The next safe runtime implementation target is therefore not the pack itself;
+  it is a correctness-gated packer prototype or manifest-level converter path.
+
 ## Non-Decisions
 
 - No scheduler or continuous-batching change is justified by this evidence.
@@ -48,3 +80,5 @@ The report must:
 - No README headline should be updated from timing-barrier profile artifacts.
 - No GatedDelta, MLA, or sliding-window rewrite should start until the diagnostic
   report names a dominant stage for the concrete slow row.
+- No loader-time packed projection rewrite should land without a row-order
+  equivalence gate against the split path.

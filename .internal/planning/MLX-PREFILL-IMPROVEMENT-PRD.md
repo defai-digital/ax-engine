@@ -419,10 +419,28 @@ adds an immediate W4 diagnostic slice. The current next slice is:
 2. Add a diagnostic MLX forward-profile report that reads
    `AX_MLX_LINEAR_ATTENTION_PROFILE=1` artifacts, rejects stale token sentinels,
    and ranks projection/conv/qk-norm/recurrent/output stages.
-3. Use the report to choose the first code patch only after the dominant stage is
+3. Add projection-substage rendering for Qwen linear-attention rows so split
+   `qkv/z/a/b` layouts are not mistaken for a generic projection bottleneck.
+4. Use the report to choose the first code patch only after the dominant stage is
    visible for the slow p128 rows.
-4. Do not update README performance claims from barrier-profile artifacts.
+5. Do not update README performance claims from barrier-profile artifacts.
 
 This sequence keeps the implementation small and prevents a speculative
 forward-kernel rewrite from being justified by a serving-overhead hypothesis
 that the current evidence does not support.
+
+## 13. W4 Projection-Pack Gate
+
+The current Qwen p128 profile identifies `split_qkv_z_a_b` as an offline pack
+candidate, but the implementation gate is stricter than "concatenate rows":
+
+- `qkvz` must be laid out per key head as `q,k,v,z`.
+- `ba` must be laid out per key head as `b,a`.
+- Quantized weight sidecars (`scales` and `biases`) must be reordered in the
+  same row order as the packed weight.
+- Group size, bit width, and bias presence must match across fused tensors.
+- A row-order equivalence test must compare packed-path outputs against the
+  split path before any prefill speed claim.
+
+Until that gate exists, W4 should continue with diagnostic reports and packer
+prototype tests rather than production loader-time packing.
