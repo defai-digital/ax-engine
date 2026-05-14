@@ -155,6 +155,7 @@ def validate_mlx_forward_profile_artifact(
     path: Path,
     *,
     require_pack_comparison: bool = False,
+    require_pack_candidate_win: bool = False,
 ) -> list[CheckedPackComparison]:
     artifact = load_json(path)
     if artifact.get("schema_version") != SCHEMA_VERSION:
@@ -169,10 +170,24 @@ def validate_mlx_forward_profile_artifact(
         raise MlxForwardProfileArtifactError(str(error)) from error
 
     comparisons = renderer.build_pack_comparisons(rows)
-    if require_pack_comparison:
+    if require_pack_comparison or require_pack_candidate_win:
         validate_raw_pack_pair_contract(path, artifact)
         if not comparisons:
             raise MlxForwardProfileArtifactError(f"{path} has no pack comparison verdicts")
+    if require_pack_candidate_win:
+        non_wins = [
+            comparison
+            for comparison in comparisons
+            if comparison.verdict != "candidate win"
+        ]
+        if non_wins:
+            summary = "; ".join(
+                f"{comparison.model} prompt={comparison.prompt_tokens}: {comparison.verdict}"
+                for comparison in non_wins
+            )
+            raise MlxForwardProfileArtifactError(
+                f"{path} pack comparison is not a candidate win: {summary}"
+            )
 
     return [
         CheckedPackComparison(
@@ -192,6 +207,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Require matched split and packed direct AX rows.",
     )
+    parser.add_argument(
+        "--require-pack-candidate-win",
+        action="store_true",
+        help=(
+            "Require every matched split/packed comparison to have a candidate win "
+            "verdict. Implies --require-pack-comparison."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -208,6 +231,7 @@ def check_mlx_forward_profile_artifacts(
     artifacts: list[Path],
     *,
     require_pack_comparison: bool = False,
+    require_pack_candidate_win: bool = False,
 ) -> ForwardProfileCheckResult:
     diagnostic_count = 0
     pack_comparisons: list[CheckedPackComparison] = []
@@ -215,6 +239,7 @@ def check_mlx_forward_profile_artifacts(
         comparisons = validate_mlx_forward_profile_artifact(
             artifact,
             require_pack_comparison=require_pack_comparison,
+            require_pack_candidate_win=require_pack_candidate_win,
         )
         diagnostic_count += max(1, len(comparisons))
         pack_comparisons.extend(comparisons)
@@ -231,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
         checked = check_mlx_forward_profile_artifacts(
             args.artifacts,
             require_pack_comparison=args.require_pack_comparison,
+            require_pack_candidate_win=args.require_pack_candidate_win,
         )
     except MlxForwardProfileArtifactError as error:
         print(f"MLX forward profile artifact check failed: {error}", file=sys.stderr)

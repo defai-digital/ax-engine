@@ -396,6 +396,10 @@ shape, direct AX decode policy, linear-attention profile counters, and the
 packed-projection public claim fields unless a future repeated, cooled promotion
 artifact defines a separate public contract.
 
+Use `--require-pack-candidate-win` only for a promotion/default-enable gate. It
+keeps the diagnostic comparison contract above, and additionally fails the check
+unless every matched split/packed comparison has a `candidate win` verdict.
+
 The wrapper preflights `config.json` and `model-manifest.json` before building
 the release server. It fails closed unless the manifest is `qwen3_5` or
 `qwen3_next`, has enabled `linear_attention`, and includes the gated-delta kernel
