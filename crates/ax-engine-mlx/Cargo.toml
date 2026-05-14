@@ -33,3 +33,7 @@ path = "src/bin/kernel_chain_batching_probe.rs"
 [[bin]]
 name = "residual-rmsnorm-fused-probe"
 path = "src/bin/residual_rmsnorm_fused_probe.rs"
+
+[[bin]]
+name = "dequant-dtype-probe"
+path = "src/bin/dequant_dtype_probe.rs"
