@@ -58,6 +58,7 @@ def ax_row(
     profile_tokens: int | None = None,
     projection_split: bool = False,
     projection_pack: bool | None = None,
+    engine: str = "ax_engine_mlx",
 ) -> dict[str, object]:
     profile = {
         "ax_mlx_linear_attention_profile_enabled": 1,
@@ -83,7 +84,7 @@ def ax_row(
             }
         )
     row: dict[str, object] = {
-        "engine": "ax_engine_mlx",
+        "engine": engine,
         "prompt_tokens": prompt_tokens,
         "generation_tokens": generation_tokens,
         "prefill_tok_s": metric(1800.0),
@@ -159,7 +160,10 @@ class MlxForwardProfileReportTests(unittest.TestCase):
 
         self.assertIn("# Forward Profile", report)
         self.assertIn("Timing barriers perturb latency", report)
-        self.assertIn("| qwen3_6_35b_a3b_8bit | 128 | 1,800.0 | 1.500x | 1.800x |", report)
+        self.assertIn(
+            "| qwen3_6_35b_a3b_8bit | ax_engine_mlx | 128 | 1,800.0 | 1.500x | 1.800x |",
+            report,
+        )
         self.assertIn("projection | 62.1% | inspect projection/layout fusion", report)
         self.assertIn("Keep barrier-profile artifacts out of README headline tables", report)
 
@@ -172,7 +176,7 @@ class MlxForwardProfileReportTests(unittest.TestCase):
 
         self.assertIn("## Projection Breakdown", report)
         self.assertIn(
-            "| qwen3_6_35b_a3b_8bit | 128 | split_qkv_z_a_b | n/a | yes | 9.0 | 0.0 | 0.0 | 7.0 | 0.8 | 0.7 | 0.5 | 77.8% | 22.2% |",
+            "| qwen3_6_35b_a3b_8bit | ax_engine_mlx | 128 | split_qkv_z_a_b | n/a | yes | 9.0 | 0.0 | 0.0 | 7.0 | 0.8 | 0.7 | 0.5 | 77.8% | 22.2% |",
             report,
         )
         self.assertIn("evaluate offline packed qkvz/ba projection", report)
@@ -197,11 +201,37 @@ class MlxForwardProfileReportTests(unittest.TestCase):
         report = renderer.render_report(renderer.build_rows(path), title="Forward Profile")
 
         self.assertIn(
-            "| qwen3_6_35b_a3b_8bit | 128 | split_qkv_z_a_b | yes | yes | 9.0 | 6.0 | 3.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0% | 0.0% |",
+            "| qwen3_6_35b_a3b_8bit | ax_engine_mlx | 128 | split_qkv_z_a_b | yes | yes | 9.0 | 6.0 | 3.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0% | 0.0% |",
             report,
         )
         self.assertIn("compare packed vs split projection delta", report)
         self.assertIn("AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS=1", report)
+
+    def test_renders_linear_pack_engine_rows(self) -> None:
+        payload = artifact(projection_layout=True)
+        payload["results"].append(
+            ax_row(
+                128,
+                128,
+                projection_pack=True,
+                engine="ax_engine_mlx_linear_pack",
+            )
+        )
+        profile = payload["results"][-1]["ax_mlx_linear_attention_profile"]  # type: ignore[index]
+        assert isinstance(profile, dict)
+        profile.update(
+            {
+                "ax_mlx_linear_attention_profile_projection_qkvz_wall_us": 5000,
+                "ax_mlx_linear_attention_profile_projection_ba_wall_us": 2000,
+            }
+        )
+        path = self.write_artifact(payload)
+
+        rows = renderer.build_rows(path)
+        report = renderer.render_report(rows, title="Forward Profile")
+
+        self.assertEqual({row.engine for row in rows}, {"ax_engine_mlx", "ax_engine_mlx_linear_pack"})
+        self.assertIn("ax_engine_mlx_linear_pack", report)
 
     def test_rejects_stale_profile_token_sentinel(self) -> None:
         path = self.write_artifact(artifact(profile_tokens=4_294_967_295))

@@ -87,6 +87,7 @@ GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS = [512, 2048, 8192, 32768]
 
 AX_ENGINE_DIRECT_KEY = "ax_engine_mlx"
 AX_ENGINE_NGRAM_ACCEL_KEY = "ax_engine_mlx_ngram_accel"
+AX_ENGINE_LINEAR_ATTENTION_PACK_KEY = "ax_engine_mlx_linear_pack"
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
 
 AX_MLX_RUNTIME_IDENTITY = {
@@ -1624,11 +1625,14 @@ def bench_axengine(
     *,
     model_metadata: dict[str, Any],
     direct_mode: bool = False,
+    engine_key_override: str | None = None,
     kv_compression: str = "disabled",
     capture_output_token_ids: bool = False,
     server_pid: int | None = None,
 ) -> dict[str, Any]:
-    engine_key = AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
+    engine_key = engine_key_override or (
+        AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
+    )
     decode_policy = ax_decode_policy(
         model_metadata, direct_mode=direct_mode
     )
@@ -2343,6 +2347,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-compare-linear-attention-projection-pack",
+        action="store_true",
+        help=(
+            "Run direct AX rows twice for the same prompts: first the default "
+            "split linear-attention projections, then the experimental loader-time "
+            f"packed row emitted as {AX_ENGINE_LINEAR_ATTENTION_PACK_KEY}."
+        ),
+    )
+    parser.add_argument(
         "--ax-decode-profile",
         action="store_true",
         help=(
@@ -2444,6 +2457,20 @@ def main() -> None:
         parser.error("--ax-ngram-accel conflicts with --ax-direct")
     if args.ax_ngram_accel and args.ax_compare_policies:
         parser.error("--ax-ngram-accel conflicts with --ax-compare-policies")
+    if args.ax_compare_linear_attention_projection_pack and args.skip_ax_engine:
+        parser.error("--ax-compare-linear-attention-projection-pack requires AX rows")
+    if args.ax_compare_linear_attention_projection_pack and (
+        args.ax_ngram_accel or args.ax_compare_policies
+    ):
+        parser.error(
+            "--ax-compare-linear-attention-projection-pack requires direct AX rows; "
+            "do not combine it with --ax-ngram-accel or --ax-compare-policies"
+        )
+    if args.ax_compare_linear_attention_projection_pack and args.ax_pack_linear_attention_projections:
+        parser.error(
+            "--ax-compare-linear-attention-projection-pack already runs the packed row; "
+            "do not combine it with --ax-pack-linear-attention-projections"
+        )
     if args.reuse_reference_results_from and args.mlx_swift_lm_command:
         parser.error("--reuse-reference-results-from conflicts with --mlx-swift-lm-command")
     if bool(args.llama_cpp_bench) != bool(args.llama_cpp_gguf):
@@ -2611,15 +2638,35 @@ def main() -> None:
                 )
 
         if not args.skip_ax_engine:
-            modes = []
-            if args.ax_compare_policies:
-                modes = [True, False]  # direct first, then n-gram acceleration
+            ax_run_configs = []
+            if args.ax_compare_linear_attention_projection_pack:
+                ax_run_configs = [
+                    (True, False, AX_ENGINE_DIRECT_KEY),
+                    (True, True, AX_ENGINE_LINEAR_ATTENTION_PACK_KEY),
+                ]
+            elif args.ax_compare_policies:
+                ax_run_configs = [
+                    (True, args.ax_pack_linear_attention_projections, AX_ENGINE_DIRECT_KEY),
+                    (
+                        False,
+                        args.ax_pack_linear_attention_projections,
+                        AX_ENGINE_NGRAM_ACCEL_KEY,
+                    ),
+                ]
             elif args.ax_ngram_accel:
-                modes = [False]
+                ax_run_configs = [
+                    (
+                        False,
+                        args.ax_pack_linear_attention_projections,
+                        AX_ENGINE_NGRAM_ACCEL_KEY,
+                    )
+                ]
             else:
-                modes = [True]
+                ax_run_configs = [
+                    (True, args.ax_pack_linear_attention_projections, AX_ENGINE_DIRECT_KEY)
+                ]
 
-            for direct_mode in modes:
+            for direct_mode, pack_linear_attention_projections, engine_key in ax_run_configs:
                 proc = start_axengine(
                     AX_ENGINE_SERVER,
                     args.model_dir,
@@ -2637,9 +2684,7 @@ def main() -> None:
                         args.gateddelta_prefill_profile or args.ax_linear_attention_profile
                     ),
                     decode_profile=args.ax_decode_profile,
-                    pack_linear_attention_projections=(
-                        args.ax_pack_linear_attention_projections
-                    ),
+                    pack_linear_attention_projections=pack_linear_attention_projections,
                 )
                 procs.append(proc)
                 if not wait_for_server(
@@ -2663,6 +2708,7 @@ def main() -> None:
                             args.cooldown,
                             model_metadata=model_metadata,
                             direct_mode=direct_mode,
+                            engine_key_override=engine_key,
                             kv_compression=args.experimental_mlx_kv_compression,
                             capture_output_token_ids=args.capture_output_token_ids,
                             server_pid=proc.pid,
@@ -2672,11 +2718,14 @@ def main() -> None:
                     results[-1]["prompt_token_ids_path"] = prompt_doc["token_ids_path"]
                     results[-1]["prompt_token_ids_sha256"] = prompt_doc["token_ids_sha256"]
                     results[-1]["ax_linear_attention_projection_pack"] = bool(
-                        args.ax_pack_linear_attention_projections
+                        pack_linear_attention_projections
                     )
                 kill_proc(proc)
                 procs.remove(proc)
-                if direct_mode and args.ax_compare_policies:
+                if (direct_mode and args.ax_compare_policies) or (
+                    not pack_linear_attention_projections
+                    and args.ax_compare_linear_attention_projection_pack
+                ):
                     time.sleep(3)  # brief cooldown between modes
     finally:
         for proc in procs:
@@ -2766,6 +2815,10 @@ def main() -> None:
         ),
         "ax_linear_attention_projection_pack": bool(
             args.ax_pack_linear_attention_projections
+            or args.ax_compare_linear_attention_projection_pack
+        ),
+        "ax_linear_attention_projection_pack_compare": bool(
+            args.ax_compare_linear_attention_projection_pack
         ),
         "ax_decode_profile": bool(args.ax_decode_profile),
         "results": results,

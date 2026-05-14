@@ -214,6 +214,26 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(row["peak_memory_gb"]["max"], 13.0)
         self.assertEqual(row["memory_source"], "server_process_rss_after_stream")
 
+    def test_axengine_summary_can_label_linear_attention_pack_row(self) -> None:
+        runs = [
+            {"prefill_s": 0.2, "decode_s": 0.1, "ttft_ms": 200.0, "prefill_tok_s": 15.0, "decode_tok_s": 20.0, "output_tokens": 3.0},
+            {"prefill_s": 0.2, "decode_s": 0.1, "ttft_ms": 200.0, "prefill_tok_s": 15.0, "decode_tok_s": 20.0, "output_tokens": 3.0},
+        ]
+        with patch.object(bench, "axengine_one_run", side_effect=runs):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+                engine_key_override=bench.AX_ENGINE_LINEAR_ATTENTION_PACK_KEY,
+            )
+
+        self.assertEqual(row["engine"], bench.AX_ENGINE_LINEAR_ATTENTION_PACK_KEY)
+        self.assertEqual(row["ax_decode_policy"], "direct_no_ngram_acceleration")
+
     def test_swift_adapter_command_gets_prompt_artifact_placeholders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prompt = bench.write_prompt_tokens(
