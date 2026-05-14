@@ -432,6 +432,82 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=10,
                 )
 
+    def test_phase0_ax_ttft_requires_positive_prefill_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx":
+                    row["prefill_s"] = metric(0.0)
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "prefill_s\\.median must be positive",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=10,
+                )
+
+    def test_phase0_ax_ttft_requires_positive_ttft_metric(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx":
+                    row["ttft_ms"] = metric(0.0)
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+            readme_path = root / "README.md"
+            readme_path.write_text(
+                readme_path.read_text().replace(
+                    "| Gemma 4 E2B | 4-bit | 4 | 40.0 | 44.4 (+11.1%) | **30.0 (-25.0%)** |",
+                    "| Gemma 4 E2B | 4-bit | 4 | 40.0 | 44.4 (+11.1%) | **0.0 (-100.0%)** |",
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "ttft_ms\\.median must be positive",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=readme_path,
+                    expected_metric_count=10,
+                )
+
+    def test_phase0_ax_ttft_requires_positive_prefill_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx":
+                    row["ax_mlx_telemetry"]["ax_mlx_prefill_steps"] = 0
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "positive ax_mlx_prefill_steps",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=10,
+                )
+
     def test_reused_reference_rows_may_have_source_repetition_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

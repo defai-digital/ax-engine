@@ -849,6 +849,23 @@ def validate_metric_summary(
         raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks {key}.median")
 
 
+def metric_summary_median(row: dict[str, Any], key: str) -> float:
+    metric = row.get(key)
+    if not isinstance(metric, dict) or "median" not in metric:
+        raise ArtifactCheckError(f"{row.get('engine')} lacks {key}.median")
+    return float(metric["median"])
+
+
+def validate_positive_metric_summary(
+    *, artifact_path: Path, row: dict[str, Any], key: str
+) -> None:
+    validate_metric_summary(artifact_path=artifact_path, row=row, key=key)
+    if metric_summary_median(row, key) <= 0.0:
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} {key}.median must be positive"
+        )
+
+
 def validate_phase0_runtime_identity(
     *, artifact_path: Path, row: dict[str, Any]
 ) -> None:
@@ -868,14 +885,34 @@ def validate_phase0_runtime_identity(
 def validate_ax_prefill_decode_split(
     *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
 ) -> None:
-    validate_metric_summary(artifact_path=artifact_path, row=row, key="prefill_s")
-    validate_metric_summary(artifact_path=artifact_path, row=row, key="decode_s")
+    validate_positive_metric_summary(
+        artifact_path=artifact_path,
+        row=row,
+        key="prefill_s",
+    )
+    generation_tokens = int(row.get("generation_tokens", 0))
+    if generation_tokens > 1:
+        validate_positive_metric_summary(
+            artifact_path=artifact_path,
+            row=row,
+            key="decode_s",
+        )
+    else:
+        validate_metric_summary(artifact_path=artifact_path, row=row, key="decode_s")
     telemetry = row.get("ax_mlx_telemetry")
     if not isinstance(telemetry, dict):
         raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks AX MLX telemetry")
     for key in ("ax_mlx_prefill_steps", "ax_mlx_decode_steps"):
         if key not in telemetry:
             raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks {key}")
+    if int(telemetry.get("ax_mlx_prefill_steps", 0)) <= 0:
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} lacks positive ax_mlx_prefill_steps"
+        )
+    if generation_tokens > 1 and int(telemetry.get("ax_mlx_decode_steps", 0)) <= 0:
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} lacks positive ax_mlx_decode_steps"
+        )
     if require_phase0:
         if row.get("timing_scope") != "ax_engine_runner_time_us":
             raise ArtifactCheckError(
@@ -885,6 +922,11 @@ def validate_ax_prefill_decode_split(
             raise ArtifactCheckError(
                 f"{artifact_path} {row.get('engine')} lacks AX TTFT source"
             )
+        validate_positive_metric_summary(
+            artifact_path=artifact_path,
+            row=row,
+            key="ttft_ms",
+        )
         validate_phase0_runtime_identity(artifact_path=artifact_path, row=row)
 
 
