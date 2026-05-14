@@ -23,6 +23,15 @@ STAGE_KEYS = [
     ("output", "ax_mlx_linear_attention_profile_output_wall_us"),
 ]
 
+PROJECTION_STAGE_KEYS = [
+    ("qkvz", "ax_mlx_linear_attention_profile_projection_qkvz_wall_us"),
+    ("ba", "ax_mlx_linear_attention_profile_projection_ba_wall_us"),
+    ("qkv", "ax_mlx_linear_attention_profile_projection_qkv_wall_us"),
+    ("z", "ax_mlx_linear_attention_profile_projection_z_wall_us"),
+    ("a", "ax_mlx_linear_attention_profile_projection_a_wall_us"),
+    ("b", "ax_mlx_linear_attention_profile_projection_b_wall_us"),
+]
+
 INVALID_PROFILE_TOKEN_SENTINELS = {4_294_967_295}
 
 
@@ -40,6 +49,9 @@ class ForwardProfileRow:
     profile_layers: int
     profile_tokens: int
     stage_ms: dict[str, float]
+    projection_ms: dict[str, float | None]
+    projection_layout: str | None
+    offline_pack_candidate: bool | None
     stage_total_ms: float
     dominant_stage: str
     dominant_share: float
@@ -86,6 +98,11 @@ def int_value(payload: dict[str, Any], key: str, *, owner: str) -> int:
     if not isinstance(value, int):
         raise MlxForwardProfileReportError(f"{owner} lacks integer field {key}")
     return value
+
+
+def optional_int_value(payload: dict[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    return value if isinstance(value, int) else None
 
 
 def optional_telemetry_ms(row: dict[str, Any], key: str) -> float | None:
@@ -154,11 +171,42 @@ def validate_profile(
         )
 
 
-def decision_hint(dominant_stage: str, dominant_share: float) -> str:
+def projection_decision_hint(
+    projection_ms: dict[str, float | None],
+    *,
+    projection_layout: str | None,
+    offline_pack_candidate: bool | None,
+) -> str:
+    qkv = projection_ms.get("qkv") or 0.0
+    qkvz = projection_ms.get("qkvz") or 0.0
+    ba = projection_ms.get("ba") or 0.0
+    split_total = sum((projection_ms.get(key) or 0.0) for key in ["qkv", "z", "a", "b"])
+    packed_total = qkvz + ba
+    if offline_pack_candidate and projection_layout == "split_qkv_z_a_b" and split_total > 0.0:
+        return "evaluate offline packed qkvz/ba projection"
+    if packed_total > 0.0:
+        return "inspect packed projection fusion"
+    if qkv > 0.0:
+        return "inspect qkv projection layout"
+    return "inspect projection/layout fusion"
+
+
+def decision_hint(
+    dominant_stage: str,
+    dominant_share: float,
+    *,
+    projection_ms: dict[str, float | None],
+    projection_layout: str | None,
+    offline_pack_candidate: bool | None,
+) -> str:
     if dominant_stage == "recurrent" and dominant_share >= 0.5:
         return "prioritize recurrent scan experiment"
     if dominant_stage == "projection":
-        return "inspect projection/layout fusion"
+        return projection_decision_hint(
+            projection_ms,
+            projection_layout=projection_layout,
+            offline_pack_candidate=offline_pack_candidate,
+        )
     if dominant_stage == "output":
         return "inspect output projection fusion"
     if dominant_stage == "conv":
@@ -169,6 +217,24 @@ def decision_hint(dominant_stage: str, dominant_share: float) -> str:
 def build_rows(artifact_path: Path) -> list[ForwardProfileRow]:
     artifact = load_json(artifact_path)
     model = str(artifact.get("model", artifact_path.stem))
+    model_config = artifact.get("model_config")
+    projection_layout_payload = (
+        model_config.get("linear_attention_projection_layout")
+        if isinstance(model_config, dict)
+        else None
+    )
+    projection_layout = (
+        str(projection_layout_payload.get("layout"))
+        if isinstance(projection_layout_payload, dict)
+        and isinstance(projection_layout_payload.get("layout"), str)
+        else None
+    )
+    offline_pack_candidate = (
+        bool(projection_layout_payload.get("offline_pack_candidate"))
+        if isinstance(projection_layout_payload, dict)
+        and isinstance(projection_layout_payload.get("offline_pack_candidate"), bool)
+        else None
+    )
     rows: list[ForwardProfileRow] = []
     for (prompt_tokens, generation_tokens), engines in sorted(rows_by_shape(artifact).items()):
         ax_row = engines.get("ax_engine_mlx")
@@ -196,6 +262,13 @@ def build_rows(artifact_path: Path) -> list[ForwardProfileRow]:
             raise MlxForwardProfileReportError(
                 f"{artifact_path} prompt={prompt_tokens} has zero profile stage time"
             )
+        projection_us = {
+            label: optional_int_value(profile, key) for label, key in PROJECTION_STAGE_KEYS
+        }
+        projection_ms = {
+            label: (value / 1000.0 if value is not None else None)
+            for label, value in projection_us.items()
+        }
         dominant_stage = max(stage_us, key=lambda key: stage_us[key])
         dominant_share = stage_us[dominant_stage] / stage_total_us
         rows.append(
@@ -226,10 +299,19 @@ def build_rows(artifact_path: Path) -> list[ForwardProfileRow]:
                     owner=f"{artifact_path} prompt={prompt_tokens}.profile",
                 ),
                 stage_ms={label: value / 1000.0 for label, value in stage_us.items()},
+                projection_ms=projection_ms,
+                projection_layout=projection_layout,
+                offline_pack_candidate=offline_pack_candidate,
                 stage_total_ms=stage_total_us / 1000.0,
                 dominant_stage=dominant_stage,
                 dominant_share=dominant_share,
-                decision_hint=decision_hint(dominant_stage, dominant_share),
+                decision_hint=decision_hint(
+                    dominant_stage,
+                    dominant_share,
+                    projection_ms=projection_ms,
+                    projection_layout=projection_layout,
+                    offline_pack_candidate=offline_pack_candidate,
+                ),
             )
         )
     return rows
@@ -269,6 +351,18 @@ def fmt_ratio(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value:.3f}x"
+
+
+def fmt_percent_ratio(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value * 100:.1f}%"
+
+
+def fmt_bool(value: bool | None) -> str:
+    if value is None:
+        return "n/a"
+    return "yes" if value else "no"
 
 
 def sort_rows(rows: list[ForwardProfileRow]) -> list[ForwardProfileRow]:
@@ -324,6 +418,36 @@ def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
             f"`{row.artifact}` |"
         )
 
+    lines.extend(
+        [
+            "",
+            "## Projection Breakdown",
+            "",
+            "| Model | Prompt tok | Layout | Offline pack candidate | Projection ms | QKVZ ms | BA ms | QKV ms | Z ms | A ms | B ms | QKV share | Split tail share |",
+            "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for row in sorted_rows:
+        projection_ms = row.stage_ms["projection"]
+        qkv_ms = row.projection_ms.get("qkv")
+        split_tail_ms = sum((row.projection_ms.get(key) or 0.0) for key in ["z", "a", "b"])
+        lines.append(
+            "| "
+            f"{row.model} | "
+            f"{row.prompt_tokens:,} | "
+            f"{row.projection_layout or 'n/a'} | "
+            f"{fmt_bool(row.offline_pack_candidate)} | "
+            f"{fmt_number(projection_ms)} | "
+            f"{fmt_number(row.projection_ms.get('qkvz'))} | "
+            f"{fmt_number(row.projection_ms.get('ba'))} | "
+            f"{fmt_number(qkv_ms)} | "
+            f"{fmt_number(row.projection_ms.get('z'))} | "
+            f"{fmt_number(row.projection_ms.get('a'))} | "
+            f"{fmt_number(row.projection_ms.get('b'))} | "
+            f"{fmt_percent_ratio(ratio(qkv_ms or 0.0, projection_ms))} | "
+            f"{fmt_percent_ratio(ratio(split_tail_ms, projection_ms))} |"
+        )
+
     worst_mlx = next((row for row in sorted_rows if row.ax_to_mlx_lm is not None), None)
     strongest_stage = max(sorted_rows, key=lambda row: row.dominant_share)
     lines.extend(["", "## Reading Notes", ""])
@@ -341,6 +465,7 @@ def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
     lines.extend(
         [
             "- Compare this with the prefill breakdown report first: if forward is not dominant, do not use this report to justify kernel work.",
+            "- Projection substage cells are `n/a` for artifacts captured before the projection split counters existed.",
             "- Reject stale artifacts with `ax_mlx_linear_attention_profile_tokens=4294967295`; that value came from an old signed/unsigned clamp bug.",
             "- Keep barrier-profile artifacts out of README headline tables.",
             "",

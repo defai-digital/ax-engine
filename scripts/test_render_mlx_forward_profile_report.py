@@ -56,7 +56,31 @@ def ax_row(
     projection_wall_us: int = 9000,
     recurrent_wall_us: int = 3000,
     profile_tokens: int | None = None,
+    projection_split: bool = False,
 ) -> dict[str, object]:
+    profile = {
+        "ax_mlx_linear_attention_profile_enabled": 1,
+        "ax_mlx_linear_attention_profile_layers": 30,
+        "ax_mlx_linear_attention_profile_tokens": (
+            profile_tokens if profile_tokens is not None else prompt_tokens * 30
+        ),
+        "ax_mlx_linear_attention_profile_projection_wall_us": projection_wall_us,
+        "ax_mlx_linear_attention_profile_conv_wall_us": 1000,
+        "ax_mlx_linear_attention_profile_qk_norm_wall_us": 500,
+        "ax_mlx_linear_attention_profile_recurrent_wall_us": recurrent_wall_us,
+        "ax_mlx_linear_attention_profile_output_wall_us": 1000,
+    }
+    if projection_split:
+        profile.update(
+            {
+                "ax_mlx_linear_attention_profile_projection_qkvz_wall_us": 0,
+                "ax_mlx_linear_attention_profile_projection_ba_wall_us": 0,
+                "ax_mlx_linear_attention_profile_projection_qkv_wall_us": 7000,
+                "ax_mlx_linear_attention_profile_projection_z_wall_us": 800,
+                "ax_mlx_linear_attention_profile_projection_a_wall_us": 700,
+                "ax_mlx_linear_attention_profile_projection_b_wall_us": 500,
+            }
+        )
     return {
         "engine": "ax_engine_mlx",
         "prompt_tokens": prompt_tokens,
@@ -66,25 +90,19 @@ def ax_row(
             "ax_mlx_prefill_wall_us": 128_000,
             "ax_mlx_prefill_forward_wall_us": 127_000,
         },
-        "ax_mlx_linear_attention_profile": {
-            "ax_mlx_linear_attention_profile_enabled": 1,
-            "ax_mlx_linear_attention_profile_layers": 30,
-            "ax_mlx_linear_attention_profile_tokens": (
-                profile_tokens if profile_tokens is not None else prompt_tokens * 30
-            ),
-            "ax_mlx_linear_attention_profile_projection_wall_us": projection_wall_us,
-            "ax_mlx_linear_attention_profile_conv_wall_us": 1000,
-            "ax_mlx_linear_attention_profile_qk_norm_wall_us": 500,
-            "ax_mlx_linear_attention_profile_recurrent_wall_us": recurrent_wall_us,
-            "ax_mlx_linear_attention_profile_output_wall_us": 1000,
-        },
+        "ax_mlx_linear_attention_profile": profile,
     }
 
 
-def artifact(*, profile_tokens: int | None = None) -> dict[str, object]:
+def artifact(
+    *,
+    profile_tokens: int | None = None,
+    projection_split: bool = False,
+    projection_layout: bool = False,
+) -> dict[str, object]:
     prompt_tokens = 128
     generation_tokens = 128
-    return {
+    payload: dict[str, object] = {
         "schema_version": "ax.mlx_inference_stack.v2",
         "model": "qwen3_6_35b_a3b_8bit",
         "ax_linear_attention_profile": True,
@@ -95,9 +113,22 @@ def artifact(*, profile_tokens: int | None = None) -> dict[str, object]:
                 prompt_tokens,
                 generation_tokens,
                 profile_tokens=profile_tokens,
+                projection_split=projection_split,
             ),
         ],
     }
+    if projection_layout:
+        payload["model_config"] = {
+            "linear_attention_projection_layout": {
+                "schema_version": "ax.linear_attention_projection_layout.v1",
+                "layout": "split_qkv_z_a_b",
+                "linear_layers": 30,
+                "packed_layers": 0,
+                "split_layers": 30,
+                "offline_pack_candidate": True,
+            }
+        }
+    return payload
 
 
 class MlxForwardProfileReportTests(unittest.TestCase):
@@ -123,6 +154,20 @@ class MlxForwardProfileReportTests(unittest.TestCase):
         self.assertIn("| qwen3_6_35b_a3b_8bit | 128 | 1,800.0 | 1.500x | 1.800x |", report)
         self.assertIn("projection | 62.1% | inspect projection/layout fusion", report)
         self.assertIn("Keep barrier-profile artifacts out of README headline tables", report)
+
+    def test_renders_projection_breakdown_and_pack_hint(self) -> None:
+        path = self.write_artifact(
+            artifact(projection_split=True, projection_layout=True)
+        )
+
+        report = renderer.render_report(renderer.build_rows(path), title="Forward Profile")
+
+        self.assertIn("## Projection Breakdown", report)
+        self.assertIn(
+            "| qwen3_6_35b_a3b_8bit | 128 | split_qkv_z_a_b | yes | 9.0 | 0.0 | 0.0 | 7.0 | 0.8 | 0.7 | 0.5 | 77.8% | 22.2% |",
+            report,
+        )
+        self.assertIn("evaluate offline packed qkvz/ba projection", report)
 
     def test_rejects_stale_profile_token_sentinel(self) -> None:
         path = self.write_artifact(artifact(profile_tokens=4_294_967_295))
