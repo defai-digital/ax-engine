@@ -1,0 +1,28 @@
+{
+  "schema_version": "ax.turboquant_quality_metrics.v1",
+  "metrics": {
+    "max_abs_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "min_cosine_similarity": 1.0
+  },
+  "rows": [
+    {
+      "index": 0,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "cosine_similarity": 1.0
+    },
+    {
+      "index": 1,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "cosine_similarity": 1.0
+    },
+    {
+      "index": 2,
+      "max_abs_diff": 0.0,
+      "mean_abs_diff": 0.0,
+      "cosine_similarity": 1.0
+    }
+  ]
+}

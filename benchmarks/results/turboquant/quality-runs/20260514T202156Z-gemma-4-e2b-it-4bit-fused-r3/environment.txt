@@ -1,0 +1,19 @@
+timestamp_utc=20260514T202156Z
+repo=/Users/akiralam/code/ax-engine-v4
+commit=48b94cda75fe33de35454e6a8ecb95ecab7b5599
+model_dir=.internal/models/gemma-4-e2b-it-4bit
+model_id=gemma-4-e2b-it-4bit
+model_family=gemma4
+head_dim=512
+context_tokens=8192
+generation_tokens=256
+repetitions=3
+cooldown=20
+prefill_step_size=2048
+
+ProductName:		macOS
+ProductVersion:		26.4.1
+BuildVersion:		25E253
+Darwin AKMBPM5MAX.local 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:33:50 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6050 arm64
+Apple M5 Max
+137438953472

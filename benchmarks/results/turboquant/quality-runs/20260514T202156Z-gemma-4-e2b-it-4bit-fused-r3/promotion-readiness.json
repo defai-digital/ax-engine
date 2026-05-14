@@ -1,0 +1,345 @@
+{
+  "schema_version": "ax.turboquant_promotion_readiness.v1",
+  "decision": {
+    "can_make_public_support_claim": false,
+    "public_docs_should_remain_experimental": true,
+    "blockers": [
+      "no passing long-context fused-path performance promotion artifact was found"
+    ],
+    "performance_blocker_summary": [
+      {
+        "path": "benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/quality-gate.json",
+        "passes_quality_gate": true,
+        "performance_blockers": [
+          "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
+        ],
+        "next_action": "rerun or improve fused compressed decode until performance blockers clear",
+        "runtime_truth": {
+          "decode_path_code": 2,
+          "decode_path_label": "fused_compressed_decode",
+          "fused_decode_attempts": 9,
+          "fused_decode_successes": 9,
+          "fused_decode_metal_successes": 9,
+          "fused_decode_fallbacks": 0,
+          "fused_decode_fallback_reason_code": 0,
+          "fused_decode_fallback_reason_label": "none",
+          "fused_decode_blocked_counters": {
+            "prefill_only": 0,
+            "attention_kind": 96,
+            "ineligible_layer": 0,
+            "unsupported_preset": 0,
+            "unsupported_head_dim": 0,
+            "gqa": 0,
+            "missing_storage": 0
+          },
+          "fused_decode_blocked_total": 96,
+          "fused_decode_blocked_reasons": [
+            "attention_kind"
+          ],
+          "fused_decode_blocked_attention_kind_counters": {
+            "linear_attention": 0,
+            "glm_mla": 0,
+            "sliding_window": 84,
+            "kv_shared": 12
+          },
+          "fused_decode_blocked_attention_kind_reasons": [
+            "sliding_window",
+            "kv_shared"
+          ],
+          "fused_path_selected": true,
+          "fused_success_observed": true,
+          "zero_fallbacks": true,
+          "promotion_path_ready": true
+        }
+      }
+    ]
+  },
+  "required_current_gate": {
+    "candidate_mode": "turboquant-fused-experimental",
+    "preset": "k8v4",
+    "head_dim": [
+      128,
+      256,
+      512
+    ],
+    "decode_path": "fused_compressed_decode",
+    "fused_decode_successes": "> 0",
+    "fused_decode_metal_successes": "> 0",
+    "fused_decode_fallbacks": 0,
+    "minimum_context_tokens": 8192,
+    "minimum_generation_tokens": 128
+  },
+  "models": [
+    {
+      "model_dir": ".internal/models/GLM-4.7-Flash-4bit",
+      "model_family": "glm4_moe_lite",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 256,
+      "attention_head_count": 20,
+      "kv_head_count": 20,
+      "full_attention_layers": 47,
+      "eligible_for_current_fused_gate": false,
+      "blockers": [
+        "GLM MLA attention remains outside TurboQuant promotion scope"
+      ]
+    },
+    {
+      "model_dir": ".internal/models/Qwen3-Coder-Next-4bit",
+      "model_family": "qwen3_next",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 256,
+      "attention_head_count": 16,
+      "kv_head_count": 2,
+      "full_attention_layers": 48,
+      "eligible_for_current_fused_gate": false,
+      "blockers": [
+        "linear-attention state remains outside TurboQuant promotion scope"
+      ]
+    },
+    {
+      "model_dir": ".internal/models/Qwen3-Coder-Next-4bit-sanitized-2026-05-11",
+      "model_family": "qwen3_next",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 256,
+      "attention_head_count": 16,
+      "kv_head_count": 2,
+      "full_attention_layers": 48,
+      "eligible_for_current_fused_gate": false,
+      "blockers": [
+        "linear-attention state remains outside TurboQuant promotion scope"
+      ]
+    },
+    {
+      "model_dir": ".internal/models/Qwen3.5-9B-MLX-4bit",
+      "model_family": "qwen3_5",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 256,
+      "attention_head_count": 16,
+      "kv_head_count": 4,
+      "full_attention_layers": 32,
+      "eligible_for_current_fused_gate": false,
+      "blockers": [
+        "linear-attention state remains outside TurboQuant promotion scope"
+      ]
+    },
+    {
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-5bit",
+      "model_family": "qwen3_5",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 256,
+      "attention_head_count": 16,
+      "kv_head_count": 2,
+      "full_attention_layers": 40,
+      "eligible_for_current_fused_gate": false,
+      "blockers": [
+        "linear-attention state remains outside TurboQuant promotion scope"
+      ]
+    },
+    {
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-6bit",
+      "model_family": "qwen3_5",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 256,
+      "attention_head_count": 16,
+      "kv_head_count": 2,
+      "full_attention_layers": 40,
+      "eligible_for_current_fused_gate": false,
+      "blockers": [
+        "linear-attention state remains outside TurboQuant promotion scope"
+      ]
+    },
+    {
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-8bit",
+      "model_family": "qwen3_5",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 256,
+      "attention_head_count": 16,
+      "kv_head_count": 2,
+      "full_attention_layers": 40,
+      "eligible_for_current_fused_gate": false,
+      "blockers": [
+        "linear-attention state remains outside TurboQuant promotion scope"
+      ]
+    },
+    {
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-UD-MLX-4bit",
+      "model_family": "qwen3_5",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 256,
+      "attention_head_count": 16,
+      "kv_head_count": 2,
+      "full_attention_layers": 40,
+      "eligible_for_current_fused_gate": false,
+      "blockers": [
+        "linear-attention state remains outside TurboQuant promotion scope"
+      ]
+    },
+    {
+      "model_dir": ".internal/models/gemma-4-26b-a4b-it-4bit",
+      "model_family": "gemma4",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 512,
+      "attention_head_count": 16,
+      "kv_head_count": 8,
+      "full_attention_layers": 5,
+      "eligible_for_current_fused_gate": true,
+      "blockers": []
+    },
+    {
+      "model_dir": ".internal/models/gemma-4-31b-it-4bit",
+      "model_family": "gemma4",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 512,
+      "attention_head_count": 32,
+      "kv_head_count": 16,
+      "full_attention_layers": 10,
+      "eligible_for_current_fused_gate": true,
+      "blockers": []
+    },
+    {
+      "model_dir": ".internal/models/gemma-4-e2b-it-4bit",
+      "model_family": "gemma4",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 512,
+      "attention_head_count": 8,
+      "kv_head_count": 1,
+      "full_attention_layers": 7,
+      "eligible_for_current_fused_gate": true,
+      "blockers": []
+    },
+    {
+      "model_dir": ".internal/models/gemma-4-e2b-it-5bit",
+      "model_family": "gemma4",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 512,
+      "attention_head_count": 8,
+      "kv_head_count": 1,
+      "full_attention_layers": 7,
+      "eligible_for_current_fused_gate": true,
+      "blockers": []
+    },
+    {
+      "model_dir": ".internal/models/gemma-4-e2b-it-6bit",
+      "model_family": "gemma4",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 512,
+      "attention_head_count": 8,
+      "kv_head_count": 1,
+      "full_attention_layers": 7,
+      "eligible_for_current_fused_gate": true,
+      "blockers": []
+    },
+    {
+      "model_dir": ".internal/models/gemma-4-e2b-it-8bit",
+      "model_family": "gemma4",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 512,
+      "attention_head_count": 8,
+      "kv_head_count": 1,
+      "full_attention_layers": 7,
+      "eligible_for_current_fused_gate": true,
+      "blockers": []
+    },
+    {
+      "model_dir": ".internal/models/gemma-4-e4b-it-4bit",
+      "model_family": "gemma4",
+      "attention_head_dim": 256,
+      "fused_attention_head_dim": 512,
+      "attention_head_count": 8,
+      "kv_head_count": 2,
+      "full_attention_layers": 7,
+      "eligible_for_current_fused_gate": true,
+      "blockers": []
+    },
+    {
+      "model_dir": ".internal/models/qwen3-embedding-0.6b-8bit",
+      "model_family": "qwen3_dense",
+      "attention_head_dim": 128,
+      "fused_attention_head_dim": 128,
+      "attention_head_count": 16,
+      "kv_head_count": 8,
+      "full_attention_layers": 28,
+      "eligible_for_current_fused_gate": true,
+      "blockers": []
+    },
+    {
+      "model_dir": ".internal/models/qwen3-embedding-4b-4bit",
+      "model_family": "qwen3_dense",
+      "attention_head_dim": 128,
+      "fused_attention_head_dim": 128,
+      "attention_head_count": 32,
+      "kv_head_count": 8,
+      "full_attention_layers": 36,
+      "eligible_for_current_fused_gate": true,
+      "blockers": []
+    },
+    {
+      "model_dir": ".internal/models/qwen3-embedding-8b-4bit-dwq",
+      "model_family": "qwen3_dense",
+      "attention_head_dim": 128,
+      "fused_attention_head_dim": 128,
+      "attention_head_count": 32,
+      "kv_head_count": 8,
+      "full_attention_layers": 36,
+      "eligible_for_current_fused_gate": true,
+      "blockers": []
+    }
+  ],
+  "quality_artifacts": [
+    {
+      "path": "benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/quality-gate.json",
+      "passes_quality_gate": true,
+      "passes_performance_gate": false,
+      "quality_blocker": null,
+      "performance_blockers": [
+        "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
+      ],
+      "runtime_truth": {
+        "decode_path_code": 2,
+        "decode_path_label": "fused_compressed_decode",
+        "fused_decode_attempts": 9,
+        "fused_decode_successes": 9,
+        "fused_decode_metal_successes": 9,
+        "fused_decode_fallbacks": 0,
+        "fused_decode_fallback_reason_code": 0,
+        "fused_decode_fallback_reason_label": "none",
+        "fused_decode_blocked_counters": {
+          "prefill_only": 0,
+          "attention_kind": 96,
+          "ineligible_layer": 0,
+          "unsupported_preset": 0,
+          "unsupported_head_dim": 0,
+          "gqa": 0,
+          "missing_storage": 0
+        },
+        "fused_decode_blocked_total": 96,
+        "fused_decode_blocked_reasons": [
+          "attention_kind"
+        ],
+        "fused_decode_blocked_attention_kind_counters": {
+          "linear_attention": 0,
+          "glm_mla": 0,
+          "sliding_window": 84,
+          "kv_shared": 12
+        },
+        "fused_decode_blocked_attention_kind_reasons": [
+          "sliding_window",
+          "kv_shared"
+        ],
+        "fused_path_selected": true,
+        "fused_success_observed": true,
+        "zero_fallbacks": true,
+        "promotion_path_ready": true
+      },
+      "promotion_gap": {
+        "observed_decode_tok_s_ratio_to_baseline": 0.2588178599839585,
+        "required_min_decode_tok_s_ratio_to_baseline": 0.85,
+        "repetitions": 3,
+        "cooldown_seconds": 20.0,
+        "repeated_measurement_ready": true,
+        "performance_promotion_ready": false,
+        "next_action": "rerun or improve fused compressed decode until performance blockers clear"
+      }
+    }
+  ]
+}
