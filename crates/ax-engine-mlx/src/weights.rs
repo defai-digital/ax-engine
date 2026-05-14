@@ -1544,6 +1544,30 @@ fn linear_attention_ba_row_sources(
     Ok(rows)
 }
 
+#[cfg(test)]
+fn gather_linear_attention_projection_rows<T: Copy>(
+    sources: &[LinearAttentionProjectionRowSource],
+    qkv: &[T],
+    z: &[T],
+    b: &[T],
+    a: &[T],
+) -> Result<Vec<T>, WeightLoadError> {
+    sources
+        .iter()
+        .map(|source| match *source {
+            LinearAttentionProjectionRowSource::Qkv(index) => qkv.get(index).copied(),
+            LinearAttentionProjectionRowSource::Z(index) => z.get(index).copied(),
+            LinearAttentionProjectionRowSource::B(index) => b.get(index).copied(),
+            LinearAttentionProjectionRowSource::A(index) => a.get(index).copied(),
+        })
+        .collect::<Option<Vec<T>>>()
+        .ok_or_else(|| {
+            WeightLoadError::InvalidLayer(
+                "linear attention projection pack row source exceeded input rows".to_string(),
+            )
+        })
+}
+
 /// Load a weight tensor together with its `.scales` and `.biases` siblings
 /// if they exist in the safetensors map (MLX affine quantization format).
 fn take_weight(
@@ -2403,6 +2427,58 @@ mod tests {
 
         assert!(qkvz_message.contains("value heads divisible by key heads"));
         assert!(ba_message.contains("value heads divisible by key heads"));
+    }
+
+    #[test]
+    fn linear_attention_qkvz_pack_oracle_gathers_rows_in_packed_order() {
+        let rows =
+            linear_attention_qkvz_row_sources(2, 1, 4, 2).expect("valid linear attention dims");
+        let qkv: Vec<i32> = (0..12).collect();
+        let z: Vec<i32> = (100..108).collect();
+
+        let packed =
+            gather_linear_attention_projection_rows(&rows, &qkv, &z, &[], &[]).expect("pack rows");
+
+        assert_eq!(
+            packed,
+            vec![
+                0, 2, 4, 5, 6, 7, 100, 101, 102, 103, 1, 3, 8, 9, 10, 11, 104, 105, 106, 107,
+            ]
+        );
+        assert_ne!(
+            packed,
+            [qkv.as_slice(), z.as_slice(),].concat(),
+            "packed qkvz is not a simple qkv-then-z row concat"
+        );
+    }
+
+    #[test]
+    fn linear_attention_ba_pack_oracle_gathers_b_before_a_per_key_head() {
+        let rows = linear_attention_ba_row_sources(2, 4).expect("valid linear attention dims");
+        let b: Vec<i32> = (200..204).collect();
+        let a: Vec<i32> = (300..304).collect();
+
+        let packed =
+            gather_linear_attention_projection_rows(&rows, &[], &[], &b, &a).expect("pack rows");
+
+        assert_eq!(packed, vec![200, 201, 300, 301, 202, 203, 302, 303]);
+        assert_ne!(
+            packed,
+            [b.as_slice(), a.as_slice()].concat(),
+            "packed ba is not a simple b-then-a row concat when multiple key heads exist"
+        );
+    }
+
+    #[test]
+    fn linear_attention_pack_oracle_rejects_short_inputs() {
+        let rows = linear_attention_ba_row_sources(2, 4).expect("valid linear attention dims");
+
+        let message = invalid_layer_message(
+            gather_linear_attention_projection_rows(&rows, &[], &[], &[1], &[2])
+                .map(|_| QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None)),
+        );
+
+        assert!(message.contains("row source exceeded input rows"));
     }
 
     #[test]
