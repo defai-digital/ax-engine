@@ -39,6 +39,15 @@ FUSED_DECODE_FALLBACK_REASON_LABELS = {
     4: "runner_not_integrated",
     5: "cpu_oracle_unavailable",
 }
+FUSED_DECODE_BLOCKED_COUNTERS = {
+    "prefill_only": "ax_mlx_kv_compression_fused_decode_blocked_prefill_only",
+    "attention_kind": "ax_mlx_kv_compression_fused_decode_blocked_attention_kind",
+    "ineligible_layer": "ax_mlx_kv_compression_fused_decode_blocked_ineligible_layer",
+    "unsupported_preset": "ax_mlx_kv_compression_fused_decode_blocked_unsupported_preset",
+    "unsupported_head_dim": "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim",
+    "gqa": "ax_mlx_kv_compression_fused_decode_blocked_gqa",
+    "missing_storage": "ax_mlx_kv_compression_fused_decode_blocked_missing_storage",
+}
 
 QUALITY_GATES = {
     "reference_k8v4": {
@@ -175,6 +184,16 @@ def route_truth_surface(route_metadata: dict[str, Any]) -> dict[str, Any]:
         decisions,
         "ax_mlx_kv_compression_fused_decode_fallback_reason",
     )
+    blocked_counters = {
+        label: _optional_int(decisions, key)
+        for label, key in FUSED_DECODE_BLOCKED_COUNTERS.items()
+    }
+    blocked_total = sum(value for value in blocked_counters.values() if isinstance(value, int))
+    blocked_reasons = [
+        label
+        for label, value in blocked_counters.items()
+        if isinstance(value, int) and value > 0
+    ]
     fused_path_selected = decode_path == 2
     fused_success_observed = (
         isinstance(successes, int)
@@ -199,6 +218,9 @@ def route_truth_surface(route_metadata: dict[str, Any]) -> dict[str, Any]:
             fallback_reason,
             f"unknown_{fallback_reason}" if fallback_reason is not None else "missing",
         ),
+        "fused_decode_blocked_counters": blocked_counters,
+        "fused_decode_blocked_total": blocked_total,
+        "fused_decode_blocked_reasons": blocked_reasons,
         "fused_path_selected": fused_path_selected,
         "fused_success_observed": fused_success_observed,
         "zero_fallbacks": zero_fallbacks,
