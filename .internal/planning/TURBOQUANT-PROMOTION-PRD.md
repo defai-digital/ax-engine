@@ -99,7 +99,7 @@ Phase 0: Keep experiment contained — **done / ongoing guardrail**
 - Keep archived design docs as background only.
 - Do not expose TurboQuant as a default product promise.
 
-Phase 1: Real-path instrumentation — **partially done**
+Phase 1: Real-path instrumentation — **done / ongoing guardrail**
 
 - Ensure fallback, preset, profile, and readiness metadata are emitted from the
   runtime path that would serve users.
@@ -107,16 +107,22 @@ Phase 1: Real-path instrumentation — **partially done**
 
 Current status: readiness and validator guardrails exist, including promotion
 readiness checks, README/public-doc experimental gating, and evidence-artifact
-provenance for optimization-related environment flags. The missing part is
-real-runner fused-path selection evidence for promoted decode shapes.
+provenance for optimization-related environment flags. The 2026-05-14 Gemma 4
+E2B artifact proves that the real runner can select
+`fused_compressed_decode`, record Metal successes, preserve zero fallbacks, and
+emit attention-kind subreason counters. This closes the instrumentation gap,
+but it does not satisfy performance promotion.
 
-Phase 2: Real-model quality evidence — **partially done**
+Phase 2: Real-model quality evidence — **partially done / negative candidate**
 
 - Run selected supported models with uncompressed and compressed KV paths.
 - Preserve prompts, outputs, seeds/policies, and metadata for review.
 
-Current status: quality artifact plumbing exists, but no candidate can promote
-until the real fused compressed decode path also passes the performance gate.
+Current status: quality artifact plumbing exists. The 2026-05-14 Gemma 4 E2B
+candidate passes the quality gate with exact replay metrics
+(`max_abs_diff=0.0`, `mean_abs_diff=0.0`, `min_cosine_similarity=1.0`), but no
+candidate can promote until the real fused compressed decode path also passes
+the performance gate.
 
 Phase 3: Long-context performance evidence — **blocking**
 
@@ -124,8 +130,31 @@ Phase 3: Long-context performance evidence — **blocking**
 - Compare against the uncompressed AX MLX path and, where applicable,
   `mlx_lm.benchmark` reference rows.
 
-Current status: no passing long-context fused-path performance artifact exists
-yet. Public docs must continue to label TurboQuant as experimental.
+Current status: a valid long-context fused-path artifact exists, but it is a
+negative performance artifact:
+
+- Artifact:
+  `../../benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/quality-gate.json`
+- Model: `gemma-4-e2b-it-4bit`
+- Shape: `context_tokens=8192`, `generation_tokens=256`, `repetitions=3`,
+  `cooldown=20`
+- Runtime truth: `decode_path=fused_compressed_decode`,
+  `fused_decode_successes=9`, `fused_decode_metal_successes=9`,
+  `fused_decode_fallbacks=0`
+- Quality: passed exact replay metrics
+- Performance blocker: `decode_tok_s_ratio_to_baseline=0.259`, below the
+  required `0.85`
+- Root-cause direction: the experimental path still has host-side query/output
+  staging and hot-tail merge/readback boundaries in the runtime decode loop.
+- Same-shape microbench:
+  `../../benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/microbench-gemma-e2b-shape.json`
+  shows the selected two-stage kernel is much faster than the dim-parallel
+  prototype, but still expensive at the runtime shape (`two_stage_scores`
+  median `5353us` per cold decode layer; `dim_parallel` median `282369us`).
+
+Public docs must continue to label TurboQuant as experimental. The next
+implementation slice must improve the fused compressed decode runtime path
+before rerunning the promotion artifact.
 
 Phase 4: Promotion decision — **not started**
 
@@ -134,10 +163,11 @@ Phase 4: Promotion decision — **not started**
 
 Remaining phase count:
 
-- **2 blocking phases remain**: Phase 3 long-context fused-path performance
-  evidence and Phase 4 promotion decision.
-- Phase 1 and Phase 2 are **partially done** and must be closed as part of the
-  same promotion evidence package, but the immediate blocker is Phase 3.
+- **2 blocking phases remain**: Phase 3 passing long-context fused-path
+  performance evidence and Phase 4 promotion decision.
+- Phase 1 is closed for the current promotion cycle. Phase 2 has one passing
+  quality/replay candidate, but it remains tied to a negative performance result
+  and must be repeated after the runtime performance fix.
 - **0 standalone guardrail phases remain** for the current cycle: provenance,
   readiness, and public-doc experimental gating are in place; further guardrail
   changes should be tied to Phase 3/4 evidence gaps rather than tracked as a

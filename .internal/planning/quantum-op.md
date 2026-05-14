@@ -89,9 +89,10 @@ Current status as of 2026-05-14:
   linear-attention, GLM MLA, sliding-window, and KV-shared layers. New benchmark
   rows, quality artifacts, and readiness next actions can report those
   subreasons without double-counting the aggregate blocked total;
-- TurboQuant public/runtime promotion remains blocked because no artifact passes
-  the stricter long-context fused-path quality gate with the full real-runner
-  truth surface.
+- TurboQuant public/runtime promotion remains blocked. The latest Gemma 4 E2B
+  real-runner artifact passes quality and real-runner truth-surface validation,
+  but fails the performance promotion gate because fused decode regresses
+  decode throughput to `0.259x` of the matched uncompressed AX MLX baseline.
 
 ## 2. Naming and Best-Practice Position
 
@@ -386,7 +387,9 @@ Implementation sequence:
 4. Validate kernel output against the CPU all-head oracle for the same compressed
    buffer and query shape.
 5. Add long-context repeated benchmarks for one conservative shape, initially
-   `K8V4`, `head_dim=128`, full-attention layers only.
+   `K8V4`, a supported fused head dimension, and full-attention layers only.
+   The first Gemma 4 E2B run used fused head dim `512` and proved runtime
+   selection plus exact replay, but failed the performance gate.
 6. Promote only if fused compressed decode is selected on the real runner path
    with zero unexplained fallbacks and a measured long-context capacity or decode
    win.
@@ -395,7 +398,8 @@ Do not:
 
 - wire a kernel into generation before oracle parity and fallback reporting are
   artifact-validated;
-- generalize beyond `K8V4` or `head_dim=128` before the conservative path passes.
+- generalize beyond `K8V4` or the currently evidenced head dimensions before
+  the conservative path passes.
 
 ### R3. KV Cache Policy: Hot FP16 Window and Compressed Cold History
 
@@ -485,8 +489,9 @@ The recommended order is:
    TurboQuant promotion**).
 4. README/Python provenance and smoke-test guardrails (**done**).
 5. R2 conservative fused compressed decode real-runner gate (**active
-   blocker; Phase 1 truth surface and Phase 2a actionable blocker subreason
-   telemetry are done, and Phase 2b real-runner kernel gate remains**).
+   blocker; Phase 1 truth surface, Phase 2a actionable blocker subreason
+   telemetry, and the first Gemma 4 E2B real-runner quality artifact are done;
+   the remaining blocker is performance, not missing telemetry**).
 6. R4 adaptive n-gram policy search once telemetry is complete (**deferred**).
 7. R5 MoE locality profiling, then search only if profiling identifies a real
    locality bottleneck.
@@ -654,7 +659,8 @@ Exit criteria:
 ### W3. Repeated Candidate Confirmation
 
 Status: Active blocker for TurboQuant promotion; diagnostic tooling is present,
-but the real fused-path repeated measurement artifact is still missing.
+and the first real fused-path repeated measurement artifact is now checked in as
+a negative performance result.
 
 Deliverables:
 
@@ -664,11 +670,39 @@ Deliverables:
 - keep builder and validator writes atomic so failed validation cannot leave an
   invalid final artifact.
 
+Current evidence:
+
+- Artifact:
+  `benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/quality-gate.json`
+- Model: `gemma-4-e2b-it-4bit`
+- Shape: `context_tokens=8192`, `generation_tokens=256`, `repetitions=3`,
+  `cooldown_seconds=20`
+- Runtime truth: `decode_path=fused_compressed_decode`,
+  `fused_decode_successes=9`, `fused_decode_metal_successes=9`,
+  `fused_decode_fallbacks=0`
+- Quality: passed exact replay metrics (`max_abs_diff=0.0`,
+  `mean_abs_diff=0.0`, `min_cosine_similarity=1.0`)
+- Performance blocker: `decode_tok_s_ratio_to_baseline=0.259`, below the
+  required `0.85`
+- Same-shape microbench:
+  `benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/microbench-gemma-e2b-shape.json`
+  records `two_stage_scores` median `5353us` and `dim_parallel` median
+  `282369us`; runtime is correctly choosing the two-stage prototype, but the
+  path is still too expensive for promotion.
+
+Next implementation focus:
+
+- remove or reduce per-decode-step host staging in
+  `turboquant_decode_attention_experimental`;
+- avoid CPU readback in the cold-stats to hot-tail merge path;
+- keep blocked sliding-window and KV-shared layers fail-closed until their
+  compressed path has separate evidence;
+- rerun this same artifact shape only after runtime forward time improves.
+
 Exit criteria:
 
 - `candidate_win_needs_repeat` can be upgraded or rejected with repeat evidence.
 - the TurboQuant promotion readiness probe no longer reports `no passing
-  long-context fused-path quality artifact was found` or `no passing
   long-context fused-path performance promotion artifact was found`.
 
 ### W4. N-Gram Policy Search
@@ -696,7 +730,9 @@ Deliverables:
 ### TurboQuant KV Runtime Promotion
 
 For the TurboQuant KV optimization path, **four blocking milestones remain**
-before AX Engine can claim the TurboQuant optimization is finished:
+before AX Engine can claim the TurboQuant optimization is finished. M1 has a
+negative attempt artifact, but it is not complete until the artifact passes the
+performance gate.
 
 1. **M1. Long-context fused-path performance artifact**
    Produce a real, passing artifact for an eligible model with
@@ -704,6 +740,10 @@ before AX Engine can claim the TurboQuant optimization is finished:
    `decode_path=fused_compressed_decode`, at least one fused decode success,
    zero fused decode fallbacks, `context_tokens >= 8192`, and
    `generation_tokens >= 128`.
+
+   Current status: attempted on 2026-05-14 with Gemma 4 E2B. The artifact
+   validates the fused path and exact replay, but fails performance
+   (`decode_tok_s_ratio_to_baseline=0.259`, required `>=0.85`).
 
 2. **M2. Repeated quality and replay confirmation**
    Rerun the chosen candidate and the matched baseline with repeated, cooled
@@ -758,22 +798,30 @@ Current readiness probe result:
   "can_make_public_support_claim": false,
   "public_docs_should_remain_experimental": true,
   "blockers": [
-    "no passing long-context fused-path quality artifact was found"
+    "no passing long-context fused-path performance promotion artifact was found"
   ],
   "performance_blocker_summary": [
     {
-      "quality_blocker": "route metadata missing required keys: ax_mlx_kv_compression_fused_decode_blocked_glm_mla, ax_mlx_kv_compression_fused_decode_blocked_kv_shared, ax_mlx_kv_compression_fused_decode_blocked_linear_attention, ax_mlx_kv_compression_fused_decode_blocked_sliding_window, ax_mlx_kv_compression_fused_decode_metal_successes",
-      "next_action": "fix fused decode blockers before rerun: attention_kind",
+      "path": "benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/quality-gate.json",
+      "passes_quality_gate": true,
+      "performance_blockers": [
+        "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
+      ],
+      "next_action": "rerun or improve fused compressed decode until performance blockers clear",
       "runtime_truth": {
         "decode_path_label": "fused_compressed_decode",
-        "fused_decode_successes": 3,
-        "fused_decode_metal_successes": null,
-        "fused_decode_blocked_total": 32,
+        "fused_decode_successes": 9,
+        "fused_decode_metal_successes": 9,
+        "fused_decode_fallbacks": 0,
+        "fused_decode_blocked_total": 96,
         "fused_decode_blocked_reasons": [
           "attention_kind"
         ],
-        "fused_decode_blocked_attention_kind_reasons": [],
-        "promotion_path_ready": false
+        "fused_decode_blocked_attention_kind_reasons": [
+          "sliding_window",
+          "kv_shared"
+        ],
+        "promotion_path_ready": true
       }
     }
   ]
