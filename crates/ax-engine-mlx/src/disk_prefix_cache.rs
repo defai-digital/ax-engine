@@ -169,6 +169,18 @@ impl DiskPrefixCache {
         self.dir.join(format!("{}.axkv", key_sha256_hex(key_bytes)))
     }
 
+    /// Cheap existence check: returns `true` when a file for the given
+    /// canonical key bytes is present on disk, regardless of whether the
+    /// file's header / payload is valid. Used by the L2-aware prefix
+    /// probe so the runner can walk block-aligned prefixes without
+    /// paying the full read + SHA256-verify cost at every candidate.
+    /// The eventual `get` call still validates content, so a stale or
+    /// corrupted file flagged by `contains` simply falls back to a
+    /// disk_miss + cold-prefill warmup.
+    pub fn contains(&self, key_bytes: &[u8]) -> bool {
+        self.path_for(key_bytes).is_file()
+    }
+
     /// Look up the payload for `key_bytes`. Returns:
     /// - `Ok(Some(payload))` on a clean hit;
     /// - `Ok(None)` on miss, hash collision (key bytes differ), or
@@ -333,6 +345,48 @@ mod tests {
         fs::write(&path, raw).expect("write corrupted");
         let result = cache.get(&key_bytes).expect("get");
         assert!(result.is_none(), "corrupted payload should miss");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contains_returns_true_after_insert() {
+        let dir = unique_tempdir("contains-hit");
+        let cache = DiskPrefixCache::open(&dir).expect("open");
+        let key_bytes =
+            canonical_key_bytes("model-c1", "policy-c1", "layout-c1", 16, 1024, 0xc04e_7415);
+        assert!(!cache.contains(&key_bytes), "before insert: must not exist");
+        cache.insert(&key_bytes, b"payload-x").expect("insert");
+        assert!(cache.contains(&key_bytes), "after insert: must exist");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contains_does_not_validate_payload_integrity() {
+        // The probe path relies on `contains` being O(1)-cheap — it does
+        // NOT read the file or check the SHA256. A subsequent `get` is
+        // what surfaces a corrupt file as a cache miss. This test locks
+        // that contract: after deliberately corrupting a file, contains
+        // still returns true, while get returns None.
+        let dir = unique_tempdir("contains-corrupt");
+        let cache = DiskPrefixCache::open(&dir).expect("open");
+        let key_bytes =
+            canonical_key_bytes("model-c2", "policy-c2", "layout-c2", 16, 1024, 0xc0c0_dead);
+        cache.insert(&key_bytes, b"payload-valid").expect("insert");
+        // Flip the last byte (payload region) to corrupt the SHA256.
+        let path = cache.path_for(&key_bytes);
+        let mut raw = fs::read(&path).expect("read");
+        let last = raw.len() - 1;
+        raw[last] ^= 0xFF;
+        fs::write(&path, raw).expect("write corrupted");
+
+        assert!(
+            cache.contains(&key_bytes),
+            "contains is existence-only; must remain true post-corruption"
+        );
+        assert!(
+            cache.get(&key_bytes).expect("get").is_none(),
+            "get must surface corruption as a miss"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
