@@ -122,6 +122,7 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
         self.assertEqual(checked.diagnostic_count, 1)
         self.assertEqual(checked.pack_candidate_win_count, 1)
         self.assertEqual(checked.pack_candidate_win_prompt_count, 1)
+        self.assertEqual(checked.pack_candidate_win_shape_count, 1)
         self.assertEqual(
             checker.summarize_pack_comparisons(checked.pack_comparisons),
             "qwen3_6_35b_a3b_8bit prompt=128 gen=128: candidate win",
@@ -275,6 +276,46 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
                 min_pack_candidate_win_prompts=-1,
             )
 
+    def test_min_pack_candidate_win_shapes_rejects_thin_shape_coverage(self) -> None:
+        first = self.write_fixture(artifact(prompt_tokens=128, generation_tokens=128))
+        second = self.write_fixture(artifact(prompt_tokens=128, generation_tokens=128))
+
+        with self.assertRaisesRegex(
+            checker.MlxForwardProfileArtifactError,
+            "shape",
+        ):
+            checker.check_mlx_forward_profile_artifacts(
+                [first, second],
+                require_pack_candidate_win=True,
+                min_pack_candidate_win_shapes=2,
+            )
+
+    def test_min_pack_candidate_win_shapes_accepts_distinct_shapes(self) -> None:
+        first = self.write_fixture(artifact(prompt_tokens=128, generation_tokens=64))
+        second = self.write_fixture(artifact(prompt_tokens=128, generation_tokens=128))
+
+        checked = checker.check_mlx_forward_profile_artifacts(
+            [first, second],
+            require_pack_candidate_win=True,
+            min_pack_candidate_win_shapes=2,
+        )
+
+        self.assertEqual(checked.pack_candidate_win_count, 2)
+        self.assertEqual(checked.pack_candidate_win_prompt_count, 1)
+        self.assertEqual(checked.pack_candidate_win_shape_count, 2)
+
+    def test_min_pack_candidate_win_shapes_must_be_non_negative(self) -> None:
+        path = self.write_fixture(artifact())
+
+        with self.assertRaisesRegex(
+            checker.MlxForwardProfileArtifactError,
+            "non-negative",
+        ):
+            checker.check_mlx_forward_profile_artifacts(
+                [path],
+                min_pack_candidate_win_shapes=-1,
+            )
+
     def test_cli_reports_diagnostics(self) -> None:
         path = self.write_fixture(artifact())
 
@@ -294,6 +335,7 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
         self.assertIn("diagnostics validated", completed.stdout)
         self.assertIn("1 candidate win", completed.stdout)
         self.assertIn("1 candidate-win prompt length", completed.stdout)
+        self.assertIn("1 candidate-win shape", completed.stdout)
         self.assertIn(
             "qwen3_6_35b_a3b_8bit prompt=128 gen=128: candidate win",
             completed.stdout,
@@ -332,6 +374,8 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
                 "1",
                 "--min-pack-candidate-win-prompts",
                 "1",
+                "--min-pack-candidate-win-shapes",
+                "1",
             ],
             check=True,
             text=True,
@@ -341,6 +385,7 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
 
         self.assertIn("1 candidate win", completed.stdout)
         self.assertIn("1 candidate-win prompt length", completed.stdout)
+        self.assertIn("1 candidate-win shape", completed.stdout)
 
 
 if __name__ == "__main__":

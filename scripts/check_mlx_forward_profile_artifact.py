@@ -49,6 +49,7 @@ class ForwardProfileCheckResult:
     diagnostic_count: int
     pack_candidate_win_count: int
     pack_candidate_win_prompt_count: int
+    pack_candidate_win_shape_count: int
     pack_comparisons: list[CheckedPackComparison]
 
 
@@ -242,6 +243,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "lengths. Implies --require-pack-comparison."
         ),
     )
+    parser.add_argument(
+        "--min-pack-candidate-win-shapes",
+        type=int,
+        default=None,
+        help=(
+            "Require candidate wins across at least this many distinct "
+            "(prompt_tokens, generation_tokens) shapes. Implies "
+            "--require-pack-comparison."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -264,6 +275,7 @@ def check_mlx_forward_profile_artifacts(
     require_pack_candidate_win: bool = False,
     min_pack_candidate_wins: int | None = None,
     min_pack_candidate_win_prompts: int | None = None,
+    min_pack_candidate_win_shapes: int | None = None,
 ) -> ForwardProfileCheckResult:
     if min_pack_candidate_wins is not None and min_pack_candidate_wins < 0:
         raise MlxForwardProfileArtifactError(
@@ -276,6 +288,13 @@ def check_mlx_forward_profile_artifacts(
         raise MlxForwardProfileArtifactError(
             "--min-pack-candidate-win-prompts must be non-negative"
         )
+    if (
+        min_pack_candidate_win_shapes is not None
+        and min_pack_candidate_win_shapes < 0
+    ):
+        raise MlxForwardProfileArtifactError(
+            "--min-pack-candidate-win-shapes must be non-negative"
+        )
     require_comparison = (
         require_pack_comparison
         or require_pack_candidate_win
@@ -283,6 +302,10 @@ def check_mlx_forward_profile_artifacts(
         or (
             min_pack_candidate_win_prompts is not None
             and min_pack_candidate_win_prompts > 0
+        )
+        or (
+            min_pack_candidate_win_shapes is not None
+            and min_pack_candidate_win_shapes > 0
         )
     )
     diagnostic_count = 0
@@ -305,6 +328,13 @@ def check_mlx_forward_profile_artifacts(
             if comparison.verdict == "candidate win"
         }
     )
+    pack_candidate_win_shape_count = len(
+        {
+            (comparison.prompt_tokens, comparison.generation_tokens)
+            for comparison in pack_comparisons
+            if comparison.verdict == "candidate win"
+        }
+    )
     if (
         min_pack_candidate_wins is not None
         and pack_candidate_win_count < min_pack_candidate_wins
@@ -323,11 +353,21 @@ def check_mlx_forward_profile_artifacts(
             f"{pack_candidate_win_prompt_count} prompt length(s), expected at least "
             f"{min_pack_candidate_win_prompts}"
         )
+    if (
+        min_pack_candidate_win_shapes is not None
+        and pack_candidate_win_shape_count < min_pack_candidate_win_shapes
+    ):
+        raise MlxForwardProfileArtifactError(
+            "pack comparison has candidate wins across "
+            f"{pack_candidate_win_shape_count} shape(s), expected at least "
+            f"{min_pack_candidate_win_shapes}"
+        )
     return ForwardProfileCheckResult(
         artifact_count=len(artifacts),
         diagnostic_count=diagnostic_count,
         pack_candidate_win_count=pack_candidate_win_count,
         pack_candidate_win_prompt_count=pack_candidate_win_prompt_count,
+        pack_candidate_win_shape_count=pack_candidate_win_shape_count,
         pack_comparisons=pack_comparisons,
     )
 
@@ -341,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
             require_pack_candidate_win=args.require_pack_candidate_win,
             min_pack_candidate_wins=args.min_pack_candidate_wins,
             min_pack_candidate_win_prompts=args.min_pack_candidate_win_prompts,
+            min_pack_candidate_win_shapes=args.min_pack_candidate_win_shapes,
         )
     except MlxForwardProfileArtifactError as error:
         print(f"MLX forward profile artifact check failed: {error}", file=sys.stderr)
@@ -351,6 +392,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{checked.artifact_count} artifact(s); "
         f"{checked.pack_candidate_win_count} candidate win(s); "
         f"{checked.pack_candidate_win_prompt_count} candidate-win prompt length(s); "
+        f"{checked.pack_candidate_win_shape_count} candidate-win shape(s); "
         f"{summarize_pack_comparisons(checked.pack_comparisons)}"
     )
     return 0

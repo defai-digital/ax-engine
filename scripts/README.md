@@ -226,7 +226,7 @@ throughput baselines.
   rejects packed-projection public claim fields. Its stricter
   `--require-pack-candidate-win`, `--min-pack-candidate-wins`, and
   `--min-pack-candidate-win-prompts` modes are for promotion/default-enable
-  gates.
+  gates; use `--min-pack-candidate-win-shapes` when generation length matters.
 - `test_mlx_forward_profile_artifact.py`: unit tests for the forward-profile
   artifact validator.
 - `run_mlx_p2_latency_artifacts.py`: real-model P2 runner for startup and
