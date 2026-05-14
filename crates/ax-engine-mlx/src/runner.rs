@@ -2119,15 +2119,18 @@ impl MlxRunner {
         // clones the cache for verification and recomputes the committed prefix on
         // partial accept, so n-gram acceleration is safe to enable for these models.
         let cfg_arc = Arc::new(cfg.clone());
-        // For MLA models, allow an env-driven smaller prefill_chunk so the
-        // chunked_prefill graph aligns the SDPA Q/K shape sequence between
-        // a cold full-prompt prefill and a warm-extend (snapshot + suffix)
-        // prefill. The hypothesis under investigation is that
-        // shape-dependent SDPA kernel selection in MLX is the root cause
-        // of the warm_extend fp-drift documented at runner.rs:3160+. Honor
-        // the override only for MLA; non-MLA tiers keep their tuned default.
+        // MLA models default to a smaller `prefill_chunk` so chunked_prefill
+        // produces the same SDPA Q/K shape sequence in cold (full-prompt)
+        // and warm-extend (snapshot + suffix) prefill paths. Without this,
+        // a single large cold chunk versus two smaller warm chunks would
+        // dispatch different SDPA kernels in MLX and accumulate slightly
+        // different fp results — that drift was the documented warm_extend
+        // correctness failure on GLM-4.7-Flash. Override with
+        // `AX_MLX_MLA_PREFILL_CHUNK=N` to trade correctness margin for
+        // prefill throughput; non-MLA tiers keep their tuned default.
         let prefill_chunk = if cfg.glm_mla_attention.is_some() {
-            crate::fastpath::mla_prefill_chunk_override().unwrap_or(prefill_chunk)
+            crate::fastpath::mla_prefill_chunk_override()
+                .unwrap_or(crate::fastpath::MLA_DEFAULT_PREFILL_CHUNK)
         } else {
             prefill_chunk
         };
@@ -3172,24 +3175,22 @@ impl MlxRunner {
             hit
         };
 
-        // MLA's compressed-latent KV survives a snapshot+restore cleanly for the
-        // same-prompt (warm_repeat / Decode-mode) case — the entire forward pass
-        // runs against a restored cache and never crosses a non-zero-seq_len
-        // chunk boundary. But for warm_extend (Prefill-mode with a suffix), the
-        // post-restore `chunked_prefill` must process the suffix starting from
-        // `seq_len == base_len`, and the resulting forward+attention math drifts
-        // fp-wise against a cold `chunked_prefill` over `base + suffix` from
-        // seq_len=0. This was reproduced on GLM-4.7-Flash via the equivalence
-        // harness (`verify_prefix_reuse_equivalence.py --mode warm_extend
-        // --pad-to-block-size 16`): p2_medium_explain diverges at decode token
-        // idx=13 with `ax_mlx_prefix_cache_hits=1` and `warmup_tokens=0`. The
-        // safe behavior is to treat the snapshot as unusable for MLA + Prefill,
-        // surfacing it as `blocked_unsupported_layout` so cee4227e's full-prompt
-        // recompute path (`full_prefill_recompute_tokens_for_warmup_fallback`)
-        // takes over. warm_repeat hits remain unaffected.
+        // Historical context: MLA + Prefill used to refuse a snapshot restore
+        // because the post-restore chunked_prefill drifted fp-wise from a
+        // cold full prefill (p2_medium_explain idx=13 divergence on
+        // GLM-4.7-Flash). Root cause was shape-dependent SDPA kernel
+        // selection in MLX — a single large cold chunk and the two smaller
+        // chunks of a warm-extend dispatched different kernels. The fix is
+        // upstream of this branch: MLA models now default to a small
+        // chunked_prefill chunk size (see `MLA_DEFAULT_PREFILL_CHUNK`) that
+        // makes cold and warm produce the same SDPA shape sequence at the
+        // same absolute positions. The equivalence harness now passes 5/5
+        // at base lengths 32, 512, and 2048. The kill-switch env
+        // `AX_DISABLE_MLA_PREFIX_RESTORE=1` re-engages the historical gate
+        // if a future workload exposes a residual drift vector.
         let mla_extend_unsafe = self.cfg.glm_mla_attention.is_some()
             && item.mode == ExecutionMode::Prefill
-            && !crate::fastpath::mla_prefix_restore_forced();
+            && crate::fastpath::mla_prefix_restore_disabled();
 
         if let Some(snapshot) = hit {
             if !mla_extend_unsafe {

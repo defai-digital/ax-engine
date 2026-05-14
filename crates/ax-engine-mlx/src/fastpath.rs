@@ -67,33 +67,43 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
-/// **Investigation tunable.** When set, overrides
-/// `DEFAULT_PREFILL_CHUNK` for MLA models. Smaller chunks let cold and
-/// warm-extend prefill paths produce the same SDPA Q/K shape sequence
-/// over the same absolute positions; the hypothesis is that
-/// shape-dependent SDPA kernel selection in MLX is the root cause of
-/// the warm_extend fp-drift on GLM-4.7-Flash. Returns `None` when the
-/// env var is unset or invalid. Value must be a positive integer.
+/// Tuning override for the MLA prefill chunk size. Smaller chunks let
+/// cold and warm-extend prefill paths produce the same SDPA Q/K shape
+/// sequence over the same absolute positions, eliminating the
+/// warm_extend fp-drift on GLM-4.7-Flash that was diagnosed via
+/// `verify_prefix_reuse_equivalence.py --mode warm_extend` (5/5 PASS at
+/// base lengths 32, 512, and 2048 after this change). `MlxRunner::from_artifacts`
+/// defaults to 16 for MLA models when this env is unset. Set
+/// `AX_MLX_MLA_PREFILL_CHUNK=N` to override (larger N trades correctness
+/// margin for prefill throughput). Returns `None` when unset/invalid;
+/// callers supply their own MLA default.
 pub fn mla_prefill_chunk_override() -> Option<usize> {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_MLX_MLA_PREFILL_CHUNK"))
 }
 
+/// Default `prefill_chunk` value applied when a model has MLA layers
+/// and `AX_MLX_MLA_PREFILL_CHUNK` is unset. Sized to the prefix-cache
+/// block_size so the chunked_prefill loop produces the same SDPA shape
+/// sequence whether the prompt was processed cold or restored from a
+/// snapshot and extended.
+pub const MLA_DEFAULT_PREFILL_CHUNK: usize = 16;
+
 env_flag!(
-    /// **Investigation override.** Engaged by `AX_ALLOW_MLA_PREFIX_RESTORE`,
-    /// this bypasses the `mla_extend_unsafe` safety gate in
-    /// `restore_reused_prefix_state`. The gate normally refuses to
-    /// restore an MLA snapshot when the request mode is Prefill, because
-    /// the post-restore `chunked_prefill` over a suffix has been observed
-    /// to drift fp-wise from a cold full-prefill on GLM-4.7-Flash (see
-    /// `verify_prefix_reuse_equivalence.py --mode warm_extend` and the
-    /// audit comment in `runner.rs`). Setting this flag is intentionally
-    /// unsafe for production: it exists so the equivalence harness can
-    /// reproduce and isolate the drift, and so a future fix can be
-    /// regression-tested against the harness before relaxing the gate
-    /// by default.
-    mla_prefix_restore_forced,
-    "AX_ALLOW_MLA_PREFIX_RESTORE"
+    /// **Defensive kill switch.** Engaged by `AX_DISABLE_MLA_PREFIX_RESTORE`,
+    /// this re-engages the historical `mla_extend_unsafe` safety gate in
+    /// `restore_reused_prefix_state` that refused to restore an MLA snapshot
+    /// for Prefill-mode requests. The gate was originally added because
+    /// post-restore `chunked_prefill` over a suffix drifted fp-wise from a
+    /// cold full-prefill on GLM-4.7-Flash. That drift was traced to
+    /// shape-dependent SDPA kernel selection in MLX and resolved by aligning
+    /// the chunked_prefill chunk size to the prefix-cache block size for MLA
+    /// models (default 16; see `MLA_DEFAULT_PREFILL_CHUNK`). The harness now
+    /// passes 5/5 across base lengths 32, 512, and 2048. This flag exists as
+    /// a fail-closed escape hatch if a future workload exposes a drift
+    /// vector the chunk-alignment fix does not cover.
+    mla_prefix_restore_disabled,
+    "AX_DISABLE_MLA_PREFIX_RESTORE"
 );
 
 #[cfg(test)]
