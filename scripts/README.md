@@ -142,10 +142,10 @@ throughput baselines.
   TurboQuant long-context quality gate artifacts. It checks model identity,
   long-context shape, baseline/candidate provenance, candidate mode
   `turboquant-fused-experimental`, K8/V4 route metadata schema `>= 2`,
-  fused_compressed_decode path code `2`, fused decode successes, zero
-  fallbacks, decode quality thresholds, recorded throughput ratio, and
-  memory-savings evidence. Decode-throughput promotion is checked separately by
-  the readiness report.
+  fused_compressed_decode path code `2`, fused decode successes, Metal fused
+  decode successes, zero fallbacks, decode quality thresholds, recorded
+  throughput ratio, and memory-savings evidence. Decode-throughput promotion is
+  checked separately by the readiness report.
 - `check_turboquant_microbench_artifact.py`: fail-closed validator for
   standalone fused cold-decode microbenchmark artifacts. It checks K8/V4
   metadata, long-cold-context coverage, `two_stage_scores` quality, memory
