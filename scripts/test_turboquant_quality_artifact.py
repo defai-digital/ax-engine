@@ -59,7 +59,7 @@ def valid_artifact(root: Path) -> dict:
     baseline.write_text("{}")
     candidate.write_text("{}")
 
-    return {
+    artifact = {
         "schema_version": checker.SCHEMA_VERSION,
         "model": {
             "id": "qwen3_5_9b_q4",
@@ -137,6 +137,8 @@ def valid_artifact(root: Path) -> dict:
             "public_support_docs_approved": False,
         },
     }
+    artifact["runtime_truth"] = checker.route_truth_surface(artifact["route_metadata"])
+    return artifact
 
 
 def benchmark_doc(
@@ -473,6 +475,25 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 checker.ArtifactValidationError,
                 "fused decode blocked missing_storage",
+            ):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_missing_runtime_truth_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            del artifact["runtime_truth"]
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "runtime_truth"):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_stale_runtime_truth_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["runtime_truth"]["decode_path_label"] = "full_precision_shadow"
+            with self.assertRaisesRegex(
+                checker.ArtifactValidationError,
+                "runtime_truth must match",
             ):
                 checker.validate_artifact(artifact, root=root)
 
