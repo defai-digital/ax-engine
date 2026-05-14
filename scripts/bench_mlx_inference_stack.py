@@ -299,6 +299,16 @@ AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
     "ax_mlx_kv_compression_fused_decode_blocked_missing_storage",
 ]
 
+KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS = {
+    "prefill_only": "ax_mlx_kv_compression_fused_decode_blocked_prefill_only",
+    "attention_kind": "ax_mlx_kv_compression_fused_decode_blocked_attention_kind",
+    "ineligible_layer": "ax_mlx_kv_compression_fused_decode_blocked_ineligible_layer",
+    "unsupported_preset": "ax_mlx_kv_compression_fused_decode_blocked_unsupported_preset",
+    "unsupported_head_dim": "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim",
+    "gqa": "ax_mlx_kv_compression_fused_decode_blocked_gqa",
+    "missing_storage": "ax_mlx_kv_compression_fused_decode_blocked_missing_storage",
+}
+
 
 def _sysctl(key: str) -> str:
     try:
@@ -1534,6 +1544,21 @@ def kv_compression_fused_decode_fallback_reason_label(
     }.get(reason, f"unknown_{reason}")
 
 
+def kv_compression_fused_decode_blocked_summary(
+    telemetry: dict[str, int],
+) -> dict[str, Any]:
+    counters = {
+        label: int(telemetry.get(key, 0))
+        for label, key in KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS.items()
+    }
+    reasons = [label for label, value in counters.items() if value > 0]
+    return {
+        "total": sum(counters.values()),
+        "reasons": reasons,
+        "counters": counters,
+    }
+
+
 def is_ax_prefill_step(step: dict[str, Any], *, seen_prefill: bool) -> bool:
     route = step.get("route") or {}
     route_labels = [
@@ -1809,6 +1834,13 @@ def bench_axengine(
         row["kv_compression_fused_decode_fallback_reason_label"] = (
             kv_compression_fused_decode_fallback_reason_label(compression_summary)
         )
+        blocked_summary = kv_compression_fused_decode_blocked_summary(
+            compression_summary
+        )
+        row["kv_compression_fused_decode_blocked_total"] = blocked_summary["total"]
+        row["kv_compression_fused_decode_blocked_reasons"] = blocked_summary[
+            "reasons"
+        ]
     if compression_summary:
         row["kv_compression_telemetry"] = compression_summary
     return row
