@@ -156,26 +156,32 @@ enum DecodeProfileStage {
 static GEMMA4_MOE_PROFILE: OnceLock<Mutex<Gemma4MoeProfileSnapshot>> = OnceLock::new();
 static LINEAR_ATTENTION_PROFILE: OnceLock<Mutex<LinearAttentionProfileSnapshot>> = OnceLock::new();
 static DECODE_PROFILE: OnceLock<Mutex<DecodeProfileSnapshot>> = OnceLock::new();
+static GEMMA4_MOE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+static LINEAR_ATTENTION_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+static DECODE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+
+fn profile_env_enabled(cache: &'static OnceLock<bool>, name: &'static str) -> bool {
+    *cache.get_or_init(|| {
+        matches!(
+            std::env::var(name).as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+    })
+}
 
 fn gemma4_moe_profile_enabled() -> bool {
-    matches!(
-        std::env::var("AX_MLX_GEMMA4_MOE_PROFILE").as_deref(),
-        Ok("1") | Ok("true") | Ok("yes")
-    )
+    profile_env_enabled(&GEMMA4_MOE_PROFILE_ENABLED, "AX_MLX_GEMMA4_MOE_PROFILE")
 }
 
 fn linear_attention_profile_enabled() -> bool {
-    matches!(
-        std::env::var("AX_MLX_LINEAR_ATTENTION_PROFILE").as_deref(),
-        Ok("1") | Ok("true") | Ok("yes")
+    profile_env_enabled(
+        &LINEAR_ATTENTION_PROFILE_ENABLED,
+        "AX_MLX_LINEAR_ATTENTION_PROFILE",
     )
 }
 
 fn decode_profile_enabled() -> bool {
-    matches!(
-        std::env::var("AX_MLX_DECODE_PROFILE").as_deref(),
-        Ok("1") | Ok("true") | Ok("yes")
-    )
+    profile_env_enabled(&DECODE_PROFILE_ENABLED, "AX_MLX_DECODE_PROFILE")
 }
 
 fn gemma4_moe_profile() -> &'static Mutex<Gemma4MoeProfileSnapshot> {
