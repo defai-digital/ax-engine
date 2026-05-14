@@ -3740,6 +3740,31 @@ mod tests {
     }
 
     #[test]
+    fn native_model_artifacts_reject_bad_packed_linear_attention_ba_shape() {
+        let mut manifest = packed_linear_attention_manifest();
+        let ba = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.layer_index == Some(1)
+                    && tensor.role == NativeTensorRole::LinearAttentionInProjBa
+            })
+            .expect("fixture has packed ba");
+        ba.shape = vec![63, 2048];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("bad packed linear attention ba shape should fail");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+
+        assert!(message.contains("linear_attention_in_proj_ba"));
+        assert!(message.contains("[64, 2048]"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn native_model_artifacts_summary_reports_mla_and_moe_dimensions() {
         let mut manifest = packed_layer_manifest();
         manifest.mla_attention = NativeMlaAttentionConfig {
