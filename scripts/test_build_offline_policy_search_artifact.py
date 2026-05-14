@@ -102,6 +102,25 @@ def candidate(policy_id: str = "k8v4-hot-256") -> dict[str, object]:
     }
 
 
+def confirmation_evidence(
+    classification_hint: str = "candidate_win_needs_repeat",
+) -> dict[str, object]:
+    return {
+        "baseline_policy_id": "disabled",
+        "candidate_policy_id": "k8v4-hot-256",
+        "repeated_measurements": {
+            "runs": 3,
+            "cooldown_seconds": 20,
+        },
+        "decision_metric": "decode_tok_s",
+        "baseline_median": 100.0,
+        "candidate_median": 110.0,
+        "relative_delta": 0.10,
+        "noise_band": 0.03,
+        "classification_hint": classification_hint,
+    }
+
+
 def write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
@@ -125,6 +144,28 @@ class BuildOfflinePolicySearchArtifactTests(unittest.TestCase):
             self.assertEqual(
                 checker.validate_offline_policy_search_artifact(path),
                 "diagnostic_only",
+            )
+
+    def test_builds_valid_candidate_win_with_confirmation_evidence(self) -> None:
+        search_metadata = metadata()
+        search_metadata["confirmation_evidence"] = confirmation_evidence()
+
+        artifact = builder.build_offline_policy_search_artifact(
+            metadata=search_metadata,
+            baseline=baseline(),
+            candidates=[candidate()],
+            decision_classification="candidate_win_needs_repeat",
+            decision_reason="candidate win requires repeated measurement review",
+        )
+
+        self.assertIn("confirmation_evidence", artifact)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "artifact.json"
+            write_json(path, artifact)
+            self.assertEqual(
+                checker.validate_offline_policy_search_artifact(path),
+                "candidate_win_needs_repeat",
             )
 
     def test_best_policy_id_required_for_multiple_candidates(self) -> None:
@@ -183,6 +224,49 @@ class BuildOfflinePolicySearchArtifactTests(unittest.TestCase):
             self.assertEqual(
                 checker.validate_offline_policy_search_artifact(output_path),
                 "diagnostic_only",
+            )
+
+    def test_cli_writes_candidate_win_with_confirmation_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata_payload = metadata()
+            metadata_payload["confirmation_evidence"] = confirmation_evidence()
+            metadata_path = root / "metadata.json"
+            baseline_path = root / "baseline.json"
+            candidate_path = root / "candidate.json"
+            output_path = root / "artifact.json"
+            write_json(metadata_path, metadata_payload)
+            write_json(baseline_path, baseline())
+            write_json(candidate_path, candidate())
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--metadata",
+                    str(metadata_path),
+                    "--baseline",
+                    str(baseline_path),
+                    "--candidate",
+                    str(candidate_path),
+                    "--output",
+                    str(output_path),
+                    "--decision-classification",
+                    "candidate_win_needs_repeat",
+                    "--decision-reason",
+                    "candidate win requires repeated measurement review",
+                    "--skip-git-repo-metadata",
+                ],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(output_path.exists())
+            self.assertEqual(
+                checker.validate_offline_policy_search_artifact(output_path),
+                "candidate_win_needs_repeat",
             )
 
     def test_cli_rejects_dirty_repo_without_allow_dirty(self) -> None:
