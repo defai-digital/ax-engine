@@ -33,11 +33,13 @@ PROJECTION_STAGE_KEYS = [
 ]
 
 INVALID_PROFILE_TOKEN_SENTINELS = {4_294_967_295}
+AX_PROFILE_ENGINES = {"ax_engine_mlx", "ax_engine_mlx_linear_pack"}
 
 
 @dataclass(frozen=True)
 class ForwardProfileRow:
     model: str
+    engine: str
     artifact: Path
     prompt_tokens: int
     generation_tokens: int
@@ -248,90 +250,93 @@ def build_rows(artifact_path: Path) -> list[ForwardProfileRow]:
     )
     rows: list[ForwardProfileRow] = []
     for (prompt_tokens, generation_tokens), engines in sorted(rows_by_shape(artifact).items()):
-        ax_row = engines.get("ax_engine_mlx")
-        if ax_row is None:
-            continue
-        profile = ax_row.get("ax_mlx_linear_attention_profile")
-        if not isinstance(profile, dict):
-            continue
-        validate_profile(profile, artifact_path=artifact_path, prompt_tokens=prompt_tokens)
-        ax_prefill = metric_median(ax_row, "prefill_tok_s")
-        if ax_prefill is None:
-            raise MlxForwardProfileReportError(
-                f"{artifact_path} prompt={prompt_tokens} lacks AX prefill metric"
-            )
-        stage_us = {
-            label: int_value(
-                profile,
-                key,
-                owner=f"{artifact_path} prompt={prompt_tokens}.profile",
-            )
-            for label, key in STAGE_KEYS
-        }
-        stage_total_us = sum(stage_us.values())
-        if stage_total_us <= 0:
-            raise MlxForwardProfileReportError(
-                f"{artifact_path} prompt={prompt_tokens} has zero profile stage time"
-            )
-        projection_us = {
-            label: optional_int_value(profile, key) for label, key in PROJECTION_STAGE_KEYS
-        }
-        projection_ms = {
-            label: (value / 1000.0 if value is not None else None)
-            for label, value in projection_us.items()
-        }
-        runtime_projection_pack = (
-            bool(ax_row.get("ax_linear_attention_projection_pack"))
-            if isinstance(ax_row.get("ax_linear_attention_projection_pack"), bool)
-            else artifact_runtime_projection_pack
-        )
-        dominant_stage = max(stage_us, key=lambda key: stage_us[key])
-        dominant_share = stage_us[dominant_stage] / stage_total_us
-        rows.append(
-            ForwardProfileRow(
-                model=model,
-                artifact=artifact_path,
-                prompt_tokens=prompt_tokens,
-                generation_tokens=generation_tokens,
-                ax_prefill_tok_s=ax_prefill,
-                mlx_lm_prefill_tok_s=metric_median(
-                    engines.get("mlx_lm", {}),
-                    "prefill_tok_s",
-                ),
-                mlx_swift_lm_prefill_tok_s=metric_median(
-                    engines.get("mlx_swift_lm", {}),
-                    "prefill_tok_s",
-                ),
-                prefill_wall_ms=optional_telemetry_ms(ax_row, "ax_mlx_prefill_wall_us"),
-                forward_ms=optional_telemetry_ms(ax_row, "ax_mlx_prefill_forward_wall_us"),
-                profile_layers=int_value(
+        for engine_name in sorted(AX_PROFILE_ENGINES):
+            ax_row = engines.get(engine_name)
+            if ax_row is None:
+                continue
+            profile = ax_row.get("ax_mlx_linear_attention_profile")
+            if not isinstance(profile, dict):
+                continue
+            validate_profile(profile, artifact_path=artifact_path, prompt_tokens=prompt_tokens)
+            ax_prefill = metric_median(ax_row, "prefill_tok_s")
+            if ax_prefill is None:
+                raise MlxForwardProfileReportError(
+                    f"{artifact_path} prompt={prompt_tokens} engine={engine_name} "
+                    "lacks AX prefill metric"
+                )
+            stage_us = {
+                label: int_value(
                     profile,
-                    "ax_mlx_linear_attention_profile_layers",
+                    key,
                     owner=f"{artifact_path} prompt={prompt_tokens}.profile",
-                ),
-                profile_tokens=int_value(
-                    profile,
-                    "ax_mlx_linear_attention_profile_tokens",
-                    owner=f"{artifact_path} prompt={prompt_tokens}.profile",
-                ),
-                stage_ms={label: value / 1000.0 for label, value in stage_us.items()},
-                projection_ms=projection_ms,
-                projection_layout=projection_layout,
-                offline_pack_candidate=offline_pack_candidate,
-                runtime_projection_pack=runtime_projection_pack,
-                stage_total_ms=stage_total_us / 1000.0,
-                dominant_stage=dominant_stage,
-                dominant_share=dominant_share,
-                decision_hint=decision_hint(
-                    dominant_stage,
-                    dominant_share,
+                )
+                for label, key in STAGE_KEYS
+            }
+            stage_total_us = sum(stage_us.values())
+            if stage_total_us <= 0:
+                raise MlxForwardProfileReportError(
+                    f"{artifact_path} prompt={prompt_tokens} has zero profile stage time"
+                )
+            projection_us = {
+                label: optional_int_value(profile, key) for label, key in PROJECTION_STAGE_KEYS
+            }
+            projection_ms = {
+                label: (value / 1000.0 if value is not None else None)
+                for label, value in projection_us.items()
+            }
+            runtime_projection_pack = (
+                bool(ax_row.get("ax_linear_attention_projection_pack"))
+                if isinstance(ax_row.get("ax_linear_attention_projection_pack"), bool)
+                else artifact_runtime_projection_pack
+            )
+            dominant_stage = max(stage_us, key=lambda key: stage_us[key])
+            dominant_share = stage_us[dominant_stage] / stage_total_us
+            rows.append(
+                ForwardProfileRow(
+                    model=model,
+                    engine=engine_name,
+                    artifact=artifact_path,
+                    prompt_tokens=prompt_tokens,
+                    generation_tokens=generation_tokens,
+                    ax_prefill_tok_s=ax_prefill,
+                    mlx_lm_prefill_tok_s=metric_median(
+                        engines.get("mlx_lm", {}),
+                        "prefill_tok_s",
+                    ),
+                    mlx_swift_lm_prefill_tok_s=metric_median(
+                        engines.get("mlx_swift_lm", {}),
+                        "prefill_tok_s",
+                    ),
+                    prefill_wall_ms=optional_telemetry_ms(ax_row, "ax_mlx_prefill_wall_us"),
+                    forward_ms=optional_telemetry_ms(ax_row, "ax_mlx_prefill_forward_wall_us"),
+                    profile_layers=int_value(
+                        profile,
+                        "ax_mlx_linear_attention_profile_layers",
+                        owner=f"{artifact_path} prompt={prompt_tokens}.profile",
+                    ),
+                    profile_tokens=int_value(
+                        profile,
+                        "ax_mlx_linear_attention_profile_tokens",
+                        owner=f"{artifact_path} prompt={prompt_tokens}.profile",
+                    ),
+                    stage_ms={label: value / 1000.0 for label, value in stage_us.items()},
                     projection_ms=projection_ms,
                     projection_layout=projection_layout,
                     offline_pack_candidate=offline_pack_candidate,
                     runtime_projection_pack=runtime_projection_pack,
-                ),
+                    stage_total_ms=stage_total_us / 1000.0,
+                    dominant_stage=dominant_stage,
+                    dominant_share=dominant_share,
+                    decision_hint=decision_hint(
+                        dominant_stage,
+                        dominant_share,
+                        projection_ms=projection_ms,
+                        projection_layout=projection_layout,
+                        offline_pack_candidate=offline_pack_candidate,
+                        runtime_projection_pack=runtime_projection_pack,
+                    ),
+                )
             )
-        )
     return rows
 
 
@@ -391,6 +396,7 @@ def sort_rows(rows: list[ForwardProfileRow]) -> list[ForwardProfileRow]:
             row.ax_to_mlx_lm if row.ax_to_mlx_lm is not None else 999.0,
             -row.dominant_share,
             row.model,
+            row.engine,
             row.prompt_tokens,
         ),
     )
@@ -410,13 +416,14 @@ def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
             "headline throughput claim."
         ),
         "",
-        "| Model | Prompt tok | AX prefill tok/s | AX/MLX | AX/SwiftLM | Prefill ms | Forward ms | LA layers | LA tokens | Projection ms | Conv ms | QK norm ms | Recurrent ms | Output ms | Dominant | Dominant % | Next hint | Artifact |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---|",
+        "| Model | Engine | Prompt tok | AX prefill tok/s | AX/MLX | AX/SwiftLM | Prefill ms | Forward ms | LA layers | LA tokens | Projection ms | Conv ms | QK norm ms | Recurrent ms | Output ms | Dominant | Dominant % | Next hint | Artifact |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---|",
     ]
     for row in sorted_rows:
         lines.append(
             "| "
             f"{row.model} | "
+            f"{row.engine} | "
             f"{row.prompt_tokens:,} | "
             f"{fmt_number(row.ax_prefill_tok_s)} | "
             f"{fmt_ratio(row.ax_to_mlx_lm)} | "
@@ -441,8 +448,8 @@ def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
             "",
             "## Projection Breakdown",
             "",
-            "| Model | Prompt tok | Layout | Runtime pack | Offline pack candidate | Projection ms | QKVZ ms | BA ms | QKV ms | Z ms | A ms | B ms | QKV share | Split tail share |",
-            "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| Model | Engine | Prompt tok | Layout | Runtime pack | Offline pack candidate | Projection ms | QKVZ ms | BA ms | QKV ms | Z ms | A ms | B ms | QKV share | Split tail share |",
+            "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in sorted_rows:
@@ -452,6 +459,7 @@ def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
         lines.append(
             "| "
             f"{row.model} | "
+            f"{row.engine} | "
             f"{row.prompt_tokens:,} | "
             f"{row.projection_layout or 'n/a'} | "
             f"{fmt_bool(row.runtime_projection_pack)} | "
