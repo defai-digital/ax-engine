@@ -75,7 +75,7 @@ REQUIRED_ROUTE_KEYS = {
     "ax_mlx_kv_compression_fused_decode_metal_successes",
     "ax_mlx_kv_compression_fused_decode_fallbacks",
     "ax_mlx_kv_compression_fused_decode_fallback_reason",
-}
+} | set(FUSED_DECODE_BLOCKED_COUNTERS.values())
 
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -350,6 +350,11 @@ def _validate_route_metadata(route_metadata: dict[str, Any]) -> None:
         == 0,
         "route metadata must report no fused decode fallback reason",
     )
+    for label, key in FUSED_DECODE_BLOCKED_COUNTERS.items():
+        _require(
+            _integer(decisions[key], f"fused decode blocked {label}") >= 0,
+            f"route metadata blocked counter {label} must be non-negative",
+        )
 
 
 def validate_artifact(doc: dict[str, Any], *, root: Path = REPO_ROOT, require_files: bool = True) -> None:

@@ -73,9 +73,11 @@ Current status as of 2026-05-14:
   counts, fallback reason, and blocked-reason counters. The builder records this
   surface and the readiness checker reports it even for artifacts that fail the
   quality gate, so false "fused" claims and blocked runner gates are easier to
-  diagnose;
-- TurboQuant public/runtime promotion remains blocked because no passing
-  long-context fused-path performance promotion artifact has been produced.
+  diagnose. The quality gate now also requires the blocked-reason counters, so
+  promotion artifacts cannot omit the real-runner gate surface;
+- TurboQuant public/runtime promotion remains blocked because no artifact passes
+  the stricter long-context fused-path quality gate with the full real-runner
+  truth surface.
 
 ## 2. Naming and Best-Practice Position
 
@@ -648,6 +650,7 @@ Exit criteria:
 
 - `candidate_win_needs_repeat` can be upgraded or rejected with repeat evidence.
 - the TurboQuant promotion readiness probe no longer reports `no passing
+  long-context fused-path quality artifact was found` or `no passing
   long-context fused-path performance promotion artifact was found`.
 
 ### W4. N-Gram Policy Search
@@ -736,7 +739,7 @@ Current readiness probe result:
   "can_make_public_support_claim": false,
   "public_docs_should_remain_experimental": true,
   "blockers": [
-    "no passing long-context fused-path performance promotion artifact was found"
+    "no passing long-context fused-path quality artifact was found"
   ]
 }
 ```
