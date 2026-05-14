@@ -77,16 +77,16 @@ TurboQuant support.
 requests compressed decode and tries the two-stage Metal cold decode plus
 full-precision hot-tail merge for eligible K8/V4 single-token decode layers.
 When Metal succeeds, route metadata reports `fused_compressed_decode`; when
-Metal is unavailable but the reference fallback works, it reports
-`cpu_oracle_compressed_decode`. Use route metadata to inspect candidate,
+Metal is unavailable, the runtime falls back to the full-precision MLX KV path
+instead of using the CPU oracle. Use route metadata to inspect candidate,
 attempt, success, fallback, and fallback-reason counters. Fallback reason label
 `runner_not_integrated` means no runtime decode attempt was observed yet;
-`cpu_oracle_unavailable` means both compressed-decode attempts fell back to the
-full-precision MLX KV path. Only `fused_compressed_decode` route evidence with
-successful attempts and zero fallbacks can feed the internal quality artifact
-gate; shadow and CPU oracle rows are diagnostic only. Public-support promotion
-remains blocked unless the separate readiness report also passes the
-decode-throughput performance gate.
+`cpu_oracle_unavailable` identifies legacy/debug artifacts where the
+compressed-decode oracle path was not available. Only `fused_compressed_decode`
+route evidence with successful attempts and zero fallbacks can feed the
+internal quality artifact gate; shadow and legacy CPU oracle rows are
+diagnostic only. Public-support promotion remains blocked unless the separate
+readiness report also passes the decode-throughput performance gate.
 
 ```text
 cargo run -p ax-engine-server -- \

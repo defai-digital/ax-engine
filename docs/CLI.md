@@ -165,13 +165,13 @@ For runner-route experiments, `--experimental-mlx-kv-compression
 turboquant-fused-experimental` requests compressed decode selection and may
 report `fused_compressed_decode` when the eligible K8/V4 single-token path uses
 the two-stage Metal cold decode plus full-precision hot-tail merge. If Metal is
-unavailable but the reference fallback works, it reports
-`cpu_oracle_compressed_decode`. A fallback reason label of
-`runner_not_integrated` means no runtime decode attempt was observed yet;
-`cpu_oracle_unavailable` means both compressed-decode attempts fell back to the
-full-precision MLX KV path. Only `fused_compressed_decode` route evidence with
-successful attempts and zero fallbacks can feed the internal quality artifact
-gate; shadow and CPU oracle rows are diagnostic only.
+unavailable, the runtime falls back to the full-precision MLX KV path instead
+of using the CPU oracle. A fallback reason label of `runner_not_integrated`
+means no runtime decode attempt was observed yet; `cpu_oracle_unavailable`
+identifies legacy/debug artifacts where the compressed-decode oracle path was
+not available. Only `fused_compressed_decode` route evidence with successful
+attempts and zero fallbacks can feed the internal quality artifact gate; shadow
+and legacy CPU oracle rows are diagnostic only.
 
 For offline TurboQuant policy search, use the diagnostic grid harness:
 
