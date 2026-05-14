@@ -7,7 +7,10 @@ use crate::turboquant::{
     TurboQuantCompressedDecodePlan, merge_attention_partition_stats, packed_kv_bytes_per_token,
     reference_decode_attention_partition_stats, turboquant_query_head_to_kv_head,
 };
-use crate::turboquant_metal::turboquant_fused_cold_decode_metal_two_stage_partition_stats;
+use crate::turboquant_metal::{
+    turboquant_fused_cold_decode_metal_two_stage_partition_stats,
+    turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array,
+};
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
 /// the logical sequence length exceeds capacity, so the number of grow operations
@@ -333,6 +336,17 @@ fn turboquant_shadow_layout_for_layer(
     .ok()
 }
 
+fn turboquant_shadow_metal_buffer_array(buffer: &TurboQuantCompressedBlockBuffer) -> MlxArray {
+    let metal_buffer = MlxArray::from_raw_data(
+        buffer.as_bytes().as_ptr(),
+        buffer.as_bytes().len(),
+        &[buffer.as_bytes().len() as i32],
+        MlxDtype::Uint8,
+    );
+    eval(&[&metal_buffer]);
+    metal_buffer
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MlxKVCacheUsage {
     pub logical_tokens: usize,
@@ -524,6 +538,7 @@ struct TurboQuantShadowLayerStorage {
     layout: TurboQuantBlockLayout,
     buffer: TurboQuantCompressedBlockBuffer,
     compressed_tokens: usize,
+    metal_buffer: Option<MlxArray>,
 }
 
 struct TurboQuantShadowSyncSource {
@@ -548,6 +563,84 @@ struct LinearLayerState {
     conv_state: Option<MlxArray>,
     /// Qwen3.5 gated-delta recurrent state: `[1, value_heads, value_dim, key_dim]`.
     recurrent_state: Option<MlxArray>,
+}
+
+/// Error produced by [`MlxKVCache::try_deserialize_from_bytes`].
+#[derive(Debug)]
+pub enum MlxKVCacheSerializeError {
+    /// Header magic did not match the F3-disk-cache wire format.
+    BadMagic,
+    /// Serialised payload was produced by an incompatible format version.
+    UnsupportedVersion(u32),
+    /// Payload ended before the structure required more bytes.
+    UnexpectedEof,
+    /// Encountered a dtype tag that does not map to a known MlxDtype.
+    UnknownDtype(u8),
+    /// Encountered an unknown layer-kind discriminator.
+    UnknownLayerKind(u8),
+    /// Tensor metadata declared an unsupported rank.
+    BadShape(usize),
+}
+
+impl std::fmt::Display for MlxKVCacheSerializeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadMagic => write!(f, "kv-cache payload has wrong magic"),
+            Self::UnsupportedVersion(v) => write!(f, "kv-cache payload version {v} unsupported"),
+            Self::UnexpectedEof => write!(f, "kv-cache payload truncated"),
+            Self::UnknownDtype(t) => write!(f, "kv-cache payload has unknown dtype tag {t}"),
+            Self::UnknownLayerKind(t) => write!(f, "kv-cache payload has unknown layer kind {t}"),
+            Self::BadShape(n) => write!(f, "kv-cache payload has bad tensor rank {n}"),
+        }
+    }
+}
+
+impl std::error::Error for MlxKVCacheSerializeError {}
+
+/// Minimal positional reader over a byte slice. Used by
+/// `MlxKVCache::try_deserialize_from_bytes` so the per-field reads stay
+/// readable; the cursor refuses to advance past the end of the slice.
+struct DeserializeCursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> DeserializeCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], MlxKVCacheSerializeError> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or(MlxKVCacheSerializeError::UnexpectedEof)?;
+        if end > self.bytes.len() {
+            return Err(MlxKVCacheSerializeError::UnexpectedEof);
+        }
+        let out = &self.bytes[self.pos..end];
+        self.pos = end;
+        Ok(out)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, MlxKVCacheSerializeError> {
+        Ok(self.read_bytes(1)?[0])
+    }
+
+    fn read_u32(&mut self) -> Result<u32, MlxKVCacheSerializeError> {
+        let bytes = self.read_bytes(4)?;
+        Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn read_i32(&mut self) -> Result<i32, MlxKVCacheSerializeError> {
+        let bytes = self.read_bytes(4)?;
+        Ok(i32::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, MlxKVCacheSerializeError> {
+        let bytes = self.read_bytes(8)?;
+        Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
+    }
 }
 
 /// Borrowed view of a GLM-MLA layer's cached KV state. Returned by
@@ -661,6 +754,21 @@ impl MlxKVCache {
         }
     }
 
+    // ── Wire-format constants for `serialize_to_bytes` / `try_deserialize_from_bytes` ──
+    // The format is private to this module; see the F3 disk-cache PRD
+    // (`MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md`) §3.3 / §4 for the rationale.
+    /// File magic for the AX disk-format payload section. Distinct from
+    /// `AXKV` (used by the future disk wrapper for outer file framing) so
+    /// a partial / nested payload cannot be mistaken for a complete file.
+    const SERIALIZE_MAGIC: &'static [u8; 4] = b"AXKB";
+    const SERIALIZE_VERSION: u32 = 1;
+    const LAYER_KIND_EMPTY: u8 = 0;
+    const LAYER_KIND_FA: u8 = 1;
+    const LAYER_KIND_MLA: u8 = 2;
+    const LAYER_KIND_LINEAR: u8 = 3;
+    const TENSOR_PRESENT_TAG: u8 = 1;
+    const TENSOR_ABSENT_TAG: u8 = 0;
+
     pub fn new(num_layers: usize) -> Self {
         Self {
             layers: (0..num_layers).map(|_| None).collect(),
@@ -678,6 +786,290 @@ impl MlxKVCache {
 
     pub fn set_rotating_sliding_decode(&mut self, enabled: bool) {
         self.use_rotating_sliding_decode = enabled;
+    }
+
+    // ── F3 M1: serialization for the disk-prefix-cache disk format ──
+    //
+    // These two methods are the foundation for the F3 disk-prefix-cache
+    // PRD (MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md): a process-restart-
+    // surviving second-tier cache. M1's goal is a round-trip-correct
+    // wire format for the KV state. M2 (runner wiring), M3 (eviction +
+    // concurrency), M4 (cross-restart validation), and M5 (docs) are
+    // separate deliverables.
+    //
+    // Wire format (private to this module; the outer disk-file framing
+    // is the F3 disk wrapper's responsibility):
+    //
+    //   header:
+    //     magic[4]         = b"AXKB"
+    //     version: u32     = 1
+    //     seq_len: u64
+    //     growth_count: u64
+    //     layer_count: u32
+    //     reserved: u32
+    //
+    //   for each layer 0..layer_count:
+    //     kind: u8   (0=Empty, 1=FA, 2=MLA, 3=Linear)
+    //     reserved[7]
+    //     layer-kind-specific payload (see below)
+    //
+    //   FA payload:     [K tensor][V tensor]
+    //   MLA payload:    [kv_latent tensor][k_pe tensor]
+    //   Linear payload: [tag:u8][optional conv_state][tag:u8][optional recurrent_state]
+    //   Empty payload:  (nothing)
+    //
+    //   tensor encoding (32 bytes header + raw bytes):
+    //     dtype: u8          (MlxDtype variant index 0..=13)
+    //     ndim: u8           (1..=4)
+    //     reserved[6]
+    //     shape: [i32; 4]    (zero-padded for ndim<4)
+    //     byte_count: u64
+    //     bytes: [u8; byte_count]
+    //
+    // TurboQuant shadow storage is intentionally not serialized; it is
+    // rebuilt from base KV on the next decode via the existing runtime
+    // sync path (see kv_cache.rs:sync_turboquant_shadow_storage).
+
+    fn dtype_to_tag(dtype: MlxDtype) -> u8 {
+        match dtype {
+            MlxDtype::Bool => 0,
+            MlxDtype::Uint8 => 1,
+            MlxDtype::Uint16 => 2,
+            MlxDtype::Uint32 => 3,
+            MlxDtype::Uint64 => 4,
+            MlxDtype::Int8 => 5,
+            MlxDtype::Int16 => 6,
+            MlxDtype::Int32 => 7,
+            MlxDtype::Int64 => 8,
+            MlxDtype::Float16 => 9,
+            MlxDtype::Float32 => 10,
+            MlxDtype::Float64 => 11,
+            MlxDtype::Bfloat16 => 12,
+            MlxDtype::Complex64 => 13,
+        }
+    }
+
+    fn dtype_from_tag(tag: u8) -> Result<MlxDtype, MlxKVCacheSerializeError> {
+        Ok(match tag {
+            0 => MlxDtype::Bool,
+            1 => MlxDtype::Uint8,
+            2 => MlxDtype::Uint16,
+            3 => MlxDtype::Uint32,
+            4 => MlxDtype::Uint64,
+            5 => MlxDtype::Int8,
+            6 => MlxDtype::Int16,
+            7 => MlxDtype::Int32,
+            8 => MlxDtype::Int64,
+            9 => MlxDtype::Float16,
+            10 => MlxDtype::Float32,
+            11 => MlxDtype::Float64,
+            12 => MlxDtype::Bfloat16,
+            13 => MlxDtype::Complex64,
+            other => return Err(MlxKVCacheSerializeError::UnknownDtype(other)),
+        })
+    }
+
+    fn serialize_tensor(out: &mut Vec<u8>, arr: &MlxArray) {
+        // Materialise before reading bytes; data_raw is only valid post-eval.
+        eval(&[arr]);
+        let dtype_tag = Self::dtype_to_tag(arr.dtype());
+        let shape = arr.shape();
+        let ndim = shape.len() as u8;
+        debug_assert!(shape.len() <= 4, "tensor ndim must be ≤ 4");
+
+        out.push(dtype_tag);
+        out.push(ndim);
+        out.extend_from_slice(&[0u8; 6]); // reserved
+        let mut padded_shape = [0i32; 4];
+        for (i, &s) in shape.iter().enumerate() {
+            padded_shape[i] = s;
+        }
+        for s in padded_shape {
+            out.extend_from_slice(&s.to_le_bytes());
+        }
+
+        let byte_count = arr.nbytes() as u64;
+        out.extend_from_slice(&byte_count.to_le_bytes());
+
+        // SAFETY: data_raw returns a host-visible pointer after eval. We
+        // copy `byte_count` bytes; the slice is bounded by the array's
+        // own reported size.
+        unsafe {
+            let ptr = arr.data_raw();
+            let slice = std::slice::from_raw_parts(ptr, byte_count as usize);
+            out.extend_from_slice(slice);
+        }
+    }
+
+    fn read_tensor(
+        cursor: &mut DeserializeCursor<'_>,
+    ) -> Result<MlxArray, MlxKVCacheSerializeError> {
+        let dtype_tag = cursor.read_u8()?;
+        let ndim = cursor.read_u8()? as usize;
+        if ndim == 0 || ndim > 4 {
+            return Err(MlxKVCacheSerializeError::BadShape(ndim));
+        }
+        cursor.read_bytes(6)?; // reserved
+        let mut shape = [0i32; 4];
+        for s in &mut shape {
+            *s = cursor.read_i32()?;
+        }
+        let dtype = Self::dtype_from_tag(dtype_tag)?;
+        let byte_count = cursor.read_u64()? as usize;
+        let bytes = cursor.read_bytes(byte_count)?;
+        Ok(MlxArray::from_raw_data(
+            bytes.as_ptr(),
+            byte_count,
+            &shape[..ndim],
+            dtype,
+        ))
+    }
+
+    /// Serialise the cache to a self-contained byte payload that
+    /// `try_deserialize_from_bytes` can reconstruct. Format is private to
+    /// this module and versioned via `SERIALIZE_VERSION`; cross-version
+    /// reads return an error rather than silently degrading.
+    ///
+    /// TurboQuant shadow storage is **not** serialised. On reload it will
+    /// be re-synced from base KV by the existing runtime path the first
+    /// time a decode step runs.
+    pub fn serialize_to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(Self::SERIALIZE_MAGIC);
+        out.extend_from_slice(&Self::SERIALIZE_VERSION.to_le_bytes());
+        out.extend_from_slice(&(self.seq_len as u64).to_le_bytes());
+        out.extend_from_slice(&self.growth_count.to_le_bytes());
+        let layer_count = self.layers.len() as u32;
+        out.extend_from_slice(&layer_count.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+
+        for idx in 0..self.layers.len() {
+            // Per-index disambiguation: at most one of the three layer
+            // vectors is populated. The encoded `kind` byte tells the
+            // reader which payload to expect.
+            if let Some(fa) = &self.layers[idx] {
+                out.push(Self::LAYER_KIND_FA);
+                out.extend_from_slice(&[0u8; 7]);
+                Self::serialize_tensor(&mut out, &fa.k);
+                Self::serialize_tensor(&mut out, &fa.v);
+            } else if let Some(mla) = &self.glm_mla_layers[idx] {
+                out.push(Self::LAYER_KIND_MLA);
+                out.extend_from_slice(&[0u8; 7]);
+                Self::serialize_tensor(&mut out, &mla.kv_latent);
+                Self::serialize_tensor(&mut out, &mla.k_pe);
+            } else if self.linear_layers[idx].conv_state.is_some()
+                || self.linear_layers[idx].recurrent_state.is_some()
+            {
+                let linear = &self.linear_layers[idx];
+                out.push(Self::LAYER_KIND_LINEAR);
+                out.extend_from_slice(&[0u8; 7]);
+                if let Some(arr) = &linear.conv_state {
+                    out.push(Self::TENSOR_PRESENT_TAG);
+                    Self::serialize_tensor(&mut out, arr);
+                } else {
+                    out.push(Self::TENSOR_ABSENT_TAG);
+                }
+                if let Some(arr) = &linear.recurrent_state {
+                    out.push(Self::TENSOR_PRESENT_TAG);
+                    Self::serialize_tensor(&mut out, arr);
+                } else {
+                    out.push(Self::TENSOR_ABSENT_TAG);
+                }
+            } else {
+                out.push(Self::LAYER_KIND_EMPTY);
+                out.extend_from_slice(&[0u8; 7]);
+            }
+        }
+        out
+    }
+
+    /// Reconstruct a cache from a byte payload produced by
+    /// `serialize_to_bytes`. Returns an error on magic / version
+    /// mismatch, truncated data, unknown dtype tags, or shape errors —
+    /// never silently degrades.
+    pub fn try_deserialize_from_bytes(bytes: &[u8]) -> Result<Self, MlxKVCacheSerializeError> {
+        let mut cursor = DeserializeCursor::new(bytes);
+        let magic = cursor.read_bytes(4)?;
+        if magic != Self::SERIALIZE_MAGIC {
+            return Err(MlxKVCacheSerializeError::BadMagic);
+        }
+        let version = cursor.read_u32()?;
+        if version != Self::SERIALIZE_VERSION {
+            return Err(MlxKVCacheSerializeError::UnsupportedVersion(version));
+        }
+        let seq_len = cursor.read_u64()? as usize;
+        let growth_count = cursor.read_u64()?;
+        let layer_count = cursor.read_u32()? as usize;
+        let _reserved = cursor.read_u32()?;
+
+        let mut cache = Self::new(layer_count);
+        cache.seq_len = seq_len;
+        cache.growth_count = growth_count;
+
+        for idx in 0..layer_count {
+            let kind = cursor.read_u8()?;
+            cursor.read_bytes(7)?; // reserved
+            match kind {
+                k if k == Self::LAYER_KIND_EMPTY => continue,
+                k if k == Self::LAYER_KIND_FA => {
+                    let k_arr = Self::read_tensor(&mut cursor)?;
+                    let v_arr = Self::read_tensor(&mut cursor)?;
+                    let shape = k_arr.shape();
+                    if shape.len() < 4 {
+                        return Err(MlxKVCacheSerializeError::BadShape(shape.len()));
+                    }
+                    cache.layers[idx] = Some(LayerKV {
+                        last_k_view: None,
+                        last_v_view: None,
+                        n_kv_heads: shape[1],
+                        head_dim: shape[3],
+                        capacity: shape[2] as usize,
+                        rotating_window: None,
+                        dtype: k_arr.dtype(),
+                        k: k_arr,
+                        v: v_arr,
+                    });
+                }
+                k if k == Self::LAYER_KIND_MLA => {
+                    let kv_latent = Self::read_tensor(&mut cursor)?;
+                    let k_pe = Self::read_tensor(&mut cursor)?;
+                    let kv_shape = kv_latent.shape();
+                    let pe_shape = k_pe.shape();
+                    if kv_shape.len() < 4 || pe_shape.len() < 4 {
+                        return Err(MlxKVCacheSerializeError::BadShape(kv_shape.len()));
+                    }
+                    cache.glm_mla_layers[idx] = Some(GlmMlaLayerCache {
+                        latent_dim: kv_shape[3],
+                        rope_dim: pe_shape[3],
+                        capacity: kv_shape[2] as usize,
+                        dtype: kv_latent.dtype(),
+                        kv_latent,
+                        k_pe,
+                    });
+                }
+                k if k == Self::LAYER_KIND_LINEAR => {
+                    let conv_present = cursor.read_u8()?;
+                    let conv_state = if conv_present == Self::TENSOR_PRESENT_TAG {
+                        Some(Self::read_tensor(&mut cursor)?)
+                    } else {
+                        None
+                    };
+                    let rec_present = cursor.read_u8()?;
+                    let recurrent_state = if rec_present == Self::TENSOR_PRESENT_TAG {
+                        Some(Self::read_tensor(&mut cursor)?)
+                    } else {
+                        None
+                    };
+                    cache.linear_layers[idx] = LinearLayerState {
+                        conv_state,
+                        recurrent_state,
+                    };
+                }
+                other => return Err(MlxKVCacheSerializeError::UnknownLayerKind(other)),
+            }
+        }
+
+        Ok(cache)
     }
 
     pub fn record_turboquant_fused_decode_attempt(
@@ -1161,6 +1553,7 @@ impl MlxKVCache {
                     layout,
                     buffer: TurboQuantCompressedBlockBuffer::new(layout),
                     compressed_tokens: 0,
+                    metal_buffer: None,
                 });
             }
 
@@ -1223,6 +1616,7 @@ impl MlxKVCache {
                     .expect("TurboQuant shadow storage writes validated KV slots");
             }
             storage.compressed_tokens = cold_tokens;
+            storage.metal_buffer = Some(turboquant_shadow_metal_buffer_array(&storage.buffer));
         }
 
         self.turboquant_shadow_storage_usage()
@@ -1464,11 +1858,19 @@ impl MlxKVCache {
             total_tokens.saturating_sub(cold_tokens),
         )?;
         let descriptor = plan.fused_decode_launch_descriptor(&storage.buffer, queries)?;
-        turboquant_fused_cold_decode_metal_two_stage_partition_stats(
-            descriptor,
-            &storage.buffer,
-            queries,
-        )
+        if let Some(metal_buffer) = storage.metal_buffer.as_ref() {
+            turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array(
+                descriptor,
+                metal_buffer,
+                queries,
+            )
+        } else {
+            turboquant_fused_cold_decode_metal_two_stage_partition_stats(
+                descriptor,
+                &storage.buffer,
+                queries,
+            )
+        }
     }
 
     fn merge_turboquant_shadow_decode_cold_stats_with_hot_tail(
@@ -2601,5 +3003,173 @@ mod tests {
 
         assert!(!cache.trim_to(4));
         assert_eq!(cache.seq_len, 5);
+    }
+
+    // ── F3 M1 serialize / deserialize round-trip tests ──
+
+    fn build_fa_array_f32(seq_len: usize, n_kv_heads: i32, head_dim: i32) -> MlxArray {
+        let total = (n_kv_heads as usize) * seq_len * (head_dim as usize);
+        let data: Vec<f32> = (0..total).map(|i| (i as f32) * 0.001).collect();
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[1, n_kv_heads, seq_len as i32, head_dim],
+            MlxDtype::Float32,
+        )
+    }
+
+    fn build_mla_latent_f32(seq_len: usize, inner: i32) -> MlxArray {
+        let total = seq_len * (inner as usize);
+        let data: Vec<f32> = (0..total).map(|i| (i as f32) * 0.0007).collect();
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 1, seq_len as i32, inner],
+            MlxDtype::Float32,
+        )
+    }
+
+    fn host_f32(arr: &MlxArray) -> Vec<f32> {
+        eval(&[arr]);
+        arr.data_f32().to_vec()
+    }
+
+    #[test]
+    fn serialize_empty_cache_roundtrips() {
+        let cache = MlxKVCache::new(3);
+        let bytes = cache.serialize_to_bytes();
+        let restored = MlxKVCache::try_deserialize_from_bytes(&bytes).expect("round-trip");
+        assert_eq!(restored.seq_len, 0);
+        assert_eq!(restored.layers.len(), 3);
+        assert!(restored.layers.iter().all(Option::is_none));
+        assert!(restored.glm_mla_layers.iter().all(Option::is_none));
+        assert!(
+            restored
+                .linear_layers
+                .iter()
+                .all(|l| l.conv_state.is_none() && l.recurrent_state.is_none())
+        );
+    }
+
+    #[test]
+    fn serialize_fa_cache_roundtrips_values() {
+        // Two FA layers, varying head counts to catch shape mistakes.
+        let mut cache = MlxKVCache::new(2);
+        let seq_len = 4;
+        let k0 = build_fa_array_f32(seq_len, 2, 8);
+        let v0 = build_fa_array_f32(seq_len, 2, 8);
+        let k1 = build_fa_array_f32(seq_len, 4, 16);
+        let v1 = build_fa_array_f32(seq_len, 4, 16);
+        cache.layers[0] = Some(LayerKV {
+            last_k_view: None,
+            last_v_view: None,
+            n_kv_heads: 2,
+            head_dim: 8,
+            capacity: seq_len,
+            rotating_window: None,
+            dtype: MlxDtype::Float32,
+            k: k0,
+            v: v0,
+        });
+        cache.layers[1] = Some(LayerKV {
+            last_k_view: None,
+            last_v_view: None,
+            n_kv_heads: 4,
+            head_dim: 16,
+            capacity: seq_len,
+            rotating_window: None,
+            dtype: MlxDtype::Float32,
+            k: k1,
+            v: v1,
+        });
+        cache.seq_len = seq_len;
+        cache.growth_count = 7;
+
+        let bytes = cache.serialize_to_bytes();
+        let restored = MlxKVCache::try_deserialize_from_bytes(&bytes).expect("round-trip");
+
+        assert_eq!(restored.seq_len, seq_len);
+        assert_eq!(restored.growth_count, 7);
+        for layer in 0..2 {
+            let orig = cache.layers[layer].as_ref().unwrap();
+            let back = restored.layers[layer].as_ref().expect("layer present");
+            assert_eq!(back.n_kv_heads, orig.n_kv_heads);
+            assert_eq!(back.head_dim, orig.head_dim);
+            assert_eq!(back.capacity, orig.capacity);
+            assert_eq!(back.dtype, orig.dtype);
+            assert_eq!(host_f32(&back.k), host_f32(&orig.k));
+            assert_eq!(host_f32(&back.v), host_f32(&orig.v));
+        }
+    }
+
+    #[test]
+    fn serialize_mla_cache_roundtrips_values() {
+        let mut cache = MlxKVCache::new(1);
+        let seq_len = 6;
+        let latent_dim = 4;
+        let rope_dim = 2;
+        let kv_latent = build_mla_latent_f32(seq_len, latent_dim);
+        let k_pe = build_mla_latent_f32(seq_len, rope_dim);
+        cache.glm_mla_layers[0] = Some(GlmMlaLayerCache {
+            latent_dim,
+            rope_dim,
+            capacity: seq_len,
+            dtype: MlxDtype::Float32,
+            kv_latent,
+            k_pe,
+        });
+        cache.seq_len = seq_len;
+
+        let bytes = cache.serialize_to_bytes();
+        let restored = MlxKVCache::try_deserialize_from_bytes(&bytes).expect("round-trip");
+
+        let orig = cache.glm_mla_layers[0].as_ref().unwrap();
+        let back = restored.glm_mla_layers[0]
+            .as_ref()
+            .expect("mla layer present");
+        assert_eq!(back.latent_dim, orig.latent_dim);
+        assert_eq!(back.rope_dim, orig.rope_dim);
+        assert_eq!(back.capacity, orig.capacity);
+        assert_eq!(back.dtype, orig.dtype);
+        assert_eq!(host_f32(&back.kv_latent), host_f32(&orig.kv_latent));
+        assert_eq!(host_f32(&back.k_pe), host_f32(&orig.k_pe));
+    }
+
+    #[test]
+    fn deserialize_rejects_bad_magic() {
+        let bytes = b"NOPE\x00\x00\x00\x00".to_vec();
+        let result = MlxKVCache::try_deserialize_from_bytes(&bytes);
+        assert!(matches!(
+            result,
+            Err(MlxKVCacheSerializeError::BadMagic) | Err(MlxKVCacheSerializeError::UnexpectedEof)
+        ));
+    }
+
+    #[test]
+    fn deserialize_rejects_unsupported_version() {
+        let mut payload = MlxKVCache::SERIALIZE_MAGIC.to_vec();
+        payload.extend_from_slice(&99u32.to_le_bytes()); // wrong version
+        payload.extend_from_slice(&0u64.to_le_bytes()); // seq_len
+        payload.extend_from_slice(&0u64.to_le_bytes()); // growth_count
+        payload.extend_from_slice(&0u32.to_le_bytes()); // layer_count
+        payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        let result = MlxKVCache::try_deserialize_from_bytes(&payload);
+        assert!(matches!(
+            result,
+            Err(MlxKVCacheSerializeError::UnsupportedVersion(99))
+        ));
+    }
+
+    #[test]
+    fn deserialize_rejects_truncated_payload() {
+        let cache = MlxKVCache::new(1);
+        let bytes = cache.serialize_to_bytes();
+        // Cut off the last byte to simulate a torn write.
+        let truncated = &bytes[..bytes.len() - 1];
+        let result = MlxKVCache::try_deserialize_from_bytes(truncated);
+        assert!(matches!(
+            result,
+            Err(MlxKVCacheSerializeError::UnexpectedEof)
+        ));
     }
 }
