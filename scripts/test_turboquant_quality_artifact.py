@@ -877,8 +877,8 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                     "repeated_measurement_ready": True,
                     "performance_promotion_ready": False,
                     "next_action": (
-                        "rerun or improve fused compressed decode until "
-                        "performance blockers clear"
+                        "optimize fused compressed decode output_staging "
+                        "stage before rerun (dominant timing: 44us)"
                     ),
                 },
             )
@@ -892,8 +892,8 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                             "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
                         ],
                         "next_action": (
-                            "rerun or improve fused compressed decode until "
-                            "performance blockers clear"
+                            "optimize fused compressed decode output_staging "
+                            "stage before rerun (dominant timing: 44us)"
                         ),
                         "runtime_truth": report["quality_artifacts"][0][
                             "runtime_truth"
@@ -1116,6 +1116,40 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                 "fix fused decode blockers before rerun: "
                 "attention_kind (glm_mla, sliding_window), missing_storage"
             ),
+        )
+
+    def test_readiness_next_action_uses_dominant_timing_when_present(self) -> None:
+        self.assertEqual(
+            readiness.promotion_gap_next_action(
+                performance_blockers=[
+                    "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
+                ],
+                repeated_measurement_ready=True,
+                runtime_truth={
+                    "fused_decode_timing_wall_us": {
+                        "query_readback": 4,
+                        "cold_metal": 32,
+                        "hot_tail_merge": 17,
+                        "output_staging": 6,
+                    }
+                },
+            ),
+            (
+                "optimize fused compressed decode cold_metal stage before rerun "
+                "(dominant timing: 32us)"
+            ),
+        )
+
+    def test_readiness_next_action_keeps_legacy_performance_message_without_timing(self) -> None:
+        self.assertEqual(
+            readiness.promotion_gap_next_action(
+                performance_blockers=[
+                    "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
+                ],
+                repeated_measurement_ready=True,
+                runtime_truth={},
+            ),
+            "rerun or improve fused compressed decode until performance blockers clear",
         )
 
     def test_readiness_derives_dense_full_attention_layers_from_tensor_roles(self) -> None:

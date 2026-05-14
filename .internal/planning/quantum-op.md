@@ -92,7 +92,9 @@ Current status as of 2026-05-14:
   decode diagnostic surface now also accepts an all-or-none timing quartet for
   `query_readback`, `cold_metal`, `hot_tail_merge`, and `output_staging`; legacy
   artifacts without timing remain valid, but partially populated timing metadata
-  fails closed;
+  fails closed. Readiness summaries use the timing quartet when present to point
+  the next performance slice at the dominant fused-decode stage instead of
+  emitting only the generic performance-blocker message;
 - TurboQuant public/runtime promotion remains blocked. The latest Gemma 4 E2B
   real-runner artifact passes quality and real-runner truth-surface validation,
   but fails the performance promotion gate because fused decode regresses

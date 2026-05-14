@@ -169,6 +169,11 @@ def inspect_quality_artifact(
         and not isinstance(cooldown_seconds, bool)
         and cooldown_seconds > 0
     )
+    next_action = promotion_gap_next_action(
+        performance_blockers=performance_blockers,
+        repeated_measurement_ready=repeated_measurement_ready,
+        runtime_truth=runtime_truth,
+    )
     return {
         "path": _relative(path),
         "passes_quality_gate": True,
@@ -183,13 +188,7 @@ def inspect_quality_artifact(
             "cooldown_seconds": cooldown_seconds,
             "repeated_measurement_ready": repeated_measurement_ready,
             "performance_promotion_ready": not performance_blockers,
-            "next_action": (
-                "ready_for_companion_prd_review"
-                if not performance_blockers and repeated_measurement_ready
-                else "rerun or improve fused compressed decode until performance blockers clear"
-                if performance_blockers
-                else "repeat candidate and baseline with cooled measurements"
-            ),
+            "next_action": next_action,
         },
     }
 
@@ -254,6 +253,46 @@ def runtime_truth_next_action(runtime_truth: dict[str, Any] | None) -> str:
         reason = runtime_truth.get("fused_decode_fallback_reason_label", "unknown")
         return f"fix fused decode fallbacks before rerun: {reason}"
     return "fix quality artifact before performance promotion review"
+
+
+def fused_timing_next_action(runtime_truth: dict[str, Any] | None) -> str | None:
+    if not isinstance(runtime_truth, dict):
+        return None
+    timing = runtime_truth.get("fused_decode_timing_wall_us")
+    if not isinstance(timing, dict) or not timing:
+        return None
+    numeric = {
+        str(label): value
+        for label, value in timing.items()
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    }
+    if not numeric:
+        return None
+    dominant_label, dominant_us = max(
+        numeric.items(),
+        key=lambda item: (item[1], item[0]),
+    )
+    return (
+        "optimize fused compressed decode "
+        f"{dominant_label} stage before rerun "
+        f"(dominant timing: {dominant_us}us)"
+    )
+
+
+def promotion_gap_next_action(
+    *,
+    performance_blockers: list[str],
+    repeated_measurement_ready: bool,
+    runtime_truth: dict[str, Any] | None,
+) -> str:
+    if not performance_blockers and repeated_measurement_ready:
+        return "ready_for_companion_prd_review"
+    if performance_blockers:
+        return (
+            fused_timing_next_action(runtime_truth)
+            or "rerun or improve fused compressed decode until performance blockers clear"
+        )
+    return "repeat candidate and baseline with cooled measurements"
 
 
 def blocker_next_action(item: dict[str, Any]) -> str:
