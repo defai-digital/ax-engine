@@ -800,6 +800,9 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                             "rerun or improve fused compressed decode until "
                             "performance blockers clear"
                         ),
+                        "runtime_truth": report["quality_artifacts"][0][
+                            "runtime_truth"
+                        ],
                     }
                 ],
             )
@@ -947,6 +950,57 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             )
             self.assertFalse(
                 report["quality_artifacts"][0]["runtime_truth"]["promotion_path_ready"]
+            )
+            self.assertEqual(
+                report["decision"]["performance_blocker_summary"][0]["next_action"],
+                (
+                    "fix fused decode route selection before rerun: observed "
+                    "full_precision_shadow (runner_not_integrated)"
+                ),
+            )
+
+    def test_readiness_next_action_calls_out_missing_metal_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models_root = root / "models"
+            model_dir = models_root / "gemma"
+            model_dir.mkdir(parents=True)
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "gemma4",
+                        "attention_head_dim": 256,
+                        "global_head_dim": 512,
+                        "attention_head_count": 8,
+                        "kv_head_count": 1,
+                        "layer_types": ["full_attention"],
+                    }
+                )
+            )
+            artifact = valid_artifact(root)
+            decisions = artifact["route_metadata"]["crossover_decisions"]
+            del decisions["ax_mlx_kv_compression_fused_decode_metal_successes"]
+            artifact["runtime_truth"] = checker.route_truth_surface(
+                artifact["route_metadata"]
+            )
+            artifact_path = root / "quality-gate.json"
+            artifact_path.write_text(json.dumps(artifact))
+
+            report = readiness.build_report(
+                models_root=models_root,
+                results_root=root / "empty-results",
+                artifacts=[artifact_path],
+                require_artifact_files=True,
+                root=root,
+            )
+
+            self.assertFalse(report["quality_artifacts"][0]["passes_quality_gate"])
+            self.assertEqual(
+                report["decision"]["performance_blocker_summary"][0]["next_action"],
+                (
+                    "rerun fused candidate with current telemetry so Metal fused "
+                    "decode successes are captured"
+                ),
             )
 
     def test_readiness_derives_dense_full_attention_layers_from_tensor_roles(self) -> None:

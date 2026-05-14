@@ -210,14 +210,43 @@ def summarize_performance_blockers(
                 "path": item.get("path"),
                 "passes_quality_gate": item.get("passes_quality_gate") is True,
                 "performance_blockers": blockers,
-                "next_action": (
-                    item.get("promotion_gap", {}).get("next_action")
-                    if isinstance(item.get("promotion_gap"), dict)
-                    else "fix quality artifact before performance promotion review"
-                ),
+                "next_action": blocker_next_action(item),
+                "runtime_truth": item.get("runtime_truth"),
             }
         )
     return summary
+
+
+def runtime_truth_next_action(runtime_truth: dict[str, Any] | None) -> str:
+    if not isinstance(runtime_truth, dict):
+        return "fix quality artifact before performance promotion review"
+    blocked_reasons = runtime_truth.get("fused_decode_blocked_reasons")
+    if isinstance(blocked_reasons, list) and blocked_reasons:
+        labels = ", ".join(str(label) for label in blocked_reasons)
+        return f"fix fused decode blockers before rerun: {labels}"
+    if runtime_truth.get("fused_path_selected") is not True:
+        observed = runtime_truth.get("decode_path_label", "unknown")
+        reason = runtime_truth.get("fused_decode_fallback_reason_label", "unknown")
+        return f"fix fused decode route selection before rerun: observed {observed} ({reason})"
+    if runtime_truth.get("fused_success_observed") is not True:
+        successes = runtime_truth.get("fused_decode_successes")
+        metal_successes = runtime_truth.get("fused_decode_metal_successes")
+        if isinstance(successes, int) and successes > 0 and not (
+            isinstance(metal_successes, int) and metal_successes > 0
+        ):
+            return "rerun fused candidate with current telemetry so Metal fused decode successes are captured"
+        return "fix fused decode execution before promotion review"
+    if runtime_truth.get("zero_fallbacks") is not True:
+        reason = runtime_truth.get("fused_decode_fallback_reason_label", "unknown")
+        return f"fix fused decode fallbacks before rerun: {reason}"
+    return "fix quality artifact before performance promotion review"
+
+
+def blocker_next_action(item: dict[str, Any]) -> str:
+    promotion_gap = item.get("promotion_gap")
+    if isinstance(promotion_gap, dict) and promotion_gap.get("next_action"):
+        return str(promotion_gap["next_action"])
+    return runtime_truth_next_action(item.get("runtime_truth"))
 
 
 def build_report(
