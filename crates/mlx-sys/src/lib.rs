@@ -10,6 +10,7 @@ pub mod closure;
 pub mod fast;
 pub mod io;
 pub mod metal;
+pub mod op_count;
 pub mod ops;
 pub mod stream;
 pub mod transforms;
@@ -34,6 +35,7 @@ pub use fast::{
 };
 pub use io::{load_safetensors, load_safetensors_mmap};
 pub use metal::{KernelOutputSpec, KernelTemplateArg, MlxMetalKernel};
+pub use op_count::{op_count_snapshot, op_count_take};
 pub use ops::{
     add, arange, argmax, argpartition_axis, argsort_axis, as_strided, astype, broadcast_to, clip,
     concatenate, contiguous, conv1d, dequantize, divide, erf, exp, expand_dims, expand_dims_axes,

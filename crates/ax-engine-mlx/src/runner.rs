@@ -807,6 +807,7 @@ struct DecodeTelemetry {
     direct_pipeline_next_complete_wall_us: u32,
     direct_pipeline_pending_eval_wall_us: u32,
     direct_pipeline_pending_read_wall_us: u32,
+    direct_pipeline_op_count: u64,
     single_decode_steps: u32,
     single_decode_wall_us: u32,
     ngram_decode_steps: u32,
@@ -854,6 +855,10 @@ impl DecodeTelemetry {
     fn record_direct_pipeline(&mut self, wall_us: u32) {
         self.direct_pipeline_steps = self.direct_pipeline_steps.saturating_add(1);
         self.direct_pipeline_wall_us = self.direct_pipeline_wall_us.saturating_add(wall_us);
+    }
+
+    fn record_direct_pipeline_op_count(&mut self, ops: u64) {
+        self.direct_pipeline_op_count = self.direct_pipeline_op_count.saturating_add(ops);
     }
 
     fn record_direct_pipeline_timings(&mut self, timings: DirectPipelineTimings) {
@@ -947,6 +952,9 @@ impl DecodeTelemetry {
         self.direct_pipeline_pending_read_wall_us = self
             .direct_pipeline_pending_read_wall_us
             .saturating_add(other.direct_pipeline_pending_read_wall_us);
+        self.direct_pipeline_op_count = self
+            .direct_pipeline_op_count
+            .saturating_add(other.direct_pipeline_op_count);
         self.single_decode_steps = self
             .single_decode_steps
             .saturating_add(other.single_decode_steps);
@@ -1022,6 +1030,10 @@ impl DecodeTelemetry {
             (
                 "ax_mlx_direct_pipeline_pending_read_wall_us",
                 self.direct_pipeline_pending_read_wall_us,
+            ),
+            (
+                "ax_mlx_direct_pipeline_op_count",
+                u32::try_from(self.direct_pipeline_op_count).unwrap_or(u32::MAX),
             ),
             ("ax_mlx_single_decode_steps", self.single_decode_steps),
             ("ax_mlx_single_decode_wall_us", self.single_decode_wall_us),
@@ -3314,6 +3326,7 @@ impl MlxRunner {
 
     fn run_direct_pipeline_once(&self, state: &mut RequestState, bootstrap_token: MlxArray) -> u32 {
         let branch_started = Instant::now();
+        let op_count_before = mlx_sys::op_count_snapshot();
         let turboquant_context = self.turboquant_model_decode_context();
         let advanced = advance_direct_pipeline_with_timings_and_turboquant_context(
             &self.cfg,
@@ -3322,9 +3335,13 @@ impl MlxRunner {
             &mut state.cache,
             turboquant_context.as_ref(),
         );
+        let op_count_delta = mlx_sys::op_count_take(op_count_before);
         state
             .decode_telemetry
             .record_direct_pipeline(elapsed_us(branch_started));
+        state
+            .decode_telemetry
+            .record_direct_pipeline_op_count(op_count_delta);
         state
             .decode_telemetry
             .record_direct_pipeline_timings(advanced.timings);
@@ -5904,6 +5921,7 @@ mod tests {
             pending_eval_wall_us: 5,
             pending_read_wall_us: 1,
         });
+        telemetry.record_direct_pipeline_op_count(42);
         telemetry.record_single_decode(13);
         telemetry.record_ngram_decode(17);
         telemetry.record_bonus_token();
@@ -5962,6 +5980,7 @@ mod tests {
             decisions.get("ax_mlx_direct_pipeline_pending_read_wall_us"),
             Some(&1)
         );
+        assert_eq!(decisions.get("ax_mlx_direct_pipeline_op_count"), Some(&42));
         assert_eq!(decisions.get("ax_mlx_single_decode_steps"), Some(&1));
         assert_eq!(decisions.get("ax_mlx_single_decode_wall_us"), Some(&13));
         assert_eq!(decisions.get("ax_mlx_ngram_decode_steps"), Some(&1));

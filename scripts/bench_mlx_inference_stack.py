@@ -174,6 +174,7 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_direct_pipeline_next_complete_wall_us",
     "ax_mlx_direct_pipeline_pending_eval_wall_us",
     "ax_mlx_direct_pipeline_pending_read_wall_us",
+    "ax_mlx_direct_pipeline_op_count",
     "ax_mlx_single_decode_steps",
     "ax_mlx_single_decode_wall_us",
     "ax_mlx_ngram_decode_steps",
@@ -1131,6 +1132,7 @@ def route_with_more_decisions(
         "ax_mlx_direct_pipeline_next_complete_wall_us",
         "ax_mlx_direct_pipeline_pending_eval_wall_us",
         "ax_mlx_direct_pipeline_pending_read_wall_us",
+        "ax_mlx_direct_pipeline_op_count",
         "ax_mlx_single_decode_steps",
         "ax_mlx_single_decode_wall_us",
         "ax_mlx_ngram_decode_steps",
@@ -1247,6 +1249,7 @@ def summarize_ax_mlx_decode_route(telemetry: dict[str, int]) -> dict[str, Any]:
     direct_pipeline_pending_read_wall_us = int(
         telemetry.get("ax_mlx_direct_pipeline_pending_read_wall_us", 0)
     )
+    direct_pipeline_op_count = int(telemetry.get("ax_mlx_direct_pipeline_op_count", 0))
     single_decode_steps = int(telemetry.get("ax_mlx_single_decode_steps", 0))
     single_decode_wall_us = int(telemetry.get("ax_mlx_single_decode_wall_us", 0))
     ngram_decode_steps = int(telemetry.get("ax_mlx_ngram_decode_steps", 0))
@@ -1322,6 +1325,12 @@ def summarize_ax_mlx_decode_route(telemetry: dict[str, int]) -> dict[str, Any]:
         "direct_pipeline_pending_read_wall_share_micros": share_micros(
             direct_pipeline_pending_read_wall_us,
             direct_pipeline_wall_us,
+        ),
+        "direct_pipeline_op_count": direct_pipeline_op_count,
+        "direct_pipeline_op_count_per_step": (
+            direct_pipeline_op_count // direct_pipeline_steps
+            if direct_pipeline_steps > 0
+            else 0
         ),
         "single_decode_steps": single_decode_steps,
         "single_decode_step_share_micros": share_micros(
