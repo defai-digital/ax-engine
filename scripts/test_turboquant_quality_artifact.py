@@ -643,6 +643,10 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             )
 
             self.assertFalse(report["decision"]["can_make_public_support_claim"])
+            self.assertEqual(report["required_current_gate"]["fused_decode_successes"], "> 0")
+            self.assertEqual(
+                report["required_current_gate"]["fused_decode_metal_successes"], "> 0"
+            )
             self.assertEqual(
                 report["decision"]["blockers"],
                 [
