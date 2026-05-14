@@ -69,10 +69,19 @@ visible from the high-level walk.
 
 ## W1.2 sizing (KV append batching candidate)
 
-KV append on Gemma 4 E2B is 2 `slice_update` calls per layer × 35 layers =
-**70 ops/step from KV alone** (~4% of total). Stacking K and V across
-layers (if shapes match) could collapse this to 2 ops/step, saving ~68 ops
-and ~136 µs/step. About 26% of the 521 µs gap to mlx_lm.
+**Initial sizing (~26% of the gap) was overstated.** The 2026-05-14
+pre-check (`.internal/planning/MLX-DECODE-W12-KV-APPEND-PRECHECK.md`)
+revised this:
+
+- Per-layer KV cost is **4 ops** (2 `slice_update` + 2 `slice` for the
+  SDPA-input view), not 2 — so total is **~140 ops/step from KV cache**,
+  not 70.
+- Gemma 4 E2B has two head_dim values (sliding=256, full=512), so the
+  cross-layer single-tensor stack is unsound.
+- Two narrower variants (sliding-only stack ~54 ops; slice-cache fusion
+  up to ~70 ops) together cover at most ~50% of the 521 µs gap with
+  medium-to-high engineering scope. PRD W1.2 has been parked; W1.3 is
+  the next workstream.
 
 ## Artifacts
 
