@@ -110,6 +110,7 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
 
         self.assertEqual(checked.artifact_count, 1)
         self.assertEqual(checked.diagnostic_count, 1)
+        self.assertEqual(checked.pack_candidate_win_count, 1)
         self.assertEqual(
             checker.summarize_pack_comparisons(checked.pack_comparisons),
             "qwen3_6_35b_a3b_8bit prompt=128: candidate win",
@@ -187,6 +188,31 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
         self.assertEqual(len(checked), 1)
         self.assertEqual(checked[0].verdict, "candidate win")
 
+    def test_min_pack_candidate_wins_gate_rejects_thin_evidence(self) -> None:
+        path = self.write_fixture(artifact())
+
+        with self.assertRaisesRegex(
+            checker.MlxForwardProfileArtifactError,
+            "expected at least 2",
+        ):
+            checker.check_mlx_forward_profile_artifacts(
+                [path],
+                require_pack_candidate_win=True,
+                min_pack_candidate_wins=2,
+            )
+
+    def test_min_pack_candidate_wins_must_be_non_negative(self) -> None:
+        path = self.write_fixture(artifact())
+
+        with self.assertRaisesRegex(
+            checker.MlxForwardProfileArtifactError,
+            "non-negative",
+        ):
+            checker.check_mlx_forward_profile_artifacts(
+                [path],
+                min_pack_candidate_wins=-1,
+            )
+
     def test_cli_reports_diagnostics(self) -> None:
         path = self.write_fixture(artifact())
 
@@ -204,10 +230,31 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
         )
 
         self.assertIn("diagnostics validated", completed.stdout)
+        self.assertIn("1 candidate win", completed.stdout)
         self.assertIn(
             "qwen3_6_35b_a3b_8bit prompt=128: candidate win",
             completed.stdout,
         )
+
+    def test_cli_accepts_min_pack_candidate_wins(self) -> None:
+        path = self.write_fixture(artifact())
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                str(path),
+                "--require-pack-candidate-win",
+                "--min-pack-candidate-wins",
+                "1",
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertIn("1 candidate win", completed.stdout)
 
 
 if __name__ == "__main__":
