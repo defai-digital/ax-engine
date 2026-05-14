@@ -13,7 +13,8 @@ artifact.
 
 Output schema: `ax.kv_multiturn_chat_evidence.v1` with per-turn rows
 plus a derived `ttft_growth_ratio = turn_N.ttft_s / turn_2.ttft_s` and
-a coarse verdict suggestion.
+a coarse verdict suggestion. Artifacts also record selected environment
+flags that can alter prefix-cache, n-gram, or TurboQuant paths.
 
 Usage:
 
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import sys
 import time
@@ -39,6 +41,17 @@ DEFAULT_PROMPT_TOKENS = 2048
 DEFAULT_TURNS = 10
 DEFAULT_DECODE_TOKENS = 64
 DEFAULT_USER_DELTA_TOKENS = 128
+
+PROVENANCE_ENV_FLAGS = [
+    "AX_ALLOW_MLA_PREFIX_RESTORE",
+    "AX_DISABLE_TURBOQUANT_FUSED_DECODE",
+    "AX_MLX_DIRECT_CLEAR_CACHE_CADENCE",
+    "AX_MLX_NGRAM_POLICY",
+    "AX_MLX_PREFIX_CACHE_MAX_BYTES",
+    "AX_MLX_PREFIX_CACHE_MAX_ENTRIES",
+    "AX_NGRAM_CONFIDENCE_THRESHOLD",
+    "AX_NO_SPEC",
+]
 
 # Telemetry keys this script consumes from `route.crossover_decisions`.
 # Kept in sync with `profile_kv_long_context_evidence.py` so JSON
@@ -91,6 +104,23 @@ TELEMETRY_KEYS = [
     "ax_mlx_prefill_drain_async_evals",
     "ax_mlx_prefill_eval_barriers",
 ]
+
+
+def parse_truthy_env(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes"}
+
+
+def collect_environment_flags() -> dict[str, dict[str, object]]:
+    return {
+        name: {
+            "set": name in os.environ,
+            "value": os.environ.get(name),
+            "truthy": parse_truthy_env(os.environ.get(name)),
+        }
+        for name in PROVENANCE_ENV_FLAGS
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -340,6 +370,7 @@ def run(args: argparse.Namespace) -> dict:
             "platform": platform.platform(),
             "python": sys.version.split()[0],
         },
+        "environment_flags": collect_environment_flags(),
         "args": {
             "model_id": args.model_id,
             "mlx_artifacts_dir": str(args.mlx_artifacts_dir),
