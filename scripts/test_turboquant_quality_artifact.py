@@ -670,6 +670,22 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                     ),
                 },
             )
+            self.assertEqual(
+                report["decision"]["performance_blocker_summary"],
+                [
+                    {
+                        "path": report["quality_artifacts"][0]["path"],
+                        "passes_quality_gate": True,
+                        "performance_blockers": [
+                            "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
+                        ],
+                        "next_action": (
+                            "rerun or improve fused compressed decode until "
+                            "performance blockers clear"
+                        ),
+                    }
+                ],
+            )
 
     def test_readiness_reports_passing_promotion_gap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -701,6 +717,7 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             )
 
             self.assertTrue(report["decision"]["can_make_public_support_claim"])
+            self.assertEqual(report["decision"]["performance_blocker_summary"], [])
             self.assertEqual(
                 report["quality_artifacts"][0]["promotion_gap"]["next_action"],
                 "ready_for_companion_prd_review",

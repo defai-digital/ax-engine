@@ -187,6 +187,32 @@ def inspect_quality_artifact(
     }
 
 
+def summarize_performance_blockers(
+    quality_artifacts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for item in quality_artifacts:
+        if item.get("passes_performance_gate") is True:
+            continue
+        blockers = item.get("performance_blockers")
+        if not isinstance(blockers, list) or not blockers:
+            blocker_text = item.get("quality_blocker")
+            blockers = [blocker_text] if isinstance(blocker_text, str) else []
+        summary.append(
+            {
+                "path": item.get("path"),
+                "passes_quality_gate": item.get("passes_quality_gate") is True,
+                "performance_blockers": blockers,
+                "next_action": (
+                    item.get("promotion_gap", {}).get("next_action")
+                    if isinstance(item.get("promotion_gap"), dict)
+                    else "fix quality artifact before performance promotion review"
+                ),
+            }
+        )
+    return summary
+
+
 def build_report(
     *,
     models_root: Path,
@@ -226,6 +252,7 @@ def build_report(
         blockers.append(
             "no passing long-context fused-path performance promotion artifact was found"
         )
+    performance_blocker_summary = summarize_performance_blockers(quality_artifacts)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -233,6 +260,7 @@ def build_report(
             "can_make_public_support_claim": not blockers,
             "public_docs_should_remain_experimental": bool(blockers),
             "blockers": blockers,
+            "performance_blocker_summary": performance_blocker_summary,
         },
         "required_current_gate": {
             "candidate_mode": checker.REQUIRED_CANDIDATE_COMPRESSION_MODE,
