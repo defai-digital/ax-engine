@@ -427,10 +427,6 @@ impl<'a> TurboQuantModelDecodeContext<'a> {
         let status = if !self.config.requests_fused_decode()
             || fastpath::turboquant_fused_decode_disabled()
         {
-            // AX_DISABLE_TURBOQUANT_FUSED_DECODE collapses to the same
-            // `Disabled` telemetry bucket as a config-time disable; the env
-            // path exists so same-session A/B benchmarks can flip the
-            // optimization without rebuilding the manifest.
             TurboQuantModelDecodeCandidateStatus::Disabled
         } else if seq != 1 {
             TurboQuantModelDecodeCandidateStatus::PrefillOnly
