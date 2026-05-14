@@ -306,6 +306,10 @@ AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
     "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim",
     "ax_mlx_kv_compression_fused_decode_blocked_gqa",
     "ax_mlx_kv_compression_fused_decode_blocked_missing_storage",
+    "ax_mlx_kv_compression_fused_decode_query_readback_wall_us",
+    "ax_mlx_kv_compression_fused_decode_cold_metal_wall_us",
+    "ax_mlx_kv_compression_fused_decode_hot_tail_merge_wall_us",
+    "ax_mlx_kv_compression_fused_decode_output_staging_wall_us",
 ]
 
 KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS = {

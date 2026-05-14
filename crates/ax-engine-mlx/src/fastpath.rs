@@ -121,6 +121,39 @@ pub fn prefill_warmup_token_count(
     }
 }
 
+/// Disk prefix-cache directory. When `AX_MLX_PREFIX_CACHE_DIR=<path>`
+/// is set (and `AX_MLX_PREFIX_CACHE_DISK_DISABLED` is not engaged),
+/// `MlxRunner` opens an L2 file-backed prefix cache rooted at that
+/// directory and writes snapshots there alongside the in-memory L1
+/// store. Unset by default — the disk cache is **opt-in**.
+/// Cached at first read per the module-level OnceLock contract.
+pub fn prefix_cache_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    static CACHED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let raw = std::env::var("AX_MLX_PREFIX_CACHE_DIR").ok()?;
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            }
+        })
+        .clone()
+}
+
+env_flag!(
+    /// **Defensive kill switch.** Engaged by
+    /// `AX_MLX_PREFIX_CACHE_DISK_DISABLED`, this forces the L2 disk
+    /// prefix cache off even when `AX_MLX_PREFIX_CACHE_DIR` is set.
+    /// Used by operators who want to disable the disk path without
+    /// editing the cache-directory environment variable (e.g. to
+    /// isolate a regression to the L1-only path during diagnosis).
+    prefix_cache_disk_disabled,
+    "AX_MLX_PREFIX_CACHE_DISK_DISABLED"
+);
+
 env_flag!(
     /// **Defensive kill switch.** Engaged by `AX_DISABLE_MLA_PREFIX_RESTORE`,
     /// this re-engages the historical `mla_extend_unsafe` safety gate in

@@ -34,9 +34,13 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_HEAD_DIM,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_PRESET,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_CANDIDATES,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_COLD_METAL_WALL_US,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACKS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_HOT_TAIL_MERGE_WALL_US,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_METAL_SUCCESSES,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_OUTPUT_STAGING_WALL_US,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_QUERY_READBACK_WALL_US,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_READY_CANDIDATES,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_SUCCESSES,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
@@ -154,6 +158,11 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_REUSED_TOKENS: &str = "ax_mlx_prefix_ca
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_WARMUP_TOKENS: &str = "ax_mlx_prefix_cache_warmup_tokens";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_ENTRIES: &str = "ax_mlx_prefix_cache_entries";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BYTES_KIB: &str = "ax_mlx_prefix_cache_bytes_kib";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS: &str = "ax_mlx_prefix_cache_disk_hits";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_MISSES: &str = "ax_mlx_prefix_cache_disk_misses";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERTS: &str = "ax_mlx_prefix_cache_disk_inserts";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERT_BYTES_KIB: &str =
+    "ax_mlx_prefix_cache_disk_insert_bytes_kib";
 const COMMON_EOT_TOKEN_STRINGS: &[&str] = &[
     "<|eot_id|>",
     "<|im_end|>",
@@ -392,6 +401,15 @@ struct MlxPrefixCacheTelemetry {
     warmup_tokens: u32,
     entries: u32,
     bytes: u64,
+    // F3 M2 — L2 disk cache counters. These count operations performed
+    // by the durable file-backed prefix-cache layer, distinct from the
+    // in-memory counters above. `disk_*` events fire only when the
+    // disk cache is opened (AX_MLX_PREFIX_CACHE_DIR set + not
+    // disabled).
+    disk_hits: u32,
+    disk_misses: u32,
+    disk_inserts: u32,
+    disk_insert_bytes: u64,
 }
 
 impl MlxPrefixCacheTelemetry {
@@ -419,6 +437,12 @@ impl MlxPrefixCacheTelemetry {
         self.warmup_tokens = self.warmup_tokens.saturating_add(other.warmup_tokens);
         self.entries = self.entries.max(other.entries);
         self.bytes = self.bytes.max(other.bytes);
+        self.disk_hits = self.disk_hits.saturating_add(other.disk_hits);
+        self.disk_misses = self.disk_misses.saturating_add(other.disk_misses);
+        self.disk_inserts = self.disk_inserts.saturating_add(other.disk_inserts);
+        self.disk_insert_bytes = self
+            .disk_insert_bytes
+            .saturating_add(other.disk_insert_bytes);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -457,6 +481,19 @@ impl MlxPrefixCacheTelemetry {
                 ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BYTES_KIB,
                 kib_ceil(self.bytes),
             ),
+            (ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS, self.disk_hits),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_MISSES,
+                self.disk_misses,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERTS,
+                self.disk_inserts,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERT_BYTES_KIB,
+                kib_ceil(self.disk_insert_bytes),
+            ),
         ];
 
         for (key, value) in entries {
@@ -477,6 +514,19 @@ impl MlxPrefixCacheTelemetry {
     fn record_blocked_trim_failure(&mut self) {
         self.blocked = self.blocked.saturating_add(1);
         self.blocked_trim_failure = self.blocked_trim_failure.saturating_add(1);
+    }
+
+    fn record_disk_hit(&mut self) {
+        self.disk_hits = self.disk_hits.saturating_add(1);
+    }
+
+    fn record_disk_miss(&mut self) {
+        self.disk_misses = self.disk_misses.saturating_add(1);
+    }
+
+    fn record_disk_insert(&mut self, bytes: u64) {
+        self.disk_inserts = self.disk_inserts.saturating_add(1);
+        self.disk_insert_bytes = self.disk_insert_bytes.saturating_add(bytes);
     }
 }
 
@@ -1391,6 +1441,10 @@ struct KvCacheTelemetry {
     compression_fused_decode_blocked_unsupported_head_dim: u64,
     compression_fused_decode_blocked_gqa: u64,
     compression_fused_decode_blocked_missing_storage: u64,
+    compression_fused_decode_query_readback_wall_us: u64,
+    compression_fused_decode_cold_metal_wall_us: u64,
+    compression_fused_decode_hot_tail_merge_wall_us: u64,
+    compression_fused_decode_output_staging_wall_us: u64,
 }
 
 impl KvCacheTelemetry {
@@ -1552,6 +1606,18 @@ impl KvCacheTelemetry {
                     self.compression_fused_decode_fallbacks = self
                         .compression_fused_decode_fallbacks
                         .saturating_add(compression.fused_decode_fallbacks);
+                    self.compression_fused_decode_query_readback_wall_us = self
+                        .compression_fused_decode_query_readback_wall_us
+                        .saturating_add(compression.fused_decode_query_readback_wall_us);
+                    self.compression_fused_decode_cold_metal_wall_us = self
+                        .compression_fused_decode_cold_metal_wall_us
+                        .saturating_add(compression.fused_decode_cold_metal_wall_us);
+                    self.compression_fused_decode_hot_tail_merge_wall_us = self
+                        .compression_fused_decode_hot_tail_merge_wall_us
+                        .saturating_add(compression.fused_decode_hot_tail_merge_wall_us);
+                    self.compression_fused_decode_output_staging_wall_us = self
+                        .compression_fused_decode_output_staging_wall_us
+                        .saturating_add(compression.fused_decode_output_staging_wall_us);
                     if compression.fused_decode_metal_successes > 0 {
                         self.compression_decode_path =
                             KV_COMPRESSION_DECODE_PATH_FUSED_COMPRESSED_DECODE;
@@ -1827,6 +1893,22 @@ impl KvCacheTelemetry {
                     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_MISSING_STORAGE,
                     saturating_u32_from_u64(self.compression_fused_decode_blocked_missing_storage),
                 ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_QUERY_READBACK_WALL_US,
+                    saturating_u32_from_u64(self.compression_fused_decode_query_readback_wall_us),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_COLD_METAL_WALL_US,
+                    saturating_u32_from_u64(self.compression_fused_decode_cold_metal_wall_us),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_HOT_TAIL_MERGE_WALL_US,
+                    saturating_u32_from_u64(self.compression_fused_decode_hot_tail_merge_wall_us),
+                ),
+                (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_OUTPUT_STAGING_WALL_US,
+                    saturating_u32_from_u64(self.compression_fused_decode_output_staging_wall_us),
+                ),
             ];
 
             for (key, value) in compression_entries {
@@ -2011,6 +2093,11 @@ pub struct MlxRunner {
     kv_compression_layer_eligible: Vec<bool>,
     /// Immutable MLX KV snapshots for block-aligned exact prompt prefixes.
     prefix_cache: Mutex<MlxPrefixCache>,
+    /// Optional L2 file-backed prefix cache (F3). Populated when
+    /// `AX_MLX_PREFIX_CACHE_DIR` is set and the disk-disabled kill
+    /// switch is not engaged. `None` when off; the L2 paths short-
+    /// circuit cheaply.
+    disk_prefix_cache: Option<crate::disk_prefix_cache::DiskPrefixCache>,
     /// Experimental Gemma sliding-window rotating backing store for direct decode.
     rotating_sliding_decode: bool,
     /// Optional mlx_lm-style `clear_cache` cadence for the direct decode pipeline.
@@ -2173,6 +2260,30 @@ impl MlxRunner {
         // Qwen3.5 linear-attention uses `ngram_accel_decode_step_linear_safe` which
         // clones the cache for verification and recomputes the committed prefix on
         // partial accept, so n-gram acceleration is safe to enable for these models.
+        // F3 M2 — Open the L2 disk prefix cache when an operator has
+        // opted in via AX_MLX_PREFIX_CACHE_DIR (and not disabled the
+        // disk path via the kill switch). Open failures are non-fatal:
+        // we log and fall back to L1-only, since the disk layer is
+        // strictly additive on top of the existing in-memory cache.
+        let disk_prefix_cache = match (
+            crate::fastpath::prefix_cache_dir(),
+            crate::fastpath::prefix_cache_disk_disabled(),
+        ) {
+            (Some(dir), false) => match crate::disk_prefix_cache::DiskPrefixCache::open(&dir) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "ax_engine_mlx::prefix_cache",
+                        error = %e,
+                        dir = %dir.display(),
+                        "failed to open disk prefix cache; falling back to in-memory only",
+                    );
+                    None
+                }
+            },
+            _ => None,
+        };
+
         let cfg_arc = Arc::new(cfg.clone());
         Ok(Self {
             cfg,
@@ -2189,6 +2300,7 @@ impl MlxRunner {
             kv_compression,
             kv_compression_layer_eligible,
             prefix_cache: Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy::from_env())),
+            disk_prefix_cache,
             rotating_sliding_decode,
             direct_clear_cache_cadence,
             embed_compile_cache: Mutex::new(HashMap::new()),
@@ -3251,6 +3363,64 @@ impl MlxRunner {
             return telemetry;
         }
 
+        // F3 M2 — L1 miss. If the L2 disk cache is open and the
+        // MLA-extend safety gate has not engaged, try the disk layer
+        // before falling through to the cold-prefill warmup path. A
+        // disk hit deserialises a fresh `MlxKVCache` (bit-equivalent to
+        // the snapshot that produced it) and routes through the same
+        // restore path as L1.
+        //
+        // Deserialise failure or filesystem error is treated as a miss
+        // per F3 PRD §3 (fail-closed): the cache miss path still runs,
+        // the request still completes, telemetry records the disk
+        // miss for observability.
+        if !mla_extend_unsafe && let Some(disk) = self.disk_prefix_cache.as_ref() {
+            let key_bytes = crate::disk_prefix_cache::canonical_key_bytes(
+                &key.model_id,
+                &key.route_policy,
+                &key.layer_layout,
+                key.block_size_tokens,
+                key.token_count,
+                key.token_hash,
+            );
+            match disk.get(&key_bytes) {
+                Ok(Some(payload)) => match MlxKVCache::try_deserialize_from_bytes(&payload) {
+                    Ok(restored_cache) => {
+                        state.cache = restored_cache;
+                        state.prompt_prefix_tokens = reused_tokens.to_vec();
+                        // On-disk format does not carry the greedy
+                        // prefill output token (PRD §4.5 / M1 findings
+                        // §3); runner recomputes on the first decode.
+                        state.cached_prefill_output_token = None;
+                        telemetry.record_disk_hit();
+                        telemetry.reused_tokens = telemetry
+                            .reused_tokens
+                            .saturating_add(saturating_u32(reused_tokens.len()));
+                        return telemetry;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "ax_engine_mlx::prefix_cache",
+                            error = %e,
+                            "disk prefix-cache payload failed to deserialize; treating as miss",
+                        );
+                        telemetry.record_disk_miss();
+                    }
+                },
+                Ok(None) => {
+                    telemetry.record_disk_miss();
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "ax_engine_mlx::prefix_cache",
+                        error = %e,
+                        "disk prefix-cache get failed; treating as miss",
+                    );
+                    telemetry.record_disk_miss();
+                }
+            }
+        }
+
         telemetry.misses = telemetry.misses.saturating_add(1);
         if !defer_prefill_warmup {
             self.warm_reused_prefix_without_cache(
@@ -3375,8 +3545,22 @@ impl MlxRunner {
                 continue;
             }
             let usage = snapshot_cache.usage_snapshot_with_layer_windows(&self.kv_layer_windows);
+            // F3 M2 — for the disk layer we want the largest valid
+            // snapshot persisted; smaller intermediate prefixes stay
+            // in L1 only. Without an eviction policy yet (M3), writing
+            // every per-block prefix to disk would balloon the cache
+            // directory by O(N/block_size) × snapshot bytes per cold
+            // prefill. The largest snapshot is also the most useful for
+            // future hits because shorter prefixes always derive from
+            // it.
+            let is_largest = prefix_len == full_block_tokens;
+            let snapshot_payload = if is_largest && self.disk_prefix_cache.is_some() {
+                Some(snapshot_cache.serialize_to_bytes())
+            } else {
+                None
+            };
             let outcome = cache.insert(
-                key,
+                key.clone(),
                 MlxPrefixSnapshot {
                     cache: snapshot_cache,
                     tokens: tokens.to_vec(),
@@ -3389,6 +3573,34 @@ impl MlxRunner {
             );
             if outcome.stored {
                 telemetry.stores = telemetry.stores.saturating_add(1);
+
+                // Mirror to the disk layer when (a) the disk cache is
+                // open, (b) this is the largest-prefix snapshot, and
+                // (c) L1 actually stored it. A disk-write failure does
+                // not back out the L1 store — the in-memory layer
+                // alone is still useful and disk is strictly additive.
+                if let (Some(disk), Some(payload)) =
+                    (self.disk_prefix_cache.as_ref(), snapshot_payload)
+                {
+                    let key_bytes = crate::disk_prefix_cache::canonical_key_bytes(
+                        &key.model_id,
+                        &key.route_policy,
+                        &key.layer_layout,
+                        key.block_size_tokens,
+                        key.token_count,
+                        key.token_hash,
+                    );
+                    match disk.insert(&key_bytes, &payload) {
+                        Ok(()) => telemetry.record_disk_insert(payload.len() as u64),
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "ax_engine_mlx::prefix_cache",
+                                error = %e,
+                                "disk prefix-cache insert failed; L1 store still active",
+                            );
+                        }
+                    }
+                }
             }
             telemetry.evictions = telemetry.evictions.saturating_add(outcome.evictions);
         }
@@ -4774,6 +4986,7 @@ mod tests {
             warmup_tokens: 8,
             entries: 2,
             bytes: 4096,
+            ..MlxPrefixCacheTelemetry::default()
         };
         let mut decisions = Vec::new();
 
@@ -6692,6 +6905,10 @@ mod tests {
                 fused_decode_attempts: 2,
                 fused_decode_successes: 2,
                 fused_decode_metal_successes: 2,
+                fused_decode_query_readback_wall_us: 11,
+                fused_decode_cold_metal_wall_us: 22,
+                fused_decode_hot_tail_merge_wall_us: 33,
+                fused_decode_output_staging_wall_us: 44,
                 status_code: 1,
                 preset_code: 1,
                 key_bits: 8,
@@ -6734,6 +6951,22 @@ mod tests {
         assert_eq!(
             decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_FALLBACK_REASON),
             Some(&KV_COMPRESSION_FUSED_DECODE_FALLBACK_NONE)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_QUERY_READBACK_WALL_US),
+            Some(&11)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_COLD_METAL_WALL_US),
+            Some(&22)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_HOT_TAIL_MERGE_WALL_US),
+            Some(&33)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_OUTPUT_STAGING_WALL_US),
+            Some(&44)
         );
     }
 

@@ -102,6 +102,11 @@ TELEMETRY_KEYS = [
     "ax_mlx_prefix_cache_warmup_tokens",
     "ax_mlx_prefix_cache_entries",
     "ax_mlx_prefix_cache_bytes_kib",
+    # F3 M2 — L2 disk prefix cache (opt-in via AX_MLX_PREFIX_CACHE_DIR)
+    "ax_mlx_prefix_cache_disk_hits",
+    "ax_mlx_prefix_cache_disk_misses",
+    "ax_mlx_prefix_cache_disk_inserts",
+    "ax_mlx_prefix_cache_disk_insert_bytes_kib",
     # Decode / prefill timing
     "ax_mlx_decode_steps",
     "ax_mlx_decode_wall_us",
