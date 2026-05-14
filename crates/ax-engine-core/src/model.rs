@@ -1577,20 +1577,29 @@ fn validate_native_model_tensor_shapes(
         {
             validate_glm_mla_attention_tensor_shapes(manifest, layer_index)?;
         }
-        // Layers without any attention tensors (e.g. linear_attention) skip QKV shape validation.
-        if manifest_tensor(
+        // Layers without standard attention tensors (e.g. linear_attention) skip
+        // QKV shape validation but still validate their projection contract below.
+        let has_split_linear_projection = manifest_tensor(
             manifest,
             NativeTensorRole::LinearAttentionInProjQkv,
             Some(layer_index),
         )
-        .is_some()
-        {
+        .is_some();
+        let has_packed_linear_projection = manifest_tensor(
+            manifest,
+            NativeTensorRole::LinearAttentionInProjQkvz,
+            Some(layer_index),
+        )
+        .is_some();
+        if has_split_linear_projection || has_packed_linear_projection {
             let linear_dims = resolved_linear_attention_dims(manifest)?;
-            if let Some(in_proj_qkvz) = manifest_tensor(
-                manifest,
-                NativeTensorRole::LinearAttentionInProjQkvz,
-                Some(layer_index),
-            ) {
+            if has_packed_linear_projection {
+                let in_proj_qkvz = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::LinearAttentionInProjQkvz,
+                    "linear_attention_in_proj_qkvz",
+                )?;
                 expect_matrix_shape(
                     in_proj_qkvz,
                     linear_dims.conv_dim + linear_dims.value_dim,
@@ -3333,6 +3342,71 @@ mod tests {
         manifest
     }
 
+    fn packed_linear_attention_manifest() -> NativeModelManifest {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "qwen3_5".to_string();
+        manifest.linear_attention = NativeLinearAttentionConfig {
+            full_attention_interval: Some(4),
+            num_value_heads: Some(32),
+            num_key_heads: Some(16),
+            key_head_dim: Some(128),
+            value_head_dim: Some(128),
+            conv_kernel_dim: Some(4),
+        };
+        manifest.tensors.retain(|tensor| {
+            !(tensor.layer_index == Some(1)
+                && matches!(
+                    tensor.role,
+                    NativeTensorRole::AttentionQkvPacked | NativeTensorRole::AttentionO
+                ))
+        });
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.1.linear_attn.in_proj_qkvz.weight",
+                NativeTensorRole::LinearAttentionInProjQkvz,
+                Some(1),
+                vec![12288, 2048],
+            ),
+            tensor(
+                "model.layers.1.linear_attn.in_proj_ba.weight",
+                NativeTensorRole::LinearAttentionInProjBa,
+                Some(1),
+                vec![64, 2048],
+            ),
+            tensor(
+                "model.layers.1.linear_attn.conv1d.weight",
+                NativeTensorRole::LinearAttentionConv1d,
+                Some(1),
+                vec![8192, 4],
+            ),
+            tensor(
+                "model.layers.1.linear_attn.dt_bias",
+                NativeTensorRole::LinearAttentionDtBias,
+                Some(1),
+                vec![32],
+            ),
+            tensor(
+                "model.layers.1.linear_attn.A_log",
+                NativeTensorRole::LinearAttentionALog,
+                Some(1),
+                vec![32],
+            ),
+            tensor(
+                "model.layers.1.linear_attn.norm.weight",
+                NativeTensorRole::LinearAttentionNorm,
+                Some(1),
+                vec![128],
+            ),
+            tensor(
+                "model.layers.1.linear_attn.out_proj.weight",
+                NativeTensorRole::LinearAttentionOutProj,
+                Some(1),
+                vec![2048, 4096],
+            ),
+        ]);
+        manifest
+    }
+
     fn moe_layer_manifest() -> NativeModelManifest {
         let mut manifest = packed_layer_manifest();
         manifest.model_family = "gemma4".to_string();
@@ -3625,6 +3699,43 @@ mod tests {
             }
         );
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_load_valid_packed_linear_attention_manifest() {
+        let manifest = packed_linear_attention_manifest();
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let artifacts = NativeModelArtifacts::from_dir(&dir)
+            .expect("packed linear attention manifest should validate");
+
+        assert!(artifacts.summary().is_hybrid_attention);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_bad_packed_linear_attention_projection_shape() {
+        let mut manifest = packed_linear_attention_manifest();
+        let qkvz = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.layer_index == Some(1)
+                    && tensor.role == NativeTensorRole::LinearAttentionInProjQkvz
+            })
+            .expect("fixture has packed qkvz");
+        qkvz.shape = vec![12287, 2048];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("bad packed linear attention qkvz shape should fail");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+
+        assert!(message.contains("linear_attention_in_proj_qkvz"));
+        assert!(message.contains("[12288, 2048]"));
         let _ = fs::remove_dir_all(dir);
     }
 
