@@ -2015,12 +2015,15 @@ pub fn forward_lazy_single_with_turboquant_context(
         );
     }
     // Single token: hidden shape is [1, 1, hidden_size] — no sequence slice needed.
+    // Return the logits as `[1, 1, vocab]`; the only consumer is `argmax(_, None)`
+    // which operates on the last axis and produces `[1, 1]` (later read via
+    // `data_u32().first()`). Skipping the flatten saves one reshape op per step
+    // versus returning a 1-D `[vocab]` array.
     let lm_head_started = profile_decode.then(Instant::now);
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
-    let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
-    let logits = reshape(&logits_f32, &[cfg.vocab_size as i32], None);
+    let logits = apply_final_logit_softcap(cfg, &logits_f32);
     if let Some(started) = lm_head_started {
         decode_profile_eval_elapsed(
             profile_decode,
