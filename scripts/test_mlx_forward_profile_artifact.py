@@ -159,6 +159,34 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
                 require_pack_comparison=True,
             )
 
+    def test_pack_candidate_win_gate_rejects_regression(self) -> None:
+        payload = artifact()
+        packed = payload["results"][1]  # type: ignore[index]
+        assert isinstance(packed, dict)
+        packed["prefill_tok_s"] = metric(1700.0)
+        packed["ax_mlx_linear_attention_profile"] = profile(projection_wall_us=11000)
+        path = self.write_fixture(payload)
+
+        with self.assertRaisesRegex(
+            checker.MlxForwardProfileArtifactError,
+            "not a candidate win",
+        ):
+            checker.validate_mlx_forward_profile_artifact(
+                path,
+                require_pack_candidate_win=True,
+            )
+
+    def test_pack_candidate_win_gate_implies_pack_comparison(self) -> None:
+        path = self.write_fixture(artifact())
+
+        checked = checker.validate_mlx_forward_profile_artifact(
+            path,
+            require_pack_candidate_win=True,
+        )
+
+        self.assertEqual(len(checked), 1)
+        self.assertEqual(checked[0].verdict, "candidate win")
+
     def test_cli_reports_diagnostics(self) -> None:
         path = self.write_fixture(artifact())
 
