@@ -3180,9 +3180,10 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     // default stream registered that matches the stream baked into the
     // compiled graph, and we have not found a clean way to satisfy this
     // contract for the tokio worker threads that drive decode requests.
-    // See `.internal/planning/MLX-DECODE-W2-PHASE0-FINDINGS.md` for the
-    // dead-end record. The `geglu` helper is kept (and unit-tested) as a
-    // record of the math; the production hot path stays imperative.
+    // See `.internal/planning/MLX-DECODE-W2A-GEGLU-FINDINGS.md` for the
+    // dead-end record (workarounds attempted + revert rationale). The
+    // `geglu` helper is kept (and unit-tested) as a record of the math;
+    // the production hot path stays imperative.
     let gate_act = if cfg.uses_geglu {
         gelu_approx(&gate_out, None)
     } else {
