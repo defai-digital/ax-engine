@@ -401,7 +401,9 @@ keeps the diagnostic comparison contract above, and additionally fails the check
 unless every matched split/packed comparison has a `candidate win` verdict.
 Pair it with `--min-pack-candidate-wins <N>` when the promotion contract needs
 more than one passing artifact, and `--min-pack-candidate-win-prompts <N>` when
-it needs wins across multiple prompt-token lengths.
+it needs wins across multiple prompt-token lengths. Use
+`--min-pack-candidate-win-shapes <N>` when generation length is part of the
+promotion shape.
 
 The wrapper preflights `config.json` and `model-manifest.json` before building
 the release server. It fails closed unless the manifest is `qwen3_5` or
