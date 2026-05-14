@@ -269,6 +269,45 @@ class BuildOfflinePolicySearchArtifactTests(unittest.TestCase):
                 "candidate_win_needs_repeat",
             )
 
+    def test_cli_validation_failure_does_not_leave_output_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata_path = root / "metadata.json"
+            baseline_path = root / "baseline.json"
+            candidate_path = root / "candidate.json"
+            output_path = root / "artifact.json"
+            write_json(metadata_path, metadata())
+            write_json(baseline_path, baseline())
+            write_json(candidate_path, candidate())
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--metadata",
+                    str(metadata_path),
+                    "--baseline",
+                    str(baseline_path),
+                    "--candidate",
+                    str(candidate_path),
+                    "--output",
+                    str(output_path),
+                    "--decision-classification",
+                    "candidate_win_needs_repeat",
+                    "--decision-reason",
+                    "candidate win requires repeated measurement review",
+                    "--skip-git-repo-metadata",
+                ],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("confirmation_evidence must be an object", result.stderr)
+            self.assertFalse(output_path.exists())
+            self.assertFalse(list(root.glob(".artifact.json.*.tmp")))
+
     def test_cli_rejects_dirty_repo_without_allow_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
