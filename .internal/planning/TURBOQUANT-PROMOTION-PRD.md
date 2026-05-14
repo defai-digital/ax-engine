@@ -106,7 +106,8 @@ Phase 1: Real-path instrumentation — **partially done**
 - Add or refresh artifact validators.
 
 Current status: readiness and validator guardrails exist, including promotion
-readiness checks and README/public-doc experimental gating. The missing part is
+readiness checks, README/public-doc experimental gating, and evidence-artifact
+provenance for optimization-related environment flags. The missing part is
 real-runner fused-path selection evidence for promoted decode shapes.
 
 Phase 2: Real-model quality evidence — **partially done**
@@ -137,6 +138,10 @@ Remaining phase count:
   evidence and Phase 4 promotion decision.
 - Phase 1 and Phase 2 are **partially done** and must be closed as part of the
   same promotion evidence package, but the immediate blocker is Phase 3.
+- **0 standalone guardrail phases remain** for the current cycle: provenance,
+  readiness, and public-doc experimental gating are in place; further guardrail
+  changes should be tied to Phase 3/4 evidence gaps rather than tracked as a
+  separate phase.
 
 ## 7. Active Reading Path
 

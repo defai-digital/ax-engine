@@ -51,6 +51,11 @@ Current status as of 2026-05-14:
 - README performance provenance was refreshed to
   `benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r3/` and the
   README artifact checker validates 280 metrics plus three narrative claims;
+- prefix-reuse and multi-turn KV evidence artifacts now record selected
+  environment flags that can alter optimization behavior. The multi-turn
+  harness distinguishes boolean fastpath flags from raw numeric/string tuning
+  env such as `AX_MLX_PREFIX_CACHE_MAX_BYTES`, so artifacts do not mislabel
+  numeric policy values as disabled boolean switches;
 - Python extension guardrails were repaired: the embedding smoke test now uses
   the current `support_tier` constructor contract, is self-contained under the
   documented `python3 -m unittest discover -s python/tests -v` command, and the
@@ -697,8 +702,9 @@ In milestone-count terms:
 - **2 non-blocking policy-search tracks remain** after that: adaptive n-gram
   policy search and prefix/MoE policy search.
 - **0 cleanup milestones remain** for the already-completed guardrail work in
-  this cycle: README provenance, Python smoke self-containment, and checked-in
-  ABI3 extension parity are closed.
+  this cycle: README provenance, prefix-reuse and multi-turn evidence
+  provenance, Python smoke self-containment, and checked-in ABI3 extension
+  parity are closed.
 
 Current readiness probe result:
 
