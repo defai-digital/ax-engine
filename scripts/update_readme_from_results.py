@@ -115,7 +115,7 @@ def main():
             lm_s  = fmt(lm_p)  if lm_p  else "—"
             swl_s = f"{fmt(swl_p)} ({pct(swl_p, lm_p)})" if swl_p and lm_p else "—"
             ax_s  = f"{fmt(ax_p)} ({pct(ax_p, lm_p)})"  if ax_p  and lm_p else "—"
-            if ax_p and lm_p and ax_p < lm_p:
+            if ax_p and lm_p and ax_p > lm_p:
                 ax_s = f"**{ax_s}**"
 
             if first:

@@ -45,10 +45,10 @@ def fmt_pct(val: float, ref: float) -> str:
 
 
 def cell_prefill(ax: float, ref: float) -> str:
-    """Bold when ax < ref (negative % = worse than mlx_lm)."""
+    """Bold when ax > ref (positive % = better than mlx_lm)."""
     pct = pct_delta(ax, ref)
     s = f"{fmt_num(ax)} {fmt_pct(ax, ref)}"
-    return f"**{s}**" if pct < 0 else s
+    return f"**{s}**" if pct > 0 else s
 
 
 def cell_decode_direct(ax: float, ref: float) -> str:
