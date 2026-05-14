@@ -100,6 +100,21 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
         self.assertEqual(len(checked), 1)
         self.assertEqual(checked[0].verdict, "candidate win")
 
+    def test_summary_reports_pack_comparison_verdicts(self) -> None:
+        path = self.write_fixture(artifact())
+
+        checked = checker.check_mlx_forward_profile_artifacts(
+            [path],
+            require_pack_comparison=True,
+        )
+
+        self.assertEqual(checked.artifact_count, 1)
+        self.assertEqual(checked.diagnostic_count, 1)
+        self.assertEqual(
+            checker.summarize_pack_comparisons(checked.pack_comparisons),
+            "qwen3_6_35b_a3b_8bit prompt=128: candidate win",
+        )
+
     def test_public_packed_claim_fails_closed(self) -> None:
         payload = artifact()
         payload["public_claims"] = ["packed_projection_performance"]
@@ -161,6 +176,10 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
         )
 
         self.assertIn("diagnostics validated", completed.stdout)
+        self.assertIn(
+            "qwen3_6_35b_a3b_8bit prompt=128: candidate win",
+            completed.stdout,
+        )
 
 
 if __name__ == "__main__":

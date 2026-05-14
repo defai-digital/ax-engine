@@ -42,6 +42,13 @@ class CheckedPackComparison:
     verdict: str
 
 
+@dataclass(frozen=True)
+class ForwardProfileCheckResult:
+    artifact_count: int
+    diagnostic_count: int
+    pack_comparisons: list[CheckedPackComparison]
+
+
 def load_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text())
@@ -188,20 +195,52 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def summarize_pack_comparisons(comparisons: list[CheckedPackComparison]) -> str:
+    if not comparisons:
+        return "0 pack comparisons"
+    return "; ".join(
+        f"{comparison.model} prompt={comparison.prompt_tokens}: {comparison.verdict}"
+        for comparison in comparisons
+    )
+
+
+def check_mlx_forward_profile_artifacts(
+    artifacts: list[Path],
+    *,
+    require_pack_comparison: bool = False,
+) -> ForwardProfileCheckResult:
+    diagnostic_count = 0
+    pack_comparisons: list[CheckedPackComparison] = []
+    for artifact in artifacts:
+        comparisons = validate_mlx_forward_profile_artifact(
+            artifact,
+            require_pack_comparison=require_pack_comparison,
+        )
+        diagnostic_count += max(1, len(comparisons))
+        pack_comparisons.extend(comparisons)
+    return ForwardProfileCheckResult(
+        artifact_count=len(artifacts),
+        diagnostic_count=diagnostic_count,
+        pack_comparisons=pack_comparisons,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    checked = 0
     try:
-        for artifact in args.artifacts:
-            comparisons = validate_mlx_forward_profile_artifact(
-                artifact,
-                require_pack_comparison=args.require_pack_comparison,
-            )
-            checked += max(1, len(comparisons))
+        checked = check_mlx_forward_profile_artifacts(
+            args.artifacts,
+            require_pack_comparison=args.require_pack_comparison,
+        )
     except MlxForwardProfileArtifactError as error:
         print(f"MLX forward profile artifact check failed: {error}", file=sys.stderr)
         return 1
-    print(f"MLX forward profile artifact check passed: {checked} diagnostics validated")
+    print(
+        "MLX forward profile artifact check passed: "
+        f"{checked.diagnostic_count} diagnostics validated across "
+        f"{checked.artifact_count} artifact(s); "
+        f"{summarize_pack_comparisons(checked.pack_comparisons)}"
+    )
     return 0
 
 
