@@ -565,6 +565,25 @@ struct LinearLayerState {
     recurrent_state: Option<MlxArray>,
 }
 
+/// Destructor compatible with [`MlxArray::from_managed_data`]. Recovers
+/// the `Box<Vec<u8>>` that owned the tensor's data buffer when
+/// `try_deserialize_from_bytes` constructed the array, and drops it so
+/// the heap allocation is freed.
+///
+/// # Safety
+///
+/// `payload` must have been produced by `Box::into_raw(Box::new(Vec<u8>))`
+/// and not yet recovered or freed. MLX guarantees `payload` is non-null
+/// and called exactly once per matching `from_managed_data` call.
+unsafe extern "C" fn vec_payload_drop(payload: *mut std::ffi::c_void) {
+    if payload.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = Box::from_raw(payload as *mut Vec<u8>);
+    }
+}
+
 /// Error produced by [`MlxKVCache::try_deserialize_from_bytes`].
 #[derive(Debug)]
 pub enum MlxKVCacheSerializeError {
@@ -916,13 +935,58 @@ impl MlxKVCache {
         }
         let dtype = Self::dtype_from_tag(dtype_tag)?;
         let byte_count = cursor.read_u64()? as usize;
-        let bytes = cursor.read_bytes(byte_count)?;
-        Ok(MlxArray::from_raw_data(
-            bytes.as_ptr(),
-            byte_count,
-            &shape[..ndim],
-            dtype,
-        ))
+
+        // Pre-validate shape × dtype against `byte_count` so a tampered or
+        // corrupted payload returns a structured error instead of tripping
+        // the assert inside `MlxArray::from_managed_data`. Any of:
+        // negative dim, overflow in product, or undersized `byte_count`
+        // is flagged as `BadShape(ndim)`.
+        let mut element_count: usize = 1;
+        for &dim in shape[..ndim].iter() {
+            if dim < 0 {
+                return Err(MlxKVCacheSerializeError::BadShape(ndim));
+            }
+            element_count = element_count
+                .checked_mul(dim as usize)
+                .ok_or(MlxKVCacheSerializeError::BadShape(ndim))?;
+        }
+        let required_bytes = element_count
+            .checked_mul(dtype.size_bytes())
+            .ok_or(MlxKVCacheSerializeError::BadShape(ndim))?;
+        if byte_count < required_bytes {
+            return Err(MlxKVCacheSerializeError::BadShape(ndim));
+        }
+
+        let bytes_view = cursor.read_bytes(byte_count)?;
+
+        // `MlxArray::from_raw_data` borrows the data buffer (see
+        // mlx-sys/src/array.rs:80: "MLX does **not** copy"), so passing the
+        // input slice's pointer would leave the array dangling once the
+        // caller's payload buffer is dropped. The deserializer must own
+        // the bytes for the array's lifetime. We allocate a `Vec<u8>` on
+        // the heap, hand its data pointer to MLX via `from_managed_data`,
+        // and register a destructor that reclaims the boxed Vec when MLX
+        // releases the array. This makes the returned `MlxArray`
+        // self-sufficient and decoupled from the input slice lifetime.
+        let owned: Box<Vec<u8>> = Box::new(bytes_view.to_vec());
+        let data_ptr = owned.as_ptr();
+        let payload = Box::into_raw(owned) as *mut std::ffi::c_void;
+        // SAFETY: data_ptr points at heap memory owned by the boxed Vec.
+        // The Vec's buffer outlives the MlxArray because `vec_payload_drop`
+        // only fires when MLX releases the array's last reference,
+        // reclaiming the Box and freeing the buffer. `byte_count` matches
+        // the Vec's length, which equals shape × dtype size by
+        // construction (the serialiser wrote the same value).
+        Ok(unsafe {
+            MlxArray::from_managed_data(
+                data_ptr,
+                byte_count,
+                &shape[..ndim],
+                dtype,
+                payload,
+                vec_payload_drop,
+            )
+        })
     }
 
     /// Serialise the cache to a self-contained byte payload that
@@ -3171,5 +3235,98 @@ mod tests {
             result,
             Err(MlxKVCacheSerializeError::UnexpectedEof)
         ));
+    }
+
+    #[test]
+    fn deserialize_rejects_undersized_byte_count() {
+        // Hand-craft a payload whose tensor header declares a shape
+        // requiring more bytes than `byte_count` advertises. Without
+        // the pre-validation guard, `MlxArray::from_managed_data` would
+        // panic; with it, we surface a structured `BadShape` error.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(MlxKVCache::SERIALIZE_MAGIC);
+        payload.extend_from_slice(&MlxKVCache::SERIALIZE_VERSION.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes()); // seq_len
+        payload.extend_from_slice(&0u64.to_le_bytes()); // growth_count
+        payload.extend_from_slice(&1u32.to_le_bytes()); // layer_count
+        payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+
+        // Single FA layer
+        payload.push(MlxKVCache::LAYER_KIND_FA);
+        payload.extend_from_slice(&[0u8; 7]);
+        // K tensor header: f32, 4-dim shape [1, 2, 4, 8] = 64 elements × 4 bytes
+        payload.push(MlxKVCache::dtype_to_tag(MlxDtype::Float32));
+        payload.push(4);
+        payload.extend_from_slice(&[0u8; 6]);
+        payload.extend_from_slice(&1i32.to_le_bytes());
+        payload.extend_from_slice(&2i32.to_le_bytes());
+        payload.extend_from_slice(&4i32.to_le_bytes());
+        payload.extend_from_slice(&8i32.to_le_bytes());
+        // Declared byte_count = 1 (too small for the declared shape)
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        payload.push(0u8);
+
+        let err = MlxKVCache::try_deserialize_from_bytes(&payload)
+            .err()
+            .expect("undersized byte_count must be rejected");
+        assert!(
+            matches!(err, MlxKVCacheSerializeError::BadShape(4)),
+            "expected BadShape(4), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn deserialized_cache_outlives_input_buffer() {
+        // Regression test for the lifetime bug fixed alongside this
+        // commit: `from_raw_data` borrows its data pointer (per the
+        // mlx-sys array.rs:80 doc, "MLX does **not** copy"), so handing
+        // it a slice of the caller's input buffer would leave the
+        // deserialised array dangling once that buffer is freed.
+        // `try_deserialize_from_bytes` must construct arrays that own
+        // their data via `from_managed_data` + a heap-Box deleter.
+        //
+        // This test arranges the scenario explicitly: build an input
+        // buffer, deserialise from it, drop the buffer, then read the
+        // cache's tensors. With the fix, every read returns the
+        // original byte pattern; without the fix this exhibits
+        // undefined behaviour (typically reads bogus values or
+        // SIGBUS / SIGSEGV under MLX's evaluator).
+        let seq_len = 4;
+        let head_dim = 8;
+        let n_kv_heads = 2;
+        let original = {
+            let mut cache = MlxKVCache::new(1);
+            let k = build_fa_array_f32(seq_len, n_kv_heads, head_dim);
+            let v = build_fa_array_f32(seq_len, n_kv_heads, head_dim);
+            cache.layers[0] = Some(LayerKV {
+                last_k_view: None,
+                last_v_view: None,
+                n_kv_heads,
+                head_dim,
+                capacity: seq_len,
+                rotating_window: None,
+                dtype: MlxDtype::Float32,
+                k,
+                v,
+            });
+            cache.seq_len = seq_len;
+            cache
+        };
+        let expected_k = host_f32(&original.layers[0].as_ref().unwrap().k);
+        let expected_v = host_f32(&original.layers[0].as_ref().unwrap().v);
+
+        let restored = {
+            let bytes = original.serialize_to_bytes();
+            MlxKVCache::try_deserialize_from_bytes(&bytes).expect("round-trip")
+            // `bytes` drops here. The restored cache must remain valid.
+        };
+
+        // Read the restored tensors AFTER the input buffer has been
+        // dropped. If `read_tensor` had borrowed the slice, this would
+        // be UB; the managed-data + heap-owned pattern keeps it sound.
+        let restored_k = host_f32(&restored.layers[0].as_ref().unwrap().k);
+        let restored_v = host_f32(&restored.layers[0].as_ref().unwrap().v);
+        assert_eq!(restored_k, expected_k);
+        assert_eq!(restored_v, expected_v);
     }
 }
