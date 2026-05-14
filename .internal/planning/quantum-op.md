@@ -1,6 +1,6 @@
 # Quantum OP PRD
 
-Status: Partially implemented; runtime promotion blocked
+Status: Partially implemented; TurboQuant runtime promotion blocked
 Date: 2026-05-14
 Owner: AX Engine
 Companions: TURBOQUANT-PROMOTION-PRD.md, MLX-RUNTIME-PERFORMANCE-PRD.md, KV-SCHEDULER-REVAMP-PRD.md, WEIGHT-QUANT-AND-SPECULATION-PRD.md
@@ -64,6 +64,10 @@ Current status as of 2026-05-14:
   the current `support_tier` constructor contract, is self-contained under the
   documented `python3 -m unittest discover -s python/tests -v` command, and the
   checked-in ABI3 extension was rebuilt from `maturin develop --release`;
+- the MLA prefix-cache path was promoted from opt-in investigation to default
+  restore behavior after the GLM-4.7-Flash warm-extend drift was avoided by
+  chunk-aligned MLA prefill. Follow-up guardrails ensure constructor JIT warm-up
+  uses the same effective chunk shape as runtime prefill;
 - TurboQuant public/runtime promotion remains blocked because no passing
   long-context fused-path performance promotion artifact has been produced.
 
@@ -249,13 +253,16 @@ offline-search target.
 The Phase C iterative-chat bug fix proved that runner-side physical snapshots
 can remove pathological TTFT growth for FA and sliding-window models when the
 runner probes its own snapshot map instead of relying only on scheduler
-annotation. GLM-4.7-Flash MLA evidence did not improve: the runner can have a
-snapshot, but `mla_extend_unsafe` correctly blocks restore in iterative-chat
-Prefill mode because the MLA warm-extend equivalence gate still has fp drift.
+annotation. GLM-4.7-Flash MLA was then moved from opt-in investigation to
+default-path restore after chunk-aligned MLA prefill avoided the reproduced
+warm-extend fp drift. The checked-in GLM evidence now covers both canonical
+warm-extend equivalence and 10-turn iterative chat with physical hits.
+
 This improves the evidence base for prefix-cache policy work, but it is not yet
 a retention-policy search. The remaining entry condition is clean physical-hit,
 blocked-reason, and eviction telemetry across FA, sliding-window, and MLA-style
-attention, with MLA treated as a separate correctness-gated subtrack.
+attention, plus cross-family retention experiments that distinguish retention
+policy from the already-fixed restore mechanics.
 
 Candidate variables:
 
@@ -447,9 +454,9 @@ The recommended order is:
 2. R1/R3 diagnostic TurboQuant KV policy search, no runtime default changes
    (**done for diagnostic enumeration**).
 3. Phase C runner-side prefix-cache bug fix for iterative chat (**done for
-   Gemma 4 E2B 4-bit, Qwen 3.5 9B 4-bit, and Qwen 3.6 35B-A3B 4-bit positive
-   evidence; GLM-4.7-Flash MLA negative/boundary evidence checked in and kept
-   out of TurboQuant promotion**).
+   Gemma 4 E2B 4-bit, Qwen 3.5 9B 4-bit, Qwen 3.6 35B-A3B 4-bit, and
+   GLM-4.7-Flash MLA default-path positive evidence; still kept out of
+   TurboQuant promotion**).
 4. README/Python provenance and smoke-test guardrails (**done**).
 5. R2 conservative fused compressed decode real-runner gate (**active
    blocker**).
@@ -700,15 +707,20 @@ promotion milestone:
 - W5 MoE policy search remains future work until per-stage telemetry shows a
   real expert-locality bottleneck.
 
+### Overall Remaining Milestones
+
 In milestone-count terms:
 
-- **4 blocking milestones remain** for TurboQuant runtime promotion.
-- **2 non-blocking policy-search tracks remain** after that: adaptive n-gram
-  policy search and prefix/MoE policy search.
+- **4 blocking milestones remain** for TurboQuant runtime promotion: M1 fused
+  long-context artifact, M2 repeated quality/replay confirmation, M3 companion
+  PRD promotion review, and M4 runtime/docs promotion.
+- **3 non-blocking optimization tracks remain** after or alongside that:
+  adaptive n-gram policy search, prefix-cache retention policy search, and MoE
+  locality policy search.
 - **0 cleanup milestones remain** for the already-completed guardrail work in
   this cycle: README provenance, prefix-reuse and multi-turn evidence
-  provenance, Python smoke self-containment, and checked-in ABI3 extension
-  parity are closed.
+  provenance, Python smoke self-containment, checked-in ABI3 extension parity,
+  and MLA prefill restore/warm-up chunk alignment are closed.
 
 Current readiness probe result:
 
