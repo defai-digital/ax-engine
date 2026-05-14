@@ -1574,6 +1574,19 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_DECODE_PROFILE"], "1")
 
+    def test_axengine_command_can_enable_linear_attention_projection_pack(self) -> None:
+        with patch.object(bench.subprocess, "Popen") as popen:
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                direct_mode=True,
+                pack_linear_attention_projections=True,
+            )
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"], "1")
+
     def test_route_with_more_decisions_keeps_step_telemetry_over_response_route(self) -> None:
         step_route = {
             "attention_route": "qwen_paged_decode",
