@@ -182,9 +182,16 @@ def _validate_candidate_fallbacks(candidate: dict[str, Any], index: int, target:
 def _validate_candidate_rows(candidates: list[Any], target: str) -> list[dict[str, Any]]:
     _require(candidates, "candidates must keep raw candidate rows")
     checked: list[dict[str, Any]] = []
+    policy_ids: set[str] = set()
     for index, candidate in enumerate(candidates):
         row = _mapping(candidate, f"candidates[{index}]")
         _validate_candidate_common(row, index, target)
+        policy_id = str(row["policy_id"])
+        _require(
+            policy_id not in policy_ids,
+            f"candidates[{index}].policy_id {policy_id!r} duplicates an earlier candidate",
+        )
+        policy_ids.add(policy_id)
         _validate_candidate_fallbacks(row, index, target)
         checked.append(row)
     return checked
