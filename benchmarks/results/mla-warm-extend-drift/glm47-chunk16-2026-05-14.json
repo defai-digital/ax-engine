@@ -1,0 +1,441 @@
+{
+  "args": {
+    "base_tokens": 32,
+    "chunk_size": 16,
+    "mlx_artifacts_dir": ".internal/models/GLM-4.7-Flash-4bit",
+    "suffix_tokens": 32,
+    "tolerance_abs_diff": 0.0010000000474974513
+  },
+  "first_divergence": null,
+  "layers": [
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 0
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 1
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 2
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 3
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 4
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 5
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 6
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 7
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 8
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 9
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 10
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 11
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 12
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 13
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 14
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 15
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 16
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 17
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 18
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 19
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 20
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 21
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 22
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 23
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 24
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 25
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 26
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 27
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 28
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 29
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 30
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 31
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 32
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 33
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 34
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 35
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 36
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 37
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 38
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 39
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 40
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 41
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 42
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 43
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 44
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 45
+    },
+    {
+      "k_pe_first_divergence_position": null,
+      "k_pe_max_abs_diff": 0.0,
+      "k_pe_max_ulps_diff": 0,
+      "kv_latent_first_divergence_position": null,
+      "kv_latent_max_abs_diff": 0.0,
+      "kv_latent_max_ulps_diff": 0,
+      "layer_idx": 46
+    }
+  ],
+  "model": {
+    "layer_count": 47,
+    "mla_layer_count": 47
+  },
+  "schema_version": "ax.mla_drift_bisect.v1",
+  "verdict": "no_divergence"
+}

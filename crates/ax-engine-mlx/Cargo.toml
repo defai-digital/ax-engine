@@ -37,3 +37,7 @@ path = "src/bin/residual_rmsnorm_fused_probe.rs"
 [[bin]]
 name = "dequant-dtype-probe"
 path = "src/bin/dequant_dtype_probe.rs"
+
+[[bin]]
+name = "mla-warm-extend-drift-probe"
+path = "src/bin/mla_warm_extend_drift_probe.rs"
