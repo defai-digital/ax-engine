@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode};
-use mlx_sys::{MlxArray, MlxDtype, astype, eval, slice, slice_update, zeros};
+use mlx_sys::{MlxArray, MlxDtype, astype, contiguous, eval, slice, slice_update, zeros};
 
 use crate::turboquant::{
     FullPrecisionKvTokenVectors, TurboQuantAttentionPartitionStats, TurboQuantBlockLayout,
@@ -183,6 +183,28 @@ fn kv_heads_for_token_from_f32_slices(
             kv_head_for_token_from_f32_slices(k_values, v_values, shape, token_index, head_index)
         })
         .collect()
+}
+
+fn kv_hot_tail_head_for_relative_token_from_f32_slices(
+    k_values: &[f32],
+    v_values: &[f32],
+    n_kv_heads: usize,
+    head_dim: usize,
+    hot_token_count: usize,
+    relative_token_index: usize,
+    head_index: usize,
+) -> FullPrecisionKvTokenVectors {
+    kv_head_for_token_from_f32_slices(
+        k_values,
+        v_values,
+        KvHeadSliceShape {
+            n_kv_heads: n_kv_heads as i32,
+            head_dim: head_dim as i32,
+            capacity: hot_token_count,
+        },
+        relative_token_index,
+        head_index,
+    )
 }
 
 fn kv_head_for_token_from_f32_slices(
@@ -2054,28 +2076,71 @@ impl MlxKVCache {
                 actual: cold_stats.len(),
             });
         }
-        let k_f32 =
-            (lkv.dtype != MlxDtype::Float32).then(|| astype(&lkv.k, MlxDtype::Float32, None));
-        let v_f32 =
-            (lkv.dtype != MlxDtype::Float32).then(|| astype(&lkv.v, MlxDtype::Float32, None));
-        let k_source = k_f32.as_ref().unwrap_or(&lkv.k);
-        let v_source = v_f32.as_ref().unwrap_or(&lkv.v);
-        eval(&[k_source, v_source]);
-        let k_values = k_source.data_f32();
-        let v_values = v_source.data_f32();
-        let shape = KvHeadSliceShape::from_layer(lkv);
+        let cold_tokens = cold_stats[0].token_count;
+        if cold_stats
+            .iter()
+            .any(|stats| stats.token_count != cold_tokens)
+        {
+            return Err(TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens,
+                required_slots: cold_tokens.saturating_mul(queries.len()),
+                written_slots: cold_stats
+                    .iter()
+                    .map(|stats| stats.token_count)
+                    .min()
+                    .unwrap_or(0)
+                    .saturating_mul(queries.len()),
+            });
+        }
+        let hot_token_count = total_tokens.saturating_sub(cold_tokens);
+        let hot_k;
+        let hot_v;
+        let hot_k_compact;
+        let hot_v_compact;
+        let k_f32;
+        let v_f32;
+        let (k_values, v_values) = if hot_token_count == 0 {
+            (&[][..], &[][..])
+        } else {
+            hot_k = slice(
+                &lkv.k,
+                &[0, 0, cold_tokens as i32, 0],
+                &[1, lkv.n_kv_heads, total_tokens as i32, lkv.head_dim],
+                &[1, 1, 1, 1],
+                None,
+            );
+            hot_v = slice(
+                &lkv.v,
+                &[0, 0, cold_tokens as i32, 0],
+                &[1, lkv.n_kv_heads, total_tokens as i32, lkv.head_dim],
+                &[1, 1, 1, 1],
+                None,
+            );
+            hot_k_compact = contiguous(&hot_k, None);
+            hot_v_compact = contiguous(&hot_v, None);
+            k_f32 = (lkv.dtype != MlxDtype::Float32)
+                .then(|| astype(&hot_k_compact, MlxDtype::Float32, None));
+            v_f32 = (lkv.dtype != MlxDtype::Float32)
+                .then(|| astype(&hot_v_compact, MlxDtype::Float32, None));
+            let k_source = k_f32.as_ref().unwrap_or(&hot_k_compact);
+            let v_source = v_f32.as_ref().unwrap_or(&hot_v_compact);
+            eval(&[k_source, v_source]);
+            (k_source.data_f32(), v_source.data_f32())
+        };
+        let head_dim = usize::try_from(lkv.head_dim).unwrap_or(usize::MAX);
 
         let mut outputs = Vec::with_capacity(queries.len());
         for (query_head_index, query) in queries.iter().enumerate() {
             let kv_head_index =
                 turboquant_query_head_to_kv_head(query_head_index, queries.len(), n_kv_heads)?;
-            let cold_tokens = cold_stats[query_head_index].token_count;
-            let hot_tokens = (cold_tokens..total_tokens)
+            let hot_tokens = (0..hot_token_count)
                 .map(|token_index| {
-                    kv_head_for_token_from_f32_slices(
+                    kv_hot_tail_head_for_relative_token_from_f32_slices(
                         k_values,
                         v_values,
-                        shape,
+                        n_kv_heads,
+                        head_dim,
+                        hot_token_count,
                         token_index,
                         kv_head_index,
                     )
