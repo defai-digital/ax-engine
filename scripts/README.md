@@ -165,7 +165,8 @@ throughput baselines.
   runner. It builds the release server, runs full-precision and
   `turboquant-fused-experimental` AX rows with output-token capture, extracts
   decode vectors, builds quality metrics, validates the quality artifact, and
-  writes a promotion-readiness report. Use `--dry-run` first to inspect
+  writes a promotion-readiness report. Its default repetitions match the
+  repeated-measurement readiness contract. Use `--dry-run` first to inspect
   inferred metadata and planned commands without loading a model.
 - `run-mlx-prefill-scaling-artifact.sh`: real-model P1 prefill/TTFT scaling
   runner. It runs the MLX inference-stack benchmark with direct AX rows, writes

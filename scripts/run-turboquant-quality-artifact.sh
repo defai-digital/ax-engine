@@ -12,7 +12,7 @@ MODEL_DIR="${AX_TURBOQUANT_MODEL_DIR:-}"
 OUTPUT_ROOT="$ROOT_DIR/benchmarks/results/turboquant/quality-runs"
 CONTEXT_TOKENS="${AX_TURBOQUANT_CONTEXT_TOKENS:-8192}"
 GENERATION_TOKENS="${AX_TURBOQUANT_GENERATION_TOKENS:-256}"
-REPETITIONS="${AX_TURBOQUANT_REPETITIONS:-1}"
+REPETITIONS="${AX_TURBOQUANT_REPETITIONS:-3}"
 COOLDOWN="${AX_TURBOQUANT_COOLDOWN:-3}"
 PREFILL_STEP_SIZE="${AX_TURBOQUANT_PREFILL_STEP_SIZE:-2048}"
 MODEL_ID="${AX_TURBOQUANT_MODEL_ID:-}"
@@ -35,7 +35,7 @@ Options:
   --output-root PATH            Output root. Defaults to benchmarks/results/turboquant/quality-runs.
   --context-tokens N            Prompt token count. Defaults to 8192.
   --generation-tokens N         Generated token count. Defaults to 256.
-  --repetitions N               Timed AX repetitions. Defaults to 1.
+  --repetitions N               Timed AX repetitions. Defaults to 3; must be at least 2 for promotion readiness.
   --cooldown SECONDS            Cooldown between repetitions. Defaults to 3.
   --prefill-step-size N         MLX prefill step size. Defaults to 2048.
   --model-id ID                 Artifact model id. Defaults to model directory basename.
@@ -186,6 +186,11 @@ HEAD_DIM="${HEAD_DIM:-$INFERRED_HEAD_DIM}"
 
 if [[ -z "$MODEL_ID" || -z "$MODEL_FAMILY" || -z "$HEAD_DIM" ]]; then
     echo "ERROR: model-id, model-family, and head-dim must be provided or inferable." >&2
+    exit 2
+fi
+
+if [[ ! "$REPETITIONS" =~ ^[0-9]+$ || "$REPETITIONS" -lt 2 ]]; then
+    echo "ERROR: --repetitions must be an integer >= 2 for promotion readiness." >&2
     exit 2
 fi
 
