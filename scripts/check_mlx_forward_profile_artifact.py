@@ -39,6 +39,7 @@ class MlxForwardProfileArtifactError(RuntimeError):
 class CheckedPackComparison:
     model: str
     prompt_tokens: int
+    generation_tokens: int
     verdict: str
 
 
@@ -186,7 +187,10 @@ def validate_mlx_forward_profile_artifact(
         ]
         if non_wins:
             summary = "; ".join(
-                f"{comparison.model} prompt={comparison.prompt_tokens}: {comparison.verdict}"
+                (
+                    f"{comparison.model} prompt={comparison.prompt_tokens} "
+                    f"gen={comparison.generation_tokens}: {comparison.verdict}"
+                )
                 for comparison in non_wins
             )
             raise MlxForwardProfileArtifactError(
@@ -197,6 +201,7 @@ def validate_mlx_forward_profile_artifact(
         CheckedPackComparison(
             model=comparison.model,
             prompt_tokens=comparison.prompt_tokens,
+            generation_tokens=comparison.generation_tokens,
             verdict=comparison.verdict,
         )
         for comparison in comparisons
@@ -244,7 +249,10 @@ def summarize_pack_comparisons(comparisons: list[CheckedPackComparison]) -> str:
     if not comparisons:
         return "0 pack comparisons"
     return "; ".join(
-        f"{comparison.model} prompt={comparison.prompt_tokens}: {comparison.verdict}"
+        (
+            f"{comparison.model} prompt={comparison.prompt_tokens} "
+            f"gen={comparison.generation_tokens}: {comparison.verdict}"
+        )
         for comparison in comparisons
     )
 
