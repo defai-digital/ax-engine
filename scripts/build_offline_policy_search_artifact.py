@@ -13,6 +13,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -211,6 +212,28 @@ def build_offline_policy_search_artifact(
     return artifact
 
 
+def write_validated_artifact(output: Path, artifact: dict[str, Any]) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            json.dump(artifact, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            temp_path = Path(handle.name)
+        checker.validate_offline_policy_search_artifact(temp_path)
+        temp_path.replace(output)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metadata", type=Path, required=True)
@@ -243,9 +266,7 @@ def main(argv: list[str] | None = None) -> int:
             best_policy_id=args.best_policy_id,
             repo=repo,
         )
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
-        checker.validate_offline_policy_search_artifact(args.output)
+        write_validated_artifact(args.output, artifact)
     except (OfflinePolicySearchBuildError, checker.OfflinePolicySearchArtifactError) as error:
         print(f"offline policy search artifact build failed: {error}", file=sys.stderr)
         return 1
