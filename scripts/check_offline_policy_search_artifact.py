@@ -254,6 +254,16 @@ def _validate_best_candidate(best_candidate: dict[str, Any], candidates: list[di
     _require(policy_id in candidate_ids, "best_candidate.policy_id must refer to a candidate row")
 
 
+def _validate_candidate_evidence_flags(candidates: list[dict[str, Any]]) -> None:
+    for index, candidate in enumerate(candidates):
+        prefix = f"candidates[{index}]"
+        _boolean(candidate.get("quality_gate_passed"), f"{prefix}.quality_gate_passed")
+        _boolean(
+            candidate.get("deterministic_replay_passed"),
+            f"{prefix}.deterministic_replay_passed",
+        )
+
+
 def _validate_promotion_evidence(artifact: dict[str, Any], candidates: list[dict[str, Any]]) -> None:
     evidence = _mapping(artifact.get("promotion_evidence"), "promotion_evidence")
     _require(
@@ -371,6 +381,8 @@ def _validate_decision(
         f"decision.classification {classification!r} is not supported",
     )
     _string(decision.get("reason"), "decision.reason")
+    if classification != "diagnostic_only":
+        _validate_candidate_evidence_flags(candidates)
     if classification == PROMOTION_REVIEW_CLASSIFICATION:
         _validate_promotion_evidence(artifact, candidates)
     if classification in CONFIRMATION_REQUIRED_CLASSIFICATIONS:
