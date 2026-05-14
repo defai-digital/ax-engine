@@ -119,6 +119,15 @@ pub struct LinearAttentionWeights {
     pub out_proj: QuantizedWeight,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LinearAttentionProjectionRowSource {
+    Qkv(usize),
+    Z(usize),
+    B(usize),
+    A(usize),
+}
+
 /// A weight matrix plus optional MLX affine quantization metadata.
 ///
 /// When `scales` is `Some`, the weight tensor contains packed affine-quantized
@@ -1459,6 +1468,82 @@ fn concat_quantized_weight_rows(
     })
 }
 
+#[cfg(test)]
+fn linear_attention_qkvz_row_sources(
+    num_key_heads: usize,
+    key_head_dim: usize,
+    num_value_heads: usize,
+    value_head_dim: usize,
+) -> Result<Vec<LinearAttentionProjectionRowSource>, WeightLoadError> {
+    if num_key_heads == 0 || key_head_dim == 0 || num_value_heads == 0 || value_head_dim == 0 {
+        return Err(WeightLoadError::InvalidLayer(
+            "linear attention projection pack dimensions must be non-zero".to_string(),
+        ));
+    }
+    if !num_value_heads.is_multiple_of(num_key_heads) {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "linear attention projection pack requires value heads divisible by key heads: {num_value_heads} vs {num_key_heads}"
+        )));
+    }
+
+    let key_dim = num_key_heads * key_head_dim;
+    let value_heads_per_key = num_value_heads / num_key_heads;
+    let value_dim_per_key = value_heads_per_key * value_head_dim;
+    let q_base = 0;
+    let k_base = key_dim;
+    let v_base = key_dim * 2;
+    let mut rows = Vec::with_capacity(key_dim * 2 + num_value_heads * value_head_dim * 2);
+
+    for key_head in 0..num_key_heads {
+        let q_start = q_base + key_head * key_head_dim;
+        let k_start = k_base + key_head * key_head_dim;
+        let value_start = key_head * value_dim_per_key;
+        rows.extend((q_start..q_start + key_head_dim).map(LinearAttentionProjectionRowSource::Qkv));
+        rows.extend((k_start..k_start + key_head_dim).map(LinearAttentionProjectionRowSource::Qkv));
+        rows.extend(
+            (v_base + value_start..v_base + value_start + value_dim_per_key)
+                .map(LinearAttentionProjectionRowSource::Qkv),
+        );
+        rows.extend(
+            (value_start..value_start + value_dim_per_key)
+                .map(LinearAttentionProjectionRowSource::Z),
+        );
+    }
+    Ok(rows)
+}
+
+#[cfg(test)]
+fn linear_attention_ba_row_sources(
+    num_key_heads: usize,
+    num_value_heads: usize,
+) -> Result<Vec<LinearAttentionProjectionRowSource>, WeightLoadError> {
+    if num_key_heads == 0 || num_value_heads == 0 {
+        return Err(WeightLoadError::InvalidLayer(
+            "linear attention BA pack dimensions must be non-zero".to_string(),
+        ));
+    }
+    if !num_value_heads.is_multiple_of(num_key_heads) {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "linear attention BA pack requires value heads divisible by key heads: {num_value_heads} vs {num_key_heads}"
+        )));
+    }
+
+    let value_heads_per_key = num_value_heads / num_key_heads;
+    let mut rows = Vec::with_capacity(num_value_heads * 2);
+    for key_head in 0..num_key_heads {
+        let value_start = key_head * value_heads_per_key;
+        rows.extend(
+            (value_start..value_start + value_heads_per_key)
+                .map(LinearAttentionProjectionRowSource::B),
+        );
+        rows.extend(
+            (value_start..value_start + value_heads_per_key)
+                .map(LinearAttentionProjectionRowSource::A),
+        );
+    }
+    Ok(rows)
+}
+
 /// Load a weight tensor together with its `.scales` and `.biases` siblings
 /// if they exist in the safetensors map (MLX affine quantization format).
 fn take_weight(
@@ -2240,6 +2325,84 @@ mod tests {
         let message = invalid_layer_message(concat_quantized_weight_rows(&a, &b));
 
         assert!(message.contains("only one has quantization scales"));
+    }
+
+    #[test]
+    fn linear_attention_qkvz_pack_order_interleaves_by_key_head() {
+        let rows =
+            linear_attention_qkvz_row_sources(2, 2, 4, 3).expect("valid linear attention dims");
+
+        assert_eq!(
+            rows,
+            vec![
+                LinearAttentionProjectionRowSource::Qkv(0),
+                LinearAttentionProjectionRowSource::Qkv(1),
+                LinearAttentionProjectionRowSource::Qkv(4),
+                LinearAttentionProjectionRowSource::Qkv(5),
+                LinearAttentionProjectionRowSource::Qkv(8),
+                LinearAttentionProjectionRowSource::Qkv(9),
+                LinearAttentionProjectionRowSource::Qkv(10),
+                LinearAttentionProjectionRowSource::Qkv(11),
+                LinearAttentionProjectionRowSource::Qkv(12),
+                LinearAttentionProjectionRowSource::Qkv(13),
+                LinearAttentionProjectionRowSource::Z(0),
+                LinearAttentionProjectionRowSource::Z(1),
+                LinearAttentionProjectionRowSource::Z(2),
+                LinearAttentionProjectionRowSource::Z(3),
+                LinearAttentionProjectionRowSource::Z(4),
+                LinearAttentionProjectionRowSource::Z(5),
+                LinearAttentionProjectionRowSource::Qkv(2),
+                LinearAttentionProjectionRowSource::Qkv(3),
+                LinearAttentionProjectionRowSource::Qkv(6),
+                LinearAttentionProjectionRowSource::Qkv(7),
+                LinearAttentionProjectionRowSource::Qkv(14),
+                LinearAttentionProjectionRowSource::Qkv(15),
+                LinearAttentionProjectionRowSource::Qkv(16),
+                LinearAttentionProjectionRowSource::Qkv(17),
+                LinearAttentionProjectionRowSource::Qkv(18),
+                LinearAttentionProjectionRowSource::Qkv(19),
+                LinearAttentionProjectionRowSource::Z(6),
+                LinearAttentionProjectionRowSource::Z(7),
+                LinearAttentionProjectionRowSource::Z(8),
+                LinearAttentionProjectionRowSource::Z(9),
+                LinearAttentionProjectionRowSource::Z(10),
+                LinearAttentionProjectionRowSource::Z(11),
+            ]
+        );
+    }
+
+    #[test]
+    fn linear_attention_ba_pack_order_is_b_then_a_per_key_head() {
+        let rows = linear_attention_ba_row_sources(2, 4).expect("valid linear attention dims");
+
+        assert_eq!(
+            rows,
+            vec![
+                LinearAttentionProjectionRowSource::B(0),
+                LinearAttentionProjectionRowSource::B(1),
+                LinearAttentionProjectionRowSource::A(0),
+                LinearAttentionProjectionRowSource::A(1),
+                LinearAttentionProjectionRowSource::B(2),
+                LinearAttentionProjectionRowSource::B(3),
+                LinearAttentionProjectionRowSource::A(2),
+                LinearAttentionProjectionRowSource::A(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn linear_attention_pack_order_rejects_uneven_value_heads() {
+        let qkvz_message =
+            invalid_layer_message(linear_attention_qkvz_row_sources(3, 2, 4, 3).map(|_| {
+                QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None)
+            }));
+        let ba_message =
+            invalid_layer_message(linear_attention_ba_row_sources(3, 4).map(|_| {
+                QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None)
+            }));
+
+        assert!(qkvz_message.contains("value heads divisible by key heads"));
+        assert!(ba_message.contains("value heads divisible by key heads"));
     }
 
     #[test]
