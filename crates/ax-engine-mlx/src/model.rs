@@ -71,6 +71,10 @@ pub struct LinearAttentionProfileSnapshot {
 ///   `qkv_project` call (Q/K/V quantized matmul(s), with the subsequent
 ///   reshape to BSHD).  Use `pre_sdpa - pre_sdpa_qkv_proj` to size the
 ///   "tail" (QK/V norm + transpose + RoPE + KV append) for ablation.
+/// - `pre_sdpa_qk_norm_wall_us` — subset of pre_sdpa after QKV projection:
+///   Q/K RMSNorm on BSHD tensors.
+/// - `pre_sdpa_rope_kv_wall_us` — subset of pre_sdpa after QK norm: transpose,
+///   V normalization, RoPE, and KV append.
 /// - `sdpa_wall_us` — `scaled_dot_product_attention_with_mask` (or TurboQuant
 ///   fused fallback). Dense full-attention layers only.
 /// - `post_attn_wall_us` — transpose-back, output projection, residual,
@@ -81,6 +85,14 @@ pub struct LinearAttentionProfileSnapshot {
 ///   surrounding attention tail (transpose+o_proj+post_norm), residuals,
 ///   per-layer-input gating, and layer_scalar.  Use `post_attn - post_attn_ffn`
 ///   to size the non-FFN portion.
+/// - `post_attn_output_proj_wall_us` — subset of post_attn: transpose-back,
+///   reshape, attention output projection, optional output gate, and optional
+///   post-attention norm.
+/// - `post_attn_residual_norm_wall_us` — subset of post_attn: attention
+///   residual add plus pre-FFN RMSNorm.
+/// - `post_attn_residual_gate_wall_us` — subset of post_attn: FFN residual add,
+///   optional Gemma per-layer-input gate/projection/norm, and optional layer
+///   scalar.
 /// - `lm_head_wall_us` — final RMSNorm + lm_head matmul + softcap + reshape.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DecodeProfileSnapshot {
@@ -90,9 +102,14 @@ pub struct DecodeProfileSnapshot {
     pub per_layer_input_wall_us: u32,
     pub pre_sdpa_wall_us: u32,
     pub pre_sdpa_qkv_proj_wall_us: u32,
+    pub pre_sdpa_qk_norm_wall_us: u32,
+    pub pre_sdpa_rope_kv_wall_us: u32,
     pub sdpa_wall_us: u32,
     pub post_attn_wall_us: u32,
     pub post_attn_ffn_wall_us: u32,
+    pub post_attn_output_proj_wall_us: u32,
+    pub post_attn_residual_norm_wall_us: u32,
+    pub post_attn_residual_gate_wall_us: u32,
     pub lm_head_wall_us: u32,
 }
 
@@ -125,9 +142,14 @@ enum DecodeProfileStage {
     PerLayerInput,
     PreSdpa,
     PreSdpaQkvProj,
+    PreSdpaQkNorm,
+    PreSdpaRopeKv,
     Sdpa,
     PostAttn,
     PostAttnFfn,
+    PostAttnOutputProj,
+    PostAttnResidualNorm,
+    PostAttnResidualGate,
     LmHead,
 }
 
@@ -232,9 +254,14 @@ fn record_decode_profile_stage(stage: DecodeProfileStage, wall_us: u32) {
         DecodeProfileStage::PerLayerInput => &mut profile.per_layer_input_wall_us,
         DecodeProfileStage::PreSdpa => &mut profile.pre_sdpa_wall_us,
         DecodeProfileStage::PreSdpaQkvProj => &mut profile.pre_sdpa_qkv_proj_wall_us,
+        DecodeProfileStage::PreSdpaQkNorm => &mut profile.pre_sdpa_qk_norm_wall_us,
+        DecodeProfileStage::PreSdpaRopeKv => &mut profile.pre_sdpa_rope_kv_wall_us,
         DecodeProfileStage::Sdpa => &mut profile.sdpa_wall_us,
         DecodeProfileStage::PostAttn => &mut profile.post_attn_wall_us,
         DecodeProfileStage::PostAttnFfn => &mut profile.post_attn_ffn_wall_us,
+        DecodeProfileStage::PostAttnOutputProj => &mut profile.post_attn_output_proj_wall_us,
+        DecodeProfileStage::PostAttnResidualNorm => &mut profile.post_attn_residual_norm_wall_us,
+        DecodeProfileStage::PostAttnResidualGate => &mut profile.post_attn_residual_gate_wall_us,
         DecodeProfileStage::LmHead => &mut profile.lm_head_wall_us,
     };
     *target = target.saturating_add(wall_us);
@@ -899,6 +926,7 @@ pub fn layer_forward_with_turboquant_context(
                 &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
                 None,
             );
+            let qk_norm_started = profile_decode_layer.then(Instant::now);
             let q = qk_norm_bshd(
                 q,
                 w.q_norm.as_ref(),
@@ -907,6 +935,15 @@ pub fn layer_forward_with_turboquant_context(
                 seq,
                 cfg.rms_norm_eps,
             );
+            if let Some(started) = qk_norm_started {
+                decode_profile_eval_elapsed(
+                    profile_decode_layer,
+                    DecodeProfileStage::PreSdpaQkNorm,
+                    started,
+                    &[&q],
+                );
+            }
+            let rope_kv_started = profile_decode_layer.then(Instant::now);
             let q = transpose(&q, &[0, 2, 1, 3], None);
             let q_rope = rope(
                 &q,
@@ -919,6 +956,14 @@ pub fn layer_forward_with_turboquant_context(
                 None,
             );
             let (ck, cv) = cache.peek_source_kv(src_layer, seq);
+            if let Some(started) = rope_kv_started {
+                decode_profile_eval_elapsed(
+                    profile_decode_layer,
+                    DecodeProfileStage::PreSdpaRopeKv,
+                    started,
+                    &[&q_rope, &ck, &cv],
+                );
+            }
             (q_rope, ck, cv, None)
         } else {
             // Normal layer: compute Q, K, V from own projections.
@@ -956,6 +1001,7 @@ pub fn layer_forward_with_turboquant_context(
                 );
             }
 
+            let qk_norm_started = profile_decode_layer.then(Instant::now);
             let q = qk_norm_bshd(
                 q,
                 w.q_norm.as_ref(),
@@ -972,7 +1018,16 @@ pub fn layer_forward_with_turboquant_context(
                 seq,
                 cfg.rms_norm_eps,
             );
+            if let Some(started) = qk_norm_started {
+                decode_profile_eval_elapsed(
+                    profile_decode_layer,
+                    DecodeProfileStage::PreSdpaQkNorm,
+                    started,
+                    &[&q, &k],
+                );
+            }
 
+            let rope_kv_started = profile_decode_layer.then(Instant::now);
             let q = transpose(&q, &[0, 2, 1, 3], None);
             let k = transpose(&k, &[0, 2, 1, 3], None);
             let v = prepare_value_bhsd(
@@ -1010,6 +1065,14 @@ pub fn layer_forward_with_turboquant_context(
             } else {
                 cache.append(layer_idx, k_rope, v)
             };
+            if let Some(started) = rope_kv_started {
+                decode_profile_eval_elapsed(
+                    profile_decode_layer,
+                    DecodeProfileStage::PreSdpaRopeKv,
+                    started,
+                    &[&q_rope, &ck, &cv],
+                );
+            }
             (q_rope, ck, cv, attn_gate_raw)
         };
         if let Some(started) = pre_sdpa_started {
@@ -1104,6 +1167,7 @@ pub fn layer_forward_with_turboquant_context(
             );
         }
         post_attn_started = profile_decode_layer.then(Instant::now);
+        let output_proj_started = profile_decode_layer.then(Instant::now);
 
         // 10. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
         let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
@@ -1125,11 +1189,20 @@ pub fn layer_forward_with_turboquant_context(
         );
 
         // 14. Optional post-attention layernorm (Gemma4): applied BEFORE residual add.
-        if let Some(post_norm) = &w.attn_post_norm {
+        let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
             rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
         } else {
             attn_proj
+        };
+        if let Some(started) = output_proj_started {
+            decode_profile_eval_elapsed(
+                profile_decode_layer,
+                DecodeProfileStage::PostAttnOutputProj,
+                started,
+                &[&attn_proj],
+            );
         }
+        attn_proj
     };
     if let Some(started) = attention_started {
         profile_eval_elapsed(
@@ -1141,10 +1214,19 @@ pub fn layer_forward_with_turboquant_context(
     }
 
     // 15. Residual.
+    let residual_norm_started = profile_decode_layer.then(Instant::now);
     let hidden = add(hidden, &attn_proj, None);
 
     // 16. Pre-FFN norm.
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    if let Some(started) = residual_norm_started {
+        decode_profile_eval_elapsed(
+            profile_decode_layer,
+            DecodeProfileStage::PostAttnResidualNorm,
+            started,
+            &[&normed2],
+        );
+    }
 
     // 17. FFN: MoE or dense.
     let ffn_started = profile_decode_layer.then(Instant::now);
@@ -1237,6 +1319,7 @@ pub fn layer_forward_with_turboquant_context(
     }
 
     // 18. Residual.
+    let residual_gate_started = profile_decode_layer.then(Instant::now);
     let mut out = add(&hidden, &ffn_out, None);
 
     // 19. Per-layer input gating (Gemma4 2B/4B): gate(h) * per_layer_embed → proj → norm + h.
@@ -1259,6 +1342,14 @@ pub fn layer_forward_with_turboquant_context(
     } else {
         out
     };
+    if let Some(started) = residual_gate_started {
+        decode_profile_eval_elapsed(
+            profile_decode_layer,
+            DecodeProfileStage::PostAttnResidualGate,
+            started,
+            &[&out],
+        );
+    }
     if let Some(started) = post_attn_started {
         decode_profile_eval_elapsed(
             profile_decode_layer,

@@ -1236,9 +1236,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_decode_profile_per_layer_input_wall_us": 100,
                     "ax_mlx_decode_profile_pre_sdpa_wall_us": 200,
                     "ax_mlx_decode_profile_pre_sdpa_qkv_proj_wall_us": 80,
+                    "ax_mlx_decode_profile_pre_sdpa_qk_norm_wall_us": 30,
+                    "ax_mlx_decode_profile_pre_sdpa_rope_kv_wall_us": 70,
                     "ax_mlx_decode_profile_sdpa_wall_us": 300,
                     "ax_mlx_decode_profile_post_attn_wall_us": 400,
                     "ax_mlx_decode_profile_post_attn_ffn_wall_us": 250,
+                    "ax_mlx_decode_profile_post_attn_output_proj_wall_us": 60,
+                    "ax_mlx_decode_profile_post_attn_residual_norm_wall_us": 40,
+                    "ax_mlx_decode_profile_post_attn_residual_gate_wall_us": 50,
                     "ax_mlx_decode_profile_lm_head_wall_us": 50,
                     "unrelated": 99,
                 }
@@ -1264,6 +1269,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_mlx_decode_profile_layers": 126,
                         "ax_mlx_decode_profile_per_layer_input_wall_us": 150,
                         "ax_mlx_decode_profile_post_attn_wall_us": 600,
+                        "ax_mlx_decode_profile_post_attn_residual_gate_wall_us": 75,
                     }
                 },
             ]
@@ -1276,6 +1282,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             250,
         )
         self.assertEqual(summary["ax_mlx_decode_profile_post_attn_wall_us"], 1000)
+        self.assertEqual(
+            summary["ax_mlx_decode_profile_post_attn_residual_gate_wall_us"],
+            125,
+        )
 
     def test_ax_mlx_kv_compression_telemetry_is_extracted_and_summarized(self) -> None:
         telemetry = bench.extract_ax_mlx_kv_compression_telemetry(
