@@ -44,10 +44,11 @@ def ax_row(
     prefill_tok_s: float,
     projection_wall_us: int,
     pack: bool,
+    prompt_tokens: int = 128,
 ) -> dict[str, object]:
     return {
         "engine": engine,
-        "prompt_tokens": 128,
+        "prompt_tokens": prompt_tokens,
         "generation_tokens": 128,
         "ax_decode_policy": "direct_no_ngram_acceleration",
         "ax_linear_attention_projection_pack": pack,
@@ -58,7 +59,7 @@ def ax_row(
     }
 
 
-def artifact() -> dict[str, object]:
+def artifact(*, prompt_tokens: int = 128) -> dict[str, object]:
     return {
         "schema_version": checker.SCHEMA_VERSION,
         "model": "qwen3_6_35b_a3b_8bit",
@@ -70,12 +71,14 @@ def artifact() -> dict[str, object]:
                 prefill_tok_s=1800.0,
                 projection_wall_us=9000,
                 pack=False,
+                prompt_tokens=prompt_tokens,
             ),
             ax_row(
                 engine="ax_engine_mlx_linear_pack",
                 prefill_tok_s=1900.0,
                 projection_wall_us=6000,
                 pack=True,
+                prompt_tokens=prompt_tokens,
             ),
         ],
     }
@@ -111,6 +114,7 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
         self.assertEqual(checked.artifact_count, 1)
         self.assertEqual(checked.diagnostic_count, 1)
         self.assertEqual(checked.pack_candidate_win_count, 1)
+        self.assertEqual(checked.pack_candidate_win_prompt_count, 1)
         self.assertEqual(
             checker.summarize_pack_comparisons(checked.pack_comparisons),
             "qwen3_6_35b_a3b_8bit prompt=128: candidate win",
@@ -213,6 +217,44 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
                 min_pack_candidate_wins=-1,
             )
 
+    def test_min_pack_candidate_win_prompts_rejects_thin_prompt_coverage(self) -> None:
+        path = self.write_fixture(artifact())
+
+        with self.assertRaisesRegex(
+            checker.MlxForwardProfileArtifactError,
+            "prompt length",
+        ):
+            checker.check_mlx_forward_profile_artifacts(
+                [path],
+                require_pack_candidate_win=True,
+                min_pack_candidate_win_prompts=2,
+            )
+
+    def test_min_pack_candidate_win_prompts_accepts_multiple_prompts(self) -> None:
+        first = self.write_fixture(artifact(prompt_tokens=128))
+        second = self.write_fixture(artifact(prompt_tokens=512))
+
+        checked = checker.check_mlx_forward_profile_artifacts(
+            [first, second],
+            require_pack_candidate_win=True,
+            min_pack_candidate_win_prompts=2,
+        )
+
+        self.assertEqual(checked.pack_candidate_win_count, 2)
+        self.assertEqual(checked.pack_candidate_win_prompt_count, 2)
+
+    def test_min_pack_candidate_win_prompts_must_be_non_negative(self) -> None:
+        path = self.write_fixture(artifact())
+
+        with self.assertRaisesRegex(
+            checker.MlxForwardProfileArtifactError,
+            "non-negative",
+        ):
+            checker.check_mlx_forward_profile_artifacts(
+                [path],
+                min_pack_candidate_win_prompts=-1,
+            )
+
     def test_cli_reports_diagnostics(self) -> None:
         path = self.write_fixture(artifact())
 
@@ -231,6 +273,7 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
 
         self.assertIn("diagnostics validated", completed.stdout)
         self.assertIn("1 candidate win", completed.stdout)
+        self.assertIn("1 candidate-win prompt length", completed.stdout)
         self.assertIn(
             "qwen3_6_35b_a3b_8bit prompt=128: candidate win",
             completed.stdout,
@@ -247,6 +290,8 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
                 "--require-pack-candidate-win",
                 "--min-pack-candidate-wins",
                 "1",
+                "--min-pack-candidate-win-prompts",
+                "1",
             ],
             check=True,
             text=True,
@@ -255,6 +300,7 @@ class MlxForwardProfileArtifactTests(unittest.TestCase):
         )
 
         self.assertIn("1 candidate win", completed.stdout)
+        self.assertIn("1 candidate-win prompt length", completed.stdout)
 
 
 if __name__ == "__main__":
