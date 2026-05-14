@@ -242,7 +242,14 @@ impl DiskPrefixCache {
                 _ => e.into(),
             });
         }
-        Ok(Self { dir, policy })
+        let cache = Self { dir, policy };
+        // Apply the configured budgets to whatever already exists in
+        // the directory. Operators who shrink AX_MLX_PREFIX_CACHE_DISK_*
+        // budgets between runs should see the trim happen at startup
+        // rather than only after the next insert. Eviction is
+        // best-effort and never propagates errors here.
+        let _ = cache.evict_until_within_policy();
+        Ok(cache)
     }
 
     /// Active eviction policy for this cache instance.
@@ -324,12 +331,19 @@ impl DiskPrefixCache {
         buf.extend_from_slice(key_bytes);
         buf.extend_from_slice(payload);
 
+        // RAII guard cleans up the temp file if any step between
+        // create and rename fails (out-of-space, permission flip,
+        // unexpected unlink). Without this, errored inserts leak
+        // `.tmp.<pid>` files that the `.axkv`-only eviction sweep
+        // would never reclaim.
+        let mut guard = TempFileGuard::new(&tmp_path);
         {
             let mut f = fs::File::create(&tmp_path)?;
             f.write_all(&buf)?;
             f.sync_all()?;
         }
         fs::rename(&tmp_path, &final_path)?;
+        guard.disarm();
 
         let evictions = self.evict_until_within_policy();
         Ok(DiskPrefixCacheInsertOutcome { evictions })
@@ -418,6 +432,33 @@ struct EntryStat {
     path: PathBuf,
     size: u64,
     mtime: std::time::SystemTime,
+}
+
+/// RAII guard that removes a temp file on drop unless explicitly
+/// disarmed. Used by [`DiskPrefixCache::insert`] so a failed write or
+/// rename does not leave a `.tmp.<pid>` file behind.
+struct TempFileGuard {
+    path: Option<PathBuf>,
+}
+
+impl TempFileGuard {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: Some(path.to_path_buf()),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn parse_file(raw: &[u8], expected_key: &[u8]) -> Option<Vec<u8>> {
@@ -663,6 +704,94 @@ mod tests {
         assert!(dir.join("NOTES.md").is_file());
         assert!(cache.contains(&key_a));
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn with_policy_evicts_existing_entries_to_budget_on_open() {
+        // Pre-populate three entries under the permissive default
+        // policy, then reopen with a tight `max_entries=1` budget.
+        // The new instance must trim back to one entry without
+        // requiring a fresh insert. Mtimes must be staggered so the
+        // initial-sweep ordering is deterministic.
+        let dir = unique_tempdir("reopen-evict");
+        {
+            let cache = DiskPrefixCache::open(&dir).expect("open default");
+            let key_a = canonical_key_bytes("m", "p", "l", 16, 1024, 0xa1);
+            let key_b = canonical_key_bytes("m", "p", "l", 16, 1024, 0xb2);
+            let key_c = canonical_key_bytes("m", "p", "l", 16, 1024, 0xc3);
+            cache.insert(&key_a, b"payload-a").expect("insert a");
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            cache.insert(&key_b, b"payload-b").expect("insert b");
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            cache.insert(&key_c, b"payload-c").expect("insert c");
+        }
+
+        let tight = DiskPrefixCachePolicy {
+            max_bytes: u64::MAX,
+            max_entries: 1,
+        };
+        let cache = DiskPrefixCache::with_policy(&dir, tight).expect("reopen");
+
+        let remaining: Vec<_> = fs::read_dir(&dir)
+            .expect("read_dir")
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|ext| ext == ENTRY_EXTENSION)
+            })
+            .collect();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "with_policy must trim existing entries down to the policy on open",
+        );
+
+        // The newest of the three entries (c) must survive.
+        let key_c = canonical_key_bytes("m", "p", "l", 16, 1024, 0xc3);
+        assert!(cache.contains(&key_c), "newest entry must survive");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn temp_file_guard_removes_tmp_on_drop() {
+        // The guard's job is to clean up a partially written
+        // `.tmp.<pid>` file if insert fails between create and
+        // rename. We simulate that by manually creating a tmp-shaped
+        // file, dropping the guard without disarming, and checking
+        // it was reaped. This proves the guard's drop path runs
+        // independently of whether insert itself errored.
+        let dir = unique_tempdir("tmp-guard");
+        fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = dir.join("orphan.tmp.999");
+        fs::write(&tmp, b"fake-partial-write").expect("seed tmp");
+        assert!(tmp.is_file(), "seed");
+
+        {
+            let _guard = TempFileGuard::new(&tmp);
+            // Drop without disarming.
+        }
+        assert!(!tmp.exists(), "temp guard must remove the tmp file on drop");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn temp_file_guard_disarmed_does_not_remove() {
+        let dir = unique_tempdir("tmp-guard-disarm");
+        fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = dir.join("survivor.tmp.999");
+        fs::write(&tmp, b"keep-me").expect("seed tmp");
+
+        {
+            let mut guard = TempFileGuard::new(&tmp);
+            guard.disarm();
+        }
+        assert!(
+            tmp.is_file(),
+            "disarmed guard must not remove the tmp file",
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
