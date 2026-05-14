@@ -47,8 +47,7 @@ const STREAM_CHANNEL_CAPACITY: usize = 128;
 // `QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING` instead.
 const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT: &str =
     "<|im_start|>assistant\n<think>\n\n</think>\n\n";
-const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING: &str =
-    "<|im_start|>assistant\n<think>\n";
+const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING: &str = "<|im_start|>assistant\n<think>\n";
 
 type StreamEvent = Result<Event, Infallible>;
 type StreamEventSender = mpsc::Sender<StreamEvent>;
@@ -555,9 +554,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
 
     if let Some(addr) = grpc_bind_address {
-        let parsed: std::net::SocketAddr = addr
-            .parse()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("invalid --grpc-bind-address {addr}: {e}")))?;
+        let parsed: std::net::SocketAddr = addr.parse().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid --grpc-bind-address {addr}: {e}"),
+            )
+        })?;
         let grpc_service = grpc::AxEngineGrpcService::new(state).into_server();
         let grpc_server = tonic::transport::Server::builder()
             .add_service(grpc_service)
@@ -761,11 +763,13 @@ async fn openai_embeddings(
             .into_iter()
             .next()
             .expect("batch.len() == 1 because input was Single");
-        vec![state
-            .embedding_batcher
-            .embed(single, pooling, normalize)
-            .await
-            .map_err(map_session_error)?]
+        vec![
+            state
+                .embedding_batcher
+                .embed(single, pooling, normalize)
+                .await
+                .map_err(map_session_error)?,
+        ]
     } else {
         let session = state.request_session.clone();
         tokio::task::spawn_blocking(move || {

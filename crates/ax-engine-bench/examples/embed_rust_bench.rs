@@ -93,10 +93,17 @@ fn main() {
         "[embed-rust-bench] model={} {}",
         args.model_dir.display(),
         match &args.batch {
-            Some(lens) =>
-                format!("mode=batch n={} lens={:?} warmup={} trials={}", lens.len(), lens, args.warmup, args.trials),
-            None =>
-                format!("mode=single seq={} warmup={} trials={}", args.seq, args.warmup, args.trials),
+            Some(lens) => format!(
+                "mode=batch n={} lens={:?} warmup={} trials={}",
+                lens.len(),
+                lens,
+                args.warmup,
+                args.trials
+            ),
+            None => format!(
+                "mode=single seq={} warmup={} trials={}",
+                args.seq, args.warmup, args.trials
+            ),
         }
     );
 
@@ -188,8 +195,5 @@ fn main() {
         "per-call ms  min={:.3}  median={:.3}  max={:.3}  mean={:.3}",
         min, median, max, mean
     );
-    println!(
-        "ms/sentence  {:.3}    tok/s {:.1}",
-        ms_per_sentence, tps
-    );
+    println!("ms/sentence  {:.3}    tok/s {:.1}", ms_per_sentence, tps);
 }

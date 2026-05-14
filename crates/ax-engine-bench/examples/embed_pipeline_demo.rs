@@ -195,7 +195,10 @@ fn main() {
         .take(args.warmup_chunks.min(chunks.len()))
         .cloned()
         .collect();
-    eprintln!("[embed-pipeline-demo] warmup × {} chunks", warmup_chunks.len());
+    eprintln!(
+        "[embed-pipeline-demo] warmup × {} chunks",
+        warmup_chunks.len()
+    );
     run_serial(&session, &tokenizer, &warmup_chunks);
 
     eprintln!("[embed-pipeline-demo] running serial …");
@@ -209,10 +212,22 @@ fn main() {
     let pipe_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     println!();
-    println!("Serial      {:>3} sentences, {:>5} tokens   {:.2} ms total   {:.0} tok/s   {:.2} ms/sent",
-        n_serial, tokens_serial, serial_ms, tokens_serial as f64 / (serial_ms / 1000.0), serial_ms / n_serial as f64);
-    println!("Pipelined   {:>3} sentences, {:>5} tokens   {:.2} ms total   {:.0} tok/s   {:.2} ms/sent",
-        n_pipe, tokens_pipe, pipe_ms, tokens_pipe as f64 / (pipe_ms / 1000.0), pipe_ms / n_pipe as f64);
+    println!(
+        "Serial      {:>3} sentences, {:>5} tokens   {:.2} ms total   {:.0} tok/s   {:.2} ms/sent",
+        n_serial,
+        tokens_serial,
+        serial_ms,
+        tokens_serial as f64 / (serial_ms / 1000.0),
+        serial_ms / n_serial as f64
+    );
+    println!(
+        "Pipelined   {:>3} sentences, {:>5} tokens   {:.2} ms total   {:.0} tok/s   {:.2} ms/sent",
+        n_pipe,
+        tokens_pipe,
+        pipe_ms,
+        tokens_pipe as f64 / (pipe_ms / 1000.0),
+        pipe_ms / n_pipe as f64
+    );
     println!(
         "Pipeline speedup: {:+.1}%  (lower ms = better)",
         (serial_ms / pipe_ms - 1.0) * 100.0
