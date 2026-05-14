@@ -27,8 +27,8 @@ def candidate(
     selected_backend: str = "mlx",
     fallback_count: int | None = 0,
     fallback_tokens: int | None = 0,
-    quality_gate_passed: bool = True,
-    deterministic_replay_passed: bool = True,
+    quality_gate_passed: bool | None = True,
+    deterministic_replay_passed: bool | None = True,
     prompt_tokens: int = 8192,
     generation_tokens: int = 256,
 ) -> dict[str, object]:
@@ -54,9 +54,11 @@ def candidate(
         "route_metadata": {
             "ax_mlx_kv_compression_decode_path": "fused_compressed_decode",
         },
-        "quality_gate_passed": quality_gate_passed,
-        "deterministic_replay_passed": deterministic_replay_passed,
     }
+    if quality_gate_passed is not None:
+        row["quality_gate_passed"] = quality_gate_passed
+    if deterministic_replay_passed is not None:
+        row["deterministic_replay_passed"] = deterministic_replay_passed
     if fallback_count is not None:
         row["fallback_count"] = fallback_count
     if fallback_tokens is not None:
@@ -370,6 +372,49 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
         self.assertEqual(
             checker.validate_offline_policy_search_artifact(path),
             "candidate_win_needs_repeat",
+        )
+
+    def test_non_diagnostic_decision_requires_candidate_quality_evidence(self) -> None:
+        path = self.write_fixture(
+            artifact(
+                candidates=[candidate(quality_gate_passed=None)],
+                decision_classification="candidate_win_needs_repeat",
+                confirmation_evidence=confirmation_evidence(),
+            )
+        )
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            r"candidates\[0\]\.quality_gate_passed must be a boolean",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+    def test_non_diagnostic_decision_requires_candidate_replay_evidence(self) -> None:
+        path = self.write_fixture(
+            artifact(
+                candidates=[candidate(deterministic_replay_passed=None)],
+                decision_classification="negative_result",
+                confirmation_evidence=confirmation_evidence(classification_hint="negative_result"),
+            )
+        )
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            r"candidates\[0\]\.deterministic_replay_passed must be a boolean",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+    def test_rejected_quality_can_record_failed_quality_gate(self) -> None:
+        path = self.write_fixture(
+            artifact(
+                candidates=[candidate(quality_gate_passed=False)],
+                decision_classification="rejected_quality",
+            )
+        )
+
+        self.assertEqual(
+            checker.validate_offline_policy_search_artifact(path),
+            "rejected_quality",
         )
 
     def test_confirmation_evidence_requires_repeated_measurements(self) -> None:
