@@ -168,6 +168,7 @@ class MlxForwardProfileReportTests(unittest.TestCase):
             report,
         )
         self.assertIn("evaluate offline packed qkvz/ba projection", report)
+        self.assertIn("row-order equivalence tests", report)
 
     def test_rejects_stale_profile_token_sentinel(self) -> None:
         path = self.write_artifact(artifact(profile_tokens=4_294_967_295))

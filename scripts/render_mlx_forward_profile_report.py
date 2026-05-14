@@ -466,6 +466,7 @@ def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
         [
             "- Compare this with the prefill breakdown report first: if forward is not dominant, do not use this report to justify kernel work.",
             "- Projection substage cells are `n/a` for artifacts captured before the projection split counters existed.",
+            "- `split_qkv_z_a_b` pack candidates need row-order equivalence tests; simple row-block concatenation can be shape-compatible but semantically wrong.",
             "- Reject stale artifacts with `ax_mlx_linear_attention_profile_tokens=4294967295`; that value came from an old signed/unsigned clamp bug.",
             "- Keep barrier-profile artifacts out of README headline tables.",
             "",
