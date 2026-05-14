@@ -35,7 +35,7 @@ class KvMultiturnEvidenceProvenanceTests(unittest.TestCase):
         self.assertEqual(set(flags), set(profile.PROVENANCE_ENV_FLAGS))
         self.assertFalse(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["set"])
         self.assertIsNone(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["value"])
-        self.assertFalse(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["truthy"])
+        self.assertIsNone(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["truthy"])
 
         with patch.dict(
             os.environ,
@@ -51,7 +51,9 @@ class KvMultiturnEvidenceProvenanceTests(unittest.TestCase):
         self.assertTrue(flags["AX_ALLOW_MLA_PREFIX_RESTORE"]["truthy"])
         self.assertEqual(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["value"], "268435456")
         self.assertTrue(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["set"])
+        self.assertIsNone(flags["AX_MLX_PREFIX_CACHE_MAX_BYTES"]["truthy"])
         self.assertEqual(flags["AX_MLX_PREFIX_CACHE_MAX_ENTRIES"]["value"], "2")
+        self.assertIsNone(flags["AX_MLX_PREFIX_CACHE_MAX_ENTRIES"]["truthy"])
         self.assertFalse(flags["AX_NO_SPEC"]["truthy"])
 
 

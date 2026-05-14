@@ -53,6 +53,12 @@ PROVENANCE_ENV_FLAGS = [
     "AX_NO_SPEC",
 ]
 
+BOOLEAN_PROVENANCE_ENV_FLAGS = {
+    "AX_ALLOW_MLA_PREFIX_RESTORE",
+    "AX_DISABLE_TURBOQUANT_FUSED_DECODE",
+    "AX_NO_SPEC",
+}
+
 # Telemetry keys this script consumes from `route.crossover_decisions`.
 # Kept in sync with `profile_kv_long_context_evidence.py` so JSON
 # artifacts from both harnesses are easy to diff.
@@ -117,7 +123,11 @@ def collect_environment_flags() -> dict[str, dict[str, object]]:
         name: {
             "set": name in os.environ,
             "value": os.environ.get(name),
-            "truthy": parse_truthy_env(os.environ.get(name)),
+            "truthy": (
+                parse_truthy_env(os.environ.get(name))
+                if name in BOOLEAN_PROVENANCE_ENV_FLAGS
+                else None
+            ),
         }
         for name in PROVENANCE_ENV_FLAGS
     }
