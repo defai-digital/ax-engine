@@ -1151,6 +1151,12 @@ impl DecodeProfileSnapshot {
         self.pre_sdpa_qkv_proj_wall_us = self
             .pre_sdpa_qkv_proj_wall_us
             .saturating_add(other.pre_sdpa_qkv_proj_wall_us);
+        self.pre_sdpa_qk_norm_wall_us = self
+            .pre_sdpa_qk_norm_wall_us
+            .saturating_add(other.pre_sdpa_qk_norm_wall_us);
+        self.pre_sdpa_rope_kv_wall_us = self
+            .pre_sdpa_rope_kv_wall_us
+            .saturating_add(other.pre_sdpa_rope_kv_wall_us);
         self.sdpa_wall_us = self.sdpa_wall_us.saturating_add(other.sdpa_wall_us);
         self.post_attn_wall_us = self
             .post_attn_wall_us
@@ -1158,6 +1164,15 @@ impl DecodeProfileSnapshot {
         self.post_attn_ffn_wall_us = self
             .post_attn_ffn_wall_us
             .saturating_add(other.post_attn_ffn_wall_us);
+        self.post_attn_output_proj_wall_us = self
+            .post_attn_output_proj_wall_us
+            .saturating_add(other.post_attn_output_proj_wall_us);
+        self.post_attn_residual_norm_wall_us = self
+            .post_attn_residual_norm_wall_us
+            .saturating_add(other.post_attn_residual_norm_wall_us);
+        self.post_attn_residual_gate_wall_us = self
+            .post_attn_residual_gate_wall_us
+            .saturating_add(other.post_attn_residual_gate_wall_us);
         self.lm_head_wall_us = self.lm_head_wall_us.saturating_add(other.lm_head_wall_us);
     }
 
@@ -1182,6 +1197,14 @@ impl DecodeProfileSnapshot {
                 "ax_mlx_decode_profile_pre_sdpa_qkv_proj_wall_us",
                 self.pre_sdpa_qkv_proj_wall_us,
             ),
+            (
+                "ax_mlx_decode_profile_pre_sdpa_qk_norm_wall_us",
+                self.pre_sdpa_qk_norm_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_pre_sdpa_rope_kv_wall_us",
+                self.pre_sdpa_rope_kv_wall_us,
+            ),
             ("ax_mlx_decode_profile_sdpa_wall_us", self.sdpa_wall_us),
             (
                 "ax_mlx_decode_profile_post_attn_wall_us",
@@ -1190,6 +1213,18 @@ impl DecodeProfileSnapshot {
             (
                 "ax_mlx_decode_profile_post_attn_ffn_wall_us",
                 self.post_attn_ffn_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_post_attn_output_proj_wall_us",
+                self.post_attn_output_proj_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_post_attn_residual_norm_wall_us",
+                self.post_attn_residual_norm_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_post_attn_residual_gate_wall_us",
+                self.post_attn_residual_gate_wall_us,
             ),
             (
                 "ax_mlx_decode_profile_lm_head_wall_us",
@@ -5625,9 +5660,14 @@ mod tests {
             per_layer_input_wall_us: 800,
             pre_sdpa_wall_us: 1200,
             pre_sdpa_qkv_proj_wall_us: 700,
+            pre_sdpa_qk_norm_wall_us: 200,
+            pre_sdpa_rope_kv_wall_us: 300,
             sdpa_wall_us: 500,
             post_attn_wall_us: 2400,
             post_attn_ffn_wall_us: 1800,
+            post_attn_output_proj_wall_us: 300,
+            post_attn_residual_norm_wall_us: 100,
+            post_attn_residual_gate_wall_us: 200,
             lm_head_wall_us: 150,
         };
         profile.merge_from(DecodeProfileSnapshot {
@@ -5637,9 +5677,14 @@ mod tests {
             per_layer_input_wall_us: 200,
             pre_sdpa_wall_us: 300,
             pre_sdpa_qkv_proj_wall_us: 200,
+            pre_sdpa_qk_norm_wall_us: 50,
+            pre_sdpa_rope_kv_wall_us: 75,
             sdpa_wall_us: 100,
             post_attn_wall_us: 600,
             post_attn_ffn_wall_us: 400,
+            post_attn_output_proj_wall_us: 75,
+            post_attn_residual_norm_wall_us: 25,
+            post_attn_residual_gate_wall_us: 50,
             lm_head_wall_us: 50,
         });
 
@@ -5668,6 +5713,14 @@ mod tests {
             Some(&900)
         );
         assert_eq!(
+            decisions.get("ax_mlx_decode_profile_pre_sdpa_qk_norm_wall_us"),
+            Some(&250)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_pre_sdpa_rope_kv_wall_us"),
+            Some(&375)
+        );
+        assert_eq!(
             decisions.get("ax_mlx_decode_profile_sdpa_wall_us"),
             Some(&600)
         );
@@ -5678,6 +5731,18 @@ mod tests {
         assert_eq!(
             decisions.get("ax_mlx_decode_profile_post_attn_ffn_wall_us"),
             Some(&2200)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_post_attn_output_proj_wall_us"),
+            Some(&375)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_post_attn_residual_norm_wall_us"),
+            Some(&125)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_post_attn_residual_gate_wall_us"),
+            Some(&250)
         );
         assert_eq!(
             decisions.get("ax_mlx_decode_profile_lm_head_wall_us"),

@@ -241,9 +241,14 @@ AX_MLX_DECODE_PROFILE_KEYS = [
     "ax_mlx_decode_profile_per_layer_input_wall_us",
     "ax_mlx_decode_profile_pre_sdpa_wall_us",
     "ax_mlx_decode_profile_pre_sdpa_qkv_proj_wall_us",
+    "ax_mlx_decode_profile_pre_sdpa_qk_norm_wall_us",
+    "ax_mlx_decode_profile_pre_sdpa_rope_kv_wall_us",
     "ax_mlx_decode_profile_sdpa_wall_us",
     "ax_mlx_decode_profile_post_attn_wall_us",
     "ax_mlx_decode_profile_post_attn_ffn_wall_us",
+    "ax_mlx_decode_profile_post_attn_output_proj_wall_us",
+    "ax_mlx_decode_profile_post_attn_residual_norm_wall_us",
+    "ax_mlx_decode_profile_post_attn_residual_gate_wall_us",
     "ax_mlx_decode_profile_lm_head_wall_us",
 ]
 
