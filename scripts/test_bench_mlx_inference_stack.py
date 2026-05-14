@@ -472,6 +472,24 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                             "value_head_dim": 128,
                             "conv_kernel_dim": 4,
                         },
+                        "tensors": [
+                            {
+                                "role": "linear_attention_in_proj_qkv",
+                                "layer_index": 0,
+                            },
+                            {
+                                "role": "linear_attention_in_proj_z",
+                                "layer_index": 0,
+                            },
+                            {
+                                "role": "linear_attention_in_proj_a",
+                                "layer_index": 0,
+                            },
+                            {
+                                "role": "linear_attention_in_proj_b",
+                                "layer_index": 0,
+                            },
+                        ],
                     }
                 )
             )
@@ -487,6 +505,30 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             bench.ax_decode_policy(metadata, direct_mode=True),
             "direct_no_ngram_acceleration",
         )
+        self.assertEqual(
+            metadata["linear_attention_projection_layout"]["layout"],
+            "split_qkv_z_a_b",
+        )
+        self.assertTrue(
+            metadata["linear_attention_projection_layout"]["offline_pack_candidate"]
+        )
+
+    def test_linear_attention_projection_layout_detects_packed_manifest(self) -> None:
+        layout = bench.linear_attention_projection_layout(
+            {
+                "tensors": [
+                    {"role": "linear_attention_in_proj_qkvz", "layer_index": 0},
+                    {"role": "linear_attention_in_proj_ba", "layer_index": 0},
+                    {"role": "linear_attention_in_proj_qkvz", "layer_index": 1},
+                    {"role": "linear_attention_in_proj_ba", "layer_index": 1},
+                ]
+            }
+        )
+
+        self.assertEqual(layout["layout"], "packed_qkvz_ba")
+        self.assertEqual(layout["linear_layers"], 2)
+        self.assertEqual(layout["packed_layers"], 2)
+        self.assertFalse(layout["offline_pack_candidate"])
 
     def test_gateddelta_prefill_profile_defaults_to_long_prompt_matrix(self) -> None:
         self.assertEqual(

@@ -377,8 +377,70 @@ def collect_model_metadata(model_dir: Path) -> dict[str, Any]:
                 )
                 if key in linear_attention
             }
+        projection_layout = linear_attention_projection_layout(manifest)
+        if projection_layout:
+            metadata["linear_attention_projection_layout"] = projection_layout
 
     return metadata
+
+
+def linear_attention_projection_layout(manifest: dict[str, Any]) -> dict[str, Any]:
+    tensors = manifest.get("tensors")
+    if not isinstance(tensors, list):
+        return {}
+
+    role_counts: dict[str, int] = {}
+    layer_roles: dict[int, set[str]] = {}
+    for tensor in tensors:
+        if not isinstance(tensor, dict):
+            continue
+        role = tensor.get("role")
+        layer_index = tensor.get("layer_index")
+        if not isinstance(role, str) or not role.startswith("linear_attention_in_proj_"):
+            continue
+        role_counts[role] = role_counts.get(role, 0) + 1
+        if isinstance(layer_index, int):
+            layer_roles.setdefault(layer_index, set()).add(role)
+
+    if not role_counts:
+        return {}
+
+    packed_layers = sum(
+        1
+        for roles in layer_roles.values()
+        if {
+            "linear_attention_in_proj_qkvz",
+            "linear_attention_in_proj_ba",
+        }.issubset(roles)
+    )
+    split_layers = sum(
+        1
+        for roles in layer_roles.values()
+        if {
+            "linear_attention_in_proj_qkv",
+            "linear_attention_in_proj_z",
+            "linear_attention_in_proj_a",
+            "linear_attention_in_proj_b",
+        }.issubset(roles)
+    )
+    if packed_layers and split_layers:
+        layout = "mixed"
+    elif packed_layers:
+        layout = "packed_qkvz_ba"
+    elif split_layers:
+        layout = "split_qkv_z_a_b"
+    else:
+        layout = "incomplete"
+
+    return {
+        "schema_version": "ax.linear_attention_projection_layout.v1",
+        "layout": layout,
+        "linear_layers": len(layer_roles),
+        "packed_layers": packed_layers,
+        "split_layers": split_layers,
+        "role_counts": dict(sorted(role_counts.items())),
+        "offline_pack_candidate": split_layers > 0 and packed_layers == 0,
+    }
 
 
 def native_manifest_has_linear_attention(linear_attention: Any) -> bool:
