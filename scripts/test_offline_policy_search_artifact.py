@@ -71,6 +71,7 @@ def artifact(
     candidates: list[dict[str, object]] | None = None,
     decision_classification: str = "diagnostic_only",
     promotion_evidence: dict[str, object] | None = None,
+    confirmation_evidence: dict[str, object] | None = None,
     dirty: bool = False,
     changed_files: list[str] | None = None,
 ) -> dict[str, object]:
@@ -146,7 +147,32 @@ def artifact(
         }
     if promotion_evidence is not None:
         payload["promotion_evidence"] = promotion_evidence
+    if confirmation_evidence is not None:
+        payload["confirmation_evidence"] = confirmation_evidence
     return payload
+
+
+def confirmation_evidence(
+    *,
+    classification_hint: str = "candidate_win_needs_repeat",
+    candidate_policy_id: str = "k8v4-hot-256",
+    runs: int = 3,
+    cooldown_seconds: int = 20,
+) -> dict[str, object]:
+    return {
+        "baseline_policy_id": "disabled",
+        "candidate_policy_id": candidate_policy_id,
+        "repeated_measurements": {
+            "runs": runs,
+            "cooldown_seconds": cooldown_seconds,
+        },
+        "decision_metric": "decode_tok_s",
+        "baseline_median": 100.0,
+        "candidate_median": 112.0,
+        "relative_delta": 0.12,
+        "noise_band": 0.03,
+        "classification_hint": classification_hint,
+    }
 
 
 class OfflinePolicySearchArtifactTests(unittest.TestCase):
@@ -167,7 +193,12 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
     def test_summary_counts_diagnostic_negative_and_promotion_review(self) -> None:
         diagnostic = self.write_fixture(artifact())
         negative = self.write_fixture(
-            artifact(decision_classification="negative_result")
+            artifact(
+                decision_classification="negative_result",
+                confirmation_evidence=confirmation_evidence(
+                    classification_hint="negative_result",
+                ),
+            )
         )
         promotion = self.write_fixture(
             artifact(
@@ -314,6 +345,74 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(
             checker.OfflinePolicySearchArtifactError,
             "max_candidates must be >= number of candidate rows",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+    def test_candidate_win_requires_confirmation_evidence(self) -> None:
+        path = self.write_fixture(
+            artifact(decision_classification="candidate_win_needs_repeat")
+        )
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "confirmation_evidence must be an object",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+    def test_candidate_win_with_confirmation_evidence_passes(self) -> None:
+        path = self.write_fixture(
+            artifact(
+                decision_classification="candidate_win_needs_repeat",
+                confirmation_evidence=confirmation_evidence(),
+            )
+        )
+
+        self.assertEqual(
+            checker.validate_offline_policy_search_artifact(path),
+            "candidate_win_needs_repeat",
+        )
+
+    def test_confirmation_evidence_requires_repeated_measurements(self) -> None:
+        path = self.write_fixture(
+            artifact(
+                decision_classification="candidate_win_needs_repeat",
+                confirmation_evidence=confirmation_evidence(runs=1),
+            )
+        )
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "runs must be >= 2",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+    def test_confirmation_evidence_must_reference_candidate(self) -> None:
+        path = self.write_fixture(
+            artifact(
+                decision_classification="candidate_win_needs_repeat",
+                confirmation_evidence=confirmation_evidence(candidate_policy_id="missing"),
+            )
+        )
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "candidate_policy_id must refer to a candidate row",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+    def test_confirmation_evidence_hint_must_match_decision(self) -> None:
+        path = self.write_fixture(
+            artifact(
+                decision_classification="negative_result",
+                confirmation_evidence=confirmation_evidence(
+                    classification_hint="candidate_win_needs_repeat"
+                ),
+            )
+        )
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "classification_hint must match decision.classification",
         ):
             checker.validate_offline_policy_search_artifact(path)
 

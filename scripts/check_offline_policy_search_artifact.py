@@ -31,6 +31,11 @@ FALLBACK_REQUIRED_TARGETS = {
 }
 
 PROMOTION_REVIEW_CLASSIFICATION = "promotion_ready_for_companion_prd_review"
+CONFIRMATION_REQUIRED_CLASSIFICATIONS = {
+    "candidate_win_needs_repeat",
+    "negative_result",
+    "rejected_noise",
+}
 
 ALLOWED_DECISIONS = {
     "diagnostic_only",
@@ -81,6 +86,14 @@ def _string(value: Any, field: str) -> str:
 def _integer(value: Any, field: str) -> int:
     _require(isinstance(value, int) and not isinstance(value, bool), f"{field} must be an integer")
     return value
+
+
+def _number(value: Any, field: str) -> float:
+    _require(
+        isinstance(value, (int, float)) and not isinstance(value, bool),
+        f"{field} must be a number",
+    )
+    return float(value)
 
 
 def _boolean(value: Any, field: str) -> bool:
@@ -291,6 +304,62 @@ def _validate_promotion_evidence(artifact: dict[str, Any], candidates: list[dict
         _require(best["fallback_tokens"] == 0, "best candidate must have zero fallback tokens for promotion review")
 
 
+def _validate_confirmation_evidence(
+    artifact: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    classification: str,
+) -> None:
+    evidence = _mapping(artifact.get("confirmation_evidence"), "confirmation_evidence")
+    baseline_policy_id = _string(
+        evidence.get("baseline_policy_id"),
+        "confirmation_evidence.baseline_policy_id",
+    )
+    baseline = _mapping(artifact.get("baseline"), "baseline")
+    expected_baseline_policy_id = _string(baseline.get("policy_id"), "baseline.policy_id")
+    _require(
+        baseline_policy_id == expected_baseline_policy_id,
+        "confirmation_evidence.baseline_policy_id must match baseline.policy_id",
+    )
+    candidate_policy_id = _string(
+        evidence.get("candidate_policy_id"),
+        "confirmation_evidence.candidate_policy_id",
+    )
+    candidate_ids = {str(candidate.get("policy_id")) for candidate in candidates}
+    _require(
+        candidate_policy_id in candidate_ids,
+        "confirmation_evidence.candidate_policy_id must refer to a candidate row",
+    )
+    repeated = _mapping(evidence.get("repeated_measurements"), "confirmation_evidence.repeated_measurements")
+    _require(
+        _integer(repeated.get("runs"), "confirmation_evidence.repeated_measurements.runs") >= 2,
+        "confirmation_evidence.repeated_measurements.runs must be >= 2",
+    )
+    _require(
+        _integer(
+            repeated.get("cooldown_seconds"),
+            "confirmation_evidence.repeated_measurements.cooldown_seconds",
+        )
+        > 0,
+        "confirmation_evidence.repeated_measurements.cooldown_seconds must be positive",
+    )
+    _string(evidence.get("decision_metric"), "confirmation_evidence.decision_metric")
+    _number(evidence.get("baseline_median"), "confirmation_evidence.baseline_median")
+    _number(evidence.get("candidate_median"), "confirmation_evidence.candidate_median")
+    _number(evidence.get("relative_delta"), "confirmation_evidence.relative_delta")
+    _require(
+        _number(evidence.get("noise_band"), "confirmation_evidence.noise_band") >= 0.0,
+        "confirmation_evidence.noise_band must be non-negative",
+    )
+    classification_hint = _string(
+        evidence.get("classification_hint"),
+        "confirmation_evidence.classification_hint",
+    )
+    _require(
+        classification_hint == classification,
+        "confirmation_evidence.classification_hint must match decision.classification",
+    )
+
+
 def _validate_decision(
     artifact: dict[str, Any],
     decision: dict[str, Any],
@@ -304,6 +373,8 @@ def _validate_decision(
     _string(decision.get("reason"), "decision.reason")
     if classification == PROMOTION_REVIEW_CLASSIFICATION:
         _validate_promotion_evidence(artifact, candidates)
+    if classification in CONFIRMATION_REQUIRED_CLASSIFICATIONS:
+        _validate_confirmation_evidence(artifact, candidates, classification)
     return classification
 
 
