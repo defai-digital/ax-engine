@@ -50,6 +50,10 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_mlx_forward_profile_artifact.py \
   scripts/check_mlx_prefill_claim_cycle.py \
   scripts/test_mlx_prefill_claim_cycle.py \
+  scripts/update_readme_from_bench.py \
+  scripts/test_update_readme_from_bench.py \
+  scripts/update_readme_from_results.py \
+  scripts/test_update_readme_from_results.py \
   scripts/check_gateddelta_prefill_model.py \
   scripts/test_gateddelta_prefill_model.py \
   scripts/test_run_gateddelta_prefill_profile.py \
@@ -69,7 +73,10 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/diagnose_server_rss.py \
   scripts/verify_prefix_reuse_equivalence.py \
   scripts/profile_kv_long_context_evidence.py
-"$PYTHON_BIN" -m unittest scripts/test_bench_ax_serving.py
+"$PYTHON_BIN" -m unittest \
+  scripts/test_bench_ax_serving.py \
+  scripts/test_update_readme_from_bench.py \
+  scripts/test_update_readme_from_results.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-turboquant-quality-gate.sh
 bash scripts/check-turboquant-microbench-gate.sh
