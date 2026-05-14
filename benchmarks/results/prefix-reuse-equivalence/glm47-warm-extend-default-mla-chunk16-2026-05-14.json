@@ -1,0 +1,247 @@
+{
+  "aggregate": {
+    "prompts_matching_exactly": 5,
+    "prompts_total": 5,
+    "verdict": "PASS"
+  },
+  "config": {
+    "corpus_source": "default",
+    "extend_suffix": " Now continue with a second paragraph that introduces a new character and a small twist. Keep the same tone.",
+    "max_output_tokens": 32,
+    "mode": "warm_extend",
+    "pad_to_block_size": 16,
+    "prompt_count": 5,
+    "seed": 1234
+  },
+  "environment_flags": {
+    "AX_ALLOW_MLA_PREFIX_RESTORE": {
+      "set": false,
+      "truthy": false,
+      "value": null
+    },
+    "AX_DISABLE_MLA_PREFIX_RESTORE": {
+      "set": false,
+      "truthy": false,
+      "value": null
+    },
+    "AX_DISABLE_TURBOQUANT_FUSED_DECODE": {
+      "set": false,
+      "truthy": false,
+      "value": null
+    },
+    "AX_MLX_MLA_PREFILL_CHUNK": {
+      "set": false,
+      "truthy": null,
+      "value": null
+    },
+    "AX_NO_SPEC": {
+      "set": false,
+      "truthy": false,
+      "value": null
+    }
+  },
+  "generated_at_utc": "2026-05-14T19:31:12Z",
+  "host": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+  "model": {
+    "artifacts_dir": ".internal/models/GLM-4.7-Flash-4bit",
+    "model_id": "glm47-flash"
+  },
+  "per_prompt": [
+    {
+      "base_prompt_token_count": 16,
+      "cold_output_token_count": 32,
+      "cold_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 1,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "prefix_reused_blocks": 0,
+        "prefix_reused_tokens": 0,
+        "retained_cache_hits": 0
+      },
+      "extended_prompt_token_count": 48,
+      "first_divergence_index": null,
+      "id": "p1_short_factoid",
+      "prompt_preview": "What is the capital of France? Answer in one short sentence. Now continue with a second paragraph th",
+      "shared_prefix_len": 32,
+      "tokens_match": true,
+      "warm_output_token_count": 32,
+      "warm_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 2,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "prefix_reused_blocks": 0,
+        "prefix_reused_tokens": 0,
+        "retained_cache_hits": 0
+      }
+    },
+    {
+      "base_prompt_token_count": 32,
+      "cold_output_token_count": 32,
+      "cold_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 1,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "prefix_reused_blocks": 0,
+        "prefix_reused_tokens": 0,
+        "retained_cache_hits": 0
+      },
+      "extended_prompt_token_count": 64,
+      "first_divergence_index": null,
+      "id": "p2_medium_explain",
+      "prompt_preview": "Explain the difference between supervised and unsupervised learning, and give one concrete example f",
+      "shared_prefix_len": 32,
+      "tokens_match": true,
+      "warm_output_token_count": 32,
+      "warm_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 2,
+        "ax_mlx_prefix_cache_hits": 1,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 32,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "prefix_reused_blocks": 2,
+        "prefix_reused_tokens": 32,
+        "retained_cache_hits": 1
+      }
+    },
+    {
+      "base_prompt_token_count": 48,
+      "cold_output_token_count": 32,
+      "cold_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 1,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "prefix_reused_blocks": 0,
+        "prefix_reused_tokens": 0,
+        "retained_cache_hits": 0
+      },
+      "extended_prompt_token_count": 80,
+      "first_divergence_index": null,
+      "id": "p3_long_story",
+      "prompt_preview": "Write the opening paragraph of a noir detective story set in 1947 Shanghai. The narrator should be t",
+      "shared_prefix_len": 32,
+      "tokens_match": true,
+      "warm_output_token_count": 32,
+      "warm_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 2,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 1,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 32,
+        "prefix_reused_blocks": 2,
+        "prefix_reused_tokens": 32,
+        "retained_cache_hits": 1
+      }
+    },
+    {
+      "base_prompt_token_count": 32,
+      "cold_output_token_count": 32,
+      "cold_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 1,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "prefix_reused_blocks": 0,
+        "prefix_reused_tokens": 0,
+        "retained_cache_hits": 0
+      },
+      "extended_prompt_token_count": 64,
+      "first_divergence_index": null,
+      "id": "p4_code_request",
+      "prompt_preview": "Write a Python function `fibonacci(n)` that returns the nth Fibonacci number using memoization. Incl",
+      "shared_prefix_len": 32,
+      "tokens_match": true,
+      "warm_output_token_count": 32,
+      "warm_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 2,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 1,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 16,
+        "prefix_reused_blocks": 1,
+        "prefix_reused_tokens": 16,
+        "retained_cache_hits": 1
+      }
+    },
+    {
+      "base_prompt_token_count": 32,
+      "cold_output_token_count": 32,
+      "cold_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 1,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "prefix_reused_blocks": 0,
+        "prefix_reused_tokens": 0,
+        "retained_cache_hits": 0
+      },
+      "extended_prompt_token_count": 48,
+      "first_divergence_index": null,
+      "id": "p5_repetition_safe",
+      "prompt_preview": "List five fruits and for each give one short adjective describing its colour. Format: `<fruit>: <adj",
+      "shared_prefix_len": 32,
+      "tokens_match": true,
+      "warm_output_token_count": 32,
+      "warm_telemetry": {
+        "ax_mlx_prefix_cache_blocked": 0,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 0,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_entries": 2,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 1,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_stores": 1,
+        "ax_mlx_prefix_cache_warmup_tokens": 16,
+        "prefix_reused_blocks": 1,
+        "prefix_reused_tokens": 16,
+        "retained_cache_hits": 1
+      }
+    }
+  ],
+  "schema_version": "ax.prefix_reuse_equivalence.v1"
+}

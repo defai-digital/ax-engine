@@ -49,7 +49,10 @@ from pathlib import Path
 SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
 
 PROVENANCE_ENV_FLAGS = [
+    # Retained for older checked-in artifacts; runtime now uses
+    # AX_DISABLE_MLA_PREFIX_RESTORE as the fail-closed switch.
     "AX_ALLOW_MLA_PREFIX_RESTORE",
+    "AX_DISABLE_MLA_PREFIX_RESTORE",
     "AX_DISABLE_TURBOQUANT_FUSED_DECODE",
     "AX_MLX_MLA_PREFILL_CHUNK",
     "AX_NO_SPEC",
@@ -57,6 +60,7 @@ PROVENANCE_ENV_FLAGS = [
 
 BOOLEAN_PROVENANCE_ENV_FLAGS = {
     "AX_ALLOW_MLA_PREFIX_RESTORE",
+    "AX_DISABLE_MLA_PREFIX_RESTORE",
     "AX_DISABLE_TURBOQUANT_FUSED_DECODE",
     "AX_NO_SPEC",
 }
