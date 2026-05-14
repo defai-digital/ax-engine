@@ -94,7 +94,10 @@ Current status as of 2026-05-14:
   artifacts without timing remain valid, but partially populated timing metadata
   fails closed. Readiness summaries use the timing quartet when present to point
   the next performance slice at the dominant fused-decode stage instead of
-  emitting only the generic performance-blocker message;
+  emitting only the generic performance-blocker message. The first runtime
+  mitigation after that telemetry avoids full-history K/V CPU readback during
+  hot-tail merge by materializing only the retained hot-window slice, while
+  preserving the existing cold Metal partition and exact replay contract;
 - TurboQuant public/runtime promotion remains blocked. The latest Gemma 4 E2B
   real-runner artifact passes quality and real-runner truth-surface validation,
   but fails the performance promotion gate because fused decode regresses
@@ -699,10 +702,14 @@ Current evidence:
   records `two_stage_scores` median `5353us` and `dim_parallel` median
   `282369us`; runtime is correctly choosing the two-stage prototype, but the
   path is still too expensive for promotion.
+- Current mitigation: hot-tail merge now reads back only the hot-window K/V
+  slice instead of materializing the full K/V history for the layer. This should
+  reduce the host-side merge boundary, but promotion still requires a fresh
+  long-context performance artifact.
 
 Next implementation focus:
 
-- remove or reduce per-decode-step host staging in
+- remove or reduce remaining per-decode-step host staging in
   `turboquant_decode_attention_experimental`;
 - avoid CPU readback in the cold-stats to hot-tail merge path;
 - keep blocked sliding-window and KV-shared layers fail-closed until their

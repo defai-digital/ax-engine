@@ -145,7 +145,10 @@ negative performance artifact:
 - Performance blocker: `decode_tok_s_ratio_to_baseline=0.259`, below the
   required `0.85`
 - Root-cause direction: the experimental path still has host-side query/output
-  staging and hot-tail merge/readback boundaries in the runtime decode loop.
+  staging boundaries in the runtime decode loop. The first follow-up runtime
+  mitigation reduces hot-tail merge readback from full-history K/V to only the
+  retained hot-window slice, but M1 remains blocked until a fresh long-context
+  artifact proves the decode ratio recovers.
 - Same-shape microbench:
   `../../benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/microbench-gemma-e2b-shape.json`
   shows the selected two-stage kernel is much faster than the dim-parallel
