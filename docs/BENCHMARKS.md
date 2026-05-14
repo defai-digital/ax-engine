@@ -159,6 +159,19 @@ artifact as a `warm_repeat` PASS with token-exact parity, physical snapshot
 hits, reused tokens, and zero warmup/miss/block counters before trusting the
 README text.
 
+README long-context and concurrent-prefill boundary sentences are marker-backed
+too. `readme-long-context-boundary-artifact` points at the
+`ax.mlx_prefill_scaling.v1` artifact that supplies the 8k AX/MLX prefill ratio,
+and `readme-concurrent-prefill-boundary-artifact` points at the
+`ax.mlx_concurrent_prefill.v1` artifact that supplies the 4-request overlap
+classification. The README checker fails if either sentence drifts from the
+marked artifact.
+
+Older concurrent-prefill boundary artifacts may predate `scheduler_evidence`.
+Use `check_mlx_concurrent_prefill_artifact.py --allow-missing-scheduler-evidence`
+only to re-validate those historical boundary artifacts; fresh P2 gate artifacts
+should keep the default scheduler-evidence requirement.
+
 Physical prefix snapshot miss/warmup correctness uses a separate artifact
 contract:
 

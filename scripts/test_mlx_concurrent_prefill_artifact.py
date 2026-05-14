@@ -179,6 +179,18 @@ class ConcurrentPrefillArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(checker.ConcurrentPrefillArtifactError, "scheduler_evidence"):
             checker.validate_mlx_concurrent_prefill_artifact(path)
 
+    def test_missing_scheduler_evidence_can_validate_legacy_boundary(self) -> None:
+        artifact = valid_artifact()
+        del artifact["rows"][1]["scheduler_evidence"]
+        path = self.write_fixture(artifact)
+
+        checked = checker.validate_mlx_concurrent_prefill_artifact(
+            path,
+            require_scheduler_evidence=False,
+        )
+
+        self.assertEqual(checked, ["concurrency=1", "concurrency=4"])
+
     def test_stale_ratio_fails(self) -> None:
         artifact = valid_artifact()
         artifact["rows"][1]["ratios_to_single_request"] = {
