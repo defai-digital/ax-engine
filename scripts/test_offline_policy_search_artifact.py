@@ -374,6 +374,51 @@ class OfflinePolicySearchArtifactTests(unittest.TestCase):
             "candidate_win_needs_repeat",
         )
 
+    def test_candidate_win_requires_confirmed_candidate_quality(self) -> None:
+        path = self.write_fixture(
+            artifact(
+                candidates=[candidate(quality_gate_passed=False)],
+                decision_classification="candidate_win_needs_repeat",
+                confirmation_evidence=confirmation_evidence(),
+            )
+        )
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "confirmed candidate to pass quality gate",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+    def test_candidate_win_requires_confirmed_candidate_replay(self) -> None:
+        path = self.write_fixture(
+            artifact(
+                candidates=[candidate(deterministic_replay_passed=False)],
+                decision_classification="candidate_win_needs_repeat",
+                confirmation_evidence=confirmation_evidence(),
+            )
+        )
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "confirmed candidate to pass deterministic replay",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
+    def test_candidate_win_requires_zero_confirmed_candidate_fallbacks(self) -> None:
+        path = self.write_fixture(
+            artifact(
+                candidates=[candidate(fallback_count=1)],
+                decision_classification="candidate_win_needs_repeat",
+                confirmation_evidence=confirmation_evidence(),
+            )
+        )
+
+        with self.assertRaisesRegex(
+            checker.OfflinePolicySearchArtifactError,
+            "zero candidate fallbacks",
+        ):
+            checker.validate_offline_policy_search_artifact(path)
+
     def test_non_diagnostic_decision_requires_candidate_quality_evidence(self) -> None:
         path = self.write_fixture(
             artifact(

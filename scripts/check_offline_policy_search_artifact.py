@@ -36,6 +36,7 @@ CONFIRMATION_REQUIRED_CLASSIFICATIONS = {
     "negative_result",
     "rejected_noise",
 }
+CONFIRMED_CANDIDATE_WIN_CLASSIFICATION = "candidate_win_needs_repeat"
 
 ALLOWED_DECISIONS = {
     "diagnostic_only",
@@ -339,6 +340,9 @@ def _validate_confirmation_evidence(
         candidate_policy_id in candidate_ids,
         "confirmation_evidence.candidate_policy_id must refer to a candidate row",
     )
+    candidate = next(
+        candidate for candidate in candidates if str(candidate.get("policy_id")) == candidate_policy_id
+    )
     repeated = _mapping(evidence.get("repeated_measurements"), "confirmation_evidence.repeated_measurements")
     _require(
         _integer(repeated.get("runs"), "confirmation_evidence.repeated_measurements.runs") >= 2,
@@ -368,6 +372,25 @@ def _validate_confirmation_evidence(
         classification_hint == classification,
         "confirmation_evidence.classification_hint must match decision.classification",
     )
+    if classification == CONFIRMED_CANDIDATE_WIN_CLASSIFICATION:
+        _require(
+            candidate.get("quality_gate_passed") is True,
+            "candidate_win_needs_repeat requires the confirmed candidate to pass quality gate",
+        )
+        _require(
+            candidate.get("deterministic_replay_passed") is True,
+            "candidate_win_needs_repeat requires the confirmed candidate to pass deterministic replay",
+        )
+        if "fallback_count" in candidate:
+            _require(
+                candidate["fallback_count"] == 0,
+                "candidate_win_needs_repeat requires zero candidate fallbacks",
+            )
+        if "fallback_tokens" in candidate:
+            _require(
+                candidate["fallback_tokens"] == 0,
+                "candidate_win_needs_repeat requires zero candidate fallback tokens",
+            )
 
 
 def _validate_decision(
