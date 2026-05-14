@@ -76,7 +76,9 @@ Current status as of 2026-05-14:
   diagnose. The quality gate now also requires the blocked-reason counters, so
   promotion artifacts cannot omit the real-runner gate surface. If an artifact
   includes stale `runtime_truth` that disagrees with route metadata, validation
-  fails closed;
+  fails closed. The readiness summary now uses `runtime_truth` to recommend the
+  next concrete fix, such as resolving attention-kind blockers or rerunning with
+  current Metal-success telemetry;
 - TurboQuant public/runtime promotion remains blocked because no artifact passes
   the stricter long-context fused-path quality gate with the full real-runner
   truth surface.
