@@ -73,6 +73,16 @@ python3 scripts/check_ax_serving_benchmark_artifact.py \
   --require-slo
 ```
 
+Render a review report after validation:
+
+```text
+python3 scripts/render_ax_serving_benchmark_report.py \
+  benchmarks/results/serving/<artifact>.json \
+  --min-input-tokens-p95 8192 \
+  --require-slo \
+  --output benchmarks/results/serving/<artifact>.md
+```
+
 Use `--request-rate-rps` when the claim is open-loop serving behavior. Without
 it, the harness uses closed-loop concurrency.
 

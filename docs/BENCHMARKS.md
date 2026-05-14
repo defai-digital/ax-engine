@@ -322,6 +322,12 @@ python3 scripts/check_ax_serving_benchmark_artifact.py \
   --min-input-tokens-p95 8192 \
   --require-slo \
   --min-goodput-ratio 0.95
+
+python3 scripts/render_ax_serving_benchmark_report.py \
+  benchmarks/results/serving/<artifact>.json \
+  --min-input-tokens-p95 8192 \
+  --require-slo \
+  --output benchmarks/results/serving/<artifact>.md
 ```
 
 The latest checked-in real-model P1 example is:

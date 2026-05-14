@@ -132,10 +132,16 @@ throughput baselines.
   `ax.serving_benchmark.v1` artifacts. Use `--require-slo`,
   `--min-goodput-ratio`, and `--min-input-tokens-p95` before citing long-prompt
   serving claims.
+- `render_ax_serving_benchmark_report.py`: renders validated
+  `ax.serving_benchmark.v1` artifacts as Markdown tables for TTFT, client TPOT,
+  E2E latency, queue delay, token distributions, goodput, and category
+  breakdowns.
 - `test_bench_ax_serving.py`: unit tests for the serving benchmark SSE parser,
   latency accounting, percentile/goodput summary, and artifact writer.
 - `test_ax_serving_benchmark_artifact.py`: unit tests for the serving artifact
   checker, including long-prompt p95 gates and failed-request rejection.
+- `test_render_ax_serving_benchmark_report.py`: unit tests for the serving
+  artifact Markdown renderer.
 - `check_gateddelta_prefill_profile_artifact.py`: fail-closed validator for
   `--gateddelta-prefill-profile` artifacts. It requires Qwen-style
   linear-attention metadata, the 512/2048/8192/32768 prompt matrix, direct AX
