@@ -113,6 +113,10 @@ matching benchmark shapes:
 - **AX-owned request lifecycle** provides deterministic, auditable scheduling,
   KV block management, and prefix reuse that upstream Python runtimes do not
   expose as stable contracts
+- **Long-session prefix reuse** restores physical MLX KV snapshots on validated
+  cache layouts, so long-running chat and agent loops can avoid repeatedly
+  pre-filling the same accumulated context. See
+  [`docs/LONG-CONTEXT.md`](docs/LONG-CONTEXT.md) for the evidence boundary.
 - **workload-contract tooling** (`ax-engine-bench`) validates correctness,
   determinism, route identity, and regression across checked-in manifests, not
   just throughput snapshots
@@ -206,7 +210,10 @@ stream.
 
 See [`docs/KV-CACHE.md`](docs/KV-CACHE.md) for a detailed description of the
 two-layer KV cache architecture, prefix caching coordination, model-specific
-cache variants, and memory pressure handling.
+cache variants, and memory pressure handling. See
+[`docs/LONG-CONTEXT.md`](docs/LONG-CONTEXT.md) for the public long-context
+claim boundary, including cold-prefill scaling, hot-prefix reuse, multi-turn
+session behavior, and current serving limitations.
 
 ## Supported Models
 
@@ -291,24 +298,19 @@ end-to-end. `mlx_lm` TTFT is derived from reported prefill throughput; AX TTFT
 is measured directly from per-step runner timing.
 
 Additional long-context validation artifacts are checked in separately from the
-short/mid-prompt public tables. On 2026-05-07, `mlx-community/Qwen3-4B-4bit`
-was run on Apple M5 Max through the P1 prefill-scaling gate and the P2
-startup/concurrent-prefill gate:
-[P1 prefill scaling](benchmarks/results/mlx-inference/2026-05-07-real-p1/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md),
-[P2 startup and concurrency](benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md).
-These artifacts measure direct AX MLX behavior, not n-gram decode acceleration.
-The 8k P1 AX/MLX prefill ratio was 0.840x, and the 4-request P2 concurrent
-prefill row was classified as serialized. Use them to set expectations for
-long-context serving; they do not prove continuous batching. This is a
-single-model long-context boundary, not a Gemma/Qwen/GLM-wide campaign.
-
-Hot-prefix physical reuse is validated separately from cold-prefill throughput.
-On Qwen3.5 9B, the 2026-05-13 warm-repeat equivalence artifact restored physical
-prefix snapshots on 5/5 prompts, reused 176 tokens, used 0 warmup-substitution
-tokens on the claimed hit path, and passed token-exact equivalence. See
-[KV cache documentation](docs/KV-CACHE.md#validated-hot-prefix-evidence) for
-the product-claim boundary; this is a physical reuse claim, not a long-prompt
-TTFT headline.
+short/mid-prompt public tables. The current long-context story has two sides:
+AX now has positive evidence for physical prefix-snapshot reuse in long-running
+sessions, while cold 8k prefill and concurrent long-prefill serving remain
+measured optimization surfaces. See
+[`docs/LONG-CONTEXT.md`](docs/LONG-CONTEXT.md) for the full boundary:
+Qwen3.5, Qwen3.6, and Gemma4 E2B multi-turn artifacts show repeated physical
+prefix hits and reduced post-first-turn TTFT. The Qwen3.5 warm-repeat
+equivalence artifact also matched 5/5 prompts, reused 176 tokens, and used
+0 warmup tokens on the claimed physical-hit path. The 8k P1 AX/MLX prefill
+ratio was 0.840x, and the 4-request P2 concurrent prefill row was classified
+as serialized. These artifacts measure direct AX MLX behavior, not n-gram
+decode acceleration. This is a single-model long-context boundary, not a
+Gemma/Qwen/GLM-wide campaign.
 
 <!-- llama-cpp-column-disclaimer -->
 **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are NOT prompt-hash parity with the other columns. The intent is rough side-by-side context against a well-known third-party Metal runtime, not head-to-head comparison. MLX bit-widths are mapped to the nearest standard GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0; UD-MLX → unsloth UD-Q4_K_XL). No percentage delta is shown for this column because the prompt is not shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.

@@ -16,6 +16,8 @@ Start here:
 - `FAQ.md`: common runtime-path and performance-boundary questions
 - `PERFORMANCE.md`: current performance-table methodology, interpretation, and
   artifact provenance
+- `LONG-CONTEXT.md`: long-context evidence, prefix-reuse boundaries, and
+  current cold-prefill/concurrency limitations
 - `API-COMPATIBILITY.md`: current OpenAI-compatible endpoint contract and
   compatibility boundaries
 - `SERVER.md`: local HTTP server routes and backend behavior
@@ -34,7 +36,9 @@ Start here:
 - `ARCHITECTURE.md`: crate boundaries and dependency rules
 
 Start with `PERFORMANCE.md` for the current public result-table context, then
-use `BENCHMARKS.md` for the benchmark evidence taxonomy. Use
+use `LONG-CONTEXT.md` when the claim is about long prompts, long-running
+sessions, or prefix reuse. Use `BENCHMARKS.md` for the benchmark evidence
+taxonomy. Use
 `SERVING-BENCHMARKS.md` when the claim is market-style online serving behavior
 over a prompt mix. `BENCHMARKS.md` defines the project split between
 `ax-engine-bench` workload-contract artifacts,

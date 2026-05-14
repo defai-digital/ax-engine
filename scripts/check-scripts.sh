@@ -28,6 +28,14 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_mlx_prefill_scaling_artifact.py \
   scripts/render_mlx_prefill_scaling_report.py \
   scripts/test_render_mlx_prefill_scaling_report.py \
+  scripts/build_long_context_comparison_artifact.py \
+  scripts/check_long_context_comparison_artifact.py \
+  scripts/render_long_context_comparison_report.py \
+  scripts/test_long_context_comparison_artifact.py \
+  scripts/build_long_context_decode_at_depth_artifact.py \
+  scripts/check_long_context_decode_at_depth_artifact.py \
+  scripts/render_long_context_decode_at_depth_report.py \
+  scripts/test_long_context_decode_at_depth_artifact.py \
   scripts/check_mlx_prefill_scaling_campaign.py \
   scripts/test_mlx_prefill_scaling_campaign.py \
   scripts/check_mlx_startup_latency_artifact.py \
@@ -91,6 +99,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/test_search_turboquant_kv_policy.py \
   scripts/test_run_turboquant_quality_artifact.py \
+  scripts/test_long_context_comparison_artifact.py \
+  scripts/test_long_context_decode_at_depth_artifact.py \
   scripts/test_verify_prefix_reuse_equivalence.py \
   scripts/test_profile_kv_multiturn_chat_evidence.py
 bash scripts/check-bench-inference-stack.sh
