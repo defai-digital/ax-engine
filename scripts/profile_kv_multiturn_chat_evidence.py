@@ -114,6 +114,8 @@ TELEMETRY_KEYS = [
     "ax_mlx_prefill_wall_us",
     "ax_mlx_prefill_drain_async_evals",
     "ax_mlx_prefill_eval_barriers",
+    # Sync-count instrumentation (graph-sync audit)
+    "ax_mlx_production_decode_evals",
 ]
 
 
