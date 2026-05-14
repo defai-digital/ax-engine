@@ -81,7 +81,9 @@ Current status as of 2026-05-14:
   current Metal-success telemetry. Benchmark rows now also expose
   `kv_compression_fused_decode_blocked_total` and
   `kv_compression_fused_decode_blocked_reasons`, so raw benchmark output,
-  quality artifacts, and readiness summaries use the same blocker vocabulary;
+  quality artifacts, and readiness summaries use the same blocker vocabulary.
+  Follow-up guardrails now test the final benchmark row output and assert that
+  benchmark blocker keys stay aligned with the quality-gate checker contract;
 - TurboQuant public/runtime promotion remains blocked because no artifact passes
   the stricter long-context fused-path quality gate with the full real-runner
   truth surface.
@@ -719,8 +721,9 @@ promotion milestone:
   accept-rate telemetry is complete.
 - W5 prefix policy search remains future work. The iterative-chat snapshot probe
   fix makes physical-prefix evidence healthier for FA and sliding-window models,
-  while GLM MLA evidence stays correctness-blocked. A retention-policy search
-  still needs cross-family hit/miss/blocked-reason/eviction artifacts.
+  and GLM MLA now has default-path positive restore evidence after
+  chunk-aligned prefill. A retention-policy search still needs cross-family
+  hit/miss/blocked-reason/eviction artifacts.
 - W5 MoE policy search remains future work until per-stage telemetry shows a
   real expert-locality bottleneck.
 
@@ -747,6 +750,22 @@ Current readiness probe result:
   "public_docs_should_remain_experimental": true,
   "blockers": [
     "no passing long-context fused-path quality artifact was found"
+  ],
+  "performance_blocker_summary": [
+    {
+      "quality_blocker": "route metadata missing required keys: ax_mlx_kv_compression_fused_decode_metal_successes",
+      "next_action": "fix fused decode blockers before rerun: attention_kind",
+      "runtime_truth": {
+        "decode_path_label": "fused_compressed_decode",
+        "fused_decode_successes": 3,
+        "fused_decode_metal_successes": null,
+        "fused_decode_blocked_total": 32,
+        "fused_decode_blocked_reasons": [
+          "attention_kind"
+        ],
+        "promotion_path_ready": false
+      }
+    }
   ]
 }
 ```
