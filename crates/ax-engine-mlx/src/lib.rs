@@ -1,4 +1,5 @@
 pub mod attention_mask;
+pub mod fastpath;
 pub mod generate;
 pub mod kv_cache;
 pub mod linear_attention;
