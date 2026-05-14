@@ -442,5 +442,18 @@ candidate, but the implementation gate is stricter than "concatenate rows":
 - A row-order equivalence test must compare packed-path outputs against the
   split path before any prefill speed claim.
 
-Until that gate exists, W4 should continue with diagnostic reports and packer
-prototype tests rather than production loader-time packing.
+2026-05-13/14 update:
+
+- The manifest-level packed role validator and row-order oracle now exist.
+- The loader has an opt-in diagnostic gate,
+  `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS=1`, for split-to-packed projection
+  packing.
+- The inference-stack benchmark can emit matched split and packed AX rows via
+  `--ax-compare-linear-attention-projection-pack`.
+- The forward-profile renderer now includes a `Pack Comparison` section with
+  packed/split prefill and projection deltas.
+
+The remaining W4 gate is empirical, not structural: do not promote the packed
+path or update public performance claims until a matched artifact shows a
+repeatable packed/split win for the same model, prompt shape, direct AX policy,
+and profile-counter contract.

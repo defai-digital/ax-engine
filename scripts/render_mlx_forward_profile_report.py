@@ -69,6 +69,46 @@ class ForwardProfileRow:
         return ratio(self.ax_prefill_tok_s, self.mlx_swift_lm_prefill_tok_s)
 
 
+@dataclass(frozen=True)
+class PackComparisonRow:
+    model: str
+    artifact: Path
+    prompt_tokens: int
+    generation_tokens: int
+    split_prefill_tok_s: float
+    packed_prefill_tok_s: float
+    split_projection_ms: float
+    packed_projection_ms: float
+    split_projection_substage_ms: float | None
+    packed_projection_substage_ms: float | None
+
+    @property
+    def prefill_ratio(self) -> float | None:
+        return ratio(self.packed_prefill_tok_s, self.split_prefill_tok_s)
+
+    @property
+    def projection_ratio(self) -> float | None:
+        return ratio(self.packed_projection_ms, self.split_projection_ms)
+
+    @property
+    def projection_substage_ratio(self) -> float | None:
+        if self.packed_projection_substage_ms is None:
+            return None
+        return ratio(self.packed_projection_substage_ms, self.split_projection_substage_ms)
+
+    @property
+    def verdict(self) -> str:
+        prefill = self.prefill_ratio
+        projection = self.projection_ratio
+        if prefill is None or projection is None:
+            return "incomplete"
+        if prefill >= 1.02 and projection <= 0.98:
+            return "candidate win"
+        if prefill <= 0.98 or projection >= 1.02:
+            return "candidate regression"
+        return "neutral/noisy"
+
+
 def ratio(numerator: float, denominator: float | None) -> float | None:
     if denominator is None or denominator <= 0:
         return None
@@ -402,6 +442,74 @@ def sort_rows(rows: list[ForwardProfileRow]) -> list[ForwardProfileRow]:
     )
 
 
+def projection_split_substage_ms(row: ForwardProfileRow) -> float | None:
+    values = [row.projection_ms.get(key) for key in ["qkv", "z", "a", "b"]]
+    if not any(value is not None for value in values):
+        return None
+    return sum(value or 0.0 for value in values)
+
+
+def projection_packed_substage_ms(row: ForwardProfileRow) -> float | None:
+    values = [row.projection_ms.get(key) for key in ["qkvz", "ba"]]
+    if not any(value is not None for value in values):
+        return None
+    return sum(value or 0.0 for value in values)
+
+
+def build_pack_comparisons(rows: list[ForwardProfileRow]) -> list[PackComparisonRow]:
+    grouped: dict[tuple[Path, str, int, int], list[ForwardProfileRow]] = {}
+    for row in rows:
+        grouped.setdefault(
+            (row.artifact, row.model, row.prompt_tokens, row.generation_tokens),
+            [],
+        ).append(row)
+
+    comparisons: list[PackComparisonRow] = []
+    for (artifact, model, prompt_tokens, generation_tokens), group in grouped.items():
+        split = next(
+            (
+                row
+                for row in group
+                if row.engine == "ax_engine_mlx" and row.runtime_projection_pack is not True
+            ),
+            None,
+        )
+        packed = next(
+            (
+                row
+                for row in group
+                if row.engine == "ax_engine_mlx_linear_pack"
+                or row.runtime_projection_pack is True
+            ),
+            None,
+        )
+        if split is None or packed is None:
+            continue
+        comparisons.append(
+            PackComparisonRow(
+                model=model,
+                artifact=artifact,
+                prompt_tokens=prompt_tokens,
+                generation_tokens=generation_tokens,
+                split_prefill_tok_s=split.ax_prefill_tok_s,
+                packed_prefill_tok_s=packed.ax_prefill_tok_s,
+                split_projection_ms=split.stage_ms["projection"],
+                packed_projection_ms=packed.stage_ms["projection"],
+                split_projection_substage_ms=projection_split_substage_ms(split),
+                packed_projection_substage_ms=projection_packed_substage_ms(packed),
+            )
+        )
+    return sorted(
+        comparisons,
+        key=lambda row: (
+            row.prefill_ratio is None,
+            -(row.prefill_ratio or 0.0),
+            row.model,
+            row.prompt_tokens,
+        ),
+    )
+
+
 def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
     if not rows:
         raise MlxForwardProfileReportError("no AX MLX forward profile rows found")
@@ -474,6 +582,35 @@ def render_report(rows: list[ForwardProfileRow], *, title: str) -> str:
             f"{fmt_percent_ratio(ratio(qkv_ms or 0.0, projection_ms))} | "
             f"{fmt_percent_ratio(ratio(split_tail_ms, projection_ms))} |"
         )
+
+    comparisons = build_pack_comparisons(sorted_rows)
+    if comparisons:
+        lines.extend(
+            [
+                "",
+                "## Pack Comparison",
+                "",
+                "| Model | Prompt tok | Split tok/s | Packed tok/s | Packed/Split tok/s | Split projection ms | Packed projection ms | Projection ms ratio | Split substage ms | Packed substage ms | Substage ratio | Verdict | Artifact |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|",
+            ]
+        )
+        for comparison in comparisons:
+            lines.append(
+                "| "
+                f"{comparison.model} | "
+                f"{comparison.prompt_tokens:,} | "
+                f"{fmt_number(comparison.split_prefill_tok_s)} | "
+                f"{fmt_number(comparison.packed_prefill_tok_s)} | "
+                f"{fmt_ratio(comparison.prefill_ratio)} | "
+                f"{fmt_number(comparison.split_projection_ms)} | "
+                f"{fmt_number(comparison.packed_projection_ms)} | "
+                f"{fmt_ratio(comparison.projection_ratio)} | "
+                f"{fmt_number(comparison.split_projection_substage_ms)} | "
+                f"{fmt_number(comparison.packed_projection_substage_ms)} | "
+                f"{fmt_ratio(comparison.projection_substage_ratio)} | "
+                f"{comparison.verdict} | "
+                f"`{comparison.artifact}` |"
+            )
 
     worst_mlx = next((row for row in sorted_rows if row.ax_to_mlx_lm is not None), None)
     strongest_stage = max(sorted_rows, key=lambda row: row.dominant_share)

@@ -82,3 +82,25 @@ Decision:
   report names a dominant stage for the concrete slow row.
 - No loader-time packed projection rewrite should land without a row-order
   equivalence gate against the split path.
+
+## 2026-05-14 Follow-Up: Pack Comparison Reporting
+
+The W4 projection-pack work now has the diagnostic plumbing needed to compare
+split and packed AX rows without turning barrier-profile data into a public
+throughput claim:
+
+- the loader pack path remains opt-in behind
+  `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS=1`;
+- `bench_mlx_inference_stack.py` can emit matched direct split and packed rows
+  via `--ax-compare-linear-attention-projection-pack`;
+- `render_mlx_forward_profile_report.py` now renders a `Pack Comparison` table
+  with packed/split prefill throughput, projection wall-time ratio, projection
+  substage ratio, and a diagnostic verdict.
+
+Decision:
+
+- Use the new `Pack Comparison` section as the next W4 artifact gate.
+- Treat `candidate win` as a prompt to run a repeated, cooled artifact before
+  promoting the path.
+- Treat `neutral/noisy`, `candidate regression`, or missing substage data as a
+  stop signal for public claims.
