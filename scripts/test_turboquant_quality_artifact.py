@@ -44,6 +44,9 @@ readiness = importlib.util.module_from_spec(READINESS_SPEC)
 READINESS_SPEC.loader.exec_module(readiness)
 
 SHA = "a" * 64
+BLOCKED_COUNTER_ZEROS = {
+    key: 0 for key in checker.FUSED_DECODE_BLOCKED_COUNTERS.values()
+}
 
 
 def valid_artifact(root: Path) -> dict:
@@ -111,6 +114,7 @@ def valid_artifact(root: Path) -> dict:
                 "ax_mlx_kv_compression_fused_decode_metal_successes": 1,
                 "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                 "ax_mlx_kv_compression_fused_decode_fallback_reason": 0,
+                **BLOCKED_COUNTER_ZEROS,
             }
         },
         "artifacts": [
@@ -206,6 +210,7 @@ def benchmark_doc(
                     "ax_mlx_kv_compression_fused_decode_fallback_reason": 0
                     if decode_path_code == 2
                     else 1,
+                    **BLOCKED_COUNTER_ZEROS,
                 },
             }
         )
@@ -446,6 +451,29 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                 "ax_mlx_kv_compression_fused_decode_fallback_reason"
             ] = 5
             with self.assertRaisesRegex(checker.ArtifactValidationError, "zero fused decode fallbacks"):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_missing_fused_decode_blocked_counter_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            del artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_fused_decode_blocked_missing_storage"
+            ]
+            with self.assertRaisesRegex(checker.ArtifactValidationError, "missing required keys"):
+                checker.validate_artifact(artifact, root=root)
+
+    def test_non_integer_fused_decode_blocked_counter_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = valid_artifact(root)
+            artifact["route_metadata"]["crossover_decisions"][
+                "ax_mlx_kv_compression_fused_decode_blocked_missing_storage"
+            ] = "0"
+            with self.assertRaisesRegex(
+                checker.ArtifactValidationError,
+                "fused decode blocked missing_storage",
+            ):
                 checker.validate_artifact(artifact, root=root)
 
     def test_route_truth_surface_names_real_fused_path(self) -> None:
