@@ -83,10 +83,11 @@ attempt, success, fallback, and fallback-reason counters. Fallback reason label
 `runner_not_integrated` means no runtime decode attempt was observed yet;
 `cpu_oracle_unavailable` identifies legacy/debug artifacts where the
 compressed-decode oracle path was not available. Only `fused_compressed_decode`
-route evidence with successful attempts and zero fallbacks can feed the
-internal quality artifact gate; shadow and legacy CPU oracle rows are
-diagnostic only. Public-support promotion remains blocked unless the separate
-readiness report also passes the decode-throughput performance gate.
+route evidence with successful attempts, Metal fused decode successes, and zero
+fallbacks can feed the internal quality artifact gate; shadow and legacy CPU
+oracle rows are diagnostic only. Public-support promotion remains blocked
+unless the separate readiness report also passes the decode-throughput
+performance gate.
 
 ```text
 cargo run -p ax-engine-server -- \

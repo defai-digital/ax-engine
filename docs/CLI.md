@@ -170,8 +170,8 @@ of using the CPU oracle. A fallback reason label of `runner_not_integrated`
 means no runtime decode attempt was observed yet; `cpu_oracle_unavailable`
 identifies legacy/debug artifacts where the compressed-decode oracle path was
 not available. Only `fused_compressed_decode` route evidence with successful
-attempts and zero fallbacks can feed the internal quality artifact gate; shadow
-and legacy CPU oracle rows are diagnostic only.
+attempts, Metal fused decode successes, and zero fallbacks can feed the internal
+quality artifact gate; shadow and legacy CPU oracle rows are diagnostic only.
 
 For offline TurboQuant policy search, use the diagnostic grid harness:
 
