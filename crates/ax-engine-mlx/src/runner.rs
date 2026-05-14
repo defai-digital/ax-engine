@@ -804,6 +804,7 @@ struct DecodeTelemetry {
     direct_pipeline_forward_wall_us: u32,
     direct_pipeline_argmax_wall_us: u32,
     direct_pipeline_async_eval_wall_us: u32,
+    direct_pipeline_next_complete_wall_us: u32,
     direct_pipeline_pending_eval_wall_us: u32,
     direct_pipeline_pending_read_wall_us: u32,
     single_decode_steps: u32,
@@ -865,6 +866,9 @@ impl DecodeTelemetry {
         self.direct_pipeline_async_eval_wall_us = self
             .direct_pipeline_async_eval_wall_us
             .saturating_add(timings.async_eval_wall_us);
+        self.direct_pipeline_next_complete_wall_us = self
+            .direct_pipeline_next_complete_wall_us
+            .saturating_add(timings.next_complete_wall_us);
         self.direct_pipeline_pending_eval_wall_us = self
             .direct_pipeline_pending_eval_wall_us
             .saturating_add(timings.pending_eval_wall_us);
@@ -934,6 +938,9 @@ impl DecodeTelemetry {
         self.direct_pipeline_async_eval_wall_us = self
             .direct_pipeline_async_eval_wall_us
             .saturating_add(other.direct_pipeline_async_eval_wall_us);
+        self.direct_pipeline_next_complete_wall_us = self
+            .direct_pipeline_next_complete_wall_us
+            .saturating_add(other.direct_pipeline_next_complete_wall_us);
         self.direct_pipeline_pending_eval_wall_us = self
             .direct_pipeline_pending_eval_wall_us
             .saturating_add(other.direct_pipeline_pending_eval_wall_us);
@@ -1003,6 +1010,10 @@ impl DecodeTelemetry {
             (
                 "ax_mlx_direct_pipeline_async_eval_wall_us",
                 self.direct_pipeline_async_eval_wall_us,
+            ),
+            (
+                "ax_mlx_direct_pipeline_next_complete_wall_us",
+                self.direct_pipeline_next_complete_wall_us,
             ),
             (
                 "ax_mlx_direct_pipeline_pending_eval_wall_us",
@@ -5889,6 +5900,7 @@ mod tests {
             forward_wall_us: 3,
             argmax_wall_us: 4,
             async_eval_wall_us: 2,
+            next_complete_wall_us: 6,
             pending_eval_wall_us: 5,
             pending_read_wall_us: 1,
         });
@@ -5937,6 +5949,10 @@ mod tests {
         assert_eq!(
             decisions.get("ax_mlx_direct_pipeline_async_eval_wall_us"),
             Some(&2)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_next_complete_wall_us"),
+            Some(&6)
         );
         assert_eq!(
             decisions.get("ax_mlx_direct_pipeline_pending_eval_wall_us"),

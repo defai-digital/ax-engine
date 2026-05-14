@@ -171,6 +171,7 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_direct_pipeline_forward_wall_us",
     "ax_mlx_direct_pipeline_argmax_wall_us",
     "ax_mlx_direct_pipeline_async_eval_wall_us",
+    "ax_mlx_direct_pipeline_next_complete_wall_us",
     "ax_mlx_direct_pipeline_pending_eval_wall_us",
     "ax_mlx_direct_pipeline_pending_read_wall_us",
     "ax_mlx_single_decode_steps",
@@ -1127,6 +1128,7 @@ def route_with_more_decisions(
         "ax_mlx_direct_pipeline_forward_wall_us",
         "ax_mlx_direct_pipeline_argmax_wall_us",
         "ax_mlx_direct_pipeline_async_eval_wall_us",
+        "ax_mlx_direct_pipeline_next_complete_wall_us",
         "ax_mlx_direct_pipeline_pending_eval_wall_us",
         "ax_mlx_direct_pipeline_pending_read_wall_us",
         "ax_mlx_single_decode_steps",
@@ -1236,6 +1238,9 @@ def summarize_ax_mlx_decode_route(telemetry: dict[str, int]) -> dict[str, Any]:
     direct_pipeline_async_eval_wall_us = int(
         telemetry.get("ax_mlx_direct_pipeline_async_eval_wall_us", 0)
     )
+    direct_pipeline_next_complete_wall_us = int(
+        telemetry.get("ax_mlx_direct_pipeline_next_complete_wall_us", 0)
+    )
     direct_pipeline_pending_eval_wall_us = int(
         telemetry.get("ax_mlx_direct_pipeline_pending_eval_wall_us", 0)
     )
@@ -1301,6 +1306,11 @@ def summarize_ax_mlx_decode_route(telemetry: dict[str, int]) -> dict[str, Any]:
         "direct_pipeline_async_eval_wall_us": direct_pipeline_async_eval_wall_us,
         "direct_pipeline_async_eval_wall_share_micros": share_micros(
             direct_pipeline_async_eval_wall_us,
+            direct_pipeline_wall_us,
+        ),
+        "direct_pipeline_next_complete_wall_us": direct_pipeline_next_complete_wall_us,
+        "direct_pipeline_next_complete_wall_share_micros": share_micros(
+            direct_pipeline_next_complete_wall_us,
             direct_pipeline_wall_us,
         ),
         "direct_pipeline_pending_eval_wall_us": direct_pipeline_pending_eval_wall_us,

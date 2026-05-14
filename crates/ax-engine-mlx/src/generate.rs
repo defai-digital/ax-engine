@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
@@ -20,6 +21,12 @@ pub struct DirectPipelineTimings {
     pub forward_wall_us: u32,
     pub argmax_wall_us: u32,
     pub async_eval_wall_us: u32,
+    /// Diagnostic-only: time spent in the synchronous `eval(next_token)` barrier
+    /// inserted right after `async_eval`. Zero unless `AX_MLX_DIRECT_PIPELINE_BARRIER`
+    /// is set; enabling it breaks the double-buffer overlap and turns
+    /// `async_eval_wall_us` into a near-pure submit cost while this bucket
+    /// captures the per-step GPU-completion time.
+    pub next_complete_wall_us: u32,
     pub pending_eval_wall_us: u32,
     pub pending_read_wall_us: u32,
 }
@@ -32,6 +39,17 @@ pub struct DirectPipelineAdvance {
 
 fn elapsed_us(started: Instant) -> u32 {
     started.elapsed().as_micros().min(u32::MAX as u128) as u32
+}
+
+static DIRECT_PIPELINE_BARRIER_ENABLED: OnceLock<bool> = OnceLock::new();
+
+fn direct_pipeline_barrier_enabled() -> bool {
+    *DIRECT_PIPELINE_BARRIER_ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("AX_MLX_DIRECT_PIPELINE_BARRIER").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+    })
 }
 
 /// Process the full prompt in chunks of `chunk_size` tokens.
@@ -207,6 +225,17 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
     async_eval(&[&next_token_arr]);
     let async_eval_wall_us = elapsed_us(async_eval_started);
 
+    // Diagnostic barrier: force step N+1 GPU completion before measuring the
+    // pending (step N) wait. Splits `async_eval` cost into "pure submit" vs
+    // "GPU-completion wait" by removing the double-buffer overlap.
+    let next_complete_wall_us = if direct_pipeline_barrier_enabled() {
+        let started = Instant::now();
+        eval(&[&next_token_arr]);
+        elapsed_us(started)
+    } else {
+        0
+    };
+
     // Materialise the pending (step N) token.  Because `async_eval` was called
     // in the previous `start_direct_pipeline` / `advance_direct_pipeline`, the GPU
     // has been working on this token the entire time the CPU was building N+1's
@@ -225,6 +254,7 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
             forward_wall_us,
             argmax_wall_us,
             async_eval_wall_us,
+            next_complete_wall_us,
             pending_eval_wall_us,
             pending_read_wall_us,
         },

@@ -40,6 +40,12 @@ throughput baselines.
   selection, temporary paths, free-port allocation, and PID cleanup.
 - `check-scripts.sh`: fast script hygiene gate. It syntax-checks shell scripts,
   compiles Python scripts, and runs the MLX inference-stack contract tests.
+- `check-mlx-telemetry.sh`: targeted Gemma/AX MLX telemetry gate. It runs the
+  MLX crate clippy/tests plus the MLX inference-stack and script gates. Use
+  `--full-workspace` only when a change may affect shared Rust contracts; that
+  mode runs `cargo test --workspace --no-run` first, then crate-by-crate tests
+  with timeout and `AX_CARGO_JOBS=1` by default so a stuck full workspace run
+  does not leave orphaned compiler processes.
 - `check-cli-tui-phase0.sh`: non-interactive Phase 0 gate for manager
   contracts. It verifies the download, manifest-generation, doctor,
   model-artifact readiness, benchmark-artifact, and server metadata JSON
@@ -303,4 +309,17 @@ Run the fast script hygiene gate before changing files in this directory:
 
 ```text
 bash scripts/check-scripts.sh
+```
+
+Run the targeted Gemma/AX MLX telemetry gate:
+
+```text
+bash scripts/check-mlx-telemetry.sh
+```
+
+When a telemetry change touches shared Rust contracts, add the protected full
+workspace pass:
+
+```text
+bash scripts/check-mlx-telemetry.sh --full-workspace
 ```
