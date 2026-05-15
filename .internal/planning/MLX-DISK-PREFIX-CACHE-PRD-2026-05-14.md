@@ -1,8 +1,8 @@
 # Disk-Durable Prefix Cache PRD (F3)
 
 Status: In progress — M1/M2/M3 locking+eviction, M4 architecture-tier
-cross-restart validation, and short cache-primitive stress landed;
-full AX-serving soak and public docs remain open.
+cross-restart validation, short cache-primitive stress, and M5 public docs
+landed; full AX-serving soak / final promotion decision remains open.
 Date: 2026-05-14
 Owner: AX Engine
 Parent PRD: DS4-LEARNINGS-FOLLOWUP-PRD-2026-05-14.md §6 (F3)
@@ -454,9 +454,12 @@ M4. **Integration validation** (1 day). **Landed for architecture tiers.**
     disk-hit validation pass via
     `scripts/verify_disk_prefix_cache_cross_restart.py`.
 
-M5. **Docs + PRD closure** (half day).
-  - `docs/KV-CACHE.md` and `docs/PERFORMANCE.md` updates.
-  - Findings artifact recording final perf numbers.
+M5. **Docs + PRD closure** (half day). **Docs landed; final promotion open.**
+  - `docs/KV-CACHE.md`, `docs/PERFORMANCE.md`, and `docs/README.md`
+    updates landed.
+  - `MLX-F3-DISK-PREFIX-CACHE-M5-PROMOTION-FINDINGS-2026-05-14.md`
+    records opt-in promotion status.
+  - Full AX-serving soak / final promotion decision remains open.
 
 Total: roughly one engineer-week. Largest risk concentration: M1
 (serialization correctness) and M3 (concurrency).
@@ -477,7 +480,7 @@ this PRD takes.
 ---
 
 **Status:** In progress. Core disk-prefix-cache runtime is implemented,
-architecture-tier cross-restart evidence is in place, and the short
-cache-primitive stress / eviction-pressure artifact passes. Remaining
-blockers before F3 closure are the full AX-serving soak decision and
-M5 docs / final promotion review.
+architecture-tier cross-restart evidence is in place, short
+cache-primitive stress / eviction-pressure artifact passes, and public
+docs are updated for opt-in usage. The only remaining blocker before F3
+closure is the full AX-serving soak / final promotion decision.
