@@ -40,7 +40,18 @@ def fake_stream(url: str, payload: dict[str, object], timeout: float):
     yield "step", {"delta_tokens": [10]}, 0.10
     yield "step", {"delta_tokens": [11]}, 0.15
     yield "step", {"delta_tokens": [12]}, 0.21
-    yield "response", {"response": {"output_token_count": 3}}, 0.24
+    yield "response", {
+        "response": {
+            "output_token_count": 3,
+            "route": {
+                "crossover_decisions": {
+                    "ax_mlx_prefix_cache_disk_hits": 2,
+                    "ax_mlx_prefix_cache_disk_enabled": True,
+                    "ax_mlx_prefix_cache_mode": "disk",
+                }
+            },
+        }
+    }, 0.24
     yield None, {"done": True}, 0.25
 
 
@@ -120,6 +131,8 @@ class AxServingBenchTests(unittest.TestCase):
         self.assertAlmostEqual(observation["client_tpot_ms"], 75.0)
         self.assertAlmostEqual(observation["stream_step_interval_ms"][0], 50.0)
         self.assertAlmostEqual(observation["stream_step_interval_ms"][1], 60.0)
+        self.assertEqual(observation["route_decisions"]["ax_mlx_prefix_cache_disk_hits"], 2)
+        self.assertTrue(observation["route_decisions"]["ax_mlx_prefix_cache_disk_enabled"])
 
     def test_summary_computes_percentiles_and_goodput(self) -> None:
         observations = [
@@ -134,6 +147,11 @@ class AxServingBenchTests(unittest.TestCase):
                 "input_tokens": 10,
                 "output_tokens": 5,
                 "stream_step_interval_ms": [20.0, 25.0],
+                "route_decisions": {
+                    "ax_mlx_prefix_cache_disk_hits": 2,
+                    "ax_mlx_prefix_cache_disk_enabled": True,
+                    "ax_mlx_prefix_cache_mode": "disk",
+                },
             },
             {
                 "phase": "measured",
@@ -146,6 +164,11 @@ class AxServingBenchTests(unittest.TestCase):
                 "input_tokens": 20,
                 "output_tokens": 10,
                 "stream_step_interval_ms": [30.0],
+                "route_decisions": {
+                    "ax_mlx_prefix_cache_disk_hits": 3,
+                    "ax_mlx_prefix_cache_disk_enabled": True,
+                    "ax_mlx_prefix_cache_mode": "disk",
+                },
             },
         ]
 
@@ -161,6 +184,8 @@ class AxServingBenchTests(unittest.TestCase):
         self.assertEqual(summary["goodput"]["requests"], 1)
         self.assertEqual(summary["output_token_throughput_tok_s"], 15.0)
         self.assertEqual(summary["ttft_ms"]["p50"], 200.0)
+        self.assertEqual(summary["route_decisions"]["ax_mlx_prefix_cache_disk_hits"], 5)
+        self.assertEqual(summary["route_decisions"]["ax_mlx_prefix_cache_disk_enabled"], 2)
 
     def test_main_writes_serving_artifact_from_fake_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -205,6 +230,7 @@ class AxServingBenchTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(result["schema_version"], "ax.serving_benchmark.v1")
             self.assertEqual(result["summary"]["ok_requests"], 1)
+            self.assertEqual(result["summary"]["route_decisions"]["ax_mlx_prefix_cache_disk_hits"], 2)
             self.assertEqual(result["corpus"]["prompt_count"], 1)
 
 

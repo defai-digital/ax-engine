@@ -33,6 +33,15 @@ Only one blocker remains before closing F3 completely:
 
 - full AX-serving soak / promotion decision.
 
+The serving benchmark harness now preserves
+`response.route.crossover_decisions` into each observation, aggregates numeric
+route counters in `summary.route_decisions`, and the artifact checker can fail
+closed with `--require-route-decision-min KEY=MIN`. The final soak should use
+that gate, for example
+`--require-route-decision-min ax_mlx_prefix_cache_disk_hits=1`, so the artifact
+proves it exercised the disk-cache route and not only a generic long-context
+serving path.
+
 This should be a serving artifact, not another cache-primitive unit stress:
 run the AX server path with the disk cache enabled, multiple processes or
 workers where applicable, shared prompts, latency/queueing telemetry, memory

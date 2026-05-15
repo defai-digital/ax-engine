@@ -29,6 +29,8 @@ Serving benchmarks should report:
 - queue delay
 - goodput against explicit TTFT, TPOT, and E2E SLO thresholds
 - error count and route/runtime identity when available
+- runtime route-decision counters for promotion gates that must prove a
+  specific path was exercised
 
 This matches the direction used by serving-oriented tools such as vLLM serving
 benchmarks, GenAI-Perf, and MLPerf-style load tests: the benchmark must measure
@@ -73,12 +75,27 @@ python3 scripts/check_ax_serving_benchmark_artifact.py \
   --require-slo
 ```
 
+For disk-durable prefix-cache promotion claims, require a route counter in
+addition to latency and corpus-shape gates:
+
+```text
+python3 scripts/check_ax_serving_benchmark_artifact.py \
+  benchmarks/results/serving/<artifact>.json \
+  --min-input-tokens-p95 8192 \
+  --require-route-decision-min ax_mlx_prefix_cache_disk_hits=1 \
+  --require-slo
+```
+
+This gate proves the serving artifact exercised the disk-cache path instead of
+only measuring a generic long-prompt run.
+
 Render a review report after validation:
 
 ```text
 python3 scripts/render_ax_serving_benchmark_report.py \
   benchmarks/results/serving/<artifact>.json \
   --min-input-tokens-p95 8192 \
+  --require-route-decision-min ax_mlx_prefix_cache_disk_hits=1 \
   --require-slo \
   --output benchmarks/results/serving/<artifact>.md
 ```
@@ -122,6 +139,9 @@ published prompt-mix table.
     "ttft_ms": {"p50": 0.0, "p95": 0.0, "p99": 0.0},
     "client_tpot_ms": {"p50": 0.0, "p95": 0.0, "p99": 0.0},
     "e2e_latency_ms": {"p50": 0.0, "p95": 0.0, "p99": 0.0},
+    "route_decisions": {
+      "ax_mlx_prefix_cache_disk_hits": 0
+    },
     "goodput": {
       "ratio": 0.0,
       "ttft_slo_ms": 2000.0,
@@ -140,6 +160,8 @@ Definitions:
 - `stream_step_interval_ms`: observed intervals between non-empty SSE `step`
   events. If one server step emits multiple tokens, the harness does not invent
   synthetic per-token timestamps.
+- `route_decisions`: numeric route/runtime counters aggregated from final
+  `response.route.crossover_decisions` SSE payloads.
 - `goodput`: measured requests that succeeded and met every configured SLO.
 
 ## Recommended Rollout

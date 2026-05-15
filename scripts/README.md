@@ -127,15 +127,17 @@ throughput baselines.
   `/v1/generate/stream`. It reads a JSONL prompt corpus, runs closed-loop
   concurrency or open-loop request-rate sweeps, and writes
   `ax.serving_benchmark.v1` artifacts with TTFT, TPOT, E2E, queue-delay,
-  throughput, category, and goodput summaries.
+  throughput, category, route-decision counters, and goodput summaries.
 - `check_ax_serving_benchmark_artifact.py`: fail-closed validator for
   `ax.serving_benchmark.v1` artifacts. Use `--require-slo`,
-  `--min-goodput-ratio`, and `--min-input-tokens-p95` before citing long-prompt
-  serving claims.
+  `--min-goodput-ratio`, `--min-input-tokens-p95`, and
+  `--require-route-decision-min KEY=MIN` before citing long-prompt or
+  runtime-path-specific serving claims.
 - `render_ax_serving_benchmark_report.py`: renders validated
   `ax.serving_benchmark.v1` artifacts as Markdown tables for TTFT, client TPOT,
   E2E latency, queue delay, token distributions, goodput, and category
-  breakdowns.
+  breakdowns. It accepts the same route-decision gate when the report is for a
+  runtime-path-specific promotion claim.
 - `test_bench_ax_serving.py`: unit tests for the serving benchmark SSE parser,
   latency accounting, percentile/goodput summary, and artifact writer.
 - `test_ax_serving_benchmark_artifact.py`: unit tests for the serving artifact

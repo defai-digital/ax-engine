@@ -15,6 +15,7 @@ import datetime as dt
 import hashlib
 import itertools
 import json
+import math
 import statistics
 import sys
 import time
@@ -302,6 +303,29 @@ def final_output_token_count(payload: Any) -> int | None:
     return None
 
 
+def final_route_decisions(payload: Any) -> dict[str, int | float | str | bool]:
+    if not isinstance(payload, dict):
+        return {}
+    response = payload.get("response")
+    if not isinstance(response, dict):
+        return {}
+    route = response.get("route")
+    if not isinstance(route, dict):
+        return {}
+    decisions = route.get("crossover_decisions")
+    if not isinstance(decisions, dict):
+        return {}
+    out: dict[str, int | float | str | bool] = {}
+    for key, value in decisions.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        if isinstance(value, (int, float, str, bool)):
+            out[key] = value
+    return out
+
+
 def observe_stream(
     events: Iterable[tuple[str | None, Any, float]],
     *,
@@ -316,6 +340,7 @@ def observe_stream(
     output_chunk_times: list[float] = []
     observed_output_tokens = 0
     final_output_tokens: int | None = None
+    route_decisions: dict[str, int | float | str | bool] = {}
     event_count = 0
 
     for event_name, payload, elapsed_s in events:
@@ -336,6 +361,7 @@ def observe_stream(
                 first_token_s = elapsed_s
         if event_name == "response":
             final_output_tokens = final_output_token_count(payload)
+            route_decisions = final_route_decisions(payload)
 
     if completed_at_s is None:
         completed_at_s = time.perf_counter()
@@ -375,6 +401,7 @@ def observe_stream(
         "output_tokens": output_tokens,
         "output_chunks": len(output_chunk_times),
         "events": event_count,
+        "route_decisions": route_decisions,
         "metadata": prompt.metadata,
     }
 
@@ -443,6 +470,7 @@ def run_one_request(
             "output_tokens": None,
             "output_chunks": 0,
             "events": 0,
+            "route_decisions": {},
             "metadata": prompt.metadata,
         }
 
@@ -479,6 +507,7 @@ def summarize_observations(
     ok = [item for item in measured if item.get("ok")]
     output_tokens = [item.get("output_tokens") or 0 for item in ok]
     input_tokens = [item.get("input_tokens") for item in ok]
+    route_decisions = summarize_route_decisions(ok)
     intervals = list(
         itertools.chain.from_iterable(item.get("stream_step_interval_ms", []) for item in ok)
     )
@@ -506,6 +535,7 @@ def summarize_observations(
         "queue_delay_ms": summarize_values(item.get("queue_delay_ms") for item in measured),
         "input_tokens": summarize_values(input_tokens),
         "output_tokens": summarize_values(output_tokens),
+        "route_decisions": route_decisions,
         "goodput": {
             "requests": len(good),
             "ratio": len(good) / len(measured) if measured else 0.0,
@@ -514,6 +544,24 @@ def summarize_observations(
             "e2e_slo_ms": e2e_slo_ms,
         },
     }
+
+
+def summarize_route_decisions(observations: list[dict[str, Any]]) -> dict[str, int | float]:
+    totals: dict[str, int | float] = {}
+    for item in observations:
+        decisions = item.get("route_decisions")
+        if not isinstance(decisions, dict):
+            continue
+        for key, value in decisions.items():
+            if not isinstance(key, str):
+                continue
+            if isinstance(value, bool):
+                totals[key] = totals.get(key, 0) + int(value)
+            elif isinstance(value, int):
+                totals[key] = totals.get(key, 0) + value
+            elif isinstance(value, float) and math.isfinite(value):
+                totals[key] = float(totals.get(key, 0)) + value
+    return totals
 
 
 def summarize_by_category(
