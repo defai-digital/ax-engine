@@ -708,6 +708,12 @@ Current evidence:
   records `two_stage_scores` median `4018us` and `dim_parallel` median
   `282795us`; this is improved standalone kernel evidence, not promotion
   evidence.
+- Post-contract-slice microbench:
+  `benchmarks/results/turboquant/quality-runs/20260515T082716Z-gemma-4-e2b-it-4bit-runtime-slices-s7/microbench-gemma-e2b-shape-post-s7.json`
+  records the shared flat hot-tail host merge at `949us` median for the same
+  Gemma E2B-style shape. The cold Metal kernel median in this short run was
+  `5218us`, which should be treated as noisy standalone evidence, not a
+  performance promotion claim.
 - Current mitigation: hot-tail merge now reads back only the hot-window K/V
   slice instead of materializing the full K/V history for the layer, and the
   production merge path now combines cold partition stats with the compact hot
@@ -825,6 +831,15 @@ Active implementation slice:
   `4018us`, `dim_parallel` median `282795us`,
   `two_stage_scores.max_abs_diff=3.864988684654236e-7`, and hot-tail merge
   `max_abs_diff=2.849847078323364e-7`.
+- **P3-S7 shared hot-tail merge evidence contract**: move the flat split-softmax
+  hot-tail merge helper into the TurboQuant module and use it from both
+  `MlxKVCache` and `turboquant-microbench`. The microbench artifact now records
+  `hot_tail_merge.host_wall_us`, so future runtime-slice evidence can separate
+  cold Metal kernel time from host hot-tail merge time instead of implying that
+  cold-kernel-only timing proves host merge changes. Diagnostic evidence:
+  `benchmarks/results/turboquant/quality-runs/20260515T082716Z-gemma-4-e2b-it-4bit-runtime-slices-s7/microbench-gemma-e2b-shape-post-s7.json`
+  passes the standalone microbench checker with shared flat hot-tail merge
+  median `949us`.
 
 ### TurboQuant KV Runtime Promotion
 
