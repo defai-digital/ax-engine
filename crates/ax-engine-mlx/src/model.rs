@@ -3412,19 +3412,30 @@ fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
     use std::sync::Mutex;
     use std::thread::ThreadId;
 
-    // Empirically, the GeGLU compiled closure ABORTS the process inside
-    // `mlx_closure_apply` ("There is no Stream(gpu, 0) in current thread"
-    // at mlx-c-0.6.0/mlx/c/transforms.cpp:73) when applied to 4D MoE-expert
-    // gather outputs. The SwiGLU compile wrap survives the same 4D shape
-    // (verified on Qwen 3.6 35B-A3B, Coder Next, GLM 4.7 Flash); the crash
-    // is specific to the `gelu_approx + multiply` op tree under MLX 0.31 /
-    // mlx-c 0.6 with high-rank inputs. Until upstream tightens its stream
-    // contract, restrict the geglu compile wrap to dense-FFN inputs (rank <=
-    // 3) and use the imperative path for MoE expert gathers (rank 4). The
-    // imperative path is what the GeGLU-MoE call site used pre-K refactor,
-    // so this matches the W1 baseline and avoids the SIGABRT on Gemma 4 26B
-    // A4B (the only K-relevant model with mixed dense + MoE GeGLU FFN).
-    if gate.ndim() > 3 {
+    // The GeGLU compiled closure ABORTS the process inside `mlx_closure_apply`
+    // ("There is no Stream(gpu, 0) in current thread" at
+    // mlx-c-0.6.0/mlx/c/transforms.cpp:73) under two MLX 0.31 / mlx-c 0.6
+    // edge cases that `try_apply`'s cross-thread guard cannot catch:
+    //
+    //   1. Rank-4 inputs from MoE expert `qw_gather` outputs. Verified on
+    //      Gemma 4 26B A4B (mixed dense+MoE GeGLU). The SwiGLU compile wrap
+    //      survives the same 4D shape on Qwen 3.6 35B-A3B / Coder Next /
+    //      GLM 4.7 Flash, so the issue is specific to the
+    //      `gelu_approx + multiply` op tree.
+    //
+    //   2. Very wide intermediate dimensions. Empirically Gemma 4 31B 4-bit
+    //      (`intermediate_size = 21504`, hidden 5376) aborts at the first
+    //      apply, while E4B (`intermediate_size = 10240`) is stable. A
+    //      threshold of 16K on the last-axis size keeps E2B (6144) and E4B
+    //      (10240) inside the compile wrap and routes 31B's enormous FFN
+    //      hidden to the imperative path.
+    //
+    // Both fallback paths produce identical numerics (the unit test asserts
+    // bit-exact equality vs `gelu_approx + multiply`) and match the W1
+    // pre-K behaviour on these call sites.
+    const COMPILE_WRAP_LAST_DIM_CEILING: usize = 16_384;
+    let last_dim = *gate.shape().last().unwrap_or(&0) as usize;
+    if gate.ndim() > 3 || last_dim > COMPILE_WRAP_LAST_DIM_CEILING {
         return multiply(&gelu_approx(gate, None), x, None);
     }
 
