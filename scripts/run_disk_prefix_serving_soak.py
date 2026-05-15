@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from pathlib import Path
 
 
 DEFAULT_ROUTE_DECISION_KEY = "ax_mlx_prefix_cache_disk_hits"
+RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,22 @@ def positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be positive")
     return parsed
+
+
+def run_id_arg(value: str) -> str:
+    if not RUN_ID_PATTERN.fullmatch(value):
+        raise argparse.ArgumentTypeError(
+            "run id must be a single path component using letters, numbers, '.', '_', or '-'"
+        )
+    if value in {".", ".."}:
+        raise argparse.ArgumentTypeError("run id must not be '.' or '..'")
+    return value
+
+
+def route_decision_key_arg(value: str) -> str:
+    if not value or "=" in value or "/" in value:
+        raise argparse.ArgumentTypeError("route decision key must be non-empty and omit '=' or '/'")
+    return value
 
 
 def non_negative_float(value: str) -> float:
@@ -180,6 +198,15 @@ def shell_join(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
+def ensure_run_dir_is_new(run_dir: Path) -> None:
+    if run_dir.exists() and not run_dir.is_dir():
+        raise RuntimeError(f"run output path exists and is not a directory: {run_dir}")
+    if run_dir.exists() and any(run_dir.iterdir()):
+        raise RuntimeError(
+            f"run directory already contains files: {run_dir}. Use a new --run-id for auditable evidence."
+        )
+
+
 def write_command_log(plan: SoakPlan, *, dry_run: bool) -> None:
     plan.paths.run_dir.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -194,6 +221,7 @@ def write_command_log(plan: SoakPlan, *, dry_run: bool) -> None:
 
 
 def run_plan(plan: SoakPlan, *, dry_run: bool) -> int:
+    ensure_run_dir_is_new(plan.paths.run_dir)
     write_command_log(plan, dry_run=dry_run)
     for command in plan.commands:
         print(shell_join(command))
@@ -211,7 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--output-root", type=Path, default=Path("benchmarks/results/serving"))
-    parser.add_argument("--run-id", default=utc_run_id())
+    parser.add_argument("--run-id", type=run_id_arg, default=utc_run_id())
     parser.add_argument("--prompts", type=positive_int, default=8)
     parser.add_argument("--prefix-tokens", type=positive_int, default=8192)
     parser.add_argument("--suffix-tokens", type=positive_int, default=64)
@@ -226,7 +254,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--slo-e2e-ms", type=optional_positive_float, default=60000.0)
     parser.add_argument("--min-goodput-ratio", type=ratio_arg)
     parser.add_argument("--min-input-tokens-p95", type=positive_int)
-    parser.add_argument("--route-decision-key", default=DEFAULT_ROUTE_DECISION_KEY)
+    parser.add_argument(
+        "--route-decision-key",
+        type=route_decision_key_arg,
+        default=DEFAULT_ROUTE_DECISION_KEY,
+    )
     parser.add_argument("--route-decision-min", type=non_negative_float, default=1.0)
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -236,7 +268,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     plan = build_plan(args)
-    return run_plan(plan, dry_run=args.dry_run)
+    try:
+        return run_plan(plan, dry_run=args.dry_run)
+    except RuntimeError as error:
+        print(f"AX disk-prefix serving soak failed: {error}", file=sys.stderr)
+        return 1
 
 
 def main_with_args_for_test(argv: list[str]) -> int:

@@ -88,7 +88,9 @@ python3 scripts/run_disk_prefix_serving_soak.py \
 This runner builds the shared-prefix corpus, runs `bench_ax_serving.py`, checks
 the artifact, renders the report, and writes `commands.json` beside the
 outputs. The AX server should already be running with `AX_MLX_PREFIX_CACHE_DIR`
-set before invoking the runner.
+set before invoking the runner. Use a fresh single-component `--run-id` for
+each attempt; the runner refuses non-empty run directories so promotion
+artifacts are not accidentally overwritten.
 
 The equivalent low-level steps are:
 

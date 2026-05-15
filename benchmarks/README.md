@@ -179,7 +179,9 @@ python3 scripts/run_disk_prefix_serving_soak.py \
 
 It assumes the AX server is already running with `AX_MLX_PREFIX_CACHE_DIR` set,
 then writes `corpus.jsonl`, `artifact.json`, `report.md`, and `commands.json`
-under `benchmarks/results/serving/<run-id>/`.
+under `benchmarks/results/serving/<run-id>/`. Use a fresh single-component
+`--run-id`; existing non-empty run directories fail closed to protect evidence
+from accidental overwrite.
 
 For manual runs, generate the corpus first:
 
