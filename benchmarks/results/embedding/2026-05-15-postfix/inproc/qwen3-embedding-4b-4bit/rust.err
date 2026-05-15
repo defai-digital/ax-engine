@@ -1,0 +1,17 @@
+[embed-rust-bench] model=.internal/models/qwen3-embedding-4b-4bit mode=batch n=10 lens=[10, 15, 13, 8, 3, 8, 10, 8, 10, 10] warmup=5 trials=15
+[embed-rust-bench] warmup × 5
+  trial  1: 40.044 ms
+  trial  2: 40.021 ms
+  trial  3: 39.989 ms
+  trial  4: 40.096 ms
+  trial  5: 40.413 ms
+  trial  6: 40.017 ms
+  trial  7: 40.070 ms
+  trial  8: 39.982 ms
+  trial  9: 39.790 ms
+  trial 10: 40.023 ms
+  trial 11: 40.067 ms
+  trial 12: 39.991 ms
+  trial 13: 39.699 ms
+  trial 14: 40.004 ms
+  trial 15: 40.045 ms

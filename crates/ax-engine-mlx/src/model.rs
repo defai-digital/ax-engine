@@ -58,6 +58,29 @@ pub struct LinearAttentionProfileSnapshot {
     pub output_wall_us: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PrefillProfileSnapshot {
+    pub enabled: u32,
+    pub prefill_steps: u32,
+    pub layers: u32,
+    pub tokens: u32,
+    pub per_layer_input_wall_us: u32,
+    pub pre_sdpa_wall_us: u32,
+    pub pre_sdpa_qkv_proj_wall_us: u32,
+    pub pre_sdpa_qk_norm_wall_us: u32,
+    pub pre_sdpa_rope_kv_wall_us: u32,
+    pub sdpa_wall_us: u32,
+    pub post_attn_wall_us: u32,
+    pub post_attn_ffn_wall_us: u32,
+    pub post_attn_ffn_gate_up_wall_us: u32,
+    pub post_attn_ffn_activation_wall_us: u32,
+    pub post_attn_ffn_down_wall_us: u32,
+    pub post_attn_output_proj_wall_us: u32,
+    pub post_attn_residual_norm_wall_us: u32,
+    pub post_attn_residual_gate_wall_us: u32,
+    pub lm_head_wall_us: u32,
+}
+
 /// Per-section wall time for the single-token lazy decode path.
 ///
 /// Enabled via `AX_MLX_DECODE_PROFILE=1`.  Each stage timing forces a blocking
@@ -111,6 +134,9 @@ pub struct DecodeProfileSnapshot {
     pub sdpa_wall_us: u32,
     pub post_attn_wall_us: u32,
     pub post_attn_ffn_wall_us: u32,
+    pub post_attn_ffn_gate_up_wall_us: u32,
+    pub post_attn_ffn_activation_wall_us: u32,
+    pub post_attn_ffn_down_wall_us: u32,
     pub post_attn_output_proj_wall_us: u32,
     pub post_attn_residual_norm_wall_us: u32,
     pub post_attn_residual_gate_wall_us: u32,
@@ -151,6 +177,9 @@ enum DecodeProfileStage {
     Sdpa,
     PostAttn,
     PostAttnFfn,
+    PostAttnFfnGateUp,
+    PostAttnFfnActivation,
+    PostAttnFfnDown,
     PostAttnOutputProj,
     PostAttnResidualNorm,
     PostAttnResidualGate,
@@ -159,9 +188,11 @@ enum DecodeProfileStage {
 
 static GEMMA4_MOE_PROFILE: OnceLock<Mutex<Gemma4MoeProfileSnapshot>> = OnceLock::new();
 static LINEAR_ATTENTION_PROFILE: OnceLock<Mutex<LinearAttentionProfileSnapshot>> = OnceLock::new();
+static PREFILL_PROFILE: OnceLock<Mutex<PrefillProfileSnapshot>> = OnceLock::new();
 static DECODE_PROFILE: OnceLock<Mutex<DecodeProfileSnapshot>> = OnceLock::new();
 static GEMMA4_MOE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 static LINEAR_ATTENTION_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+static PREFILL_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 static DECODE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 fn profile_env_enabled(cache: &'static OnceLock<bool>, name: &'static str) -> bool {
@@ -184,6 +215,10 @@ fn linear_attention_profile_enabled() -> bool {
     )
 }
 
+fn prefill_profile_enabled() -> bool {
+    profile_env_enabled(&PREFILL_PROFILE_ENABLED, "AX_MLX_PREFILL_PROFILE")
+}
+
 fn decode_profile_enabled() -> bool {
     profile_env_enabled(&DECODE_PROFILE_ENABLED, "AX_MLX_DECODE_PROFILE")
 }
@@ -194,6 +229,10 @@ fn gemma4_moe_profile() -> &'static Mutex<Gemma4MoeProfileSnapshot> {
 
 fn linear_attention_profile() -> &'static Mutex<LinearAttentionProfileSnapshot> {
     LINEAR_ATTENTION_PROFILE.get_or_init(|| Mutex::new(LinearAttentionProfileSnapshot::default()))
+}
+
+fn prefill_profile() -> &'static Mutex<PrefillProfileSnapshot> {
+    PREFILL_PROFILE.get_or_init(|| Mutex::new(PrefillProfileSnapshot::default()))
 }
 
 fn decode_profile() -> &'static Mutex<DecodeProfileSnapshot> {
@@ -257,6 +296,29 @@ fn record_linear_attention_profile_stage(stage: LinearAttentionProfileStage, wal
     *target = target.saturating_add(wall_us);
 }
 
+fn record_prefill_profile_stage(stage: DecodeProfileStage, wall_us: u32) {
+    let mut profile = prefill_profile().lock().unwrap();
+    profile.enabled = 1;
+    let target = match stage {
+        DecodeProfileStage::PerLayerInput => &mut profile.per_layer_input_wall_us,
+        DecodeProfileStage::PreSdpa => &mut profile.pre_sdpa_wall_us,
+        DecodeProfileStage::PreSdpaQkvProj => &mut profile.pre_sdpa_qkv_proj_wall_us,
+        DecodeProfileStage::PreSdpaQkNorm => &mut profile.pre_sdpa_qk_norm_wall_us,
+        DecodeProfileStage::PreSdpaRopeKv => &mut profile.pre_sdpa_rope_kv_wall_us,
+        DecodeProfileStage::Sdpa => &mut profile.sdpa_wall_us,
+        DecodeProfileStage::PostAttn => &mut profile.post_attn_wall_us,
+        DecodeProfileStage::PostAttnFfn => &mut profile.post_attn_ffn_wall_us,
+        DecodeProfileStage::PostAttnFfnGateUp => &mut profile.post_attn_ffn_gate_up_wall_us,
+        DecodeProfileStage::PostAttnFfnActivation => &mut profile.post_attn_ffn_activation_wall_us,
+        DecodeProfileStage::PostAttnFfnDown => &mut profile.post_attn_ffn_down_wall_us,
+        DecodeProfileStage::PostAttnOutputProj => &mut profile.post_attn_output_proj_wall_us,
+        DecodeProfileStage::PostAttnResidualNorm => &mut profile.post_attn_residual_norm_wall_us,
+        DecodeProfileStage::PostAttnResidualGate => &mut profile.post_attn_residual_gate_wall_us,
+        DecodeProfileStage::LmHead => &mut profile.lm_head_wall_us,
+    };
+    *target = target.saturating_add(wall_us);
+}
+
 fn record_decode_profile_stage(stage: DecodeProfileStage, wall_us: u32) {
     let mut profile = decode_profile().lock().unwrap();
     profile.enabled = 1;
@@ -269,12 +331,23 @@ fn record_decode_profile_stage(stage: DecodeProfileStage, wall_us: u32) {
         DecodeProfileStage::Sdpa => &mut profile.sdpa_wall_us,
         DecodeProfileStage::PostAttn => &mut profile.post_attn_wall_us,
         DecodeProfileStage::PostAttnFfn => &mut profile.post_attn_ffn_wall_us,
+        DecodeProfileStage::PostAttnFfnGateUp => &mut profile.post_attn_ffn_gate_up_wall_us,
+        DecodeProfileStage::PostAttnFfnActivation => &mut profile.post_attn_ffn_activation_wall_us,
+        DecodeProfileStage::PostAttnFfnDown => &mut profile.post_attn_ffn_down_wall_us,
         DecodeProfileStage::PostAttnOutputProj => &mut profile.post_attn_output_proj_wall_us,
         DecodeProfileStage::PostAttnResidualNorm => &mut profile.post_attn_residual_norm_wall_us,
         DecodeProfileStage::PostAttnResidualGate => &mut profile.post_attn_residual_gate_wall_us,
         DecodeProfileStage::LmHead => &mut profile.lm_head_wall_us,
     };
     *target = target.saturating_add(wall_us);
+}
+
+fn record_prefill_profile_step(layers: u32, tokens: u32) {
+    let mut profile = prefill_profile().lock().unwrap();
+    profile.enabled = 1;
+    profile.prefill_steps = profile.prefill_steps.saturating_add(1);
+    profile.layers = profile.layers.saturating_add(layers);
+    profile.tokens = profile.tokens.saturating_add(tokens);
 }
 
 fn record_decode_profile_step(layers: u32) {
@@ -320,6 +393,22 @@ fn decode_profile_eval_elapsed(
     }
 }
 
+fn forward_profile_eval_elapsed(
+    profile_decode: bool,
+    profile_prefill: bool,
+    stage: DecodeProfileStage,
+    started: Instant,
+    targets: &[&MlxArray],
+) {
+    if profile_decode {
+        eval(targets);
+        record_decode_profile_stage(stage, saturating_profile_us(started));
+    } else if profile_prefill {
+        eval(targets);
+        record_prefill_profile_stage(stage, saturating_profile_us(started));
+    }
+}
+
 pub fn take_gemma4_moe_profile_snapshot() -> Gemma4MoeProfileSnapshot {
     let mut profile = gemma4_moe_profile().lock().unwrap();
     let snapshot = *profile;
@@ -331,6 +420,13 @@ pub fn take_linear_attention_profile_snapshot() -> LinearAttentionProfileSnapsho
     let mut profile = linear_attention_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = LinearAttentionProfileSnapshot::default();
+    snapshot
+}
+
+pub fn take_prefill_profile_snapshot() -> PrefillProfileSnapshot {
+    let mut profile = prefill_profile().lock().unwrap();
+    let snapshot = *profile;
+    *profile = PrefillProfileSnapshot::default();
     snapshot
 }
 
@@ -919,6 +1015,8 @@ pub fn layer_forward_with_turboquant_context(
     // dedicated profilers (LinearAttentionProfile, MoE attention profile) cover
     // those paths.
     let profile_decode_layer = seq == 1 && decode_profile_enabled();
+    let profile_prefill_layer = seq > 1 && prefill_profile_enabled();
+    let profile_forward_layer = profile_decode_layer || profile_prefill_layer;
     let mut post_attn_started: Option<Instant> = None;
 
     let attn_proj = if cfg.is_linear_attention_layer(layer_idx) {
@@ -931,7 +1029,7 @@ pub fn layer_forward_with_turboquant_context(
             attn_proj
         }
     } else {
-        let pre_sdpa_started = profile_decode_layer.then(Instant::now);
+        let pre_sdpa_started = profile_forward_layer.then(Instant::now);
         // 2-7. QKV projections + RoPE. KV-shared layers skip K/V and borrow from source.
         let (q_rope, cached_k, cached_v, attn_gate) = if let Some(src_layer) = kv_source {
             // KV-shared layer (Gemma4 layers 24-41): compute Q only.
@@ -944,7 +1042,7 @@ pub fn layer_forward_with_turboquant_context(
                 &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
                 None,
             );
-            let qk_norm_started = profile_decode_layer.then(Instant::now);
+            let qk_norm_started = profile_forward_layer.then(Instant::now);
             let q = qk_norm_bshd(
                 q,
                 w.q_norm.as_ref(),
@@ -954,14 +1052,15 @@ pub fn layer_forward_with_turboquant_context(
                 cfg.rms_norm_eps,
             );
             if let Some(started) = qk_norm_started {
-                decode_profile_eval_elapsed(
+                forward_profile_eval_elapsed(
                     profile_decode_layer,
+                    profile_prefill_layer,
                     DecodeProfileStage::PreSdpaQkNorm,
                     started,
                     &[&q],
                 );
             }
-            let rope_kv_started = profile_decode_layer.then(Instant::now);
+            let rope_kv_started = profile_forward_layer.then(Instant::now);
             let q = transpose(&q, &[0, 2, 1, 3], None);
             let q_rope = rope(
                 &q,
@@ -975,8 +1074,9 @@ pub fn layer_forward_with_turboquant_context(
             );
             let (ck, cv) = cache.peek_source_kv(src_layer, seq);
             if let Some(started) = rope_kv_started {
-                decode_profile_eval_elapsed(
+                forward_profile_eval_elapsed(
                     profile_decode_layer,
+                    profile_prefill_layer,
                     DecodeProfileStage::PreSdpaRopeKv,
                     started,
                     &[&q_rope, &ck, &cv],
@@ -985,7 +1085,7 @@ pub fn layer_forward_with_turboquant_context(
             (q_rope, ck, cv, None)
         } else {
             // Normal layer: compute Q, K, V from own projections.
-            let qkv_proj_started = profile_decode_layer.then(Instant::now);
+            let qkv_proj_started = profile_forward_layer.then(Instant::now);
             let (q_raw, k_raw, v_raw, attn_gate_raw) = qkv_project(cfg, w, &normed, head_dim);
 
             let q = reshape(
@@ -1011,15 +1111,16 @@ pub fn layer_forward_with_turboquant_context(
                 if let Some(g) = attn_gate_raw.as_ref() {
                     refs.push(g);
                 }
-                decode_profile_eval_elapsed(
+                forward_profile_eval_elapsed(
                     profile_decode_layer,
+                    profile_prefill_layer,
                     DecodeProfileStage::PreSdpaQkvProj,
                     started,
                     &refs,
                 );
             }
 
-            let qk_norm_started = profile_decode_layer.then(Instant::now);
+            let qk_norm_started = profile_forward_layer.then(Instant::now);
             let q = qk_norm_bshd(
                 q,
                 w.q_norm.as_ref(),
@@ -1037,15 +1138,16 @@ pub fn layer_forward_with_turboquant_context(
                 cfg.rms_norm_eps,
             );
             if let Some(started) = qk_norm_started {
-                decode_profile_eval_elapsed(
+                forward_profile_eval_elapsed(
                     profile_decode_layer,
+                    profile_prefill_layer,
                     DecodeProfileStage::PreSdpaQkNorm,
                     started,
                     &[&q, &k],
                 );
             }
 
-            let rope_kv_started = profile_decode_layer.then(Instant::now);
+            let rope_kv_started = profile_forward_layer.then(Instant::now);
             let q = transpose(&q, &[0, 2, 1, 3], None);
             let k = transpose(&k, &[0, 2, 1, 3], None);
             let v = prepare_value_bhsd(
@@ -1084,8 +1186,9 @@ pub fn layer_forward_with_turboquant_context(
                 cache.append(layer_idx, k_rope, v)
             };
             if let Some(started) = rope_kv_started {
-                decode_profile_eval_elapsed(
+                forward_profile_eval_elapsed(
                     profile_decode_layer,
+                    profile_prefill_layer,
                     DecodeProfileStage::PreSdpaRopeKv,
                     started,
                     &[&q_rope, &ck, &cv],
@@ -1098,8 +1201,9 @@ pub fn layer_forward_with_turboquant_context(
             if let Some(g) = attn_gate.as_ref() {
                 refs.push(g);
             }
-            decode_profile_eval_elapsed(
+            forward_profile_eval_elapsed(
                 profile_decode_layer,
+                profile_prefill_layer,
                 DecodeProfileStage::PreSdpa,
                 started,
                 &refs,
@@ -1133,7 +1237,7 @@ pub fn layer_forward_with_turboquant_context(
             local_mask = attention_mask_array(seq, key_len, sliding_window);
             &local_mask
         };
-        let sdpa_started = profile_decode_layer.then(Instant::now);
+        let sdpa_started = profile_forward_layer.then(Instant::now);
         let attn_sdpa =
             if turboquant_candidate.status == TurboQuantModelDecodeCandidateStatus::Ready {
                 let turboquant_out = turboquant_decode_attention_experimental(
@@ -1176,15 +1280,16 @@ pub fn layer_forward_with_turboquant_context(
                 )
             };
         if let Some(started) = sdpa_started {
-            decode_profile_eval_elapsed(
+            forward_profile_eval_elapsed(
                 profile_decode_layer,
+                profile_prefill_layer,
                 DecodeProfileStage::Sdpa,
                 started,
                 &[&attn_sdpa],
             );
         }
-        post_attn_started = profile_decode_layer.then(Instant::now);
-        let output_proj_started = profile_decode_layer.then(Instant::now);
+        post_attn_started = profile_forward_layer.then(Instant::now);
+        let output_proj_started = profile_forward_layer.then(Instant::now);
 
         // 10. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
         let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
@@ -1212,8 +1317,9 @@ pub fn layer_forward_with_turboquant_context(
             attn_proj
         };
         if let Some(started) = output_proj_started {
-            decode_profile_eval_elapsed(
+            forward_profile_eval_elapsed(
                 profile_decode_layer,
+                profile_prefill_layer,
                 DecodeProfileStage::PostAttnOutputProj,
                 started,
                 &[&attn_proj],
@@ -1231,14 +1337,15 @@ pub fn layer_forward_with_turboquant_context(
     }
 
     // 15. Residual.
-    let residual_norm_started = profile_decode_layer.then(Instant::now);
+    let residual_norm_started = profile_forward_layer.then(Instant::now);
     let hidden = add(hidden, &attn_proj, None);
 
     // 16. Pre-FFN norm.
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
     if let Some(started) = residual_norm_started {
-        decode_profile_eval_elapsed(
+        forward_profile_eval_elapsed(
             profile_decode_layer,
+            profile_prefill_layer,
             DecodeProfileStage::PostAttnResidualNorm,
             started,
             &[&normed2],
@@ -1246,7 +1353,7 @@ pub fn layer_forward_with_turboquant_context(
     }
 
     // 17. FFN: MoE or dense.
-    let ffn_started = profile_decode_layer.then(Instant::now);
+    let ffn_started = profile_forward_layer.then(Instant::now);
     let ffn_out = if w.router_proj.is_some() {
         if cfg.gemma4_moe_router {
             // Gemma4 dual-path: dense sub-block + expert sub-block.
@@ -1327,8 +1434,9 @@ pub fn layer_forward_with_turboquant_context(
         rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
     };
     if let Some(started) = ffn_started {
-        decode_profile_eval_elapsed(
+        forward_profile_eval_elapsed(
             profile_decode_layer,
+            profile_prefill_layer,
             DecodeProfileStage::PostAttnFfn,
             started,
             &[&ffn_out],
@@ -1336,7 +1444,7 @@ pub fn layer_forward_with_turboquant_context(
     }
 
     // 18. Residual.
-    let residual_gate_started = profile_decode_layer.then(Instant::now);
+    let residual_gate_started = profile_forward_layer.then(Instant::now);
     let mut out = add(&hidden, &ffn_out, None);
 
     // 19. Per-layer input gating (Gemma4 2B/4B): gate(h) * per_layer_embed → proj → norm + h.
@@ -1360,16 +1468,18 @@ pub fn layer_forward_with_turboquant_context(
         out
     };
     if let Some(started) = residual_gate_started {
-        decode_profile_eval_elapsed(
+        forward_profile_eval_elapsed(
             profile_decode_layer,
+            profile_prefill_layer,
             DecodeProfileStage::PostAttnResidualGate,
             started,
             &[&out],
         );
     }
     if let Some(started) = post_attn_started {
-        decode_profile_eval_elapsed(
+        forward_profile_eval_elapsed(
             profile_decode_layer,
+            profile_prefill_layer,
             DecodeProfileStage::PostAttn,
             started,
             &[&out],
@@ -1443,6 +1553,8 @@ pub fn forward_with_turboquant_context(
     token_offset: usize,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
+    let profile_prefill = token_ids.len() > 1 && prefill_profile_enabled();
+
     // Build ids_1d once; reused for both embedding and per-layer-input projection
     // (Gemma4 2B/4B), avoiding a duplicate CPU→GPU token-ID upload.
     let ids_1d = MlxArray::from_raw_data(
@@ -1459,7 +1571,18 @@ pub fn forward_with_turboquant_context(
 
     let seq = token_ids.len();
     let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
+    let per_layer_started = profile_prefill.then(Instant::now);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
+    if let (Some(started), Some(inputs)) = (per_layer_started, per_layer_inputs.as_ref()) {
+        let refs: Vec<&MlxArray> = inputs.iter().collect();
+        forward_profile_eval_elapsed(
+            false,
+            profile_prefill,
+            DecodeProfileStage::PerLayerInput,
+            started,
+            &refs,
+        );
+    }
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward_with_turboquant_context(
@@ -1485,6 +1608,7 @@ pub fn forward_with_turboquant_context(
         hidden
     };
 
+    let lm_head_started = profile_prefill.then(Instant::now);
     let normed = rms_norm(
         &last_hidden,
         Some(&weights.final_norm),
@@ -1494,7 +1618,20 @@ pub fn forward_with_turboquant_context(
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
-    reshape(&logits_f32, &[cfg.vocab_size as i32], None)
+    let logits = reshape(&logits_f32, &[cfg.vocab_size as i32], None);
+    if let Some(started) = lm_head_started {
+        forward_profile_eval_elapsed(
+            false,
+            profile_prefill,
+            DecodeProfileStage::LmHead,
+            started,
+            &[&logits],
+        );
+    }
+    if profile_prefill {
+        record_prefill_profile_step(weights.layers.len() as u32, seq as u32);
+    }
+    logits
 }
 
 /// Forward pass returning logits for ALL token positions — `[seq, vocab_size]` f32.
@@ -3188,7 +3325,18 @@ fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
     multiply(&gelu_approx(gate, None), x, None)
 }
 
+fn gemma4_geglu(cfg: &ModelConfig, gate: &MlxArray, up: &MlxArray) -> MlxArray {
+    if cfg.uses_geglu {
+        multiply(&gelu_approx(gate, None), up, None)
+    } else {
+        multiply(&mlx_sys::ops::silu(gate, None), up, None)
+    }
+}
+
 fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
+    let seq = x.shape().get(1).copied().unwrap_or(1);
+    let profile_decode = seq == 1 && decode_profile_enabled();
+    let profile_prefill = seq > 1 && prefill_profile_enabled();
     // Insert the rotation per `AX_MLX_EXPERIMENTAL_WEIGHT_ROTATION` mode:
     //   Enable mode (P1):  R(R(x)) ≈ x (identity sandwich)
     //   Apply  mode (P2a): R(x), expects offline-rotated weights to cancel
@@ -3204,6 +3352,7 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
         rotated
     };
     let x = &smoothed;
+    let gate_up_started = Instant::now();
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_packed {
         let out = qw(x, packed);
         let packed_dim = out
@@ -3224,6 +3373,13 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
         let up = qw(x, w.up_proj.as_ref().unwrap());
         (gate, up)
     };
+    forward_profile_eval_elapsed(
+        profile_decode,
+        profile_prefill,
+        DecodeProfileStage::PostAttnFfnGateUp,
+        gate_up_started,
+        &[&gate_out, &up_out],
+    );
 
     // Gemma4 uses GEGLU with fast-approx GELU gate (matches mlx_lm's `nn.gelu_approx`).
     // Qwen3 uses SwiGLU (SiLU gate).
@@ -3242,18 +3398,30 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     // dead-end record (workarounds attempted + revert rationale). The
     // `geglu` helper is kept (and unit-tested) as a record of the math;
     // the production hot path stays imperative.
-    let gate_act = if cfg.uses_geglu {
-        gelu_approx(&gate_out, None)
-    } else {
-        mlx_sys::ops::silu(&gate_out, None)
-    };
-    let ffn_hidden = multiply(&gate_act, &up_out, None);
-    qw(
+    let activation_started = Instant::now();
+    let ffn_hidden = gemma4_geglu(cfg, &gate_out, &up_out);
+    forward_profile_eval_elapsed(
+        profile_decode,
+        profile_prefill,
+        DecodeProfileStage::PostAttnFfnActivation,
+        activation_started,
+        &[&ffn_hidden],
+    );
+    let down_started = Instant::now();
+    let out = qw(
         &ffn_hidden,
         w.down_proj
             .as_ref()
             .expect("dense FFN layer must have down_proj"),
-    )
+    );
+    forward_profile_eval_elapsed(
+        profile_decode,
+        profile_prefill,
+        DecodeProfileStage::PostAttnFfnDown,
+        down_started,
+        &[&out],
+    );
+    out
 }
 
 fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {

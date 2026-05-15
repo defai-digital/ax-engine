@@ -1,0 +1,3 @@
+
+per-call ms  min=10.721  median=10.814  max=11.256  mean=10.877
+ms/sentence  1.081    tok/s 8784.8

@@ -10,8 +10,9 @@ phrase:
 - experimental compressed-KV work
 
 AX Engine's strongest current long-context evidence is repeated-prefix reuse in
-long-running sessions. Cold 8k prefill and multi-request serving are measured
-separately and should not be presented as solved by the same evidence.
+long-running sessions plus refreshed Qwen3-4B cold-prefill scaling. Multi-request
+serving is measured separately and should not be presented as solved by the same
+evidence.
 
 ## What AX Owns
 
@@ -36,7 +37,9 @@ The detailed implementation contract lives in [KV-CACHE.md](KV-CACHE.md).
 
 | Surface | Evidence | Current result | What it supports |
 |---|---|---|---|
-| Cold prefill scaling | [Qwen3-4B P1 prefill scaling](../benchmarks/results/mlx-inference/2026-05-07-real-p1/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md) | AX/MLX prefill ratio was 1.159x at 1k, 0.982x at 2k, 0.913x at 4k, and 0.840x at 8k | AX has measured long-context behavior, but cold 8k prefill is still an optimization surface |
+| Cold prefill scaling | [Qwen3-4B prefill scaling, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md) | AX/MLX prefill ratio was 1.190x at 1k, 1.028x at 2k, 1.045x at 4k, and 1.154x at 8k | AX has measured Qwen3-4B long-prefill wins on this host; this is still a single-model boundary, not a family-wide claim |
+| Decode at depth | [Qwen3-4B decode-at-depth, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-decode-at-depth.md) | AX/MLX direct decode ratio was 1.067x at 4k depth and 1.232x at 8k depth | AX has measured Qwen3-4B direct decode wins after long context; this is not a serving or n-gram acceleration claim |
+| N-gram decode at depth | [Qwen3-4B n-gram depth diagnostic, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-ngram-depth.md) | AX n-gram decode was 2.225x vs `mlx_lm` at 4k depth and 2.686x at 8k depth, with 100% draft acceptance in this run | N-gram remains a decode-policy result and should not be credited as prefill or serving-concurrency evidence |
 | Server startup and concurrency | [Qwen3-4B P2 startup/concurrency](../benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md) | 8k benchmark-warm TTFT was 2509.7 ms; 4-request concurrent prefill was classified as serialized | This sets serving expectations; it does not prove continuous batching |
 | Hot-prefix correctness | [Qwen3.5 warm-repeat equivalence](../benchmarks/results/mlx-inference/2026-05-13-hot-prefix-w2/equivalence-gate/warm_repeat/qwen3-5-9b-2026-05-13.json) | 5/5 prompts matched token-exactly, with 5 physical snapshot hits, 176 reused tokens, and 0 warmup tokens on the claimed hit path | AX can restore physical MLX prefix snapshots on the validated Qwen warm-repeat path |
 | Multi-turn long session | `benchmarks/results/kv-long-context/*fix-final-2026-05-14.json` | Qwen3.5, Qwen3.6, and Gemma4 E2B show repeated physical prefix hits and reduced post-first-turn TTFT; GLM-4.7 still shows no prefix hits in this artifact family | Long-running session reuse is promising on supported cache layouts, but not uniform across every architecture |
