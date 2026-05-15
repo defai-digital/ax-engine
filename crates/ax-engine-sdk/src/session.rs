@@ -119,6 +119,13 @@ pub struct EngineSessionConfig {
     pub mlx_disable_ngram_acceleration: bool,
     /// Optional MLX KV compression policy. Disabled by default.
     pub mlx_kv_compression: MlxKvCompressionConfig,
+    /// Override the MLX runner's prefill chunk size. `None` keeps the
+    /// runner's `DEFAULT_PREFILL_CHUNK` (sized to the GatedDelta linear-
+    /// attention threadgroup cache). Setting this lets callers (benchmark
+    /// harness, server CLI) align AX's prefill chunk geometry with the
+    /// upstream `--prefill-step-size` mlx_lm and mlx-swift-lm use so the
+    /// three engines compare apples-to-apples at long prompts.
+    pub mlx_prefill_chunk: Option<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -135,6 +142,11 @@ pub struct PreviewSessionConfigRequest {
     pub mlx_disable_ngram_acceleration: bool,
     /// Optional MLX KV compression policy. Disabled by default.
     pub mlx_kv_compression: MlxKvCompressionConfig,
+    /// Optional MLX prefill chunk override. `None` keeps the runner's
+    /// `DEFAULT_PREFILL_CHUNK`. The bench harness uses this to match the
+    /// `--prefill-step-size` mlx_lm and mlx-swift-lm receive so the three
+    /// runtimes are compared on identical chunk geometry at long prompts.
+    pub mlx_prefill_chunk: Option<usize>,
 }
 
 impl Default for PreviewSessionConfigRequest {
@@ -150,6 +162,7 @@ impl Default for PreviewSessionConfigRequest {
             mlx_model_artifacts_dir: None,
             mlx_disable_ngram_acceleration: false,
             mlx_kv_compression: MlxKvCompressionConfig::disabled(),
+            mlx_prefill_chunk: None,
         }
     }
 }
@@ -171,6 +184,7 @@ pub struct ResolvedSessionConfigRequest {
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
     pub mlx_disable_ngram_acceleration: bool,
     pub mlx_kv_compression: MlxKvCompressionConfig,
+    pub mlx_prefill_chunk: Option<usize>,
 }
 
 impl Default for ResolvedSessionConfigRequest {
@@ -192,6 +206,7 @@ impl Default for ResolvedSessionConfigRequest {
             mlx_model_artifacts_source: default.mlx_model_artifacts_source,
             mlx_disable_ngram_acceleration: default.mlx_disable_ngram_acceleration,
             mlx_kv_compression: default.mlx_kv_compression,
+            mlx_prefill_chunk: default.mlx_prefill_chunk,
         }
     }
 }
@@ -224,6 +239,7 @@ impl Default for EngineSessionConfig {
             mlx_model_artifacts_source: mlx_model_artifacts.map(|selection| selection.source),
             mlx_disable_ngram_acceleration: false,
             mlx_kv_compression: MlxKvCompressionConfig::disabled(),
+            mlx_prefill_chunk: None,
         }
     }
 }
@@ -316,6 +332,7 @@ impl EngineSessionConfig {
                 .or(default.mlx_model_artifacts_source),
             mlx_disable_ngram_acceleration: request.mlx_disable_ngram_acceleration,
             mlx_kv_compression: request.mlx_kv_compression,
+            mlx_prefill_chunk: request.mlx_prefill_chunk,
         })
     }
 
@@ -354,6 +371,7 @@ impl EngineSessionConfig {
             mlx_model_artifacts_source: request.mlx_model_artifacts_source,
             mlx_disable_ngram_acceleration: request.mlx_disable_ngram_acceleration,
             mlx_kv_compression: request.mlx_kv_compression,
+            mlx_prefill_chunk: request.mlx_prefill_chunk,
         }
     }
 
@@ -2177,9 +2195,14 @@ fn build_mlx_core(config: &EngineSessionConfig) -> Result<EngineCore, EngineSess
     let artifacts = NativeModelArtifacts::from_dir(model_dir)
         .map_err(|e| EngineSessionError::MetalRuntime(e.into()))?;
 
+    let prefill_chunk = config
+        .mlx_prefill_chunk
+        .map(|n| n.max(1))
+        .unwrap_or(DEFAULT_PREFILL_CHUNK);
+
     let runner = MlxRunner::from_artifacts(
         &artifacts,
-        DEFAULT_PREFILL_CHUNK,
+        prefill_chunk,
         config.mlx_disable_ngram_acceleration,
         config.mlx_kv_compression,
     )

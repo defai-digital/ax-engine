@@ -122,6 +122,29 @@ def find_next_512_line(lines: list[str], after: int) -> int:
     return -1
 
 
+def find_next_4096_line(lines: list[str], after: int) -> int:
+    """Find the pt=4096 continuation row immediately after the pt=512 row.
+    Returns -1 if no 4096 row exists (older README without the long-context row)."""
+    for i in range(after + 1, min(after + 4, len(lines))):
+        if "| 4096 |" in lines[i]:
+            return i
+    return -1
+
+
+def collect_prompt_rows(lines: list[str], anchor: int) -> list[tuple[int, int]]:
+    """Return ordered list of (prompt_tokens, line_index) for this model.
+    The pt=128 row is the anchor; pt=512 and optional pt=4096 follow.
+    """
+    rows: list[tuple[int, int]] = [(128, anchor)]
+    idx_512 = find_next_512_line(lines, anchor)
+    if idx_512 >= 0:
+        rows.append((512, idx_512))
+        idx_4096 = find_next_4096_line(lines, idx_512)
+        if idx_4096 >= 0:
+            rows.append((4096, idx_4096))
+    return rows
+
+
 def update_prefill_rows(lines: list[str], model_name: str, quant: str, vals: dict) -> int:
     changed = 0
     anchor = find_anchor_line(lines, model_name, quant, "Prefill throughput")
@@ -129,10 +152,7 @@ def update_prefill_rows(lines: list[str], model_name: str, quant: str, vals: dic
         print(f"  WARN: prefill pt=128 row not found for {model_name!r} {quant!r}")
         return 0
 
-    for pt, idx in [(128, anchor), (512, find_next_512_line(lines, anchor))]:
-        if idx < 0:
-            print(f"  WARN: prefill pt={pt} row not found")
-            continue
+    for pt, idx in collect_prompt_rows(lines, anchor):
         ref = vals.get(("mlx_lm", pt), {}).get("prefill")
         ax  = vals.get(("ax_engine_mlx", pt), {}).get("prefill")
         if ref is None or ax is None:
@@ -150,10 +170,7 @@ def update_decode_rows(lines: list[str], model_name: str, quant: str, vals: dict
         print(f"  WARN: decode pt=128 row not found for {model_name!r} {quant!r}")
         return 0
 
-    for pt, idx in [(128, anchor), (512, find_next_512_line(lines, anchor))]:
-        if idx < 0:
-            print(f"  WARN: decode pt={pt} row not found")
-            continue
+    for pt, idx in collect_prompt_rows(lines, anchor):
         ref       = vals.get(("mlx_lm", pt), {}).get("decode")
         ax_direct = vals.get(("ax_engine_mlx", pt), {}).get("decode")
         ax_ngram  = vals.get(("ax_engine_mlx_ngram_accel", pt), {}).get("decode")
@@ -175,10 +192,7 @@ def update_ttft_rows(lines: list[str], model_name: str, quant: str, vals: dict) 
         print(f"  WARN: ttft pt=128 row not found for {model_name!r} {quant!r}")
         return 0
 
-    for pt, idx in [(128, anchor), (512, find_next_512_line(lines, anchor))]:
-        if idx < 0:
-            print(f"  WARN: ttft pt={pt} row not found")
-            continue
+    for pt, idx in collect_prompt_rows(lines, anchor):
         ref_ttft = vals.get(("mlx_lm", pt), {}).get("ttft")
         ax_ttft  = vals.get(("ax_engine_mlx", pt), {}).get("ttft")
         if ref_ttft is None or ax_ttft is None:
