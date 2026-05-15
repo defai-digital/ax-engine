@@ -1912,6 +1912,70 @@ pub struct TurboQuantAttentionPartitionStats {
     pub weighted_value_sum: Vec<f32>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurboQuantAttentionPartitionStatsBatch {
+    pub token_count: usize,
+    pub value_dim: usize,
+    pub max_scores: Vec<f32>,
+    pub exp_sums: Vec<f32>,
+    pub weighted_value_sums: Vec<f32>,
+}
+
+impl TurboQuantAttentionPartitionStatsBatch {
+    pub fn query_heads(&self) -> usize {
+        self.max_scores.len()
+    }
+
+    pub fn validate(&self) -> Result<(), TurboQuantCodecError> {
+        if self.token_count == 0 {
+            return Err(TurboQuantCodecError::EmptyKvHistory);
+        }
+        if self.exp_sums.len() != self.max_scores.len() {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: self.max_scores.len(),
+                actual: self.exp_sums.len(),
+            });
+        }
+        let expected_values = self.max_scores.len().saturating_mul(self.value_dim);
+        if self.weighted_value_sums.len() != expected_values {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: expected_values,
+                actual: self.weighted_value_sums.len(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn weighted_value_sum_for_head(
+        &self,
+        head_index: usize,
+    ) -> Result<&[f32], TurboQuantCodecError> {
+        self.validate()?;
+        if head_index >= self.max_scores.len() {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: self.max_scores.len(),
+                actual: head_index.saturating_add(1),
+            });
+        }
+        let start = head_index.saturating_mul(self.value_dim);
+        Ok(&self.weighted_value_sums[start..start + self.value_dim])
+    }
+
+    pub fn partition_stats(
+        &self,
+        head_index: usize,
+    ) -> Result<TurboQuantAttentionPartitionStats, TurboQuantCodecError> {
+        let weighted_value_sum = self.weighted_value_sum_for_head(head_index)?;
+        Ok(TurboQuantAttentionPartitionStats {
+            token_count: self.token_count,
+            value_dim: self.value_dim,
+            max_score: self.max_scores[head_index],
+            exp_sum: self.exp_sums[head_index],
+            weighted_value_sum: weighted_value_sum.to_vec(),
+        })
+    }
+}
+
 pub fn reference_decode_attention_partition_stats(
     query: &[f32],
     kv_tokens: &[FullPrecisionKvTokenVectors],

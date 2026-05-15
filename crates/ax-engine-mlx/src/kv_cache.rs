@@ -4,13 +4,14 @@ use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode};
 use mlx_sys::{MlxArray, MlxDtype, astype, contiguous, eval, slice, slice_update, zeros};
 
 use crate::turboquant::{
-    FullPrecisionKvTokenVectors, TurboQuantAttentionPartitionStats, TurboQuantBlockLayout,
-    TurboQuantBlockLayoutConfig, TurboQuantCodecError, TurboQuantCompressedBlockBuffer,
-    TurboQuantCompressedDecodePlan, packed_kv_bytes_per_token, turboquant_query_head_to_kv_head,
+    FullPrecisionKvTokenVectors, TurboQuantAttentionPartitionStats,
+    TurboQuantAttentionPartitionStatsBatch, TurboQuantBlockLayout, TurboQuantBlockLayoutConfig,
+    TurboQuantCodecError, TurboQuantCompressedBlockBuffer, TurboQuantCompressedDecodePlan,
+    packed_kv_bytes_per_token, turboquant_query_head_to_kv_head,
 };
 use crate::turboquant_metal::{
+    turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat,
     turboquant_fused_cold_decode_metal_two_stage_partition_stats_flat,
-    turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array_flat,
 };
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
@@ -274,28 +275,8 @@ fn hot_tail_partition_stats_from_f32_slices(
     })
 }
 
-fn attention_partition_stats_to_output(
-    stats: &TurboQuantAttentionPartitionStats,
-) -> Result<Vec<f32>, TurboQuantCodecError> {
-    if stats.token_count == 0 {
-        return Err(TurboQuantCodecError::EmptyKvHistory);
-    }
-    if stats.weighted_value_sum.len() != stats.value_dim {
-        return Err(TurboQuantCodecError::MismatchedVectorDimension {
-            expected: stats.value_dim,
-            actual: stats.weighted_value_sum.len(),
-        });
-    }
-
-    let denom = stats.exp_sum.max(f32::MIN_POSITIVE);
-    Ok(stats
-        .weighted_value_sum
-        .iter()
-        .map(|value| *value / denom)
-        .collect())
-}
-
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn merge_cold_stats_with_hot_tail_from_f32_slices(
     cold_stats: &TurboQuantAttentionPartitionStats,
     query: &[f32],
@@ -306,23 +287,99 @@ fn merge_cold_stats_with_hot_tail_from_f32_slices(
     hot_token_count: usize,
     kv_head_index: usize,
 ) -> Result<Vec<f32>, TurboQuantCodecError> {
-    if cold_stats.token_count == 0 {
+    merge_cold_partition_with_hot_tail_from_f32_slices(
+        cold_stats.token_count,
+        cold_stats.value_dim,
+        cold_stats.max_score,
+        cold_stats.exp_sum,
+        &cold_stats.weighted_value_sum,
+        query,
+        k_values,
+        v_values,
+        n_kv_heads,
+        head_dim,
+        hot_token_count,
+        kv_head_index,
+    )
+}
+
+fn attention_partition_stats_batch_head_to_output(
+    batch: &TurboQuantAttentionPartitionStatsBatch,
+    head_index: usize,
+) -> Result<Vec<f32>, TurboQuantCodecError> {
+    let weighted_value_sum = batch.weighted_value_sum_for_head(head_index)?;
+    let denom = batch.exp_sums[head_index].max(f32::MIN_POSITIVE);
+    Ok(weighted_value_sum
+        .iter()
+        .map(|value| *value / denom)
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_cold_stats_batch_with_hot_tail_from_f32_slices(
+    cold_stats: &TurboQuantAttentionPartitionStatsBatch,
+    query_head_index: usize,
+    query: &[f32],
+    k_values: &[f32],
+    v_values: &[f32],
+    n_kv_heads: usize,
+    head_dim: usize,
+    hot_token_count: usize,
+    kv_head_index: usize,
+) -> Result<Vec<f32>, TurboQuantCodecError> {
+    let weighted_value_sum = cold_stats.weighted_value_sum_for_head(query_head_index)?;
+    merge_cold_partition_with_hot_tail_from_f32_slices(
+        cold_stats.token_count,
+        cold_stats.value_dim,
+        cold_stats.max_scores[query_head_index],
+        cold_stats.exp_sums[query_head_index],
+        weighted_value_sum,
+        query,
+        k_values,
+        v_values,
+        n_kv_heads,
+        head_dim,
+        hot_token_count,
+        kv_head_index,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_cold_partition_with_hot_tail_from_f32_slices(
+    cold_token_count: usize,
+    cold_value_dim: usize,
+    cold_max_score: f32,
+    cold_exp_sum: f32,
+    cold_weighted_value_sum: &[f32],
+    query: &[f32],
+    k_values: &[f32],
+    v_values: &[f32],
+    n_kv_heads: usize,
+    head_dim: usize,
+    hot_token_count: usize,
+    kv_head_index: usize,
+) -> Result<Vec<f32>, TurboQuantCodecError> {
+    if cold_token_count == 0 {
         return Err(TurboQuantCodecError::EmptyKvHistory);
     }
-    if cold_stats.value_dim != head_dim {
+    if cold_value_dim != head_dim {
         return Err(TurboQuantCodecError::MismatchedVectorDimension {
-            expected: cold_stats.value_dim,
+            expected: cold_value_dim,
             actual: head_dim,
         });
     }
-    if cold_stats.weighted_value_sum.len() != head_dim {
+    if cold_weighted_value_sum.len() != head_dim {
         return Err(TurboQuantCodecError::MismatchedVectorDimension {
             expected: head_dim,
-            actual: cold_stats.weighted_value_sum.len(),
+            actual: cold_weighted_value_sum.len(),
         });
     }
     if hot_token_count == 0 {
-        return attention_partition_stats_to_output(cold_stats);
+        let denom = cold_exp_sum.max(f32::MIN_POSITIVE);
+        return Ok(cold_weighted_value_sum
+            .iter()
+            .map(|value| *value / denom)
+            .collect());
     }
     if query.len() != head_dim {
         return Err(TurboQuantCodecError::MismatchedVectorDimension {
@@ -392,12 +449,12 @@ fn merge_cold_stats_with_hot_tail_from_f32_slices(
         }
     }
 
-    let global_max = cold_stats.max_score.max(hot_max_score);
-    let cold_scale = (cold_stats.max_score - global_max).exp();
+    let global_max = cold_max_score.max(hot_max_score);
+    let cold_scale = (cold_max_score - global_max).exp();
     let hot_scale = (hot_max_score - global_max).exp();
-    let denom = (cold_stats.exp_sum * cold_scale + hot_exp_sum * hot_scale).max(f32::MIN_POSITIVE);
+    let denom = (cold_exp_sum * cold_scale + hot_exp_sum * hot_scale).max(f32::MIN_POSITIVE);
 
-    for (out, cold_value_sum) in output.iter_mut().zip(&cold_stats.weighted_value_sum) {
+    for (out, cold_value_sum) in output.iter_mut().zip(cold_weighted_value_sum) {
         *out = (*out * hot_scale + cold_value_sum * cold_scale) / denom;
     }
 
@@ -2262,7 +2319,7 @@ impl MlxKVCache {
         query_values: &[f32],
         n_query_heads: usize,
         total_tokens: usize,
-    ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+    ) -> Result<TurboQuantAttentionPartitionStatsBatch, TurboQuantCodecError> {
         let lkv = self.layers.get(layer).and_then(Option::as_ref).ok_or(
             TurboQuantCodecError::CompressedDecodePlanIncomplete {
                 cold_tokens: total_tokens,
@@ -2315,19 +2372,29 @@ impl MlxKVCache {
         let descriptor =
             plan.fused_decode_launch_descriptor_for_query_count(&storage.buffer, n_query_heads)?;
         if let Some(metal_buffer) = storage.metal_buffer.as_ref() {
-            turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array_flat(
+            turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat(
                 descriptor,
                 metal_buffer,
                 query_values,
                 n_query_heads,
             )
         } else {
-            turboquant_fused_cold_decode_metal_two_stage_partition_stats_flat(
+            let stats = turboquant_fused_cold_decode_metal_two_stage_partition_stats_flat(
                 descriptor,
                 &storage.buffer,
                 query_values,
                 n_query_heads,
-            )
+            )?;
+            Ok(TurboQuantAttentionPartitionStatsBatch {
+                token_count: cold_tokens,
+                value_dim: head_dim,
+                max_scores: stats.iter().map(|stats| stats.max_score).collect(),
+                exp_sums: stats.iter().map(|stats| stats.exp_sum).collect(),
+                weighted_value_sums: stats
+                    .into_iter()
+                    .flat_map(|stats| stats.weighted_value_sum)
+                    .collect(),
+            })
         }
     }
 
@@ -2353,12 +2420,51 @@ impl MlxKVCache {
             .iter()
             .flat_map(|query| query.iter().copied())
             .collect::<Vec<_>>();
+        let cold_tokens = cold_stats
+            .first()
+            .map(|stats| stats.token_count)
+            .unwrap_or(0);
+        if cold_stats
+            .iter()
+            .any(|stats| stats.token_count != cold_tokens)
+        {
+            return Err(TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens,
+                required_slots: cold_tokens.saturating_mul(queries.len()),
+                written_slots: cold_stats
+                    .iter()
+                    .map(|stats| stats.token_count)
+                    .min()
+                    .unwrap_or(0)
+                    .saturating_mul(queries.len()),
+            });
+        }
+        if cold_stats.iter().any(|stats| stats.value_dim != head_dim) {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: head_dim,
+                actual: cold_stats
+                    .iter()
+                    .find(|stats| stats.value_dim != head_dim)
+                    .map(|stats| stats.value_dim)
+                    .unwrap_or(0),
+            });
+        }
+        let cold_stats_batch = TurboQuantAttentionPartitionStatsBatch {
+            token_count: cold_tokens,
+            value_dim: head_dim,
+            max_scores: cold_stats.iter().map(|stats| stats.max_score).collect(),
+            exp_sums: cold_stats.iter().map(|stats| stats.exp_sum).collect(),
+            weighted_value_sums: cold_stats
+                .iter()
+                .flat_map(|stats| stats.weighted_value_sum.iter().copied())
+                .collect(),
+        };
         let flat = self.merge_turboquant_shadow_decode_cold_stats_with_hot_tail_flat(
             layer,
             &query_values,
             queries.len(),
             total_tokens,
-            cold_stats,
+            &cold_stats_batch,
         )?;
         if head_dim == 0 || flat.len() != queries.len().saturating_mul(head_dim) {
             return Err(TurboQuantCodecError::MismatchedVectorDimension {
@@ -2378,7 +2484,7 @@ impl MlxKVCache {
         query_values: &[f32],
         n_query_heads: usize,
         total_tokens: usize,
-        cold_stats: &[TurboQuantAttentionPartitionStats],
+        cold_stats: &TurboQuantAttentionPartitionStatsBatch,
     ) -> Result<Vec<f32>, TurboQuantCodecError> {
         let lkv = self.layers.get(layer).and_then(Option::as_ref).ok_or(
             TurboQuantCodecError::CompressedDecodePlanIncomplete {
@@ -2388,31 +2494,17 @@ impl MlxKVCache {
             },
         )?;
         let n_kv_heads = usize::try_from(lkv.n_kv_heads).unwrap_or(usize::MAX);
-        if cold_stats.len() != n_query_heads
+        cold_stats.validate()?;
+        if cold_stats.query_heads() != n_query_heads
             || n_query_heads == 0
             || !n_query_heads.is_multiple_of(n_kv_heads)
         {
             return Err(TurboQuantCodecError::MismatchedKvHeadCount {
                 expected: n_query_heads,
-                actual: cold_stats.len(),
+                actual: cold_stats.query_heads(),
             });
         }
-        let cold_tokens = cold_stats[0].token_count;
-        if cold_stats
-            .iter()
-            .any(|stats| stats.token_count != cold_tokens)
-        {
-            return Err(TurboQuantCodecError::CompressedDecodePlanIncomplete {
-                cold_tokens,
-                required_slots: cold_tokens.saturating_mul(n_query_heads),
-                written_slots: cold_stats
-                    .iter()
-                    .map(|stats| stats.token_count)
-                    .min()
-                    .unwrap_or(0)
-                    .saturating_mul(n_query_heads),
-            });
-        }
+        let cold_tokens = cold_stats.token_count;
         let hot_token_count = total_tokens.saturating_sub(cold_tokens);
         let hot_k;
         let hot_v;
@@ -2462,12 +2554,14 @@ impl MlxKVCache {
             let kv_head_index =
                 turboquant_query_head_to_kv_head(query_head_index, n_query_heads, n_kv_heads)?;
             if hot_token_count == 0 {
-                outputs.extend(attention_partition_stats_to_output(
-                    &cold_stats[query_head_index],
+                outputs.extend(attention_partition_stats_batch_head_to_output(
+                    cold_stats,
+                    query_head_index,
                 )?);
             } else {
-                outputs.extend(merge_cold_stats_with_hot_tail_from_f32_slices(
-                    &cold_stats[query_head_index],
+                outputs.extend(merge_cold_stats_batch_with_hot_tail_from_f32_slices(
+                    cold_stats,
+                    query_head_index,
                     query,
                     k_values,
                     v_values,
