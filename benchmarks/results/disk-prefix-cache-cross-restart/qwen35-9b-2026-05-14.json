@@ -6,7 +6,7 @@
     "verdict": "PASS"
   },
   "config": {
-    "cache_dir": "/var/folders/pw/j64s76pj6sl3t1ty5bg9ctq00000gp/T/ax-disk-m4-6_dd8pfr",
+    "cache_dir": "/var/folders/pw/j64s76pj6sl3t1ty5bg9ctq00000gp/T/ax-disk-m4-pkglm4qe",
     "corpus_source": "default",
     "max_output_tokens": 24,
     "pad_to_block_size": 16,
@@ -16,47 +16,47 @@
   "disk_state": {
     "files_after_phase_a": [
       {
-        "mtime_unix": 1778808900,
-        "name": "451752a38b00c7d2bf1130dfc432fc7fce78b7a9c40255240731c84a7d6f44af.axkv",
-        "size_bytes": 4720047
+        "mtime_unix": 1778808914,
+        "name": "5af51de4fa4fb6daaae063ec09cc7fc932a722bab8d2fab456dc688765b5c306.axkv",
+        "size_bytes": 59902462
       },
       {
-        "mtime_unix": 1778808900,
-        "name": "b33006ab7f4f493065bf9426b897c65588c34cc55d7bd6b6bd0a03b14ba48ffe.axkv",
-        "size_bytes": 4720047
+        "mtime_unix": 1778808916,
+        "name": "5b275498ba3066d5f137216183150daa81bb7f2f6f51d8333d637478e8f8d5d9.axkv",
+        "size_bytes": 59902462
       }
     ],
     "files_after_phase_b": [
       {
-        "mtime_unix": 1778808903,
-        "name": "451752a38b00c7d2bf1130dfc432fc7fce78b7a9c40255240731c84a7d6f44af.axkv",
-        "size_bytes": 4720047
+        "mtime_unix": 1778808922,
+        "name": "5af51de4fa4fb6daaae063ec09cc7fc932a722bab8d2fab456dc688765b5c306.axkv",
+        "size_bytes": 59902462
       },
       {
-        "mtime_unix": 1778808903,
-        "name": "b33006ab7f4f493065bf9426b897c65588c34cc55d7bd6b6bd0a03b14ba48ffe.axkv",
-        "size_bytes": 4720047
+        "mtime_unix": 1778808927,
+        "name": "5b275498ba3066d5f137216183150daa81bb7f2f6f51d8333d637478e8f8d5d9.axkv",
+        "size_bytes": 59902462
       }
     ]
   },
-  "generated_at_utc": "2026-05-15T01:35:03Z",
+  "generated_at_utc": "2026-05-15T01:35:27Z",
   "host": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
   "model": {
-    "artifacts_dir": "/Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-4bit",
-    "model_id": "gemma-4-e2b-it-4bit"
+    "artifacts_dir": "/Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.5-9B-MLX-4bit",
+    "model_id": "qwen3-5-9b"
   },
   "per_prompt": [
     {
       "disk_hits_b": 1,
       "first_divergence_index": null,
       "id": "p1_short_factoid",
-      "output_token_count_a": 3,
-      "output_token_count_b": 3,
+      "output_token_count_a": 24,
+      "output_token_count_b": 24,
       "prompt_token_count": 16,
       "telemetry_a": {
         "ax_mlx_prefix_cache_disk_evictions": 0,
         "ax_mlx_prefix_cache_disk_hits": 0,
-        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 4610,
+        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 58499,
         "ax_mlx_prefix_cache_disk_inserts": 1,
         "ax_mlx_prefix_cache_disk_misses": 0,
         "ax_mlx_prefix_cache_entries": 1,
@@ -67,7 +67,7 @@
       "telemetry_b": {
         "ax_mlx_prefix_cache_disk_evictions": 0,
         "ax_mlx_prefix_cache_disk_hits": 1,
-        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 4610,
+        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 58499,
         "ax_mlx_prefix_cache_disk_inserts": 1,
         "ax_mlx_prefix_cache_disk_misses": 0,
         "ax_mlx_prefix_cache_entries": 1,
@@ -83,11 +83,11 @@
       "id": "p2_medium_explain",
       "output_token_count_a": 24,
       "output_token_count_b": 24,
-      "prompt_token_count": 32,
+      "prompt_token_count": 48,
       "telemetry_a": {
         "ax_mlx_prefix_cache_disk_evictions": 0,
         "ax_mlx_prefix_cache_disk_hits": 0,
-        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 4610,
+        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 58499,
         "ax_mlx_prefix_cache_disk_inserts": 1,
         "ax_mlx_prefix_cache_disk_misses": 0,
         "ax_mlx_prefix_cache_entries": 2,
@@ -98,7 +98,7 @@
       "telemetry_b": {
         "ax_mlx_prefix_cache_disk_evictions": 0,
         "ax_mlx_prefix_cache_disk_hits": 1,
-        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 4610,
+        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 58499,
         "ax_mlx_prefix_cache_disk_inserts": 1,
         "ax_mlx_prefix_cache_disk_misses": 0,
         "ax_mlx_prefix_cache_entries": 2,
