@@ -736,6 +736,12 @@ pub struct MlxTurboQuantFusedDecodeAttention {
     pub timing: MlxKvCompressionFusedDecodeTiming,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct MlxTurboQuantFusedDecodeFlatAttention {
+    pub outputs: Vec<f32>,
+    pub timing: MlxKvCompressionFusedDecodeTiming,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MlxKvCompressionDecodeOutcome {
     Fallback,
@@ -2114,13 +2120,42 @@ impl MlxKVCache {
         queries: &[Vec<f32>],
         total_tokens: usize,
     ) -> Result<MlxTurboQuantFusedDecodeAttention, TurboQuantCodecError> {
+        let attention = self
+            .debug_turboquant_shadow_decode_attention_metal_flat_timed_for_layer_with_total_tokens(
+                layer,
+                queries,
+                total_tokens,
+            )?;
+        let head_dim = queries.first().map(Vec::len).unwrap_or(0);
+        if head_dim == 0 || attention.outputs.len() != queries.len().saturating_mul(head_dim) {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: queries.len().saturating_mul(head_dim),
+                actual: attention.outputs.len(),
+            });
+        }
+        Ok(MlxTurboQuantFusedDecodeAttention {
+            outputs: attention
+                .outputs
+                .chunks_exact(head_dim)
+                .map(|head| head.to_vec())
+                .collect(),
+            timing: attention.timing,
+        })
+    }
+
+    pub fn debug_turboquant_shadow_decode_attention_metal_flat_timed_for_layer_with_total_tokens(
+        &self,
+        layer: usize,
+        queries: &[Vec<f32>],
+        total_tokens: usize,
+    ) -> Result<MlxTurboQuantFusedDecodeFlatAttention, TurboQuantCodecError> {
         let cold_started = Instant::now();
         let cold_stats =
             self.debug_turboquant_shadow_decode_cold_stats_metal(layer, queries, total_tokens)?;
         let cold_metal_wall_us = elapsed_us_u64(cold_started);
 
         let merge_started = Instant::now();
-        let outputs = self.merge_turboquant_shadow_decode_cold_stats_with_hot_tail(
+        let outputs = self.merge_turboquant_shadow_decode_cold_stats_with_hot_tail_flat(
             layer,
             queries,
             total_tokens,
@@ -2128,7 +2163,7 @@ impl MlxKVCache {
         )?;
         let hot_tail_merge_wall_us = elapsed_us_u64(merge_started);
 
-        Ok(MlxTurboQuantFusedDecodeAttention {
+        Ok(MlxTurboQuantFusedDecodeFlatAttention {
             outputs,
             timing: MlxKvCompressionFusedDecodeTiming {
                 cold_metal_wall_us,
@@ -2256,6 +2291,32 @@ impl MlxKVCache {
         total_tokens: usize,
         cold_stats: &[TurboQuantAttentionPartitionStats],
     ) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
+        let flat = self.merge_turboquant_shadow_decode_cold_stats_with_hot_tail_flat(
+            layer,
+            queries,
+            total_tokens,
+            cold_stats,
+        )?;
+        let head_dim = queries.first().map(Vec::len).unwrap_or(0);
+        if head_dim == 0 || flat.len() != queries.len().saturating_mul(head_dim) {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: queries.len().saturating_mul(head_dim),
+                actual: flat.len(),
+            });
+        }
+        Ok(flat
+            .chunks_exact(head_dim)
+            .map(|head| head.to_vec())
+            .collect())
+    }
+
+    fn merge_turboquant_shadow_decode_cold_stats_with_hot_tail_flat(
+        &self,
+        layer: usize,
+        queries: &[Vec<f32>],
+        total_tokens: usize,
+        cold_stats: &[TurboQuantAttentionPartitionStats],
+    ) -> Result<Vec<f32>, TurboQuantCodecError> {
         let lkv = self.layers.get(layer).and_then(Option::as_ref).ok_or(
             TurboQuantCodecError::CompressedDecodePlanIncomplete {
                 cold_tokens: total_tokens,
@@ -2326,16 +2387,16 @@ impl MlxKVCache {
         };
         let head_dim = usize::try_from(lkv.head_dim).unwrap_or(usize::MAX);
 
-        let mut outputs = Vec::with_capacity(queries.len());
+        let mut outputs = Vec::with_capacity(queries.len().saturating_mul(head_dim));
         for (query_head_index, query) in queries.iter().enumerate() {
             let kv_head_index =
                 turboquant_query_head_to_kv_head(query_head_index, queries.len(), n_kv_heads)?;
             if hot_token_count == 0 {
-                outputs.push(attention_partition_stats_to_output(
+                outputs.extend(attention_partition_stats_to_output(
                     &cold_stats[query_head_index],
                 )?);
             } else {
-                outputs.push(merge_cold_stats_with_hot_tail_from_f32_slices(
+                outputs.extend(merge_cold_stats_with_hot_tail_from_f32_slices(
                     &cold_stats[query_head_index],
                     query,
                     k_values,

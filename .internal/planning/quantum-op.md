@@ -707,8 +707,11 @@ Current evidence:
   slice instead of materializing the full K/V history for the layer, and the
   production merge path now combines cold partition stats with the compact hot
   tail directly without cloning the cold stats payload into the generic
-  partition merger. This should reduce the host-side merge boundary, but
-  promotion still requires a fresh long-context performance artifact.
+  partition merger. The production fused path also now carries merged attention
+  output as a flat head-major buffer into MLX array staging, while the nested
+  debug output remains available for diagnostics. This should reduce the
+  host-side merge/output boundary, but promotion still requires a fresh
+  long-context performance artifact.
 
 Next implementation focus:
 
@@ -786,6 +789,10 @@ Active implementation slice:
   keeps the same split-softmax math while removing one cloned cold
   `weighted_value_sum` payload and one intermediate output allocation per query
   head.
+- **P3-S3 flat fused output staging**: carry the fused decode attention output
+  as a flat head-major buffer on the production Metal path so `model.rs` can
+  construct the MLX output array without flattening a `Vec<Vec<f32>>`. Keep the
+  existing nested debug API as a wrapper over the flat path.
 
 ### TurboQuant KV Runtime Promotion
 
