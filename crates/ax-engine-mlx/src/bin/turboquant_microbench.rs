@@ -6,6 +6,7 @@ use ax_engine_core::MlxTurboQuantPreset;
 use ax_engine_mlx::turboquant::{
     TurboQuantAttentionPartitionStatsBatch, TurboQuantBlockLayout, TurboQuantBlockLayoutConfig,
     TurboQuantCompressedBlockBuffer, TurboQuantCompressedDecodePlan,
+    ValidatedTurboQuantAttentionPartitionStatsBatch,
     append_attention_partition_stats_batch_head_with_hot_tail_from_f32_slices,
     compare_decode_outputs, reference_decode_attention, turboquant_query_head_to_kv_head,
 };
@@ -280,6 +281,9 @@ fn hot_tail_merge_quality(
             .flat_map(|stats| stats.weighted_value_sum.iter().copied())
             .collect(),
     };
+    let cold_stats_batch = cold_stats_batch
+        .validated()
+        .map_err(|error| error.to_string())?;
 
     let hot_tokens = (0..config.hot_tokens)
         .map(|offset| token_heads(cold_tokens + offset, config))
@@ -318,7 +322,7 @@ fn hot_tail_merge_quality(
     for _ in 0..config.warmup {
         let _ = hot_tail_merge_outputs(
             config,
-            &cold_stats_batch,
+            cold_stats_batch,
             queries,
             &hot_k_values,
             &hot_v_values,
@@ -331,7 +335,7 @@ fn hot_tail_merge_quality(
         let started = Instant::now();
         actual_flat_outputs = hot_tail_merge_outputs(
             config,
-            &cold_stats_batch,
+            cold_stats_batch,
             queries,
             &hot_k_values,
             &hot_v_values,
@@ -363,7 +367,7 @@ fn hot_tail_merge_quality(
 
 fn hot_tail_merge_outputs(
     config: &Config,
-    cold_stats: &TurboQuantAttentionPartitionStatsBatch,
+    cold_stats: ValidatedTurboQuantAttentionPartitionStatsBatch<'_>,
     queries: &[Vec<f32>],
     hot_k_values: &[f32],
     hot_v_values: &[f32],

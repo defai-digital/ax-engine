@@ -298,7 +298,7 @@ fn merge_cold_stats_with_hot_tail_from_f32_slices(
     let mut output = Vec::with_capacity(head_dim);
     append_attention_partition_stats_batch_head_with_hot_tail_from_f32_slices(
         &mut output,
-        &cold_stats,
+        cold_stats.validated()?,
         0,
         query,
         k_values,
@@ -2344,7 +2344,7 @@ impl MlxKVCache {
             },
         )?;
         let n_kv_heads = usize::try_from(lkv.n_kv_heads).unwrap_or(usize::MAX);
-        cold_stats.validate()?;
+        let cold_stats = cold_stats.validated()?;
         if cold_stats.query_heads() != n_query_heads
             || n_query_heads == 0
             || !n_query_heads.is_multiple_of(n_kv_heads)
@@ -2354,7 +2354,7 @@ impl MlxKVCache {
                 actual: cold_stats.query_heads(),
             });
         }
-        let cold_tokens = cold_stats.token_count;
+        let cold_tokens = cold_stats.token_count();
         let hot_token_count = total_tokens.saturating_sub(cold_tokens);
         let hot_k;
         let hot_v;

@@ -1921,6 +1921,11 @@ pub struct TurboQuantAttentionPartitionStatsBatch {
     pub weighted_value_sums: Vec<f32>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ValidatedTurboQuantAttentionPartitionStatsBatch<'a> {
+    inner: &'a TurboQuantAttentionPartitionStatsBatch,
+}
+
 impl TurboQuantAttentionPartitionStatsBatch {
     pub fn query_heads(&self) -> usize {
         self.max_scores.len()
@@ -1944,6 +1949,13 @@ impl TurboQuantAttentionPartitionStatsBatch {
             });
         }
         Ok(())
+    }
+
+    pub fn validated(
+        &self,
+    ) -> Result<ValidatedTurboQuantAttentionPartitionStatsBatch<'_>, TurboQuantCodecError> {
+        self.validate()?;
+        Ok(ValidatedTurboQuantAttentionPartitionStatsBatch { inner: self })
     }
 
     pub fn weighted_value_sum_for_head(
@@ -1985,6 +1997,16 @@ impl TurboQuantAttentionPartitionStatsBatch {
             exp_sum: self.exp_sums[head_index],
             weighted_value_sum: weighted_value_sum.to_vec(),
         })
+    }
+}
+
+impl ValidatedTurboQuantAttentionPartitionStatsBatch<'_> {
+    pub fn query_heads(&self) -> usize {
+        self.inner.query_heads()
+    }
+
+    pub fn token_count(&self) -> usize {
+        self.inner.token_count
     }
 }
 
@@ -2084,7 +2106,7 @@ pub fn merge_attention_partition_stats(
 #[allow(clippy::too_many_arguments)]
 pub fn append_attention_partition_stats_batch_head_with_hot_tail_from_f32_slices(
     output: &mut Vec<f32>,
-    cold_stats: &TurboQuantAttentionPartitionStatsBatch,
+    cold_stats: ValidatedTurboQuantAttentionPartitionStatsBatch<'_>,
     query_head_index: usize,
     query: &[f32],
     k_values: &[f32],
@@ -2094,23 +2116,24 @@ pub fn append_attention_partition_stats_batch_head_with_hot_tail_from_f32_slices
     hot_token_count: usize,
     kv_head_index: usize,
 ) -> Result<(), TurboQuantCodecError> {
-    let weighted_value_sum = cold_stats.weighted_value_sum_for_validated_head(query_head_index)?;
-    let cold_max_score = cold_stats.max_scores.get(query_head_index).copied().ok_or(
+    let batch = cold_stats.inner;
+    let weighted_value_sum = batch.weighted_value_sum_for_validated_head(query_head_index)?;
+    let cold_max_score = batch.max_scores.get(query_head_index).copied().ok_or(
         TurboQuantCodecError::MismatchedKvHeadCount {
-            expected: cold_stats.max_scores.len(),
+            expected: batch.max_scores.len(),
             actual: query_head_index.saturating_add(1),
         },
     )?;
-    let cold_exp_sum = cold_stats.exp_sums.get(query_head_index).copied().ok_or(
+    let cold_exp_sum = batch.exp_sums.get(query_head_index).copied().ok_or(
         TurboQuantCodecError::MismatchedKvHeadCount {
-            expected: cold_stats.max_scores.len(),
+            expected: batch.max_scores.len(),
             actual: query_head_index.saturating_add(1),
         },
     )?;
     append_attention_partition_with_hot_tail_from_f32_slices(
         output,
-        cold_stats.token_count,
-        cold_stats.value_dim,
+        batch.token_count,
+        batch.value_dim,
         cold_max_score,
         cold_exp_sum,
         weighted_value_sum,
@@ -4447,12 +4470,66 @@ mod tests {
             .expect("cold partition stats");
         let hot_stats = reference_decode_attention_partition_stats(&query, &hot_head)
             .expect("hot partition stats");
-        let actual =
-            merge_attention_partition_stats(&[cold_stats, hot_stats]).expect("merged attention");
+        let actual = merge_attention_partition_stats(&[cold_stats.clone(), hot_stats])
+            .expect("merged attention");
 
         assert!(
             max_abs_diff(&expected, &actual) < 1e-6,
             "expected {expected:?}, got {actual:?}"
+        );
+
+        let cold_batch = TurboQuantAttentionPartitionStatsBatch {
+            token_count: cold_stats.token_count,
+            value_dim: cold_stats.value_dim,
+            max_scores: vec![cold_stats.max_score],
+            exp_sums: vec![cold_stats.exp_sum],
+            weighted_value_sums: cold_stats.weighted_value_sum.clone(),
+        };
+        let mut hot_k_values = Vec::with_capacity(hot_head.len() * 8);
+        let mut hot_v_values = Vec::with_capacity(hot_head.len() * 8);
+        for (key, value) in &hot_head {
+            hot_k_values.extend(key);
+            hot_v_values.extend(value);
+        }
+        let mut flat_actual = Vec::new();
+        append_attention_partition_stats_batch_head_with_hot_tail_from_f32_slices(
+            &mut flat_actual,
+            cold_batch.validated().expect("batch should validate"),
+            0,
+            &query,
+            &hot_k_values,
+            &hot_v_values,
+            1,
+            8,
+            hot_head.len(),
+            0,
+        )
+        .expect("flat hot-tail merge should work");
+        assert!(
+            max_abs_diff(&expected, &flat_actual) < 1e-6,
+            "expected {expected:?}, got {flat_actual:?}"
+        );
+    }
+
+    #[test]
+    fn partition_stats_batch_validated_rejects_malformed_weighted_sum() {
+        let batch = TurboQuantAttentionPartitionStatsBatch {
+            token_count: 1,
+            value_dim: 4,
+            max_scores: vec![0.0],
+            exp_sums: vec![1.0],
+            weighted_value_sums: vec![1.0, 2.0, 3.0],
+        };
+
+        let error = batch
+            .validated()
+            .expect_err("malformed batch should fail validation");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedVectorDimension {
+                expected: 4,
+                actual: 3,
+            }
         );
     }
 
