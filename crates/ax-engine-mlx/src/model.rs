@@ -2435,6 +2435,28 @@ struct TurboQuantExperimentalDecodeOutput {
     timing: MlxKvCompressionFusedDecodeTiming,
 }
 
+enum TurboQuantQueryReadbackArray<'a> {
+    Borrowed(&'a MlxArray),
+    Owned(MlxArray),
+}
+
+impl TurboQuantQueryReadbackArray<'_> {
+    fn as_array(&self) -> &MlxArray {
+        match self {
+            Self::Borrowed(array) => array,
+            Self::Owned(array) => array,
+        }
+    }
+}
+
+fn turboquant_query_readback_array(q_rope: &MlxArray) -> TurboQuantQueryReadbackArray<'_> {
+    if q_rope.dtype() == MlxDtype::Float32 {
+        TurboQuantQueryReadbackArray::Borrowed(q_rope)
+    } else {
+        TurboQuantQueryReadbackArray::Owned(astype(q_rope, MlxDtype::Float32, None))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn turboquant_decode_attention_experimental(
     cache: &MlxKVCache,
@@ -2454,9 +2476,10 @@ fn turboquant_decode_attention_experimental(
     }
 
     let query_readback_started = Instant::now();
-    let q_f32 = astype(q_rope, MlxDtype::Float32, None);
-    eval(&[&q_f32]);
-    let q_data = q_f32.data_f32();
+    let q_readback = turboquant_query_readback_array(q_rope);
+    let q_readback_array = q_readback.as_array();
+    eval(&[q_readback_array]);
+    let q_data = q_readback_array.data_f32();
     let query_readback_wall_us = saturating_profile_us(query_readback_started) as u64;
     if q_data.len() != n_heads.saturating_mul(head_dim) {
         return None;
@@ -4262,6 +4285,29 @@ mod tests {
         assert_eq!(actual.shape(), vec![1, 2, 1, 2]);
         assert_eq!(actual.dtype(), MlxDtype::Float32);
         assert_eq!(actual.data_f32(), output.as_slice());
+    }
+
+    #[test]
+    fn turboquant_query_readback_array_borrows_float32_input() {
+        let q_data = vec![0.25, -0.5, 0.75, 1.0];
+        let q_rope = MlxArray::from_raw_data(
+            q_data.as_ptr().cast(),
+            q_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 1, 2],
+            MlxDtype::Float32,
+        );
+
+        let readback = turboquant_query_readback_array(&q_rope);
+        assert!(matches!(
+            readback,
+            TurboQuantQueryReadbackArray::Borrowed(_)
+        ));
+        let readback_array = readback.as_array();
+        eval(&[readback_array]);
+
+        assert_eq!(readback_array.shape(), vec![1, 2, 1, 2]);
+        assert_eq!(readback_array.dtype(), MlxDtype::Float32);
+        assert_eq!(readback_array.data_f32(), q_data.as_slice());
     }
 
     fn gemma4_interleaved_manifest() -> NativeModelManifest {
