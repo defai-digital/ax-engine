@@ -49,6 +49,12 @@ pass with `--input-kind tokens`, and store the corpus, serving JSON artifact,
 and rendered report under the same `benchmarks/results/serving/<run-id>/`
 directory.
 
+The preferred execution path is now `scripts/run_disk_prefix_serving_soak.py`.
+It assumes the AX server is already running with `AX_MLX_PREFIX_CACHE_DIR` set,
+then writes `corpus.jsonl`, `artifact.json`, `report.md`, and `commands.json`
+under one run directory. Use `--dry-run` during review to inspect the exact
+commands before spending model/server time.
+
 This should be a serving artifact, not another cache-primitive unit stress:
 run the AX server path with the disk cache enabled, multiple processes or
 workers where applicable, shared prompts, latency/queueing telemetry, memory

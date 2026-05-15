@@ -79,6 +79,20 @@ For disk-durable prefix-cache promotion claims, require a route counter in
 addition to latency and corpus-shape gates:
 
 ```text
+python3 scripts/run_disk_prefix_serving_soak.py \
+  --base-url http://127.0.0.1:8080 \
+  --model-id qwen3_dense \
+  --run-id <run-id>
+```
+
+This runner builds the shared-prefix corpus, runs `bench_ax_serving.py`, checks
+the artifact, renders the report, and writes `commands.json` beside the
+outputs. The AX server should already be running with `AX_MLX_PREFIX_CACHE_DIR`
+set before invoking the runner.
+
+The equivalent low-level steps are:
+
+```text
 python3 scripts/build_serving_shared_prefix_corpus.py \
   --output benchmarks/results/serving/disk-prefix-cache-soak-corpus.jsonl \
   --prompts 8 \
