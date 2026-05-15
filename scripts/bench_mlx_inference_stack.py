@@ -93,6 +93,7 @@ GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS = [512, 2048, 8192, 32768]
 AX_ENGINE_DIRECT_KEY = "ax_engine_mlx"
 AX_ENGINE_NGRAM_ACCEL_KEY = "ax_engine_mlx_ngram_accel"
 AX_ENGINE_LINEAR_ATTENTION_PACK_KEY = "ax_engine_mlx_linear_pack"
+AX_ENGINE_DENSE_FFN_PACK_KEY = "ax_engine_mlx_dense_ffn_pack"
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
 
 AX_MLX_RUNTIME_IDENTITY = {
@@ -197,11 +198,15 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_prefix_cache_warmup_tokens",
     "ax_mlx_prefix_cache_entries",
     "ax_mlx_prefix_cache_bytes_kib",
+    "ax_mlx_dense_ffn_gate_up_packed_layers",
+    "ax_mlx_dense_ffn_split_gate_up_layers",
 ]
 
 AX_MLX_PREFIX_CACHE_MAX_KEYS = {
     "ax_mlx_prefix_cache_entries",
     "ax_mlx_prefix_cache_bytes_kib",
+    "ax_mlx_dense_ffn_gate_up_packed_layers",
+    "ax_mlx_dense_ffn_split_gate_up_layers",
 }
 AX_MLX_PREFIX_CACHE_SUM_KEYS = {
     key
@@ -247,6 +252,28 @@ AX_MLX_LINEAR_ATTENTION_PROFILE_KEYS = [
     "ax_mlx_linear_attention_profile_output_wall_us",
 ]
 
+AX_MLX_PREFILL_PROFILE_KEYS = [
+    "ax_mlx_prefill_profile_enabled",
+    "ax_mlx_prefill_profile_prefill_steps",
+    "ax_mlx_prefill_profile_layers",
+    "ax_mlx_prefill_profile_tokens",
+    "ax_mlx_prefill_profile_per_layer_input_wall_us",
+    "ax_mlx_prefill_profile_pre_sdpa_wall_us",
+    "ax_mlx_prefill_profile_pre_sdpa_qkv_proj_wall_us",
+    "ax_mlx_prefill_profile_pre_sdpa_qk_norm_wall_us",
+    "ax_mlx_prefill_profile_pre_sdpa_rope_kv_wall_us",
+    "ax_mlx_prefill_profile_sdpa_wall_us",
+    "ax_mlx_prefill_profile_post_attn_wall_us",
+    "ax_mlx_prefill_profile_post_attn_ffn_wall_us",
+    "ax_mlx_prefill_profile_post_attn_ffn_gate_up_wall_us",
+    "ax_mlx_prefill_profile_post_attn_ffn_activation_wall_us",
+    "ax_mlx_prefill_profile_post_attn_ffn_down_wall_us",
+    "ax_mlx_prefill_profile_post_attn_output_proj_wall_us",
+    "ax_mlx_prefill_profile_post_attn_residual_norm_wall_us",
+    "ax_mlx_prefill_profile_post_attn_residual_gate_wall_us",
+    "ax_mlx_prefill_profile_lm_head_wall_us",
+]
+
 AX_MLX_DECODE_PROFILE_KEYS = [
     "ax_mlx_decode_profile_enabled",
     "ax_mlx_decode_profile_decode_steps",
@@ -259,6 +286,9 @@ AX_MLX_DECODE_PROFILE_KEYS = [
     "ax_mlx_decode_profile_sdpa_wall_us",
     "ax_mlx_decode_profile_post_attn_wall_us",
     "ax_mlx_decode_profile_post_attn_ffn_wall_us",
+    "ax_mlx_decode_profile_post_attn_ffn_gate_up_wall_us",
+    "ax_mlx_decode_profile_post_attn_ffn_activation_wall_us",
+    "ax_mlx_decode_profile_post_attn_ffn_down_wall_us",
     "ax_mlx_decode_profile_post_attn_output_proj_wall_us",
     "ax_mlx_decode_profile_post_attn_residual_norm_wall_us",
     "ax_mlx_decode_profile_post_attn_residual_gate_wall_us",
@@ -1009,8 +1039,12 @@ def start_axengine(
     kv_compression_min_context_tokens: int | None = None,
     gemma4_moe_profile: bool = False,
     linear_attention_profile: bool = False,
+    prefill_profile: bool = False,
     decode_profile: bool = False,
     pack_linear_attention_projections: bool = False,
+    pack_dense_ffn_gate_up: bool = False,
+    prefill_chunk: int | None = None,
+    max_batch_tokens: int | None = None,
 ) -> subprocess.Popen[Any]:
     cmd = [
         str(binary),
@@ -1022,6 +1056,10 @@ def start_axengine(
     ]
     if direct_mode:
         cmd.append("--disable-ngram-acceleration")
+    if prefill_chunk is not None:
+        cmd.extend(["--prefill-chunk", str(prefill_chunk)])
+    if max_batch_tokens is not None:
+        cmd.extend(["--max-batch-tokens", str(max_batch_tokens)])
     if kv_compression != "disabled":
         cmd.extend(["--experimental-mlx-kv-compression", kv_compression])
         if kv_compression_hot_window_tokens is not None:
@@ -1043,10 +1081,14 @@ def start_axengine(
         env["AX_MLX_GEMMA4_MOE_PROFILE"] = "1"
     if linear_attention_profile:
         env["AX_MLX_LINEAR_ATTENTION_PROFILE"] = "1"
+    if prefill_profile:
+        env["AX_MLX_PREFILL_PROFILE"] = "1"
     if decode_profile:
         env["AX_MLX_DECODE_PROFILE"] = "1"
     if pack_linear_attention_projections:
         env["AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"] = "1"
+    if pack_dense_ffn_gate_up:
+        env["AX_MLX_PACK_DENSE_FFN_GATE_UP"] = "1"
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
 
@@ -1127,6 +1169,20 @@ def extract_ax_mlx_decode_profile(
     }
 
 
+def extract_ax_mlx_prefill_profile(
+    route: dict[str, Any] | None,
+) -> dict[str, int]:
+    if not route:
+        return {}
+    decisions = route.get("crossover_decisions") or {}
+    if "ax_mlx_prefill_profile_enabled" not in decisions:
+        return {}
+    return {
+        key: int(decisions.get(key, 0))
+        for key in AX_MLX_PREFILL_PROFILE_KEYS
+    }
+
+
 def extract_ax_mlx_kv_compression_telemetry(
     route: dict[str, Any] | None,
 ) -> dict[str, int]:
@@ -1169,6 +1225,7 @@ def route_with_more_decisions(
         "ax_mlx_ngram_decode_steps",
         "ax_mlx_ngram_decode_wall_us",
         "ax_mlx_bonus_tokens",
+        *AX_MLX_PREFILL_PROFILE_KEYS,
         *AX_MLX_DECODE_PROFILE_KEYS,
     }
 
@@ -1516,6 +1573,17 @@ def summarize_ax_mlx_decode_profile(runs: list[dict[str, Any]]) -> dict[str, int
     return totals
 
 
+def summarize_ax_mlx_prefill_profile(runs: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for run in runs:
+        for key, value in (run.get("ax_mlx_prefill_profile") or {}).items():
+            if key == "ax_mlx_prefill_profile_enabled":
+                totals[key] = max(totals.get(key, 0), int(value))
+            else:
+                totals[key] = totals.get(key, 0) + int(value)
+    return totals
+
+
 def summarize_ax_mlx_kv_compression_telemetry(
     runs: list[dict[str, Any]],
 ) -> dict[str, int]:
@@ -1748,6 +1816,9 @@ def axengine_one_run(
     )
     if linear_attention_profile:
         run["ax_mlx_linear_attention_profile"] = linear_attention_profile
+    prefill_profile = extract_ax_mlx_prefill_profile(prefill_route)
+    if prefill_profile:
+        run["ax_mlx_prefill_profile"] = prefill_profile
     decode_profile = extract_ax_mlx_decode_profile(final_route)
     if decode_profile:
         run["ax_mlx_decode_profile"] = decode_profile
@@ -1850,6 +1921,7 @@ def bench_axengine(
         "scheduler_telemetry": summarize_scheduler_telemetry(runs),
         "ax_mlx_gemma4_moe_profile": summarize_ax_mlx_gemma4_moe_profile(runs),
         "ax_mlx_linear_attention_profile": summarize_ax_mlx_linear_attention_profile(runs),
+        "ax_mlx_prefill_profile": summarize_ax_mlx_prefill_profile(runs),
         "ax_mlx_decode_profile": summarize_ax_mlx_decode_profile(runs),
         "trials": runs,
     }
@@ -2661,6 +2733,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-pack-dense-ffn-gate-up",
+        action="store_true",
+        help=(
+            "Enable experimental loader-time packing of split dense FFN gate/up "
+            "projections into the existing gate_up_packed fast path for AX rows. "
+            "This is an opt-in prefill probe and does not change the model artifact."
+        ),
+    )
+    parser.add_argument(
         "--ax-compare-linear-attention-projection-pack",
         action="store_true",
         help=(
@@ -2670,12 +2751,30 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-compare-dense-ffn-gate-up-pack",
+        action="store_true",
+        help=(
+            "Run direct AX rows twice for the same prompts: first the default "
+            "split dense FFN gate/up projections, then the experimental loader-time "
+            f"packed row emitted as {AX_ENGINE_DENSE_FFN_PACK_KEY}."
+        ),
+    )
+    parser.add_argument(
         "--ax-decode-profile",
         action="store_true",
         help=(
             "Enable opt-in direct decode stage profiling for AX rows. This "
             "materializes lazy graphs between stages, disables production decode "
             "pipelining, and is intended for hotspot diagnosis only."
+        ),
+    )
+    parser.add_argument(
+        "--ax-prefill-profile",
+        action="store_true",
+        help=(
+            "Enable opt-in prompt prefill stage profiling for AX rows. This "
+            "materializes lazy graphs between stages and is intended for "
+            "long-context hotspot diagnosis only."
         ),
     )
     parser.add_argument(
@@ -2794,6 +2893,26 @@ def main() -> None:
         parser.error(
             "--ax-compare-linear-attention-projection-pack already runs the packed row; "
             "do not combine it with --ax-pack-linear-attention-projections"
+        )
+    if args.ax_compare_dense_ffn_gate_up_pack and args.skip_ax_engine:
+        parser.error("--ax-compare-dense-ffn-gate-up-pack requires AX rows")
+    if args.ax_compare_dense_ffn_gate_up_pack and (
+        args.ax_ngram_accel or args.ax_compare_policies
+    ):
+        parser.error(
+            "--ax-compare-dense-ffn-gate-up-pack requires direct AX rows; "
+            "do not combine it with --ax-ngram-accel or --ax-compare-policies"
+        )
+    if args.ax_compare_dense_ffn_gate_up_pack and args.ax_pack_dense_ffn_gate_up:
+        parser.error(
+            "--ax-compare-dense-ffn-gate-up-pack already runs the packed row; "
+            "do not combine it with --ax-pack-dense-ffn-gate-up"
+        )
+    if args.ax_compare_dense_ffn_gate_up_pack and args.ax_compare_linear_attention_projection_pack:
+        parser.error(
+            "--ax-compare-dense-ffn-gate-up-pack and "
+            "--ax-compare-linear-attention-projection-pack both run paired AX rows; "
+            "run one comparison at a time"
         )
     if args.reuse_reference_results_from and args.mlx_swift_lm_command:
         parser.error("--reuse-reference-results-from conflicts with --mlx-swift-lm-command")
@@ -2978,15 +3097,36 @@ def main() -> None:
             ax_run_configs = []
             if args.ax_compare_linear_attention_projection_pack:
                 ax_run_configs = [
-                    (True, False, AX_ENGINE_DIRECT_KEY),
-                    (True, True, AX_ENGINE_LINEAR_ATTENTION_PACK_KEY),
+                    (True, False, args.ax_pack_dense_ffn_gate_up, AX_ENGINE_DIRECT_KEY),
+                    (
+                        True,
+                        True,
+                        args.ax_pack_dense_ffn_gate_up,
+                        AX_ENGINE_LINEAR_ATTENTION_PACK_KEY,
+                    ),
+                ]
+            elif args.ax_compare_dense_ffn_gate_up_pack:
+                ax_run_configs = [
+                    (True, args.ax_pack_linear_attention_projections, False, AX_ENGINE_DIRECT_KEY),
+                    (
+                        True,
+                        args.ax_pack_linear_attention_projections,
+                        True,
+                        AX_ENGINE_DENSE_FFN_PACK_KEY,
+                    ),
                 ]
             elif args.ax_compare_policies:
                 ax_run_configs = [
-                    (True, args.ax_pack_linear_attention_projections, AX_ENGINE_DIRECT_KEY),
+                    (
+                        True,
+                        args.ax_pack_linear_attention_projections,
+                        args.ax_pack_dense_ffn_gate_up,
+                        AX_ENGINE_DIRECT_KEY,
+                    ),
                     (
                         False,
                         args.ax_pack_linear_attention_projections,
+                        args.ax_pack_dense_ffn_gate_up,
                         AX_ENGINE_NGRAM_ACCEL_KEY,
                     ),
                 ]
@@ -2995,15 +3135,26 @@ def main() -> None:
                     (
                         False,
                         args.ax_pack_linear_attention_projections,
+                        args.ax_pack_dense_ffn_gate_up,
                         AX_ENGINE_NGRAM_ACCEL_KEY,
                     )
                 ]
             else:
                 ax_run_configs = [
-                    (True, args.ax_pack_linear_attention_projections, AX_ENGINE_DIRECT_KEY)
+                    (
+                        True,
+                        args.ax_pack_linear_attention_projections,
+                        args.ax_pack_dense_ffn_gate_up,
+                        AX_ENGINE_DIRECT_KEY,
+                    )
                 ]
 
-            for direct_mode, pack_linear_attention_projections, engine_key in ax_run_configs:
+            for (
+                direct_mode,
+                pack_linear_attention_projections,
+                pack_dense_ffn_gate_up,
+                engine_key,
+            ) in ax_run_configs:
                 proc = start_axengine(
                     AX_ENGINE_SERVER,
                     args.model_dir,
@@ -3020,8 +3171,16 @@ def main() -> None:
                     linear_attention_profile=(
                         args.gateddelta_prefill_profile or args.ax_linear_attention_profile
                     ),
+                    prefill_profile=args.ax_prefill_profile,
                     decode_profile=args.ax_decode_profile,
                     pack_linear_attention_projections=pack_linear_attention_projections,
+                    pack_dense_ffn_gate_up=pack_dense_ffn_gate_up,
+                    prefill_chunk=args.prefill_step_size,
+                    # Scheduler caps per-step prefill at max_batch_tokens. To
+                    # let the runner emit one chunked_prefill call per request
+                    # (matching mlx_lm.benchmark / mlx-swift-bench geometry),
+                    # provision at least the longest configured prompt.
+                    max_batch_tokens=max(max(prompt_lengths), args.prefill_step_size),
                 )
                 procs.append(proc)
                 if not wait_for_server(
@@ -3057,11 +3216,14 @@ def main() -> None:
                     results[-1]["ax_linear_attention_projection_pack"] = bool(
                         pack_linear_attention_projections
                     )
+                    results[-1]["ax_dense_ffn_gate_up_pack"] = bool(pack_dense_ffn_gate_up)
                 kill_proc(proc)
                 procs.remove(proc)
                 if (direct_mode and args.ax_compare_policies) or (
                     not pack_linear_attention_projections
                     and args.ax_compare_linear_attention_projection_pack
+                ) or (
+                    not pack_dense_ffn_gate_up and args.ax_compare_dense_ffn_gate_up_pack
                 ):
                     time.sleep(3)  # brief cooldown between modes
     finally:
@@ -3157,6 +3319,11 @@ def main() -> None:
         "ax_linear_attention_projection_pack_compare": bool(
             args.ax_compare_linear_attention_projection_pack
         ),
+        "ax_dense_ffn_gate_up_pack": bool(
+            args.ax_pack_dense_ffn_gate_up or args.ax_compare_dense_ffn_gate_up_pack
+        ),
+        "ax_dense_ffn_gate_up_pack_compare": bool(args.ax_compare_dense_ffn_gate_up_pack),
+        "ax_prefill_profile": bool(args.ax_prefill_profile),
         "ax_decode_profile": bool(args.ax_decode_profile),
         "results": results,
     }

@@ -1,0 +1,22 @@
+
+=== AX Engine MLX inference stack ===
+  model: .internal/models/gemma-4-e2b-it-6bit
+  model_dir: .internal/models/gemma-4-e2b-it-6bit
+  prompt_tokens: [4096]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-15-ax-4k-r5/gemma-4-e2b-it-6bit-prompts
+  [prompt] prompt_tokens=4096 sha256=5bcf4c86ed5c path=benchmarks/results/mlx-inference/2026-05-15-ax-4k-r5/gemma-4-e2b-it-6bit-prompts/prompt-4096-gen-128-5bcf4c86ed5c.json
+  [mlx_lm] python3 -m mlx_lm.benchmark --model .internal/models/gemma-4-e2b-it-6bit --batch-size 1 --prompt-tokens 4096 --generation-tokens 128 --num-trials 5 --delay 15 --prefill-step-size 2048
+  [mlx-swift-lm] scripts/mlx-swift-bench/.build/release/mlx-swift-bench --model .internal/models/gemma-4-e2b-it-6bit --prompt-token-ids benchmarks/results/mlx-inference/2026-05-15-ax-4k-r5/gemma-4-e2b-it-6bit-prompts/prompt-4096-gen-128-5bcf4c86ed5c.json --generation-tokens 128 --trials 5 --delay 15.0 --prefill-step-size 2048
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/gemma-4-e2b-it-6bit --port 8091 --disable-ngram-acceleration
+  [ax-engine/ax_engine_mlx] prompt=4096 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=8467.3 tok/s decode=146.6 tok/s out=128
+    rep 2: prefill=8398.7 tok/s decode=146.5 tok/s out=128
+    rep 3: prefill=8481.4 tok/s decode=146.4 tok/s out=128
+    rep 4: prefill=8391.3 tok/s decode=146.6 tok/s out=128
+    rep 5: prefill=8482.9 tok/s decode=146.9 tok/s out=128
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/gemma-4-e2b-it-6bit --port 8091
+  [ax-engine/ax_engine_mlx_ngram_accel] prompt=4096 generation=128 policy=ngram_acceleration_kv_trim kv_compression=disabled
+    rep 1: prefill=8502.8 tok/s decode=399.2 tok/s out=128
+    rep 2: prefill=8462.8 tok/s decode=399.0 tok/s out=128

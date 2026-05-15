@@ -252,6 +252,18 @@ pub struct ServerArgs {
     #[arg(long = "disable-ngram-acceleration", default_value_t = false)]
     pub disable_ngram_acceleration: bool,
 
+    /// Override the MLX prefill chunk size. When unset, the runner uses
+    /// `DEFAULT_PREFILL_CHUNK` (512, sized to the GatedDelta linear-attention
+    /// threadgroup cache). For dense / full-attention models on long prompts
+    /// (≥4k), a larger chunk such as 2048 dramatically improves prefill
+    /// throughput by reducing the number of SDPA dispatches. The bench
+    /// harness sets this to match `--prefill-step-size` used by mlx_lm and
+    /// mlx-swift-lm so the three runtimes compare on identical chunk
+    /// geometry. MLA models layer their own `AX_MLX_MLA_PREFILL_CHUNK`
+    /// env override on top of this for warm-extend equivalence.
+    #[arg(long = "prefill-chunk")]
+    pub prefill_chunk: Option<usize>,
+
     /// Experimental MLX KV compression policy. Disabled keeps the existing KV path unchanged.
     #[arg(long = "experimental-mlx-kv-compression", value_enum, default_value_t = PreviewMlxKvCompression::Disabled)]
     pub experimental_mlx_kv_compression: PreviewMlxKvCompression,
@@ -333,6 +345,7 @@ impl ServerArgs {
                 self.experimental_mlx_kv_compression_hot_window_tokens,
                 self.experimental_mlx_kv_compression_min_context_tokens,
             ),
+            mlx_prefill_chunk: self.prefill_chunk,
         })
         .map_err(|error| error.to_string())
     }
