@@ -43,7 +43,7 @@ Remaining blockers before F3 closure:
 
 - concurrent four-process stress artifact with zero corruption load
   failures;
-- broader architecture-tier cross-restart evidence for MLA and
-  linear-attention models;
+- pure-MLA cross-restart evidence (Qwen3.5-9B now covers the hybrid
+  MLA + linear-attention tier);
 - tight-budget eviction-pressure artifact;
 - M5 runtime/docs promotion review.
