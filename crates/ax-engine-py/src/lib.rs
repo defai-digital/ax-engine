@@ -174,6 +174,7 @@ impl Session {
             mlx_model_artifacts_dir: effective_mlx_model_artifacts_dir,
             mlx_disable_ngram_acceleration: false,
             mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
+            mlx_prefill_chunk: None,
         })
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let inner = EngineSession::new(config).map_err(to_py_runtime_error)?;
