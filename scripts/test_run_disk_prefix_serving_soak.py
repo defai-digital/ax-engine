@@ -96,6 +96,37 @@ class DiskPrefixServingSoakRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "between 0 and 1"):
             runner.ratio_arg("1.5")
 
+    def test_run_id_rejects_path_traversal(self) -> None:
+        with self.assertRaisesRegex(Exception, "single path component"):
+            runner.run_id_arg("../bad")
+
+    def test_route_decision_key_rejects_invalid_gate_key(self) -> None:
+        with self.assertRaisesRegex(Exception, "route decision key"):
+            runner.route_decision_key_arg("bad=1")
+
+    def test_dry_run_refuses_non_empty_run_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp)
+            run_dir = output_root / "unit-soak"
+            run_dir.mkdir()
+            (run_dir / "old-artifact.json").write_text("{}\n")
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                code = runner.main_with_args_for_test(
+                    [
+                        "--model-id",
+                        "qwen3_dense",
+                        "--output-root",
+                        str(output_root),
+                        "--run-id",
+                        "unit-soak",
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertIn("already contains files", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
