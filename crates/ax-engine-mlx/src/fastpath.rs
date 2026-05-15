@@ -67,6 +67,21 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
+env_flag!(
+    /// Engaged by `AX_MLX_PREFILL_FFN_COMPILE` (W1 spike of
+    /// `MLX-PREFILL-FUSION-PRD-2026-05-15.md`). When truthy, the Gemma 4
+    /// GeGLU branch in `model.rs::gemma4_geglu` routes its
+    /// `gelu_approx + multiply` sub-chain through a per-thread
+    /// `MlxClosure::compile` cache, mirroring the
+    /// `@partial(mx.compile, shapeless=True) def geglu(gate, x)` mlx_lm
+    /// uses. `MlxClosure::try_apply` falls back to the imperative path on
+    /// a cross-thread or stream-contract mismatch, so the env switch fails
+    /// closed. Default off until the W1 acceptance gates in fusion PRD §0
+    /// are green on a captured Gemma 4 E2B 4-bit @4k bring-up smoke.
+    prefill_ffn_compile_enabled,
+    "AX_MLX_PREFILL_FFN_COMPILE"
+);
+
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
 /// cold and warm-extend prefill paths produce the same SDPA Q/K shape
 /// sequence over the same absolute positions, avoiding the reproduced

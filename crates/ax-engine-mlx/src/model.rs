@@ -3383,31 +3383,71 @@ fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
 /// math + the test as regression protection if the stream story is ever solved.
 /// See
 /// `benchmarks/results/mlx-inference/2026-05-14-w2-stream-contract-source-read/stream-contract.md`.
-#[allow(dead_code)]
+/// GeGLU compiled helper kept (and unit-tested) as a record of the math;
+/// the production gate that wires this into `gemma4_geglu` is
+/// `fastpath::prefill_ffn_compile_enabled()` reading
+/// `AX_MLX_PREFILL_FFN_COMPILE`. Pre-W1 this helper was dead code because
+/// the original `OnceLock<Option<MlxClosure>>` cache was process-wide:
+/// thread A compiled the closure, thread B (a different tokio worker)
+/// inherited it and aborted at `mlx_closure_apply` with
+/// `"There is no Stream(gpu, N) in current thread"` — MLX 0.31 / mlx-c
+/// 0.6 default streams + compiled-function caches + Metal command
+/// encoders are thread-local.
+///
+/// W1 fix: per-thread cache keyed by `ThreadId` in a process-static
+/// `Mutex<HashMap<ThreadId, MlxClosure>>`. Each thread compiles its own
+/// closure on first use and reuses it on subsequent calls from the same
+/// thread. The cache is intentionally NOT a `thread_local!` because
+/// thread_local destructors run after the thread's MLX state has
+/// torn down, leaving a stale `MlxClosure` that SIGSEGVs at drop. The
+/// process-static map holds entries until process exit, mirroring the
+/// embedding compile cache in `MlxRunner` (`runner.rs::EmbedCompileKey =
+/// (ThreadId, ...)`). Combined with `MlxClosure::try_apply` (which
+/// rejects a cross-thread apply before reaching `mlx_closure_apply`),
+/// the helper fails closed: on any contract violation we fall back to
+/// the imperative `gelu_approx + multiply` path without aborting.
 fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
-    static CACHED: OnceLock<Option<MlxClosure>> = OnceLock::new();
-    let cls = CACHED.get_or_init(|| {
-        MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
-            let gate = inputs.get(0);
-            let x = inputs.get(1);
-            let activated = gelu_approx(&gate, None);
-            vec![multiply(&activated, &x, None)]
-        })
-        .compile(true)
-        .ok()
-    });
-    if let Some(cls) = cls {
-        let mut out = cls.apply(&[gate, x]);
-        if let Some(out) = out.pop() {
-            return out;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::thread::ThreadId;
+
+    static GEGLU_COMPILE_CACHE: OnceLock<Mutex<HashMap<ThreadId, MlxClosure>>> = OnceLock::new();
+
+    let cache = GEGLU_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let tid = std::thread::current().id();
+    let outputs = {
+        let mut guard = cache.lock().expect("geglu compile cache mutex poisoned");
+        if !guard.contains_key(&tid) {
+            let compiled = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
+                let gate = inputs.get(0);
+                let x = inputs.get(1);
+                let activated = gelu_approx(&gate, None);
+                vec![multiply(&activated, &x, None)]
+            })
+            .compile(true)
+            .ok();
+            if let Some(compiled) = compiled {
+                guard.insert(tid, compiled);
+            }
         }
+        guard.get(&tid).and_then(|cls| cls.try_apply(&[gate, x]).ok())
+    };
+
+    if let Some(mut outputs) = outputs
+        && let Some(out) = outputs.pop()
+    {
+        return out;
     }
     multiply(&gelu_approx(gate, None), x, None)
 }
 
 fn gemma4_geglu(cfg: &ModelConfig, gate: &MlxArray, up: &MlxArray) -> MlxArray {
     if cfg.uses_geglu {
-        multiply(&gelu_approx(gate, None), up, None)
+        if crate::fastpath::prefill_ffn_compile_enabled() {
+            geglu(gate, up)
+        } else {
+            multiply(&gelu_approx(gate, None), up, None)
+        }
     } else {
         multiply(&mlx_sys::ops::silu(gate, None), up, None)
     }
