@@ -15,7 +15,7 @@ Source: `benchmarks/results/mlx-inference/2026-05-15-prefill-profile-baseline/`.
 | .internal/models/gemma-4-e2b-it-6bit | 753,456 | 58.5% | 19.4% | 8.6% | 5.9% | 0.7% |
 | .internal/models/gemma-4-e2b-it-8bit | 716,547 | 58.6% | 19.8% | 8.8% | 5.5% | 0.8% |
 | .internal/models/gemma-4-e4b-it-4bit | 1,088,892 | 63.7% | 15.1% | 9.7% | 5.3% | 0.7% |
-| .internal/models/GLM-4.7-Flash-4bit | 1,520,751 | 43.3% | — | — | — | — |
+| .internal/models/GLM-4.7-Flash-4bit | 1,615,471 | 40.8% | 39.5% | — | 7.6% | — |
 | .internal/models/Qwen3-Coder-Next-4bit | 2,532,292 | 65.6% | 3.1% | 4.7% | 1.6% | — |
 | .internal/models/Qwen3.5-9B-MLX-4bit | 1,713,868 | 54.2% | 3.1% | 6.3% | 2.2% | — |
 | .internal/models/Qwen3.6-35B-A3B-5bit | 1,830,732 | 60.6% | 3.4% | 5.5% | 1.9% | — |
@@ -188,25 +188,25 @@ Forward wall (median across trials): **1,088,892 µs** — 2 prefill step(s), 84
 
 ### .internal/models/GLM-4.7-Flash-4bit @ prompt=4096, generation=128
 
-Forward wall (median across trials): **1,520,751 µs** — 2 prefill step(s), 94 layer-passes, 4096 tokens, median AX direct prefill = 2,692.1 tok/s.
+Forward wall (median across trials): **1,615,471 µs** — 2 prefill step(s), 94 layer-passes, 4096 tokens, median AX direct prefill = 2,534.6 tok/s.
 
 | Stage | µs (median) | %-of-forward | %-of-parent |
 |---|---:|---:|---:|
 | per-layer input | — | — | — |
 | pre-SDPA (umbrella) | — | — | — |
-|   QKV projection | — | — | — |
+|   QKV projection | 82,323 | 5.1% | — |
 |   QK norm | — | — | — |
-|   RoPE + KV append | — | — | — |
-| SDPA | — | — | — |
+|   RoPE + KV append | 63,792 | 3.9% | — |
+| SDPA | 638,745 | 39.5% | — |
 | post-attn (umbrella) | — | — | — |
-|   output projection | — | — | — |
-|   residual norm | 836,500 | 55.0% | — |
-|   residual gate | 22,018 | 1.4% | — |
-|   FFN (umbrella) | 658,299 | 43.3% | — |
-|     FFN gate+up | 7,734 | 0.5% | 1.2% |
-|     FFN activation | 2,563 | 0.2% | 0.4% |
-|     FFN down | 4,548 | 0.3% | 0.7% |
-| LM head | 1,153 | 0.1% | — |
+|   output projection | 123,123 | 7.6% | — |
+|   residual norm | 24,226 | 1.5% | — |
+|   residual gate | 22,041 | 1.4% | — |
+|   FFN (umbrella) | 658,829 | 40.8% | — |
+|     FFN gate+up | 6,322 | 0.4% | 1.0% |
+|     FFN activation | 2,287 | 0.1% | 0.3% |
+|     FFN down | 3,840 | 0.2% | 0.6% |
+| LM head | 1,126 | 0.1% | — |
 
 
 ### .internal/models/Qwen3-Coder-Next-4bit @ prompt=4096, generation=128
