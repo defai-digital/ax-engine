@@ -1,6 +1,7 @@
 # Quantum OP PRD
 
-Status: Partially implemented; TurboQuant runtime promotion blocked
+Status: Partially implemented; offline policy-search guardrails landed;
+TurboQuant runtime promotion has 4 blocking milestones remaining
 Date: 2026-05-14
 Owner: AX Engine
 Companions: TURBOQUANT-PROMOTION-PRD.md, MLX-RUNTIME-PERFORMANCE-PRD.md, KV-SCHEDULER-REVAMP-PRD.md, WEIGHT-QUANT-AND-SPECULATION-PRD.md
@@ -743,6 +744,40 @@ Deliverables:
 - avoid mixing prefix-cache, speculation, and MoE conclusions in one result.
 
 ## 13. Remaining Milestones
+
+Implementation-plan snapshot, 2026-05-14:
+
+- The active PRD for this work is this file, `quantum-op.md` (formerly tracked
+  as `OFFLINE-POLICY-SEARCH-PRD.md` in discussion).
+- Runtime promotion is still blocked by evidence, not by the offline search
+  schema or validator.
+- Continue in small validated slices: fix fused compressed decode performance,
+  rerun the same long-context artifact shape, then promote only through the
+  companion TurboQuant PRD.
+
+Phase count:
+
+| Phase | Scope | Status | Blocking? |
+|---|---|---|---|
+| P0 | Offline policy-search schema, validator, diagnostic artifact format | Done | No |
+| P1 | Diagnostic TurboQuant KV policy enumeration | Done for diagnostic use | No |
+| P2 | Real-runner fused compressed decode truth surface and quality gate | Done, with negative performance evidence | No |
+| P3 | Long-context fused-path performance artifact | Open | Yes |
+| P4 | Repeated quality and replay confirmation | Open | Yes |
+| P5 | Companion TurboQuant PRD promotion review | Open | Yes |
+| P6 | Runtime preset and public docs promotion | Open | Yes |
+| P7 | Adaptive n-gram, prefix retention, and MoE locality searches | Future tracks | No |
+
+Count: **4 blocking milestones remain** for TurboQuant runtime promotion
+(P3-P6). **3 non-blocking optimization tracks remain** under P7.
+
+Active implementation slice:
+
+- **P3-S1 hot-tail merge host allocation reduction**: replace the fused decode
+  hot-tail merge's per-query `Vec<FullPrecisionKvTokenVectors>` materialization
+  with direct partition-stat accumulation over the compact hot K/V f32 slices.
+  This is a low-risk runtime slice because it preserves the existing
+  split-softmax merge contract and changes only host-side staging work.
 
 ### TurboQuant KV Runtime Promotion
 
