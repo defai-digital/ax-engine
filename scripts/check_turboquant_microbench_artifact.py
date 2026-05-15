@@ -140,11 +140,29 @@ def _validate_hot_tail_merge(
         >= min_cosine_similarity,
         "hot-tail merge min_cosine_similarity is below fused-kernel limit",
     )
+    _validate_wall_us(entry, "row.hot_tail_merge")
 
 
 def _median_us(variant: dict[str, Any], field: str) -> float:
     metal_wall_us = _mapping(variant.get("metal_wall_us"), f"{field}.metal_wall_us")
     return _positive_number(metal_wall_us.get("median"), f"{field}.metal_wall_us.median")
+
+
+def _validate_wall_us(entry: dict[str, Any], field: str) -> None:
+    wall_us = entry.get("host_wall_us")
+    if wall_us is None:
+        return
+    wall = _mapping(wall_us, f"{field}.host_wall_us")
+    _positive_number(wall.get("median"), f"{field}.host_wall_us.median")
+    _positive_number(wall.get("min"), f"{field}.host_wall_us.min")
+    _positive_number(wall.get("max"), f"{field}.host_wall_us.max")
+    samples = wall.get("samples")
+    _require(
+        isinstance(samples, list) and samples,
+        f"{field}.host_wall_us.samples must be a non-empty array",
+    )
+    for index, sample in enumerate(samples):
+        _positive_number(sample, f"{field}.host_wall_us.samples[{index}]")
 
 
 def _validate_row(

@@ -55,6 +55,12 @@ def microbench_artifact() -> dict:
                 "hot_tail_merge": {
                     "hot_tokens": 128,
                     "contract": "shared_logsumexp_partition_merge",
+                    "host_wall_us": {
+                        "median": 42,
+                        "min": 40,
+                        "max": 44,
+                        "samples": [40, 42, 44],
+                    },
                     "quality": {
                         "max_abs_diff": 1e-7,
                         "mean_abs_diff": 1e-8,
@@ -150,6 +156,16 @@ class TurboQuantMicrobenchArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(
             checker.MicrobenchArtifactValidationError,
             "config.hot_tokens",
+        ):
+            checker.validate_artifact(artifact)
+
+    def test_hot_tail_merge_wall_time_shape_fails_closed(self) -> None:
+        artifact = microbench_artifact()
+        artifact["rows"][1]["hot_tail_merge"]["host_wall_us"]["samples"] = []
+
+        with self.assertRaisesRegex(
+            checker.MicrobenchArtifactValidationError,
+            "host_wall_us.samples",
         ):
             checker.validate_artifact(artifact)
 

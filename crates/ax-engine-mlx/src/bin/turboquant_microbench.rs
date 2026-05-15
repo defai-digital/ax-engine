@@ -4,9 +4,10 @@ use std::time::Instant;
 
 use ax_engine_core::MlxTurboQuantPreset;
 use ax_engine_mlx::turboquant::{
-    TurboQuantBlockLayout, TurboQuantBlockLayoutConfig, TurboQuantCompressedBlockBuffer,
-    TurboQuantCompressedDecodePlan, compare_decode_outputs, merge_attention_partition_stats,
-    reference_decode_attention, reference_decode_attention_partition_stats,
+    TurboQuantAttentionPartitionStatsBatch, TurboQuantBlockLayout, TurboQuantBlockLayoutConfig,
+    TurboQuantCompressedBlockBuffer, TurboQuantCompressedDecodePlan,
+    append_attention_partition_stats_batch_head_with_hot_tail_from_f32_slices,
+    compare_decode_outputs, reference_decode_attention, turboquant_query_head_to_kv_head,
 };
 use ax_engine_mlx::turboquant_metal::{
     turboquant_fused_cold_decode_metal, turboquant_fused_cold_decode_metal_head_serial,
@@ -269,13 +270,35 @@ fn hot_tail_merge_quality(
     let cold_stats = buffer
         .debug_decode_partition_stats_for_all_heads(queries, cold_tokens)
         .map_err(|error| error.to_string())?;
+    let cold_stats_batch = TurboQuantAttentionPartitionStatsBatch {
+        token_count: cold_tokens,
+        value_dim: config.head_dim,
+        max_scores: cold_stats.iter().map(|stats| stats.max_score).collect(),
+        exp_sums: cold_stats.iter().map(|stats| stats.exp_sum).collect(),
+        weighted_value_sums: cold_stats
+            .iter()
+            .flat_map(|stats| stats.weighted_value_sum.iter().copied())
+            .collect(),
+    };
 
     let hot_tokens = (0..config.hot_tokens)
         .map(|offset| token_heads(cold_tokens + offset, config))
         .collect::<Vec<_>>();
+    let mut hot_k_values = Vec::with_capacity(
+        config
+            .n_kv_heads
+            .saturating_mul(config.hot_tokens)
+            .saturating_mul(config.head_dim),
+    );
+    let mut hot_v_values = Vec::with_capacity(hot_k_values.capacity());
+    for kv_head_index in 0..config.n_kv_heads {
+        for heads in &hot_tokens {
+            hot_k_values.extend(&heads[kv_head_index].0);
+            hot_v_values.extend(&heads[kv_head_index].1);
+        }
+    }
 
     let mut expected_outputs = Vec::with_capacity(config.n_query_heads);
-    let mut actual_outputs = Vec::with_capacity(config.n_query_heads);
     let repeats = config.n_query_heads / config.n_kv_heads;
     for (head_index, query) in queries.iter().enumerate() {
         let kv_head_index = head_index / repeats;
@@ -290,26 +313,84 @@ fn hot_tail_merge_quality(
         expected_outputs.push(
             reference_decode_attention(query, &cold_head).map_err(|error| error.to_string())?,
         );
-
-        let hot_stats = reference_decode_attention_partition_stats(query, &hot_head)
-            .map_err(|error| error.to_string())?;
-        actual_outputs.push(
-            merge_attention_partition_stats(&[cold_stats[head_index].clone(), hot_stats])
-                .map_err(|error| error.to_string())?,
-        );
     }
 
+    for _ in 0..config.warmup {
+        let _ = hot_tail_merge_outputs(
+            config,
+            &cold_stats_batch,
+            queries,
+            &hot_k_values,
+            &hot_v_values,
+        )?;
+    }
+
+    let mut wall_us = Vec::with_capacity(config.repetitions);
+    let mut actual_flat_outputs = Vec::new();
+    for _ in 0..config.repetitions {
+        let started = Instant::now();
+        actual_flat_outputs = hot_tail_merge_outputs(
+            config,
+            &cold_stats_batch,
+            queries,
+            &hot_k_values,
+            &hot_v_values,
+        )?;
+        wall_us.push(elapsed_us(started));
+    }
+    let actual_outputs = actual_flat_outputs
+        .chunks_exact(config.head_dim)
+        .map(|head| head.to_vec())
+        .collect::<Vec<_>>();
     let comparison =
         compare_decode_outputs(&expected_outputs, &actual_outputs).map_err(|e| e.to_string())?;
     Ok(json!({
         "hot_tokens": config.hot_tokens,
         "contract": "shared_logsumexp_partition_merge",
+        "host_wall_us": {
+            "median": median_u128(&wall_us),
+            "min": *wall_us.iter().min().unwrap_or(&0),
+            "max": *wall_us.iter().max().unwrap_or(&0),
+            "samples": wall_us,
+        },
         "quality": {
             "max_abs_diff": comparison.max_abs_diff,
             "mean_abs_diff": comparison.mean_abs_diff,
             "min_cosine_similarity": comparison.min_cosine_similarity,
         }
     }))
+}
+
+fn hot_tail_merge_outputs(
+    config: &Config,
+    cold_stats: &TurboQuantAttentionPartitionStatsBatch,
+    queries: &[Vec<f32>],
+    hot_k_values: &[f32],
+    hot_v_values: &[f32],
+) -> Result<Vec<f32>, String> {
+    let mut outputs = Vec::with_capacity(config.n_query_heads.saturating_mul(config.head_dim));
+    for (query_head_index, query) in queries.iter().enumerate() {
+        let kv_head_index = turboquant_query_head_to_kv_head(
+            query_head_index,
+            config.n_query_heads,
+            config.n_kv_heads,
+        )
+        .map_err(|error| error.to_string())?;
+        append_attention_partition_stats_batch_head_with_hot_tail_from_f32_slices(
+            &mut outputs,
+            cold_stats,
+            query_head_index,
+            query,
+            hot_k_values,
+            hot_v_values,
+            config.n_kv_heads,
+            config.head_dim,
+            config.hot_tokens,
+            kv_head_index,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(outputs)
 }
 
 type KernelFn = fn(

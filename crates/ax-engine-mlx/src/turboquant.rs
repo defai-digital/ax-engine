@@ -1954,7 +1954,7 @@ impl TurboQuantAttentionPartitionStatsBatch {
         self.weighted_value_sum_for_validated_head(head_index)
     }
 
-    pub(crate) fn weighted_value_sum_for_validated_head(
+    fn weighted_value_sum_for_validated_head(
         &self,
         head_index: usize,
     ) -> Result<&[f32], TurboQuantCodecError> {
@@ -2079,6 +2079,167 @@ pub fn merge_attention_partition_stats(
     }
 
     Ok(output)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn append_attention_partition_stats_batch_head_with_hot_tail_from_f32_slices(
+    output: &mut Vec<f32>,
+    cold_stats: &TurboQuantAttentionPartitionStatsBatch,
+    query_head_index: usize,
+    query: &[f32],
+    k_values: &[f32],
+    v_values: &[f32],
+    n_kv_heads: usize,
+    head_dim: usize,
+    hot_token_count: usize,
+    kv_head_index: usize,
+) -> Result<(), TurboQuantCodecError> {
+    let weighted_value_sum = cold_stats.weighted_value_sum_for_validated_head(query_head_index)?;
+    let cold_max_score = cold_stats.max_scores.get(query_head_index).copied().ok_or(
+        TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: cold_stats.max_scores.len(),
+            actual: query_head_index.saturating_add(1),
+        },
+    )?;
+    let cold_exp_sum = cold_stats.exp_sums.get(query_head_index).copied().ok_or(
+        TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: cold_stats.max_scores.len(),
+            actual: query_head_index.saturating_add(1),
+        },
+    )?;
+    append_attention_partition_with_hot_tail_from_f32_slices(
+        output,
+        cold_stats.token_count,
+        cold_stats.value_dim,
+        cold_max_score,
+        cold_exp_sum,
+        weighted_value_sum,
+        query,
+        k_values,
+        v_values,
+        n_kv_heads,
+        head_dim,
+        hot_token_count,
+        kv_head_index,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_attention_partition_with_hot_tail_from_f32_slices(
+    output: &mut Vec<f32>,
+    cold_token_count: usize,
+    cold_value_dim: usize,
+    cold_max_score: f32,
+    cold_exp_sum: f32,
+    cold_weighted_value_sum: &[f32],
+    query: &[f32],
+    k_values: &[f32],
+    v_values: &[f32],
+    n_kv_heads: usize,
+    head_dim: usize,
+    hot_token_count: usize,
+    kv_head_index: usize,
+) -> Result<(), TurboQuantCodecError> {
+    if cold_token_count == 0 {
+        return Err(TurboQuantCodecError::EmptyKvHistory);
+    }
+    if cold_value_dim != head_dim {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: cold_value_dim,
+            actual: head_dim,
+        });
+    }
+    if cold_weighted_value_sum.len() != head_dim {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: head_dim,
+            actual: cold_weighted_value_sum.len(),
+        });
+    }
+    if hot_token_count == 0 {
+        let denom = cold_exp_sum.max(f32::MIN_POSITIVE);
+        output.extend(cold_weighted_value_sum.iter().map(|value| *value / denom));
+        return Ok(());
+    }
+    if query.len() != head_dim {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: head_dim,
+            actual: query.len(),
+        });
+    }
+    if kv_head_index >= n_kv_heads {
+        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: n_kv_heads,
+            actual: kv_head_index.saturating_add(1),
+        });
+    }
+    let expected_len = n_kv_heads
+        .saturating_mul(hot_token_count)
+        .saturating_mul(head_dim);
+    if k_values.len() != expected_len {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: expected_len,
+            actual: k_values.len(),
+        });
+    }
+    if v_values.len() != expected_len {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: expected_len,
+            actual: v_values.len(),
+        });
+    }
+
+    let scale = (head_dim as f32).sqrt().recip();
+    let head_offset = kv_head_index
+        .saturating_mul(hot_token_count)
+        .saturating_mul(head_dim);
+    let token_range = |token_index: usize| {
+        let start = head_offset.saturating_add(token_index.saturating_mul(head_dim));
+        start..start.saturating_add(head_dim)
+    };
+
+    let mut hot_max_score = f32::NEG_INFINITY;
+    for token_index in 0..hot_token_count {
+        let key = &k_values[token_range(token_index)];
+        let score = query
+            .iter()
+            .zip(key)
+            .map(|(left, right)| left * right)
+            .sum::<f32>()
+            * scale;
+        hot_max_score = hot_max_score.max(score);
+    }
+
+    let mut hot_exp_sum = 0.0f32;
+    let output_start = output.len();
+    output.resize(output_start.saturating_add(head_dim), 0.0);
+    let hot_output = &mut output[output_start..];
+    for token_index in 0..hot_token_count {
+        let range = token_range(token_index);
+        let key = &k_values[range.clone()];
+        let value = &v_values[range];
+        let score = query
+            .iter()
+            .zip(key)
+            .map(|(left, right)| left * right)
+            .sum::<f32>()
+            * scale;
+        let weight = (score - hot_max_score).exp();
+        hot_exp_sum += weight;
+        for (acc, value) in hot_output.iter_mut().zip(value) {
+            *acc += weight * value;
+        }
+    }
+
+    let global_max = cold_max_score.max(hot_max_score);
+    let cold_scale = (cold_max_score - global_max).exp();
+    let hot_scale = (hot_max_score - global_max).exp();
+    let denom = (cold_exp_sum * cold_scale + hot_exp_sum * hot_scale).max(f32::MIN_POSITIVE);
+
+    for (out, cold_value_sum) in hot_output.iter_mut().zip(cold_weighted_value_sum) {
+        *out = (*out * hot_scale + cold_value_sum * cold_scale) / denom;
+    }
+
+    Ok(())
 }
 
 pub fn reference_decode_attention_split(

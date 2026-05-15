@@ -1,0 +1,99 @@
+{
+  "config": {
+    "block_tokens": 256,
+    "head_dim": 512,
+    "hot_tokens": 256,
+    "n_kv_heads": 1,
+    "n_query_heads": 8,
+    "repetitions": 3,
+    "value_group_size": 32,
+    "variants": [
+      "dim_parallel",
+      "two_stage_scores"
+    ],
+    "warmup": 1
+  },
+  "decode_path": "fused_compressed_decode",
+  "kernel": "turboquant_fused_cold_decode_k8v4",
+  "key_bits": 8,
+  "output_path": "benchmarks/results/turboquant/quality-runs/20260515T082716Z-gemma-4-e2b-it-4bit-runtime-slices-s7/microbench-gemma-e2b-shape-post-s7.json",
+  "preset": "k8v4",
+  "rows": [
+    {
+      "cold_compression_ratio_milli": 219,
+      "cold_tokens": 7936,
+      "compressed_buffer_bytes": 7237632,
+      "cpu_reference_wall_us": 138838,
+      "estimated_cold_saved_bytes": 25363456,
+      "estimated_total_read_bytes": 7142400,
+      "full_precision_cold_kv_bytes": 32505856,
+      "head_dim": 512,
+      "hot_tail_merge": {
+        "contract": "shared_logsumexp_partition_merge",
+        "host_wall_us": {
+          "max": 980,
+          "median": 949.0,
+          "min": 945,
+          "samples": [
+            949,
+            980,
+            945
+          ]
+        },
+        "hot_tokens": 256,
+        "quality": {
+          "max_abs_diff": 2.849847078323364e-7,
+          "mean_abs_diff": 3.117656532936053e-8,
+          "min_cosine_similarity": 0.9999993443489075
+        }
+      },
+      "kernel_variants": [
+        {
+          "estimated_read_gib_s": 0.02380210242724909,
+          "metal_wall_us": {
+            "max": 279910,
+            "median": 279466.0,
+            "min": 278934,
+            "samples": [
+              279466,
+              278934,
+              279910
+            ]
+          },
+          "name": "dim_parallel",
+          "quality": {
+            "max_abs_diff": 3.334134817123413e-7,
+            "mean_abs_diff": 3.2409200656502435e-8,
+            "min_cosine_similarity": 0.9999997615814209
+          },
+          "token_heads_per_second": 227176.1144468379
+        },
+        {
+          "estimated_read_gib_s": 1.27479462570594,
+          "metal_wall_us": {
+            "max": 5278,
+            "median": 5218.0,
+            "min": 4474,
+            "samples": [
+              4474,
+              5278,
+              5218
+            ]
+          },
+          "name": "two_stage_scores",
+          "quality": {
+            "max_abs_diff": 3.864988684654236e-7,
+            "mean_abs_diff": 4.320509816579943e-8,
+            "min_cosine_similarity": 0.9999997019767761
+          },
+          "token_heads_per_second": 12167113.83671905
+        }
+      ],
+      "n_kv_heads": 1,
+      "n_query_heads": 8,
+      "required_compressed_slots": 7936
+    }
+  ],
+  "schema_version": "ax.turboquant_fused_decode_microbench.v1",
+  "value_bits": 4
+}
