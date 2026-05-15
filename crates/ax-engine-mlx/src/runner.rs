@@ -2426,12 +2426,37 @@ impl MlxRunner {
         // `AX_MLX_MLA_PREFILL_CHUNK=N` (applies to warm-extend) or by
         // setting the caller's prefill chunk explicitly; non-MLA tiers
         // ignore the MLA-specific resolution.
-        let cold_prefill_chunk = prefill_chunk.max(1);
-        let prefill_chunk = crate::fastpath::resolve_prefill_chunk(
+        //
+        // Linear-attention tiers (Qwen3.5 9B, Qwen3-Next family — Qwen 3.6
+        // and Qwen Coder Next) have a hard kernel cap of
+        // `GATED_DELTA_THREADGROUP_CACHE_CAPACITY` (=512) tokens per
+        // chunked_prefill call: the GatedDelta recurrent state update is
+        // dispatched into a threadgroup-local cache that cannot hold more
+        // than that. Larger chunks panic at
+        // `linear_attention.rs:gated_delta_kernel`. Clamp both the cold
+        // and warm prefill chunks to that cap when the model has ANY
+        // linear-attention layer, regardless of what the caller asked
+        // for via `--prefill-chunk`. This preserves the user-facing
+        // `--prefill-chunk` knob on dense models and on the (currently
+        // empty) set of architectures that have no kernel-side cap.
+        let linear_attention_chunk_cap =
+            if (0..cfg.layer_count).any(|i| cfg.is_linear_attention_layer(i)) {
+                Some(crate::linear_attention::GATED_DELTA_THREADGROUP_CACHE_CAPACITY)
+            } else {
+                None
+            };
+        let clamp_to_linear_cap = |chunk: usize| -> usize {
+            match linear_attention_chunk_cap {
+                Some(cap) => chunk.min(cap).max(1),
+                None => chunk.max(1),
+            }
+        };
+        let cold_prefill_chunk = clamp_to_linear_cap(prefill_chunk);
+        let prefill_chunk = clamp_to_linear_cap(crate::fastpath::resolve_prefill_chunk(
             cfg.glm_mla_attention.is_some(),
             prefill_chunk,
             crate::fastpath::mla_prefill_chunk_override(),
-        );
+        ));
 
         // JIT warm-up: trigger Metal shader compilation for both decode and prefill paths.
         {
