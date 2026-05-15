@@ -202,6 +202,11 @@ throughput baselines.
   context/generation shapes, zero-cooldown runs, and unsupported head dims
   before loading a model. Use `--dry-run` first to inspect inferred metadata and
   planned commands without loading a model.
+- `verify_disk_prefix_cache_cross_restart.py`: F3 M4 disk prefix-cache
+  cross-restart validator. It launches a cold phase that writes `.axkv`
+  snapshots, then a fresh phase that must hit L2 and reproduce the same output
+  token IDs. Use `PYTHONPATH=python` when running against the local extension
+  without installing the package.
 - `run-mlx-prefill-scaling-artifact.sh`: real-model P1 prefill/TTFT scaling
   runner. It runs the MLX inference-stack benchmark with direct AX rows, writes
   the raw `ax.mlx_inference_stack.v2` artifact, builds

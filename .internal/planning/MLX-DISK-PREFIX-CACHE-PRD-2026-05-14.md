@@ -441,10 +441,10 @@ M3. **Eviction + locking** (1–2 days). **Partially landed.**
     implemented and emits `disk_evictions`.
   - Cross-process locking and concurrency stress tests remain open.
 
-M4. **Integration validation** (1 day).
-  - Cross-restart `verify_prefix_reuse_equivalence.py` run on all
-    four architecture tiers.
-  - Stress test under four-process workload.
+M4. **Integration validation** (1 day). **Partially landed.**
+  - Gemma 4 E2B cross-restart disk-hit validation passes via
+    `scripts/verify_disk_prefix_cache_cross_restart.py`.
+  - Broader architecture-tier coverage and four-process stress remain open.
 
 M5. **Docs + PRD closure** (half day).
   - `docs/KV-CACHE.md` and `docs/PERFORMANCE.md` updates.
