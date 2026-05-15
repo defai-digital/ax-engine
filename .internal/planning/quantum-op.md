@@ -709,9 +709,11 @@ Current evidence:
   tail directly without cloning the cold stats payload into the generic
   partition merger. The production fused path also now carries merged attention
   output as a flat head-major buffer into MLX array staging, while the nested
-  debug output remains available for diagnostics. This should reduce the
-  host-side merge/output boundary, but promotion still requires a fresh
-  long-context performance artifact.
+  debug output remains available for diagnostics. The production path now also
+  passes q readback as a flat query slice into the KV cache and Metal cold-stats
+  launch, avoiding a per-layer `Vec<Vec<f32>>` query staging step. This should
+  reduce the host-side query/merge/output boundary, but promotion still requires
+  a fresh long-context performance artifact.
 
 Next implementation focus:
 
@@ -793,6 +795,10 @@ Active implementation slice:
   as a flat head-major buffer on the production Metal path so `model.rs` can
   construct the MLX output array without flattening a `Vec<Vec<f32>>`. Keep the
   existing nested debug API as a wrapper over the flat path.
+- **P3-S4 flat query staging**: pass q readback as a flat head-major query slice
+  from `model.rs` through `MlxKVCache` into the two-stage Metal cold-stats
+  launcher. Keep nested query APIs as debug wrappers so diagnostics can compare
+  the same math without forcing production to allocate one `Vec` per query head.
 
 ### TurboQuant KV Runtime Promotion
 

@@ -2461,27 +2461,24 @@ fn turboquant_decode_attention_experimental(
     if q_data.len() != n_heads.saturating_mul(head_dim) {
         return None;
     }
-    let mut queries = q_data
-        .chunks_exact(head_dim)
-        .map(|chunk| chunk.to_vec())
-        .collect::<Vec<_>>();
-    if queries.len() != n_heads {
-        return None;
-    }
     let query_multiplier = query_scale / expected_scale;
-    if (query_multiplier - 1.0).abs() > 1.0e-6 {
-        for query in &mut queries {
-            for value in query {
-                *value *= query_multiplier;
-            }
-        }
-    }
+    let scaled_queries;
+    let query_values = if (query_multiplier - 1.0).abs() > 1.0e-6 {
+        scaled_queries = q_data
+            .iter()
+            .map(|value| *value * query_multiplier)
+            .collect::<Vec<_>>();
+        scaled_queries.as_slice()
+    } else {
+        q_data
+    };
 
     let total_tokens = cache.seq_len.saturating_add(seq);
     if let Ok(decoded) = cache
-        .debug_turboquant_shadow_decode_attention_metal_flat_timed_for_layer_with_total_tokens(
+        .debug_turboquant_shadow_decode_attention_metal_flat_query_timed_for_layer_with_total_tokens(
             layer_idx,
-            &queries,
+            query_values,
+            n_heads,
             total_tokens,
         )
     {

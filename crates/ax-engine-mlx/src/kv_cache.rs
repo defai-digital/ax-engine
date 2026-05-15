@@ -9,8 +9,8 @@ use crate::turboquant::{
     TurboQuantCompressedDecodePlan, packed_kv_bytes_per_token, turboquant_query_head_to_kv_head,
 };
 use crate::turboquant_metal::{
-    turboquant_fused_cold_decode_metal_two_stage_partition_stats,
-    turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array,
+    turboquant_fused_cold_decode_metal_two_stage_partition_stats_flat,
+    turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array_flat,
 };
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
@@ -2149,15 +2149,50 @@ impl MlxKVCache {
         queries: &[Vec<f32>],
         total_tokens: usize,
     ) -> Result<MlxTurboQuantFusedDecodeFlatAttention, TurboQuantCodecError> {
+        let head_dim = queries.first().map(Vec::len).unwrap_or(0);
+        if head_dim == 0 || queries.iter().any(|query| query.len() != head_dim) {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: head_dim,
+                actual: queries
+                    .iter()
+                    .find(|query| query.len() != head_dim)
+                    .map(Vec::len)
+                    .unwrap_or(0),
+            });
+        }
+        let query_values = queries
+            .iter()
+            .flat_map(|query| query.iter().copied())
+            .collect::<Vec<_>>();
+        self.debug_turboquant_shadow_decode_attention_metal_flat_query_timed_for_layer_with_total_tokens(
+            layer,
+            &query_values,
+            queries.len(),
+            total_tokens,
+        )
+    }
+
+    pub fn debug_turboquant_shadow_decode_attention_metal_flat_query_timed_for_layer_with_total_tokens(
+        &self,
+        layer: usize,
+        query_values: &[f32],
+        n_query_heads: usize,
+        total_tokens: usize,
+    ) -> Result<MlxTurboQuantFusedDecodeFlatAttention, TurboQuantCodecError> {
         let cold_started = Instant::now();
-        let cold_stats =
-            self.debug_turboquant_shadow_decode_cold_stats_metal(layer, queries, total_tokens)?;
+        let cold_stats = self.debug_turboquant_shadow_decode_cold_stats_metal_flat(
+            layer,
+            query_values,
+            n_query_heads,
+            total_tokens,
+        )?;
         let cold_metal_wall_us = elapsed_us_u64(cold_started);
 
         let merge_started = Instant::now();
         let outputs = self.merge_turboquant_shadow_decode_cold_stats_with_hot_tail_flat(
             layer,
-            queries,
+            query_values,
+            n_query_heads,
             total_tokens,
             &cold_stats,
         )?;
@@ -2221,10 +2256,11 @@ impl MlxKVCache {
         Ok(cold_stats)
     }
 
-    fn debug_turboquant_shadow_decode_cold_stats_metal(
+    fn debug_turboquant_shadow_decode_cold_stats_metal_flat(
         &self,
         layer: usize,
-        queries: &[Vec<f32>],
+        query_values: &[f32],
+        n_query_heads: usize,
         total_tokens: usize,
     ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
         let lkv = self.layers.get(layer).and_then(Option::as_ref).ok_or(
@@ -2244,10 +2280,18 @@ impl MlxKVCache {
                 written_slots: 0,
             })?;
         let n_kv_heads = usize::try_from(lkv.n_kv_heads).unwrap_or(usize::MAX);
-        if queries.is_empty() || !queries.len().is_multiple_of(n_kv_heads) {
+        let head_dim = usize::try_from(lkv.head_dim).unwrap_or(usize::MAX);
+        if n_query_heads == 0 || !n_query_heads.is_multiple_of(n_kv_heads) {
             return Err(TurboQuantCodecError::MismatchedKvHeadCount {
                 expected: n_kv_heads,
-                actual: queries.len(),
+                actual: n_query_heads,
+            });
+        }
+        let expected_query_values = n_query_heads.saturating_mul(head_dim);
+        if query_values.len() != expected_query_values {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: expected_query_values,
+                actual: query_values.len(),
             });
         }
 
@@ -2268,18 +2312,21 @@ impl MlxKVCache {
             total_tokens,
             total_tokens.saturating_sub(cold_tokens),
         )?;
-        let descriptor = plan.fused_decode_launch_descriptor(&storage.buffer, queries)?;
+        let descriptor =
+            plan.fused_decode_launch_descriptor_for_query_count(&storage.buffer, n_query_heads)?;
         if let Some(metal_buffer) = storage.metal_buffer.as_ref() {
-            turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array(
+            turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array_flat(
                 descriptor,
                 metal_buffer,
-                queries,
+                query_values,
+                n_query_heads,
             )
         } else {
-            turboquant_fused_cold_decode_metal_two_stage_partition_stats(
+            turboquant_fused_cold_decode_metal_two_stage_partition_stats_flat(
                 descriptor,
                 &storage.buffer,
-                queries,
+                query_values,
+                n_query_heads,
             )
         }
     }
@@ -2291,13 +2338,28 @@ impl MlxKVCache {
         total_tokens: usize,
         cold_stats: &[TurboQuantAttentionPartitionStats],
     ) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
+        let head_dim = queries.first().map(Vec::len).unwrap_or(0);
+        if head_dim == 0 || queries.iter().any(|query| query.len() != head_dim) {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: head_dim,
+                actual: queries
+                    .iter()
+                    .find(|query| query.len() != head_dim)
+                    .map(Vec::len)
+                    .unwrap_or(0),
+            });
+        }
+        let query_values = queries
+            .iter()
+            .flat_map(|query| query.iter().copied())
+            .collect::<Vec<_>>();
         let flat = self.merge_turboquant_shadow_decode_cold_stats_with_hot_tail_flat(
             layer,
-            queries,
+            &query_values,
+            queries.len(),
             total_tokens,
             cold_stats,
         )?;
-        let head_dim = queries.first().map(Vec::len).unwrap_or(0);
         if head_dim == 0 || flat.len() != queries.len().saturating_mul(head_dim) {
             return Err(TurboQuantCodecError::MismatchedVectorDimension {
                 expected: queries.len().saturating_mul(head_dim),
@@ -2313,7 +2375,8 @@ impl MlxKVCache {
     fn merge_turboquant_shadow_decode_cold_stats_with_hot_tail_flat(
         &self,
         layer: usize,
-        queries: &[Vec<f32>],
+        query_values: &[f32],
+        n_query_heads: usize,
         total_tokens: usize,
         cold_stats: &[TurboQuantAttentionPartitionStats],
     ) -> Result<Vec<f32>, TurboQuantCodecError> {
@@ -2325,12 +2388,12 @@ impl MlxKVCache {
             },
         )?;
         let n_kv_heads = usize::try_from(lkv.n_kv_heads).unwrap_or(usize::MAX);
-        if cold_stats.len() != queries.len()
-            || queries.is_empty()
-            || !queries.len().is_multiple_of(n_kv_heads)
+        if cold_stats.len() != n_query_heads
+            || n_query_heads == 0
+            || !n_query_heads.is_multiple_of(n_kv_heads)
         {
             return Err(TurboQuantCodecError::MismatchedKvHeadCount {
-                expected: queries.len(),
+                expected: n_query_heads,
                 actual: cold_stats.len(),
             });
         }
@@ -2341,13 +2404,13 @@ impl MlxKVCache {
         {
             return Err(TurboQuantCodecError::CompressedDecodePlanIncomplete {
                 cold_tokens,
-                required_slots: cold_tokens.saturating_mul(queries.len()),
+                required_slots: cold_tokens.saturating_mul(n_query_heads),
                 written_slots: cold_stats
                     .iter()
                     .map(|stats| stats.token_count)
                     .min()
                     .unwrap_or(0)
-                    .saturating_mul(queries.len()),
+                    .saturating_mul(n_query_heads),
             });
         }
         let hot_token_count = total_tokens.saturating_sub(cold_tokens);
@@ -2386,11 +2449,18 @@ impl MlxKVCache {
             (k_source.data_f32(), v_source.data_f32())
         };
         let head_dim = usize::try_from(lkv.head_dim).unwrap_or(usize::MAX);
+        let expected_query_values = n_query_heads.saturating_mul(head_dim);
+        if query_values.len() != expected_query_values {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: expected_query_values,
+                actual: query_values.len(),
+            });
+        }
 
-        let mut outputs = Vec::with_capacity(queries.len().saturating_mul(head_dim));
-        for (query_head_index, query) in queries.iter().enumerate() {
+        let mut outputs = Vec::with_capacity(n_query_heads.saturating_mul(head_dim));
+        for (query_head_index, query) in query_values.chunks_exact(head_dim).enumerate() {
             let kv_head_index =
-                turboquant_query_head_to_kv_head(query_head_index, queries.len(), n_kv_heads)?;
+                turboquant_query_head_to_kv_head(query_head_index, n_query_heads, n_kv_heads)?;
             if hot_token_count == 0 {
                 outputs.extend(attention_partition_stats_to_output(
                     &cold_stats[query_head_index],

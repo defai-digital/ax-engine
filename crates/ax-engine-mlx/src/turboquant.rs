@@ -857,12 +857,7 @@ impl TurboQuantCompressedDecodePlan {
     }
 
     pub fn validate_queries(self, queries: &[Vec<f32>]) -> Result<(), TurboQuantCodecError> {
-        if queries.is_empty() || !queries.len().is_multiple_of(self.layout.config.n_kv_heads) {
-            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
-                expected: self.layout.config.n_kv_heads,
-                actual: queries.len(),
-            });
-        }
+        self.validate_query_count(queries.len())?;
 
         for query in queries {
             if query.len() != self.layout.config.head_dim {
@@ -871,6 +866,17 @@ impl TurboQuantCompressedDecodePlan {
                     actual: query.len(),
                 });
             }
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_query_count(self, n_query_heads: usize) -> Result<(), TurboQuantCodecError> {
+        if n_query_heads == 0 || !n_query_heads.is_multiple_of(self.layout.config.n_kv_heads) {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: self.layout.config.n_kv_heads,
+                actual: n_query_heads,
+            });
         }
 
         Ok(())
@@ -890,6 +896,15 @@ impl TurboQuantCompressedDecodePlan {
         queries: &[Vec<f32>],
     ) -> Result<TurboQuantCompressedDecodeReadiness, TurboQuantCodecError> {
         self.validate_queries(queries)?;
+        self.decode_readiness_for_query_count(buffer, queries.len())
+    }
+
+    pub fn decode_readiness_for_query_count(
+        self,
+        buffer: &TurboQuantCompressedBlockBuffer,
+        n_query_heads: usize,
+    ) -> Result<TurboQuantCompressedDecodeReadiness, TurboQuantCodecError> {
+        self.validate_query_count(n_query_heads)?;
         let written_compressed_slots = self.written_compressed_slots(buffer)?;
 
         if written_compressed_slots != self.required_compressed_slots {
@@ -908,7 +923,7 @@ impl TurboQuantCompressedDecodePlan {
             total_tokens: self.total_tokens,
             cold_tokens: self.cold_tokens,
             hot_tokens: self.hot_tokens,
-            query_heads: queries.len(),
+            query_heads: n_query_heads,
             query_head_dim: self.layout.config.head_dim,
             compressed_blocks: self.compressed_blocks,
             compressed_buffer_bytes: self.compressed_buffer_bytes,
@@ -924,6 +939,22 @@ impl TurboQuantCompressedDecodePlan {
         queries: &[Vec<f32>],
     ) -> Result<TurboQuantFusedDecodeLaunchDescriptor, TurboQuantCodecError> {
         let readiness = self.decode_readiness(buffer, queries)?;
+        self.fused_decode_launch_descriptor_from_readiness(readiness)
+    }
+
+    pub fn fused_decode_launch_descriptor_for_query_count(
+        self,
+        buffer: &TurboQuantCompressedBlockBuffer,
+        n_query_heads: usize,
+    ) -> Result<TurboQuantFusedDecodeLaunchDescriptor, TurboQuantCodecError> {
+        let readiness = self.decode_readiness_for_query_count(buffer, n_query_heads)?;
+        self.fused_decode_launch_descriptor_from_readiness(readiness)
+    }
+
+    fn fused_decode_launch_descriptor_from_readiness(
+        self,
+        readiness: TurboQuantCompressedDecodeReadiness,
+    ) -> Result<TurboQuantFusedDecodeLaunchDescriptor, TurboQuantCodecError> {
         let candidate = readiness.fused_decode_candidate();
         if !candidate.is_candidate() {
             return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {

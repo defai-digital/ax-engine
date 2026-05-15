@@ -42,6 +42,38 @@ fn validate_fused_decode_launch(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
     queries: &[Vec<f32>],
 ) -> Result<(), TurboQuantCodecError> {
+    validate_fused_decode_launch_for_query_count(descriptor, queries.len())?;
+    for query in queries {
+        if query.len() != descriptor.head_dim {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: descriptor.head_dim,
+                actual: query.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_fused_decode_launch_flat(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    query_values: &[f32],
+    n_query_heads: usize,
+) -> Result<(), TurboQuantCodecError> {
+    validate_fused_decode_launch_for_query_count(descriptor, n_query_heads)?;
+    let expected_len = n_query_heads.saturating_mul(descriptor.head_dim);
+    if query_values.len() != expected_len {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: expected_len,
+            actual: query_values.len(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_fused_decode_launch_for_query_count(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    n_query_heads: usize,
+) -> Result<(), TurboQuantCodecError> {
     if descriptor.preset != MlxTurboQuantPreset::K8V4 {
         return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
             status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset,
@@ -57,7 +89,22 @@ fn validate_fused_decode_launch(
             status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly,
         });
     }
-    validate_query_head_mapping(descriptor, queries.len())
+    validate_query_head_mapping(descriptor, n_query_heads)
+}
+
+fn rotated_query_values_from_flat(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    query_values: &[f32],
+    n_query_heads: usize,
+) -> Result<Vec<f32>, TurboQuantCodecError> {
+    validate_fused_decode_launch_flat(descriptor, query_values, n_query_heads)?;
+    let mut rotated_queries = Vec::with_capacity(query_values.len());
+    for query in query_values.chunks_exact(descriptor.head_dim) {
+        let mut rotated = query.to_vec();
+        hadamard_in_place(&mut rotated)?;
+        rotated_queries.extend(rotated);
+    }
+    Ok(rotated_queries)
 }
 
 pub fn turboquant_fused_cold_decode_metal(
@@ -88,7 +135,7 @@ pub fn turboquant_fused_cold_decode_metal(
     );
     let query = MlxArray::from_raw_data(
         rotated_queries.as_ptr().cast(),
-        rotated_queries.len() * std::mem::size_of::<f32>(),
+        std::mem::size_of_val(rotated_queries.as_slice()),
         &[descriptor.n_query_heads as i32, descriptor.head_dim as i32],
         MlxDtype::Float32,
     );
@@ -222,7 +269,7 @@ pub fn turboquant_fused_cold_decode_metal_head_serial(
     );
     let query = MlxArray::from_raw_data(
         rotated_queries.as_ptr().cast(),
-        rotated_queries.len() * std::mem::size_of::<f32>(),
+        std::mem::size_of_val(rotated_queries.as_slice()),
         &[descriptor.n_kv_heads as i32, descriptor.head_dim as i32],
         MlxDtype::Float32,
     );
@@ -340,12 +387,46 @@ pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats(
     turboquant_fused_cold_decode_metal_two_stage_stats(descriptor, &compressed, queries)
 }
 
+pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_flat(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    buffer: &TurboQuantCompressedBlockBuffer,
+    query_values: &[f32],
+    n_query_heads: usize,
+) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+    let compressed = MlxArray::from_raw_data(
+        buffer.as_bytes().as_ptr(),
+        buffer.as_bytes().len(),
+        &[buffer.as_bytes().len() as i32],
+        MlxDtype::Uint8,
+    );
+    turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array_flat(
+        descriptor,
+        &compressed,
+        query_values,
+        n_query_heads,
+    )
+}
+
 pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
     compressed: &MlxArray,
     queries: &[Vec<f32>],
 ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
     turboquant_fused_cold_decode_metal_two_stage_stats(descriptor, compressed, queries)
+}
+
+pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compressed_array_flat(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    compressed: &MlxArray,
+    query_values: &[f32],
+    n_query_heads: usize,
+) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+    let rotated_queries = rotated_query_values_from_flat(descriptor, query_values, n_query_heads)?;
+    turboquant_fused_cold_decode_metal_two_stage_stats_with_rotated_queries(
+        descriptor,
+        compressed,
+        &rotated_queries,
+    )
 }
 
 fn turboquant_fused_cold_decode_metal_two_stage_stats(
@@ -368,9 +449,21 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
         rotated_queries.extend(rotated);
     }
 
+    turboquant_fused_cold_decode_metal_two_stage_stats_with_rotated_queries(
+        descriptor,
+        compressed,
+        &rotated_queries,
+    )
+}
+
+fn turboquant_fused_cold_decode_metal_two_stage_stats_with_rotated_queries(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    compressed: &MlxArray,
+    rotated_queries: &[f32],
+) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
     let query = MlxArray::from_raw_data(
         rotated_queries.as_ptr().cast(),
-        rotated_queries.len() * std::mem::size_of::<f32>(),
+        std::mem::size_of_val(rotated_queries),
         &[descriptor.n_query_heads as i32, descriptor.head_dim as i32],
         MlxDtype::Float32,
     );
