@@ -6,8 +6,7 @@ use mlx_sys::{MlxArray, MlxDtype, astype, contiguous, eval, slice, slice_update,
 use crate::turboquant::{
     FullPrecisionKvTokenVectors, TurboQuantAttentionPartitionStats, TurboQuantBlockLayout,
     TurboQuantBlockLayoutConfig, TurboQuantCodecError, TurboQuantCompressedBlockBuffer,
-    TurboQuantCompressedDecodePlan, merge_attention_partition_stats, packed_kv_bytes_per_token,
-    turboquant_query_head_to_kv_head,
+    TurboQuantCompressedDecodePlan, packed_kv_bytes_per_token, turboquant_query_head_to_kv_head,
 };
 use crate::turboquant_metal::{
     turboquant_fused_cold_decode_metal_two_stage_partition_stats,
@@ -185,6 +184,7 @@ fn kv_heads_for_token_from_f32_slices(
         .collect()
 }
 
+#[cfg(test)]
 fn hot_tail_partition_stats_from_f32_slices(
     query: &[f32],
     k_values: &[f32],
@@ -272,6 +272,136 @@ fn hot_tail_partition_stats_from_f32_slices(
         exp_sum,
         weighted_value_sum,
     })
+}
+
+fn attention_partition_stats_to_output(
+    stats: &TurboQuantAttentionPartitionStats,
+) -> Result<Vec<f32>, TurboQuantCodecError> {
+    if stats.token_count == 0 {
+        return Err(TurboQuantCodecError::EmptyKvHistory);
+    }
+    if stats.weighted_value_sum.len() != stats.value_dim {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: stats.value_dim,
+            actual: stats.weighted_value_sum.len(),
+        });
+    }
+
+    let denom = stats.exp_sum.max(f32::MIN_POSITIVE);
+    Ok(stats
+        .weighted_value_sum
+        .iter()
+        .map(|value| *value / denom)
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_cold_stats_with_hot_tail_from_f32_slices(
+    cold_stats: &TurboQuantAttentionPartitionStats,
+    query: &[f32],
+    k_values: &[f32],
+    v_values: &[f32],
+    n_kv_heads: usize,
+    head_dim: usize,
+    hot_token_count: usize,
+    kv_head_index: usize,
+) -> Result<Vec<f32>, TurboQuantCodecError> {
+    if cold_stats.token_count == 0 {
+        return Err(TurboQuantCodecError::EmptyKvHistory);
+    }
+    if cold_stats.value_dim != head_dim {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: cold_stats.value_dim,
+            actual: head_dim,
+        });
+    }
+    if cold_stats.weighted_value_sum.len() != head_dim {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: head_dim,
+            actual: cold_stats.weighted_value_sum.len(),
+        });
+    }
+    if hot_token_count == 0 {
+        return attention_partition_stats_to_output(cold_stats);
+    }
+    if query.len() != head_dim {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: head_dim,
+            actual: query.len(),
+        });
+    }
+    if kv_head_index >= n_kv_heads {
+        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: n_kv_heads,
+            actual: kv_head_index.saturating_add(1),
+        });
+    }
+    let expected_len = n_kv_heads
+        .saturating_mul(hot_token_count)
+        .saturating_mul(head_dim);
+    if k_values.len() != expected_len {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: expected_len,
+            actual: k_values.len(),
+        });
+    }
+    if v_values.len() != expected_len {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: expected_len,
+            actual: v_values.len(),
+        });
+    }
+
+    let scale = (head_dim as f32).sqrt().recip();
+    let head_offset = kv_head_index
+        .saturating_mul(hot_token_count)
+        .saturating_mul(head_dim);
+    let token_range = |token_index: usize| {
+        let start = head_offset.saturating_add(token_index.saturating_mul(head_dim));
+        start..start.saturating_add(head_dim)
+    };
+
+    let mut hot_max_score = f32::NEG_INFINITY;
+    for token_index in 0..hot_token_count {
+        let key = &k_values[token_range(token_index)];
+        let score = query
+            .iter()
+            .zip(key)
+            .map(|(left, right)| left * right)
+            .sum::<f32>()
+            * scale;
+        hot_max_score = hot_max_score.max(score);
+    }
+
+    let mut hot_exp_sum = 0.0f32;
+    let mut output = vec![0.0f32; head_dim];
+    for token_index in 0..hot_token_count {
+        let range = token_range(token_index);
+        let key = &k_values[range.clone()];
+        let value = &v_values[range];
+        let score = query
+            .iter()
+            .zip(key)
+            .map(|(left, right)| left * right)
+            .sum::<f32>()
+            * scale;
+        let weight = (score - hot_max_score).exp();
+        hot_exp_sum += weight;
+        for (acc, value) in output.iter_mut().zip(value) {
+            *acc += weight * value;
+        }
+    }
+
+    let global_max = cold_stats.max_score.max(hot_max_score);
+    let cold_scale = (cold_stats.max_score - global_max).exp();
+    let hot_scale = (hot_max_score - global_max).exp();
+    let denom = (cold_stats.exp_sum * cold_scale + hot_exp_sum * hot_scale).max(f32::MIN_POSITIVE);
+
+    for (out, cold_value_sum) in output.iter_mut().zip(&cold_stats.weighted_value_sum) {
+        *out = (*out * hot_scale + cold_value_sum * cold_scale) / denom;
+    }
+
+    Ok(output)
 }
 
 fn kv_head_for_token_from_f32_slices(
@@ -2201,11 +2331,12 @@ impl MlxKVCache {
             let kv_head_index =
                 turboquant_query_head_to_kv_head(query_head_index, queries.len(), n_kv_heads)?;
             if hot_token_count == 0 {
-                outputs.push(merge_attention_partition_stats(&[cold_stats
-                    [query_head_index]
-                    .clone()])?);
+                outputs.push(attention_partition_stats_to_output(
+                    &cold_stats[query_head_index],
+                )?);
             } else {
-                let hot_stats = hot_tail_partition_stats_from_f32_slices(
+                outputs.push(merge_cold_stats_with_hot_tail_from_f32_slices(
+                    &cold_stats[query_head_index],
                     query,
                     k_values,
                     v_values,
@@ -2213,11 +2344,7 @@ impl MlxKVCache {
                     head_dim,
                     hot_token_count,
                     kv_head_index,
-                )?;
-                outputs.push(merge_attention_partition_stats(&[
-                    cold_stats[query_head_index].clone(),
-                    hot_stats,
-                ])?);
+                )?);
             }
         }
 
@@ -3020,6 +3147,99 @@ mod tests {
                 .zip(&expected.weighted_value_sum)
             {
                 assert!((actual - expected).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn turboquant_hot_tail_merge_combines_cold_stats_without_cloning_partition_payloads() {
+        let n_kv_heads = 2;
+        let head_dim = 4;
+        let cold_token_count = 2;
+        let hot_token_count = 3;
+        let hot_k_values = (0..n_kv_heads * hot_token_count * head_dim)
+            .map(|idx| ((idx % 19) as f32 - 9.0) / 10.0)
+            .collect::<Vec<_>>();
+        let hot_v_values = (0..n_kv_heads * hot_token_count * head_dim)
+            .map(|idx| ((idx % 23) as f32 - 11.0) / 12.0)
+            .collect::<Vec<_>>();
+        let cold_k_values = (0..n_kv_heads * cold_token_count * head_dim)
+            .map(|idx| ((idx % 17) as f32 - 8.0) / 8.0)
+            .collect::<Vec<_>>();
+        let cold_v_values = (0..n_kv_heads * cold_token_count * head_dim)
+            .map(|idx| ((idx % 13) as f32 - 6.0) / 9.0)
+            .collect::<Vec<_>>();
+        let queries = [
+            vec![0.15, -0.2, 0.35, -0.45],
+            vec![-0.25, 0.3, 0.2, -0.1],
+            vec![0.4, 0.1, -0.3, 0.25],
+            vec![0.05, -0.35, 0.45, 0.15],
+        ];
+        let hot_shape = KvHeadSliceShape {
+            n_kv_heads: n_kv_heads as i32,
+            head_dim: head_dim as i32,
+            capacity: hot_token_count,
+        };
+        let cold_shape = KvHeadSliceShape {
+            n_kv_heads: n_kv_heads as i32,
+            head_dim: head_dim as i32,
+            capacity: cold_token_count,
+        };
+
+        for (query_head_index, query) in queries.iter().enumerate() {
+            let kv_head_index =
+                turboquant_query_head_to_kv_head(query_head_index, queries.len(), n_kv_heads)
+                    .expect("GQA head mapping");
+            let cold_tokens = (0..cold_token_count)
+                .map(|token_index| {
+                    kv_head_for_token_from_f32_slices(
+                        &cold_k_values,
+                        &cold_v_values,
+                        cold_shape,
+                        token_index,
+                        kv_head_index,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let hot_tokens = (0..hot_token_count)
+                .map(|token_index| {
+                    kv_head_for_token_from_f32_slices(
+                        &hot_k_values,
+                        &hot_v_values,
+                        hot_shape,
+                        token_index,
+                        kv_head_index,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let cold_stats =
+                crate::turboquant::reference_decode_attention_partition_stats(query, &cold_tokens)
+                    .expect("reference cold stats");
+            let hot_stats =
+                crate::turboquant::reference_decode_attention_partition_stats(query, &hot_tokens)
+                    .expect("reference hot stats");
+            let expected = crate::turboquant::merge_attention_partition_stats(&[
+                cold_stats.clone(),
+                hot_stats,
+            ])
+            .expect("reference merged output");
+            let actual = merge_cold_stats_with_hot_tail_from_f32_slices(
+                &cold_stats,
+                query,
+                &hot_k_values,
+                &hot_v_values,
+                n_kv_heads,
+                head_dim,
+                hot_token_count,
+                kv_head_index,
+            )
+            .expect("direct merged output");
+
+            for (actual, expected) in actual.iter().zip(&expected) {
+                assert!(
+                    (actual - expected).abs() < 1e-6,
+                    "actual {actual} expected {expected}"
+                );
             }
         }
     }

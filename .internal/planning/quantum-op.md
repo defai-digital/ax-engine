@@ -704,9 +704,11 @@ Current evidence:
   `282369us`; runtime is correctly choosing the two-stage prototype, but the
   path is still too expensive for promotion.
 - Current mitigation: hot-tail merge now reads back only the hot-window K/V
-  slice instead of materializing the full K/V history for the layer. This should
-  reduce the host-side merge boundary, but promotion still requires a fresh
-  long-context performance artifact.
+  slice instead of materializing the full K/V history for the layer, and the
+  production merge path now combines cold partition stats with the compact hot
+  tail directly without cloning the cold stats payload into the generic
+  partition merger. This should reduce the host-side merge boundary, but
+  promotion still requires a fresh long-context performance artifact.
 
 Next implementation focus:
 
@@ -773,11 +775,17 @@ Count: **4 blocking milestones remain** for TurboQuant runtime promotion
 
 Active implementation slice:
 
-- **P3-S1 hot-tail merge host allocation reduction**: replace the fused decode
+- **P3-S1 hot-tail merge host allocation reduction**: replaced the fused decode
   hot-tail merge's per-query `Vec<FullPrecisionKvTokenVectors>` materialization
   with direct partition-stat accumulation over the compact hot K/V f32 slices.
   This is a low-risk runtime slice because it preserves the existing
   split-softmax merge contract and changes only host-side staging work.
+- **P3-S2 direct cold+hot merge**: replace the production hot-tail merge's
+  `cold_stats.clone() -> hot_stats -> generic merge` path with a direct
+  two-partition merge over borrowed cold stats and compact hot K/V slices. This
+  keeps the same split-softmax math while removing one cloned cold
+  `weighted_value_sum` payload and one intermediate output allocation per query
+  head.
 
 ### TurboQuant KV Runtime Promotion
 
