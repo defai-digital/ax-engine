@@ -287,7 +287,9 @@ fn merge_cold_stats_with_hot_tail_from_f32_slices(
     hot_token_count: usize,
     kv_head_index: usize,
 ) -> Result<Vec<f32>, TurboQuantCodecError> {
+    let mut output = Vec::with_capacity(head_dim);
     merge_cold_partition_with_hot_tail_from_f32_slices(
+        &mut output,
         cold_stats.token_count,
         cold_stats.value_dim,
         cold_stats.max_score,
@@ -300,23 +302,30 @@ fn merge_cold_stats_with_hot_tail_from_f32_slices(
         head_dim,
         hot_token_count,
         kv_head_index,
-    )
+    )?;
+    Ok(output)
 }
 
-fn attention_partition_stats_batch_head_to_output(
+fn append_attention_partition_stats_batch_head_to_output(
+    output: &mut Vec<f32>,
     batch: &TurboQuantAttentionPartitionStatsBatch,
     head_index: usize,
-) -> Result<Vec<f32>, TurboQuantCodecError> {
-    let weighted_value_sum = batch.weighted_value_sum_for_head(head_index)?;
-    let denom = batch.exp_sums[head_index].max(f32::MIN_POSITIVE);
-    Ok(weighted_value_sum
-        .iter()
-        .map(|value| *value / denom)
-        .collect())
+) -> Result<(), TurboQuantCodecError> {
+    let weighted_value_sum = batch.weighted_value_sum_for_validated_head(head_index)?;
+    let exp_sum = batch.exp_sums.get(head_index).copied().ok_or(
+        TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: batch.max_scores.len(),
+            actual: head_index.saturating_add(1),
+        },
+    )?;
+    let denom = exp_sum.max(f32::MIN_POSITIVE);
+    output.extend(weighted_value_sum.iter().map(|value| *value / denom));
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn merge_cold_stats_batch_with_hot_tail_from_f32_slices(
+fn append_cold_stats_batch_with_hot_tail_from_f32_slices(
+    output: &mut Vec<f32>,
     cold_stats: &TurboQuantAttentionPartitionStatsBatch,
     query_head_index: usize,
     query: &[f32],
@@ -326,13 +335,26 @@ fn merge_cold_stats_batch_with_hot_tail_from_f32_slices(
     head_dim: usize,
     hot_token_count: usize,
     kv_head_index: usize,
-) -> Result<Vec<f32>, TurboQuantCodecError> {
-    let weighted_value_sum = cold_stats.weighted_value_sum_for_head(query_head_index)?;
+) -> Result<(), TurboQuantCodecError> {
+    let weighted_value_sum = cold_stats.weighted_value_sum_for_validated_head(query_head_index)?;
+    let cold_max_score = cold_stats.max_scores.get(query_head_index).copied().ok_or(
+        TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: cold_stats.max_scores.len(),
+            actual: query_head_index.saturating_add(1),
+        },
+    )?;
+    let cold_exp_sum = cold_stats.exp_sums.get(query_head_index).copied().ok_or(
+        TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: cold_stats.max_scores.len(),
+            actual: query_head_index.saturating_add(1),
+        },
+    )?;
     merge_cold_partition_with_hot_tail_from_f32_slices(
+        output,
         cold_stats.token_count,
         cold_stats.value_dim,
-        cold_stats.max_scores[query_head_index],
-        cold_stats.exp_sums[query_head_index],
+        cold_max_score,
+        cold_exp_sum,
         weighted_value_sum,
         query,
         k_values,
@@ -346,6 +368,7 @@ fn merge_cold_stats_batch_with_hot_tail_from_f32_slices(
 
 #[allow(clippy::too_many_arguments)]
 fn merge_cold_partition_with_hot_tail_from_f32_slices(
+    output: &mut Vec<f32>,
     cold_token_count: usize,
     cold_value_dim: usize,
     cold_max_score: f32,
@@ -358,7 +381,7 @@ fn merge_cold_partition_with_hot_tail_from_f32_slices(
     head_dim: usize,
     hot_token_count: usize,
     kv_head_index: usize,
-) -> Result<Vec<f32>, TurboQuantCodecError> {
+) -> Result<(), TurboQuantCodecError> {
     if cold_token_count == 0 {
         return Err(TurboQuantCodecError::EmptyKvHistory);
     }
@@ -376,10 +399,8 @@ fn merge_cold_partition_with_hot_tail_from_f32_slices(
     }
     if hot_token_count == 0 {
         let denom = cold_exp_sum.max(f32::MIN_POSITIVE);
-        return Ok(cold_weighted_value_sum
-            .iter()
-            .map(|value| *value / denom)
-            .collect());
+        output.extend(cold_weighted_value_sum.iter().map(|value| *value / denom));
+        return Ok(());
     }
     if query.len() != head_dim {
         return Err(TurboQuantCodecError::MismatchedVectorDimension {
@@ -431,7 +452,9 @@ fn merge_cold_partition_with_hot_tail_from_f32_slices(
     }
 
     let mut hot_exp_sum = 0.0f32;
-    let mut output = vec![0.0f32; head_dim];
+    let output_start = output.len();
+    output.resize(output_start.saturating_add(head_dim), 0.0);
+    let hot_output = &mut output[output_start..];
     for token_index in 0..hot_token_count {
         let range = token_range(token_index);
         let key = &k_values[range.clone()];
@@ -444,7 +467,7 @@ fn merge_cold_partition_with_hot_tail_from_f32_slices(
             * scale;
         let weight = (score - hot_max_score).exp();
         hot_exp_sum += weight;
-        for (acc, value) in output.iter_mut().zip(value) {
+        for (acc, value) in hot_output.iter_mut().zip(value) {
             *acc += weight * value;
         }
     }
@@ -454,11 +477,11 @@ fn merge_cold_partition_with_hot_tail_from_f32_slices(
     let hot_scale = (hot_max_score - global_max).exp();
     let denom = (cold_exp_sum * cold_scale + hot_exp_sum * hot_scale).max(f32::MIN_POSITIVE);
 
-    for (out, cold_value_sum) in output.iter_mut().zip(cold_weighted_value_sum) {
+    for (out, cold_value_sum) in hot_output.iter_mut().zip(cold_weighted_value_sum) {
         *out = (*out * hot_scale + cold_value_sum * cold_scale) / denom;
     }
 
-    Ok(output)
+    Ok(())
 }
 
 fn kv_head_for_token_from_f32_slices(
@@ -2554,12 +2577,14 @@ impl MlxKVCache {
             let kv_head_index =
                 turboquant_query_head_to_kv_head(query_head_index, n_query_heads, n_kv_heads)?;
             if hot_token_count == 0 {
-                outputs.extend(attention_partition_stats_batch_head_to_output(
+                append_attention_partition_stats_batch_head_to_output(
+                    &mut outputs,
                     cold_stats,
                     query_head_index,
-                )?);
+                )?;
             } else {
-                outputs.extend(merge_cold_stats_batch_with_hot_tail_from_f32_slices(
+                append_cold_stats_batch_with_hot_tail_from_f32_slices(
+                    &mut outputs,
                     cold_stats,
                     query_head_index,
                     query,
@@ -2569,7 +2594,7 @@ impl MlxKVCache {
                     head_dim,
                     hot_token_count,
                     kv_head_index,
-                )?);
+                )?;
             }
         }
 
