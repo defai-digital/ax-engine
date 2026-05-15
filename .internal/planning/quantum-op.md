@@ -703,6 +703,11 @@ Current evidence:
   records `two_stage_scores` median `5353us` and `dim_parallel` median
   `282369us`; runtime is correctly choosing the two-stage prototype, but the
   path is still too expensive for promotion.
+- Post-runtime-slice microbench:
+  `benchmarks/results/turboquant/quality-runs/20260515T080910Z-gemma-4-e2b-it-4bit-runtime-slices-s6/microbench-gemma-e2b-shape-post-s6.json`
+  records `two_stage_scores` median `4018us` and `dim_parallel` median
+  `282795us`; this is improved standalone kernel evidence, not promotion
+  evidence.
 - Current mitigation: hot-tail merge now reads back only the hot-window K/V
   slice instead of materializing the full K/V history for the layer, and the
   production merge path now combines cold partition stats with the compact hot
@@ -714,9 +719,11 @@ Current evidence:
   launch, avoiding a per-layer `Vec<Vec<f32>>` query staging step. Metal
   cold-stats readback now remains in a flat batch shape on the production path
   instead of materializing one `weighted_value_sum` vector per query head before
-  hot-tail merge. This should reduce the host-side query/cold-stats/merge/output
-  boundary, but promotion still requires a fresh long-context performance
-  artifact.
+  hot-tail merge. The production hot-tail merge loop now appends no-hot and
+  hot-tail merged heads directly into the flat output buffer and borrows
+  weighted-sum slices from the already-validated cold-stats batch. This should
+  reduce the host-side query/cold-stats/merge/output boundary, but promotion
+  still requires a fresh long-context performance artifact.
 
 Next implementation focus:
 
@@ -807,6 +814,17 @@ Active implementation slice:
   production path. The debug APIs still expose per-head
   `TurboQuantAttentionPartitionStats`, but production hot-tail merge now borrows
   head slices from the batch instead of materializing one vector per head first.
+- **P3-S6 direct flat hot-tail output append**: keep the validated cold-stats
+  batch on the production path and append each no-hot or hot-tail merged head
+  directly into the flat output buffer. This removes the remaining per-query
+  temporary output vector in the production merge loop and avoids repeated full
+  batch validation while preserving bounds checks for per-head slices.
+  Diagnostic evidence:
+  `benchmarks/results/turboquant/quality-runs/20260515T080910Z-gemma-4-e2b-it-4bit-runtime-slices-s6/microbench-gemma-e2b-shape-post-s6.json`
+  passes the standalone microbench checker with `two_stage_scores` median
+  `4018us`, `dim_parallel` median `282795us`,
+  `two_stage_scores.max_abs_diff=3.864988684654236e-7`, and hot-tail merge
+  `max_abs_diff=2.849847078323364e-7`.
 
 ### TurboQuant KV Runtime Promotion
 

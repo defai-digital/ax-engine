@@ -1951,6 +1951,13 @@ impl TurboQuantAttentionPartitionStatsBatch {
         head_index: usize,
     ) -> Result<&[f32], TurboQuantCodecError> {
         self.validate()?;
+        self.weighted_value_sum_for_validated_head(head_index)
+    }
+
+    pub(crate) fn weighted_value_sum_for_validated_head(
+        &self,
+        head_index: usize,
+    ) -> Result<&[f32], TurboQuantCodecError> {
         if head_index >= self.max_scores.len() {
             return Err(TurboQuantCodecError::MismatchedKvHeadCount {
                 expected: self.max_scores.len(),
@@ -1958,7 +1965,12 @@ impl TurboQuantAttentionPartitionStatsBatch {
             });
         }
         let start = head_index.saturating_mul(self.value_dim);
-        Ok(&self.weighted_value_sums[start..start + self.value_dim])
+        self.weighted_value_sums
+            .get(start..start.saturating_add(self.value_dim))
+            .ok_or(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: start.saturating_add(self.value_dim),
+                actual: self.weighted_value_sums.len(),
+            })
     }
 
     pub fn partition_stats(
