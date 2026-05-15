@@ -5,9 +5,10 @@
 //! `.internal/planning/MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md`. The
 //! current implementation owns file-level get / insert primitives,
 //! wire framing around the kv_cache payload, runner-side L2 lookup,
-//! and best-effort post-insert eviction. Cross-process locking and
-//! full cross-restart promotion validation remain deferred follow-ups
-//! per the PRD's milestone breakdown.
+//! and best-effort post-insert eviction. Mutating operations take a
+//! directory-level advisory lock so concurrent processes serialize
+//! `insert -> atomic rename -> eviction` work while readers remain
+//! lock-free.
 //!
 //! What is implemented here:
 //!   - On-disk file layout: outer magic + version + payload SHA256 +
@@ -24,13 +25,10 @@
 //!     so future M2 wire-up only needs to hand the existing key
 //!     down. The key bytes are also written into the file header for
 //!     hash-collision detection on load.
+//!   - Cross-process advisory locking around mutating operations via
+//!     a sentinel lock file in the cache directory.
 //!
 //! What is explicitly out of scope for this layer:
-//!   - Multi-process concurrency / flock (M3). Atomic rename gives
-//!     readers a consistent file view; concurrent writers may
-//!     overwrite each other's files (harmless when content matches
-//!     the same key, and key collisions across writers are
-//!     vanishingly unlikely under SHA256).
 //!   - Network or mmap I/O (PRD §5.3 explicitly defers mmap to a
 //!     follow-up).
 
@@ -38,6 +36,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use sha2::{Digest, Sha256};
 
 /// Outer file magic. Distinct from the kv_cache payload's `AXKB` magic
@@ -59,6 +58,9 @@ const FIXED_HEADER_LEN: usize = 56;
 const PREFILL_TOKEN_NONE: u32 = u32::MAX;
 /// File extension for stored entries.
 const ENTRY_EXTENSION: &str = "axkv";
+/// Sentinel file used for the directory-level cross-process lock.
+/// The file itself is not a cache entry and is ignored by eviction.
+const LOCK_FILE_NAME: &str = ".axkv.lock";
 
 /// Default per-process disk-cache size budget when no env override is
 /// set. Matches the value documented in
@@ -209,12 +211,10 @@ fn payload_sha256(payload: &[u8]) -> [u8; 32] {
 /// do not propagate, and the operator can always rotate the directory
 /// manually if eviction stalls.
 ///
-/// Concurrency note: multi-process eviction is not yet protected by a
-/// `flock` (PRD §5.1). Two processes evicting concurrently may delete
-/// the same files (harmless — `fs::remove_file` on a missing path is
-/// gracefully handled) or evict slightly past the budget. The disk
-/// cache is correctness-safe under concurrent reads + concurrent
-/// writes regardless, because every entry write is atomic-renamed.
+/// Concurrency note: mutating operations take an exclusive advisory
+/// lock on a directory-level sentinel file. Readers stay lock-free and
+/// rely on atomic rename + payload checksum validation for a
+/// consistent view.
 pub struct DiskPrefixCache {
     dir: PathBuf,
     policy: DiskPrefixCachePolicy,
@@ -340,6 +340,7 @@ impl DiskPrefixCache {
         key_bytes: &[u8],
         entry: &DiskPrefixCacheEntry,
     ) -> Result<DiskPrefixCacheInsertOutcome, DiskPrefixCacheError> {
+        let _lock = self.lock_exclusive()?;
         let final_path = self.path_for(key_bytes);
         let tmp_path = self.dir.join(format!(
             "{}.tmp.{}",
@@ -377,7 +378,7 @@ impl DiskPrefixCache {
         fs::rename(&tmp_path, &final_path)?;
         guard.disarm();
 
-        let evictions = self.evict_until_within_policy();
+        let evictions = self.evict_until_within_policy_unlocked();
         Ok(DiskPrefixCacheInsertOutcome { evictions })
     }
 
@@ -391,6 +392,18 @@ impl DiskPrefixCache {
     /// it independently (e.g. on demand during a low-traffic window)
     /// is also safe.
     pub fn evict_until_within_policy(&self) -> u32 {
+        let Ok(_lock) = self.lock_exclusive() else {
+            tracing::warn!(
+                target: "ax_engine_mlx::prefix_cache",
+                dir = %self.dir.display(),
+                "disk prefix-cache failed to acquire eviction lock; skipping eviction",
+            );
+            return 0;
+        };
+        self.evict_until_within_policy_unlocked()
+    }
+
+    fn evict_until_within_policy_unlocked(&self) -> u32 {
         let mut entries = match self.list_entries() {
             Ok(e) => e,
             Err(err) => {
@@ -439,6 +452,18 @@ impl DiskPrefixCache {
         evictions
     }
 
+    fn lock_exclusive(&self) -> Result<DiskPrefixCacheLock, DiskPrefixCacheError> {
+        let path = self.dir.join(LOCK_FILE_NAME);
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        file.lock_exclusive()?;
+        Ok(DiskPrefixCacheLock { file })
+    }
+
     fn list_entries(&self) -> Result<Vec<EntryStat>, DiskPrefixCacheError> {
         let mut out = Vec::new();
         for entry in fs::read_dir(&self.dir)? {
@@ -464,6 +489,16 @@ struct EntryStat {
     path: PathBuf,
     size: u64,
     mtime: std::time::SystemTime,
+}
+
+struct DiskPrefixCacheLock {
+    file: fs::File,
+}
+
+impl Drop for DiskPrefixCacheLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 /// RAII guard that removes a temp file on drop unless explicitly
@@ -797,6 +832,30 @@ mod tests {
         // Junk file must remain untouched.
         assert!(dir.join("NOTES.md").is_file());
         assert!(cache.contains(&key_a));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_file_is_ignored_by_eviction_budget() {
+        // Opening the cache creates the sentinel lock file. It must
+        // never count as a stored entry, otherwise max_entries=1 would
+        // evict the only real cache entry immediately.
+        let dir = unique_tempdir("lock-file-budget");
+        let policy = DiskPrefixCachePolicy {
+            max_bytes: u64::MAX,
+            max_entries: 1,
+        };
+        let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
+        let key = canonical_key_bytes("m", "p", "l", 16, 1024, 0x10cc);
+
+        let outcome = cache
+            .insert(&key, &payload_only(b"payload-a"))
+            .expect("insert");
+
+        assert_eq!(outcome.evictions, 0, "lock file must not force eviction");
+        assert!(cache.contains(&key), "real entry must survive");
+        assert!(dir.join(LOCK_FILE_NAME).is_file(), "lock sentinel exists");
 
         let _ = fs::remove_dir_all(&dir);
     }

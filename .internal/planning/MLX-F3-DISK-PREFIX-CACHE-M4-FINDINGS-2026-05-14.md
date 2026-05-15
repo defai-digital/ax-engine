@@ -166,9 +166,10 @@ which is the M4 acceptance criterion per PRD §8.2.
   `store_prompt_prefix_snapshots` is the same code path, so the
   expectation is that they behave identically modulo the
   `mla_extend_unsafe` kill switch (which the L2 path honours).
-- **Multi-process concurrent writers.** Still deferred — the M3
-  findings doc §5.1 explicitly punted `flock`. M4 ran one process
-  at a time.
+- **Multi-process stress.** M4 ran one process at a time. The M3B
+  follow-up now lands the directory-level advisory lock primitive,
+  but the PRD's concurrent four-process stress artifact has not
+  been produced yet.
 - **Long-running cache pressure.** M4 corpus is two short prompts
   with default budgets (8 GiB / 1024 entries). The eviction sweep
   fired zero times because the budget was never reached. A future
@@ -196,12 +197,13 @@ which is the M4 acceptance criterion per PRD §8.2.
   for two prompts on Gemma 4 E2B.
 
 PRD §6 row in the parent ledger should update from "M3 landed; M4
-open" to "M4 landed; F3 complete (multi-process locking deferred)".
+open" to "M4 landed; F3 runtime mostly complete; architecture-tier
+and four-process stress evidence open".
 
 ---
 
 **Status:** M4 closed. F3 disk prefix cache is end-to-end validated
-modulo the explicitly-deferred multi-process concurrency and tight
-budget stress tests. The follow-up surface area is `flock`-based
-multi-writer coordination, MLA / linear-attention architecture
-sweeps, and an under-budget eviction-pressure run.
+for Gemma 4 E2B cross-restart. After the M3B amendment, the
+remaining follow-up surface area is the four-process stress artifact,
+MLA / linear-attention architecture sweeps, and an under-budget
+eviction-pressure run.

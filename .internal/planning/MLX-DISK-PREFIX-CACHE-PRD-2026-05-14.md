@@ -1,6 +1,8 @@
 # Disk-Durable Prefix Cache PRD (F3)
 
-Status: Open — design only; implementation not yet scheduled.
+Status: In progress — M1/M2/M3 locking+eviction and Gemma 4 E2B M4
+cross-restart validation landed; broader architecture-tier evidence,
+four-process stress, and public docs remain open.
 Date: 2026-05-14
 Owner: AX Engine
 Parent PRD: DS4-LEARNINGS-FOLLOWUP-PRD-2026-05-14.md §6 (F3)
@@ -252,19 +254,15 @@ restore.
 ### 5.1 Writers
 
 `DiskPrefixCache::insert` writes to a temporary file in the same
-directory, computes the FOOTER hashes, fsync, then atomically
+directory, computes the header payload hash, fsyncs, then atomically
 `rename` to the canonical filename `<sha256_hex>.axkv`. This makes
 partial writes invisible to readers.
 
-Multiple writers racing on the same key: the loser's rename
-overwrites the winner's, which is harmless (same content). No
-explicit lock needed.
-
-Multiple writers racing on eviction: each writer that exceeds policy
-runs `evict_until_within_policy` after its rename; the eviction
-takes a directory-level file lock (POSIX `flock` on a sentinel
-`AXKV_LOCK` file). Eviction without the lock skips and logs; the
-next writer retries.
+Mutating operations take a directory-level advisory lock on the
+`.axkv.lock` sentinel. `insert` holds that lock across temp-file
+write, atomic rename, and the post-insert eviction sweep; explicit
+`evict_until_within_policy` uses the same lock. Readers remain
+lock-free.
 
 ### 5.2 Readers
 
@@ -439,12 +437,15 @@ M2. **Integration with runner** (1–2 days). **Landed.**
 M3. **Eviction + locking** (1–2 days). **Partially landed.**
   - Best-effort post-insert eviction under byte/entry budgets is
     implemented and emits `disk_evictions`.
-  - Cross-process locking and concurrency stress tests remain open.
+  - Cross-process advisory locking around insert/evict landed via a
+    directory-level sentinel lock.
+  - Concurrent four-process stress remains open.
 
 M4. **Integration validation** (1 day). **Partially landed.**
   - Gemma 4 E2B cross-restart disk-hit validation passes via
     `scripts/verify_disk_prefix_cache_cross_restart.py`.
-  - Broader architecture-tier coverage and four-process stress remain open.
+  - Broader architecture-tier coverage and four-process stress remain
+    open.
 
 M5. **Docs + PRD closure** (half day).
   - `docs/KV-CACHE.md` and `docs/PERFORMANCE.md` updates.
@@ -468,6 +469,7 @@ this PRD takes.
 
 ---
 
-**Status:** Open — implementation not yet scheduled. Estimated ~1
-engineer-week if F4 (MLA bisect tooling) has confirmed the chunk-
-alignment workaround holds across the cases we serialize.
+**Status:** In progress. Core disk-prefix-cache runtime is implemented
+and validated for Gemma 4 E2B cross-restart. Remaining blockers before
+F3 closure are broader architecture-tier evidence, a concurrent
+four-process stress artifact, and M5 docs / final promotion review.

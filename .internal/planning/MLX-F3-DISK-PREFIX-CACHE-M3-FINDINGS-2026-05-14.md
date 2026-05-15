@@ -6,7 +6,13 @@ Prior milestones:
 - `MLX-F3-DISK-PREFIX-CACHE-M1-FINDINGS-2026-05-14.md`
 - `MLX-F3-DISK-PREFIX-CACHE-M2-FINDINGS-2026-05-14.md`
 
-## 1. Status: **M3 LANDED.** M4 (cross-restart integration validation) is the only remaining milestone.
+## 1. Status: **M3 LANDED; M3B LOCKING AMENDMENT LANDED.** M4 cross-restart validation is also landed; broader architecture-tier evidence and four-process stress remain open.
+
+2026-05-14 amendment: the original M3 slice intentionally deferred
+cross-process locking. A follow-up M3B slice now adds an exclusive
+directory-level advisory lock around `insert -> atomic rename ->
+eviction` and explicit eviction. The remaining concurrency gap is
+the stress artifact, not the runtime lock primitive.
 
 ## 2. Scope decision
 
@@ -16,17 +22,15 @@ This milestone tightens scope:
 - **In scope:** byte-budget + entry-budget eviction, mtime-based
   ordering (FIFO of last-modified), per-insert eviction sweep,
   telemetry counter, env-driven policy.
-- **Deferred:** multi-process `flock`-based concurrency control, and
-  the "touch tick rename" the PRD §6 sketches for true LRU. Both are
-  M4-blocking but not M3-blocking, and adding them now would
-  significantly expand the change.
+- **Originally deferred, now landed in M3B:** multi-process
+  advisory locking around mutating operations.
+- **Still deferred:** the "touch tick rename" the PRD §6 sketches
+  for true LRU.
 
-Single-process is the only supported deployment shape at M3. Two
-ax-engine processes pointed at the same `AX_MLX_PREFIX_CACHE_DIR`
-may race on eviction; the harm is at worst a redundant eviction (one
-extra `disk_miss` next time around), never corruption — atomic-rename
-writes still hold. This is documented and reasonable for the M4
-integration test, which uses one process per restart sequence.
+After M3B, two ax-engine processes pointed at the same
+`AX_MLX_PREFIX_CACHE_DIR` serialize inserts and eviction sweeps on
+the sentinel lock file. Readers remain lock-free and rely on
+atomic-rename writes plus payload checksums.
 
 ## 3. What landed
 
@@ -125,16 +129,14 @@ Full suite results:
 - `cargo clippy -p ax-engine-mlx --all-targets --all-features -- -D warnings`:
   clean.
 
-## 5. What M3 does not yet do (held for M4)
+## 5. What M3/M3B does not yet do
 
-### 5.1 No multi-process locking
+### 5.1 No four-process stress artifact yet
 
-Per §2 above, multi-process concurrency is deferred. The M4
-integration test (process A writes, process B reads after restart)
-is the immediate next consumer and does not need it — there is at
-most one process at a time. When we wire ax-engine into the
-production server with multiple workers, we will need the `flock`
-sentinel.
+The runtime now has an advisory sentinel lock around mutating
+operations, but the PRD's concurrent four-process stress artifact
+has not been produced yet. Until that artifact exists, this remains
+a validation gap rather than a missing runtime primitive.
 
 ### 5.2 mtime-based, not full LRU
 
@@ -155,6 +157,7 @@ production that one budget dominates, we can add the split.
 | Path | Change |
 |---|---|
 | `crates/ax-engine-mlx/src/disk_prefix_cache.rs` | + `DiskPrefixCachePolicy`, `DiskPrefixCacheInsertOutcome`, `EntryStat`, `with_policy`, `evict_until_within_policy`, `list_entries`; insert signature returns outcome; 3 new unit tests |
+| `crates/ax-engine-mlx/src/disk_prefix_cache.rs` | M3B amendment: + `fs2::FileExt` sentinel lock around mutating operations; `lock_file_is_ignored_by_eviction_budget` regression test |
 | `crates/ax-engine-mlx/src/runner.rs` | + `disk_evictions` telemetry field + route key; `record_disk_insert(bytes, evictions)`; runner construction now passes `DiskPrefixCachePolicy::from_env()`; insert call site handles new outcome |
 | `scripts/profile_kv_multiturn_chat_evidence.py` | (unchanged from M2; `disk_evictions` will be added when first observed in a real-workload smoke) |
 
@@ -169,7 +172,9 @@ production that one budget dominates, we can add the split.
 - ✅ Runner construction uses `DiskPrefixCachePolicy::from_env()`.
 - ✅ `cargo clippy --all-targets --all-features -- -D warnings` clean.
 - ✅ `cargo test -p ax-engine-mlx --lib` 372/372 green.
-- ✅ Scope deferrals (flock, full-LRU touch) explicitly documented.
+- ✅ M3B: advisory lock primitive landed for mutating operations.
+- ✅ Scope deferrals (four-process stress, full-LRU touch) explicitly
+  documented.
 
 PRD §6 row in the parent ledger should update from "M2 landed; M3-M5
 open" to "M3 landed; M4 open" (M5 was rolled into M4 in the M2
@@ -177,5 +182,7 @@ findings doc).
 
 ---
 
-**Status:** M3 closed. M4 (cross-restart validation against
-`verify_prefix_reuse_equivalence.py`) is the natural next milestone.
+**Status:** M3 runtime is closed including the M3B lock primitive.
+Remaining work is validation evidence: four-process stress,
+broader architecture-tier cross-restart coverage, and M5 docs /
+promotion review.
