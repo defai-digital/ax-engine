@@ -8,8 +8,10 @@
 //! Memory is owned by `MlxClosure::Drop`, which calls back into the C dtor
 //! and frees the boxed payload exactly once.
 
+use std::fmt;
 use std::os::raw::{c_int, c_void};
 use std::ptr;
+use std::thread::{self, ThreadId};
 
 use crate::array::{MlxArray, null_ffi_array};
 use crate::ffi;
@@ -155,6 +157,29 @@ unsafe extern "C" fn closure_dtor(payload: *mut c_void) {
 /// closure or its compiled form.
 pub struct MlxClosure {
     pub(crate) inner: ffi::mlx_closure,
+    compiled_on: Option<ThreadId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MlxClosureApplyError {
+    CompiledClosureThreadMismatch {
+        compiled_on: ThreadId,
+        current: ThreadId,
+    },
+}
+
+impl fmt::Display for MlxClosureApplyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CompiledClosureThreadMismatch {
+                compiled_on,
+                current,
+            } => write!(
+                f,
+                "compiled MLX closure cannot be applied on thread {current:?}; it was compiled on {compiled_on:?}"
+            ),
+        }
+    }
 }
 
 impl MlxClosure {
@@ -180,7 +205,10 @@ impl MlxClosure {
                 Some(closure_dtor),
             )
         };
-        Self { inner: cls }
+        Self {
+            inner: cls,
+            compiled_on: None,
+        }
     }
 
     /// Compile this closure with `mlx_compile`. The compiled closure can be
@@ -196,13 +224,38 @@ impl MlxClosure {
         if rc != 0 {
             return Err("mlx_compile failed");
         }
-        Ok(Self { inner: out })
+        Ok(Self {
+            inner: out,
+            compiled_on: Some(thread::current().id()),
+        })
     }
 
     /// Invoke the closure on the given inputs. Returns the outputs as a
     /// `Vec<MlxArray>`. Each output is a refcounted handle owned by the
     /// caller.
     pub fn apply(&self, inputs: &[&MlxArray]) -> Vec<MlxArray> {
+        self.try_apply(inputs)
+            .expect("compiled MLX closure applied from the wrong thread")
+    }
+
+    /// Fallible variant of `apply`.
+    ///
+    /// MLX 0.31 keeps both default streams and Metal command encoders in
+    /// thread-local registries. A closure compiled on one thread can abort
+    /// inside `mlx_closure_apply` if it is applied on a different thread whose
+    /// registry does not contain the compiled stream. Guard that contract here
+    /// so production callers can fall back or compile a per-thread entry before
+    /// crossing into the C API.
+    pub fn try_apply(&self, inputs: &[&MlxArray]) -> Result<Vec<MlxArray>, MlxClosureApplyError> {
+        if let Some(compiled_on) = self.compiled_on {
+            let current = thread::current().id();
+            if current != compiled_on {
+                return Err(MlxClosureApplyError::CompiledClosureThreadMismatch {
+                    compiled_on,
+                    current,
+                });
+            }
+        }
         // Count one MLX dispatch per closure invocation. For a compiled
         // closure this is the single underlying graph dispatch; for an
         // uncompiled closure it is the trampoline call. Either way, this
@@ -223,7 +276,7 @@ impl MlxClosure {
         for i in 0..len {
             result.push(out_vec.get(i));
         }
-        result
+        Ok(result)
     }
 }
 
@@ -298,5 +351,29 @@ mod tests {
         eval(&[&raw_out[0], &comp_out[0]]);
         assert_eq!(raw_out[0].data_f32().to_vec(), vec![3.0, 6.0, 9.0]);
         assert_eq!(comp_out[0].data_f32().to_vec(), vec![3.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn compiled_closure_rejects_cross_thread_apply_before_mlx_abort() {
+        let compiled = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
+            let x = inputs.get(0);
+            vec![add(&x, &x, None)]
+        })
+        .compile(false)
+        .expect("compile must succeed");
+
+        let handle = std::thread::spawn(move || {
+            let x = const_f32_1d(&[1.0, 2.0, 3.0]);
+            compiled.try_apply(&[&x])
+        });
+        let result = handle.join().expect("thread must not panic");
+        let err = match result {
+            Ok(_) => panic!("cross-thread apply must be rejected before calling mlx_closure_apply"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err,
+            MlxClosureApplyError::CompiledClosureThreadMismatch { .. }
+        ));
     }
 }

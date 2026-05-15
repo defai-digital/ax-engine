@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::fs;
 use std::sync::{Arc, Mutex};
+use std::thread::{self, ThreadId};
 use std::time::Instant;
 
 use mlx_sys::{
@@ -2257,15 +2258,16 @@ fn seed_generation_ngram_from_prompt(state: &mut RequestState) {
     state.ngram.feed(&state.prompt_prefix_tokens[feed_start..]);
 }
 
-/// Cache key for the embedding-forward compiled closure: shape-specific.
-/// `target_position` is baked into the trace, so we key on (seq_len, pos).
-type EmbedCompileKey = (usize, Option<usize>);
+/// Cache key for the embedding-forward compiled closure: thread- and
+/// shape-specific. MLX compiled closures are stream-registry sensitive, so a
+/// closure compiled on one worker thread must not be applied on another.
+type EmbedCompileKey = (ThreadId, usize, Option<usize>);
 
 /// Cache key for the batched embedding-forward compiled closure.
 /// `target_positions` is baked into the trace, so two batches with the same
-/// `(batch_size, max_len)` but different per-sequence target positions hit
-/// distinct keys.
-type EmbedBatchCompileKey = (usize, usize, Option<Vec<usize>>);
+/// `(thread_id, batch_size, max_len)` but different per-sequence target
+/// positions hit distinct keys.
+type EmbedBatchCompileKey = (ThreadId, usize, usize, Option<Vec<usize>>);
 
 /// ExecutionRunner backed by the MLX inference path.
 pub struct MlxRunner {
@@ -2307,14 +2309,15 @@ pub struct MlxRunner {
     rotating_sliding_decode: bool,
     /// Optional mlx_lm-style `clear_cache` cadence for the direct decode pipeline.
     direct_clear_cache_cadence: u32,
-    /// Per-shape compiled embedding-forward closures. Each entry is built on
-    /// the first `embed()` call at a new `(seq_len, target_position)` shape
-    /// and reused for subsequent calls. Set `AX_EMBED_NO_COMPILE=1` to skip
-    /// the compiled path and fall back to imperative `forward_for_embedding`.
+    /// Per-thread/per-shape compiled embedding-forward closures. Each entry is
+    /// built on the first `embed()` call at a new `(thread_id, seq_len,
+    /// target_position)` shape and reused on the same worker thread. Set
+    /// `AX_EMBED_NO_COMPILE=1` to skip the compiled path and fall back to
+    /// imperative `forward_for_embedding`.
     embed_compile_cache: Mutex<HashMap<EmbedCompileKey, mlx_sys::MlxClosure>>,
-    /// Per-shape compiled batched-embedding-forward closures. Keyed on
-    /// `(batch_size, max_len, target_positions)`; same kill switch as the
-    /// single-call cache (`AX_EMBED_NO_COMPILE`).
+    /// Per-thread/per-shape compiled batched-embedding-forward closures. Keyed
+    /// on `(thread_id, batch_size, max_len, target_positions)`; same kill
+    /// switch as the single-call cache (`AX_EMBED_NO_COMPILE`).
     embed_batch_compile_cache: Mutex<HashMap<EmbedBatchCompileKey, mlx_sys::MlxClosure>>,
     /// Cumulative hit / miss counters for the two embedding compile
     /// caches. Useful to confirm a workload is reusing compiled
@@ -3019,7 +3022,7 @@ impl MlxRunner {
             hidden = crate::model::scale_hidden_pub(&hidden, scale);
         }
 
-        let key: EmbedCompileKey = (token_ids.len(), target_position);
+        let key: EmbedCompileKey = (thread::current().id(), token_ids.len(), target_position);
         let mut cache = self
             .embed_compile_cache
             .lock()
@@ -3057,7 +3060,19 @@ impl MlxRunner {
             }
         }
         let cls = cache.get(&key).expect("just inserted");
-        let outputs = cls.apply(&[&hidden]);
+        let outputs = match cls.try_apply(&[&hidden]) {
+            Ok(outputs) => outputs,
+            Err(_) => {
+                cache.remove(&key);
+                drop(cache);
+                return crate::model::forward_for_embedding(
+                    &self.cfg,
+                    &self.weights,
+                    token_ids,
+                    target_position,
+                );
+            }
+        };
         outputs
             .into_iter()
             .next()
@@ -3090,7 +3105,12 @@ impl MlxRunner {
             batch_token_ids,
         );
         let target_positions_vec: Vec<usize> = target_positions.expect("checked above").to_vec();
-        let key: EmbedBatchCompileKey = (batch, max_len, Some(target_positions_vec.clone()));
+        let key: EmbedBatchCompileKey = (
+            thread::current().id(),
+            batch,
+            max_len,
+            Some(target_positions_vec.clone()),
+        );
         let mut cache = self
             .embed_batch_compile_cache
             .lock()
@@ -3128,7 +3148,19 @@ impl MlxRunner {
             }
         }
         let cls = cache.get(&key).expect("just inserted");
-        let outputs = cls.apply(&[&hidden]);
+        let outputs = match cls.try_apply(&[&hidden]) {
+            Ok(outputs) => outputs,
+            Err(_) => {
+                cache.remove(&key);
+                drop(cache);
+                return crate::model::forward_for_embedding_batch(
+                    &self.cfg,
+                    &self.weights,
+                    batch_token_ids,
+                    target_positions,
+                );
+            }
+        };
         let out = outputs
             .into_iter()
             .next()

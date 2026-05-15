@@ -82,6 +82,22 @@ env_flag!(
     "AX_MLX_PREFILL_FFN_COMPILE"
 );
 
+env_flag!(
+    /// Engaged by `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU` (W1 spike K of
+    /// `MLX-PREFILL-FUSION-PRD-2026-05-15.md`, extending the GeGLU wrap
+    /// to the SwiGLU branch used by Qwen 3 dense FFN, Qwen MoE routed
+    /// experts, and the shared-expert path). When truthy, the
+    /// `silu(gate) * up` chain in `model.rs::dense_ffn_activation`,
+    /// `shared_expert_forward`, and the MoE expert hidden compute go
+    /// through a per-thread `MlxClosure::compile` cache analogous to
+    /// `geglu()`. `MlxClosure::try_apply` falls back to the imperative
+    /// path on a cross-thread or stream-contract mismatch, so the env
+    /// switch fails closed. Default off until G2-equivalent acceptance
+    /// runs on Qwen3.5 9B / Qwen Coder Next are green.
+    prefill_ffn_compile_swiglu_enabled,
+    "AX_MLX_PREFILL_FFN_COMPILE_SWIGLU"
+);
+
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
 /// cold and warm-extend prefill paths produce the same SDPA Q/K shape
 /// sequence over the same absolute positions, avoiding the reproduced
