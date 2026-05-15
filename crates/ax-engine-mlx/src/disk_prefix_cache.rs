@@ -952,6 +952,141 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_inserts_and_eviction_preserve_cache_consistency() {
+        // M3B advisory-lock stress proxy. Eight threads share an
+        // `Arc<DiskPrefixCache>` with a tight `max_entries=8` budget
+        // and hammer it with 25 inserts each (200 total) plus parallel
+        // explicit eviction sweeps. The lock serializes
+        // `insert -> rename -> eviction` per thread; without it,
+        // concurrent evictors would race against in-flight renames and
+        // produce orphan `.tmp.<pid>` files, dropped entries, or
+        // double-removals. After all threads join we assert:
+        //   - no `.tmp.*` orphan remains (rename either succeeded
+        //     atomically or the TempFileGuard reaped the temp);
+        //   - the on-disk entry count stays within the policy budget;
+        //   - every surviving `.axkv` file parses cleanly when looked
+        //     up by its canonical key — i.e. no torn writes.
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = unique_tempdir("multi-thread-stress");
+        let policy = DiskPrefixCachePolicy {
+            max_bytes: u64::MAX,
+            max_entries: 8,
+        };
+        let cache = Arc::new(DiskPrefixCache::with_policy(&dir, policy).expect("open"));
+
+        let threads_per_role = 4;
+        let inserts_per_thread = 25;
+        let mut handles = Vec::with_capacity(threads_per_role * 2);
+
+        // Inserter threads: each writes `inserts_per_thread` entries
+        // with unique keys, returning the key bytes it produced.
+        for worker_id in 0..threads_per_role {
+            let cache = Arc::clone(&cache);
+            handles.push(thread::spawn(move || -> Vec<Vec<u8>> {
+                let mut written = Vec::with_capacity(inserts_per_thread);
+                for op in 0..inserts_per_thread {
+                    let token_hash = ((worker_id as u64) << 32) | op as u64;
+                    let key = canonical_key_bytes("m", "p", "l", 16, 1024, token_hash);
+                    let payload = format!("payload-w{worker_id}-op{op}").into_bytes();
+                    cache
+                        .insert(
+                            &key,
+                            &DiskPrefixCacheEntry {
+                                payload,
+                                prefill_output_token: Some(op as u32),
+                            },
+                        )
+                        .expect("insert");
+                    written.push(key);
+                }
+                written
+            }));
+        }
+
+        // Evictor threads: hammer explicit eviction sweeps in parallel
+        // with the inserts. These compete for the same lock, so they
+        // must not panic or leave the directory in an inconsistent
+        // state regardless of the interleaving with inserts.
+        for _ in 0..threads_per_role {
+            let cache = Arc::clone(&cache);
+            handles.push(thread::spawn(move || -> Vec<Vec<u8>> {
+                for _ in 0..inserts_per_thread {
+                    let _ = cache.evict_until_within_policy();
+                    thread::sleep(std::time::Duration::from_micros(50));
+                }
+                Vec::new()
+            }));
+        }
+
+        // Collect every key we know was at-least-once written.
+        let all_written: Vec<Vec<u8>> = handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("worker panicked"))
+            .collect();
+        assert_eq!(
+            all_written.len(),
+            threads_per_role * inserts_per_thread,
+            "every insert must have completed without error",
+        );
+
+        // No `.tmp.*` orphans left behind.
+        let tmp_orphans: Vec<_> = fs::read_dir(&dir)
+            .expect("read_dir")
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            tmp_orphans.is_empty(),
+            "no .tmp.* files should remain after concurrent stress; found {tmp_orphans:?}",
+        );
+
+        // Entry count within budget. The advisory lock serializes
+        // insert+evict so the budget must hold strictly, not "give or
+        // take one in flight".
+        let surviving_axkv: Vec<_> = fs::read_dir(&dir)
+            .expect("read_dir")
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|ext| ext == ENTRY_EXTENSION)
+            })
+            .collect();
+        assert!(
+            surviving_axkv.len() <= 8,
+            "policy budget breached: {} entries > max_entries=8",
+            surviving_axkv.len(),
+        );
+
+        // Every surviving file must parse cleanly when looked up
+        // through the public `get` API. We can't predict which keys
+        // survived eviction, but for each `axkv` file on disk we can
+        // recover the canonical key it claims to hold by scanning all
+        // produced keys.
+        let mut clean_hits = 0;
+        for key in &all_written {
+            if cache.contains(key)
+                && cache
+                    .get(key)
+                    .expect("get")
+                    .filter(|entry| !entry.payload.is_empty())
+                    .is_some()
+            {
+                clean_hits += 1;
+            }
+        }
+        assert_eq!(
+            clean_hits,
+            surviving_axkv.len(),
+            "every surviving .axkv must parse cleanly via get() — torn writes detected",
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn atomic_rename_temp_files_cleaned() {
         // The .tmp.* file should not survive a successful insert.
         let dir = unique_tempdir("atomic");

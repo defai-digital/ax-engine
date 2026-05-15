@@ -1,0 +1,123 @@
+{
+  "aggregate": {
+    "concurrent_workers": 4,
+    "corruption_load_failures": 0,
+    "eviction_policy_passed": true,
+    "iterations_per_worker": 24,
+    "overlap_keys": 8,
+    "read_misses": 0,
+    "verdict": "PASS",
+    "worker_failures": 0
+  },
+  "concurrent_stress": {
+    "cache_dir": "/var/folders/pw/j64s76pj6sl3t1ty5bg9ctq00000gp/T/ax-disk-prefix-stress-15223-1778809457828507000/concurrent",
+    "files_after": [
+      {
+        "name": "1c11edba844dac36ef331050d3313226eac3c92f8cd92eea33951c875ee29563.axkv",
+        "size_bytes": 4215
+      },
+      {
+        "name": "31e914cd70402944db81b4ece68a963df3e259fa2164b724dc930eb08c5a326a.axkv",
+        "size_bytes": 4215
+      },
+      {
+        "name": "3685cc88e7cdf9f8eb3144243b237732921f5ba53384d7cea38145509fa14320.axkv",
+        "size_bytes": 4215
+      },
+      {
+        "name": "8fe0ce46f9d7afff11febb028579965247ada6998f1e5219c62209e6850a2c57.axkv",
+        "size_bytes": 4215
+      },
+      {
+        "name": "a5963c0f8a62093a1be7b6368f7a7d6c7086692ab65a94b71d6f2cb4dd80bc42.axkv",
+        "size_bytes": 4215
+      },
+      {
+        "name": "abc7ad582ea534b556c5760e9d138a27c867f5f5e525eea38fc5bb7223eae2f7.axkv",
+        "size_bytes": 4215
+      },
+      {
+        "name": "ac4edc8cbe5636d0856dc9cc4d58c4c22d10bd8912b0fa545100c74c3042d495.axkv",
+        "size_bytes": 4215
+      },
+      {
+        "name": "ea74f0463a8491006efff56f5b9f7e6361ef9925866988da45c86354c357b455.axkv",
+        "size_bytes": 4215
+      }
+    ],
+    "policy": {
+      "max_bytes": 18446744073709551615,
+      "max_entries": 120
+    },
+    "workers": [
+      {
+        "corruption_load_failures": 0,
+        "disk_evictions": 0,
+        "exit_status": 0,
+        "insert_errors": 0,
+        "iterations": 24,
+        "read_errors": 0,
+        "read_misses": 0,
+        "worker_id": 0
+      },
+      {
+        "corruption_load_failures": 0,
+        "disk_evictions": 0,
+        "exit_status": 0,
+        "insert_errors": 0,
+        "iterations": 24,
+        "read_errors": 0,
+        "read_misses": 0,
+        "worker_id": 1
+      },
+      {
+        "corruption_load_failures": 0,
+        "disk_evictions": 0,
+        "exit_status": 0,
+        "insert_errors": 0,
+        "iterations": 24,
+        "read_errors": 0,
+        "read_misses": 0,
+        "worker_id": 2
+      },
+      {
+        "corruption_load_failures": 0,
+        "disk_evictions": 0,
+        "exit_status": 0,
+        "insert_errors": 0,
+        "iterations": 24,
+        "read_errors": 0,
+        "read_misses": 0,
+        "worker_id": 3
+      }
+    ]
+  },
+  "eviction_pressure": {
+    "cache_dir": "/var/folders/pw/j64s76pj6sl3t1ty5bg9ctq00000gp/T/ax-disk-prefix-stress-15223-1778809457828507000/eviction",
+    "files_after": [
+      {
+        "name": "482a68e1f7fa0cb8ff422da081fb48446d63e2366b8feaa41fe869d67cfd4860.axkv",
+        "size_bytes": 4215
+      },
+      {
+        "name": "7a6f4e0dbbbb1f775700bdabb02585ca470d921d1a21992999b17d2e8bc8b763.axkv",
+        "size_bytes": 4215
+      }
+    ],
+    "inserted_entries": 5,
+    "newest_entries_survived": true,
+    "oldest_entry_evicted": true,
+    "policy": {
+      "max_bytes": 18446744073709551615,
+      "max_entries": 2
+    },
+    "policy_passed": true,
+    "total_evictions": 3
+  },
+  "generated_at_unix": 1778809458,
+  "host": {
+    "arch": "aarch64",
+    "os": "macos"
+  },
+  "schema_version": "ax.disk_prefix_cache_stress.v1"
+}
