@@ -251,6 +251,98 @@ MLX runner route metadata keeps that distinction visible:
 | `ax_mlx_prefix_cache_entries` | Current runner prefix snapshot entries |
 | `ax_mlx_prefix_cache_bytes_kib` | Current runner prefix snapshot footprint |
 
+## Disk-Durable Prefix Cache (Opt-In)
+
+The MLX runner can add a second, file-backed prefix-cache tier below the
+in-memory `prefix_cache`. This is disabled by default. When enabled, the runner
+stores serialized `MlxKVCache` snapshots as `.axkv` files so a process restart
+or another local process can restore a validated prompt prefix without repeating
+the full cold prefill.
+
+The disk layer is additive:
+
+1. The scheduler still discovers logical prefix reuse through `KvManager`.
+2. The runner first checks the in-memory snapshot cache.
+3. If L1 misses and `AX_MLX_PREFIX_CACHE_DIR` is set, the runner probes the
+   `.axkv` store.
+4. A disk hit restores the KV snapshot, repopulates L1, and records disk-cache
+   telemetry.
+5. A miss, corrupt entry, version mismatch, unsupported layout, or disabled disk
+   layer falls back to the existing L1-only or warmup path.
+
+### Configuration
+
+| Environment variable | Default | Meaning |
+|---|---:|---|
+| `AX_MLX_PREFIX_CACHE_DIR` | unset | Enables the disk tier and selects the local cache directory. Empty or unset disables the disk tier. |
+| `AX_MLX_PREFIX_CACHE_DISK_DISABLED` | unset | Kill switch. When truthy, disables the disk tier even if `AX_MLX_PREFIX_CACHE_DIR` is set. |
+| `AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES` | 8 GiB | Post-insert byte budget. Invalid, blank, or zero values fall back to the default. |
+| `AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES` | 1024 | Post-insert entry budget. Invalid, blank, or zero values fall back to the default. |
+
+The cache assumes a local filesystem. Writers use a directory-level advisory
+lock on `.axkv.lock`; readers remain lock-free and rely on atomic rename plus
+payload checksum validation. Network filesystems may have different advisory
+lock and rename semantics, so do not treat this as a distributed cache.
+
+### File and Integrity Contract
+
+Each entry is named by the SHA256 of the canonical prefix-cache key and uses the
+`.axkv` extension. The file stores:
+
+- `AXKV` magic and a format version;
+- payload SHA256;
+- serialized canonical key bytes for collision detection;
+- optional greedy prefill output token for full-prompt restores;
+- serialized `MlxKVCache` payload.
+
+Readers fail closed. If the file is truncated, has a stale version, mismatched
+key bytes, or a checksum mismatch, the lookup is treated as a miss. The runner
+must never continue with a partially restored KV state.
+
+### Disk Telemetry
+
+When the disk tier is active, route metadata can include:
+
+| Key | Meaning |
+|---|---|
+| `ax_mlx_prefix_cache_disk_hits` | Disk entry restored successfully. |
+| `ax_mlx_prefix_cache_disk_misses` | Disk tier was eligible but no valid entry was restored. |
+| `ax_mlx_prefix_cache_disk_inserts` | Disk entries written after a prompt-prefix snapshot store. |
+| `ax_mlx_prefix_cache_disk_insert_bytes_kib` | Serialized disk-entry bytes written, rounded to KiB. |
+| `ax_mlx_prefix_cache_disk_evictions` | Files removed by post-insert eviction. |
+
+These counters are separate from the in-memory `ax_mlx_prefix_cache_hits` /
+`misses` counters. A request can miss L1 and hit L2; that is the expected
+cross-restart path.
+
+### Validation Evidence
+
+Current checked-in disk-prefix-cache evidence:
+
+| Artifact | Coverage | Result |
+|---|---|---|
+| `benchmarks/results/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json` | Gemma 4 E2B, standard FA + sliding window | PASS, 2/2 token-exact, 2 phase-B disk hits |
+| `benchmarks/results/disk-prefix-cache-cross-restart/qwen35-9b-2026-05-14.json` | Qwen3.5-9B, hybrid MLA + linear attention | PASS, 2/2 token-exact, 2 phase-B disk hits |
+| `benchmarks/results/disk-prefix-cache-cross-restart/glm47-flash-2026-05-14.json` | GLM-4.7-Flash, pure MLA | PASS, 2/2 token-exact, 2 phase-B disk hits |
+| `benchmarks/results/disk-prefix-cache-stress/2026-05-14-m3b-stress.json` | 4 worker processes over overlapping keys plus `max_entries=2` eviction pressure | PASS, zero corruption load failures, zero read misses, 3 evictions |
+
+Reusable commands:
+
+```bash
+PYTHONPATH=python python3 scripts/verify_disk_prefix_cache_cross_restart.py \
+  --model-id gemma-4-e2b-it-4bit \
+  --mlx-artifacts-dir .internal/models/gemma-4-e2b-it-4bit \
+  --output benchmarks/results/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json
+
+cargo run -p ax-engine-mlx --bin disk-prefix-cache-stress -- \
+  --output benchmarks/results/disk-prefix-cache-stress/2026-05-14-m3b-stress.json
+```
+
+The stress artifact validates the cache primitive, not a long-running
+multi-user AX server soak. Keep production-serving claims behind a separate
+serving artifact with request latency, queueing, memory pressure, and model
+route telemetry.
+
 ### Snapshot path support matrix
 
 `restore_reused_prefix_state` and `store_prompt_prefix_snapshots` gate the

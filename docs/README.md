@@ -18,6 +18,8 @@ Start here:
   artifact provenance
 - `LONG-CONTEXT.md`: long-context evidence, prefix-reuse boundaries, and
   current cold-prefill/concurrency limitations
+- `KV-CACHE.md`: logical KV ledger, MLX physical snapshots, opt-in
+  disk-durable prefix cache, and memory-pressure invariants
 - `API-COMPATIBILITY.md`: current OpenAI-compatible endpoint contract and
   compatibility boundaries
 - `SERVER.md`: local HTTP server routes and backend behavior

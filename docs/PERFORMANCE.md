@@ -72,6 +72,29 @@ generation-state initialization. Diagnostic profile artifacts in the same
 directory are intentionally excluded from the default rendered report unless
 `scripts/render_mlx_prefill_breakdown_report.py --include-diagnostics` is used.
 
+## Disk-Durable Prefix Cache Evidence
+
+The disk-durable prefix cache is an opt-in runtime feature, not part of the
+default public throughput table. It is designed for process-restart and
+same-host multi-process prefix reuse: set `AX_MLX_PREFIX_CACHE_DIR` to enable
+the L2 `.axkv` store, and keep it unset for the historical in-memory-only path.
+
+Current checked-in evidence covers correctness and cache primitive safety:
+
+| Artifact | Coverage | Key result | Interpretation |
+|---|---|---|---|
+| `benchmarks/results/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json` | Gemma 4 E2B, standard FA + sliding window | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the Gemma tier |
+| `benchmarks/results/disk-prefix-cache-cross-restart/qwen35-9b-2026-05-14.json` | Qwen3.5-9B, hybrid MLA + linear attention | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the hybrid tier |
+| `benchmarks/results/disk-prefix-cache-cross-restart/glm47-flash-2026-05-14.json` | GLM-4.7-Flash, pure MLA | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the pure-MLA tier |
+| `benchmarks/results/disk-prefix-cache-stress/2026-05-14-m3b-stress.json` | 4 worker processes over overlapping keys plus tight eviction pressure | PASS, zero corruption load failures, zero read misses, 3 evictions | The disk-cache primitive survived short concurrent writer and eviction stress |
+
+This evidence supports an opt-in runtime claim: AX can persist validated MLX
+prefix snapshots to a local disk cache and restore them across process
+restarts. It does not yet support a broad production-serving performance claim.
+For that, use a serving artifact that measures request latency, queueing,
+memory pressure, cache hit rate, and failure rate under the target process
+count and prompt mix.
+
 ## Comprehensive Review Scope
 
 The current public table has been reviewed as a scoped MLX model-inference
@@ -151,6 +174,9 @@ should not be read as a complete inference-serving proof. In particular:
   prefill tok/s, memory pressure, and route telemetry.
 - Current public rows do not prove KV eviction or fragmentation behavior. They
   validate the benchmark path, not long-lived multi-session cache management.
+- Disk-durable prefix-cache artifacts prove cross-restart correctness and short
+  cache-primitive stress. They do not replace a full AX-serving soak for
+  production-serving latency or availability claims.
 
 ## Additional Testing Plan
 
