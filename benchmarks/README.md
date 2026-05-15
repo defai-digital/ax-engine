@@ -168,7 +168,20 @@ are not model-inference throughput baselines and should not be merged into the
 MLX inference-stack table.
 
 For disk-durable prefix-cache serving promotion, first generate a deterministic
-shared-prefix token corpus:
+shared-prefix token corpus. The preferred path is the soak runner:
+
+```text
+python3 scripts/run_disk_prefix_serving_soak.py \
+  --base-url http://127.0.0.1:8080 \
+  --model-id qwen3_dense \
+  --run-id <run-id>
+```
+
+It assumes the AX server is already running with `AX_MLX_PREFIX_CACHE_DIR` set,
+then writes `corpus.jsonl`, `artifact.json`, `report.md`, and `commands.json`
+under `benchmarks/results/serving/<run-id>/`.
+
+For manual runs, generate the corpus first:
 
 ```text
 python3 scripts/build_serving_shared_prefix_corpus.py \
