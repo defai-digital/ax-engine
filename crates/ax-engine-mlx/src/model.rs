@@ -2844,8 +2844,34 @@ fn glm_mla_attention_forward(
         .as_ref()
         .expect("GLM MLA attention config");
     let seq = x.shape()[1] as usize;
-    let cached = glm_mla_project_and_cache_inputs(cfg, w, x, cache, layer_idx, token_offset);
 
+    // W4 (MLX-PREFILL-FUSION-PRD §5): route the MLA forward through the
+    // existing DecodeProfileStage buckets so GLM 4.7 Flash's per-stage
+    // profile lines up with the other architectures'. Without this the
+    // entire MLA forward would land outside the labeled stages, leaving
+    // ~55% of GLM prefill unattributed and the `post_attn_residual_norm`
+    // umbrella visibly inflated. Mapping:
+    //   project_and_cache        → PreSdpaQkvProj  (analog of QKV projection)
+    //   embed_q + concat + mask  → PreSdpaRopeKv   (Q/K materialization)
+    //   SDPA call                → Sdpa            (same op the dense path uses)
+    //   unembed_out + o_proj     → PostAttnOutputProj
+    let profile_decode_layer = seq == 1 && decode_profile_enabled();
+    let profile_prefill_layer = seq > 1 && prefill_profile_enabled();
+    let profile_forward_layer = profile_decode_layer || profile_prefill_layer;
+
+    let qkv_started = profile_forward_layer.then(Instant::now);
+    let cached = glm_mla_project_and_cache_inputs(cfg, w, x, cache, layer_idx, token_offset);
+    if let Some(started) = qkv_started {
+        forward_profile_eval_elapsed(
+            profile_decode_layer,
+            profile_prefill_layer,
+            DecodeProfileStage::PreSdpaQkvProj,
+            started,
+            &[&cached.q_nope, &cached.q_pe, &cached.kv_latent, &cached.k_pe],
+        );
+    }
+
+    let rope_kv_started = profile_forward_layer.then(Instant::now);
     // embed_q maps q_nope [n_heads, seq, nope_dim] → [n_heads, seq, kv_lora_rank].
     // Same quantized op as decode; works for any seq length.
     let q_nope_proj = glm_mla_embed_q_decode(cfg, w, &cached.q_nope);
@@ -2859,7 +2885,17 @@ fn glm_mla_attention_forward(
     } else {
         ScaledDotProductAttentionMask::None
     };
+    if let Some(started) = rope_kv_started {
+        forward_profile_eval_elapsed(
+            profile_decode_layer,
+            profile_prefill_layer,
+            DecodeProfileStage::PreSdpaRopeKv,
+            started,
+            &[&q_packed, &k_packed],
+        );
+    }
 
+    let sdpa_started = profile_forward_layer.then(Instant::now);
     // V stays as kv_latent [1, key_len, kv_lora_rank]; unembed_out maps output → value space.
     let out = scaled_dot_product_attention_with_mask(
         &q_packed,
@@ -2869,6 +2905,17 @@ fn glm_mla_attention_forward(
         mask,
         None,
     );
+    if let Some(started) = sdpa_started {
+        forward_profile_eval_elapsed(
+            profile_decode_layer,
+            profile_prefill_layer,
+            DecodeProfileStage::Sdpa,
+            started,
+            &[&out],
+        );
+    }
+
+    let oproj_started = profile_forward_layer.then(Instant::now);
     let attn_out = glm_mla_unembed_out(cfg, w, &out);
 
     let attn_out = transpose(&attn_out, &[0, 2, 1, 3], None);
@@ -2877,11 +2924,21 @@ fn glm_mla_attention_forward(
         &[1, seq as i32, (cfg.n_heads * mla_cfg.value_head_dim) as i32],
         None,
     );
-    attention_output_projection(
+    let result = attention_output_projection(
         &attn_flat,
         None,
         w.o_proj.as_ref().expect("GLM MLA layer must have o_proj"),
-    )
+    );
+    if let Some(started) = oproj_started {
+        forward_profile_eval_elapsed(
+            profile_decode_layer,
+            profile_prefill_layer,
+            DecodeProfileStage::PostAttnOutputProj,
+            started,
+            &[&result],
+        );
+    }
+    result
 }
 
 /// Prefill path: `kv_latent [B,1,seq,kv_lora_rank] @ embed_q [n_heads,kv_lora_rank,qk_nope_head_dim]`
