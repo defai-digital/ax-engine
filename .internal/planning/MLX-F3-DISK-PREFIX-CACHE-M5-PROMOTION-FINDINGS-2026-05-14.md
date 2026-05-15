@@ -42,6 +42,13 @@ that gate, for example
 proves it exercised the disk-cache route and not only a generic long-context
 serving path.
 
+The repo also has a deterministic shared-prefix token-corpus builder,
+`scripts/build_serving_shared_prefix_corpus.py`, for this final soak. Use it to
+generate an 8K+ token shared-prefix corpus, run at least one full warmup corpus
+pass with `--input-kind tokens`, and store the corpus, serving JSON artifact,
+and rendered report under the same `benchmarks/results/serving/<run-id>/`
+directory.
+
 This should be a serving artifact, not another cache-primitive unit stress:
 run the AX server path with the disk cache enabled, multiple processes or
 workers where applicable, shared prompts, latency/queueing telemetry, memory
