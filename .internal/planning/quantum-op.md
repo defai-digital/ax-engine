@@ -840,6 +840,13 @@ Active implementation slice:
   `benchmarks/results/turboquant/quality-runs/20260515T082716Z-gemma-4-e2b-it-4bit-runtime-slices-s7/microbench-gemma-e2b-shape-post-s7.json`
   passes the standalone microbench checker with shared flat hot-tail merge
   median `949us`.
+- **P3-S8 validated hot-tail merge helper contract**: require callers to obtain
+  a `ValidatedTurboQuantAttentionPartitionStatsBatch` before using the shared
+  flat hot-tail merge helper. This keeps the helper fail-closed for malformed
+  batch shapes while preserving the production path's once-per-layer validation
+  instead of returning to per-query-head full-batch validation. Guardrail tests
+  now cover malformed batch rejection and the shared flat helper's equivalence
+  to the reference split-softmax merge.
 
 ### TurboQuant KV Runtime Promotion
 
