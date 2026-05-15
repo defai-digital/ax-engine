@@ -332,11 +332,28 @@ python3 scripts/render_ax_serving_benchmark_report.py \
 
 The latest checked-in real-model P1 example is:
 
-- [Qwen3-4B-4bit prefill scaling, 2026-05-07](../benchmarks/results/mlx-inference/2026-05-07-real-p1/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md)
+- [Qwen3-4B-4bit prefill scaling, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md)
 
-This example is intentionally expectation-management evidence: AX beats
-`mlx_lm` at 1k in that run, is near parity at 2k, and is below `mlx_lm` at
-4k/8k. Do not cite it as a broad AX prefill win.
+This example is intentionally scoped evidence: AX beats `mlx_lm` at every
+measured Qwen3-4B context in that run, including 1.154x at 8k. Do not cite it
+as a broad family-wide or serving-concurrency win.
+
+The latest checked-in decode-at-depth example is:
+
+- [Qwen3-4B-4bit decode-at-depth, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-decode-at-depth.md)
+
+It measures direct AX decode after 4k and 8k prompt depths with generation=128.
+AX was 1.067x vs `mlx_lm` at 4k depth and 1.232x at 8k depth. This is still not
+an online serving, prefix-cache reuse, or n-gram acceleration claim.
+
+The latest checked-in n-gram depth diagnostic is:
+
+- [Qwen3-4B-4bit n-gram depth diagnostic, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-ngram-depth.md)
+
+It measures AX default n-gram decode after 4k and 8k prompt depths with
+generation=128. AX n-gram was 2.225x vs `mlx_lm` at 4k depth and 2.686x at 8k
+depth, with 100% draft acceptance in this run. This is a decode-policy
+diagnostic, not a prefill or serving-concurrency claim.
 
 Cold-start and warm-throughput claims require a separate startup-latency
 artifact:

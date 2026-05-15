@@ -54,7 +54,7 @@ checked-in heavy real-model validation is separate:
 
 | Artifact | Model | Shape | Key result | Interpretation |
 |---|---|---|---|---|
-| [P1 prefill scaling](../benchmarks/results/mlx-inference/2026-05-07-real-p1/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md) | `mlx-community/Qwen3-4B-4bit` | 1k/2k/4k/8k context, generation=1, repetitions=3 | AX/MLX prefill ratio moves from 1.159x at 1k to 0.840x at 8k | AX was faster only at 1k in this run; long-context prefill should be described as measured and context-dependent |
+| [P1 prefill scaling](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md) | `mlx-community/Qwen3-4B-4bit` | 1k/2k/4k/8k context, generation=1, repetitions=3 | AX/MLX prefill ratio moves from 1.190x at 1k to 1.154x at 8k, with every measured context above `mlx_lm` | AX now has a positive Qwen3-4B cold-prefill boundary on this host; keep it separate from family-wide and serving-concurrency claims |
 | [P2 startup and concurrency](../benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md) | `mlx-community/Qwen3-4B-4bit` | 8k context; startup generation=128; concurrent generation=1; concurrency 1/2/4 | 8k warm TTFT 2509.7 ms; 4-request concurrent prefill TTFT 8318.7 ms and overlap classified serialized | This does not support a continuous-batching or concurrent-prefill-overlap claim yet |
 
 Both artifacts use direct AX MLX policy and are not evidence for n-gram decode

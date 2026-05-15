@@ -644,7 +644,12 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                     idx,
                     "up_proj",
                 )?;
-                (None, Some(g), Some(u))
+                if dense_ffn_gate_up_packing_enabled() {
+                    let packed = pack_dense_ffn_gate_up_projection(&g, &u)?;
+                    (Some(packed), None, None)
+                } else {
+                    (None, Some(g), Some(u))
+                }
             } else {
                 (None, None, None)
             };
@@ -1502,6 +1507,24 @@ fn linear_attention_projection_packing_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn dense_ffn_gate_up_packing_enabled() -> bool {
+    // Experimental prefill probe: materialize packed dense FFN gate/up
+    // projections at load time so the forward path uses one projection and
+    // splits the result, matching artifact-native gate_up weights when present.
+    std::env::var("AX_MLX_PACK_DENSE_FFN_GATE_UP")
+        .map(|value| !value.is_empty() && value != "0")
+        .unwrap_or(false)
+}
+
+fn pack_dense_ffn_gate_up_projection(
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> Result<QuantizedWeight, WeightLoadError> {
+    let packed = concat_quantized_weight_rows(gate, up)?;
+    eval_packed_projection(&packed);
+    Ok(packed)
+}
+
 fn pack_split_linear_attention_projections(
     config: &NativeLinearAttentionConfig,
     qkv: &QuantizedWeight,
@@ -1573,12 +1596,12 @@ fn pack_split_linear_attention_projections(
         Some(b),
         Some(a),
     )?;
-    eval_packed_linear_attention_projection(&qkvz);
-    eval_packed_linear_attention_projection(&ba);
+    eval_packed_projection(&qkvz);
+    eval_packed_projection(&ba);
     Ok((qkvz, ba))
 }
 
-fn eval_packed_linear_attention_projection(weight: &QuantizedWeight) {
+fn eval_packed_projection(weight: &QuantizedWeight) {
     let mut arrays = vec![&weight.weight];
     if let Some(scales) = &weight.scales {
         arrays.push(scales);
@@ -2631,6 +2654,37 @@ mod tests {
         assert_eq!(fused.bits, 4);
         assert!(fused.scales.is_some());
         assert!(fused.biases.is_some());
+    }
+
+    #[test]
+    fn pack_dense_ffn_gate_up_projection_concatenates_gate_then_up_rows() {
+        let gate = glm_quantized_weight(64, 4, true);
+        let up = glm_quantized_weight(64, 4, true);
+
+        let packed =
+            pack_dense_ffn_gate_up_projection(&gate, &up).expect("matching FFN projections pack");
+
+        assert_eq!(packed.weight.shape(), vec![4, 2]);
+        assert_eq!(
+            packed.scales.as_ref().expect("scales should pack").shape(),
+            vec![4, 1]
+        );
+        assert_eq!(
+            packed.biases.as_ref().expect("biases should pack").shape(),
+            vec![4, 1]
+        );
+        assert_eq!(packed.group_size, 64);
+        assert_eq!(packed.bits, 4);
+    }
+
+    #[test]
+    fn pack_dense_ffn_gate_up_projection_rejects_mixed_quantization() {
+        let gate = QuantizedWeight::new(zeros(&[2, 2], MlxDtype::Float32, None), None, None);
+        let up = glm_quantized_weight(64, 4, false);
+
+        let message = invalid_layer_message(pack_dense_ffn_gate_up_projection(&gate, &up));
+
+        assert!(message.contains("only one has quantization scales"));
     }
 
     #[test]

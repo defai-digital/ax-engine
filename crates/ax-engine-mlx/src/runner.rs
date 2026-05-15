@@ -75,8 +75,9 @@ use crate::generate::{
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
     DecodeProfileSnapshot, Gemma4MoeProfileSnapshot, LinearAttentionProfileSnapshot, ModelConfig,
-    TurboQuantModelDecodeContext, take_decode_profile_snapshot, take_gemma4_moe_profile_snapshot,
-    take_linear_attention_profile_snapshot,
+    PrefillProfileSnapshot, TurboQuantModelDecodeContext, take_decode_profile_snapshot,
+    take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
+    take_prefill_profile_snapshot,
 };
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
@@ -89,6 +90,8 @@ use crate::turboquant::{
     TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION, TurboQuantProductionRequirements,
     turboquant_support_report,
 };
+#[cfg(test)]
+use crate::weights::{LayerWeights, QuantizedWeight};
 use crate::weights::{ModelWeights, load_weights};
 
 /// Beta prior counts for the n-gram acceleration accept-rate gate.
@@ -865,6 +868,42 @@ fn kv_layer_windows_from_config(cfg: &ModelConfig) -> Vec<Option<usize>> {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct WeightLayoutTelemetry {
+    dense_ffn_gate_up_packed_layers: u32,
+    dense_ffn_split_gate_up_layers: u32,
+}
+
+impl WeightLayoutTelemetry {
+    fn from_weights(weights: &ModelWeights) -> Self {
+        let mut telemetry = Self::default();
+        for layer in &weights.layers {
+            if layer.down_proj.is_none() {
+                continue;
+            }
+            if layer.gate_up_packed.is_some() {
+                telemetry.dense_ffn_gate_up_packed_layers =
+                    telemetry.dense_ffn_gate_up_packed_layers.saturating_add(1);
+            } else if layer.gate_proj.is_some() && layer.up_proj.is_some() {
+                telemetry.dense_ffn_split_gate_up_layers =
+                    telemetry.dense_ffn_split_gate_up_layers.saturating_add(1);
+            }
+        }
+        telemetry
+    }
+
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
+        decisions.upsert_route_decision(
+            "ax_mlx_dense_ffn_gate_up_packed_layers",
+            self.dense_ffn_gate_up_packed_layers,
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_dense_ffn_split_gate_up_layers",
+            self.dense_ffn_split_gate_up_layers,
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct DecodeTelemetry {
     prefill_steps: u32,
     prefill_wall_us: u32,
@@ -1296,6 +1335,128 @@ impl LinearAttentionProfileSnapshot {
     }
 }
 
+impl PrefillProfileSnapshot {
+    fn merge_from(&mut self, other: Self) {
+        self.enabled = self.enabled.max(other.enabled);
+        self.prefill_steps = self.prefill_steps.saturating_add(other.prefill_steps);
+        self.layers = self.layers.saturating_add(other.layers);
+        self.tokens = self.tokens.saturating_add(other.tokens);
+        self.per_layer_input_wall_us = self
+            .per_layer_input_wall_us
+            .saturating_add(other.per_layer_input_wall_us);
+        self.pre_sdpa_wall_us = self.pre_sdpa_wall_us.saturating_add(other.pre_sdpa_wall_us);
+        self.pre_sdpa_qkv_proj_wall_us = self
+            .pre_sdpa_qkv_proj_wall_us
+            .saturating_add(other.pre_sdpa_qkv_proj_wall_us);
+        self.pre_sdpa_qk_norm_wall_us = self
+            .pre_sdpa_qk_norm_wall_us
+            .saturating_add(other.pre_sdpa_qk_norm_wall_us);
+        self.pre_sdpa_rope_kv_wall_us = self
+            .pre_sdpa_rope_kv_wall_us
+            .saturating_add(other.pre_sdpa_rope_kv_wall_us);
+        self.sdpa_wall_us = self.sdpa_wall_us.saturating_add(other.sdpa_wall_us);
+        self.post_attn_wall_us = self
+            .post_attn_wall_us
+            .saturating_add(other.post_attn_wall_us);
+        self.post_attn_ffn_wall_us = self
+            .post_attn_ffn_wall_us
+            .saturating_add(other.post_attn_ffn_wall_us);
+        self.post_attn_ffn_gate_up_wall_us = self
+            .post_attn_ffn_gate_up_wall_us
+            .saturating_add(other.post_attn_ffn_gate_up_wall_us);
+        self.post_attn_ffn_activation_wall_us = self
+            .post_attn_ffn_activation_wall_us
+            .saturating_add(other.post_attn_ffn_activation_wall_us);
+        self.post_attn_ffn_down_wall_us = self
+            .post_attn_ffn_down_wall_us
+            .saturating_add(other.post_attn_ffn_down_wall_us);
+        self.post_attn_output_proj_wall_us = self
+            .post_attn_output_proj_wall_us
+            .saturating_add(other.post_attn_output_proj_wall_us);
+        self.post_attn_residual_norm_wall_us = self
+            .post_attn_residual_norm_wall_us
+            .saturating_add(other.post_attn_residual_norm_wall_us);
+        self.post_attn_residual_gate_wall_us = self
+            .post_attn_residual_gate_wall_us
+            .saturating_add(other.post_attn_residual_gate_wall_us);
+        self.lm_head_wall_us = self.lm_head_wall_us.saturating_add(other.lm_head_wall_us);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
+        if self.enabled == 0 {
+            return;
+        }
+
+        let entries = [
+            ("ax_mlx_prefill_profile_enabled", self.enabled),
+            ("ax_mlx_prefill_profile_prefill_steps", self.prefill_steps),
+            ("ax_mlx_prefill_profile_layers", self.layers),
+            ("ax_mlx_prefill_profile_tokens", self.tokens),
+            (
+                "ax_mlx_prefill_profile_per_layer_input_wall_us",
+                self.per_layer_input_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_pre_sdpa_wall_us",
+                self.pre_sdpa_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_pre_sdpa_qkv_proj_wall_us",
+                self.pre_sdpa_qkv_proj_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_pre_sdpa_qk_norm_wall_us",
+                self.pre_sdpa_qk_norm_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_pre_sdpa_rope_kv_wall_us",
+                self.pre_sdpa_rope_kv_wall_us,
+            ),
+            ("ax_mlx_prefill_profile_sdpa_wall_us", self.sdpa_wall_us),
+            (
+                "ax_mlx_prefill_profile_post_attn_wall_us",
+                self.post_attn_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_post_attn_ffn_wall_us",
+                self.post_attn_ffn_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_post_attn_ffn_gate_up_wall_us",
+                self.post_attn_ffn_gate_up_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_post_attn_ffn_activation_wall_us",
+                self.post_attn_ffn_activation_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_post_attn_ffn_down_wall_us",
+                self.post_attn_ffn_down_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_post_attn_output_proj_wall_us",
+                self.post_attn_output_proj_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_post_attn_residual_norm_wall_us",
+                self.post_attn_residual_norm_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_post_attn_residual_gate_wall_us",
+                self.post_attn_residual_gate_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_lm_head_wall_us",
+                self.lm_head_wall_us,
+            ),
+        ];
+
+        for (key, value) in entries {
+            decisions.upsert_route_decision(key, value);
+        }
+    }
+}
+
 impl DecodeProfileSnapshot {
     fn merge_from(&mut self, other: Self) {
         self.enabled = self.enabled.max(other.enabled);
@@ -1321,6 +1482,15 @@ impl DecodeProfileSnapshot {
         self.post_attn_ffn_wall_us = self
             .post_attn_ffn_wall_us
             .saturating_add(other.post_attn_ffn_wall_us);
+        self.post_attn_ffn_gate_up_wall_us = self
+            .post_attn_ffn_gate_up_wall_us
+            .saturating_add(other.post_attn_ffn_gate_up_wall_us);
+        self.post_attn_ffn_activation_wall_us = self
+            .post_attn_ffn_activation_wall_us
+            .saturating_add(other.post_attn_ffn_activation_wall_us);
+        self.post_attn_ffn_down_wall_us = self
+            .post_attn_ffn_down_wall_us
+            .saturating_add(other.post_attn_ffn_down_wall_us);
         self.post_attn_output_proj_wall_us = self
             .post_attn_output_proj_wall_us
             .saturating_add(other.post_attn_output_proj_wall_us);
@@ -1370,6 +1540,18 @@ impl DecodeProfileSnapshot {
             (
                 "ax_mlx_decode_profile_post_attn_ffn_wall_us",
                 self.post_attn_ffn_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_post_attn_ffn_gate_up_wall_us",
+                self.post_attn_ffn_gate_up_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_post_attn_ffn_activation_wall_us",
+                self.post_attn_ffn_activation_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_post_attn_ffn_down_wall_us",
+                self.post_attn_ffn_down_wall_us,
             ),
             (
                 "ax_mlx_decode_profile_post_attn_output_proj_wall_us",
@@ -1978,6 +2160,9 @@ struct RequestState {
     /// we merge each batch's delta into this field so the surfaced totals
     /// reflect the full request, not just the latest step.
     decode_profile: DecodeProfileSnapshot,
+    /// Per-request cumulative prefill profile. This is opt-in and mirrors the
+    /// decode-stage profile, but only for chunked prompt forward passes.
+    prefill_profile: PrefillProfileSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2010,6 +2195,7 @@ impl RequestState {
             ngram_acceleration: NgramAccelerationTelemetry::default(),
             decode_telemetry: DecodeTelemetry::default(),
             decode_profile: DecodeProfileSnapshot::default(),
+            prefill_profile: PrefillProfileSnapshot::default(),
         }
     }
 
@@ -2086,7 +2272,17 @@ pub struct MlxRunner {
     cfg: ModelConfig,
     cfg_arc: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
+    /// Chunk size used for warm-extend prefill (snapshot restore + suffix).
+    /// MLA models force this to `MLA_DEFAULT_PREFILL_CHUNK` (16) so the
+    /// SDPA shape sequence matches the cold-of-full equivalence path.
     prefill_chunk: usize,
+    /// Chunk size used for cold prefill (no prefix-cache restore). For MLA
+    /// models this preserves the caller-supplied larger chunk (e.g. 2048
+    /// via `--prefill-step-size`), avoiding the 5–6× prefill throughput
+    /// regression that the chunk-16 alignment imposes when warm-extend is
+    /// not actually engaged for the request. Set equal to `prefill_chunk`
+    /// for non-MLA models.
+    cold_prefill_chunk: usize,
     kv_layer_windows: Vec<Option<usize>>,
     binding_summary: NativeModelBindingSummary,
     terminal_token_ids: Vec<u32>,
@@ -2219,15 +2415,18 @@ impl MlxRunner {
 
         let weights = Arc::new(weights);
 
-        // MLA models default to a smaller `prefill_chunk` so chunked_prefill
-        // produces the same SDPA Q/K shape sequence in cold (full-prompt)
-        // and warm-extend (snapshot + suffix) prefill paths. Without this,
-        // a single large cold chunk versus two smaller warm chunks would
-        // dispatch different SDPA kernels in MLX and accumulate slightly
-        // different fp results — that drift was the documented warm_extend
-        // correctness failure on GLM-4.7-Flash. Override with
-        // `AX_MLX_MLA_PREFILL_CHUNK=N` to trade correctness margin for
-        // prefill throughput; non-MLA tiers keep their tuned default.
+        // MLA models default to a smaller `prefill_chunk` for warm-extend
+        // (snapshot restore + suffix) so chunked_prefill produces the same
+        // SDPA Q/K shape sequence as the cold-of-full path. Cold prefill
+        // without any prefix-cache restore keeps the caller's larger chunk
+        // (`cold_prefill_chunk`) because chunk-16 alignment serves no
+        // correctness purpose when no snapshot is being compared against,
+        // and the 5–6× per-prefill dispatch overhead on MLA was hurting
+        // the GLM-4.7-Flash README throughput claim. Override either with
+        // `AX_MLX_MLA_PREFILL_CHUNK=N` (applies to warm-extend) or by
+        // setting the caller's prefill chunk explicitly; non-MLA tiers
+        // ignore the MLA-specific resolution.
+        let cold_prefill_chunk = prefill_chunk.max(1);
         let prefill_chunk = crate::fastpath::resolve_prefill_chunk(
             cfg.glm_mla_attention.is_some(),
             prefill_chunk,
@@ -2264,6 +2463,7 @@ impl MlxRunner {
         }
         let _ = take_gemma4_moe_profile_snapshot();
         let _ = take_linear_attention_profile_snapshot();
+        let _ = take_prefill_profile_snapshot();
         let _ = take_decode_profile_snapshot();
 
         // Qwen3.5 linear-attention uses `ngram_accel_decode_step_linear_safe` which
@@ -2302,6 +2502,7 @@ impl MlxRunner {
             cfg_arc,
             weights,
             prefill_chunk,
+            cold_prefill_chunk,
             kv_layer_windows,
             binding_summary,
             terminal_token_ids,
@@ -2374,6 +2575,7 @@ impl ExecutionRunner for MlxRunner {
         let mut decode_telemetry = DecodeTelemetry::default();
         let mut gemma4_moe_profile = Gemma4MoeProfileSnapshot::default();
         let mut linear_attention_profile = LinearAttentionProfileSnapshot::default();
+        let mut prefill_profile = PrefillProfileSnapshot::default();
         let mut decode_profile = DecodeProfileSnapshot::default();
         let mut kv_cache = KvCacheTelemetry::default();
         let mut prefix_cache = MlxPrefixCacheTelemetry::default();
@@ -2394,6 +2596,7 @@ impl ExecutionRunner for MlxRunner {
             decode_telemetry.merge_from(result.decode_telemetry);
             gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
             linear_attention_profile.merge_from(result.linear_attention_profile);
+            prefill_profile.merge_from(result.prefill_profile);
             decode_profile.merge_from(result.decode_profile);
             kv_cache.merge_from(result.kv_usage);
             prefix_cache.merge_from(result.prefix_cache);
@@ -2409,7 +2612,10 @@ impl ExecutionRunner for MlxRunner {
             decode_telemetry.append_route_decisions(&mut route_decisions);
             gemma4_moe_profile.append_route_decisions(&mut route_decisions);
             linear_attention_profile.append_route_decisions(&mut route_decisions);
+            prefill_profile.append_route_decisions(&mut route_decisions);
             decode_profile.append_route_decisions(&mut route_decisions);
+            WeightLayoutTelemetry::from_weights(&self.weights)
+                .append_route_decisions(&mut route_decisions);
             kv_cache.append_route_decisions(&mut route_decisions);
             prefix_cache.append_route_decisions(&mut route_decisions);
         }
@@ -2926,6 +3132,7 @@ impl MlxRunner {
                 decode_telemetry: DecodeTelemetry::default(),
                 gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
                 linear_attention_profile: LinearAttentionProfileSnapshot::default(),
+                prefill_profile: PrefillProfileSnapshot::default(),
                 decode_profile: DecodeProfileSnapshot::default(),
                 kv_usage: MlxKVCacheUsage::default(),
                 prefix_cache: MlxPrefixCacheTelemetry::default(),
@@ -3029,6 +3236,17 @@ impl MlxRunner {
                 // generated token — which is what L1-equivalence
                 // demands, since that token *is* the prefill output
                 // for the producing cold prefill.
+                // Pick chunk size based on whether this prefill will extend
+                // a restored snapshot (warm-extend → small MLA-aligned chunk
+                // so SDPA shape sequence matches the snapshot's producing
+                // path) or start from an empty KV cache (cold → caller's
+                // larger chunk for prefill throughput). For MLA models the
+                // two values differ; for non-MLA models they're identical.
+                let prefill_chunk_for_request = if state.cache.seq_len == 0 {
+                    self.cold_prefill_chunk
+                } else {
+                    self.prefill_chunk
+                };
                 let tok = if prefill_tokens.is_empty() {
                     if let Some(tok) = state.cached_prefill_output_token.take() {
                         tok
@@ -3037,7 +3255,9 @@ impl MlxRunner {
                         // not carry a prefill output token, do not run
                         // decode_one on the restored full cache: that
                         // would append the last prompt token twice.
-                        // Fall back to an exact cold prefill.
+                        // Fall back to an exact cold prefill — `cache`
+                        // is reset on the line below, so the cold chunk
+                        // size applies regardless of how we got here.
                         state.cache.reset();
                         state.prompt_prefix_tokens.clear();
                         effective_prefill_token_count = token_ids.len();
@@ -3047,7 +3267,7 @@ impl MlxRunner {
                             &self.weights,
                             token_ids,
                             &mut state.cache,
-                            self.prefill_chunk,
+                            self.cold_prefill_chunk,
                             MlxSamplingRequest::new(sampling, &recompute_history),
                             &mut state.rng,
                         )
@@ -3058,7 +3278,7 @@ impl MlxRunner {
                         &self.weights,
                         prefill_tokens,
                         &mut state.cache,
-                        self.prefill_chunk,
+                        prefill_chunk_for_request,
                         MlxSamplingRequest::new(sampling, &repetition_history),
                         &mut state.rng,
                     )
@@ -3152,6 +3372,10 @@ impl MlxRunner {
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
         let linear_attention_profile = take_linear_attention_profile_snapshot();
         state
+            .prefill_profile
+            .merge_from(take_prefill_profile_snapshot());
+        let prefill_profile = state.prefill_profile;
+        state
             .decode_profile
             .merge_from(take_decode_profile_snapshot());
         let decode_profile = state.decode_profile;
@@ -3201,6 +3425,7 @@ impl MlxRunner {
             decode_telemetry,
             gemma4_moe_profile,
             linear_attention_profile,
+            prefill_profile,
             decode_profile,
             kv_usage,
             prefix_cache,
@@ -4243,6 +4468,7 @@ struct MlxItemRun {
     decode_telemetry: DecodeTelemetry,
     gemma4_moe_profile: Gemma4MoeProfileSnapshot,
     linear_attention_profile: LinearAttentionProfileSnapshot,
+    prefill_profile: PrefillProfileSnapshot,
     decode_profile: DecodeProfileSnapshot,
     kv_usage: MlxKVCacheUsage,
     prefix_cache: MlxPrefixCacheTelemetry,
@@ -5434,6 +5660,98 @@ mod tests {
         assert_eq!(summary.source_q8_0_binding_count, 0);
     }
 
+    fn unit_weight() -> QuantizedWeight {
+        QuantizedWeight::new(mlx_sys::zeros(&[1, 1], MlxDtype::Float32, None), None, None)
+    }
+
+    fn runner_test_layer() -> LayerWeights {
+        LayerWeights {
+            attn_norm: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: None,
+            glm_mla_attn: None,
+            ffn_norm: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: None,
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: None,
+            router_correction_bias: None,
+            router_scale: None,
+            router_combined_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
+            gate_up_exps_packed: None,
+            gate_exps: None,
+            up_exps: None,
+            down_exps: None,
+            rotation_smoothing_inverse: None,
+        }
+    }
+
+    fn runner_test_weights(layers: Vec<LayerWeights>) -> ModelWeights {
+        ModelWeights {
+            token_embedding: unit_weight(),
+            final_norm: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
+            lm_head: unit_weight(),
+            layers,
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+        }
+    }
+
+    #[test]
+    fn weight_layout_telemetry_counts_dense_ffn_packed_and_split_layers() {
+        let mut packed = runner_test_layer();
+        packed.gate_up_packed = Some(unit_weight());
+        packed.down_proj = Some(unit_weight());
+        let mut split = runner_test_layer();
+        split.gate_proj = Some(unit_weight());
+        split.up_proj = Some(unit_weight());
+        split.down_proj = Some(unit_weight());
+        let mut attention_only = runner_test_layer();
+        attention_only.gate_up_packed = Some(unit_weight());
+
+        let telemetry = WeightLayoutTelemetry::from_weights(&runner_test_weights(vec![
+            packed,
+            split,
+            attention_only,
+        ]));
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get("ax_mlx_dense_ffn_gate_up_packed_layers"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_dense_ffn_split_gate_up_layers"),
+            Some(&1)
+        );
+    }
+
     fn dense_manifest() -> NativeModelManifest {
         NativeModelManifest {
             schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
@@ -6291,6 +6609,9 @@ mod tests {
             sdpa_wall_us: 500,
             post_attn_wall_us: 2400,
             post_attn_ffn_wall_us: 1800,
+            post_attn_ffn_gate_up_wall_us: 900,
+            post_attn_ffn_activation_wall_us: 300,
+            post_attn_ffn_down_wall_us: 600,
             post_attn_output_proj_wall_us: 300,
             post_attn_residual_norm_wall_us: 100,
             post_attn_residual_gate_wall_us: 200,
@@ -6308,6 +6629,9 @@ mod tests {
             sdpa_wall_us: 100,
             post_attn_wall_us: 600,
             post_attn_ffn_wall_us: 400,
+            post_attn_ffn_gate_up_wall_us: 200,
+            post_attn_ffn_activation_wall_us: 50,
+            post_attn_ffn_down_wall_us: 150,
             post_attn_output_proj_wall_us: 75,
             post_attn_residual_norm_wall_us: 25,
             post_attn_residual_gate_wall_us: 50,
@@ -6359,6 +6683,18 @@ mod tests {
             Some(&2200)
         );
         assert_eq!(
+            decisions.get("ax_mlx_decode_profile_post_attn_ffn_gate_up_wall_us"),
+            Some(&1100)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_post_attn_ffn_activation_wall_us"),
+            Some(&350)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_post_attn_ffn_down_wall_us"),
+            Some(&750)
+        );
+        assert_eq!(
             decisions.get("ax_mlx_decode_profile_post_attn_output_proj_wall_us"),
             Some(&375)
         );
@@ -6377,6 +6713,102 @@ mod tests {
 
         let mut disabled_decisions = Vec::new();
         DecodeProfileSnapshot::default().append_route_decisions(&mut disabled_decisions);
+        assert!(disabled_decisions.is_empty());
+    }
+
+    #[test]
+    fn prefill_profile_route_decisions_emit_only_when_enabled() {
+        let mut profile = PrefillProfileSnapshot {
+            enabled: 1,
+            prefill_steps: 2,
+            layers: 48,
+            tokens: 4096,
+            per_layer_input_wall_us: 800,
+            pre_sdpa_wall_us: 1200,
+            pre_sdpa_qkv_proj_wall_us: 700,
+            pre_sdpa_qk_norm_wall_us: 200,
+            pre_sdpa_rope_kv_wall_us: 300,
+            sdpa_wall_us: 500,
+            post_attn_wall_us: 2400,
+            post_attn_ffn_wall_us: 1800,
+            post_attn_ffn_gate_up_wall_us: 900,
+            post_attn_ffn_activation_wall_us: 300,
+            post_attn_ffn_down_wall_us: 600,
+            post_attn_output_proj_wall_us: 300,
+            post_attn_residual_norm_wall_us: 100,
+            post_attn_residual_gate_wall_us: 200,
+            lm_head_wall_us: 150,
+        };
+        profile.merge_from(PrefillProfileSnapshot {
+            enabled: 1,
+            prefill_steps: 1,
+            layers: 24,
+            tokens: 2048,
+            per_layer_input_wall_us: 200,
+            pre_sdpa_wall_us: 300,
+            pre_sdpa_qkv_proj_wall_us: 200,
+            pre_sdpa_qk_norm_wall_us: 50,
+            pre_sdpa_rope_kv_wall_us: 75,
+            sdpa_wall_us: 100,
+            post_attn_wall_us: 600,
+            post_attn_ffn_wall_us: 400,
+            post_attn_ffn_gate_up_wall_us: 200,
+            post_attn_ffn_activation_wall_us: 50,
+            post_attn_ffn_down_wall_us: 150,
+            post_attn_output_proj_wall_us: 75,
+            post_attn_residual_norm_wall_us: 25,
+            post_attn_residual_gate_wall_us: 50,
+            lm_head_wall_us: 50,
+        });
+
+        let mut decisions = Vec::new();
+        profile.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(decisions.get("ax_mlx_prefill_profile_enabled"), Some(&1));
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_prefill_steps"),
+            Some(&3)
+        );
+        assert_eq!(decisions.get("ax_mlx_prefill_profile_layers"), Some(&72));
+        assert_eq!(decisions.get("ax_mlx_prefill_profile_tokens"), Some(&6144));
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_pre_sdpa_wall_us"),
+            Some(&1500)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_pre_sdpa_qkv_proj_wall_us"),
+            Some(&900)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_sdpa_wall_us"),
+            Some(&600)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_post_attn_ffn_wall_us"),
+            Some(&2200)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_post_attn_ffn_gate_up_wall_us"),
+            Some(&1100)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_post_attn_ffn_activation_wall_us"),
+            Some(&350)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_post_attn_ffn_down_wall_us"),
+            Some(&750)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_lm_head_wall_us"),
+            Some(&200)
+        );
+
+        let mut disabled_decisions = Vec::new();
+        PrefillProfileSnapshot::default().append_route_decisions(&mut disabled_decisions);
         assert!(disabled_decisions.is_empty());
     }
 

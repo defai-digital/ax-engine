@@ -174,13 +174,19 @@ fn detect_xcrun_tool(tool: &str) -> ToolStatusReport {
 }
 
 fn xcrun_developer_dir_candidates() -> Vec<Option<String>> {
+    // Source of truth for the active developer dir is `xcode-select -p` (or
+    // a `DEVELOPER_DIR` env override). We previously also hardcoded
+    // `/Applications/Xcode.app/Contents/Developer` as a candidate, but on
+    // machines where the user has both Xcode.app installed AND
+    // xcode-select pointing at the Command Line Tools, that candidate
+    // costs ~300–350 ms per probed tool (xcrun does an exhaustive Xcode
+    // toolchain scan before failing). For three probed tools that adds
+    // ~700 ms of one-time cost to every cold start. Trust xcode-select.
     let mut candidates = Vec::new();
     let mut seen = BTreeSet::new();
 
     for candidate in [
         env::var("DEVELOPER_DIR").ok(),
-        Some("/Applications/Xcode.app/Contents/Developer".to_string())
-            .filter(|path| Path::new(path).is_dir()),
         command_stdout("xcode-select", &["-p"]).filter(|path| Path::new(path).is_dir()),
     ] {
         let Some(candidate) = candidate else {
