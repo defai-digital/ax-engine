@@ -4,8 +4,9 @@ use ax_engine_core::MlxTurboQuantPreset;
 use mlx_sys::{KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, eval};
 
 use crate::turboquant::{
-    TurboQuantAttentionPartitionStats, TurboQuantCodecError, TurboQuantCompressedBlockBuffer,
-    TurboQuantFusedDecodeLaunchDescriptor, hadamard_in_place, merge_attention_partition_stats,
+    TurboQuantAttentionPartitionStats, TurboQuantAttentionPartitionStatsBatch,
+    TurboQuantCodecError, TurboQuantCompressedBlockBuffer, TurboQuantFusedDecodeLaunchDescriptor,
+    hadamard_in_place, merge_attention_partition_stats,
 };
 
 static TURBOQUANT_FUSED_COLD_DECODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -421,8 +422,26 @@ pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compres
     query_values: &[f32],
     n_query_heads: usize,
 ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+    let batch =
+        turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat(
+            descriptor,
+            compressed,
+            query_values,
+            n_query_heads,
+        )?;
+    (0..batch.query_heads())
+        .map(|head_index| batch.partition_stats(head_index))
+        .collect()
+}
+
+pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    compressed: &MlxArray,
+    query_values: &[f32],
+    n_query_heads: usize,
+) -> Result<TurboQuantAttentionPartitionStatsBatch, TurboQuantCodecError> {
     let rotated_queries = rotated_query_values_from_flat(descriptor, query_values, n_query_heads)?;
-    turboquant_fused_cold_decode_metal_two_stage_stats_with_rotated_queries(
+    turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries(
         descriptor,
         compressed,
         &rotated_queries,
@@ -461,6 +480,21 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_with_rotated_queries(
     compressed: &MlxArray,
     rotated_queries: &[f32],
 ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+    let batch = turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries(
+        descriptor,
+        compressed,
+        rotated_queries,
+    )?;
+    (0..batch.query_heads())
+        .map(|head_index| batch.partition_stats(head_index))
+        .collect()
+}
+
+fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    compressed: &MlxArray,
+    rotated_queries: &[f32],
+) -> Result<TurboQuantAttentionPartitionStatsBatch, TurboQuantCodecError> {
     let query = MlxArray::from_raw_data(
         rotated_queries.as_ptr().cast(),
         std::mem::size_of_val(rotated_queries),
@@ -670,19 +704,13 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_with_rotated_queries(
     let max_scores = max_scores.data_f32();
     let exp_sums = exp_sums.data_f32();
     let weighted_value_sum = weighted_value_sum.data_f32();
-    let mut stats = Vec::with_capacity(descriptor.n_query_heads);
-    for head_index in 0..descriptor.n_query_heads {
-        let offset = head_index * descriptor.head_dim;
-        stats.push(TurboQuantAttentionPartitionStats {
-            token_count: descriptor.cold_tokens,
-            value_dim: descriptor.head_dim,
-            max_score: max_scores[head_index],
-            exp_sum: exp_sums[head_index],
-            weighted_value_sum: weighted_value_sum[offset..offset + descriptor.head_dim].to_vec(),
-        });
-    }
-
-    Ok(stats)
+    Ok(TurboQuantAttentionPartitionStatsBatch {
+        token_count: descriptor.cold_tokens,
+        value_dim: descriptor.head_dim,
+        max_scores: max_scores.to_vec(),
+        exp_sums: exp_sums.to_vec(),
+        weighted_value_sums: weighted_value_sum.to_vec(),
+    })
 }
 
 const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_HEADER: &str = r#"
