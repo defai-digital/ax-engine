@@ -11,6 +11,7 @@ from typing import Any
 from check_ax_serving_benchmark_artifact import (
     ArtifactCheckError,
     load_json,
+    route_decision_min_arg,
     validate_serving_benchmark_artifact,
 )
 
@@ -93,6 +94,19 @@ def render_category_table(by_category: dict[str, Any]) -> list[str]:
     return lines
 
 
+def render_route_decisions_table(route_decisions: Any) -> list[str]:
+    if not isinstance(route_decisions, dict) or not route_decisions:
+        return []
+    lines = [
+        "| Route decision | Value |",
+        "|---|---:|",
+    ]
+    for key, value in sorted(route_decisions.items()):
+        rendered = fmt(value, digits=0) if isinstance(value, (int, float)) else str(value)
+        lines.append(f"| `{key}` | {rendered} |")
+    return lines
+
+
 def render_report(
     artifact_path: Path,
     *,
@@ -102,6 +116,7 @@ def render_report(
     require_slo: bool = False,
     min_goodput_ratio: float | None = None,
     min_input_tokens_p95: int | None = None,
+    required_route_decision_mins: dict[str, float] | None = None,
 ) -> str:
     validate_serving_benchmark_artifact(
         artifact_path,
@@ -111,6 +126,7 @@ def render_report(
         require_slo=require_slo,
         min_goodput_ratio=min_goodput_ratio,
         min_input_tokens_p95=min_input_tokens_p95,
+        required_route_decision_mins=required_route_decision_mins,
     )
     artifact = load_json(artifact_path)
     target = require_summary(artifact, "target")
@@ -153,6 +169,10 @@ def render_report(
         "",
     ]
     lines.extend(render_distribution_table(summary))
+    route_decisions_table = render_route_decisions_table(summary.get("route_decisions"))
+    if route_decisions_table:
+        lines.extend(["", "## Route Decisions", ""])
+        lines.extend(route_decisions_table)
     lines.extend(["", "## Category Breakdown", ""])
     lines.extend(render_category_table(by_category))
     lines.extend(
@@ -196,6 +216,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--require-slo", action="store_true")
     parser.add_argument("--min-goodput-ratio", type=ratio_arg)
     parser.add_argument("--min-input-tokens-p95", type=positive_int_arg)
+    parser.add_argument(
+        "--require-route-decision-min",
+        action="append",
+        default=[],
+        metavar="KEY=MIN",
+        type=route_decision_min_arg,
+    )
     return parser.parse_args(argv)
 
 
@@ -210,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
             require_slo=args.require_slo,
             min_goodput_ratio=args.min_goodput_ratio,
             min_input_tokens_p95=args.min_input_tokens_p95,
+            required_route_decision_mins=dict(args.require_route_decision_min),
         )
     except (ArtifactCheckError, ServingBenchmarkReportError) as error:
         print(f"AX serving benchmark report failed: {error}", file=sys.stderr)

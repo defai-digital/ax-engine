@@ -131,7 +131,24 @@ def validate_observation(row: Any, index: int) -> dict[str, Any]:
         )
         if output_tokens > 1:
             require_number(obs.get("client_tpot_ms"), f"observations[{index}].client_tpot_ms")
+    route_decisions = obs.get("route_decisions")
+    if route_decisions is not None:
+        validate_route_decisions(route_decisions, f"observations[{index}].route_decisions")
     return obs
+
+
+def validate_route_decisions(value: Any, owner: str) -> dict[str, Any]:
+    decisions = require_object(value, owner)
+    for key, route_value in decisions.items():
+        if not isinstance(key, str) or not key:
+            raise ArtifactCheckError(f"{owner} keys must be non-empty strings")
+        if not isinstance(route_value, (int, float, str, bool)) or (
+            isinstance(route_value, float) and not math.isfinite(route_value)
+        ):
+            raise ArtifactCheckError(
+                f"{owner}.{key} must be a finite number, string, or boolean"
+            )
+    return decisions
 
 
 def validate_counts(summary: dict[str, Any], observations: list[dict[str, Any]]) -> None:
@@ -187,6 +204,7 @@ def validate_serving_benchmark_artifact(
     require_slo: bool,
     min_goodput_ratio: float | None,
     min_input_tokens_p95: int | None,
+    required_route_decision_mins: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     artifact = load_json(path)
     if artifact.get("schema_version") != SCHEMA_VERSION:
@@ -246,6 +264,21 @@ def validate_serving_benchmark_artifact(
     )
     for key in SUMMARY_DISTRIBUTIONS:
         validate_distribution(summary.get(key), f"summary.{key}", allow_null=False)
+    summary_route_decisions = summary.get("route_decisions")
+    if summary_route_decisions is not None:
+        validate_route_decisions(summary_route_decisions, "summary.route_decisions")
+    required_route_decision_mins = required_route_decision_mins or {}
+    if required_route_decision_mins:
+        route_decisions = validate_route_decisions(
+            summary.get("route_decisions"), "summary.route_decisions"
+        )
+        for key, minimum in required_route_decision_mins.items():
+            actual = require_number(route_decisions.get(key), f"summary.route_decisions.{key}")
+            if actual < minimum:
+                raise ArtifactCheckError(
+                    f"summary.route_decisions.{key}={actual:.6f} "
+                    f"is below required {minimum:.6f}"
+                )
 
     if require_zero_errors and int(summary["error_requests"]) != 0:
         raise ArtifactCheckError("serving artifact contains failed measured requests")
@@ -280,6 +313,21 @@ def positive_int_arg(value: str) -> int:
     return parsed
 
 
+def route_decision_min_arg(value: str) -> tuple[str, float]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("value must use KEY=MIN")
+    key, raw_minimum = value.split("=", 1)
+    if not key:
+        raise argparse.ArgumentTypeError("KEY must be non-empty")
+    try:
+        minimum = float(raw_minimum)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("MIN must be numeric") from error
+    if not math.isfinite(minimum) or minimum < 0.0:
+        raise argparse.ArgumentTypeError("MIN must be a non-negative finite number")
+    return key, minimum
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", type=Path)
@@ -292,6 +340,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-input-tokens-p95",
         type=positive_int_arg,
         help="Require p95 input tokens at or above this value for long-prompt serving claims.",
+    )
+    parser.add_argument(
+        "--require-route-decision-min",
+        action="append",
+        default=[],
+        metavar="KEY=MIN",
+        type=route_decision_min_arg,
+        help=(
+            "Require summary.route_decisions[KEY] to be at least MIN. Repeat for "
+            "promotion gates that must prove a runtime route was exercised."
+        ),
     )
     return parser
 
@@ -308,6 +367,7 @@ def main(argv: list[str]) -> int:
             require_slo=args.require_slo,
             min_goodput_ratio=args.min_goodput_ratio,
             min_input_tokens_p95=args.min_input_tokens_p95,
+            required_route_decision_mins=dict(args.require_route_decision_min),
         )
     except ArtifactCheckError as error:
         print(f"AX serving benchmark artifact check failed: {error}", file=sys.stderr)

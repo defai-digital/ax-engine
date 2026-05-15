@@ -57,6 +57,11 @@ def observation(prompt_id: str, input_tokens: int, ttft_ms: float) -> dict[str, 
         "output_tokens": 5,
         "output_chunks": 5,
         "events": 7,
+        "route_decisions": {
+            "ax_mlx_prefix_cache_disk_hits": 2,
+            "ax_mlx_prefix_cache_disk_enabled": True,
+            "ax_mlx_prefix_cache_mode": "disk",
+        },
         "metadata": {},
     }
 
@@ -112,6 +117,10 @@ def artifact() -> dict[str, object]:
             "queue_delay_ms": dist([0.0, 0.0]),
             "input_tokens": dist([8192.0, 9000.0]),
             "output_tokens": dist([5.0, 5.0]),
+            "route_decisions": {
+                "ax_mlx_prefix_cache_disk_hits": 4,
+                "ax_mlx_prefix_cache_disk_enabled": 2,
+            },
             "goodput": {
                 "requests": 2,
                 "ratio": 1.0,
@@ -155,6 +164,7 @@ class AxServingBenchmarkArtifactTests(unittest.TestCase):
             require_slo=True,
             min_goodput_ratio=0.99,
             min_input_tokens_p95=8192,
+            required_route_decision_mins={"ax_mlx_prefix_cache_disk_hits": 2.0},
         )
 
         self.assertEqual(result["schema_version"], "ax.serving_benchmark.v1")
@@ -203,6 +213,44 @@ class AxServingBenchmarkArtifactTests(unittest.TestCase):
                 min_input_tokens_p95=8192,
             )
 
+    def test_route_decision_gate_rejects_missing_runtime_route_evidence(self) -> None:
+        payload = artifact()
+        summary = payload["summary"]
+        assert isinstance(summary, dict)
+        summary["route_decisions"] = {"ax_mlx_prefix_cache_disk_hits": 0}
+        path = self.write_artifact(payload)
+
+        with self.assertRaisesRegex(checker.ArtifactCheckError, "below required 1"):
+            checker.validate_serving_benchmark_artifact(
+                path,
+                min_requests=1,
+                min_concurrency=1,
+                require_zero_errors=True,
+                require_slo=False,
+                min_goodput_ratio=None,
+                min_input_tokens_p95=None,
+                required_route_decision_mins={"ax_mlx_prefix_cache_disk_hits": 1.0},
+            )
+
+    def test_route_decision_gate_rejects_missing_summary_field(self) -> None:
+        payload = artifact()
+        summary = payload["summary"]
+        assert isinstance(summary, dict)
+        del summary["route_decisions"]
+        path = self.write_artifact(payload)
+
+        with self.assertRaisesRegex(checker.ArtifactCheckError, "summary.route_decisions"):
+            checker.validate_serving_benchmark_artifact(
+                path,
+                min_requests=1,
+                min_concurrency=1,
+                require_zero_errors=True,
+                require_slo=False,
+                min_goodput_ratio=None,
+                min_input_tokens_p95=None,
+                required_route_decision_mins={"ax_mlx_prefix_cache_disk_hits": 1.0},
+            )
+
     def test_cli_validates_artifact_file(self) -> None:
         path = self.write_artifact(artifact())
 
@@ -220,6 +268,8 @@ class AxServingBenchmarkArtifactTests(unittest.TestCase):
                 "1.0",
                 "--min-input-tokens-p95",
                 "8192",
+                "--require-route-decision-min",
+                "ax_mlx_prefix_cache_disk_hits=4",
             ],
             check=True,
             text=True,

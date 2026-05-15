@@ -53,6 +53,10 @@ def category_summary() -> dict[str, object]:
         "queue_delay_ms": dist([0.0, 0.0]),
         "input_tokens": dist([8192.0, 9000.0]),
         "output_tokens": dist([5.0, 5.0]),
+        "route_decisions": {
+            "ax_mlx_prefix_cache_disk_hits": 2,
+            "ax_mlx_prefix_cache_disk_enabled": 2,
+        },
         "goodput": {
             "requests": 2,
             "ratio": 1.0,
@@ -158,10 +162,13 @@ class AxServingBenchmarkReportTests(unittest.TestCase):
             min_concurrency=2,
             require_slo=True,
             min_input_tokens_p95=8192,
+            required_route_decision_mins={"ax_mlx_prefix_cache_disk_hits": 1.0},
         )
 
         self.assertIn("# AX Serving Benchmark Report", report)
         self.assertIn("Goodput: 1.000", report)
+        self.assertIn("## Route Decisions", report)
+        self.assertIn("| `ax_mlx_prefix_cache_disk_hits` | 2 |", report)
         self.assertIn("| TTFT ms | 2 | 1,200.0 |", report)
         self.assertIn("| long_rag | 2 | 0 | 1,200.0 |", report)
         self.assertIn("client-observed SSE timings", report)
@@ -177,6 +184,8 @@ class AxServingBenchmarkReportTests(unittest.TestCase):
                 str(output),
                 "--min-input-tokens-p95",
                 "8192",
+                "--require-route-decision-min",
+                "ax_mlx_prefix_cache_disk_hits=1",
                 "--require-slo",
             ]
         )
