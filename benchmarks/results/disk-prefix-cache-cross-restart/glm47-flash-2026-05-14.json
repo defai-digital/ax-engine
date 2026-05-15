@@ -1,0 +1,113 @@
+{
+  "aggregate": {
+    "correctness_failures": 0,
+    "prompts_total": 2,
+    "total_disk_hits_phase_b": 2,
+    "verdict": "PASS"
+  },
+  "config": {
+    "cache_dir": "/var/folders/pw/j64s76pj6sl3t1ty5bg9ctq00000gp/T/ax-disk-m4-rewets4t",
+    "corpus_source": "default",
+    "max_output_tokens": 24,
+    "pad_to_block_size": 16,
+    "prompt_count": 2,
+    "seed": 1234
+  },
+  "disk_state": {
+    "files_after_phase_a": [
+      {
+        "mtime_unix": 1778809062,
+        "name": "1e92bcab40b2369088788f3d9094eb2dbd83c44a76d02d8dcf2a941b8cb83a90.axkv",
+        "size_bytes": 13864460
+      },
+      {
+        "mtime_unix": 1778809061,
+        "name": "7d0c8c7deae35a0afed989f704a8ebe6b4b918dc210d0eb9cbbbd22024d7af71.axkv",
+        "size_bytes": 13864460
+      }
+    ],
+    "files_after_phase_b": [
+      {
+        "mtime_unix": 1778809066,
+        "name": "1e92bcab40b2369088788f3d9094eb2dbd83c44a76d02d8dcf2a941b8cb83a90.axkv",
+        "size_bytes": 13864460
+      },
+      {
+        "mtime_unix": 1778809065,
+        "name": "7d0c8c7deae35a0afed989f704a8ebe6b4b918dc210d0eb9cbbbd22024d7af71.axkv",
+        "size_bytes": 13864460
+      }
+    ]
+  },
+  "generated_at_utc": "2026-05-15T01:37:47Z",
+  "host": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+  "model": {
+    "artifacts_dir": "/Users/akiralam/code/ax-engine-v4/.internal/models/GLM-4.7-Flash-4bit",
+    "model_id": "glm47-flash-4bit"
+  },
+  "per_prompt": [
+    {
+      "disk_hits_b": 1,
+      "first_divergence_index": null,
+      "id": "p1_short_factoid",
+      "output_token_count_a": 24,
+      "output_token_count_b": 24,
+      "prompt_token_count": 16,
+      "telemetry_a": {
+        "ax_mlx_prefix_cache_disk_evictions": 0,
+        "ax_mlx_prefix_cache_disk_hits": 0,
+        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 13540,
+        "ax_mlx_prefix_cache_disk_inserts": 1,
+        "ax_mlx_prefix_cache_disk_misses": 0,
+        "ax_mlx_prefix_cache_entries": 1,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_stores": 1
+      },
+      "telemetry_b": {
+        "ax_mlx_prefix_cache_disk_evictions": 0,
+        "ax_mlx_prefix_cache_disk_hits": 1,
+        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 13540,
+        "ax_mlx_prefix_cache_disk_inserts": 1,
+        "ax_mlx_prefix_cache_disk_misses": 0,
+        "ax_mlx_prefix_cache_entries": 1,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_stores": 1
+      },
+      "tokens_match": true
+    },
+    {
+      "disk_hits_b": 1,
+      "first_divergence_index": null,
+      "id": "p2_medium_explain",
+      "output_token_count_a": 24,
+      "output_token_count_b": 24,
+      "prompt_token_count": 32,
+      "telemetry_a": {
+        "ax_mlx_prefix_cache_disk_evictions": 0,
+        "ax_mlx_prefix_cache_disk_hits": 0,
+        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 13540,
+        "ax_mlx_prefix_cache_disk_inserts": 1,
+        "ax_mlx_prefix_cache_disk_misses": 0,
+        "ax_mlx_prefix_cache_entries": 2,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_stores": 1
+      },
+      "telemetry_b": {
+        "ax_mlx_prefix_cache_disk_evictions": 0,
+        "ax_mlx_prefix_cache_disk_hits": 1,
+        "ax_mlx_prefix_cache_disk_insert_bytes_kib": 13540,
+        "ax_mlx_prefix_cache_disk_inserts": 1,
+        "ax_mlx_prefix_cache_disk_misses": 0,
+        "ax_mlx_prefix_cache_entries": 2,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_stores": 1
+      },
+      "tokens_match": true
+    }
+  ],
+  "schema_version": "ax.disk_prefix_cache_cross_restart.v1"
+}

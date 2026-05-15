@@ -170,6 +170,24 @@ exactly block-aligned). Token-exact equivalence under cross-restart
 confirms the L1 alignment gate and the new prefill-token-on-disk
 plumbing both translate cleanly to the hybrid path.
 
+### 4.3 Pure MLA — GLM-4.7-Flash 4-bit
+
+Same harness, same corpus, same pad_to_block:
+
+| Prompt | tokens | tokens_match | disk_hits_b | telemetry_b notes |
+|---|---|---|---|---|
+| p1_short_factoid | 16 | ✅ true | 1 | hit + re-insert + 0 evictions |
+| p2_medium_explain | 32 | ✅ true | 1 | hit + re-insert + 0 evictions |
+
+Artifact: `benchmarks/results/disk-prefix-cache-cross-restart/glm47-flash-2026-05-14.json`.
+
+GLM-4.7 is the pure-MLA target: every layer goes through MLA
+attention with the kv_latent + k_pe split. The M2 store path explicitly
+gates non-FA architectures (linear / sliding-window / MLA) on
+block-aligned full-prompt snapshots only, so this run also confirms
+that the gate's MLA branch is sound under cross-restart, not just
+in-process.
+
 Both phase-B telemetry rows in both runs show `disk_hits=1` confirming
 the L2 restore actually fired (the previous M2 smoke ran the same
 prompt within a single process and never exercised the restore path).
@@ -184,10 +202,6 @@ PRD §8.2.
 
 ## 5. What this *doesn't* prove
 
-- **Pure-MLA (GLM-class) models.** GLM-4.7 was not run in this batch;
-  the Qwen3.5 hybrid path exercises both the linear-attention store
-  restriction and the full-attention MLA gate, so the gap is narrow,
-  but a dedicated GLM-class run would close it.
 - **Multi-process stress.** The M3B advisory-lock primitive serializes
   mutating operations across processes, but the PRD's concurrent
   four-process stress artifact has not been produced yet.
@@ -205,6 +219,7 @@ PRD §8.2.
 | `scripts/verify_disk_prefix_cache_cross_restart.py` | New M4 harness: orchestrator + run-once worker. |
 | `benchmarks/results/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json` | M4 PASS evidence on Gemma 4 E2B (standard FA + sliding window). |
 | `benchmarks/results/disk-prefix-cache-cross-restart/qwen35-9b-2026-05-14.json` | M4 PASS evidence on Qwen3.5-9B (hybrid MLA + linear attention). |
+| `benchmarks/results/disk-prefix-cache-cross-restart/glm47-flash-2026-05-14.json` | M4 PASS evidence on GLM-4.7-Flash (pure MLA). |
 
 ## 7. Closure conditions for this M4 artifact
 
