@@ -7,7 +7,7 @@ use crate::turboquant::{
     FullPrecisionKvTokenVectors, TurboQuantAttentionPartitionStats, TurboQuantBlockLayout,
     TurboQuantBlockLayoutConfig, TurboQuantCodecError, TurboQuantCompressedBlockBuffer,
     TurboQuantCompressedDecodePlan, merge_attention_partition_stats, packed_kv_bytes_per_token,
-    reference_decode_attention_partition_stats, turboquant_query_head_to_kv_head,
+    turboquant_query_head_to_kv_head,
 };
 use crate::turboquant_metal::{
     turboquant_fused_cold_decode_metal_two_stage_partition_stats,
@@ -185,26 +185,93 @@ fn kv_heads_for_token_from_f32_slices(
         .collect()
 }
 
-fn kv_hot_tail_head_for_relative_token_from_f32_slices(
+fn hot_tail_partition_stats_from_f32_slices(
+    query: &[f32],
     k_values: &[f32],
     v_values: &[f32],
     n_kv_heads: usize,
     head_dim: usize,
     hot_token_count: usize,
-    relative_token_index: usize,
-    head_index: usize,
-) -> FullPrecisionKvTokenVectors {
-    kv_head_for_token_from_f32_slices(
-        k_values,
-        v_values,
-        KvHeadSliceShape {
-            n_kv_heads: n_kv_heads as i32,
-            head_dim: head_dim as i32,
-            capacity: hot_token_count,
-        },
-        relative_token_index,
-        head_index,
-    )
+    kv_head_index: usize,
+) -> Result<TurboQuantAttentionPartitionStats, TurboQuantCodecError> {
+    if hot_token_count == 0 {
+        return Err(TurboQuantCodecError::EmptyKvHistory);
+    }
+    if query.len() != head_dim {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: head_dim,
+            actual: query.len(),
+        });
+    }
+    if kv_head_index >= n_kv_heads {
+        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: n_kv_heads,
+            actual: kv_head_index.saturating_add(1),
+        });
+    }
+    let expected_len = n_kv_heads
+        .saturating_mul(hot_token_count)
+        .saturating_mul(head_dim);
+    if k_values.len() < expected_len {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: expected_len,
+            actual: k_values.len(),
+        });
+    }
+    if v_values.len() < expected_len {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: expected_len,
+            actual: v_values.len(),
+        });
+    }
+
+    let scale = (head_dim as f32).sqrt().recip();
+    let head_offset = kv_head_index
+        .saturating_mul(hot_token_count)
+        .saturating_mul(head_dim);
+    let token_range = |token_index: usize| {
+        let start = head_offset.saturating_add(token_index.saturating_mul(head_dim));
+        start..start.saturating_add(head_dim)
+    };
+
+    let mut max_score = f32::NEG_INFINITY;
+    for token_index in 0..hot_token_count {
+        let key = &k_values[token_range(token_index)];
+        let score = query
+            .iter()
+            .zip(key)
+            .map(|(left, right)| left * right)
+            .sum::<f32>()
+            * scale;
+        max_score = max_score.max(score);
+    }
+
+    let mut exp_sum = 0.0f32;
+    let mut weighted_value_sum = vec![0.0f32; head_dim];
+    for token_index in 0..hot_token_count {
+        let range = token_range(token_index);
+        let key = &k_values[range.clone()];
+        let value = &v_values[range];
+        let score = query
+            .iter()
+            .zip(key)
+            .map(|(left, right)| left * right)
+            .sum::<f32>()
+            * scale;
+        let weight = (score - max_score).exp();
+        exp_sum += weight;
+        for (acc, value) in weighted_value_sum.iter_mut().zip(value) {
+            *acc += weight * value;
+        }
+    }
+
+    Ok(TurboQuantAttentionPartitionStats {
+        token_count: hot_token_count,
+        value_dim: head_dim,
+        max_score,
+        exp_sum,
+        weighted_value_sum,
+    })
 }
 
 fn kv_head_for_token_from_f32_slices(
@@ -2133,25 +2200,20 @@ impl MlxKVCache {
         for (query_head_index, query) in queries.iter().enumerate() {
             let kv_head_index =
                 turboquant_query_head_to_kv_head(query_head_index, queries.len(), n_kv_heads)?;
-            let hot_tokens = (0..hot_token_count)
-                .map(|token_index| {
-                    kv_hot_tail_head_for_relative_token_from_f32_slices(
-                        k_values,
-                        v_values,
-                        n_kv_heads,
-                        head_dim,
-                        hot_token_count,
-                        token_index,
-                        kv_head_index,
-                    )
-                })
-                .collect::<Vec<_>>();
-            if hot_tokens.is_empty() {
+            if hot_token_count == 0 {
                 outputs.push(merge_attention_partition_stats(&[cold_stats
                     [query_head_index]
                     .clone()])?);
             } else {
-                let hot_stats = reference_decode_attention_partition_stats(query, &hot_tokens)?;
+                let hot_stats = hot_tail_partition_stats_from_f32_slices(
+                    query,
+                    k_values,
+                    v_values,
+                    n_kv_heads,
+                    head_dim,
+                    hot_token_count,
+                    kv_head_index,
+                )?;
                 outputs.push(merge_attention_partition_stats(&[
                     cold_stats[query_head_index].clone(),
                     hot_stats,
@@ -2892,6 +2954,72 @@ mod tests {
         for (expected, actual) in expected.iter().zip(&actual) {
             for (expected, actual) in expected.iter().zip(actual) {
                 assert!((actual - expected).abs() < 0.05);
+            }
+        }
+    }
+
+    #[test]
+    fn turboquant_hot_tail_partition_stats_read_compact_slices_without_token_materialization() {
+        let n_kv_heads = 2;
+        let head_dim = 4;
+        let hot_token_count = 3;
+        let k_values = (0..n_kv_heads * hot_token_count * head_dim)
+            .map(|idx| ((idx % 17) as f32 - 8.0) / 9.0)
+            .collect::<Vec<_>>();
+        let v_values = (0..n_kv_heads * hot_token_count * head_dim)
+            .map(|idx| ((idx % 13) as f32 - 6.0) / 7.0)
+            .collect::<Vec<_>>();
+        let queries = [
+            vec![0.1, -0.2, 0.3, -0.4],
+            vec![-0.3, 0.2, 0.1, 0.5],
+            vec![0.4, 0.3, -0.2, 0.1],
+            vec![0.0, -0.5, 0.2, 0.3],
+        ];
+
+        for (query_head_index, query) in queries.iter().enumerate() {
+            let kv_head_index =
+                turboquant_query_head_to_kv_head(query_head_index, queries.len(), n_kv_heads)
+                    .expect("GQA head mapping");
+            let shape = KvHeadSliceShape {
+                n_kv_heads: n_kv_heads as i32,
+                head_dim: head_dim as i32,
+                capacity: hot_token_count,
+            };
+            let hot_tokens = (0..hot_token_count)
+                .map(|token_index| {
+                    kv_head_for_token_from_f32_slices(
+                        &k_values,
+                        &v_values,
+                        shape,
+                        token_index,
+                        kv_head_index,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let expected =
+                crate::turboquant::reference_decode_attention_partition_stats(query, &hot_tokens)
+                    .expect("reference hot stats");
+            let actual = hot_tail_partition_stats_from_f32_slices(
+                query,
+                &k_values,
+                &v_values,
+                n_kv_heads,
+                head_dim,
+                hot_token_count,
+                kv_head_index,
+            )
+            .expect("slice hot stats");
+
+            assert_eq!(actual.token_count, expected.token_count);
+            assert_eq!(actual.value_dim, expected.value_dim);
+            assert!((actual.max_score - expected.max_score).abs() < 1e-6);
+            assert!((actual.exp_sum - expected.exp_sum).abs() < 1e-6);
+            for (actual, expected) in actual
+                .weighted_value_sum
+                .iter()
+                .zip(&expected.weighted_value_sum)
+            {
+                assert!((actual - expected).abs() < 1e-6);
             }
         }
     }
