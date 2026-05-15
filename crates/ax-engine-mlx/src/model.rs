@@ -2479,14 +2479,14 @@ fn turboquant_decode_attention_experimental(
 
     let total_tokens = cache.seq_len.saturating_add(seq);
     if let Ok(decoded) = cache
-        .debug_turboquant_shadow_decode_attention_metal_timed_for_layer_with_total_tokens(
+        .debug_turboquant_shadow_decode_attention_metal_flat_timed_for_layer_with_total_tokens(
             layer_idx,
             &queries,
             total_tokens,
         )
     {
         let output_started = Instant::now();
-        return turboquant_attention_output_array(
+        return turboquant_attention_output_array_from_flat(
             decoded.outputs,
             n_heads,
             head_dim,
@@ -2507,20 +2507,19 @@ fn turboquant_decode_attention_experimental(
     None
 }
 
-fn turboquant_attention_output_array(
-    outputs: Vec<Vec<f32>>,
+fn turboquant_attention_output_array_from_flat(
+    output: Vec<f32>,
     n_heads: usize,
     head_dim: usize,
     dtype: MlxDtype,
 ) -> Option<MlxArray> {
-    if outputs.len() != n_heads || outputs.iter().any(|head| head.len() != head_dim) {
+    if output.len() != n_heads.saturating_mul(head_dim) {
         return None;
     }
 
-    let flat = outputs.into_iter().flatten().collect::<Vec<_>>();
     let out = MlxArray::from_raw_data(
-        flat.as_ptr().cast(),
-        flat.len() * std::mem::size_of::<f32>(),
+        output.as_ptr().cast(),
+        output.len() * std::mem::size_of::<f32>(),
         &[1, n_heads as i32, 1, head_dim as i32],
         MlxDtype::Float32,
     );
