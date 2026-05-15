@@ -188,27 +188,26 @@ block-aligned full-prompt snapshots only, so this run also confirms
 that the gate's MLA branch is sound under cross-restart, not just
 in-process.
 
-Both phase-B telemetry rows in both runs show `disk_hits=1` confirming
-the L2 restore actually fired (the previous M2 smoke ran the same
-prompt within a single process and never exercised the restore path).
+All phase-B telemetry rows across the three runs show `disk_hits=1`
+confirming the L2 restore actually fired (the previous M2 smoke ran
+the same prompt within a single process and never exercised the
+restore path).
 Phase-B also re-inserts each snapshot after the model continues to
 generate, which is expected behaviour: the runner refreshes the disk
 entry from the post-restore cache state, so the entry stays warm
 even when the same prompt is served by many process restarts.
 
 Phase-A vs phase-B output token streams are byte-for-byte identical
-on both architecture tiers, which is the M4 acceptance criterion per
-PRD §8.2.
+across the covered architecture tiers, which is the M4 acceptance
+criterion per PRD §8.2.
 
 ## 5. What this *doesn't* prove
 
-- **Multi-process stress.** The M3B advisory-lock primitive serializes
-  mutating operations across processes, but the PRD's concurrent
-  four-process stress artifact has not been produced yet.
-- **Long-running cache pressure.** M4 corpus is two short prompts
-  with default budgets (8 GiB / 1024 entries). The eviction sweep
-  fired zero times because the budget was never reached. A future
-  run with a tight budget would exercise the M3 LRU.
+- **Full AX-serving soak.** The M3C stress artifact covers the cache
+  primitive with four processes and tight eviction pressure, but it
+  does not load four full model-serving processes for a long soak.
+- **Long-context / perf pressure.** M4 proves correctness and disk-hit
+  wire-up, not the final long-context TTFT promotion numbers.
 
 ## 6. Files
 
@@ -234,13 +233,12 @@ PRD §8.2.
   for two prompts on Gemma 4 E2B.
 
 PRD §6 row in the parent ledger should update from "M3 landed; M4
-open" to "M4 landed; F3 runtime mostly complete; architecture-tier
-and four-process stress evidence open".
+open" to "M4 architecture-tier validation landed; F3 docs/promotion
+open".
 
 ---
 
 **Status:** M4 closed. F3 disk prefix cache is end-to-end validated
-for Gemma 4 E2B cross-restart. After the M3B amendment, the
-remaining follow-up surface area is the four-process stress artifact,
-MLA / linear-attention architecture sweeps, and an under-budget
-eviction-pressure run.
+across Gemma 4 E2B, Qwen3.5-9B, and GLM-4.7-Flash cross-restart.
+After the M3C stress artifact, the remaining follow-up surface area
+is full AX-serving soak / promotion and M5 docs.

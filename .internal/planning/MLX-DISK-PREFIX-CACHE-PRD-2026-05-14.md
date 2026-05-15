@@ -1,8 +1,8 @@
 # Disk-Durable Prefix Cache PRD (F3)
 
-Status: In progress — M1/M2/M3 locking+eviction and M4
-cross-restart validation landed for Gemma 4 E2B plus Qwen3.5-9B;
-pure-MLA evidence, four-process stress, and public docs remain open.
+Status: In progress — M1/M2/M3 locking+eviction, M4 architecture-tier
+cross-restart validation, and short cache-primitive stress landed;
+full AX-serving soak and public docs remain open.
 Date: 2026-05-14
 Owner: AX Engine
 Parent PRD: DS4-LEARNINGS-FOLLOWUP-PRD-2026-05-14.md §6 (F3)
@@ -377,6 +377,11 @@ and the perf budget.
   eviction stays bounded and `get` continues to return correct data.
 - Spawn 4 concurrent AX processes serving overlapping prompts.
   Verify no corruption, no torn reads, eviction races resolve.
+- Short cache-primitive stress can run via:
+  `cargo run -p ax-engine-mlx --bin disk-prefix-cache-stress -- --output <path>`.
+  This covers the actual `DiskPrefixCache` writer lock and tight
+  eviction policy without loading four model copies; it does not
+  replace the longer AX-serving soak.
 
 ## 9. Telemetry & success criteria
 
@@ -434,17 +439,20 @@ M2. **Integration with runner** (1–2 days). **Landed.**
     `store_prompt_prefix_snapshots`.
   - Telemetry counters land.
 
-M3. **Eviction + locking** (1–2 days). **Partially landed.**
+M3. **Eviction + locking** (1–2 days). **Landed for runtime + short stress.**
   - Best-effort post-insert eviction under byte/entry budgets is
     implemented and emits `disk_evictions`.
   - Cross-process advisory locking around insert/evict landed via a
     directory-level sentinel lock.
-  - Concurrent four-process stress remains open.
+  - Short four-process cache-primitive stress and tight-budget
+    eviction-pressure artifact landed.
+  - Full AX-serving soak remains a promotion gate, not a missing
+    runtime primitive.
 
-M4. **Integration validation** (1 day). **Partially landed.**
-  - Gemma 4 E2B and Qwen3.5-9B cross-restart disk-hit validation
-    pass via `scripts/verify_disk_prefix_cache_cross_restart.py`.
-  - Pure-MLA coverage and four-process stress remain open.
+M4. **Integration validation** (1 day). **Landed for architecture tiers.**
+  - Gemma 4 E2B, Qwen3.5-9B, and GLM-4.7-Flash cross-restart
+    disk-hit validation pass via
+    `scripts/verify_disk_prefix_cache_cross_restart.py`.
 
 M5. **Docs + PRD closure** (half day).
   - `docs/KV-CACHE.md` and `docs/PERFORMANCE.md` updates.
@@ -468,8 +476,8 @@ this PRD takes.
 
 ---
 
-**Status:** In progress. Core disk-prefix-cache runtime is implemented
-and validated for Gemma 4 E2B plus Qwen3.5-9B cross-restart.
-Remaining blockers before F3 closure are pure-MLA evidence, a
-concurrent four-process stress artifact, and M5 docs / final
-promotion review.
+**Status:** In progress. Core disk-prefix-cache runtime is implemented,
+architecture-tier cross-restart evidence is in place, and the short
+cache-primitive stress / eviction-pressure artifact passes. Remaining
+blockers before F3 closure are the full AX-serving soak decision and
+M5 docs / final promotion review.

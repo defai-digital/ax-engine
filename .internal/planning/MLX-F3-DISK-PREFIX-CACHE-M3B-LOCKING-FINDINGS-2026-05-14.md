@@ -38,12 +38,9 @@ make a distributed-cache promise for NFS/SMB semantics.
 
 ## 4. Remaining validation
 
-This slice lands the primitive, not the PRD's full stress evidence.
+This slice landed the primitive. Follow-up stress evidence now exists
+in `MLX-F3-DISK-PREFIX-CACHE-M3C-STRESS-FINDINGS-2026-05-14.md`.
 Remaining blockers before F3 closure:
 
-- concurrent four-process stress artifact with zero corruption load
-  failures;
-- pure-MLA cross-restart evidence (Qwen3.5-9B now covers the hybrid
-  MLA + linear-attention tier);
-- tight-budget eviction-pressure artifact;
+- full AX-serving soak / promotion decision;
 - M5 runtime/docs promotion review.

@@ -43,3 +43,7 @@ path = "src/bin/dequant_dtype_probe.rs"
 [[bin]]
 name = "mla-warm-extend-drift-probe"
 path = "src/bin/mla_warm_extend_drift_probe.rs"
+
+[[bin]]
+name = "disk-prefix-cache-stress"
+path = "src/bin/disk_prefix_cache_stress.rs"
