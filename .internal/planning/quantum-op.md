@@ -852,6 +852,11 @@ Active implementation slice:
   `Float32`. This is a small output-staging cleanup that preserves the existing
   cast for BF16/FP16 model paths and adds a shape/dtype guardrail test for the
   Float32 fast path.
+- **P3-S10 Float32 query-readback no-op cast removal**: skip the
+  `astype(Float32)` query staging step when `q_rope` is already Float32, while
+  preserving the explicit cast for BF16/FP16 model paths. This reduces
+  query-readback graph work for Float32 paths and adds a guardrail test that the
+  readback helper borrows Float32 input.
 
 ### TurboQuant KV Runtime Promotion
 
