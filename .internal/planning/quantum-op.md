@@ -847,6 +847,11 @@ Active implementation slice:
   instead of returning to per-query-head full-batch validation. Guardrail tests
   now cover malformed batch rejection and the shared flat helper's equivalence
   to the reference split-softmax merge.
+- **P3-S9 Float32 output-staging no-op cast removal**: skip the final
+  `astype(Float32)` when the fused flat attention output is already targeting
+  `Float32`. This is a small output-staging cleanup that preserves the existing
+  cast for BF16/FP16 model paths and adds a shape/dtype guardrail test for the
+  Float32 fast path.
 
 ### TurboQuant KV Runtime Promotion
 
