@@ -79,6 +79,12 @@ For disk-durable prefix-cache promotion claims, require a route counter in
 addition to latency and corpus-shape gates:
 
 ```text
+python3 scripts/build_serving_shared_prefix_corpus.py \
+  --output benchmarks/results/serving/disk-prefix-cache-soak-corpus.jsonl \
+  --prompts 8 \
+  --prefix-tokens 8192 \
+  --suffix-tokens 64
+
 python3 scripts/check_ax_serving_benchmark_artifact.py \
   benchmarks/results/serving/<artifact>.json \
   --min-input-tokens-p95 8192 \
@@ -88,6 +94,29 @@ python3 scripts/check_ax_serving_benchmark_artifact.py \
 
 This gate proves the serving artifact exercised the disk-cache path instead of
 only measuring a generic long-prompt run.
+
+The serving run should use the generated corpus with `--input-kind tokens`,
+warm up at least one full corpus pass, and write both the JSON artifact and the
+rendered report into the same `benchmarks/results/serving/<run-id>/` directory.
+For example:
+
+```text
+AX_MLX_PREFIX_CACHE_DIR=/tmp/ax-prefix-cache-soak \
+  cargo run -p ax-engine-server -- --host 127.0.0.1 --port 8080
+
+python3 scripts/bench_ax_serving.py \
+  --base-url http://127.0.0.1:8080 \
+  --model-id qwen3_dense \
+  --corpus benchmarks/results/serving/disk-prefix-cache-soak-corpus.jsonl \
+  --input-kind tokens \
+  --warmup-requests 8 \
+  --requests 24 \
+  --concurrency 2 \
+  --slo-ttft-ms 10000 \
+  --slo-tpot-ms 250 \
+  --slo-e2e-ms 60000 \
+  --output benchmarks/results/serving/<run-id>/artifact.json
+```
 
 Render a review report after validation:
 

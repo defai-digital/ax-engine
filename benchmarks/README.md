@@ -167,6 +167,23 @@ throughput, queue delay, category summaries, and SLO goodput. Serving artifacts
 are not model-inference throughput baselines and should not be merged into the
 MLX inference-stack table.
 
+For disk-durable prefix-cache serving promotion, first generate a deterministic
+shared-prefix token corpus:
+
+```text
+python3 scripts/build_serving_shared_prefix_corpus.py \
+  --output benchmarks/results/serving/disk-prefix-cache-soak-corpus.jsonl \
+  --prompts 8 \
+  --prefix-tokens 8192 \
+  --suffix-tokens 64
+```
+
+Then run `bench_ax_serving.py` with `--input-kind tokens`, at least one warmup
+corpus pass, and validate the artifact with
+`--require-route-decision-min ax_mlx_prefix_cache_disk_hits=1`. The route gate
+is required because a long-prompt serving artifact alone does not prove the
+disk-cache path was exercised.
+
 ## Generated Outputs
 
 `ax-engine-bench` writes result directories under the chosen `--output-root`.
