@@ -2520,7 +2520,11 @@ fn turboquant_attention_output_array_from_flat(
         &[1, n_heads as i32, 1, head_dim as i32],
         MlxDtype::Float32,
     );
-    Some(astype(&out, dtype, None))
+    if dtype == MlxDtype::Float32 {
+        Some(out)
+    } else {
+        Some(astype(&out, dtype, None))
+    }
 }
 
 /// Pre-compute one SDPA mask per unique sliding-window size before the layer
@@ -4245,6 +4249,19 @@ mod tests {
             actual.is_none(),
             "runtime path should fall back to full-precision SDPA instead of CPU oracle"
         );
+    }
+
+    #[test]
+    fn turboquant_attention_output_array_from_flat_skips_float32_cast() {
+        let output = vec![0.25, -0.5, 0.75, 1.0];
+        let actual =
+            turboquant_attention_output_array_from_flat(output.clone(), 2, 2, MlxDtype::Float32)
+                .expect("flat output should become attention array");
+        eval(&[&actual]);
+
+        assert_eq!(actual.shape(), vec![1, 2, 1, 2]);
+        assert_eq!(actual.dtype(), MlxDtype::Float32);
+        assert_eq!(actual.data_f32(), output.as_slice());
     }
 
     fn gemma4_interleaved_manifest() -> NativeModelManifest {
