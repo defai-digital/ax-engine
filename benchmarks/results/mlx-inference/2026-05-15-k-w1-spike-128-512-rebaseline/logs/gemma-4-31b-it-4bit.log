@@ -1,0 +1,86 @@
+
+=== AX Engine MLX inference stack ===
+  model: .internal/models/gemma-4-31b-it-4bit
+  model_dir: .internal/models/gemma-4-31b-it-4bit
+  prompt_tokens: [128, 512]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-15-k-w1-spike-128-512-rebaseline/gemma-4-31b-it-4bit-prompts
+  [prompt] prompt_tokens=128 sha256=4ebdfdf02961 path=benchmarks/results/mlx-inference/2026-05-15-k-w1-spike-128-512-rebaseline/gemma-4-31b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json
+  [prompt] prompt_tokens=512 sha256=846109be82df path=benchmarks/results/mlx-inference/2026-05-15-k-w1-spike-128-512-rebaseline/gemma-4-31b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json
+  [reference] reused 4 mlx_lm/mlx_swift_lm rows from benchmarks/results/mlx-inference/2026-05-13-full-fresh/gemma-4-31b-it-4bit.json
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/gemma-4-31b-it-4bit --port 8091 --disable-ngram-acceleration --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine/ax_engine_mlx] prompt=128 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 3402, in <module>
+    main()
+    ~~~~^^
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 3199, in main
+    bench_axengine(
+    ~~~~~~~~~~~~~~^
+        args.axengine_port,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<9 lines>...
+        server_pid=proc.pid,
+        ^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 1876, in bench_axengine
+    axengine_one_run(port, tokens, generation_tokens, server_pid=server_pid)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 1739, in axengine_one_run
+    response = conn.getresponse()
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1459, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 336, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 305, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+                             " response")
+http.client.RemoteDisconnected: Remote end closed connection without response
+  [retry] first attempt failed, retrying once after 30s cleanup
+
+=== AX Engine MLX inference stack ===
+  model: .internal/models/gemma-4-31b-it-4bit
+  model_dir: .internal/models/gemma-4-31b-it-4bit
+  prompt_tokens: [128, 512]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-15-k-w1-spike-128-512-rebaseline/gemma-4-31b-it-4bit-prompts
+  [prompt] prompt_tokens=128 sha256=4ebdfdf02961 path=benchmarks/results/mlx-inference/2026-05-15-k-w1-spike-128-512-rebaseline/gemma-4-31b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json
+  [prompt] prompt_tokens=512 sha256=846109be82df path=benchmarks/results/mlx-inference/2026-05-15-k-w1-spike-128-512-rebaseline/gemma-4-31b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json
+  [reference] reused 4 mlx_lm/mlx_swift_lm rows from benchmarks/results/mlx-inference/2026-05-13-full-fresh/gemma-4-31b-it-4bit.json
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/gemma-4-31b-it-4bit --port 8091 --disable-ngram-acceleration --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine/ax_engine_mlx] prompt=128 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 3402, in <module>
+    main()
+    ~~~~^^
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 3199, in main
+    bench_axengine(
+    ~~~~~~~~~~~~~~^
+        args.axengine_port,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<9 lines>...
+        server_pid=proc.pid,
+        ^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 1876, in bench_axengine
+    axengine_one_run(port, tokens, generation_tokens, server_pid=server_pid)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/akiralam/code/ax-engine-v4/scripts/bench_mlx_inference_stack.py", line 1739, in axengine_one_run
+    response = conn.getresponse()
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1459, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 336, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 305, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+                             " response")
+http.client.RemoteDisconnected: Remote end closed connection without response
+  [skip] gemma-4-31b-it-4bit failed twice — moving on
