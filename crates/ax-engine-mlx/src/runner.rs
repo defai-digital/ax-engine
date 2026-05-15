@@ -2990,25 +2990,81 @@ impl MlxRunner {
                     &prefix_cache,
                     &state,
                 );
-                let prefill_tokens = full_recompute_tokens.as_deref().unwrap_or(token_ids);
+                let prefill_tokens_base = full_recompute_tokens.as_deref().unwrap_or(token_ids);
                 if full_recompute_tokens.is_some() {
                     state.cache.reset();
                     state.prompt_prefix_tokens.clear();
                     state.cached_prefill_output_token = None;
                 }
+                // F3 M4 — when the runner-side probe restored more
+                // prefix tokens than the scheduler knew about (e.g.
+                // cross-restart L2 hit, where the scheduler's block
+                // table is empty), `token_ids` still includes the
+                // tokens already covered by `state.cache`. Without
+                // slicing them off, chunked_prefill would write
+                // duplicate K/V past the existing seq_len. Detect
+                // that gap and skip the leading reused portion.
+                let probe_over_claim = if full_recompute_tokens.is_some() {
+                    0
+                } else {
+                    state
+                        .cache
+                        .seq_len
+                        .saturating_sub(item.reused_prefix_token_slice.len())
+                };
+                let prefill_tokens = if probe_over_claim < prefill_tokens_base.len() {
+                    &prefill_tokens_base[probe_over_claim..]
+                } else {
+                    &[][..]
+                };
+                let mut effective_prefill_token_count = prefill_tokens.len();
                 let repetition_history = state.repetition_history(prefill_tokens, sampling);
                 let prefill_forward_started = Instant::now();
-                let tok = chunked_prefill(
-                    &self.cfg,
-                    &self.weights,
-                    prefill_tokens,
-                    &mut state.cache,
-                    self.prefill_chunk,
-                    MlxSamplingRequest::new(sampling, &repetition_history),
-                    &mut state.rng,
-                );
+                // When the runner-probe over-claimed enough to wipe
+                // out `prefill_tokens`, every input position is
+                // already covered by `state.cache`. We must NOT call
+                // chunked_prefill on an empty slice (it would still
+                // sample logits from an undefined state). Instead,
+                // emit `cached_prefill_output_token` as the first
+                // generated token — which is what L1-equivalence
+                // demands, since that token *is* the prefill output
+                // for the producing cold prefill.
+                let tok = if prefill_tokens.is_empty() {
+                    if let Some(tok) = state.cached_prefill_output_token.take() {
+                        tok
+                    } else {
+                        // Defensive: if a full-prefix disk entry does
+                        // not carry a prefill output token, do not run
+                        // decode_one on the restored full cache: that
+                        // would append the last prompt token twice.
+                        // Fall back to an exact cold prefill.
+                        state.cache.reset();
+                        state.prompt_prefix_tokens.clear();
+                        effective_prefill_token_count = token_ids.len();
+                        let recompute_history = state.repetition_history(token_ids, sampling);
+                        chunked_prefill(
+                            &self.cfg,
+                            &self.weights,
+                            token_ids,
+                            &mut state.cache,
+                            self.prefill_chunk,
+                            MlxSamplingRequest::new(sampling, &recompute_history),
+                            &mut state.rng,
+                        )
+                    }
+                } else {
+                    chunked_prefill(
+                        &self.cfg,
+                        &self.weights,
+                        prefill_tokens,
+                        &mut state.cache,
+                        self.prefill_chunk,
+                        MlxSamplingRequest::new(sampling, &repetition_history),
+                        &mut state.rng,
+                    )
+                };
                 let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
-                let prefill_token_count = prefill_tokens.len();
+                let prefill_token_count = effective_prefill_token_count;
                 if let Some(tokens) = full_recompute_tokens {
                     state.prompt_prefix_tokens = tokens;
                 } else {
@@ -3421,14 +3477,18 @@ impl MlxRunner {
                 key.token_hash,
             );
             match disk.get(&key_bytes) {
-                Ok(Some(payload)) => match MlxKVCache::try_deserialize_from_bytes(&payload) {
+                Ok(Some(entry)) => match MlxKVCache::try_deserialize_from_bytes(&entry.payload) {
                     Ok(restored_cache) => {
                         state.cache = restored_cache;
                         state.prompt_prefix_tokens = reused_tokens.to_vec();
-                        // On-disk format does not carry the greedy
-                        // prefill output token (PRD §4.5 / M1 findings
-                        // §3); runner recomputes on the first decode.
-                        state.cached_prefill_output_token = None;
+                        // F3 M4 — file format v2 carries the greedy
+                        // prefill output token, so cross-restart L2
+                        // hits avoid recomputing at decode step 0
+                        // (which diverged for single-block prefixes
+                        // in the pre-fix run). When the slot is None
+                        // (older partial-prefix snapshot), decode_one
+                        // still runs as a fallback.
+                        state.cached_prefill_output_token = entry.prefill_output_token;
                         telemetry.record_disk_hit();
                         telemetry.reused_tokens = telemetry
                             .reused_tokens
@@ -3601,6 +3661,9 @@ impl MlxRunner {
             // configuration the original `key` moves cleanly into
             // `cache.insert`, no extra allocation.
             let key_for_disk = snapshot_payload.as_ref().map(|_| key.clone());
+            let snapshot_prefill_output_token = (prefix_len == available_tokens)
+                .then_some(greedy_prefill_output_token)
+                .flatten();
             let outcome = cache.insert(
                 key,
                 MlxPrefixSnapshot {
@@ -3608,9 +3671,7 @@ impl MlxRunner {
                     tokens: tokens.to_vec(),
                     token_count: prefix_len,
                     bytes: usage.logical_bytes,
-                    greedy_prefill_output_token: (prefix_len == available_tokens)
-                        .then_some(greedy_prefill_output_token)
-                        .flatten(),
+                    greedy_prefill_output_token: snapshot_prefill_output_token,
                 },
             );
             if outcome.stored {
@@ -3634,9 +3695,14 @@ impl MlxRunner {
                         disk_key.token_count,
                         disk_key.token_hash,
                     );
-                    match disk.insert(&key_bytes, &payload) {
+                    let entry = crate::disk_prefix_cache::DiskPrefixCacheEntry {
+                        payload,
+                        prefill_output_token: snapshot_prefill_output_token,
+                    };
+                    let payload_bytes = entry.payload.len() as u64;
+                    match disk.insert(&key_bytes, &entry) {
                         Ok(outcome) => {
-                            telemetry.record_disk_insert(payload.len() as u64, outcome.evictions)
+                            telemetry.record_disk_insert(payload_bytes, outcome.evictions)
                         }
                         Err(e) => {
                             tracing::warn!(

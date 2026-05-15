@@ -43,10 +43,20 @@ use sha2::{Digest, Sha256};
 /// Outer file magic. Distinct from the kv_cache payload's `AXKB` magic
 /// so an unframed payload cannot be mistaken for a complete file.
 const FILE_MAGIC: &[u8; 4] = b"AXKV";
-const FILE_VERSION: u32 = 1;
-/// Outer header byte count: magic(4) + version(4) + payload_sha256(32)
-/// + payload_length(8) + key_len(4) + reserved(4) = 56 bytes.
+/// File-format version. Bumped to 2 in F3 M4 to carry the
+/// `greedy_prefill_output_token` alongside the kv_cache payload —
+/// without it, L2 restores diverged at decode step 0 vs cold prefill
+/// for single-block prefixes (see
+/// `MLX-F3-DISK-PREFIX-CACHE-M4-FINDINGS-2026-05-14.md` §3).
+/// Files written under version 1 are rejected as a miss.
+const FILE_VERSION: u32 = 2;
+/// Outer header byte count: magic(4) + version(4) + payload_sha256(32) +
+/// payload_length(8) + key_len(4) + prefill_token_slot(4) = 56 bytes. The
+/// trailing 4-byte slot is u32::MAX when there is no prefill token to
+/// carry (e.g. partial-prefix snapshots).
 const FIXED_HEADER_LEN: usize = 56;
+/// Sentinel for "no prefill output token captured" in the header slot.
+const PREFILL_TOKEN_NONE: u32 = u32::MAX;
 /// File extension for stored entries.
 const ENTRY_EXTENSION: &str = "axkv";
 
@@ -219,6 +229,21 @@ pub struct DiskPrefixCacheInsertOutcome {
     pub evictions: u32,
 }
 
+/// One disk-cache entry: the serialized kv_cache payload plus the
+/// optional greedy prefill output token that the producing prefill
+/// captured. Carrying the token through cross-restart prevents L2
+/// hits from diverging at decode step 0 vs cold prefill — see the
+/// M4 findings doc.
+#[derive(Clone, Debug)]
+pub struct DiskPrefixCacheEntry {
+    /// `MlxKVCache::serialize_to_bytes` payload.
+    pub payload: Vec<u8>,
+    /// Greedy prefill output token from the producing prefill, if the
+    /// snapshot covers the full prompt. `None` for partial-prefix
+    /// snapshots that did not capture a decode-step-0 token.
+    pub prefill_output_token: Option<u32>,
+}
+
 impl DiskPrefixCache {
     /// Open a disk cache rooted at `dir` with the default policy.
     /// Equivalent to [`DiskPrefixCache::with_policy`] with
@@ -280,13 +305,18 @@ impl DiskPrefixCache {
         self.path_for(key_bytes).is_file()
     }
 
-    /// Look up the payload for `key_bytes`. Returns:
-    /// - `Ok(Some(payload))` on a clean hit;
-    /// - `Ok(None)` on miss, hash collision (key bytes differ), or
-    ///   on-disk corruption (the caller treats this like a miss);
+    /// Look up the entry for `key_bytes`. Returns:
+    /// - `Ok(Some(entry))` on a clean hit (with the prefill token
+    ///   from the producing prefill, if any);
+    /// - `Ok(None)` on miss, hash collision (key bytes differ),
+    ///   version mismatch, or on-disk corruption (the caller treats
+    ///   this like a miss);
     /// - `Err(_)` only for unrecoverable IO failures (e.g. permission
     ///   denied on a file we know exists).
-    pub fn get(&self, key_bytes: &[u8]) -> Result<Option<Vec<u8>>, DiskPrefixCacheError> {
+    pub fn get(
+        &self,
+        key_bytes: &[u8],
+    ) -> Result<Option<DiskPrefixCacheEntry>, DiskPrefixCacheError> {
         let path = self.path_for(key_bytes);
         let raw = match fs::read(&path) {
             Ok(bytes) => bytes,
@@ -308,7 +338,7 @@ impl DiskPrefixCache {
     pub fn insert(
         &self,
         key_bytes: &[u8],
-        payload: &[u8],
+        entry: &DiskPrefixCacheEntry,
     ) -> Result<DiskPrefixCacheInsertOutcome, DiskPrefixCacheError> {
         let final_path = self.path_for(key_bytes);
         let tmp_path = self.dir.join(format!(
@@ -317,9 +347,11 @@ impl DiskPrefixCache {
             std::process::id()
         ));
 
+        let payload = entry.payload.as_slice();
         let payload_hash = payload_sha256(payload);
         let payload_len = payload.len() as u64;
         let key_len = u32::try_from(key_bytes.len()).expect("key too long");
+        let prefill_slot = entry.prefill_output_token.unwrap_or(PREFILL_TOKEN_NONE);
 
         let mut buf = Vec::with_capacity(FIXED_HEADER_LEN + key_bytes.len() + payload.len());
         buf.extend_from_slice(FILE_MAGIC);
@@ -327,7 +359,7 @@ impl DiskPrefixCache {
         buf.extend_from_slice(&payload_hash);
         buf.extend_from_slice(&payload_len.to_le_bytes());
         buf.extend_from_slice(&key_len.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        buf.extend_from_slice(&prefill_slot.to_le_bytes());
         buf.extend_from_slice(key_bytes);
         buf.extend_from_slice(payload);
 
@@ -461,7 +493,7 @@ impl Drop for TempFileGuard {
     }
 }
 
-fn parse_file(raw: &[u8], expected_key: &[u8]) -> Option<Vec<u8>> {
+fn parse_file(raw: &[u8], expected_key: &[u8]) -> Option<DiskPrefixCacheEntry> {
     if raw.len() < FIXED_HEADER_LEN {
         return None;
     }
@@ -475,7 +507,7 @@ fn parse_file(raw: &[u8], expected_key: &[u8]) -> Option<Vec<u8>> {
     let payload_hash: [u8; 32] = raw[8..40].try_into().ok()?;
     let payload_len = u64::from_le_bytes(raw[40..48].try_into().ok()?) as usize;
     let key_len = u32::from_le_bytes(raw[48..52].try_into().ok()?) as usize;
-    // raw[52..56] reserved
+    let prefill_slot = u32::from_le_bytes(raw[52..56].try_into().ok()?);
     let key_start = FIXED_HEADER_LEN;
     let key_end = key_start.checked_add(key_len)?;
     let payload_start = key_end;
@@ -490,7 +522,15 @@ fn parse_file(raw: &[u8], expected_key: &[u8]) -> Option<Vec<u8>> {
     if payload_sha256(payload) != payload_hash {
         return None;
     }
-    Some(payload.to_vec())
+    let prefill_output_token = if prefill_slot == PREFILL_TOKEN_NONE {
+        None
+    } else {
+        Some(prefill_slot)
+    };
+    Some(DiskPrefixCacheEntry {
+        payload: payload.to_vec(),
+        prefill_output_token,
+    })
 }
 
 #[cfg(test)]
@@ -512,6 +552,16 @@ mod tests {
         dir
     }
 
+    /// Build a no-prefill-token entry from a raw payload. Tests that
+    /// only care about the kv_cache payload don't need to think about
+    /// the prefill-token slot.
+    fn payload_only(bytes: &[u8]) -> DiskPrefixCacheEntry {
+        DiskPrefixCacheEntry {
+            payload: bytes.to_vec(),
+            prefill_output_token: None,
+        }
+    }
+
     #[test]
     fn insert_then_get_roundtrip() {
         let dir = unique_tempdir("roundtrip");
@@ -519,9 +569,35 @@ mod tests {
         let key_bytes =
             canonical_key_bytes("model-a", "policy-a", "layout-a", 16, 1024, 0xdead_beef);
         let payload = b"PAYLOAD-FOR-CACHE".to_vec();
-        cache.insert(&key_bytes, &payload).expect("insert");
+        cache
+            .insert(&key_bytes, &payload_only(&payload))
+            .expect("insert");
         let got = cache.get(&key_bytes).expect("get").expect("hit");
-        assert_eq!(got, payload);
+        assert_eq!(got.payload, payload);
+        assert_eq!(
+            got.prefill_output_token, None,
+            "no prefill token written → reads back as None",
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn roundtrip_preserves_prefill_output_token() {
+        // Regression for the M4-discovered cross-restart correctness
+        // bug: when the producing prefill captured a greedy prefill
+        // output token, the on-disk format must carry it so the L2
+        // restore path can avoid recomputing at decode step 0.
+        let dir = unique_tempdir("prefill-tok-roundtrip");
+        let cache = DiskPrefixCache::open(&dir).expect("open");
+        let key_bytes = canonical_key_bytes("m", "p", "l", 16, 1024, 0xfeed_d00d);
+        let entry = DiskPrefixCacheEntry {
+            payload: b"payload".to_vec(),
+            prefill_output_token: Some(987_654),
+        };
+        cache.insert(&key_bytes, &entry).expect("insert");
+        let got = cache.get(&key_bytes).expect("get").expect("hit");
+        assert_eq!(got.payload, entry.payload);
+        assert_eq!(got.prefill_output_token, Some(987_654));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -541,7 +617,9 @@ mod tests {
         let cache = DiskPrefixCache::open(&dir).expect("open");
         let key_a = canonical_key_bytes("model-c", "policy-c", "layout-c", 16, 1024, 1);
         let key_b = canonical_key_bytes("model-c", "policy-c", "layout-c", 16, 1024, 2);
-        cache.insert(&key_a, b"payload-a").expect("insert");
+        cache
+            .insert(&key_a, &payload_only(b"payload-a"))
+            .expect("insert");
         // Different key, but same filename slot would only happen on a
         // SHA256 collision (vanishingly improbable). Simulate by writing
         // key_a's content under key_b's filename: we manually swap so the
@@ -563,7 +641,7 @@ mod tests {
         let cache = DiskPrefixCache::open(&dir).expect("open");
         let key_bytes = canonical_key_bytes("model-d", "policy-d", "layout-d", 16, 1024, 9);
         cache
-            .insert(&key_bytes, b"payload-correct")
+            .insert(&key_bytes, &payload_only(b"payload-correct"))
             .expect("insert");
         // Flip a byte in the payload region (last byte of file).
         let path = cache.path_for(&key_bytes);
@@ -583,7 +661,9 @@ mod tests {
         let key_bytes =
             canonical_key_bytes("model-c1", "policy-c1", "layout-c1", 16, 1024, 0xc04e_7415);
         assert!(!cache.contains(&key_bytes), "before insert: must not exist");
-        cache.insert(&key_bytes, b"payload-x").expect("insert");
+        cache
+            .insert(&key_bytes, &payload_only(b"payload-x"))
+            .expect("insert");
         assert!(cache.contains(&key_bytes), "after insert: must exist");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -599,7 +679,9 @@ mod tests {
         let cache = DiskPrefixCache::open(&dir).expect("open");
         let key_bytes =
             canonical_key_bytes("model-c2", "policy-c2", "layout-c2", 16, 1024, 0xc0c0_dead);
-        cache.insert(&key_bytes, b"payload-valid").expect("insert");
+        cache
+            .insert(&key_bytes, &payload_only(b"payload-valid"))
+            .expect("insert");
         // Flip the last byte (payload region) to corrupt the SHA256.
         let path = cache.path_for(&key_bytes);
         let mut raw = fs::read(&path).expect("read");
@@ -635,11 +717,17 @@ mod tests {
         // Insert in order a, b, c with sleeps so mtimes are strictly
         // increasing (1-second filesystem resolution is the worst-case
         // we need to defeat).
-        cache.insert(&key_a, b"payload-a").expect("insert a");
+        cache
+            .insert(&key_a, &payload_only(b"payload-a"))
+            .expect("insert a");
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        cache.insert(&key_b, b"payload-b").expect("insert b");
+        cache
+            .insert(&key_b, &payload_only(b"payload-b"))
+            .expect("insert b");
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        let outcome = cache.insert(&key_c, b"payload-c").expect("insert c");
+        let outcome = cache
+            .insert(&key_c, &payload_only(b"payload-c"))
+            .expect("insert c");
 
         assert_eq!(
             outcome.evictions, 1,
@@ -671,9 +759,13 @@ mod tests {
         let key_b = canonical_key_bytes("m", "p", "l", 16, 1024, 0xb2);
         let payload = vec![0u8; payload_size];
 
-        cache.insert(&key_a, &payload).expect("insert a");
+        cache
+            .insert(&key_a, &payload_only(&payload))
+            .expect("insert a");
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        let outcome = cache.insert(&key_b, &payload).expect("insert b");
+        let outcome = cache
+            .insert(&key_b, &payload_only(&payload))
+            .expect("insert b");
 
         assert_eq!(
             outcome.evictions, 1,
@@ -698,7 +790,9 @@ mod tests {
         fs::write(dir.join("NOTES.md"), b"hello").expect("write junk");
 
         let key_a = canonical_key_bytes("m", "p", "l", 16, 1024, 0xaa);
-        cache.insert(&key_a, b"payload-a").expect("insert a");
+        cache
+            .insert(&key_a, &payload_only(b"payload-a"))
+            .expect("insert a");
 
         // Junk file must remain untouched.
         assert!(dir.join("NOTES.md").is_file());
@@ -720,11 +814,17 @@ mod tests {
             let key_a = canonical_key_bytes("m", "p", "l", 16, 1024, 0xa1);
             let key_b = canonical_key_bytes("m", "p", "l", 16, 1024, 0xb2);
             let key_c = canonical_key_bytes("m", "p", "l", 16, 1024, 0xc3);
-            cache.insert(&key_a, b"payload-a").expect("insert a");
+            cache
+                .insert(&key_a, &payload_only(b"payload-a"))
+                .expect("insert a");
             std::thread::sleep(std::time::Duration::from_millis(1100));
-            cache.insert(&key_b, b"payload-b").expect("insert b");
+            cache
+                .insert(&key_b, &payload_only(b"payload-b"))
+                .expect("insert b");
             std::thread::sleep(std::time::Duration::from_millis(1100));
-            cache.insert(&key_c, b"payload-c").expect("insert c");
+            cache
+                .insert(&key_c, &payload_only(b"payload-c"))
+                .expect("insert c");
         }
 
         let tight = DiskPrefixCachePolicy {
@@ -788,10 +888,7 @@ mod tests {
             let mut guard = TempFileGuard::new(&tmp);
             guard.disarm();
         }
-        assert!(
-            tmp.is_file(),
-            "disarmed guard must not remove the tmp file",
-        );
+        assert!(tmp.is_file(), "disarmed guard must not remove the tmp file",);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -801,7 +898,9 @@ mod tests {
         let dir = unique_tempdir("atomic");
         let cache = DiskPrefixCache::open(&dir).expect("open");
         let key_bytes = canonical_key_bytes("model-e", "policy-e", "layout-e", 16, 1024, 42);
-        cache.insert(&key_bytes, b"payload-e").expect("insert");
+        cache
+            .insert(&key_bytes, &payload_only(b"payload-e"))
+            .expect("insert");
         let entries: Vec<_> = fs::read_dir(&dir)
             .expect("read_dir")
             .filter_map(Result::ok)
