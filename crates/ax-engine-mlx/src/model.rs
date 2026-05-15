@@ -3384,7 +3384,7 @@ fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
 /// See
 /// `benchmarks/results/mlx-inference/2026-05-14-w2-stream-contract-source-read/stream-contract.md`.
 /// GeGLU compiled helper kept (and unit-tested) as a record of the math;
-/// the production gate that wires this into `gemma4_geglu` is
+/// the production gate that wires this into `dense_ffn_activation` is
 /// `fastpath::prefill_ffn_compile_enabled()` reading
 /// `AX_MLX_PREFILL_FFN_COMPILE`. Pre-W1 this helper was dead code because
 /// the original `OnceLock<Option<MlxClosure>>` cache was process-wide:
@@ -3408,8 +3408,25 @@ fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
 /// the imperative `gelu_approx + multiply` path without aborting.
 fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
     use std::collections::HashMap;
+    use std::collections::hash_map::Entry;
     use std::sync::Mutex;
     use std::thread::ThreadId;
+
+    // Empirically, the GeGLU compiled closure ABORTS the process inside
+    // `mlx_closure_apply` ("There is no Stream(gpu, 0) in current thread"
+    // at mlx-c-0.6.0/mlx/c/transforms.cpp:73) when applied to 4D MoE-expert
+    // gather outputs. The SwiGLU compile wrap survives the same 4D shape
+    // (verified on Qwen 3.6 35B-A3B, Coder Next, GLM 4.7 Flash); the crash
+    // is specific to the `gelu_approx + multiply` op tree under MLX 0.31 /
+    // mlx-c 0.6 with high-rank inputs. Until upstream tightens its stream
+    // contract, restrict the geglu compile wrap to dense-FFN inputs (rank <=
+    // 3) and use the imperative path for MoE expert gathers (rank 4). The
+    // imperative path is what the GeGLU-MoE call site used pre-K refactor,
+    // so this matches the W1 baseline and avoids the SIGABRT on Gemma 4 26B
+    // A4B (the only K-relevant model with mixed dense + MoE GeGLU FFN).
+    if gate.ndim() > 3 {
+        return multiply(&gelu_approx(gate, None), x, None);
+    }
 
     static GEGLU_COMPILE_CACHE: OnceLock<Mutex<HashMap<ThreadId, MlxClosure>>> = OnceLock::new();
 
@@ -3417,18 +3434,16 @@ fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
     let tid = std::thread::current().id();
     let outputs = {
         let mut guard = cache.lock().expect("geglu compile cache mutex poisoned");
-        if !guard.contains_key(&tid) {
-            let compiled = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
+        if let Entry::Vacant(slot) = guard.entry(tid)
+            && let Ok(compiled) = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
                 let gate = inputs.get(0);
                 let x = inputs.get(1);
                 let activated = gelu_approx(&gate, None);
                 vec![multiply(&activated, &x, None)]
             })
             .compile(true)
-            .ok();
-            if let Some(compiled) = compiled {
-                guard.insert(tid, compiled);
-            }
+        {
+            slot.insert(compiled);
         }
         guard.get(&tid).and_then(|cls| cls.try_apply(&[gate, x]).ok())
     };
@@ -3441,13 +3456,62 @@ fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
     multiply(&gelu_approx(gate, None), x, None)
 }
 
-fn gemma4_geglu(cfg: &ModelConfig, gate: &MlxArray, up: &MlxArray) -> MlxArray {
+/// SwiGLU compiled helper — mirrors `geglu()` but with SiLU activation.
+/// Wraps `silu(gate) * up` in a per-thread `Mutex<HashMap<ThreadId,
+/// MlxClosure>>` compile cache. Same thread-locality + fail-closed
+/// contract: `try_apply` falls back to the imperative path on
+/// cross-thread / stream-contract mismatch. Process-static (NOT
+/// `thread_local!`) for the same SIGSEGV-at-drop reason documented on
+/// `geglu()`.
+fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
+    use std::collections::HashMap;
+    use std::collections::hash_map::Entry;
+    use std::sync::Mutex;
+    use std::thread::ThreadId;
+
+    // SwiGLU's `silu(gate) * up` op tree empirically tolerates 3D and 4D
+    // inputs under the same compiled closure (verified on Qwen 3.6 35B-A3B,
+    // Coder Next, GLM 4.7 Flash — all rank-mixed dense+MoE and stable),
+    // unlike the `gelu_approx + multiply` tree that ABORTS — see the
+    // companion comment on `geglu()`. A single per-thread closure is
+    // sufficient here.
+    static SWIGLU_COMPILE_CACHE: OnceLock<Mutex<HashMap<ThreadId, MlxClosure>>> = OnceLock::new();
+
+    let cache = SWIGLU_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let tid = std::thread::current().id();
+    let outputs = {
+        let mut guard = cache.lock().expect("swiglu compile cache mutex poisoned");
+        if let Entry::Vacant(slot) = guard.entry(tid)
+            && let Ok(compiled) = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
+                let gate = inputs.get(0);
+                let up = inputs.get(1);
+                let activated = mlx_sys::ops::silu(&gate, None);
+                vec![multiply(&activated, &up, None)]
+            })
+            .compile(true)
+        {
+            slot.insert(compiled);
+        }
+        guard.get(&tid).and_then(|cls| cls.try_apply(&[gate, up]).ok())
+    };
+
+    if let Some(mut outputs) = outputs
+        && let Some(out) = outputs.pop()
+    {
+        return out;
+    }
+    multiply(&mlx_sys::ops::silu(gate, None), up, None)
+}
+
+fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxArray) -> MlxArray {
     if cfg.uses_geglu {
         if crate::fastpath::prefill_ffn_compile_enabled() {
             geglu(gate, up)
         } else {
             multiply(&gelu_approx(gate, None), up, None)
         }
+    } else if crate::fastpath::prefill_ffn_compile_swiglu_enabled() {
+        swiglu(gate, up)
     } else {
         multiply(&mlx_sys::ops::silu(gate, None), up, None)
     }
@@ -3519,7 +3583,7 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     // `geglu` helper is kept (and unit-tested) as a record of the math;
     // the production hot path stays imperative.
     let activation_started = Instant::now();
-    let ffn_hidden = gemma4_geglu(cfg, &gate_out, &up_out);
+    let ffn_hidden = dense_ffn_activation(cfg, &gate_out, &up_out);
     forward_profile_eval_elapsed(
         profile_decode,
         profile_prefill,
@@ -3557,12 +3621,7 @@ fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
             .as_ref()
             .expect("shared expert must have up projection"),
     );
-    let gate_act = if cfg.uses_geglu {
-        gelu_approx(&gate, None)
-    } else {
-        mlx_sys::ops::silu(&gate, None)
-    };
-    let hidden = multiply(&gate_act, &up, None);
+    let hidden = dense_ffn_activation(cfg, &gate, &up);
     let shared = qw(
         &hidden,
         w.shared_down_proj
@@ -3886,13 +3945,9 @@ fn moe_experts_forward(
     };
 
     // Gemma4 experts use GEGLU with fast-approx GELU (matches mlx_lm's `nn.gelu_approx`).
-    // Qwen3 uses SwiGLU (SiLU gate).
-    let gate_act = if cfg.uses_geglu {
-        gelu_approx(&gate_out, None)
-    } else {
-        mlx_sys::ops::silu(&gate_out, None)
-    };
-    let hidden = multiply(&gate_act, &up_out, None);
+    // Qwen3 uses SwiGLU (SiLU gate). Both routes go through the compile cache when the
+    // corresponding `AX_MLX_PREFILL_FFN_COMPILE[_SWIGLU]` env flag is engaged.
+    let hidden = dense_ffn_activation(cfg, &gate_out, &up_out);
 
     // Down projection: [1, seq, top_k, hidden]
     let down_out = squeeze_switch_singleton(&qw_gather(
@@ -6368,6 +6423,53 @@ mod tests {
             cmp,
             compiled_again_f32.data_f32().to_vec(),
             "cached compiled geglu must remain stable across invocations"
+        );
+    }
+
+    #[test]
+    fn swiglu_compiled_matches_imperative() {
+        // Same shape and dtype the Qwen 3 dense FFN call site produces:
+        // gate_proj output and up_proj output, both bf16.
+        let gate_f32: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.05).collect();
+        let up_f32: Vec<f32> = (0..32).map(|i| ((i as f32) + 1.0) * 0.07).collect();
+        let gate_src = MlxArray::from_raw_data(
+            gate_f32.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_f32.as_slice()),
+            &[1, 4, 8],
+            MlxDtype::Float32,
+        );
+        let up_src = MlxArray::from_raw_data(
+            up_f32.as_ptr() as *const u8,
+            std::mem::size_of_val(up_f32.as_slice()),
+            &[1, 4, 8],
+            MlxDtype::Float32,
+        );
+        let gate = astype(&gate_src, MlxDtype::Bfloat16, None);
+        let up = astype(&up_src, MlxDtype::Bfloat16, None);
+
+        // Imperative reference: silu(gate) * up
+        let imperative = multiply(&mlx_sys::ops::silu(&gate, None), &up, None);
+        let imperative_f32 = astype(&imperative, MlxDtype::Float32, None);
+
+        let compiled = swiglu(&gate, &up);
+        let compiled_f32 = astype(&compiled, MlxDtype::Float32, None);
+
+        eval(&[&imperative_f32, &compiled_f32]);
+
+        let imp = imperative_f32.data_f32().to_vec();
+        let cmp = compiled_f32.data_f32().to_vec();
+        assert_eq!(
+            imp, cmp,
+            "compiled swiglu must produce bit-identical output to the imperative fallback"
+        );
+
+        let compiled_again = swiglu(&gate, &up);
+        let compiled_again_f32 = astype(&compiled_again, MlxDtype::Float32, None);
+        eval(&[&compiled_again_f32]);
+        assert_eq!(
+            cmp,
+            compiled_again_f32.data_f32().to_vec(),
+            "cached compiled swiglu must remain stable across invocations"
         );
     }
 }
