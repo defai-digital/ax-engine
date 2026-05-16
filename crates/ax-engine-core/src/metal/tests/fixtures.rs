@@ -467,6 +467,10 @@ pub(super) fn write_projection_moe_native_model_fixture() -> PathBuf {
         expert_count: Some(2),
         experts_per_token: Some(1),
         expert_intermediate_size: Some(1),
+        layer_freq: None,
+        first_dense_layers: None,
+        shared_expert_count: None,
+        sigmoid_routing: false,
     };
     manifest.tensors.extend([
         native_model_tensor_with_file(

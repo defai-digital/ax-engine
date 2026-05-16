@@ -785,8 +785,8 @@ fn prefix_attention_group_predicate_partitions_disabled_batch_shape_before_retry
         block_size_tokens: 16,
         execution_batch: ExecutionBatch {
             step_id: StepId(12),
-            model_id: "qwen3_dense".into(),
-            execution_plan_ref: Some("phase1.qwen3_dense.prefill_pair".into()),
+            model_id: "qwen3".into(),
+            execution_plan_ref: Some("phase1.qwen3.prefill_pair".into()),
             items: vec![
                 ExecutionItem {
                     request_id: RequestId(31),
@@ -1783,6 +1783,10 @@ fn native_model_bindings_accept_moe_manifest_and_materialize_layer_moe_bindings(
         expert_count: Some(2),
         experts_per_token: Some(1),
         expert_intermediate_size: Some(2),
+        layer_freq: None,
+        first_dense_layers: None,
+        shared_expert_count: None,
+        sigmoid_routing: false,
     };
     manifest.tensors.extend([
         native_model_tensor(
@@ -4049,7 +4053,7 @@ fn deterministic_model_bound_sampleable_items_omit_all_logits_payloads() {
         .for_each(|context| context.deterministic_argmax_sampling = true);
     let mut decode_only_input = input.clone();
     decode_only_input.execution_batch.execution_plan_ref =
-        Some("phase1.qwen3_dense.decode_only".into());
+        Some("phase1.qwen3.decode_only".into());
     decode_only_input
         .execution_batch
         .items
@@ -4789,7 +4793,7 @@ fn annotate_staged_input_source_marks_mixed_prefix_attention() {
 #[test]
 fn complete_model_forward_support_requires_model_conditioned_source() {
     let single_layer_model = NativeModelArtifactsSummary {
-        model_family: "qwen3_dense".to_string(),
+        model_family: "qwen3".to_string(),
         tensor_format: crate::model::NativeTensorFormat::Safetensors,
         source_quantization: None,
         runtime_status: crate::model::NativeRuntimeStatus::default(),
@@ -4803,7 +4807,7 @@ fn complete_model_forward_support_requires_model_conditioned_source() {
         moe_active_experts: None,
     };
     let multilayer_model = NativeModelArtifactsSummary {
-        model_family: "qwen3_dense".to_string(),
+        model_family: "qwen3".to_string(),
         tensor_format: crate::model::NativeTensorFormat::Safetensors,
         source_quantization: None,
         runtime_status: crate::model::NativeRuntimeStatus::default(),
@@ -5156,8 +5160,8 @@ fn copied_prefix_blocks_persist_into_layer_cache_for_future_native_decode() {
         block_size_tokens: 16,
         execution_batch: ExecutionBatch {
             step_id: StepId(7),
-            model_id: "qwen3_dense".into(),
-            execution_plan_ref: Some("phase1.qwen3_dense.decode_copied_prefix".into()),
+            model_id: "qwen3".into(),
+            execution_plan_ref: Some("phase1.qwen3.decode_copied_prefix".into()),
             items: vec![ExecutionItem {
                 request_id: RequestId(29),
                 mode: ExecutionMode::Decode,
@@ -5568,7 +5572,7 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
             rms_norm_source_quantized_binding_count: 0,
         },
         model: Some(NativeModelArtifactsSummary {
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: crate::model::NativeRuntimeStatus::default(),
@@ -5814,7 +5818,7 @@ fn completed_real_model_forward_step_marks_pure_decode_batch_with_no_remaining_l
         model_buffer_bytes: 4096,
         native_dense_kernel_coverage: MetalNativeDenseKernelCoverage::default(),
         model: Some(NativeModelArtifactsSummary {
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: crate::model::NativeRuntimeStatus::default(),
@@ -5912,7 +5916,7 @@ fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_p
         model_buffer_bytes: 4096,
         native_dense_kernel_coverage: MetalNativeDenseKernelCoverage::default(),
         model: Some(NativeModelArtifactsSummary {
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: crate::model::NativeRuntimeStatus::default(),
@@ -5979,7 +5983,7 @@ fn completed_real_model_forward_step_rejects_prefill_only_completion_without_sam
         model_buffer_bytes: 4096,
         native_dense_kernel_coverage: MetalNativeDenseKernelCoverage::default(),
         model: Some(NativeModelArtifactsSummary {
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: crate::model::NativeRuntimeStatus::default(),
@@ -6028,7 +6032,7 @@ fn completed_real_model_forward_step_accepts_prefill_only_completion_with_output
         model_buffer_bytes: 4096,
         native_dense_kernel_coverage: MetalNativeDenseKernelCoverage::default(),
         model: Some(NativeModelArtifactsSummary {
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: crate::model::NativeRuntimeStatus::default(),
@@ -6082,7 +6086,7 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
         model_buffer_bytes: 4096,
         native_dense_kernel_coverage: MetalNativeDenseKernelCoverage::default(),
         model: Some(NativeModelArtifactsSummary {
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: crate::model::NativeRuntimeStatus::default(),
@@ -6150,7 +6154,7 @@ fn completed_real_model_forward_step_rejects_multilayer_runtime_when_prefix_atte
         model_buffer_bytes: 4096,
         native_dense_kernel_coverage: MetalNativeDenseKernelCoverage::default(),
         model: Some(NativeModelArtifactsSummary {
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: crate::model::NativeRuntimeStatus::default(),
@@ -6209,7 +6213,7 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
         model_buffer_bytes: 4096,
         native_dense_kernel_coverage: MetalNativeDenseKernelCoverage::default(),
         model: Some(NativeModelArtifactsSummary {
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: crate::model::NativeRuntimeStatus::default(),
@@ -8847,8 +8851,8 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
             block_size_tokens: 16,
             execution_batch: ExecutionBatch {
                 step_id: StepId(1),
-                model_id: "qwen3_dense".into(),
-                execution_plan_ref: Some("phase1.qwen3_dense.dense_prefill".into()),
+                model_id: "qwen3".into(),
+                execution_plan_ref: Some("phase1.qwen3.dense_prefill".into()),
                 items: vec![ExecutionItem {
                     request_id,
                     mode: ExecutionMode::Prefill,
@@ -8942,8 +8946,8 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
             block_size_tokens: 16,
             execution_batch: ExecutionBatch {
                 step_id: StepId(2),
-                model_id: "qwen3_dense".into(),
-                execution_plan_ref: Some("phase1.qwen3_dense.paged_decode".into()),
+                model_id: "qwen3".into(),
+                execution_plan_ref: Some("phase1.qwen3.paged_decode".into()),
                 items: vec![ExecutionItem {
                     request_id,
                     mode: ExecutionMode::Decode,
@@ -9246,8 +9250,8 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
             block_size_tokens,
             execution_batch: ExecutionBatch {
                 step_id: StepId(1),
-                model_id: "qwen3_dense".into(),
-                execution_plan_ref: Some("phase1.qwen3_dense.dense_prefill".into()),
+                model_id: "qwen3".into(),
+                execution_plan_ref: Some("phase1.qwen3.dense_prefill".into()),
                 items: vec![ExecutionItem {
                     request_id,
                     mode: ExecutionMode::Prefill,
@@ -9338,8 +9342,8 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                 block_size_tokens,
                 execution_batch: ExecutionBatch {
                     step_id: StepId(u64::from(generated_len.saturating_add(1))),
-                    model_id: "qwen3_dense".into(),
-                    execution_plan_ref: Some("phase1.qwen3_dense.paged_decode".into()),
+                    model_id: "qwen3".into(),
+                    execution_plan_ref: Some("phase1.qwen3.paged_decode".into()),
                     items: vec![ExecutionItem {
                         request_id,
                         mode: ExecutionMode::Decode,

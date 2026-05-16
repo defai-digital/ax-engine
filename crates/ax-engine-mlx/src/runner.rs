@@ -5834,6 +5834,10 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: None,
+            attn_temperature_scale: None,
+            intermediate_size_mlp: 0,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,
@@ -6129,6 +6133,10 @@ mod tests {
             expert_count: Some(4),
             experts_per_token: Some(2),
             expert_intermediate_size: Some(8),
+            layer_freq: None,
+            first_dense_layers: None,
+            shared_expert_count: None,
+            sigmoid_routing: false,
         };
         manifest.glm_router = NativeGlmRouterConfig {
             first_dense_layer_count: Some(1),

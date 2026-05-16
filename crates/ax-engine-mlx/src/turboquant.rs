@@ -2871,6 +2871,10 @@ mod tests {
             attn_temperature_floor: 8192.0,
             attn_temperature_scale: 0.1,
             intermediate_size_mlp: 0,
+            moe_layer_freq: 1,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 0,
+            moe_sigmoid_routing: false,
         }
     }
 

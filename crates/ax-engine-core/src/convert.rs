@@ -864,6 +864,10 @@ fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
         experts_per_token,
         expert_intermediate_size: arch_u64(config, model_type, "moe_intermediate_size")
             .and_then(u64_to_u32),
+        layer_freq: None,
+        first_dense_layers: None,
+        shared_expert_count: None,
+        sigmoid_routing: false,
     }
 }
 

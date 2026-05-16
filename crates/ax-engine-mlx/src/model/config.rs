@@ -239,6 +239,14 @@ pub struct ModelConfig {
     /// Dense (non-MoE) FFN intermediate size for LLaMA4.
     /// 0 means use `intermediate_size` for both dense and MoE layers.
     pub intermediate_size_mlp: usize,
+    /// MoE every N layers (DeepSeek V3: `moe_layer_freq`). 0 = use GlmRouter dispatch.
+    pub moe_layer_freq: usize,
+    /// First K layers use dense FFN, rest use MoE (DeepSeek V3: `first_k_dense_replace`).
+    pub moe_first_dense_layers: usize,
+    /// Number of always-active shared experts (DeepSeek V3: `n_shared_experts`).
+    pub moe_shared_expert_count: usize,
+    /// Use sigmoid routing (DeepSeek V3). False → softmax (Qwen3/GLM).
+    pub moe_sigmoid_routing: bool,
 }
 
 impl ModelConfig {
@@ -322,6 +330,10 @@ impl ModelConfig {
             attn_temperature_floor: m.attn_temperature_floor.unwrap_or(8192) as f32,
             attn_temperature_scale: m.attn_temperature_scale.unwrap_or(0.1),
             intermediate_size_mlp: m.intermediate_size_mlp as usize,
+            moe_layer_freq: m.moe.layer_freq.unwrap_or(1) as usize,
+            moe_first_dense_layers: m.moe.first_dense_layers.unwrap_or(0) as usize,
+            moe_shared_expert_count: m.moe.shared_expert_count.unwrap_or(0) as usize,
+            moe_sigmoid_routing: m.moe.sigmoid_routing,
         }
     }
 
@@ -329,6 +341,15 @@ impl ModelConfig {
         self.linear_attention
             .as_ref()
             .is_some_and(|linear| linear.is_linear_layer(layer_idx))
+    }
+
+    /// True when the layer is a MoE layer for DeepSeek V3:
+    /// `layer_idx >= first_dense_layers && layer_idx % moe_layer_freq == 0`.
+    pub fn is_deepseek_moe_layer(&self, layer_idx: usize) -> bool {
+        self.moe_expert_count > 0
+            && self.moe_layer_freq > 0
+            && layer_idx >= self.moe_first_dense_layers
+            && layer_idx.is_multiple_of(self.moe_layer_freq)
     }
 
     pub fn is_glm_moe_layer(&self, layer_idx: usize) -> bool {

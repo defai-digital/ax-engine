@@ -6,6 +6,7 @@ mod artifact_files;
 mod artifact_summary;
 mod cli;
 mod compare_json;
+mod determinism;
 mod doctor;
 mod doctor_workflow;
 mod environment_probe;
@@ -63,6 +64,7 @@ use crate::compare_json::{
     explicit_or_inferred_compare_mode, explicit_or_inferred_tool_mode,
     runtime_tuning_informational_diff_json, string_at_path_or_unknown,
 };
+use crate::determinism::deterministic_runtime_digest;
 use crate::doctor::{
     build_doctor_report, build_doctor_report_for_model, metal_build_doctor_report,
     parse_doctor_args, render_doctor_report,
@@ -7228,12 +7230,6 @@ fn generate_request_from_spec(
 
 fn manifest_expect_deterministic(manifest: &BenchmarkManifest) -> Result<bool, CliError> {
     Ok(manifest.checks.expect_deterministic)
-}
-
-fn deterministic_runtime_digest(value: &Value) -> Value {
-    json!({
-        "requests": value.get("requests").cloned().unwrap_or(Value::Null)
-    })
 }
 
 fn direct_decode_batching_opportunity_observed(step_trace: &[StepTraceEntry]) -> bool {

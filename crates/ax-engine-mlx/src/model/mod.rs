@@ -130,6 +130,9 @@ pub fn layer_forward_with_turboquant_context(
         "glm4_moe_lite" => families::glm4_moe_lite::layer_forward(
             cfg, w, hidden, cache, layer_idx, token_offset,
         ),
+        "deepseek_v3" => families::deepseek_v3::layer_forward(
+            cfg, w, hidden, cache, layer_idx, token_offset, turboquant_context,
+        ),
         "mistral3" => families::mistral3::layer_forward(
             cfg, w, hidden, cache, layer_idx, token_offset, shared_mask, turboquant_context,
         ),
@@ -964,6 +967,10 @@ mod tests {
             attn_temperature_floor: 8192.0,
             attn_temperature_scale: 0.1,
             intermediate_size_mlp: 0,
+            moe_layer_freq: 1,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 0,
+            moe_sigmoid_routing: false,
         }
     }
 
@@ -1471,6 +1478,10 @@ mod tests {
                 expert_count: Some(64),
                 experts_per_token: Some(4),
                 expert_intermediate_size: Some(1536),
+                layer_freq: None,
+                first_dense_layers: None,
+                shared_expert_count: None,
+                sigmoid_routing: false,
             },
             glm_router: NativeGlmRouterConfig {
                 first_dense_layer_count: Some(1),

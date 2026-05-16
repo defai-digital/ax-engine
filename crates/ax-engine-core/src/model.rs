@@ -249,6 +249,18 @@ pub struct NativeMoeConfig {
     pub experts_per_token: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expert_intermediate_size: Option<u32>,
+    /// MoE every N layers (1 = every layer, 0 = use GlmRouter dispatch). Default 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_freq: Option<u32>,
+    /// First K layers are dense (DeepSeek: first_k_dense_replace). Default 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_dense_layers: Option<u32>,
+    /// Number of shared (always-active) experts. Default 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_expert_count: Option<u32>,
+    /// Use sigmoid routing instead of softmax (DeepSeek V3). Default false.
+    #[serde(default)]
+    pub sigmoid_routing: bool,
 }
 
 impl NativeMoeConfig {
@@ -3480,6 +3492,10 @@ mod tests {
             expert_count: Some(128),
             experts_per_token: Some(8),
             expert_intermediate_size: Some(704),
+            layer_freq: None,
+            first_dense_layers: None,
+            shared_expert_count: None,
+            sigmoid_routing: false,
         };
         manifest.tensors.extend([
             tensor(
@@ -3614,6 +3630,10 @@ mod tests {
             expert_count: Some(4),
             experts_per_token: Some(2),
             expert_intermediate_size: Some(512),
+            layer_freq: None,
+            first_dense_layers: None,
+            shared_expert_count: None,
+            sigmoid_routing: false,
         };
         manifest.tensors.retain(|tensor| {
             tensor.layer_index != Some(1)
@@ -3817,6 +3837,10 @@ mod tests {
             expert_count: Some(64),
             experts_per_token: Some(4),
             expert_intermediate_size: Some(1536),
+            layer_freq: None,
+            first_dense_layers: None,
+            shared_expert_count: None,
+            sigmoid_routing: false,
         };
         let artifacts = NativeModelArtifacts {
             root_dir: PathBuf::new(),

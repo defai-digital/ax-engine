@@ -613,6 +613,68 @@ pub(crate) fn top_k_by_argpartition(
     (top_k_indices, top_k_weights)
 }
 
+/// DeepSeek V3 router: sigmoid routing with optional correction bias.
+///
+/// Algorithm: sigmoid(logits) + correction_bias → argpartition top-k →
+/// gather original sigmoid scores (pre-bias) → optionally normalise → scale.
+/// This matches `group_expert_select` from mlx-lm deepseek_v3.py when n_group=1.
+pub(crate) fn moe_router_deepseek_v3(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+) -> (MlxArray, MlxArray) {
+    let router_proj = w
+        .router_proj
+        .as_ref()
+        .expect("DeepSeek V3 MoE layer must have router_proj");
+    let logits = qw(x, router_proj);
+    let last_axis = logits.ndim() as i32 - 1;
+
+    // sigmoid scores (f32 for precision, downcast after selection).
+    let orig_scores = mlx_sys::ops::sigmoid(&astype(&logits, MlxDtype::Float32, None), None);
+
+    // Selection scores: add correction bias if present.
+    let selection_scores = if let Some(bias) = w.router_correction_bias.as_ref() {
+        add(&orig_scores, bias, None)
+    } else {
+        orig_scores.clone()
+    };
+
+    // Top-k by argpartition on negated selection scores.
+    let (top_k_indices, _) = top_k_by_argpartition(
+        &selection_scores,
+        cfg.moe_expert_count,
+        cfg.moe_experts_per_token,
+        false,
+    );
+
+    // Gather original (pre-bias) scores for the selected experts.
+    let top_k_weights = take_along_axis(&orig_scores, &top_k_indices, last_axis, None);
+    let top_k_weights = astype(&top_k_weights, x.dtype(), None);
+
+    // Optionally normalise top-k weights to sum to 1.
+    let top_k_weights = if cfg.moe_experts_per_token > 1 && cfg.moe_norm_topk_prob {
+        let denominator = sum_axis(&top_k_weights, last_axis, true, None);
+        divide(&top_k_weights, &denominator, None)
+    } else {
+        top_k_weights
+    };
+
+    // Scale by routed_scaling_factor (from glm_router config if present, else 1.0).
+    let scaling = cfg
+        .glm_router
+        .as_ref()
+        .map(|r| r.routed_scaling_factor)
+        .unwrap_or(1.0);
+    let top_k_weights = if (scaling - 1.0).abs() > 1e-6 {
+        scale_hidden(&top_k_weights, scaling)
+    } else {
+        top_k_weights
+    };
+
+    (top_k_indices, top_k_weights)
+}
+
 /// Expert forward: applies selected experts to `x` and returns the weighted sum.
 ///
 /// x: [1, seq, hidden] (already pre-normed via pre_feedforward_layernorm_2)
