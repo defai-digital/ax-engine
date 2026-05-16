@@ -463,6 +463,20 @@ pub struct NativeModelManifest {
     /// LLaMA-3 original training context length for wavelen boundary computation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rope_original_context_len: Option<u32>,
+    /// LLaMA-4 iRoPE: every N-th layer has no RoPE (N=4 for LLaMA4 Scout/Maverick).
+    /// 0 means all layers use RoPE.
+    #[serde(default)]
+    pub no_rope_layer_interval: u32,
+    /// LLaMA-4 attention temperature floor scale (default 8192).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attn_temperature_floor: Option<u32>,
+    /// LLaMA-4 attention temperature scale factor (default 0.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attn_temperature_scale: Option<f32>,
+    /// Dense FFN intermediate size for models where MoE and dense layers use different sizes (LLaMA4).
+    /// 0 means use `intermediate_size` for both.
+    #[serde(default)]
+    pub intermediate_size_mlp: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_pre_attn_scalar: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3224,6 +3238,10 @@ mod tests {
             rope_low_freq_factor: None,
             rope_high_freq_factor: None,
             rope_original_context_len: None,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: None,
+            attn_temperature_scale: None,
+            intermediate_size_mlp: 0,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,

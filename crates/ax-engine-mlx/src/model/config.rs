@@ -230,6 +230,15 @@ pub struct ModelConfig {
     /// `None` means standard RoPE (compute freqs from `rope_theta` at runtime).
     /// `Some(freqs)` is passed directly to `mlx_sys::rope` as the `freqs` arg.
     pub rope_freqs: Option<MlxArray>,
+    /// LLaMA-4 iRoPE interval: every N-th layer has no RoPE. 0 = all layers use RoPE.
+    pub no_rope_layer_interval: usize,
+    /// LLaMA-4 attention temperature floor scale (positions / floor → log scale).
+    pub attn_temperature_floor: f32,
+    /// LLaMA-4 attention temperature scale multiplier.
+    pub attn_temperature_scale: f32,
+    /// Dense (non-MoE) FFN intermediate size for LLaMA4.
+    /// 0 means use `intermediate_size` for both dense and MoE layers.
+    pub intermediate_size_mlp: usize,
 }
 
 impl ModelConfig {
@@ -309,6 +318,10 @@ impl ModelConfig {
                 .rms_norm_eps
                 .unwrap_or_else(|| default_rms_norm_eps(&m.model_family)),
             rope_freqs,
+            no_rope_layer_interval: m.no_rope_layer_interval as usize,
+            attn_temperature_floor: m.attn_temperature_floor.unwrap_or(8192) as f32,
+            attn_temperature_scale: m.attn_temperature_scale.unwrap_or(0.1),
+            intermediate_size_mlp: m.intermediate_size_mlp as usize,
         }
     }
 

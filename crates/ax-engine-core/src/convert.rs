@@ -144,6 +144,10 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         rope_low_freq_factor: None,
         rope_high_freq_factor: None,
         rope_original_context_len: None,
+        no_rope_layer_interval: 0,
+        attn_temperature_floor: None,
+        attn_temperature_scale: None,
+        intermediate_size_mlp: 0,
         query_pre_attn_scalar,
         attention_logit_softcap,
         // Qwen3.5/Qwen3Next full-attention layers split q_proj into queries and a sigmoid

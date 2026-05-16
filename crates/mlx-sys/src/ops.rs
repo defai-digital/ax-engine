@@ -783,6 +783,7 @@ pub fn repeat(a: &MlxArray, repeats: i32, s: Option<&MlxStream>) -> MlxArray {
 
 unary_op!(cos, mlx_cos);
 unary_op!(sin, mlx_sin);
+unary_op!(floor, mlx_floor);
 unary_op!(stop_gradient, mlx_stop_gradient);
 binary_op!(outer, mlx_outer);
 

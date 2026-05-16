@@ -1,4 +1,5 @@
 pub(super) mod glm4_moe_lite;
+pub(super) mod llama4;
 pub(super) mod qwen3_linear;
 pub(super) mod standard;
 

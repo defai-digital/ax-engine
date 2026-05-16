@@ -100,8 +100,7 @@ use crate::route_metadata::{
     serialize_route_metadata,
 };
 use crate::route_readiness::{
-    MlxMetalReadinessInputs, NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER, mlx_metal_readiness,
-    mlx_metal_readiness_from_route_json,
+    MlxMetalReadinessInputs, mlx_metal_readiness, mlx_metal_readiness_from_route_json,
 };
 use crate::stats::{
     elapsed_ms_since, percentage_delta, proportional_time_us, tokens_per_second_from_micros,
