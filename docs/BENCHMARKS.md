@@ -660,10 +660,10 @@ fused compressed decode, and long-context quality gates so TurboQuant results
 can report decode ratio, prefill ratio, KV saved percent, runtime storage
 coverage, fallback rate, and quality pass/fail without mixing evidence types.
 
-For fused-kernel-only evidence, use the `ax-engine-mlx` microbenchmark:
+For fused-kernel-only evidence, use the `ax-engine-microbench` microbenchmark:
 
 ```text
-cargo run -p ax-engine-mlx --release --bin turboquant-microbench -- \
+cargo run -p ax-engine-microbench --release --bin turboquant-microbench -- \
   --cold-tokens 512,2048,8192 \
   --hot-tokens 128 \
   --repetitions 5 \

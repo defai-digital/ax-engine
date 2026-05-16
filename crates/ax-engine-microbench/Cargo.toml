@@ -1,0 +1,42 @@
+[package]
+name = "ax-engine-microbench"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+ax-engine-core = { path = "../ax-engine-core" }
+ax-engine-mlx = { path = "../ax-engine-mlx" }
+mlx-sys = { path = "../mlx-sys" }
+serde_json.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+
+[[bin]]
+name = "turboquant-microbench"
+path = "src/bin/turboquant_microbench.rs"
+
+[[bin]]
+name = "rmsnorm-fused-probe"
+path = "src/bin/rmsnorm_fused_probe.rs"
+
+[[bin]]
+name = "kernel-chain-batching-probe"
+path = "src/bin/kernel_chain_batching_probe.rs"
+
+[[bin]]
+name = "residual-rmsnorm-fused-probe"
+path = "src/bin/residual_rmsnorm_fused_probe.rs"
+
+[[bin]]
+name = "dequant-dtype-probe"
+path = "src/bin/dequant_dtype_probe.rs"
+
+[[bin]]
+name = "mla-warm-extend-drift-probe"
+path = "src/bin/mla_warm_extend_drift_probe.rs"
+
+[[bin]]
+name = "disk-prefix-cache-stress"
+path = "src/bin/disk_prefix_cache_stress.rs"

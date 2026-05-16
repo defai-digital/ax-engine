@@ -17,7 +17,7 @@
 //! recover that gap and then some?
 //!
 //! Run:
-//!   cargo run --release --bin residual-rmsnorm-fused-probe
+//!   cargo run -p ax-engine-microbench --release --bin residual-rmsnorm-fused-probe
 //!
 //! Output mirrors the rmsnorm probe — bit-exact equivalence check,
 //! wall-clock comparison, verdict bucket. PASS gate is +3% vs the

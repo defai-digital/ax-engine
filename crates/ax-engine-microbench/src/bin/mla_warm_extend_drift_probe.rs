@@ -18,7 +18,7 @@
 //! `chunked_prefill`, the same path the runner uses.
 //!
 //! Run:
-//!   cargo run --release --bin mla-warm-extend-drift-probe -- \
+//!   cargo run -p ax-engine-microbench --release --bin mla-warm-extend-drift-probe -- \
 //!       --mlx-artifacts-dir .internal/models/GLM-4.7-Flash-4bit \
 //!       --base-tokens 16 --suffix-tokens 16 --chunk-size 16 \
 //!       --output benchmarks/results/mla-warm-extend-drift/<file>.json

@@ -1,21 +1,35 @@
 #![recursion_limit = "512"]
 #![allow(clippy::collapsible_if, clippy::single_match)]
 
+mod args;
+mod artifact_files;
+mod artifact_summary;
+mod cli;
+mod doctor_workflow;
+mod environment_probe;
+mod error;
+mod generate_manifest;
+mod json_io;
+mod labels;
+mod logging;
+mod metal_build;
+mod path_utils;
+mod stats;
+
 use ax_engine_core::{
     CacheGroupId, EngineCore, MetalBuildDoctorReport, MetalBuildHostReport, MetalBuildStatus,
     MetalBuildToolStatus, MetalBuildToolchainReport, MetalDispatchTrace, MetalKernelBuildRequest,
     NativeModelArtifacts, NativeModelBindingSummary, RequestId, RequestSnapshot, RequestSubmission,
-    RouteMetadata, SamplingParams, SequenceNo, StepId, StopReason, build_phase1_kernel_artifacts,
+    RouteMetadata, SamplingParams, SequenceNo, StepId, build_phase1_kernel_artifacts,
 };
 use ax_engine_sdk::{
-    BackendPolicy, EngineSession, EngineSessionConfig, EngineStepReport, GenerateFinishReason,
-    GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling, GenerateStatus,
-    GenerateStreamEvent, HostReport, LlamaCppConfig, MetalToolchainReport,
-    NativeModelArtifactsSource, NativeModelReport, NativeRuntimeArtifactsSource,
-    NativeRuntimeReport, PreviewBackendRequest, ResolutionPolicy, ResolvedBackend,
-    ResolvedSessionConfigRequest, RuntimeReport, SelectedBackend, SessionRequestReport,
-    SessionRequestState, SupportTier, ToolStatusReport, current_host_report,
-    current_metal_toolchain_report, preview_support_tier_from_label,
+    BackendPolicy, EngineSession, EngineSessionConfig, EngineStepReport, GenerateRequest,
+    GenerateResponse, GenerateRouteReport, GenerateSampling, GenerateStatus, GenerateStreamEvent,
+    HostReport, LlamaCppConfig, MetalToolchainReport, NativeModelArtifactsSource,
+    NativeModelReport, NativeRuntimeArtifactsSource, NativeRuntimeReport, PreviewBackendRequest,
+    ResolutionPolicy, ResolvedBackend, ResolvedSessionConfigRequest, RuntimeReport,
+    SelectedBackend, SessionRequestReport, SessionRequestState, SupportTier, ToolStatusReport,
+    current_host_report, current_metal_toolchain_report, preview_support_tier_from_label,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -23,20 +37,67 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use thiserror::Error;
-use tracing_subscriber::EnvFilter;
+use std::time::Instant;
+
+use crate::args::{
+    ensure_output_root, has_flag, next_flag_value, parse_bool_list, parse_flag_value,
+    parse_optional_u32_list, parse_token_list, parse_u32_list, require_existing_dir,
+    require_existing_file, require_existing_path, required_flag, required_string_flag,
+};
+use crate::artifact_files::{
+    copy_optional_artifact_file, copy_required_artifact_file, create_unique_result_dir,
+    reject_contract_failure_artifact_dir, sanitize_component, unix_timestamp_secs, write_json_file,
+};
+use crate::artifact_summary::{BenchmarkArtifactSummary, print_benchmark_artifact_summary};
+use crate::cli::usage;
+use crate::doctor_workflow::{
+    DoctorWorkflowReport, command_text, detect_doctor_workflow_report, workflow_mode_label,
+};
+use crate::environment_probe::{
+    bytes_to_gib, default_metal_driver, detect_kernel_release, detect_memory_bytes,
+    detect_os_build, detect_os_version, detect_soc, detect_system_model, file_fingerprint_fnv1a64,
+};
+use crate::error::CliError;
+use crate::generate_manifest::handle_generate_manifest;
+use crate::json_io::{
+    json_value_label, load_json_value, load_optional_json_value, nested_string, nested_value,
+    validate_matching_json_field, validate_matching_optional_json_field,
+};
+use crate::labels::{
+    compare_result_label, compare_summary_note, generate_finish_reason_label,
+    generate_status_label, optional_route_label, request_state_label, selected_backend_label,
+    stop_reason_from_generate_finish_reason, support_tier_label,
+};
+use crate::logging::init_tracing;
+use crate::metal_build::{map_metal_build_error, metal_build_status_label, parse_metal_build_args};
+use crate::path_utils::{expand_manifest_path_env, normalize_path_lexically, path_string};
+use crate::stats::{percentage_delta, proportional_time_us, tokens_per_second_from_micros};
+
+#[cfg(test)]
+use crate::args::{unique_sorted_option_u32, unique_sorted_u32};
+#[cfg(test)]
+use crate::artifact_files::unique_run_suffix;
+#[cfg(test)]
+use crate::artifact_summary::render_benchmark_artifact_summary;
+#[cfg(test)]
+use crate::doctor_workflow::{DoctorWorkflowMode, doctor_workflow_report_for_cwd};
+#[cfg(test)]
+use crate::generate_manifest::{
+    GENERATE_MANIFEST_SCHEMA_VERSION, GenerateManifestStatus, GenerateManifestSummary,
+    GenerateManifestValidationSummary, parse_generate_manifest_args,
+};
+#[cfg(test)]
+use crate::labels::optional_u32_label;
+#[cfg(test)]
+use crate::stats::{percentile_f64, percentile_u64};
 
 const NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE: &str =
     "source_quantization_dequantized_for_dense_native_export";
 const NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER: &str =
     "source_quantization_dequantized_dense_native_artifact";
-const GENERATE_MANIFEST_SCHEMA_VERSION: &str = "ax.generate_manifest.v1";
-const BENCHMARK_ARTIFACT_SCHEMA_VERSION: &str = "ax.benchmark_artifact.v1";
 
 fn main() -> ExitCode {
     init_tracing();
@@ -64,31 +125,6 @@ fn main() -> ExitCode {
             ExitCode::from(4)
         }
     }
-}
-
-fn init_tracing() {
-    let filter = env::var("AX_BENCH_LOG")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            env::var("RUST_LOG")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        });
-
-    let Some(filter) = filter else {
-        return;
-    };
-    let Ok(env_filter) = EnvFilter::try_new(filter) else {
-        return;
-    };
-
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_target(false)
-        .with_ansi(false)
-        .compact()
-        .try_init();
 }
 
 fn run() -> Result<(), CliError> {
@@ -428,130 +464,6 @@ fn handle_matrix(args: &[String]) -> Result<(), CliError> {
     enforce_matrix_gates(&execution)
 }
 
-#[derive(Debug, Serialize)]
-struct BenchmarkArtifactSummary {
-    schema_version: &'static str,
-    command: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    manifest: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    baseline: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    candidate: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    output_root: String,
-    result_dir: String,
-    status: String,
-}
-
-impl BenchmarkArtifactSummary {
-    fn manifest_run(
-        command: &'static str,
-        manifest: &Path,
-        output_root: &Path,
-        result_dir: &Path,
-        status: &str,
-    ) -> Self {
-        Self {
-            schema_version: BENCHMARK_ARTIFACT_SCHEMA_VERSION,
-            command,
-            manifest: Some(path_string(manifest)),
-            baseline: None,
-            candidate: None,
-            source: None,
-            name: None,
-            output_root: path_string(output_root),
-            result_dir: path_string(result_dir),
-            status: status.to_string(),
-        }
-    }
-
-    fn comparison(
-        command: &'static str,
-        baseline: &Path,
-        candidate: &Path,
-        output_root: &Path,
-        result_dir: &Path,
-    ) -> Self {
-        Self {
-            schema_version: BENCHMARK_ARTIFACT_SCHEMA_VERSION,
-            command,
-            manifest: None,
-            baseline: Some(path_string(baseline)),
-            candidate: Some(path_string(candidate)),
-            source: None,
-            name: None,
-            output_root: path_string(output_root),
-            result_dir: path_string(result_dir),
-            status: "written".to_string(),
-        }
-    }
-
-    fn baseline(source: &Path, name: &str, output_root: &Path, result_dir: &Path) -> Self {
-        Self {
-            schema_version: BENCHMARK_ARTIFACT_SCHEMA_VERSION,
-            command: "baseline",
-            manifest: None,
-            baseline: None,
-            candidate: None,
-            source: Some(path_string(source)),
-            name: Some(name.to_string()),
-            output_root: path_string(output_root),
-            result_dir: path_string(result_dir),
-            status: "written".to_string(),
-        }
-    }
-}
-
-fn print_benchmark_artifact_summary(
-    summary: &BenchmarkArtifactSummary,
-    json: bool,
-) -> Result<(), CliError> {
-    if json {
-        let json = serde_json::to_string_pretty(summary).map_err(|error| {
-            CliError::Runtime(format!(
-                "failed to serialize benchmark artifact summary: {error}"
-            ))
-        })?;
-        println!("{json}");
-    } else {
-        println!("{}", render_benchmark_artifact_summary(summary));
-    }
-    Ok(())
-}
-
-fn render_benchmark_artifact_summary(summary: &BenchmarkArtifactSummary) -> String {
-    let mut lines = vec![format!("ax-engine-bench {}", summary.command)];
-    if let Some(manifest) = summary.manifest.as_deref() {
-        lines.push(format!("manifest={manifest}"));
-    }
-    if let Some(baseline) = summary.baseline.as_deref() {
-        lines.push(format!("baseline={baseline}"));
-    }
-    if let Some(candidate) = summary.candidate.as_deref() {
-        lines.push(format!("candidate={candidate}"));
-    }
-    if let Some(source) = summary.source.as_deref() {
-        lines.push(format!("source={source}"));
-    }
-    if let Some(name) = summary.name.as_deref() {
-        lines.push(format!("name={name}"));
-    }
-    lines.push(format!("output_root={}", summary.output_root));
-    lines.push(format!("result_dir={}", summary.result_dir));
-    if summary.status != "written" {
-        lines.push(format!("status={}", summary.status));
-    }
-    lines.join("\n")
-}
-
-fn path_string(path: &Path) -> String {
-    path.display().to_string()
-}
-
 fn handle_doctor(args: &[String]) -> Result<(), CliError> {
     let doctor_args = parse_doctor_args(args)?;
     let mut report = build_doctor_report_for_model(
@@ -571,148 +483,6 @@ fn handle_doctor(args: &[String]) -> Result<(), CliError> {
     }
 
     Ok(())
-}
-
-fn handle_generate_manifest(args: &[String]) -> Result<(), CliError> {
-    let args = parse_generate_manifest_args(args)?;
-    let model_dir = args.model_dir;
-    if !model_dir.is_dir() {
-        return Err(CliError::Runtime(format!(
-            "model directory not found: {}",
-            model_dir.display()
-        )));
-    }
-    let manifest_path = model_dir.join(ax_engine_core::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-    let status = if manifest_path.exists() {
-        GenerateManifestStatus::AlreadyExists
-    } else {
-        let manifest = ax_engine_core::convert::convert_hf_model_dir(&model_dir)
-            .map_err(|e| CliError::Runtime(format!("error converting model: {e}")))?;
-        ax_engine_core::convert::write_manifest(&model_dir, &manifest)
-            .map_err(|e| CliError::Runtime(format!("error writing manifest: {e}")))?;
-        GenerateManifestStatus::Written
-    };
-    let validation = if args.validate {
-        validate_native_model_artifacts(&model_dir)?;
-        Some(GenerateManifestValidationSummary { passed: true })
-    } else {
-        None
-    };
-    let summary = GenerateManifestSummary {
-        schema_version: GENERATE_MANIFEST_SCHEMA_VERSION,
-        model_dir: model_dir.display().to_string(),
-        manifest_path: manifest_path.display().to_string(),
-        status,
-        manifest_present: manifest_path.exists(),
-        validation,
-    };
-
-    if args.json {
-        let json = serde_json::to_string_pretty(&summary).map_err(|error| {
-            CliError::Runtime(format!(
-                "failed to serialize generate-manifest summary: {error}"
-            ))
-        })?;
-        println!("{json}");
-    } else if status == GenerateManifestStatus::AlreadyExists {
-        println!("manifest already exists: {}", manifest_path.display());
-        if args.validate {
-            println!("validated {}", manifest_path.display());
-        }
-    } else {
-        println!("wrote {}", manifest_path.display());
-        if args.validate {
-            println!("validated {}", manifest_path.display());
-        }
-    }
-    Ok(())
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct GenerateManifestArgs {
-    model_dir: PathBuf,
-    json: bool,
-    validate: bool,
-}
-
-fn parse_generate_manifest_args(args: &[String]) -> Result<GenerateManifestArgs, CliError> {
-    let mut model_dir = None;
-    let mut json = false;
-    let mut validate = false;
-
-    for arg in args {
-        match arg.as_str() {
-            "--json" => json = true,
-            "--validate" => validate = true,
-            value if value.starts_with('-') => {
-                return Err(CliError::Usage(format!(
-                    "unknown generate-manifest option: {value}\n\n{}",
-                    generate_manifest_usage()
-                )));
-            }
-            value => {
-                if model_dir.is_some() {
-                    return Err(CliError::Usage(format!(
-                        "unexpected generate-manifest argument: {value}\n\n{}",
-                        generate_manifest_usage()
-                    )));
-                }
-                model_dir = Some(PathBuf::from(value));
-            }
-        }
-    }
-
-    let Some(model_dir) = model_dir else {
-        return Err(CliError::Usage(generate_manifest_usage()));
-    };
-
-    Ok(GenerateManifestArgs {
-        model_dir,
-        json,
-        validate,
-    })
-}
-
-fn generate_manifest_usage() -> String {
-    "Usage: ax-engine-bench generate-manifest <model-dir> [--json] [--validate]\n\n\
-     Generates model-manifest.json for an MLX model snapshot. Required before \
-     ax-engine can load the model. With --validate, reads the generated \
-     model-manifest.json back through the native model artifact validator."
-        .to_string()
-}
-
-fn validate_native_model_artifacts(model_dir: &Path) -> Result<(), CliError> {
-    ax_engine_core::model::NativeModelArtifacts::from_dir(model_dir)
-        .map(|_| ())
-        .map_err(|error| {
-            CliError::Runtime(format!(
-                "generated manifest validation failed for {}: {error}",
-                model_dir.display()
-            ))
-        })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum GenerateManifestStatus {
-    AlreadyExists,
-    Written,
-}
-
-#[derive(Debug, Serialize)]
-struct GenerateManifestSummary {
-    schema_version: &'static str,
-    model_dir: String,
-    manifest_path: String,
-    status: GenerateManifestStatus,
-    manifest_present: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    validation: Option<GenerateManifestValidationSummary>,
-}
-
-#[derive(Debug, Serialize)]
-struct GenerateManifestValidationSummary {
-    passed: bool,
 }
 
 fn handle_metal_build(args: &[String]) -> Result<(), CliError> {
@@ -805,7 +575,7 @@ struct InferenceArgs {
 impl Default for InferenceArgs {
     fn default() -> Self {
         Self {
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             input_tokens: Vec::new(),
             input_text: None,
             max_output_tokens: 32,
@@ -948,98 +718,6 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
     Ok(parsed)
 }
 
-fn next_flag_value<'a>(
-    iter: &mut std::slice::Iter<'a, String>,
-    name: &str,
-) -> Result<&'a str, CliError> {
-    iter.next()
-        .map(|value| value.as_str())
-        .ok_or_else(|| CliError::Usage(format!("missing value for required flag {name}")))
-}
-
-fn parse_flag_value<T>(value: &str, name: &str) -> Result<T, CliError>
-where
-    T: std::str::FromStr,
-{
-    value.parse::<T>().map_err(|_| {
-        CliError::Usage(format!(
-            "invalid value for {name}: expected {}, got {value}",
-            std::any::type_name::<T>()
-        ))
-    })
-}
-
-fn parse_u32_list(value: &str, name: &str) -> Result<Vec<u32>, CliError> {
-    let parts = split_list_parts(value);
-    if parts.is_empty() {
-        return Err(CliError::Usage(format!(
-            "{name} expects a comma- or space-separated list"
-        )));
-    }
-    Ok(unique_sorted_u32(
-        parts
-            .into_iter()
-            .map(|part| parse_flag_value::<u32>(part, name))
-            .collect::<Result<Vec<_>, _>>()?,
-    ))
-}
-
-fn parse_optional_u32_list(value: &str, name: &str) -> Result<Vec<Option<u32>>, CliError> {
-    let parts = split_list_parts(value);
-    if parts.is_empty() {
-        return Err(CliError::Usage(format!(
-            "{name} expects a comma- or space-separated list"
-        )));
-    }
-    Ok(unique_sorted_option_u32(
-        parts
-            .into_iter()
-            .map(|part| {
-                if part.eq_ignore_ascii_case("none") {
-                    Ok(None)
-                } else {
-                    Ok(Some(parse_flag_value::<u32>(part, name)?))
-                }
-            })
-            .collect::<Result<Vec<_>, CliError>>()?,
-    ))
-}
-
-fn parse_bool_list(value: &str, name: &str) -> Result<Vec<bool>, CliError> {
-    let parts = split_list_parts(value);
-    if parts.is_empty() {
-        return Err(CliError::Usage(format!(
-            "{name} expects a comma- or space-separated list"
-        )));
-    }
-    Ok(unique_sorted_bool(
-        parts
-            .into_iter()
-            .map(|part| parse_flag_value::<bool>(part, name))
-            .collect::<Result<Vec<_>, _>>()?,
-    ))
-}
-
-fn split_list_parts(value: &str) -> Vec<&str> {
-    value
-        .split(|character: char| character == ',' || character.is_whitespace())
-        .filter(|part| !part.is_empty())
-        .collect()
-}
-
-fn parse_token_list(value: &str) -> Result<Vec<u32>, CliError> {
-    split_list_parts(value)
-        .into_iter()
-        .map(|part| {
-            part.parse::<u32>().map_err(|_| {
-                CliError::Usage(format!(
-                    "invalid token id {part}; --tokens expects a comma- or space-separated u32 list"
-                ))
-            })
-        })
-        .collect()
-}
-
 fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliError> {
     let backend_request = if args.mlx {
         PreviewBackendRequest::shipping_mlx()
@@ -1089,6 +767,7 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
             mlx_model_artifacts_dir,
             mlx_disable_ngram_acceleration: disable_ngram,
             mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
+            mlx_prefill_chunk: None,
         })
         .map_err(|error| CliError::Usage(format!("invalid inference configuration: {error}")))?;
 
@@ -1230,79 +909,6 @@ fn format_generate_metadata_suffix(response: &GenerateResponse) -> String {
     )
 }
 
-fn selected_backend_label(backend: SelectedBackend) -> &'static str {
-    match backend {
-        SelectedBackend::Mlx => "mlx",
-        SelectedBackend::MlxLmDelegated => "mlx_lm_delegated",
-        SelectedBackend::LlamaCpp => "llama_cpp",
-    }
-}
-
-fn support_tier_label(support_tier: SupportTier) -> &'static str {
-    match support_tier {
-        SupportTier::MlxCertified => "mlx_certified",
-        SupportTier::MlxPreview => "mlx_preview",
-        SupportTier::MlxLmDelegated => "mlx_lm_delegated",
-        SupportTier::LlamaCpp => "llama_cpp",
-        SupportTier::Unsupported => "unsupported",
-    }
-}
-
-fn request_state_label(state: SessionRequestState) -> &'static str {
-    match state {
-        SessionRequestState::Waiting => "waiting",
-        SessionRequestState::Runnable => "runnable",
-        SessionRequestState::Running => "running",
-        SessionRequestState::BlockedOnMemory => "blocked_on_memory",
-        SessionRequestState::Finished => "finished",
-        SessionRequestState::Cancelled => "cancelled",
-        SessionRequestState::Failed => "failed",
-    }
-}
-
-fn generate_status_label(status: GenerateStatus) -> &'static str {
-    match status {
-        GenerateStatus::Pending => "pending",
-        GenerateStatus::Finished => "finished",
-        GenerateStatus::Cancelled => "cancelled",
-        GenerateStatus::Failed => "failed",
-    }
-}
-
-fn generate_finish_reason_label(finish_reason: GenerateFinishReason) -> &'static str {
-    match finish_reason {
-        GenerateFinishReason::Stop => "stop",
-        GenerateFinishReason::MaxOutputTokens => "max_output_tokens",
-        GenerateFinishReason::ContentFilter => "content_filter",
-        GenerateFinishReason::Cancelled => "cancelled",
-        GenerateFinishReason::Error => "error",
-    }
-}
-
-fn optional_route_label(value: Option<&str>) -> &str {
-    value.unwrap_or("none")
-}
-
-#[cfg(test)]
-fn optional_u32_label(value: Option<u32>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string())
-}
-
-fn stop_reason_from_generate_finish_reason(
-    finish_reason: Option<GenerateFinishReason>,
-) -> Option<StopReason> {
-    match finish_reason {
-        Some(GenerateFinishReason::Stop) => Some(StopReason::EosToken),
-        Some(GenerateFinishReason::MaxOutputTokens) => Some(StopReason::MaxOutputTokens),
-        Some(GenerateFinishReason::ContentFilter) => Some(StopReason::Error),
-        Some(GenerateFinishReason::Cancelled) => Some(StopReason::Cancelled),
-        Some(GenerateFinishReason::Error) => Some(StopReason::Error),
-        None => None,
-    }
-}
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct DoctorArgs {
     json: bool,
@@ -1334,72 +940,6 @@ fn parse_doctor_args(args: &[String]) -> Result<DoctorArgs, CliError> {
     }
 
     Ok(doctor_args)
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct MetalBuildArgs {
-    manifest_path: PathBuf,
-    output_dir: PathBuf,
-}
-
-fn parse_metal_build_args(args: &[String]) -> Result<MetalBuildArgs, CliError> {
-    let current_dir = env::current_dir().map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to resolve current working directory: {error}"
-        ))
-    })?;
-    let mut manifest_path = env::var_os("AX_METAL_MANIFEST_PATH").map(PathBuf::from);
-    let mut output_dir = env::var_os("AX_METAL_OUTPUT_DIR").map(PathBuf::from);
-
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--manifest" => {
-                let Some(value) = iter.next() else {
-                    return Err(CliError::Usage(
-                        "missing value for required flag --manifest".to_string(),
-                    ));
-                };
-                manifest_path = Some(PathBuf::from(value));
-            }
-            "--output-dir" => {
-                let Some(value) = iter.next() else {
-                    return Err(CliError::Usage(
-                        "missing value for required flag --output-dir".to_string(),
-                    ));
-                };
-                output_dir = Some(PathBuf::from(value));
-            }
-            other => {
-                return Err(CliError::Usage(format!(
-                    "unknown flag for metal-build: {other}\n\n{}",
-                    usage()
-                )));
-            }
-        }
-    }
-
-    let manifest_path = absolutize_path(
-        manifest_path.unwrap_or_else(|| current_dir.join("metal/phase1-kernels.json")),
-        &current_dir,
-    );
-    let output_dir = absolutize_path(
-        output_dir.unwrap_or_else(|| current_dir.join("build/metal")),
-        &current_dir,
-    );
-
-    Ok(MetalBuildArgs {
-        manifest_path,
-        output_dir,
-    })
-}
-
-fn required_flag(args: &[String], name: &str) -> Result<PathBuf, CliError> {
-    Ok(PathBuf::from(required_string_flag(args, name)?))
-}
-
-fn has_flag(args: &[String], name: &str) -> bool {
-    args.iter().any(|arg| arg == name)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1434,59 +974,6 @@ struct DoctorReport {
     issues: Vec<String>,
     notes: Vec<String>,
     performance_advice: Vec<DoctorAdvice>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum DoctorWorkflowMode {
-    Unknown,
-    SourceCheckout,
-    InstalledTools,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct DoctorWorkflowReport {
-    mode: DoctorWorkflowMode,
-    cwd: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_root: Option<String>,
-    doctor: DoctorWorkflowCommand,
-    server: DoctorWorkflowCommand,
-    generate_manifest: DoctorWorkflowCommand,
-    benchmark: DoctorWorkflowCommand,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    download_model: Option<DoctorWorkflowCommand>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct DoctorWorkflowCommand {
-    argv: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cwd: Option<String>,
-}
-
-impl DoctorWorkflowCommand {
-    fn new(argv: &[&str], cwd: Option<&Path>) -> Self {
-        Self {
-            argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
-            cwd: cwd.map(path_string),
-        }
-    }
-}
-
-impl DoctorWorkflowReport {
-    fn unknown() -> Self {
-        Self {
-            mode: DoctorWorkflowMode::Unknown,
-            cwd: String::new(),
-            source_root: None,
-            doctor: DoctorWorkflowCommand::new(&[], None),
-            server: DoctorWorkflowCommand::new(&[], None),
-            generate_manifest: DoctorWorkflowCommand::new(&[], None),
-            benchmark: DoctorWorkflowCommand::new(&[], None),
-            download_model: None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1612,151 +1099,6 @@ fn metal_build_tool_status(tool: &ToolStatusReport) -> MetalBuildToolStatus {
     MetalBuildToolStatus {
         available: tool.available,
         version: tool.version.clone(),
-    }
-}
-
-fn detect_doctor_workflow_report() -> Result<DoctorWorkflowReport, CliError> {
-    let cwd = env::current_dir().map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to resolve current working directory for workflow discovery: {error}"
-        ))
-    })?;
-    Ok(doctor_workflow_report_for_cwd(&cwd))
-}
-
-fn doctor_workflow_report_for_cwd(cwd: &Path) -> DoctorWorkflowReport {
-    if let Some(source_root) = find_source_checkout_root(cwd) {
-        return DoctorWorkflowReport {
-            mode: DoctorWorkflowMode::SourceCheckout,
-            cwd: path_string(cwd),
-            source_root: Some(path_string(&source_root)),
-            doctor: DoctorWorkflowCommand::new(
-                &[
-                    "cargo",
-                    "run",
-                    "-p",
-                    "ax-engine-bench",
-                    "--",
-                    "doctor",
-                    "--json",
-                ],
-                Some(&source_root),
-            ),
-            server: DoctorWorkflowCommand::new(
-                &["cargo", "run", "-p", "ax-engine-server", "--"],
-                Some(&source_root),
-            ),
-            generate_manifest: DoctorWorkflowCommand::new(
-                &[
-                    "cargo",
-                    "run",
-                    "-p",
-                    "ax-engine-bench",
-                    "--",
-                    "generate-manifest",
-                    "<model-dir>",
-                    "--json",
-                ],
-                Some(&source_root),
-            ),
-            benchmark: DoctorWorkflowCommand::new(
-                &[
-                    "cargo",
-                    "run",
-                    "-p",
-                    "ax-engine-bench",
-                    "--",
-                    "scenario",
-                    "--manifest",
-                    "<manifest>",
-                    "--output-root",
-                    "<output-root>",
-                    "--json",
-                ],
-                Some(&source_root),
-            ),
-            download_model: Some(DoctorWorkflowCommand::new(
-                &[
-                    "python3",
-                    "scripts/download_model.py",
-                    "<repo-id>",
-                    "--json",
-                ],
-                Some(&source_root),
-            )),
-        };
-    }
-
-    DoctorWorkflowReport {
-        mode: DoctorWorkflowMode::InstalledTools,
-        cwd: path_string(cwd),
-        source_root: None,
-        doctor: DoctorWorkflowCommand::new(&["ax-engine-bench", "doctor", "--json"], None),
-        server: DoctorWorkflowCommand::new(&["ax-engine-server"], None),
-        generate_manifest: DoctorWorkflowCommand::new(
-            &[
-                "ax-engine-bench",
-                "generate-manifest",
-                "<model-dir>",
-                "--json",
-            ],
-            None,
-        ),
-        benchmark: DoctorWorkflowCommand::new(
-            &[
-                "ax-engine-bench",
-                "scenario",
-                "--manifest",
-                "<manifest>",
-                "--output-root",
-                "<output-root>",
-                "--json",
-            ],
-            None,
-        ),
-        download_model: None,
-    }
-}
-
-fn find_source_checkout_root(cwd: &Path) -> Option<PathBuf> {
-    cwd.ancestors()
-        .find(|candidate| is_source_checkout_root(candidate))
-        .map(Path::to_path_buf)
-}
-
-fn is_source_checkout_root(path: &Path) -> bool {
-    path.join("Cargo.toml").is_file()
-        && path.join("scripts/download_model.py").is_file()
-        && path.join("crates/ax-engine-server/Cargo.toml").is_file()
-        && path.join("crates/ax-engine-bench/Cargo.toml").is_file()
-}
-
-fn metal_build_status_label(status: MetalBuildStatus) -> &'static str {
-    match status {
-        MetalBuildStatus::Unknown => "unknown",
-        MetalBuildStatus::Compiled => "compiled",
-        MetalBuildStatus::SkippedToolchainUnavailable => "skipped_toolchain_unavailable",
-        MetalBuildStatus::SkippedNotReady => "skipped_not_ready",
-        MetalBuildStatus::FailedCompile => "failed_compile",
-    }
-}
-
-fn absolutize_path(path: PathBuf, current_dir: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path
-    } else {
-        current_dir.join(path)
-    }
-}
-
-fn map_metal_build_error(error: ax_engine_core::MetalRuntimeError) -> CliError {
-    match error {
-        ax_engine_core::MetalRuntimeError::InvalidManifest { .. }
-        | ax_engine_core::MetalRuntimeError::InvalidBuildReport { .. }
-        | ax_engine_core::MetalRuntimeError::MissingBuildArtifact { .. } => {
-            CliError::Contract(error.to_string())
-        }
-        _ => CliError::Runtime(error.to_string()),
     }
 }
 
@@ -2312,92 +1654,6 @@ fn render_doctor_report(report: &DoctorReport) -> String {
     lines.join("\n")
 }
 
-fn workflow_mode_label(mode: DoctorWorkflowMode) -> &'static str {
-    match mode {
-        DoctorWorkflowMode::Unknown => "unknown",
-        DoctorWorkflowMode::SourceCheckout => "source_checkout",
-        DoctorWorkflowMode::InstalledTools => "installed_tools",
-    }
-}
-
-fn command_text(command: &DoctorWorkflowCommand) -> String {
-    if command.argv.is_empty() {
-        return "none".to_string();
-    }
-    let argv = command.argv.join(" ");
-    if let Some(cwd) = command.cwd.as_deref() {
-        format!("{argv} [in: {cwd}]")
-    } else {
-        argv
-    }
-}
-
-fn required_string_flag(args: &[String], name: &str) -> Result<String, CliError> {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == name {
-            let Some(value) = iter.next() else {
-                return Err(CliError::Usage(format!(
-                    "missing value for required flag {name}"
-                )));
-            };
-            return Ok(value.clone());
-        }
-    }
-
-    Err(CliError::Usage(format!("missing required flag {name}")))
-}
-
-fn require_existing_file(path: &Path) -> Result<(), CliError> {
-    if !path.is_file() {
-        return Err(CliError::Contract(format!(
-            "manifest file does not exist: {}",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
-fn require_existing_path(path: &Path) -> Result<(), CliError> {
-    if !path.exists() {
-        return Err(CliError::Contract(format!(
-            "required path does not exist: {}",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
-fn require_existing_dir(path: &Path) -> Result<(), CliError> {
-    if !path.is_dir() {
-        return Err(CliError::Contract(format!(
-            "required directory does not exist or is not a directory: {}",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
-fn ensure_output_root(path: &Path) -> Result<(), CliError> {
-    if path.exists() && !path.is_dir() {
-        return Err(CliError::Contract(format!(
-            "output root exists but is not a directory: {}",
-            path.display()
-        )));
-    }
-
-    if !path.exists() {
-        fs::create_dir_all(path).map_err(|error| {
-            CliError::Runtime(format!(
-                "failed to create output root {}: {error}",
-                path.display()
-            ))
-        })?;
-    }
-
-    Ok(())
-}
-
 fn load_manifest(path: &Path) -> Result<BenchmarkManifest, CliError> {
     let raw = fs::read_to_string(path).map_err(|error| {
         CliError::Runtime(format!(
@@ -2458,63 +1714,6 @@ fn resolve_manifest_path(path: &Path, manifest_path: &Path) -> Result<PathBuf, C
         ))
     })?;
     Ok(normalize_path_lexically(manifest_dir.join(expanded)))
-}
-
-fn expand_manifest_path_env(path: &Path) -> Result<PathBuf, CliError> {
-    let raw = path.to_string_lossy();
-    if let Some(variable) = raw
-        .strip_prefix("${")
-        .and_then(|value| value.strip_suffix('}'))
-    {
-        return env::var_os(variable).map(PathBuf::from).ok_or_else(|| {
-            CliError::Contract(format!(
-                "manifest path references unset environment variable {variable}"
-            ))
-        });
-    }
-
-    if let Some(stripped) = raw.strip_prefix('$') {
-        let variable_len = stripped
-            .chars()
-            .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
-            .count();
-        if variable_len > 0 {
-            let (variable, remainder) = stripped.split_at(variable_len);
-            let value = env::var_os(variable).ok_or_else(|| {
-                CliError::Contract(format!(
-                    "manifest path references unset environment variable {variable}"
-                ))
-            })?;
-            let mut resolved = PathBuf::from(value);
-            if !remainder.is_empty() {
-                resolved.push(remainder.trim_start_matches(['/', '\\']));
-            }
-            return Ok(resolved);
-        }
-    }
-
-    Ok(path.to_path_buf())
-}
-
-fn normalize_path_lexically(path: PathBuf) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(
-                    normalized.components().next_back(),
-                    Some(Component::Normal(_))
-                ) {
-                    normalized.pop();
-                } else if !normalized.has_root() {
-                    normalized.push(component.as_os_str());
-                }
-            }
-            _ => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
 }
 
 fn validate_manifest(
@@ -3228,30 +2427,6 @@ fn autotune_probe_baseline(
         fallback_free_decode_tok_s_floor,
         ttft_ceiling_ms,
     })
-}
-
-#[cfg(test)]
-fn percentile_f64(values: &[f64], quantile: f64) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut values = values.to_vec();
-    values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
-    let quantile = quantile.clamp(0.0, 1.0);
-    let index = ((values.len() - 1) as f64 * quantile).round() as usize;
-    values.get(index).copied()
-}
-
-#[cfg(test)]
-fn percentile_u64(values: &[u64], quantile: f64) -> Option<u64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut values = values.to_vec();
-    values.sort_unstable();
-    let quantile = quantile.clamp(0.0, 1.0);
-    let index = ((values.len() - 1) as f64 * quantile).round() as usize;
-    values.get(index).copied()
 }
 
 #[cfg(test)]
@@ -4162,27 +3337,6 @@ fn autotune_score(execution: &RuntimeResult, metrics: &AutotuneTrialMetrics) -> 
         - ttft_penalty
         - cpu_fallback_penalty
         - gate_penalty
-}
-
-fn unique_sorted_u32(values: Vec<u32>) -> Vec<u32> {
-    let mut values = values;
-    values.sort_unstable();
-    values.dedup();
-    values
-}
-
-fn unique_sorted_option_u32(values: Vec<Option<u32>>) -> Vec<Option<u32>> {
-    let mut values = values;
-    values.sort_by_key(|value| value.unwrap_or(0));
-    values.dedup();
-    values
-}
-
-fn unique_sorted_bool(values: Vec<bool>) -> Vec<bool> {
-    let mut values = values;
-    values.sort_unstable();
-    values.dedup();
-    values
 }
 
 #[cfg(test)]
@@ -5264,6 +4418,7 @@ fn session_config_from_runtime(
         mlx_model_artifacts_source: runtime.mlx_model_artifacts_source,
         mlx_disable_ngram_acceleration: false,
         mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
+        mlx_prefill_chunk: None,
     })
 }
 
@@ -6834,67 +5989,6 @@ fn build_trusted_baseline_summary_markdown(trusted_baseline: &Value) -> String {
     )
 }
 
-fn copy_required_artifact_file(
-    source_dir: &Path,
-    destination_dir: &Path,
-    name: &str,
-) -> Result<(), CliError> {
-    let source = source_dir.join(name);
-    if !source.is_file() {
-        return Err(CliError::Contract(format!(
-            "benchmark artifact missing {name}: {}",
-            source_dir.display()
-        )));
-    }
-    fs::copy(&source, destination_dir.join(name)).map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to copy {} into {}: {error}",
-            source.display(),
-            destination_dir.display()
-        ))
-    })?;
-    Ok(())
-}
-
-fn copy_optional_artifact_file(
-    source_dir: &Path,
-    destination_dir: &Path,
-    name: &str,
-) -> Result<(), CliError> {
-    let source = source_dir.join(name);
-    if !source.is_file() {
-        return Ok(());
-    }
-    fs::copy(&source, destination_dir.join(name)).map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to copy {} into {}: {error}",
-            source.display(),
-            destination_dir.display()
-        ))
-    })?;
-    Ok(())
-}
-
-fn reject_contract_failure_artifact_dir(path: &Path, label: &str) -> Result<(), CliError> {
-    let failure_path = path.join("contract_failure.json");
-    if !failure_path.is_file() {
-        return Ok(());
-    }
-
-    let failure = load_json_value(&failure_path)?;
-    let code = nested_value(&failure, &["failure", "code"])
-        .and_then(Value::as_str)
-        .unwrap_or("contract_validation_failed");
-    let message = nested_value(&failure, &["failure", "message"])
-        .and_then(Value::as_str)
-        .unwrap_or("contract failure artifact present");
-
-    Err(CliError::Contract(format!(
-        "compare requires successful execution artifacts; {label} points to a contract-failure result at {} ({code}): {message}",
-        path.display()
-    )))
-}
-
 fn validate_comparable_manifests(baseline: &Value, candidate: &Value) -> Result<(), CliError> {
     let fields = [
         ["schema_version"].as_slice(),
@@ -7165,63 +6259,6 @@ fn validate_comparable_environments(baseline: &Value, candidate: &Value) -> Resu
     Ok(())
 }
 
-fn validate_matching_json_field(
-    baseline: &Value,
-    candidate: &Value,
-    field: &[&str],
-) -> Result<(), CliError> {
-    let baseline_value = nested_value(baseline, field)
-        .ok_or_else(|| CliError::Contract(format!("baseline missing {}", field.join("."))))?;
-    let candidate_value = nested_value(candidate, field)
-        .ok_or_else(|| CliError::Contract(format!("candidate missing {}", field.join("."))))?;
-    validate_matching_values(field, baseline_value, candidate_value)
-}
-
-fn validate_matching_optional_json_field(
-    baseline: &Value,
-    candidate: &Value,
-    field: &[&str],
-) -> Result<(), CliError> {
-    match (
-        nested_value(baseline, field),
-        nested_value(candidate, field),
-    ) {
-        (None, None) => Ok(()),
-        (Some(baseline_value), Some(candidate_value)) => {
-            validate_matching_values(field, baseline_value, candidate_value)
-        }
-        (Some(_), None) => Err(CliError::Contract(format!(
-            "candidate missing {}",
-            field.join(".")
-        ))),
-        (None, Some(_)) => Err(CliError::Contract(format!(
-            "baseline missing {}",
-            field.join(".")
-        ))),
-    }
-}
-
-fn validate_matching_values(
-    field: &[&str],
-    baseline_value: &Value,
-    candidate_value: &Value,
-) -> Result<(), CliError> {
-    if baseline_value != candidate_value {
-        return Err(CliError::Contract(format!(
-            "benchmark contract mismatch for {}: baseline={}, candidate={}",
-            field.join("."),
-            json_value_label(baseline_value),
-            json_value_label(candidate_value)
-        )));
-    }
-
-    Ok(())
-}
-
-fn json_value_label(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}"))
-}
-
 fn inferred_tool_mode_from_runtime_json(runtime: &Value) -> Option<&'static str> {
     match nested_value(runtime, &["mlx_runtime", "runner"]).and_then(Value::as_str) {
         Some("metal_bringup") => return Some("engine_bringup_runtime"),
@@ -7325,68 +6362,6 @@ fn runtime_tuning_informational_diff_json(
     })
 }
 
-fn compare_result_label(tool_mode: &str, execution_semantics: &str) -> &'static str {
-    match tool_mode {
-        "llama_cpp_stepwise_runtime" => "llama_cpp_stepwise_compare",
-        "llama_cpp_blocking_runtime" => "llama_cpp_blocking_compare",
-        _ => match execution_semantics {
-            "metal_real_model_forward" => "metal_real_model_forward_compare",
-            "metal_multilayer_mixed_prefix_attention" => {
-                "metal_multilayer_mixed_prefix_attention_compare"
-            }
-            "metal_multilayer_native_prefix_attention" => {
-                "metal_multilayer_native_prefix_attention_compare"
-            }
-            "metal_multilayer_model_incomplete" => "metal_multilayer_model_incomplete_compare",
-            "metal_model_bound_ffn_decode" => "metal_model_bound_ffn_decode_compare",
-            "metal_real_model_tensor_inputs" => "metal_real_model_tensor_inputs_compare",
-            "metal_model_conditioned_numeric_scaffold" => {
-                "metal_model_conditioned_scaffold_compare"
-            }
-            "metal_numeric_scaffold_only" => "metal_numeric_scaffold_compare",
-            _ => "engine_bringup_compare",
-        },
-    }
-}
-
-fn compare_summary_note(tool_mode: &str, execution_semantics: &str) -> &'static str {
-    match tool_mode {
-        "llama_cpp_blocking_runtime" => {
-            "\nThis comparison reflects the current llama.cpp llama.cpp benchmark path. TTFT, prefill throughput, and decode throughput should be read as delegated llama.cpp wall-time proxies rather than MLX-mode scheduler measurements.\n"
-        }
-        "llama_cpp_stepwise_runtime" => {
-            "\nThis comparison reflects the delegated llama.cpp benchmark path over the stepwise `llama.cpp /completion` adapter. Throughput and prefix-reuse deltas should be read as delegated request-cadence and backend-managed prompt-cache evidence, not as AX Engine scheduler, KV, or runner evidence.\n"
-        }
-        _ if execution_semantics == "metal_real_model_forward" => {
-            "\nThis comparison reflects Metal runs that explicitly marked real model forward execution. Compare only against the same execution semantics and validated model provenance.\n"
-        }
-        _ if execution_semantics == "metal_multilayer_mixed_prefix_attention" => {
-            "\nThis comparison reflects multi-layer Metal runs where some prefix-layer attention already executed through MLX Metal dispatch while part of the prefix path still fell back to CPU reference. Read it as partial MLX dense-forward progress, not as full MLX prefix coverage or release-grade inference.\n"
-        }
-        _ if execution_semantics == "metal_multilayer_native_prefix_attention" => {
-            "\nThis comparison reflects Metal runs where validated multi-layer model artifacts were present and at least part of prefix-layer attention already executed through MLX Metal dispatch, but the full dense forward path still remained incomplete. Treat these runs as stronger bring-up evidence than CPU-reference multilayer staging, but not as release-grade MLX inference.\n"
-        }
-        _ if execution_semantics == "metal_multilayer_model_incomplete" => {
-            "\nThis comparison reflects Metal runs that loaded validated multi-layer model artifacts, but did not report a complete real model forward path. Treat these runs as partial MLX Metal bring-up milestones rather than final dense inference performance.\n"
-        }
-        _ if execution_semantics == "metal_model_bound_ffn_decode" => {
-            "\nThis comparison reflects Metal runs that consumed real model tensor inputs and reported model-bound FFN direct decode continuation. It is stronger evidence than tensor-input bring-up alone, but it is still not a full release-grade native forward path.\n"
-        }
-        _ if execution_semantics == "metal_real_model_tensor_inputs" => {
-            "\nThis comparison reflects Metal runs with real model tensor inputs present, but without a reported real model forward pass. Treat deltas as model-bound bring-up progress rather than final inference performance.\n"
-        }
-        _ if execution_semantics == "metal_model_conditioned_numeric_scaffold" => {
-            "\nThis comparison reflects Metal runs with model-conditioned staged inputs that still remain numeric scaffold bring-up paths. Do not use these deltas as release-grade inference conclusions.\n"
-        }
-        _ if execution_semantics == "metal_numeric_scaffold_only" => {
-            "\nThis comparison reflects Metal numeric scaffold bring-up runs. The command queue, kernels, and runtime may be real, but the workload is still not a full model forward.\n"
-        }
-        _ => {
-            "\nThis comparison reflects the current engine bring-up benchmark path and still requires human review before performance conclusions are used for release decisions.\n"
-        }
-    }
-}
-
 fn build_environment_json(
     run_id: &str,
     command: &str,
@@ -7474,92 +6449,6 @@ fn build_environment_json(
             "cwd": cwd.display().to_string()
         }
     }))
-}
-
-fn detect_system_model() -> Option<String> {
-    match env::consts::OS {
-        "macos" => command_stdout("sysctl", &["-n", "hw.model"]),
-        _ => None,
-    }
-}
-
-fn detect_soc() -> Option<String> {
-    match env::consts::OS {
-        "macos" => command_stdout("sysctl", &["-n", "machdep.cpu.brand_string"]),
-        _ => None,
-    }
-}
-
-fn detect_memory_bytes() -> Option<u64> {
-    match env::consts::OS {
-        "macos" => command_stdout("sysctl", &["-n", "hw.memsize"])
-            .and_then(|value| value.parse::<u64>().ok()),
-        _ => None,
-    }
-}
-
-fn detect_os_version() -> Option<String> {
-    match env::consts::OS {
-        "macos" => command_stdout("sw_vers", &["-productVersion"]),
-        _ => None,
-    }
-}
-
-fn detect_os_build() -> Option<String> {
-    match env::consts::OS {
-        "macos" => command_stdout("sw_vers", &["-buildVersion"]),
-        _ => None,
-    }
-}
-
-fn detect_kernel_release() -> Option<String> {
-    command_stdout("uname", &["-r"])
-}
-
-fn default_metal_driver() -> &'static str {
-    match env::consts::OS {
-        "macos" => "system-default",
-        _ => "unavailable",
-    }
-}
-
-fn bytes_to_gib(bytes: u64) -> u64 {
-    bytes / (1024 * 1024 * 1024)
-}
-
-fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(trimmed.to_string())
-}
-
-fn file_fingerprint_fnv1a64(path: &Path) -> Result<String, CliError> {
-    let bytes = fs::read(path).map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to read {} for benchmark provenance fingerprint: {error}",
-            path.display()
-        ))
-    })?;
-    Ok(format!("{:016x}", fnv1a64(&bytes)))
-}
-
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    const FNV_OFFSET_BASIS_64: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME_64: u64 = 0x100000001b3;
-
-    let mut hash = FNV_OFFSET_BASIS_64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME_64);
-    }
-    hash
 }
 
 fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
@@ -11244,152 +10133,12 @@ fn llama_cpp_session_has_live_requests(
     Ok(false)
 }
 
-fn load_json_value(path: &Path) -> Result<Value, CliError> {
-    let raw = fs::read_to_string(path).map_err(|error| {
-        CliError::Runtime(format!("failed to read {}: {error}", path.display()))
-    })?;
-
-    serde_json::from_str(&raw).map_err(|error| {
-        CliError::Contract(format!(
-            "failed to parse {} as JSON: {error}",
-            path.display()
-        ))
-    })
-}
-
-fn load_optional_json_value(path: &Path) -> Result<Option<Value>, CliError> {
-    if !path.is_file() {
-        return Ok(None);
-    }
-    load_json_value(path).map(Some)
-}
-
-fn nested_value<'a>(json: &'a Value, path: &[&str]) -> Option<&'a Value> {
-    let mut current = json;
-    for component in path {
-        current = current.get(*component)?;
-    }
-    Some(current)
-}
-
-fn nested_string<'a>(json: &'a Value, path: &[&str]) -> Result<&'a str, CliError> {
-    nested_value(json, path)
-        .and_then(Value::as_str)
-        .ok_or_else(|| CliError::Contract(format!("missing string field {}", path.join("."))))
-}
-
 fn metric_number(metrics_json: &Value, key: &str) -> Result<f64, CliError> {
     metrics_json
         .get("metrics")
         .and_then(|metrics| metrics.get(key))
         .and_then(Value::as_f64)
         .ok_or_else(|| CliError::Contract(format!("metrics artifact missing numeric field {key}")))
-}
-
-fn percentage_delta(baseline: f64, candidate: f64) -> f64 {
-    if baseline.abs() < f64::EPSILON {
-        if candidate.abs() < f64::EPSILON {
-            0.0
-        } else {
-            f64::INFINITY.copysign(candidate)
-        }
-    } else {
-        ((candidate - baseline) / baseline) * 100.0
-    }
-}
-
-fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), CliError> {
-    let bytes = serde_json::to_vec_pretty(value).map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to serialize JSON for {}: {error}",
-            path.display()
-        ))
-    })?;
-    fs::write(path, bytes)
-        .map_err(|error| CliError::Runtime(format!("failed to write {}: {error}", path.display())))
-}
-
-fn create_unique_result_dir(
-    output_root: &Path,
-    label: Option<&str>,
-    component: &str,
-) -> Result<(String, PathBuf), CliError> {
-    let timestamp = unix_timestamp_secs()?;
-    let component = sanitize_component(component);
-
-    for attempt in 0..32 {
-        let suffix = unique_run_suffix(attempt)?;
-        let run_id = match label {
-            Some(label) => format!("{timestamp}-{suffix}-{label}-{component}"),
-            None => format!("{timestamp}-{suffix}-{component}"),
-        };
-        let result_dir = output_root.join(&run_id);
-        match fs::create_dir(&result_dir) {
-            Ok(()) => return Ok((run_id, result_dir)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(CliError::Runtime(format!(
-                    "failed to create result directory {}: {error}",
-                    result_dir.display()
-                )));
-            }
-        }
-    }
-
-    Err(CliError::Runtime(format!(
-        "failed to create unique result directory under {} after repeated collisions",
-        output_root.display()
-    )))
-}
-
-fn unique_run_suffix(attempt: u32) -> Result<String, CliError> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .map_err(|error| CliError::Runtime(format!("system clock error: {error}")))?;
-    let pid = u64::from(std::process::id());
-    let mixed = (nanos as u64)
-        ^ pid.wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        ^ u64::from(attempt).rotate_left(17)
-        ^ ((nanos >> 64) as u64);
-    Ok(format!("{:012x}", mixed & 0xFFFF_FFFF_FFFF))
-}
-
-fn unix_timestamp_secs() -> Result<u64, CliError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .map_err(|error| CliError::Runtime(format!("system clock error: {error}")))
-}
-
-fn sanitize_component(input: &str) -> String {
-    input
-        .chars()
-        .map(|char| match char {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => char,
-            _ => '-',
-        })
-        .collect()
-}
-
-fn usage() -> String {
-    let text = r#"AX Engine v4 benchmark CLI
-
-Usage:
-  ax-engine-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
-  ax-engine-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
-  ax-engine-bench scenario --manifest <path> --output-root <path> [--json] [--no-trace]
-  ax-engine-bench replay --manifest <path> --output-root <path> [--json] [--no-trace]
-  ax-engine-bench compare --baseline <path> --candidate <path> --output-root <path> [--json]
-  ax-engine-bench matrix-compare --baseline <path> --candidate <path> --output-root <path> [--json]
-  ax-engine-bench baseline --source <path> --name <name> --output-root <path> [--json]
-  ax-engine-bench matrix --manifest <path> --output-root <path> [--json] [--no-trace]
-  ax-engine-bench doctor [--json] [--mlx-model-artifacts-dir <path>]
-  ax-engine-bench generate-manifest <model-dir> [--json] [--validate]
-  ax-engine-bench metal-build [--manifest <path>] [--output-dir <path>]
-"#;
-
-    text.to_string()
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -11872,23 +10621,6 @@ struct RuntimeObservation {
     kv_modes_seen: BTreeSet<String>,
     barrier_modes_seen: BTreeSet<String>,
     runtime_report: Option<RuntimeReport>,
-}
-
-fn proportional_time_us(total_us: u64, part_tokens: u64, total_tokens: u64) -> u64 {
-    if total_us == 0 || part_tokens == 0 || total_tokens == 0 {
-        return 0;
-    }
-    let value =
-        u128::from(total_us).saturating_mul(u128::from(part_tokens)) / u128::from(total_tokens);
-    value.min(u128::from(u64::MAX)) as u64
-}
-
-fn tokens_per_second_from_micros(tokens: u64, elapsed_us: u64) -> f64 {
-    if tokens == 0 || elapsed_us == 0 {
-        0.0
-    } else {
-        (tokens as f64 * 1_000_000.0) / elapsed_us as f64
-    }
 }
 
 const LEGACY_KV_CACHE_ESTIMATED_BYTES_PER_TOKEN: f64 = 16.0;
@@ -13016,27 +11748,6 @@ impl FinalRequestState {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Error)]
-enum CliError {
-    #[error("{0}")]
-    Usage(String),
-    #[error("{0}")]
-    Runtime(String),
-    #[error("{0}")]
-    Contract(String),
-    #[error("{0}")]
-    Correctness(String),
-    #[error("{0}")]
-    Performance(String),
-}
-
-impl From<ax_engine_core::EngineCoreError> for CliError {
-    fn from(value: ax_engine_core::EngineCoreError) -> Self {
-        Self::Runtime(value.to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -13918,7 +12629,7 @@ mod tests {
 
         let manifest = ax_engine_core::NativeModelManifest {
             schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: ax_engine_core::NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
@@ -14102,7 +12813,7 @@ mod tests {
         let embedding_bytes = (embedding.len() * std::mem::size_of::<f32>()) as u64;
         let manifest = ax_engine_core::NativeModelManifest {
             schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: ax_engine_core::NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
@@ -14983,7 +13694,7 @@ mod tests {
             "class": "scenario",
             "scenario": "chat",
             "model": {
-                "family": "qwen3_dense"
+                "family": "qwen3"
             }
         });
         let mut environment = native_environment_fixture();
@@ -15029,13 +13740,13 @@ mod tests {
             "class": "scenario",
             "scenario": "chat",
             "model": {
-                "family": "qwen3_dense"
+                "family": "qwen3"
             }
         });
         let mut environment = native_environment_fixture();
         environment["runtime"]["mlx_model"] = json!({
             "artifacts_source": "explicit_config",
-            "model_family": "qwen3_dense",
+            "model_family": "qwen3",
             "tensor_format": "safetensors",
             "layer_count": 36,
             "tensor_count": 402,
@@ -15150,7 +13861,7 @@ mod tests {
                 .get("mlx_model")
                 .and_then(|value| value.get("model_family"))
                 .and_then(Value::as_str),
-            Some("qwen3_dense")
+            Some("qwen3")
         );
         assert_eq!(
             runtime_json
@@ -15213,7 +13924,7 @@ mod tests {
                 .get("mlx_model")
                 .and_then(|value| value.get("model_family"))
                 .and_then(Value::as_str),
-            Some("qwen3_dense")
+            Some("qwen3")
         );
         assert_eq!(
             runtime_json
@@ -16615,7 +15326,7 @@ mod tests {
             "class": "scenario",
             "scenario": "chat",
             "model": {
-                "family": "qwen3_dense",
+                "family": "qwen3",
                 "revision": "phase1-llama-cpp",
                 "quant": "q4_k_m",
                 "tokenizer_revision": "qwen-tokenizer-v1",
@@ -17043,7 +15754,7 @@ mod tests {
             "class": "replay",
             "scenario": "replay",
             "model": {
-                "family": "qwen3_dense",
+                "family": "qwen3",
                 "revision": "phase1-llama-cpp",
                 "quant": "q4_k_m",
                 "tokenizer_revision": "qwen-tokenizer-v1",
@@ -17116,7 +15827,7 @@ mod tests {
             "class": "scenario",
             "scenario": "chat",
             "model": {
-                "family": "qwen3_dense",
+                "family": "qwen3",
                 "revision": "phase1-llama-cpp",
                 "quant": "q4_k_m",
                 "tokenizer_revision": "qwen-tokenizer-v1",
@@ -17310,14 +16021,14 @@ mod tests {
         let mut observation = RuntimeObservation::default();
 
         observation.merge_route_metadata(&make_route_metadata(
-            "phase1.qwen3_dense.dense_prefill",
-            "qwen3_dense_prefill",
+            "phase1.qwen3.dense_prefill",
+            "qwen3_prefill",
             "paged_metadata",
             "serial",
         ));
         observation.merge_route_metadata(&make_route_metadata(
-            "phase1.qwen3_dense.paged_decode",
-            "qwen3_dense_paged_decode",
+            "phase1.qwen3.paged_decode",
+            "qwen3_paged_decode",
             "paged_metadata",
             "serial",
         ));
@@ -17348,8 +16059,8 @@ mod tests {
     fn route_aggregation_saturates_crossover_decisions_instead_of_overflowing() {
         let mut observation = RuntimeObservation::default();
         let mut first = make_route_metadata(
-            "phase1.qwen3_dense.dense_prefill",
-            "qwen3_dense_prefill",
+            "phase1.qwen3.dense_prefill",
+            "qwen3_prefill",
             "paged_metadata",
             "serial",
         );
@@ -17359,8 +16070,8 @@ mod tests {
         observation.merge_route_metadata(&first);
 
         let mut second = make_route_metadata(
-            "phase1.qwen3_dense.paged_decode",
-            "qwen3_dense_paged_decode",
+            "phase1.qwen3.paged_decode",
+            "qwen3_paged_decode",
             "paged_metadata",
             "serial",
         );
@@ -18291,7 +17002,7 @@ mod tests {
   "class": "scenario",
   "scenario": "chat",
   "model": {
-    "family": "qwen3_dense",
+    "family": "qwen3",
     "revision": "phase1-canonical",
     "quant": "q4_k_m",
     "tokenizer_revision": "qwen-tokenizer-v1",
@@ -18349,7 +17060,7 @@ mod tests {
   "class": "scenario",
   "scenario": "chat",
   "model": {
-    "family": "qwen3_dense",
+    "family": "qwen3",
     "revision": "phase1-canonical",
     "quant": "q4_k_m",
     "tokenizer_revision": "qwen-tokenizer-v1",
@@ -19109,7 +17820,7 @@ mod tests {
                 "id": "chat_qwen_short",
                 "class": "scenario",
                 "scenario": "chat",
-                "model_family": "qwen3_dense"
+                "model_family": "qwen3"
             },
             "runtime": {
                 "tool_mode": "engine_bringup_runtime",
@@ -19309,7 +18020,7 @@ mod tests {
                     "manifest_id": "chat_qwen_short",
                     "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
                     "scenario": "chat",
-                    "model_family": "qwen3_dense",
+                    "model_family": "qwen3",
                     "status": "ok",
                     "tool_mode": "engine_bringup_runtime",
                     "selected_backend": "mlx",
@@ -19325,7 +18036,7 @@ mod tests {
                     "manifest_id": "concurrent_qwen_dual",
                     "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/concurrent_qwen_dual.json").as_str(),
                     "scenario": "concurrent",
-                    "model_family": "qwen3_dense",
+                    "model_family": "qwen3",
                     "status": "ok",
                     "tool_mode": "engine_bringup_runtime",
                     "selected_backend": "mlx",
@@ -19348,7 +18059,7 @@ mod tests {
                     "manifest_id": "chat_qwen_short",
                     "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
                     "scenario": "chat",
-                    "model_family": "qwen3_dense",
+                    "model_family": "qwen3",
                     "status": "ok",
                     "tool_mode": "engine_bringup_runtime",
                     "selected_backend": "mlx",
@@ -19364,7 +18075,7 @@ mod tests {
                     "manifest_id": "concurrent_qwen_dual",
                     "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/concurrent_qwen_dual.json").as_str(),
                     "scenario": "concurrent",
-                    "model_family": "qwen3_dense",
+                    "model_family": "qwen3",
                     "status": "ok",
                     "tool_mode": "engine_bringup_runtime",
                     "selected_backend": "mlx",
@@ -19455,7 +18166,7 @@ mod tests {
                 "manifest_id": "chat_qwen_short",
                 "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
                 "scenario": "chat",
-                "model_family": "qwen3_dense",
+                "model_family": "qwen3",
                 "status": "ok",
                 "tool_mode": "engine_bringup_runtime",
                 "selected_backend": "mlx",
@@ -19476,7 +18187,7 @@ mod tests {
                 "manifest_id": "chat_qwen_short",
                 "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
                 "scenario": "chat",
-                "model_family": "qwen3_dense",
+                "model_family": "qwen3",
                 "status": "ok",
                 "tool_mode": "engine_bringup_runtime",
                 "selected_backend": "mlx",
@@ -19881,7 +18592,7 @@ mod tests {
         let mut baseline_runtime = mlx_runtime_fixture();
         baseline_runtime["mlx_model"] = json!({
             "artifacts_source": "explicit_config",
-            "model_family": "qwen3_dense",
+            "model_family": "qwen3",
             "tensor_format": "safetensors",
             "layer_count": 36,
             "tensor_count": 402,

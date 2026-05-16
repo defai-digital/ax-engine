@@ -552,7 +552,7 @@ fn recommended_variants() -> [&'static str; 1] {
 }
 
 fn help() -> String {
-    "Usage: cargo run -p ax-engine-mlx --release --bin turboquant-microbench -- \\
+    "Usage: cargo run -p ax-engine-microbench --release --bin turboquant-microbench -- \\
        [--cold-tokens 512,2048] [--hot-tokens 0] [--n-query-heads 1] [--n-kv-heads 1] [--head-dim 128] \\
        [--variants two_stage_scores|dim_parallel,head_serial,two_stage_scores] \\
        [--repetitions 5] [--warmup 1] [--output path.json]"

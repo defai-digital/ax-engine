@@ -17,33 +17,5 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [[bin]]
-name = "turboquant-microbench"
-path = "src/bin/turboquant_microbench.rs"
-
-[[bin]]
 name = "mlx-bench"
 path = "src/bench_main.rs"
-
-[[bin]]
-name = "rmsnorm-fused-probe"
-path = "src/bin/rmsnorm_fused_probe.rs"
-
-[[bin]]
-name = "kernel-chain-batching-probe"
-path = "src/bin/kernel_chain_batching_probe.rs"
-
-[[bin]]
-name = "residual-rmsnorm-fused-probe"
-path = "src/bin/residual_rmsnorm_fused_probe.rs"
-
-[[bin]]
-name = "dequant-dtype-probe"
-path = "src/bin/dequant_dtype_probe.rs"
-
-[[bin]]
-name = "mla-warm-extend-drift-probe"
-path = "src/bin/mla_warm_extend_drift_probe.rs"
-
-[[bin]]
-name = "disk-prefix-cache-stress"
-path = "src/bin/disk_prefix_cache_stress.rs"

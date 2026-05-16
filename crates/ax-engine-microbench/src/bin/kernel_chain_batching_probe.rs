@@ -19,7 +19,7 @@
 //! the planning artifact's decision rules consume.
 //!
 //! Run:
-//!   cargo run --release --bin kernel-chain-batching-probe
+//!   cargo run -p ax-engine-microbench --release --bin kernel-chain-batching-probe
 //!
 //! Output: human-readable summary plus the verdict bucket. Paste into
 //! `.internal/planning/MLX-PHASE-B-BATCH-MICROBENCH-<date>.md`.

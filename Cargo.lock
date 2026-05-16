@@ -144,6 +144,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-engine-microbench"
+version = "4.9.0"
+dependencies = [
+ "ax-engine-core",
+ "ax-engine-mlx",
+ "mlx-sys",
+ "serde_json",
+]
+
+[[package]]
 name = "ax-engine-mlx"
 version = "4.9.0"
 dependencies = [

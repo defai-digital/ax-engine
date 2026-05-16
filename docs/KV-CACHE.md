@@ -334,7 +334,7 @@ PYTHONPATH=python python3 scripts/verify_disk_prefix_cache_cross_restart.py \
   --mlx-artifacts-dir .internal/models/gemma-4-e2b-it-4bit \
   --output benchmarks/results/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json
 
-cargo run -p ax-engine-mlx --bin disk-prefix-cache-stress -- \
+cargo run -p ax-engine-microbench --bin disk-prefix-cache-stress -- \
   --output benchmarks/results/disk-prefix-cache-stress/2026-05-14-m3b-stress.json
 ```
 

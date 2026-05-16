@@ -6,7 +6,7 @@
 //! production vehicle) and produces wall-clock evidence for ADR 0017.
 //!
 //! Run:
-//!   cargo run --release --bin rmsnorm-fused-probe
+//!   cargo run -p ax-engine-microbench --release --bin rmsnorm-fused-probe
 //!
 //! Output is a small JSON-ish summary suitable for pasting into
 //! .internal/benchmark/track-k-*.md as the REQ-K2 evidence.

@@ -333,7 +333,7 @@ throughput baselines.
   quality-gate artifacts, then reports whether public docs must remain
   experimental. Passing quality/path evidence alone is not enough for public
   promotion when the decode-throughput performance gate is still blocked.
-- `cargo run -p ax-engine-mlx --release --bin turboquant-microbench -- ...`:
+- `cargo run -p ax-engine-microbench --release --bin turboquant-microbench -- ...`:
   TurboQuant fused cold-decode microbenchmark. It compares the K8/V4 MLX/Metal
   kernels against the CPU reference oracle and writes
   `ax.turboquant_fused_decode_microbench.v1` JSON artifacts. Use `--variants`

@@ -28,7 +28,7 @@
 //! bindings — out of scope for the cheap directional answer.
 //!
 //! Run:
-//!   cargo run --release --bin dequant-dtype-probe
+//!   cargo run -p ax-engine-microbench --release --bin dequant-dtype-probe
 
 use std::time::Instant;
 
