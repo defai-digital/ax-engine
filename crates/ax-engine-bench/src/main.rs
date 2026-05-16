@@ -74,8 +74,9 @@ use crate::generate_manifest::handle_generate_manifest;
 use crate::inference_args::{InferenceArgs, build_inference_session, parse_inference_args};
 use crate::inference_render::{render_generate_response, render_stream_event};
 use crate::json_io::{
-    json_string_label, json_value_label, load_json_value, load_optional_json_value, nested_string,
-    nested_value, validate_matching_json_field, validate_matching_optional_json_field,
+    json_string_label, json_value_label, load_json_value, load_optional_json_value, metric_number,
+    nested_string, nested_value, validate_matching_json_field,
+    validate_matching_optional_json_field,
 };
 use crate::labels::{
     compare_result_label, compare_summary_note, llama_cpp_final_request_state_label,
@@ -84,7 +85,9 @@ use crate::labels::{
 use crate::logging::init_tracing;
 use crate::metal_build::{map_metal_build_error, metal_build_status_label, parse_metal_build_args};
 use crate::path_utils::{expand_manifest_path_env, normalize_path_lexically};
-use crate::stats::{percentage_delta, proportional_time_us, tokens_per_second_from_micros};
+use crate::stats::{
+    elapsed_ms_since, percentage_delta, proportional_time_us, tokens_per_second_from_micros,
+};
 use crate::synthetic::{
     replay_prompt_target, synthetic_prompt_text, synthetic_prompt_tokens,
     synthetic_text_output_tokens,
@@ -3089,10 +3092,6 @@ fn execute_replay_once(
     runtime: RuntimeConfig,
 ) -> Result<RuntimeObservation, CliError> {
     run_replay_workload(runtime, replay_events_from_manifest(manifest)?)
-}
-
-fn elapsed_ms_since(started: Instant) -> u64 {
-    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64 + 1
 }
 
 fn run_scenario_workload(
@@ -8894,14 +8893,6 @@ fn llama_cpp_session_has_live_requests(
     Ok(false)
 }
 
-fn metric_number(metrics_json: &Value, key: &str) -> Result<f64, CliError> {
-    metrics_json
-        .get("metrics")
-        .and_then(|metrics| metrics.get(key))
-        .and_then(Value::as_f64)
-        .ok_or_else(|| CliError::Contract(format!("metrics artifact missing numeric field {key}")))
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ManifestClass {
@@ -11383,6 +11374,11 @@ mod tests {
             tie_word_embeddings: false,
             rope_theta: None,
             rope_theta_swa: None,
+            rope_scaling_type: None,
+            rope_scaling_factor: None,
+            rope_low_freq_factor: None,
+            rope_high_freq_factor: None,
+            rope_original_context_len: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,
@@ -11567,6 +11563,11 @@ mod tests {
             tie_word_embeddings: false,
             rope_theta: None,
             rope_theta_swa: None,
+            rope_scaling_type: None,
+            rope_scaling_factor: None,
+            rope_low_freq_factor: None,
+            rope_high_freq_factor: None,
+            rope_original_context_len: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,

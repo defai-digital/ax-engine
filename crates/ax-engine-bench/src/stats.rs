@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 #[cfg(test)]
 pub(crate) fn percentile_f64(values: &[f64], quantile: f64) -> Option<f64> {
     if values.is_empty() {
@@ -49,4 +51,8 @@ pub(crate) fn tokens_per_second_from_micros(tokens: u64, elapsed_us: u64) -> f64
     } else {
         (tokens as f64 * 1_000_000.0) / elapsed_us as f64
     }
+}
+
+pub(crate) fn elapsed_ms_since(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64 + 1
 }

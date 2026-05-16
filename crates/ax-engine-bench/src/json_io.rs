@@ -103,3 +103,11 @@ pub(crate) fn json_string_label<T: Serialize>(value: T) -> String {
         .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_else(|| "unknown".to_string())
 }
+
+pub(crate) fn metric_number(metrics_json: &Value, key: &str) -> Result<f64, CliError> {
+    metrics_json
+        .get("metrics")
+        .and_then(|metrics| metrics.get(key))
+        .and_then(Value::as_f64)
+        .ok_or_else(|| CliError::Contract(format!("metrics artifact missing numeric field {key}")))
+}
