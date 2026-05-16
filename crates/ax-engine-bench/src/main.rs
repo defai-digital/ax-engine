@@ -19,6 +19,7 @@ mod logging;
 mod metal_build;
 mod path_utils;
 mod stats;
+mod synthetic;
 
 use ax_engine_core::{
     CacheGroupId, EngineCore, MetalBuildStatus, MetalDispatchTrace, MetalKernelBuildRequest,
@@ -84,6 +85,10 @@ use crate::logging::init_tracing;
 use crate::metal_build::{map_metal_build_error, metal_build_status_label, parse_metal_build_args};
 use crate::path_utils::{expand_manifest_path_env, normalize_path_lexically};
 use crate::stats::{percentage_delta, proportional_time_us, tokens_per_second_from_micros};
+use crate::synthetic::{
+    replay_prompt_target, synthetic_prompt_text, synthetic_prompt_tokens,
+    synthetic_text_output_tokens,
+};
 
 #[cfg(test)]
 use crate::args::{unique_sorted_option_u32, unique_sorted_u32};
@@ -8698,70 +8703,6 @@ fn output_token_count_source(
     }
 }
 
-fn synthetic_prompt_tokens(
-    target_len: u32,
-    prompt_ref: Option<&str>,
-    prefix_group: Option<&str>,
-    body_group: Option<&str>,
-    ordinal: u32,
-) -> Vec<u32> {
-    let mut tokens = Vec::with_capacity(target_len as usize);
-    let shared_prefix_len = prefix_group.map_or(0, |_| target_len.min(64));
-    let shared_seed = prefix_group.map(stable_hash32).unwrap_or(17);
-    let body_seed = body_group.map(stable_hash32).unwrap_or_else(|| {
-        stable_hash32(prompt_ref.unwrap_or("prompt")).wrapping_add(ordinal * 131)
-    });
-
-    for index in 0..shared_prefix_len {
-        tokens.push(shared_seed.wrapping_add(index + 1));
-    }
-
-    for index in shared_prefix_len..target_len {
-        tokens.push(body_seed.wrapping_add(index + 1));
-    }
-
-    tokens
-}
-
-fn synthetic_prompt_text(
-    target_len: u32,
-    prompt_ref: Option<&str>,
-    prefix_group: Option<&str>,
-    body_group: Option<&str>,
-    ordinal: u32,
-) -> String {
-    let shared_prefix_len = prefix_group.map_or(0, |_| target_len.min(64));
-    let shared_seed = prefix_group.map(stable_hash32).unwrap_or(17);
-    let body_seed = body_group.map(stable_hash32).unwrap_or_else(|| {
-        stable_hash32(prompt_ref.unwrap_or("prompt")).wrapping_add(ordinal * 131)
-    });
-
-    let mut parts = Vec::with_capacity(target_len as usize);
-    for index in 0..shared_prefix_len {
-        parts.push(format!("shared{}_{}", shared_seed, index + 1));
-    }
-
-    for index in shared_prefix_len..target_len {
-        parts.push(format!("body{}_{}", body_seed, index + 1));
-    }
-
-    parts.join(" ")
-}
-
-fn synthetic_text_output_tokens(text: &str, target_len: u32) -> Vec<u32> {
-    synthetic_prompt_tokens(target_len, Some(text), None, None, 0)
-}
-
-fn replay_prompt_target(prompt_ref: &str) -> u32 {
-    if prompt_ref.contains("long") {
-        1024
-    } else if prompt_ref.contains("variant") {
-        320
-    } else {
-        256
-    }
-}
-
 fn replay_events_from_manifest(manifest: &BenchmarkManifest) -> Result<Vec<ReplayEvent>, CliError> {
     let events = if manifest.events.is_empty() {
         return Err(CliError::Contract(
@@ -8892,15 +8833,6 @@ fn validate_llama_cpp_benchmark_runtime(
             "llama.cpp benchmark execution requires runtime.backend_adapter".to_string(),
         )),
     }
-}
-
-fn stable_hash32(input: &str) -> u32 {
-    let mut hash = 2_166_136_261u32;
-    for byte in input.as_bytes() {
-        hash ^= u32::from(*byte);
-        hash = hash.wrapping_mul(16_777_619);
-    }
-    hash
 }
 
 fn request_snapshot_for_bench(
