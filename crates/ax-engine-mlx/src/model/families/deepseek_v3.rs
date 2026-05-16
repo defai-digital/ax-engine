@@ -49,7 +49,7 @@ fn deepseek_dense_ffn(w: &LayerWeights, x: &MlxArray) -> MlxArray {
 /// DeepSeek V3 MoE: sigmoid routing with optional correction bias + shared experts.
 fn deepseek_moe_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     let (indices, scores) = moe_router_deepseek_v3(cfg, w, x);
-    let expert_out = moe_experts_forward(cfg, w, x, &scores, &indices);
+    let expert_out = moe_experts_forward(cfg, w, x, &indices, &scores);
 
     if cfg.moe_shared_expert_count > 0 {
         let shared_out = shared_expert_forward(cfg, w, x);
