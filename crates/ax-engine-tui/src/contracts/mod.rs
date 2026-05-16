@@ -334,15 +334,15 @@ mod tests {
     #[test]
     fn parses_server_contracts() {
         let health = parse_health_json(
-            r#"{"status":"ok","service":"ax-engine-server","model_id":"qwen3_dense","runtime":{"selected_backend":"llama_cpp"}}"#,
+            r#"{"status":"ok","service":"ax-engine-server","model_id":"qwen3","runtime":{"selected_backend":"llama_cpp"}}"#,
         )
         .expect("health should parse");
         assert_eq!(health.status, "ok");
 
         let models = parse_models_json(
-            r#"{"object":"list","data":[{"id":"qwen3_dense","object":"model","owned_by":"ax-engine-v4","runtime":{"selected_backend":"llama_cpp"}}]}"#,
+            r#"{"object":"list","data":[{"id":"qwen3","object":"model","owned_by":"ax-engine-v4","runtime":{"selected_backend":"llama_cpp"}}]}"#,
         )
         .expect("models should parse");
-        assert_eq!(models.data[0].id, "qwen3_dense");
+        assert_eq!(models.data[0].id, "qwen3");
     }
 }

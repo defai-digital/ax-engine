@@ -165,7 +165,7 @@ def start_server(
 
     cmd = [
         str(server_bin),
-        "--model-id", "qwen3_dense",
+        "--model-id", "qwen3",
         "--mlx",
         "--mlx-model-artifacts-dir", str(model_dir),
         "--host", "127.0.0.1",

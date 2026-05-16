@@ -72,7 +72,7 @@ def valid_artifact(root: Path) -> dict:
         "schema_version": checker.SCHEMA_VERSION,
         "model": {
             "id": "qwen3_5_9b_q4",
-            "family": "qwen3_dense",
+            "family": "qwen3",
             "revision": "test-revision",
             "head_dim": 128,
         },
@@ -700,7 +700,7 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                 quality_metrics=metrics,
                 manifest=manifest,
                 model_id="qwen3_5_9b_q4",
-                model_family="qwen3_dense",
+                model_family="qwen3",
                 model_revision="test",
                 head_dim=128,
                 context_tokens=8192,
@@ -758,7 +758,7 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                     quality_metrics=metrics,
                     manifest=manifest,
                     model_id="qwen3_5_9b_q4",
-                    model_family="qwen3_dense",
+                    model_family="qwen3",
                     model_revision="test",
                     head_dim=128,
                     context_tokens=8192,
@@ -797,7 +797,7 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                 quality_metrics=metrics,
                 manifest=manifest,
                 model_id="qwen3_5_9b_q4",
-                model_family="qwen3_dense",
+                model_family="qwen3",
                 model_revision="test",
                 head_dim=128,
                 context_tokens=8192,
@@ -1161,7 +1161,7 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             (model_dir / "model-manifest.json").write_text(
                 json.dumps(
                     {
-                        "model_family": "qwen3_dense",
+                        "model_family": "qwen3",
                         "attention_head_dim": 128,
                         "attention_head_count": 16,
                         "kv_head_count": 8,
@@ -1194,7 +1194,7 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             (model_dir / "model-manifest.json").write_text(
                 json.dumps(
                     {
-                        "model_family": "qwen3_dense",
+                        "model_family": "qwen3",
                         "attention_head_dim": 128,
                         "attention_head_count": 16,
                         "kv_head_count": 8,
@@ -1257,7 +1257,7 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                     quality_metrics=metrics,
                     manifest=manifest,
                     model_id="qwen3_5_9b_q4",
-                    model_family="qwen3_dense",
+                    model_family="qwen3",
                     model_revision="test",
                     head_dim=128,
                     context_tokens=8192,
@@ -1305,7 +1305,7 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                     quality_metrics=metrics,
                     manifest=manifest,
                     model_id="qwen3_5_9b_q4",
-                    model_family="qwen3_dense",
+                    model_family="qwen3",
                     model_revision="test",
                     head_dim=128,
                     context_tokens=8192,
@@ -1360,7 +1360,7 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                         "--model-id",
                         "qwen3_5_9b_q4",
                         "--model-family",
-                        "qwen3_dense",
+                        "qwen3",
                         "--model-revision",
                         "test",
                         "--root",

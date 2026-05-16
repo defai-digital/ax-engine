@@ -55,7 +55,7 @@ class PrefixWarmupBuilderTests(unittest.TestCase):
                 "schema_version": "ax.engine_bench.manifest.v1",
                 "id": "shared_prefix_long_churn",
                 "class": "replay",
-                "model": {"family": "qwen3_dense", "quant": "q4_k_m"},
+                "model": {"family": "qwen3", "quant": "q4_k_m"},
                 "runtime": {
                     "selected_backend": "mlx",
                     "deterministic": True,

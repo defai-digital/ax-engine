@@ -58,6 +58,7 @@ fn main() {
         mlx_model_artifacts_dir: Some(model_dir.clone()),
         mlx_disable_ngram_acceleration: false,
         mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
+        mlx_prefill_chunk: None,
     })
     .expect("config");
 

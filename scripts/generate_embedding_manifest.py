@@ -71,7 +71,7 @@ UNQUANTIZED_ROLES = {
 }
 
 
-def match_qwen3_dense(name: str) -> tuple[str, int | None] | None:
+def match_qwen3(name: str) -> tuple[str, int | None] | None:
     for pattern, role, is_per_layer in QWEN3_DENSE_ROLES:
         m = pattern.match(name)
         if m:
@@ -131,7 +131,7 @@ def build_tensor_specs(
     weight_names = [n for n in sorted(tensor_info.keys()) if not any(n.endswith(s) for s in skip_suffixes)]
 
     for name in weight_names:
-        matched = match_qwen3_dense(name)
+        matched = match_qwen3(name)
         if matched is None:
             continue  # skip unknown tensors (e.g., rotary_emb, attention_mask, etc.)
 
@@ -241,7 +241,7 @@ def build_manifest(model_dir: Path, cfg: dict[str, Any], specs: list[dict[str, A
 
     manifest: dict[str, Any] = {
         "schema_version": "ax.native_model.v1",
-        "model_family": "qwen3_dense",
+        "model_family": "qwen3",
         "tensor_format": "safetensors",
         "layer_count": cfg["num_layers"],
         "hidden_size": cfg["hidden_size"],

@@ -211,7 +211,7 @@ class AxServingBenchTests(unittest.TestCase):
                         "--base-url",
                         "http://127.0.0.1:8080",
                         "--model-id",
-                        "qwen3_dense",
+                        "qwen3",
                         "--corpus",
                         str(corpus),
                         "--requests",

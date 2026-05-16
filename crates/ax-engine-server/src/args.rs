@@ -185,7 +185,7 @@ pub struct ServerArgs {
     #[arg(long = "port", default_value_t = 8080)]
     pub port: u16,
 
-    #[arg(long = "model-id", default_value = "qwen3_dense")]
+    #[arg(long = "model-id", default_value = "qwen3")]
     pub model_id: String,
 
     #[arg(long = "preset", value_enum, conflicts_with_all = ["model_id", "support_tier"])]
@@ -631,7 +631,7 @@ mod tests {
         ServerArgs {
             host: "127.0.0.1".to_string(),
             port: 8080,
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             preset: None,
             list_presets: false,
             deterministic: true,
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         let args = ServerArgs {
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             cache_group_id: 3,
             total_blocks: 2048,
             support_tier: PreviewSupportTier::MlxPreview,

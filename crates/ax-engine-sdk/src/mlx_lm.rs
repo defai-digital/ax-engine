@@ -647,7 +647,7 @@ mod tests {
     fn blocking_generate_calls_mlx_lm_completions_contract() {
         let response_body = r#"{"choices":[{"text":" world","finish_reason":"length"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}"#.to_string();
         let (server_url, handle) = spawn_completion_server(response_body, |payload| {
-            assert_eq!(payload["model"], "qwen3_dense");
+            assert_eq!(payload["model"], "qwen3");
             assert_eq!(payload["prompt"], "hello");
             assert_eq!(payload["max_tokens"], 3);
             assert_eq!(payload["temperature"], 0.25);
@@ -688,7 +688,7 @@ mod tests {
     fn blocking_chat_generate_calls_mlx_lm_chat_completions_contract() {
         let response_body = r#"{"choices":[{"message":{"content":"bonjour"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":1}}"#.to_string();
         let (server_url, handle) = spawn_completion_server(response_body, |payload| {
-            assert_eq!(payload["model"], "qwen3_dense");
+            assert_eq!(payload["model"], "qwen3");
             assert_eq!(payload["messages"][0]["role"], "system");
             assert_eq!(payload["messages"][0]["content"], "Be concise.");
             assert_eq!(payload["messages"][1]["role"], "user");
@@ -867,7 +867,7 @@ mod tests {
 
     fn text_request(prompt: &str) -> GenerateRequest {
         GenerateRequest {
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             input_tokens: Vec::new(),
             input_text: Some(prompt.to_string()),
             max_output_tokens: 3,
@@ -879,7 +879,7 @@ mod tests {
 
     fn chat_request() -> MlxLmChatGenerateRequest {
         MlxLmChatGenerateRequest {
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             messages: vec![
                 MlxLmChatMessage::new("system", "Be concise."),
                 MlxLmChatMessage::new("user", "hello"),

@@ -34,8 +34,8 @@ Output schema: ax.bw_profile_variance.v1
 
 Usage:
     python scripts/aggregate_bw_variance.py \\
-        benchmarks/results/bw-profile-variance/qwen3_dense-2026-05-11-run*.json \\
-        --output benchmarks/results/bw-profile-variance/qwen3_dense-2026-05-11-summary.json
+        benchmarks/results/bw-profile-variance/qwen3-2026-05-11-run*.json \\
+        --output benchmarks/results/bw-profile-variance/qwen3-2026-05-11-summary.json
 """
 
 from __future__ import annotations

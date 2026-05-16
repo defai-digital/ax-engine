@@ -104,7 +104,7 @@ for _ in range(N_TRIALS):
 del model
 
 # ax-engine-py
-s = ax_engine.Session(mlx=True, model_id="qwen3_dense", support_tier="mlx_preview",
+s = ax_engine.Session(mlx=True, model_id="qwen3", support_tier="mlx_preview",
                      mlx_model_artifacts_dir=model_dir)
 for _ in range(N_WARMUP):
     s.embed_batch_bytes(batch, pooling="last", normalize=True)
@@ -155,7 +155,7 @@ for spec in "${MODELS[@]}"; do
     cleanup
     AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS=20 \
         ./target/release/ax-engine-server \
-        --model-id qwen3_dense --support-tier mlx-preview --mlx \
+        --model-id qwen3 --support-tier mlx-preview --mlx \
         --mlx-model-artifacts-dir "$model_dir" \
         --host 127.0.0.1 --port 8083 >"$sub/server.log" 2>&1 &
     server_pid=$!

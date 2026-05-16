@@ -304,13 +304,13 @@ mod tests {
                     .unwrap_or("/");
                 let body = match path {
                     "/health" => {
-                        r#"{"status":"ok","service":"ax-engine-server","model_id":"qwen3_dense","runtime":{"selected_backend":"llama_cpp"}}"#
+                        r#"{"status":"ok","service":"ax-engine-server","model_id":"qwen3","runtime":{"selected_backend":"llama_cpp"}}"#
                     }
                     "/v1/runtime" => {
-                        r#"{"service":"ax-engine-server","model_id":"qwen3_dense","deterministic":false,"max_batch_tokens":2048,"block_size_tokens":16,"runtime":{"selected_backend":"llama_cpp"}}"#
+                        r#"{"service":"ax-engine-server","model_id":"qwen3","deterministic":false,"max_batch_tokens":2048,"block_size_tokens":16,"runtime":{"selected_backend":"llama_cpp"}}"#
                     }
                     "/v1/models" => {
-                        r#"{"object":"list","data":[{"id":"qwen3_dense","object":"model","owned_by":"ax-engine-v4","runtime":{"selected_backend":"llama_cpp"}}]}"#
+                        r#"{"object":"list","data":[{"id":"qwen3","object":"model","owned_by":"ax-engine-v4","runtime":{"selected_backend":"llama_cpp"}}]}"#
                     }
                     _ => r#"{"error":"not found"}"#,
                 };
@@ -328,8 +328,8 @@ mod tests {
             fetch_server_snapshot(&format!("http://{addr}")).expect("server snapshot should fetch");
 
         assert_eq!(snapshot.health.status, "ok");
-        assert_eq!(snapshot.runtime.model_id, "qwen3_dense");
-        assert_eq!(snapshot.models.data[0].id, "qwen3_dense");
+        assert_eq!(snapshot.runtime.model_id, "qwen3");
+        assert_eq!(snapshot.models.data[0].id, "qwen3");
         handle.join().expect("server thread should finish");
     }
 

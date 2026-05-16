@@ -288,7 +288,7 @@ def bench_ax_engine_py_batched(
         )
 
     session = ax_engine.Session(
-        model_id="qwen3_dense",
+        model_id="qwen3",
         mlx=True,
         support_tier="mlx_preview",
         mlx_model_artifacts_dir=str(model_dir),
@@ -346,7 +346,7 @@ def bench_ax_engine_py(
         )
 
     session = ax_engine.Session(
-        model_id="qwen3_dense",
+        model_id="qwen3",
         mlx=True,
         support_tier="mlx_preview",
         mlx_model_artifacts_dir=str(model_dir),
@@ -407,7 +407,7 @@ def _start_axengine_server(
         )
     cmd = [
         str(server_bin),
-        "--model-id", "qwen3_dense",
+        "--model-id", "qwen3",
         "--support-tier", "mlx-preview",
         "--mlx",
         "--mlx-model-artifacts-dir", str(model_dir),

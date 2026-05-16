@@ -10,8 +10,8 @@ pub(super) fn sample_runner_input() -> RunnerInput {
         block_size_tokens: 16,
         execution_batch: ExecutionBatch {
             step_id: StepId(3),
-            model_id: "qwen3_dense".into(),
-            execution_plan_ref: Some("phase1.qwen3_dense.dense_prefill".into()),
+            model_id: "qwen3".into(),
+            execution_plan_ref: Some("phase1.qwen3.dense_prefill".into()),
             items: vec![
                 ExecutionItem {
                     request_id: RequestId(7),
@@ -44,8 +44,8 @@ pub(super) fn sample_runner_input() -> RunnerInput {
             ],
             total_scheduled_tokens: 4,
             route_metadata: RouteMetadata {
-                execution_plan: Some("phase1.qwen3_dense.dense_prefill".into()),
-                attention_route: Some("qwen3_dense_prefill".into()),
+                execution_plan: Some("phase1.qwen3.dense_prefill".into()),
+                attention_route: Some("qwen3_prefill".into()),
                 kv_mode: Some("paged_metadata".into()),
                 prefix_cache_path: Some("metadata_lookup".into()),
                 barrier_mode: Some("serial".into()),
@@ -104,8 +104,8 @@ pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
         block_size_tokens: 16,
         execution_batch: ExecutionBatch {
             step_id: StepId(4),
-            model_id: "qwen3_dense".into(),
-            execution_plan_ref: Some("phase1.qwen3_dense.decode_only".into()),
+            model_id: "qwen3".into(),
+            execution_plan_ref: Some("phase1.qwen3.decode_only".into()),
             items: vec![
                 ExecutionItem {
                     request_id: RequestId(9),
@@ -138,8 +138,8 @@ pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
             ],
             total_scheduled_tokens: 2,
             route_metadata: RouteMetadata {
-                execution_plan: Some("phase1.qwen3_dense.decode_only".into()),
-                attention_route: Some("qwen3_dense_decode".into()),
+                execution_plan: Some("phase1.qwen3.decode_only".into()),
+                attention_route: Some("qwen3_decode".into()),
                 kv_mode: Some("paged_metadata".into()),
                 prefix_cache_path: Some("metadata_lookup".into()),
                 barrier_mode: Some("serial".into()),
@@ -198,8 +198,8 @@ pub(super) fn sample_prefill_only_runner_input() -> RunnerInput {
         block_size_tokens: 16,
         execution_batch: ExecutionBatch {
             step_id: StepId(5),
-            model_id: "qwen3_dense".into(),
-            execution_plan_ref: Some("phase1.qwen3_dense.prefill_only".into()),
+            model_id: "qwen3".into(),
+            execution_plan_ref: Some("phase1.qwen3.prefill_only".into()),
             items: vec![ExecutionItem {
                 request_id: RequestId(17),
                 mode: ExecutionMode::Prefill,
@@ -216,8 +216,8 @@ pub(super) fn sample_prefill_only_runner_input() -> RunnerInput {
             }],
             total_scheduled_tokens: 4,
             route_metadata: RouteMetadata {
-                execution_plan: Some("phase1.qwen3_dense.prefill_only".into()),
-                attention_route: Some("qwen3_dense_prefill".into()),
+                execution_plan: Some("phase1.qwen3.prefill_only".into()),
+                attention_route: Some("qwen3_prefill".into()),
                 kv_mode: Some("paged_metadata".into()),
                 prefix_cache_path: Some("metadata_lookup".into()),
                 barrier_mode: Some("serial".into()),
@@ -252,8 +252,8 @@ pub(super) fn sample_decode_continuation_runner_input() -> RunnerInput {
         block_size_tokens: 16,
         execution_batch: ExecutionBatch {
             step_id: StepId(6),
-            model_id: "qwen3_dense".into(),
-            execution_plan_ref: Some("phase1.qwen3_dense.decode_continuation".into()),
+            model_id: "qwen3".into(),
+            execution_plan_ref: Some("phase1.qwen3.decode_continuation".into()),
             items: vec![ExecutionItem {
                 request_id: RequestId(17),
                 mode: ExecutionMode::Decode,
@@ -270,8 +270,8 @@ pub(super) fn sample_decode_continuation_runner_input() -> RunnerInput {
             }],
             total_scheduled_tokens: 1,
             route_metadata: RouteMetadata {
-                execution_plan: Some("phase1.qwen3_dense.decode_continuation".into()),
-                attention_route: Some("qwen3_dense_decode".into()),
+                execution_plan: Some("phase1.qwen3.decode_continuation".into()),
+                attention_route: Some("qwen3_decode".into()),
                 kv_mode: Some("paged_metadata".into()),
                 prefix_cache_path: Some("metadata_lookup".into()),
                 barrier_mode: Some("serial".into()),

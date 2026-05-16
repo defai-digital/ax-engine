@@ -89,7 +89,7 @@ artifact: `decode_tok_s` is the effective rate users observe;
 
 Usage:
     python scripts/profile_decode_bandwidth.py \\
-        --model-id qwen3_dense \\
+        --model-id qwen3 \\
         --mlx-artifacts-dir /path/to/mlx-community/Qwen3-9B-4bit \\
         --peak-bandwidth-gbps 800 \\
         --output-root benchmarks/results/bw-profile

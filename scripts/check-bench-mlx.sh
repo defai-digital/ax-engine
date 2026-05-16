@@ -52,11 +52,11 @@ scenarios = [
     {
         "name": "qwen",
         "manifest": repo / "benchmarks/manifests/scenario/chat_qwen_short.json",
-        "model_family": "qwen3_dense",
-        "prefill_plan": "phase1.qwen3_dense.dense_prefill",
-        "decode_plan": "phase1.qwen3_dense.paged_decode",
-        "prefill_route": "qwen3_dense_prefill",
-        "decode_route": "qwen3_dense_paged_decode",
+        "model_family": "qwen3",
+        "prefill_plan": "phase1.qwen3.dense_prefill",
+        "decode_plan": "phase1.qwen3.paged_decode",
+        "prefill_route": "qwen3_prefill",
+        "decode_route": "qwen3_paged_decode",
     },
     {
         "name": "gemma",

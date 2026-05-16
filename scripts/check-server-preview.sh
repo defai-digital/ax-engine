@@ -347,7 +347,7 @@ text_generate = request_json(
     "POST",
     "/v1/generate",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3",
         "input_text": "hello llama.cpp",
         "max_output_tokens": 2,
     },
@@ -360,7 +360,7 @@ token_generate = request_json(
     "POST",
     "/v1/generate",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3",
         "input_tokens": [1, 2, 3],
         "max_output_tokens": 2,
     },
@@ -372,7 +372,7 @@ openai_completion = request_json(
     "POST",
     "/v1/completions",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3",
         "prompt": "hello openai completion",
         "max_tokens": 2,
     },
@@ -385,7 +385,7 @@ openai_chat = request_json(
     "POST",
     "/v1/chat/completions",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3",
         "messages": [
             {
                 "role": "user",
@@ -403,7 +403,7 @@ submit = request_json(
     "POST",
     "/v1/requests",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3",
         "input_tokens": [1, 2, 3],
         "max_output_tokens": 2,
     },
@@ -433,7 +433,7 @@ cancel_submit = request_json(
     "POST",
     "/v1/requests",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3",
         "input_tokens": [7, 8, 9],
         "max_output_tokens": 2,
     },
@@ -447,7 +447,7 @@ sse_body = request_text(
     "POST",
     "/v1/generate/stream",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3",
         "input_tokens": [1, 2, 3],
         "max_output_tokens": 2,
     },
@@ -481,7 +481,7 @@ openai_completion_stream = request_text(
     "POST",
     "/v1/completions",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3",
         "prompt": "hello openai stream",
         "max_tokens": 2,
         "stream": True,
@@ -497,7 +497,7 @@ openai_chat_stream = request_text(
     "POST",
     "/v1/chat/completions",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3",
         "messages": [
             {
                 "role": "user",

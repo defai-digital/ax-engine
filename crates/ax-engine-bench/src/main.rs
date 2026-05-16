@@ -24,6 +24,7 @@ mod route_metadata;
 mod route_readiness;
 mod stats;
 mod synthetic;
+mod token_sources;
 
 use ax_engine_core::{
     CacheGroupId, EngineCore, MetalBuildStatus, MetalDispatchTrace, MetalKernelBuildRequest,
@@ -113,6 +114,7 @@ use crate::synthetic::{
     replay_prompt_target, synthetic_prompt_text, synthetic_prompt_tokens,
     synthetic_text_output_tokens,
 };
+use crate::token_sources::{output_token_count_source, prompt_token_count_source};
 
 #[cfg(test)]
 use crate::args::{unique_sorted_option_u32, unique_sorted_u32};
@@ -7401,36 +7403,6 @@ fn runtime_backend_adapter_for_report<'a>(
         .backend_adapter
         .as_ref()
         .filter(|adapter| adapter.selected_backend() == selected_backend)
-}
-
-fn prompt_token_count_source(
-    response: &GenerateResponse,
-    used_manifest_target: bool,
-) -> &'static str {
-    if response.prompt_token_count.is_some() {
-        "backend_reported_usage"
-    } else if !response.prompt_tokens.is_empty() {
-        "token_array"
-    } else if used_manifest_target {
-        "manifest_synthetic_target"
-    } else {
-        "unknown"
-    }
-}
-
-fn output_token_count_source(
-    response: &GenerateResponse,
-    used_synthetic_text_estimate: bool,
-) -> &'static str {
-    if response.output_token_count.is_some() {
-        "backend_reported_usage"
-    } else if !response.output_tokens.is_empty() {
-        "token_array"
-    } else if used_synthetic_text_estimate {
-        "synthetic_text_estimate"
-    } else {
-        "unknown"
-    }
 }
 
 fn replay_events_from_manifest(manifest: &BenchmarkManifest) -> Result<Vec<ReplayEvent>, CliError> {

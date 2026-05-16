@@ -48,7 +48,7 @@ Artifact schema: ax.ngram_observability.v1
 
 Usage:
     python scripts/profile_ngram_observability.py \\
-        --model-id qwen3_dense \\
+        --model-id qwen3 \\
         --mlx-artifacts-dir /path/to/mlx-community/Qwen3-9B-4bit \\
         --output-root benchmarks/results/ngram-observability
 

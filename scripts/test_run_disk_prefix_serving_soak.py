@@ -30,7 +30,7 @@ class DiskPrefixServingSoakRunnerTests(unittest.TestCase):
                 code = runner.main_with_args_for_test(
                     [
                         "--model-id",
-                        "qwen3_dense",
+                        "qwen3",
                         "--output-root",
                         str(output_root),
                         "--run-id",
@@ -70,7 +70,7 @@ class DiskPrefixServingSoakRunnerTests(unittest.TestCase):
         args = parser.parse_args(
             [
                 "--model-id",
-                "qwen3_dense",
+                "qwen3",
                 "--run-id",
                 "unit-soak",
                 "--request-rate-rps",
@@ -115,7 +115,7 @@ class DiskPrefixServingSoakRunnerTests(unittest.TestCase):
                 code = runner.main_with_args_for_test(
                     [
                         "--model-id",
-                        "qwen3_dense",
+                        "qwen3",
                         "--output-root",
                         str(output_root),
                         "--run-id",

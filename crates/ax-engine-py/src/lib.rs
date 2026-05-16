@@ -109,7 +109,7 @@ fn floats_to_pybytes<'py>(py: Python<'py>, floats: &[f32]) -> PyResult<Bound<'py
 impl Session {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (model_id="qwen3_dense".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, mlx=false, support_tier="llama_cpp", llama_cli_path="llama-cli".to_string(), llama_model_path=None, llama_server_url=None, mlx_lm_server_url=None, mlx_model_artifacts_dir=None, delegated_http_connect_timeout_secs=30, delegated_http_read_timeout_secs=300, delegated_http_write_timeout_secs=300))]
+    #[pyo3(signature = (model_id="qwen3".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, mlx=false, support_tier="llama_cpp", llama_cli_path="llama-cli".to_string(), llama_model_path=None, llama_server_url=None, mlx_lm_server_url=None, mlx_model_artifacts_dir=None, delegated_http_connect_timeout_secs=30, delegated_http_read_timeout_secs=300, delegated_http_write_timeout_secs=300))]
     fn new(
         model_id: String,
         deterministic: bool,
@@ -1580,7 +1580,7 @@ mod tests {
         fs::write(&model_path, "fake gguf").expect("fake model should be written");
 
         Session::new(
-            "qwen3_dense".to_string(),
+            "qwen3".to_string(),
             true,
             2048,
             0,
@@ -1602,7 +1602,7 @@ mod tests {
 
     fn llama_cpp_server_session(server_url: String) -> Session {
         Session::new(
-            "qwen3_dense".to_string(),
+            "qwen3".to_string(),
             true,
             2048,
             0,
@@ -1626,7 +1626,7 @@ mod tests {
     fn python_session_routes_default_local_model_to_llama_cpp() {
         init_python();
         let session = Session::new(
-            "qwen3_dense".to_string(),
+            "qwen3".to_string(),
             true,
             2048,
             0,
@@ -1656,7 +1656,7 @@ mod tests {
     fn python_session_routes_default_gguf_model_to_llama_cpp() {
         init_python();
         let session = Session::new(
-            "qwen3_dense".to_string(),
+            "qwen3".to_string(),
             true,
             2048,
             0,
@@ -1686,7 +1686,7 @@ mod tests {
     fn python_session_routes_mlx_lm_delegated_to_runtime_report() {
         init_python();
         let session = Session::new(
-            "qwen3_dense".to_string(),
+            "qwen3".to_string(),
             true,
             2048,
             0,
@@ -1718,7 +1718,7 @@ mod tests {
         init_python();
 
         let error = match Session::new(
-            "qwen3_dense".to_string(),
+            "qwen3".to_string(),
             true,
             2048,
             0,
@@ -1921,7 +1921,7 @@ mod tests {
 
     fn sample_sdk_request(input_tokens: &[u32], max_output_tokens: u32) -> GenerateRequest {
         GenerateRequest {
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             input_tokens: input_tokens.to_vec(),
             input_text: None,
             max_output_tokens,
@@ -2134,7 +2134,7 @@ sys.stdout.write(f"python::{prompt}")
                 .expect("llama.cpp generate should succeed");
             let response = response.bind(py);
 
-            assert_eq!(dict_string(response, "model_id"), "qwen3_dense");
+            assert_eq!(dict_string(response, "model_id"), "qwen3");
             assert_eq!(
                 response
                     .get_item("prompt_text")

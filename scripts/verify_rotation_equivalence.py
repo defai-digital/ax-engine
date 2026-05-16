@@ -20,7 +20,7 @@ same corpus. Absolute ratio ≥ 0.90 is the floor.
 Usage:
 
     python scripts/verify_rotation_equivalence.py \\
-        --model-id qwen3_dense \\
+        --model-id qwen3 \\
         --mlx-artifacts-dir .internal/models/Qwen3.5-9B-MLX-4bit \\
         --mode enable
 

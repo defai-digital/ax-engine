@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn route_report_preserves_crossover_decisions() {
         let route = RouteMetadata {
-            execution_plan: Some("phase1.qwen3_dense".to_string()),
+            execution_plan: Some("phase1.qwen3".to_string()),
             attention_route: Some("paged_decode".to_string()),
             kv_mode: Some("paged".to_string()),
             prefix_cache_path: Some("live_request_share".to_string()),
@@ -601,7 +601,7 @@ mod tests {
         let response = GenerateResponse::from_report(
             SessionRequestReport {
                 request_id: 9,
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 state: SessionRequestState::Finished,
                 prompt_tokens: vec![1, 2, 3],
                 processed_prompt_tokens: 3,
@@ -611,10 +611,10 @@ mod tests {
                 output_len: 2,
                 max_output_tokens: 2,
                 cancel_requested: false,
-                execution_plan_ref: Some("phase1.qwen3_dense.paged_decode".to_string()),
+                execution_plan_ref: Some("phase1.qwen3.paged_decode".to_string()),
                 route: GenerateRouteReport {
-                    execution_plan: Some("phase1.qwen3_dense.paged_decode".to_string()),
-                    attention_route: Some("qwen3_dense_paged_decode".to_string()),
+                    execution_plan: Some("phase1.qwen3.paged_decode".to_string()),
+                    attention_route: Some("qwen3_paged_decode".to_string()),
                     kv_mode: Some("paged_metadata".to_string()),
                     prefix_cache_path: None,
                     barrier_mode: Some("serial".to_string()),
@@ -651,7 +651,7 @@ mod tests {
         let response = GenerateResponse::from_report(
             SessionRequestReport {
                 request_id: 10,
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 state: SessionRequestState::Finished,
                 prompt_tokens: vec![1, 2, 3],
                 processed_prompt_tokens: 3,
@@ -708,7 +708,7 @@ mod tests {
     fn known_usage_uses_token_arrays_for_token_native_paths() {
         let response = GenerateResponse {
             request_id: 1,
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             prompt_tokens: vec![1, 2, 3],
             prompt_text: None,
             output_tokens: vec![4, 5],
@@ -733,7 +733,7 @@ mod tests {
     fn known_usage_prefers_backend_reported_counts_for_text_backends() {
         let response = GenerateResponse {
             request_id: 2,
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             prompt_tokens: Vec::new(),
             prompt_text: Some("hello".to_string()),
             output_tokens: Vec::new(),
@@ -762,7 +762,7 @@ mod tests {
     fn known_usage_omits_unknown_text_only_counts() {
         let response = GenerateResponse {
             request_id: 3,
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             prompt_tokens: Vec::new(),
             prompt_text: Some("hello".to_string()),
             output_tokens: Vec::new(),
@@ -791,7 +791,7 @@ mod tests {
     fn known_usage_omits_empty_token_native_output_without_reported_count() {
         let response = GenerateResponse {
             request_id: 4,
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             prompt_tokens: vec![1, 2, 3],
             prompt_text: None,
             output_tokens: Vec::new(),

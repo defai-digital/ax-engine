@@ -122,7 +122,7 @@ JSON
   --output "$TMP_DIR/quality-gate.json" \
   --manifest "$TMP_DIR/benchmarks/manifests/scenario/long_context_qwen_8k.json" \
   --model-id qwen3_5_9b_q4 \
-  --model-family qwen3_dense \
+  --model-family qwen3 \
   --model-revision synthetic \
   --root "$TMP_DIR"
 
@@ -186,7 +186,7 @@ if "$PYTHON_BIN" scripts/build_turboquant_quality_artifact.py \
   --output "$TMP_DIR/shadow-quality-gate.json" \
   --manifest "$TMP_DIR/benchmarks/manifests/scenario/long_context_qwen_8k.json" \
   --model-id qwen3_5_9b_q4 \
-  --model-family qwen3_dense \
+  --model-family qwen3 \
   --model-revision synthetic \
   --root "$TMP_DIR"; then
   echo "error: full_precision_shadow candidate unexpectedly passed quality gate" >&2

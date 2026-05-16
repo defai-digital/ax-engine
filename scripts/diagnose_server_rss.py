@@ -350,7 +350,7 @@ def run_mode(
                 "MLX mode requires --mlx-model-artifacts-dir or AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR"
             )
         upstream = None
-        model_id = "qwen3_dense"
+        model_id = "qwen3"
         server = RunningServer(
             repo_root,
             binary,
@@ -367,7 +367,7 @@ def run_mode(
     elif mode == "llama":
         upstream = FakeLlamaCppUpstream()
         upstream.start()
-        model_id = "qwen3_dense"
+        model_id = "qwen3"
         server = RunningServer(
             repo_root,
             binary,

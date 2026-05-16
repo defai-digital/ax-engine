@@ -2349,7 +2349,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower::ServiceExt;
 
-    const TEST_MODEL_ID: &str = "qwen3_dense";
+    const TEST_MODEL_ID: &str = "qwen3";
 
     fn sample_http_request_base(input_name: &str, input: Value, max_output_tokens: u32) -> Value {
         let mut request = serde_json::Map::new();
@@ -3340,7 +3340,7 @@ sys.stdout.write(f"server::{prompt}")
         .expect("sample messages should deserialize");
 
         assert_eq!(
-            render_openai_chat_prompt("qwen3_dense", &messages).expect("qwen prompt"),
+            render_openai_chat_prompt("qwen3", &messages).expect("qwen prompt"),
             "<|im_start|>system\nBe concise.<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
         );
         assert_eq!(
@@ -3365,7 +3365,7 @@ sys.stdout.write(f"server::{prompt}")
     #[test]
     fn openai_chat_stop_sequences_use_family_defaults_unless_user_supplies_stop() {
         assert_eq!(
-            openai_chat_stop_sequences("qwen3_dense", None),
+            openai_chat_stop_sequences("qwen3", None),
             vec!["<|im_end|>".to_string()]
         );
         assert_eq!(
@@ -3396,7 +3396,7 @@ sys.stdout.write(f"server::{prompt}")
     #[test]
     fn openai_chat_template_kwargs_disable_thinking_for_qwen_and_glm() {
         assert_eq!(
-            chat_template_kwargs_for_model_id("qwen3_dense"),
+            chat_template_kwargs_for_model_id("qwen3"),
             Some(json!({"enable_thinking": false}))
         );
         assert_eq!(

@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn grpc_chat_prompt_keeps_no_thinking_for_older_qwen() {
-        let prompt = render_grpc_chat_prompt("qwen3_dense", &user("hi")).expect("render");
+        let prompt = render_grpc_chat_prompt("qwen3", &user("hi")).expect("render");
         assert!(
             prompt.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
             "non-thinking Qwen must keep the pre-closed think block: {prompt}"
@@ -838,7 +838,7 @@ mod tests {
 
     #[test]
     fn grpc_chat_prompt_rejects_empty_messages() {
-        let err = render_grpc_chat_prompt("qwen3_dense", &[]).expect_err("empty must fail");
+        let err = render_grpc_chat_prompt("qwen3", &[]).expect_err("empty must fail");
         assert!(err.contains("at least one message"));
     }
 

@@ -33,7 +33,7 @@ Current preview endpoints:
 Example:
 
 ```bash
-cargo run -p ax-engine-server -- --model-id qwen3_dense --port 8080
+cargo run -p ax-engine-server -- --model-id qwen3 --port 8080
 
 bash scripts/check-server-preview.sh
 
@@ -42,7 +42,7 @@ curl http://127.0.0.1:8080/v1/runtime
 curl http://127.0.0.1:8080/v1/requests \
   -H 'content-type: application/json' \
   -d '{
-    "model": "qwen3_dense",
+    "model": "qwen3",
     "input_tokens": [1, 2, 3, 4],
     "max_output_tokens": 4
   }'
@@ -54,7 +54,7 @@ curl http://127.0.0.1:8080/v1/requests/1
 curl -N http://127.0.0.1:8080/v1/generate/stream \
   -H 'content-type: application/json' \
   -d '{
-    "model": "qwen3_dense",
+    "model": "qwen3",
     "input_tokens": [1, 2, 3, 4],
     "max_output_tokens": 4
   }'
@@ -62,7 +62,7 @@ curl -N http://127.0.0.1:8080/v1/generate/stream \
 curl http://127.0.0.1:8080/v1/generate \
   -H 'content-type: application/json' \
   -d '{
-    "model": "qwen3_dense",
+    "model": "qwen3",
     "input_tokens": [1, 2, 3, 4],
     "max_output_tokens": 4,
     "sampling": {
@@ -74,7 +74,7 @@ curl http://127.0.0.1:8080/v1/generate \
   }'
 
 cargo run -p ax-engine-server -- \
-  --model-id qwen3_dense \
+  --model-id qwen3 \
   --support-tier llama_cpp \
   --llama-server-url http://127.0.0.1:8081 \
   --port 8080
@@ -82,13 +82,13 @@ cargo run -p ax-engine-server -- \
 curl http://127.0.0.1:8080/v1/generate \
   -H 'content-type: application/json' \
   -d '{
-    "model": "qwen3_dense",
+    "model": "qwen3",
     "input_tokens": [1, 2, 3, 4],
     "max_output_tokens": 32
   }'
 
 cargo run -p ax-engine-server -- \
-  --model-id qwen3_dense \
+  --model-id qwen3 \
   --support-tier llama_cpp \
   --llama-cli-path llama-cli \
   --llama-model-path /absolute/path/to/model.gguf \
@@ -97,7 +97,7 @@ cargo run -p ax-engine-server -- \
 curl http://127.0.0.1:8080/v1/generate \
   -H 'content-type: application/json' \
   -d '{
-    "model": "qwen3_dense",
+    "model": "qwen3",
     "input_text": "Hello from llama.cpp",
     "max_output_tokens": 32
   }'

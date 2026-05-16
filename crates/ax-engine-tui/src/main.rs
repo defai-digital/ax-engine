@@ -3356,7 +3356,7 @@ mod tests {
         .to_string();
 
         let cases = [
-            ("qwen3_dense", None, json!(["<|im_end|>"])),
+            ("qwen3", None, json!(["<|im_end|>"])),
             ("gemma4-e2b", None, json!(["<turn|>"])),
             (
                 "glm4_moe_lite",
