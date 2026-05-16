@@ -1,10 +1,45 @@
+use ax_engine_sdk::NativeModelReport;
 use serde_json::{Value, json};
 
+use crate::json_io::nested_value;
 use crate::route_json::{route_count_from_json, route_flag_from_json};
 use crate::route_metadata::mlx_metal_coverage_ratio;
 
+const NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE: &str =
+    "source_quantization_dequantized_for_dense_native_export";
 pub(crate) const NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER: &str =
     "source_quantization_dequantized_dense_native_artifact";
+
+pub(crate) fn native_model_report_has_dense_dequantized_source(report: &NativeModelReport) -> bool {
+    serde_json::to_value(report)
+        .ok()
+        .is_some_and(|native_model| {
+            native_dense_dequantized_source_from_native_model_json(&native_model)
+        })
+}
+
+pub(crate) fn native_dense_dequantized_source_from_runtime_json(runtime_json: &Value) -> bool {
+    nested_value(runtime_json, &["mlx_model"])
+        .is_some_and(native_dense_dequantized_source_from_native_model_json)
+}
+
+fn native_dense_dequantized_source_from_native_model_json(native_model: &Value) -> bool {
+    let contains_quantized_tensors = nested_value(
+        native_model,
+        &["source_quantization", "contains_quantized_tensors"],
+    )
+    .and_then(Value::as_bool)
+    .unwrap_or(false);
+    let has_dense_dequantized_note = nested_value(native_model, &["runtime_status", "notes"])
+        .and_then(Value::as_array)
+        .is_some_and(|notes| {
+            notes
+                .iter()
+                .any(|note| note.as_str() == Some(NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE))
+        });
+
+    contains_quantized_tensors && has_dense_dequantized_note
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MlxMetalReadiness {

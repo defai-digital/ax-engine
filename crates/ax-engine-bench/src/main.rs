@@ -101,6 +101,8 @@ use crate::route_metadata::{
 };
 use crate::route_readiness::{
     MlxMetalReadinessInputs, mlx_metal_readiness, mlx_metal_readiness_from_route_json,
+    native_dense_dequantized_source_from_runtime_json,
+    native_model_report_has_dense_dequantized_source,
 };
 use crate::stats::{
     elapsed_ms_since, percentage_delta, proportional_time_us, tokens_per_second_from_micros,
@@ -147,9 +149,6 @@ use crate::route_readiness::NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER;
 use crate::stats::{percentile_f64, percentile_u64};
 #[cfg(test)]
 use ax_engine_sdk::{HostReport, MetalToolchainReport, ToolStatusReport};
-
-const NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE: &str =
-    "source_quantization_dequantized_for_dense_native_export";
 
 fn main() -> ExitCode {
     init_tracing();
@@ -7235,37 +7234,6 @@ fn deterministic_runtime_digest(value: &Value) -> Value {
     json!({
         "requests": value.get("requests").cloned().unwrap_or(Value::Null)
     })
-}
-
-fn native_model_report_has_dense_dequantized_source(report: &NativeModelReport) -> bool {
-    serde_json::to_value(report)
-        .ok()
-        .is_some_and(|native_model| {
-            native_dense_dequantized_source_from_native_model_json(&native_model)
-        })
-}
-
-fn native_dense_dequantized_source_from_runtime_json(runtime_json: &Value) -> bool {
-    nested_value(runtime_json, &["mlx_model"])
-        .is_some_and(native_dense_dequantized_source_from_native_model_json)
-}
-
-fn native_dense_dequantized_source_from_native_model_json(native_model: &Value) -> bool {
-    let contains_quantized_tensors = nested_value(
-        native_model,
-        &["source_quantization", "contains_quantized_tensors"],
-    )
-    .and_then(Value::as_bool)
-    .unwrap_or(false);
-    let has_dense_dequantized_note = nested_value(native_model, &["runtime_status", "notes"])
-        .and_then(Value::as_array)
-        .is_some_and(|notes| {
-            notes
-                .iter()
-                .any(|note| note.as_str() == Some(NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE))
-        });
-
-    contains_quantized_tensors && has_dense_dequantized_note
 }
 
 fn direct_decode_batching_opportunity_observed(step_trace: &[StepTraceEntry]) -> bool {
