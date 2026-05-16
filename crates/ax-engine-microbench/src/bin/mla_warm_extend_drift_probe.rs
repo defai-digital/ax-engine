@@ -281,7 +281,7 @@ fn main() -> ExitCode {
         }
     };
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
-    if cfg.glm_mla_attention.is_none() {
+    if cfg.mla_attention.is_none() {
         eprintln!(
             "error: model at {} is not a GLM-MLA model (probe only diagnoses MLA drift)",
             args.mlx_artifacts_dir.display()

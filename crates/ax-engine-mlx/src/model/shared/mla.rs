@@ -44,7 +44,7 @@ pub(crate) fn glm_mla_project_inputs(
     token_offset: usize,
 ) -> GlmMlaProjectedInputs {
     let mla_cfg = cfg
-        .glm_mla_attention
+        .mla_attention
         .as_ref()
         .expect("GLM MLA attention config");
     let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");
@@ -157,7 +157,7 @@ pub(crate) fn glm_mla_attention_forward(
     token_offset: usize,
 ) -> MlxArray {
     let mla_cfg = cfg
-        .glm_mla_attention
+        .mla_attention
         .as_ref()
         .expect("GLM MLA attention config");
     let seq = x.shape()[1] as usize;
@@ -263,7 +263,7 @@ pub(crate) fn glm_mla_embed_q_prefill(
     kv_latent: &MlxArray,
 ) -> MlxArray {
     let mla_cfg = cfg
-        .glm_mla_attention
+        .mla_attention
         .as_ref()
         .expect("GLM MLA attention config");
     let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");
@@ -302,7 +302,7 @@ pub(crate) fn glm_mla_embed_q_decode(
     q_nope: &MlxArray,
 ) -> MlxArray {
     let mla_cfg = cfg
-        .glm_mla_attention
+        .mla_attention
         .as_ref()
         .expect("GLM MLA attention config");
     let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");
@@ -341,7 +341,7 @@ pub(crate) fn glm_mla_unembed_out(
     latent: &MlxArray,
 ) -> MlxArray {
     let mla_cfg = cfg
-        .glm_mla_attention
+        .mla_attention
         .as_ref()
         .expect("GLM MLA attention config");
     let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");

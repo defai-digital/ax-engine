@@ -2863,7 +2863,7 @@ mod tests {
             moe_norm_topk_prob: false,
             hidden_size_per_layer_input: 0,
             linear_attention: None,
-            glm_mla_attention: None,
+            mla_attention: None,
             glm_router: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,

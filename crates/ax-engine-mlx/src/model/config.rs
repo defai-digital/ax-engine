@@ -86,7 +86,7 @@ impl LinearAttentionConfig {
 
 /// GLM4MoELite MLA attention dimensions extracted from the manifest.
 #[derive(Clone, Debug, PartialEq)]
-pub struct GlmMlaAttentionConfig {
+pub struct MlaAttentionConfig {
     pub q_lora_rank: usize,
     pub kv_lora_rank: usize,
     pub qk_nope_head_dim: usize,
@@ -96,7 +96,7 @@ pub struct GlmMlaAttentionConfig {
     pub query_scale: f32,
 }
 
-impl GlmMlaAttentionConfig {
+impl MlaAttentionConfig {
     pub(super) fn from_manifest(m: &NativeModelManifest) -> Option<Self> {
         let cfg = &m.mla_attention;
         if !cfg.is_enabled() {
@@ -221,7 +221,7 @@ pub struct ModelConfig {
     /// Qwen3.5 gated-delta linear-attention config, when present.
     pub linear_attention: Option<LinearAttentionConfig>,
     /// GLM4MoELite MLA attention config, when present.
-    pub glm_mla_attention: Option<GlmMlaAttentionConfig>,
+    pub mla_attention: Option<MlaAttentionConfig>,
     /// GLM4MoELite sigmoid router config, when present.
     pub glm_router: Option<GlmRouterConfig>,
     /// Epsilon for all RMSNorm operations (1e-6 for Qwen/Gemma, 1e-5 for GLM/LLaMA/Mistral).
@@ -320,7 +320,7 @@ impl ModelConfig {
             moe_norm_topk_prob: m.moe_norm_topk_prob,
             hidden_size_per_layer_input: m.hidden_size_per_layer_input as usize,
             linear_attention: LinearAttentionConfig::from_manifest(m),
-            glm_mla_attention: GlmMlaAttentionConfig::from_manifest(m),
+            mla_attention: MlaAttentionConfig::from_manifest(m),
             glm_router: GlmRouterConfig::from_manifest(m),
             rms_norm_eps: m
                 .rms_norm_eps

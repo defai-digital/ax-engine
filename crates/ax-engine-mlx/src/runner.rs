@@ -2456,7 +2456,7 @@ impl MlxRunner {
         };
         let cold_prefill_chunk = clamp_to_linear_cap(prefill_chunk);
         let prefill_chunk = clamp_to_linear_cap(crate::fastpath::resolve_prefill_chunk(
-            cfg.glm_mla_attention.is_some(),
+            cfg.mla_attention.is_some(),
             prefill_chunk,
             crate::fastpath::mla_prefill_chunk_override(),
         ));
@@ -2475,7 +2475,7 @@ impl MlxRunner {
             );
             dummy_cache.reset();
             let dummy_token_count = crate::fastpath::prefill_warmup_token_count(
-                cfg.glm_mla_attention.is_some(),
+                cfg.mla_attention.is_some(),
                 prefill_chunk,
             );
             let dummy_tokens: Vec<u32> = vec![0u32; dummy_token_count];
@@ -3716,7 +3716,7 @@ impl MlxRunner {
         // kill-switch env
         // `AX_DISABLE_MLA_PREFIX_RESTORE=1` re-engages the historical gate
         // if a future workload exposes a residual drift vector.
-        let mla_extend_unsafe = self.cfg.glm_mla_attention.is_some()
+        let mla_extend_unsafe = self.cfg.mla_attention.is_some()
             && item.mode == ExecutionMode::Prefill
             && crate::fastpath::mla_prefix_restore_disabled();
 
@@ -3902,8 +3902,8 @@ impl MlxRunner {
         // harness green on every model in the supported tier.
         let linear_attention = self.cfg.linear_attention.is_some();
         let sliding_window = self.kv_layer_windows.iter().any(Option::is_some);
-        let glm_mla_attention = self.cfg.glm_mla_attention.is_some();
-        let alignment_restricted = linear_attention || sliding_window || glm_mla_attention;
+        let mla_attention = self.cfg.mla_attention.is_some();
+        let alignment_restricted = linear_attention || sliding_window || mla_attention;
         if alignment_restricted && full_block_tokens != available_tokens {
             telemetry.record_blocked_trim_failure();
             return telemetry;

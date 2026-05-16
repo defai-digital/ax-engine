@@ -29,7 +29,7 @@ pub use turboquant_context::{
 mod config;
 use config::layer_params;
 pub use config::{
-    GlmMlaAttentionConfig, GlmRouterConfig, LayerConfig, LinearAttentionConfig, ModelConfig,
+    MlaAttentionConfig, GlmRouterConfig, LayerConfig, LinearAttentionConfig, ModelConfig,
 };
 
 pub(crate) mod shared;
@@ -130,7 +130,7 @@ pub fn layer_forward_with_turboquant_context(
         "glm4_moe_lite" => families::glm4_moe_lite::layer_forward(
             cfg, w, hidden, cache, layer_idx, token_offset,
         ),
-        "deepseek_v3" => families::deepseek_v3::layer_forward(
+        "deepseek_v3" | "deepseek_v32" => families::deepseek_v3::layer_forward(
             cfg, w, hidden, cache, layer_idx, token_offset, turboquant_context,
         ),
         "mistral3" => families::mistral3::layer_forward(
@@ -959,7 +959,7 @@ mod tests {
             moe_norm_topk_prob: false,
             hidden_size_per_layer_input: 0,
             linear_attention: None,
-            glm_mla_attention: None,
+            mla_attention: None,
             glm_router: None,
             rms_norm_eps: 1e-6,
             rope_freqs: None,
@@ -1576,7 +1576,7 @@ mod tests {
     }
 
     fn glm_mla_layer_weights(cfg: &ModelConfig) -> LayerWeights {
-        let mla = cfg.glm_mla_attention.as_ref().expect("GLM MLA config");
+        let mla = cfg.mla_attention.as_ref().expect("GLM MLA config");
         LayerWeights {
             attn_norm: zeros(&[cfg.hidden_size as i32], MlxDtype::Float32, None),
             attn_post_norm: None,
@@ -1642,7 +1642,7 @@ mod tests {
     }
 
     fn glm_mla_quantized_multilinear_layer_weights(cfg: &ModelConfig) -> LayerWeights {
-        let mla = cfg.glm_mla_attention.as_ref().expect("GLM MLA config");
+        let mla = cfg.mla_attention.as_ref().expect("GLM MLA config");
         let mut weights = glm_mla_layer_weights(cfg);
         weights.glm_mla_attn = Some(GlmMlaAttentionWeights {
             qa_kva_fused: dense_weight(&[
@@ -2042,7 +2042,7 @@ mod tests {
             .expect("linear attention config");
 
         assert_eq!(cfg.rms_norm_eps, 1e-6);
-        assert!(cfg.glm_mla_attention.is_none());
+        assert!(cfg.mla_attention.is_none());
         assert!(cfg.glm_router.is_none());
         assert_eq!(linear.full_attention_interval, 4);
         assert_eq!(linear.key_dim(), 4);
@@ -2068,7 +2068,7 @@ mod tests {
     fn glm_mla_attention_config_matches_reference_shape_contract() {
         let cfg = ModelConfig::from_manifest(&glm4_moe_lite_manifest());
         let mla = cfg
-            .glm_mla_attention
+            .mla_attention
             .as_ref()
             .expect("GLM MLA attention config");
 
@@ -2412,7 +2412,7 @@ mod tests {
             glm_mla_project_and_cache_inputs(&cfg, &weights, &hidden, &mut reference_cache, 0, 0);
         let reference_k = glm_mla_embed_q_prefill(&cfg, &weights, &cached.kv_latent);
         let reference_v = glm_mla_unembed_out(&cfg, &weights, &cached.kv_latent);
-        let mla = cfg.glm_mla_attention.as_ref().expect("GLM MLA config");
+        let mla = cfg.mla_attention.as_ref().expect("GLM MLA config");
         let q_pe_scaled = scale_hidden(&cached.q_pe, mla.query_scale);
         let pe_scores = matmul(
             &q_pe_scaled,
