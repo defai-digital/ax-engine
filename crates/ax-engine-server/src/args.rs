@@ -652,6 +652,7 @@ mod tests {
             resolve_model_artifacts: ModelArtifactResolution::ExplicitOnly,
             hf_cache_root: None,
             disable_ngram_acceleration: false,
+            prefill_chunk: None,
             experimental_mlx_kv_compression: PreviewMlxKvCompression::Disabled,
             experimental_mlx_kv_compression_hot_window_tokens:
                 MlxKvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS,
@@ -721,6 +722,7 @@ mod tests {
             mlx_model_artifacts_dir: None,
             mlx_disable_ngram_acceleration: false,
             mlx_kv_compression: MlxKvCompressionConfig::disabled(),
+            mlx_prefill_chunk: None,
             backend_request: PreviewBackendRequest {
                 support_tier: SupportTier::MlxPreview,
                 llama_cli_path: PathBuf::from("llama-cli"),
@@ -760,6 +762,7 @@ mod tests {
             mlx_model_artifacts_dir: None,
             mlx_disable_ngram_acceleration: false,
             mlx_kv_compression: MlxKvCompressionConfig::disabled(),
+            mlx_prefill_chunk: None,
             backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
                 PathBuf::from("llama-cli"),
                 None,
@@ -852,6 +855,7 @@ mod tests {
             mlx_model_artifacts_dir: None,
             mlx_disable_ngram_acceleration: false,
             mlx_kv_compression: MlxKvCompressionConfig::disabled(),
+            mlx_prefill_chunk: None,
             backend_request: PreviewBackendRequest {
                 support_tier: SupportTier::MlxLmDelegated,
                 mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),

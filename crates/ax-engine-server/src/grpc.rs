@@ -766,6 +766,7 @@ impl AxEngine for AxEngineGrpcService {
             "cls" => EmbeddingPooling::Cls,
             _ => EmbeddingPooling::Last,
         };
+        let prompt_tokens = grpc_embedding_prompt_tokens(&req.input);
         let embedding = self
             .state
             .embedding_batcher
@@ -773,7 +774,6 @@ impl AxEngine for AxEngineGrpcService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let prompt_tokens = embedding.len() as u32;
         Ok(Response::new(proto::EmbeddingsResponse {
             object: "list".to_string(),
             data: vec![proto::EmbeddingData {
@@ -788,6 +788,10 @@ impl AxEngine for AxEngineGrpcService {
             }),
         }))
     }
+}
+
+fn grpc_embedding_prompt_tokens(input: &[u32]) -> u32 {
+    input.len() as u32
 }
 
 #[cfg(test)]
@@ -836,6 +840,14 @@ mod tests {
     fn grpc_chat_prompt_rejects_empty_messages() {
         let err = render_grpc_chat_prompt("qwen3_dense", &[]).expect_err("empty must fail");
         assert!(err.contains("at least one message"));
+    }
+
+    #[test]
+    fn grpc_embedding_usage_counts_input_tokens() {
+        let input_tokens = [101, 102, 103];
+        let embedding_width = 768_u32;
+        assert_eq!(grpc_embedding_prompt_tokens(&input_tokens), 3);
+        assert_ne!(grpc_embedding_prompt_tokens(&input_tokens), embedding_width);
     }
 
     #[test]
