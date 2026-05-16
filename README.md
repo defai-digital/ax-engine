@@ -190,7 +190,7 @@ architecture, run
 report `repo_owned_runtime_ready` only when its manifest, local reference files,
 and runtime path are all present.
 
-## Performance ([full benchmark docs](docs/BENCHMARKS.md))
+## Performance ([full performance docs](docs/PERFORMANCE.md))
 
 <!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
