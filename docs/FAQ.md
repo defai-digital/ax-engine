@@ -1,5 +1,79 @@
 # FAQ
 
+## What hardware does AX Engine support?
+
+AX Engine targets high-memory Apple Silicon Macs running macOS 14 (Sonoma) or
+later.
+
+| Machine | Minimum spec | Suggested spec |
+|---|---|---|
+| Mac Mini | M4 Pro, 32 GB | M4 Pro, 64 GB |
+| MacBook Pro 14" / 16" | M2 Pro / M2 Max, 32 GB | M3 Max, 96 GB |
+| Mac Studio | M2 Max / M2 Ultra, 32 GB | M4 Max, 96 GB |
+
+M3, M4, and M5 chip variants are supported across all three lines. M1 is not
+supported. The M2 base chip, with a 24 GB maximum memory configuration, is
+below the 32 GB minimum.
+
+For a typical local model stack, start with one of these higher-memory
+configurations:
+
+| Hardware | Recommended memory | Best fit |
+|---|---:|---|
+| Mac mini M4 Pro | 64 GB RAM | Compact always-on local chatbot and agent server |
+| MacBook Pro M5 Max | 128 GB RAM | Portable high-throughput chatbot, agent, and coding stack |
+| Mac Studio M3 Ultra | 256 GB RAM | Larger local model portfolio, longer contexts, and heavier parallel workloads |
+
+## What model stack should I run on high-memory Apple Silicon?
+
+Use a three-model stack when memory allows it. One model can serve every task,
+but the better local setup is to match the model to the workflow.
+
+| Role | Recommended model | Setup | App | Why |
+|---|---|---|---|---|
+| Default chatbot | Gemma 4 26B-A4B / 31B | 4-bit or 6-bit, 16K-32K | [ax-studio](https://github.com/defai-digital/ax-studio) | General assistant path for reasoning, chat, JSON/function calling, and on-device agent workflows |
+| General agentic model | Qwen3.6-35B-A3B | 4-bit or 6-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
+| Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
+
+Suggested default stack:
+
+```text
+Chatbot:
+Gemma 4 31B 4-bit/6-bit + 16K
+
+General agent:
+Qwen3.6-35B-A3B 4-bit + 32K
+
+Coding agent:
+Qwen3-Coder-Next 6-bit + 16K
+```
+
+| Use case | Best pick |
+|---|---|
+| Daily chatbot | Gemma 4 |
+| Business/technical assistant | Qwen3.6-35B-A3B |
+| Repo editing / coding agent | Qwen3-Coder-Next |
+| Fast lightweight coding | Qwen3.6-27B when available through a direct or delegated route |
+| Long-context coding | Qwen3-Coder-Next 4-bit + 32K |
+
+Client positioning:
+
+- **Safe / high-ROI path**: Gemma 4 in
+  [ax-studio](https://github.com/defai-digital/ax-studio) for chatbot +
+  Qwen3.6 for agent tasks.
+- **Higher-return path**: add Qwen3-Coder-Next as the dedicated local coding
+  specialist in [ax-code](https://github.com/defai-digital/ax-code).
+
+Model references: [Gemma 4](https://deepmind.google/models/gemma/gemma-4/),
+[Qwen3.6-35B-A3B](https://qwen.ai/blog?id=qwen3.6-35b-a3b), and
+[Qwen3-Coder-Next](https://unsloth.ai/docs/models/qwen3-coder-next).
+
+## Where is the serving roadmap?
+
+AX Engine v4.9.0 is the current serving-oriented runtime baseline. The active
+serving roadmap, shipped v4.9.0 runtime work, and evidence gates live in
+[`docs/ROADMAP.md`](ROADMAP.md).
+
 ## Why does the repo-owned MLX runtime require M2 Max or newer?
 
 The repo-owned MLX runtime is a supported performance contract, not only a
@@ -14,6 +88,36 @@ Delegated routes are separate. A non-MLX or GGUF workflow can use `llama.cpp`,
 and unsupported MLX text models can use an explicitly configured
 `mlx_lm.server`, but those routes are compatibility contracts rather than
 repo-owned MLX throughput claims.
+
+## Is AX faster because it replaces MLX kernels?
+
+No. The repo-owned MLX path uses MLX directly for tensor operations through the
+official `mlx-c` C API. Matrix multiply, quantized matmul, attention, RMSNorm,
+and RoPE go through MLX's Apple-maintained Metal kernels. AX owns the runtime
+behavior above that graph.
+
+AX improves the runtime behavior above MLX: how tokens are speculated, how
+requests are scheduled, how KV state is materialized, and how benchmark evidence
+is recorded. That runtime layer is what produces higher effective throughput on
+supported workloads.
+
+Important pieces:
+
+- **N-gram acceleration**: a bigram/trigram table built at runtime predicts up
+  to 4 draft tokens per step. The target model verifies them in one forward pass
+  over `[last_token, D1, ..., D_n]`. No second draft model is required.
+- **Scheduler and KV manager**: request lifecycle, batching, memory-blocked
+  recovery, and execution planning live in `ax-engine-core`.
+- **Chunked KV cache**: keys and values grow in pre-allocated backing buffers,
+  and draft rollback only moves the sequence-length pointer.
+- **Graph compilation**: `mlx_enable_compile()` is called once at startup so
+  Metal shader compilation and dispatch tables are reused across matching
+  shapes.
+- **Memory policy**: `mlx_set_wired_limit(recommendedMaxWorkingSetSize)` wires
+  model weights into GPU memory at startup, reducing paging between requests.
+
+See `docs/SCHEDULER.md`, `docs/KV-CACHE.md`, and `docs/LONG-CONTEXT.md` for
+the deeper design contract.
 
 ## Why can N-gram acceleration have little or no effect?
 
@@ -41,6 +145,32 @@ Benchmark rows labeled with N-gram acceleration are effective-throughput
 measurements. They should not be described as raw model-kernel speedups. Use
 the MLX inference-stack harness with `--ax-compare-policies` to compare the
 direct path and the N-gram path on the same prompt/decode shape.
+
+## What are the current limitations?
+
+- **GatedDelta prefill (Qwen3.5)**: The recurrent state update in GatedDelta
+  linear-attention layers serializes over time steps and cannot be parallelized.
+  On **Qwen3.5 9B** this puts AX prefill about 9% behind mlx-swift-lm at 512
+  tokens; decode throughput is unaffected. **Qwen3-Next (Coder Next) is not
+  affected** in the same way: AX prefill exceeds mlx-swift-lm by 2x on that
+  architecture because the sparse MoE forward path dominates the runtime, not
+  the GatedDelta layers.
+- **Raw HuggingFace weights**: ax-engine loads MLX community pre-sanitized
+  weights. For hybrid architectures such as Qwen3.5 and Qwen3-Next, loading an
+  unsanitized checkpoint raises a hard error at load time. Convert first with
+  `mlx_lm.convert`, or download a pre-sanitized model from mlx-community.
+- **N-gram acceleration rows**: effective-throughput measurements, not raw
+  model-kernel speedups. The hit rate is prompt- and output-pattern dependent.
+  Coding-shaped workloads with repeated local structure are the intended
+  high-value case; random, high-entropy, very short, or deliberately diverse
+  outputs may see little benefit.
+- **TurboQuant KV compression**: experimental and off by default. The
+  `turboquant-shadow` and `turboquant-fused-experimental` modes are evidence and
+  route-telemetry surfaces, not production support claims. The correctness
+  quality gate for the K8/V4 fused path now passes for Gemma 4 E2B; the remaining
+  blocker is a long-context performance promotion artifact at 8192-token context
+  or higher. Run `scripts/check_turboquant_promotion_readiness.py` before
+  changing any public support wording.
 
 ## Which runtime path should I choose first?
 

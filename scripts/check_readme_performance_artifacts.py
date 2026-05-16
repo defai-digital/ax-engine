@@ -1205,6 +1205,7 @@ def collect_artifact_rows(
     repo_root: Path,
     artifact_dir: Path,
     include_engines: frozenset[str] | None = None,
+    needed_labels: frozenset[tuple[str, str]] | None = None,
 ) -> dict[tuple[str, str, int, int, str], ArtifactRow]:
     if not artifact_dir.exists():
         raise ArtifactCheckError(f"artifact directory does not exist: {artifact_dir}")
@@ -1216,6 +1217,8 @@ def collect_artifact_rows(
     for path in json_paths:
         label = ARTIFACT_LABELS.get(path.stem)
         if label is None:
+            continue
+        if needed_labels is not None and label not in needed_labels:
             continue
         artifact = json.loads(path.read_text())
         if artifact.get("schema_version") != "ax.mlx_inference_stack.v2":
@@ -1280,7 +1283,9 @@ def collect_artifact_rows(
 
 
 def collect_artifact_rows_from_sources(
-    repo_root: Path, sources: list[ArtifactSource]
+    repo_root: Path,
+    sources: list[ArtifactSource],
+    needed_labels: frozenset[tuple[str, str]] | None = None,
 ) -> dict[tuple[str, str, int, int, str], ArtifactRow]:
     rows: dict[tuple[str, str, int, int, str], ArtifactRow] = {}
     for source in sources:
@@ -1288,6 +1293,7 @@ def collect_artifact_rows_from_sources(
             repo_root,
             source.artifact_dir,
             include_engines=source.include_engines,
+            needed_labels=needed_labels,
         )
         rows.update(source_rows)
     return rows
@@ -1339,7 +1345,7 @@ def check_readme_performance(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 280,
+    expected_metric_count: int | None = 220,
 ) -> list[str]:
     return check_readme_performance_summary(
         repo_root=repo_root,
@@ -1354,7 +1360,7 @@ def check_readme_performance_summary(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 280,
+    expected_metric_count: int | None = 220,
 ) -> ReadmeCheckResult:
     resolved_readme = readme_path.resolve()
     artifact_sources = (
@@ -1370,8 +1376,13 @@ def check_readme_performance_summary(
         default_concurrent_prefill_boundary_artifact_paths(resolved_readme)
     )
     metrics = parse_readme_metrics(resolved_readme)
+    needed_labels = frozenset(
+        (metric.model, metric.quantization) for metric in metrics
+    )
     artifact_rows = collect_artifact_rows_from_sources(
-        repo_root.resolve(), artifact_sources
+        repo_root.resolve(),
+        artifact_sources,
+        needed_labels=needed_labels,
     )
     narrative_claim_checks = [
         *validate_readme_hot_prefix_claims(

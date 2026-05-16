@@ -1,12 +1,13 @@
 # Performance
 
-This page explains how to interpret the public performance tables in the root
-`README.md`. The README intentionally keeps only the current result tables; this
-page carries methodology, artifact provenance, and caveats.
+This page explains how to interpret the public performance snapshot in the root
+`README.md`. The README intentionally keeps only the common Gemma 4 and Qwen
+3.6 rows; this page carries methodology, artifact provenance, limitations, and
+additional benchmark context.
 
 ## Current Result Set
 
-The current public table was refreshed on 2026-05-13 on:
+The current public table was refreshed on 2026-05-14 on:
 
 - Apple M5 Max
 - 128 GB memory
@@ -22,23 +23,22 @@ Benchmark shape:
 - 5 repetitions per engine/model/prompt row
 - 15-second cooldown between trials and 45-second inter-model pause
 
-The current README generation-model tables are a provenance-tracked composite
+The current README generation-model snapshot is a provenance-tracked composite
 from:
 
 ```text
-benchmarks/results/mlx-inference/2026-05-13-ax-direct-ngram-r2/
+benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/
 ```
 
-This 14-model AX refresh reruns the direct and n-gram AX rows and carries
-forward the same-host `mlx_lm` / `mlx_swift_lm` reference rows from
-`benchmarks/results/mlx-inference/2026-05-13-full-fresh/` inside each artifact.
-All rows use the same prompt-token contract, prompt SHA checks, and
+This 14-model AX refresh reruns the direct and n-gram AX rows on the post-W1.3
+binaries and carries forward the same-host `mlx_lm` / `mlx_swift_lm` reference
+rows from `benchmarks/results/mlx-inference/2026-05-13-full-fresh/` inside each
+artifact. All rows use the same prompt-token contract, prompt SHA checks, and
 generation=128 shape. The AX rows were produced with production-build server
-binaries
-(`[profile.release]`: LTO thin, `codegen-units=1`, `panic=abort`, stripped
-debuginfo). This composite is intentional: the third-party reference rows stay
-attached to the same artifact contract while AX-only refreshes can update
-current runtime behavior without rerunning the reference adapters.
+binaries (`[profile.release]`: LTO thin, `codegen-units=1`, `panic=abort`,
+stripped debuginfo). This composite is intentional: the third-party reference
+rows stay attached to the same artifact contract while AX-only refreshes can
+update current runtime behavior without rerunning the reference adapters.
 
 `ax direct baseline` is the direct same-policy comparison against `mlx_lm`; the
 benchmark starts the AX server with n-gram acceleration disabled for this row.
@@ -120,22 +120,23 @@ systems such as vLLM or TensorRT-LLM.
 
 ## Interpretation
 
-The current composite README table is not a universal direct-decode win.
+The current composite result set is not a universal direct-decode win.
 Direct AX is intentionally measured with n-gram acceleration disabled, and the
-direct column spans -12.3% to +22.9% versus `mlx_lm` across the README decode
-table. Those rows are the same-policy baseline rather than the default AX user
-path.
+direct column spans -14.4% to +22.9% versus `mlx_lm` across the full decode
+artifact set. In the README Gemma 4 / Qwen 3.6 snapshot, direct decode spans
+-14.4% to +9.1%. Those rows are the same-policy baseline rather than the
+default AX user path.
 
 N-gram acceleration is the default AX user/server path and is the better
 headline row for decode-throughput expectations when the workload produces
-draftable local repetition. In the current README table, the n-gram column spans
--2.4% to +207.2% versus `mlx_lm`. Artifact claim status is explicit: 26 of 28
-n-gram rows are labeled `ngram_acceleration_effective_throughput`; the two
-no-draft rows are labeled `ngram_no_draft_direct_fallback`. Those two rows are
-Qwen Coder Next at 128 prompt tokens, which is -2.4% versus `mlx_lm` and -0.9%
-versus direct AX, and Qwen 3.5 9B at 512 prompt tokens, which is +20.1% versus
-`mlx_lm` but -2.2% versus direct AX. Public docs should keep direct baseline
-rows visible beside the default n-gram row.
+draftable local repetition. In the README snapshot, the n-gram column spans
++86.7% to +207.2% versus `mlx_lm`; across the full artifact set it spans +0.0%
+to +207.2%. Artifact claim status is explicit: 26 of 28 n-gram rows are labeled
+`ngram_acceleration_effective_throughput`; the two no-draft rows are labeled
+`ngram_no_draft_direct_fallback`. Those no-draft rows are Qwen Coder Next at
+128 prompt tokens and Qwen 3.5 9B at 512 prompt tokens, which are outside the
+concise README snapshot. Public docs should keep direct baseline rows visible
+beside the default n-gram row.
 
 The strongest user-facing case for n-gram acceleration is coding-shaped output
 with repeated local structure: completion, edit loops, structured diffs,

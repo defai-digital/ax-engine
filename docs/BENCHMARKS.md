@@ -4,14 +4,13 @@ AX Engine keeps benchmarking deliberately split by evidence type. A result is
 useful only when the workload, runtime route, reference engine, host, model,
 sampling policy, and artifact schema are explicit.
 
-Measured results for each tested model are summarized in the root `README.md`
-under the **Performance** section. Methodology and interpretation for the
-current public table live in `docs/PERFORMANCE.md`. The current README table is
-backed by
-`benchmarks/results/mlx-inference/2026-05-12-production-build-readme-refresh/`.
-Older result sets remain useful diagnostic history, but they should not be
-described as the current public table unless README is rolled back to those
-artifacts.
+The root `README.md` summarizes the high-traffic Gemma 4 and Qwen 3.6 rows
+under the **Performance** section. Methodology, interpretation, evidence
+boundaries, and additional benchmark tables live in `docs/PERFORMANCE.md`. The
+current README snapshot is backed by
+`benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/`. Older result
+sets remain useful diagnostic history, but they should not be described as the
+current public table unless README is rolled back to those artifacts.
 
 ## Which Tool To Use
 

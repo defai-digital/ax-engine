@@ -18,25 +18,13 @@
 AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and
 benchmark toolkit for Apple Silicon.
 
-AX Engine runs supported Apple Silicon model families on MLX, and keeps
-unsupported or non-MLX models reachable through explicit `mlx-lm` and
+AX Engine runs direct-support MLX model families on Apple Silicon, and keeps
+other MLX text models or non-MLX models reachable through explicit `mlx-lm` and
 `llama.cpp` compatibility routes. Users get one AX server, SDK, and benchmark
-surface while model coverage grows.
+surface while repo-owned model coverage grows.
 
 > Requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB RAM minimum**.
 > Rust 1.85+ for source builds.
-
-### Supported Hardware
-
-AX Engine targets high-memory Apple Silicon Macs running **macOS 14 (Sonoma) or later**.
-
-| Machine | Minimum spec | Suggested spec |
-|---|---|---|
-| Mac Mini | M4 Pro, 32 GB | M4 Pro, 64 GB |
-| MacBook Pro 14″ / 16″ | M2 Pro / M2 Max, 32 GB | M3 Max, 96 GB |
-| Mac Studio | M2 Max / M2 Ultra, 32 GB | M4 Max, 96 GB |
-
-M3, M4, M5 chip variants are supported across all three lines. M1 is not supported. M2 base chip (max 24 GB) is below the 32 GB minimum.
 
 ## 30-Second Setup
 
@@ -77,7 +65,26 @@ with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
 See [Getting a Model](#getting-a-model) for all paths including raw HF checkpoints,
 and see [AX Engine Manager](docs/MANAGER.md) for the full web workflow.
 
-## Why AX Engine
+## Typical Hardware Stack ([hardware FAQ](docs/FAQ.md#what-hardware-does-ax-engine-support))
+
+For local agent and chatbot workloads, AX Engine is a better fit for a small
+model portfolio than for one model serving every workflow. See the
+[FAQ model-stack guidance](docs/FAQ.md#what-model-stack-should-i-run-on-high-memory-apple-silicon)
+for the full recommendation.
+
+| Hardware | Recommended memory | Best fit |
+|---|---:|---|
+| Mac mini M4 Pro | 64 GB RAM | Compact always-on local chatbot and agent server |
+| MacBook Pro M5 Max | 128 GB RAM | Portable high-throughput chatbot, agent, and coding stack |
+| Mac Studio M3 Ultra | 256 GB RAM | Larger local model portfolio, longer contexts, and heavier parallel workloads |
+
+| Role | Recommended model | Setup | App | Why |
+|---|---|---|---|---|
+| Default chatbot | Gemma 4 26B-A4B / 31B | 4-bit or 6-bit, 16K-32K | [ax-studio](https://github.com/defai-digital/ax-studio) | General assistant path for reasoning, chat, JSON/function calling, and on-device agent workflows |
+| General agentic model | Qwen3.6-35B-A3B | 4-bit or 6-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
+| Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
+
+## Why AX Engine ([FAQ](docs/FAQ.md#is-ax-faster-because-it-replaces-mlx-kernels))
 
 AX Engine gives local inference work a stable runtime contract:
 
@@ -86,30 +93,28 @@ AX Engine gives local inference work a stable runtime contract:
   determinism, and performance evidence.
 - `ax-engine-sdk`, Python bindings, and the JavaScript client provide
   thin integration surfaces over the same backend-resolution rules.
-- Repo-owned MLX execution is optimized for supported Qwen and Gemma families.
+- Repo-owned MLX execution is tracked in
+  [Direct Support Models](#direct-support-models-support-llm-models); delegated
+  routes stay separate from AX-owned throughput claims.
 - Delegated `mlx_lm.server` and `llama.cpp` routes cover explicit
   compatibility cases without turning delegated results into AX-owned
   throughput claims.
 
 [mlx_lm](https://github.com/ml-explore/mlx-lm) and
 [mlx-swift-lm](https://github.com/ml-explore/mlx-swift) remain the canonical
-MLX references. AX Engine compares against them, uses them as compatibility
-routes when needed, and owns the runtime layer around supported workloads:
-request lifecycle, scheduling, KV/cache policy, n-gram acceleration, and
-auditable benchmark artifacts.
+MLX references. AX Engine compares against both and keeps `mlx_lm.server` as
+the explicit delegated compatibility route when AX does not yet have a
+repo-owned graph.
 
-For supported transformer families on Apple Silicon, the AX-owned runtime layer
-can produce higher effective throughput than the reference MLX runtimes on
-matching benchmark shapes:
+For measured direct-support transformer families on Apple Silicon, the AX-owned
+runtime layer can produce higher effective throughput than the reference MLX
+runtimes on matching benchmark shapes:
 
 - **N-gram acceleration** reaches up to 3.1x mlx_lm decode
-  throughput on high-hit benchmark rows — with no second draft model and no
-  model changes
-- **Coding-shaped decode is a natural fit when local repetition exists**:
-  completion, edit loops, structured diffs, JSON/tool output, imports,
-  indentation, and repeated identifiers often contain patterns that n-gram
-  acceleration can predict and the target model can verify. Novel, high-entropy,
-  or very short coding requests may see little or no gain.
+  throughput on high-hit benchmark rows with no second draft model
+- **Coding-shaped decode is a natural fit when local repetition exists**,
+  including completion, edit loops, structured diffs, JSON/tool output, imports,
+  indentation, and repeated identifiers
 - **AX-owned request lifecycle** provides deterministic, auditable scheduling,
   KV block management, and prefix reuse that upstream Python runtimes do not
   expose as stable contracts
@@ -121,46 +126,14 @@ matching benchmark shapes:
   determinism, route identity, and regression across checked-in manifests, not
   just throughput snapshots
 
-The claim is not that AX has faster MLX tensor kernels. MLX still compiles and
-executes the model graph. AX improves the runtime behavior above MLX: how
-tokens are speculated, how requests are scheduled, and how KV state is
-materialized. That runtime layer is what produces higher effective throughput
-on supported workloads.
-
-## v4.9.0 Serving Roadmap
-
-AX Engine v4.9.0 continues the serving-oriented runtime push opened in
-v4.8.0 (Apache License 2.0). This release ships the disk-backed L2 prefix
-cache, MLA warm-extend correctness, TurboQuant compressed-decode telemetry,
-and a per-request MLA prefill chunk decision that restores GLM-4.7-Flash
-cold prefill throughput without losing warm-extend snapshot equivalence
-inside a single session.
-
-The next optimization tracks are:
-
-- **KV cache memory layout**: paged or block-aligned KV storage, better
-  per-layer locality, fewer KV copies or transposes, and cache reuse between
-  speculative draft and target verification paths.
-- **Apple unified memory advantage**: zero-copy weight mapping,
-  memory-mapped quantized weights, direct Metal buffer reuse, fewer temporary
-  tensor materializations, and persistent request buffers to improve cold
-  start, TTFT, and memory pressure.
-- **MoE expert locality optimization**: expert-weight cache scheduling, token
-  grouping by expert, lower dispatch overhead, likely-expert prefetching,
-  router/dispatch fusion, and top-k routing memory-pattern tuning.
-- **Speculative decoding software tuning**: adaptive n-gram length, dynamic
-  draft windows, acceptance-rate prediction, fallback thresholds,
-  prompt-pattern-aware speculation, and better cache sharing between draft and
-  verify paths.
-- **Kernel fusion and quantization path**: fused RMSNorm/matmul, attention
-  projection fusion, fused dequant/matmul, group-wise quantization kernels,
-  Apple AMX/Metal mixed paths, and prepacked weight layouts.
+See the [FAQ](docs/FAQ.md#is-ax-faster-because-it-replaces-mlx-kernels) for
+the boundary between MLX kernels and AX-owned runtime behavior.
 
 ## Runtime Paths
 
 | Path | Use it for | Current scope |
 |---|---|---|
-| Repo-owned MLX runtime | Supported Qwen/Gemma MLX model artifacts and repo-owned performance claims | Local Apple Silicon inference, token-based server/SDK requests, benchmarked direct and n-gram acceleration modes |
+| Repo-owned MLX runtime | Direct-support MLX model families and repo-owned performance claims when backed by benchmark artifacts | Local Apple Silicon inference, token-based server/SDK requests, benchmarked direct and n-gram acceleration modes |
 | `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | Blocking and SSE text generation through a user-provided `mlx_lm.server`; `/v1/generate`, `/v1/generate/stream`, and OpenAI-compatible completion/chat text endpoints. Streaming is delegated text compatibility evidence, not repo-owned token/KV performance |
 | `llama_cpp` | GGUF and non-MLX local inference | Delegated llama.cpp server/CLI compatibility; route-contract evidence, not repo-owned MLX throughput |
 
@@ -173,131 +146,66 @@ compatible today, see `docs/API-COMPATIBILITY.md`.
 
 ## Design
 
-### Execution Layer
+The repo-owned MLX path uses MLX directly for tensor operations through the
+official `mlx-c` C API. MLX owns the Apple-maintained Metal kernels; AX owns the
+runtime behavior above the graph: request lifecycle, scheduling, KV/cache
+policy, n-gram acceleration, manifests, and benchmark evidence.
 
-The repo-owned MLX path uses MLX directly for tensor operations via the official
-`mlx-c` C API. Matrix multiply, quantized matmul, attention, RMSNorm, and RoPE
-go through MLX's Apple-maintained Metal kernels. AX owns the runtime behavior
-above that graph.
+Design details live in the focused docs:
+[Scheduler](docs/SCHEDULER.md) ·
+[KV Cache](docs/KV-CACHE.md) ·
+[Long Context](docs/LONG-CONTEXT.md) ·
+[Benchmark Design](docs/BENCH-DESIGN.md) ·
+[FAQ](docs/FAQ.md#is-ax-faster-because-it-replaces-mlx-kernels).
 
-What AX Engine adds around model execution:
+## Direct Support Models ([support LLM models](docs/SUPPORTED-MODELS.md))
 
-- **N-gram acceleration**: a bigram/trigram table built at runtime predicts
-  up to 4 draft tokens per step. The target model verifies them in one forward
-  pass over `[last_token, D1, …, D_n]`. An EMA accept-rate gate (α=0.1,
-  threshold 0.5) disables acceleration after a bad sequence and re-enables when
-  the table recovers. No second draft model required.
-- **Scheduler and KV manager**: request lifecycle, batching, memory-blocked
-  recovery, and execution planning live in `ax-engine-core` — deterministic,
-  async-free, no framework dependencies. See [`docs/SCHEDULER.md`](docs/SCHEDULER.md)
-  and [`docs/KV-CACHE.md`](docs/KV-CACHE.md) for design details.
-- **Chunked KV cache**: keys and values grow in pre-allocated backing buffers via
-  `slice_update`. Draft rollback is O(1) — only the sequence-length
-  pointer moves. After each decode step, all KV buffers are evaluated with the
-  output token to flatten the lazy-eval graph and prevent O(N²) graph depth.
-- **Graph compilation**: `mlx_enable_compile()` is called once at startup so
-  Metal shader compilation and dispatch tables are reused across steps with the
-  same shape — equivalent to `mx.compile()` in mlx_lm.
-- **GatedDelta linear attention**: hybrid architectures (Qwen3.5, Qwen3-Next)
-  use a custom SIMD-group Metal kernel for the recurrent GatedDelta state update.
-  All other ops in the same models (dense attention, FFN, projections) delegate
-  to MLX's hardware-optimized paths.
+Direct support means AX has a repo-owned `ax-engine-mlx` graph for the model
+family and loads MLX safetensors through the AX manifest path. Other MLX text
+models can still use the explicit `mlx_lm_delegated` compatibility route, but
+delegated rows are not AX-owned throughput claims.
 
-### Memory Layer
+| Family | Direct model IDs | Current scope | Architecture notes |
+|---|---|---|---|
+| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6/8-bit weights where available | Dense, per-layer embedding, and MoE variants; sliding-window + full attention, K=V full-attention layers, logit softcapping |
+| Gemma 3 | `gemma-3-1b-it` through `gemma-3-27b-it` | Repo-owned MLX runtime | GeGLU dense FFN; per-head QK norm; sliding-window local + global attention interleaving; embedding scale |
+| Qwen 3.5 | `Qwen3.5-9B` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
+| Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4/5/6/8-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
+| Qwen 3 | `Qwen3-0.6B` through `Qwen3-32B` | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants |
+| GLM 4.7 Flash | `mlx-community/GLM-4.7-Flash-4bit` | Repo-owned MLX runtime after community-model promotion | MLA attention, sigmoid router, latent-KV cache support |
+| LLaMA 3 / 3.1 / 3.2 / 3.3 | `Llama-3.1-8B-Instruct` and related | Repo-owned MLX runtime | SwiGLU dense FFN; LLaMA-3 RoPE scaling |
+| LLaMA 4 | `Llama-4-Scout`, `Llama-4-Maverick` | Repo-owned MLX runtime | iRoPE; interleaved MoE with frequency-based dispatch; attention temperature scaling |
+| Mistral 3 / Ministral | `Mistral-Small-3.1`, `Ministral-3B`, `Ministral-8B` | Repo-owned MLX runtime | SwiGLU dense FFN; sliding-window attention on all layers |
+| Mixtral | `Mixtral-8x7B-Instruct`, `Mixtral-8x22B-Instruct` | Repo-owned MLX runtime | SWA + sparse top-2 MoE; `block_sparse_moe` weights |
+| DeepSeek V3 / V3.2 | `DeepSeek-V3`, `DeepSeek-V3-0324` | Repo-owned MLX runtime | MLA attention; sigmoid MoE routing with optional correction bias; shared experts |
 
-`mlx_set_wired_limit(recommendedMaxWorkingSetSize)` wires model weights into GPU
-memory at startup, preventing Metal from paging them between requests. A
-dedicated GPU stream avoids cross-stream synchronization on the shared default
-stream.
+Direct-support models use MLX safetensors format with the AX
+`model-manifest.json` descriptor. Each supported architecture has a hand-written
+forward pass in `ax-engine-mlx`. Adding a new architecture means implementing
+the model graph, not wiring up a generic loader.
 
-See [`docs/KV-CACHE.md`](docs/KV-CACHE.md) for a detailed description of the
-two-layer KV cache architecture, prefix caching coordination, model-specific
-cache variants, and memory pressure handling. See
-[`docs/LONG-CONTEXT.md`](docs/LONG-CONTEXT.md) for the public long-context
-claim boundary, including cold-prefill scaling, hot-prefix reuse, multi-turn
-session behavior, and current serving limitations.
-
-## Supported Models
-
-| Family | Model | Architecture notes |
-|---|---|---|
-| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-26b-a4b-it, gemma-4-31b-it | Dense, per-layer embedding, and MoE variants; MLX affine 4/5/6/8-bit weights, sliding-window + full attention, K=V full-attention layers, logit softcapping |
-| Qwen 3.5 | Qwen3.5-9B | Linear attention + MoE FFN, attn_output_gate per-head interleaving |
-| Qwen 3.6 / Coder Next | Qwen3.6-35B-A3B 4/5/6/8-bit MLX, Qwen3-Coder-Next-4bit | `qwen3_next` architecture: GatedDelta linear attention (3 of every 4 layers) + full attention with per-head sigmoid gate (every 4th layer) + sparse top-k MoE with shared expert |
-
-All models use MLX safetensors format with the AX `model-manifest.json`
-descriptor. Each supported architecture has a hand-written forward pass in
-`ax-engine-mlx`. Adding a new architecture means implementing the model graph,
-not wiring up a generic loader.
-
-Community-model checks are tracked by evidence level. For example,
-`mlx-community/GLM-4.7-Flash-4bit` is now a repo-owned MLX runtime path after
-GLM MLA attention, sigmoid router, latent-KV cache support, and AX server
-benchmarks landed. Before promoting another architecture, run
+Community-model checks are tracked by evidence level. Before promoting another
+architecture, run
 `scripts/probe_mlx_model_support.py --model-dir <model-dir>`; a model should
 report `repo_owned_runtime_ready` only when its manifest, local reference files,
 and runtime path are all present.
 
-## Limitations
-
-- **GatedDelta prefill (Qwen3.5)**: The recurrent state update in GatedDelta
-  linear-attention layers serializes over time steps and cannot be parallelized.
-  On **Qwen3.5 9B** this puts AX prefill ~9% behind mlx-swift-lm at 512 tokens;
-  decode throughput is unaffected. **Qwen3-Next (Coder Next) is not affected** —
-  AX prefill exceeds mlx-swift-lm by 2× on that architecture because the sparse
-  MoE forward path dominates the runtime, not the GatedDelta layers.
-- **Raw HuggingFace weights**: ax-engine loads MLX community (pre-sanitized)
-  weights only. For hybrid architectures (Qwen3.5, Qwen3-Next), loading an
-  unsanitized checkpoint now raises a hard error — norm weight mean is sampled at
-  load time and a clear remediation message is shown. Convert first with
-  `mlx_lm.convert`, or download a pre-sanitized model from mlx-community. See
-  [Getting a Model](#getting-a-model).
-- **N-gram acceleration rows**: effective-throughput measurements, not raw
-  model-kernel speedups. The n-gram hit rate is prompt- and output-pattern
-  dependent. Coding-shaped workloads with repeated local structure are the
-  intended high-value case; random, high-entropy, very short, or deliberately
-  diverse outputs may see little benefit, and the runtime backs off toward the
-  direct path when the accept rate drops below threshold.
-- **TurboQuant KV compression**: experimental and off by default. The
-  `turboquant-shadow` and `turboquant-fused-experimental` modes are evidence and
-  route-telemetry surfaces, not production support claims. The correctness quality
-  gate (K8/V4 fused path, zero fallbacks) now passes for Gemma 4 E2B; the
-  remaining blocker is a long-context performance promotion artifact (≥8192-token
-  context) required before public docs can drop the experimental label. Run
-  `scripts/check_turboquant_promotion_readiness.py` to see the current gate
-  status before changing any public support wording.
-
-## Performance ([methodology](docs/PERFORMANCE.md))
+## Performance ([full benchmark docs](docs/BENCHMARKS.md))
 
 <!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/ -->
-The README generation-model tables are a provenance-tracked composite from
-`benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/`. This 14-model
-AX refresh reruns the direct and n-gram AX rows on the post-W1.3 binaries and
-carries forward the same-host `mlx_lm` / `mlx_swift_lm` reference rows from
-`benchmarks/results/mlx-inference/2026-05-13-full-fresh/` inside each artifact.
-All rows use the same prompt contract, generation=128 shape, prompt SHA checks,
-a 15-second cooldown between trials, and production-build binaries (LTO thin,
-`codegen-units=1`, `panic=abort`, stripped debuginfo). Later fast-path
-verification artifacts are tracked separately and are not mixed into these
-public tables.
+The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
+visible and leaves the full benchmarking contract, longer tables, caveats, and
+reproduction method in
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) and
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
-Testing condition note: MLX quantization labels omit the shared storage
-settings; all rows in these tables use group=64 affine quantized weights unless
-the row label explicitly says otherwise.
-
-**Prefill** — Every row in the current table is at or above mlx_lm prefill: AX engine prefill spans +2.1% to +185.4% vs mlx_lm. The weakest current row is Gemma 4 E2B 5-bit at 512 tokens, while the strongest current row is Qwen Coder Next at 128 tokens.
-
-**Decode** — Direct decode (n-gram disabled) spans -14.4% to +22.9% vs mlx_lm across the current table. With n-gram acceleration (the default), current rows span +0.0% to +207.2% vs mlx_lm; the only row that holds flat against mlx_lm is Qwen Coder Next at 128 prompt tokens, which falls back to direct mode (no drafts produced).
-
-**TTFT** — AX TTFT is lower than mlx_lm on every row of the current table
-(28/28). The earlier-refresh Gemma sliding-window regression is gone: the
-sliding-window mask fix that removed redundant O(seq²) mask arrays for in-window
-prefill is now in the captured binary, so 512-token Gemma TTFT now wins
-end-to-end. `mlx_lm` TTFT is derived from reported prefill throughput; AX TTFT
-is measured directly from per-step runner timing.
-
-<!-- llama-cpp-column-disclaimer -->
-**`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are NOT prompt-hash parity with the other columns. The intent is rough side-by-side context against a well-known third-party Metal runtime, not head-to-head comparison. MLX bit-widths are mapped to the nearest standard GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0; UD-MLX → unsloth UD-Q4_K_XL). No percentage delta is shown for this column because the prompt is not shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
+These rows are a provenance-tracked composite from
+`benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/`. All rows use
+the same prompt contract, generation=128 shape, prompt SHA checks, 5
+repetitions, a 15-second cooldown between trials, and production-build binaries.
+Percentages are versus `mlx_lm`. The `llama.cpp Metal*` column is a
+shape-compatible external reference; it does not share prompt-token hashes with
+the MLX rows.
 
 ### Prefill throughput (tok/s) — percentages vs mlx_lm
 
@@ -317,8 +225,6 @@ is measured directly from per-step runner timing.
 |         |         | 512 | 3,387.1 | 2,090.9 | 2,938.6 (+40.5%) | **3,149.3 (+50.6%)** |
 | Gemma 4 31B | 4-bit | 128 | 511.7 | 374.7 | 653.6 (+74.4%) | **657.3 (+75.4%)** |
 |         |         | 512 | 651.7 | 653.7 | 817.6 (+25.1%) | **783.6 (+19.9%)** |
-| Qwen 3.5 9B | 4-bit | 128 | 1,790.5 | 962.5 | 1,781.1 (+85.0%) | **2,291.0 (+138.0%)** |
-|         |         | 512 | 2,470.2 | 1,797.9 | 2,426.6 (+35.0%) | **3,042.8 (+69.2%)** |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit | 128 | 1,711.4 | 575.0 | 1,032.6 (+79.6%) | **1,134.4 (+97.3%)** |
 |         |         | 512 | 3,137.6 | 1,702.2 | 2,589.5 (+52.1%) | **2,842.1 (+67.0%)** |
 | Qwen 3.6 35B A3B | MLX 5-bit | 128 | 1,563.4 | 499.2 | 919.1 (+84.1%) | **1,122.3 (+124.8%)** |
@@ -327,23 +233,12 @@ is measured directly from per-step runner timing.
 |         |         | 512 | 2,988.3 | 1,440.3 | 2,404.2 (+66.9%) | **2,622.9 (+82.1%)** |
 | Qwen 3.6 35B A3B | MLX 8-bit | 128 | 1,664.2 | 406.4 | 667.9 (+64.3%) | **1,038.4 (+155.5%)** |
 |         |         | 512 | 3,122.8 | 1,298.5 | 2,373.6 (+82.8%) | **2,606.6 (+100.7%)** |
-| Qwen Coder Next | 4-bit | 128 | 1,199.7 | 314.0 | 522.9 (+66.5%) | **896.1 (+185.4%)** |
-|         |         | 512 | 2,000.5 | 959.3 | 1,811.2 (+88.8%) | **1,852.6 (+93.1%)** |
-| GLM 4.7 Flash | 4-bit | 128 | 1,368.2 | 484.8 | 962.0 (+98.4%) | **926.6 (+91.1%)** |
-|         |         | 512 | 2,803.0 | 1,591.8 | 2,526.4 (+58.7%) | **2,504.3 (+57.3%)** |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
-Higher is better. The direct AX column disables n-gram acceleration and serves
-as the same-policy baseline. The n-gram column is the default AX decode policy
-and is the right column for user-facing throughput expectations. All rows come
-from the provenance-tracked sources named above. Qwen Coder Next n-gram is
-effective at 512 prompt tokens
-(`ngram_acceleration_effective_throughput`, 113.3 tok/s, +11.1% vs mlx_lm); the 128-token
-row falls back to direct mode (no drafts produced, `ngram_no_draft_direct_fallback`).
-Qwen 3.5 9B n-gram is effective at 128 tokens (206.0 tok/s, +143.8% vs mlx_lm); the
-512-token row falls back to direct mode, though effective throughput still exceeds mlx_lm
-(101.1 tok/s, +20.4%).
+Higher is better. `ax direct baseline` disables n-gram acceleration.
+`ax default n-gram` is the default AX decode policy and reports observed
+effective throughput, not raw model-kernel speed.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | mlx_swift_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|---:|
@@ -361,8 +256,6 @@ Qwen 3.5 9B n-gram is effective at 128 tokens (206.0 tok/s, +143.8% vs mlx_lm); 
 |         |         | 512 | 107.7 | 124.9 | 115.8 (-7.2%) | 117.6 (-5.9%) | **233.2 (+86.7%)** |
 | Gemma 4 31B | 4-bit | 128 | 24.5 | 29.0 | 28.4 (-2.2%) | 27.8 (-4.1%) | **65.4 (+125.7%)** |
 |         |         | 512 | 24.1 | 28.4 | 27.6 (-2.7%) | 27.0 (-5.1%) | **63.9 (+125.0%)** |
-| Qwen 3.5 9B | 4-bit | 128 | 76.5 | 84.5 | 81.6 (-3.4%) | **103.6 (+22.6%)** | **205.6 (+143.3%)** |
-|         |         | 512 | 77.1 | 83.9 | 79.3 (-5.5%) | **103.2 (+22.9%)** | **101.2 (+20.5%)** |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit | 128 | 89.7 | 120.8 | 121.7 (+0.8%) | **123.3 (+2.0%)** | **284.2 (+135.2%)** |
 |         |         | 512 | 90.9 | 120.6 | 119.6 (-0.8%) | **122.4 (+1.5%)** | **281.2 (+133.2%)** |
 | Qwen 3.6 35B A3B | MLX 5-bit | 128 | 98.5 | 125.7 | 123.5 (-1.7%) | **137.2 (+9.1%)** | **284.2 (+126.1%)** |
@@ -371,18 +264,12 @@ Qwen 3.5 9B n-gram is effective at 128 tokens (206.0 tok/s, +143.8% vs mlx_lm); 
 |         |         | 512 | 95.5 | 114.4 | 110.1 (-3.7%) | **119.6 (+4.6%)** | **258.4 (+125.9%)** |
 | Qwen 3.6 35B A3B | MLX 8-bit | 128 | 90.3 | 105.1 | 102.2 (-2.8%) | **108.0 (+2.8%)** | **263.1 (+150.4%)** |
 |         |         | 512 | 90.1 | 104.4 | 100.7 (-3.5%) | **107.2 (+2.7%)** | **259.4 (+148.5%)** |
-| Qwen Coder Next | 4-bit | 128 | 80.1 | 100.9 | 100.9 (+0.1%) | **103.0 (+2.1%)** | **100.9 (+0.0%)** |
-|         |         | 512 | 82.3 | 102.0 | 98.6 (-3.3%) | **102.5 (+0.5%)** | **114.8 (+12.6%)** |
-| GLM 4.7 Flash | 4-bit | 128 | 92.4 | 104.6 | 99.6 (-4.7%) | 100.5 (-3.9%) | **272.6 (+160.7%)** |
-|         |         | 512 | 92.7 | 100.8 | 95.4 (-5.3%) | 99.7 (-1.0%) | **266.2 (+164.1%)** |
 
 ### Time to first token (ms) — generation=128 tokens, temp=0
 
 Lower is better. `mlx_lm` and `mlx_swift_lm` values are derived from reported
-prefill throughput (`prompt_tokens / prefill_tok_s × 1000 ms`). AX values are
-measured directly from per-step runner timing in the SSE event stream. Source:
-the provenance-tracked sources named above. Later fast-path verification
-artifacts are tracked separately and are not mixed into this table.
+prefill throughput. AX values are measured directly from per-step runner timing
+in the SSE event stream.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | mlx_swift_lm | ax engine |
 |---|---|---:| ---: |---:|---:|---:|
@@ -400,8 +287,6 @@ artifacts are tracked separately and are not mixed into this table.
 |         |         | 512 | 151.2 | 244.9 | 174.2 (-28.8%) | **162.6 (-33.6%)** |
 | Gemma 4 31B | 4-bit | 128 | 250.2 | 341.6 | 195.8 (-42.7%) | **194.7 (-43.0%)** |
 |         |         | 512 | 785.6 | 783.2 | 626.3 (-20.0%) | **653.4 (-16.6%)** |
-| Qwen 3.5 9B | 4-bit | 128 | 71.5 | 133.0 | 71.9 (-46.0%) | **55.9 (-58.0%)** |
-|         |         | 512 | 207.3 | 284.8 | 211.0 (-25.9%) | **168.3 (-40.9%)** |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit | 128 | 74.8 | 222.6 | 124.0 (-44.3%) | **112.8 (-49.3%)** |
 |         |         | 512 | 163.2 | 300.8 | 197.7 (-34.3%) | **180.1 (-40.1%)** |
 | Qwen 3.6 35B A3B | MLX 5-bit | 128 | 81.9 | 256.4 | 139.3 (-45.7%) | **114.0 (-55.5%)** |
@@ -410,75 +295,10 @@ artifacts are tracked separately and are not mixed into this table.
 |         |         | 512 | 171.3 | 355.5 | 213.0 (-40.1%) | **195.2 (-45.1%)** |
 | Qwen 3.6 35B A3B | MLX 8-bit | 128 | 76.9 | 314.9 | 191.7 (-39.1%) | **123.3 (-60.9%)** |
 |         |         | 512 | 164.0 | 394.3 | 215.7 (-45.3%) | **196.4 (-50.2%)** |
-| Qwen Coder Next | 4-bit | 128 | 106.7 | 407.7 | 244.8 (-40.0%) | **142.8 (-65.0%)** |
-|         |         | 512 | 255.9 | 533.7 | 282.7 (-47.0%) | **276.4 (-48.2%)** |
-| GLM 4.7 Flash | 4-bit | 128 | 93.6 | 264.0 | 133.1 (-49.6%) | **138.1 (-47.7%)** |
-|         |         | 512 | 182.7 | 321.7 | 202.7 (-37.0%) | **204.4 (-36.4%)** |
-### Embedding throughput
 
-ax-engine matches `mlx-lm` on Qwen3-Embedding 4B and 8B and is
-within ~10% on 0.6B (small-model Python/PyO3 overhead). Use the
-batched API — `embed_batch_array` in Python, `embed_batch_flat`
-in Rust, or `{"input": [[ids], ...]}` over HTTP. Single-sentence
-loops are 2–3× slower in both backends.
-
-Source: `benchmarks/results/embedding/2026-05-15-postfix/`.
-
-#### In-process batched (sustained, hot-loop)
-
-| Model | mlx-lm | ax-engine-py | ax-engine Rust |
-|---|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 9,629 | 8,780 | 8,785 |
-| Qwen3-Embedding 4B 4-bit | 2,370 | 2,374 | 2,374 |
-| Qwen3-Embedding 8B 4-bit DWQ | 1,471 | 1,443 | 1,449 |
-
-Median tok/s, 5 warmup + 15 timed trials, no cooldown. 10-sentence
-corpus with lengths [10,15,13,8,3,8,10,8,10,10], `last` pooling,
-l2-normalized.
-
-#### HTTP serving (`/v1/embeddings`)
-
-Three serving contracts on the same 10-sentence corpus:
-
-| Model | Sequential | Concurrent (microbatcher) | Batched POST |
-|---|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 320 | 1,837 | 3,950 |
-| Qwen3-Embedding 4B 4-bit | 240 | 1,203 | 1,809 |
-| Qwen3-Embedding 8B 4-bit DWQ | 184 | 902 | 1,179 |
-
-- **Batched POST** `{"input": [[ids], ...]}` is the fastest path.
-- **Concurrent** single-input POSTs are coalesced server-side by
-  `EmbeddingMicroBatcher` (20 ms window in this measurement). Use
-  this when the caller can't pre-batch.
-- **Sequential** is the worst case — every POST round-trips through
-  the GPU on its own.
-
-#### Cold start (session construction)
-
-| Model | Default | `AX_MMAP_WEIGHTS=1` |
-|---|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 161 ms | 205 ms (+27%) |
-| Qwen3-Embedding 4B 4-bit | 219 ms | 384 ms (+75%) |
-| Qwen3-Embedding 8B 4-bit DWQ | 279 ms | 603 ms (+116%) |
-
-Default loader (`mlx_load_safetensors`) is the recommended choice
-on warm OS page cache. `AX_MMAP_WEIGHTS=1` selects a Rust mmap +
-`mlx_array_new_data` path that may be faster on true-cold disk
-(where the C loader's userspace `read()` pipeline costs more than
-mmap-on-demand) but is slower on warm cache because it adds JSON-
-header parsing and per-tensor registration overhead on top of the
-required copy. See
-[`docs/EMBEDDING_COLDSTART.md`](docs/EMBEDDING_COLDSTART.md)
-for the true-cold (post-`sudo purge`) measurement procedure and the
-default-on criteria.
-
-#### Reproducing
-
-```bash
-bash scripts/bench_embedding_readme.sh
-```
-
-Detailed methodology: [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
+Embedding benchmarks are kept out of this README summary; see
+[`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md) for embedding throughput, serving,
+and cold-start measurements.
 
 ## Installation
 
@@ -877,6 +697,19 @@ Public documentation is in `docs/`. Canonical benchmark manifests are in
 [KV Cache](docs/KV-CACHE.md) ·
 [Benchmarking](docs/BENCH-DESIGN.md) ·
 [Serving Benchmarks](docs/SERVING-BENCHMARKS.md)
+
+## Limitations
+
+- **GatedDelta prefill (Qwen3.5)**: Qwen3.5 prefill can trail mlx-swift-lm on
+  longer prompts; decode and Qwen3-Next are not affected in the same way.
+- **Raw HuggingFace weights**: use pre-sanitized MLX community weights or
+  convert first with `mlx_lm.convert`.
+- **N-gram acceleration rows**: effective-throughput measurements, not raw
+  model-kernel speedups.
+- **TurboQuant KV compression**: experimental and off by default.
+
+See the [FAQ limitations entry](docs/FAQ.md#what-are-the-current-limitations)
+for details.
 
 ## Contributing
 

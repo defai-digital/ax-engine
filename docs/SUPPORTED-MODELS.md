@@ -1,192 +1,169 @@
-# Supported Models
+# Supported LLM Models
 
-AX Engine routes inference through three labeled shipping paths:
+AX Engine supports LLMs through three explicit runtime paths. The path matters
+because it defines who runs the model graph, which API features are available,
+and what benchmark claims are allowed.
 
-- repo-owned MLX runtime for supported Apple Silicon model artifacts
-- explicit `mlx-lm` delegated compatibility for unsupported MLX text models
-- `llama.cpp` delegated compatibility for GGUF and non-MLX inference
-
-## Support Strategy
-
-AX does not treat model support as a simple yes-or-no list.
-
-Instead, support should be understood through:
-
-- support tier
-- selected backend
-- capability set
-
-This matters because a future model may be:
-
-- available through the repo-owned MLX runtime
-- available through the explicit `mlx-lm` delegated path
-- available through the delegated `llama.cpp` path
-- not supported yet
-
-The current default route is:
-
-- explicit repo-owned MLX requests route to `mlx`
-- explicit `mlx_lm_delegated` routes to a user-provided `mlx_lm.server`
-- all non-MLX inference routes to `llama.cpp`
-- local `.gguf` model paths route to `llama.cpp`
-- retired AX native mode is no longer a supported user-facing inference mode
-
-The current routing decision is recorded in the private ADR set.
-
-## Runtime Baseline
-
-The repo-owned MLX runtime targets Apple Silicon Macs where the MLX runtime and
-AX Engine's model graph are both available.
-
-This means:
-
-- repo-owned MLX runtime is the local Mac path for supported model artifacts
-- `mlx_lm_delegated` is compatibility, not the repo-owned runtime
-- non-MLX local inference should use delegated `llama.cpp`
-- support-tier language should not be read as implying broad model support
-- retired AX native mode should not be exposed as a shipping runtime
-- model-inference benchmark claims for repo-owned MLX runtime must come from
-  `scripts/bench_mlx_inference_stack.py` with a matching required
-  `mlx_lm.benchmark` primary baseline and, optionally, an explicit
-  `mlx-swift-lm` `BenchmarkHelpers` / `MLXLMCommon` secondary baseline adapter
-- `ax-engine-bench` scenario, replay, matrix, compare, and autotune artifacts
-  describe workload-contract evidence; delegated llama.cpp and
-  `mlx_lm_delegated` manifests describe route-contract evidence only
-
-## Support Tiers
-
-### `mlx_certified`
-
-Meaning:
-
-- reserved for a future certified repo-owned runtime
-- not currently used for the repo-owned MLX runtime
-- must not be assigned without benchmark and correctness evidence
-
-### `mlx_preview`
-
-Meaning:
-
-- repo-owned MLX runtime is selected
-- MLX runtime behavior is still preview-grade unless explicitly certified
-- not a claim that every MLX model architecture is supported
-
-### `llama_cpp`
-
-Meaning:
-
-- request is handled through `llama.cpp`
-- this should not be read as equivalent to repo-owned runtime feature coverage
-  or performance
-- `vLLM`, `mistral.rs`, and unlabeled MLX adapters are not part of the current
-  shipping inference route
-
-### `mlx_lm_delegated`
-
-Meaning:
-
-- request is handled by an explicitly configured `mlx_lm.server`
-- this is broad MLX text-model compatibility, not repo-owned MLX runtime support
-- supports text-only blocking generation, SSE text generation, and
-  OpenAI-compatible text completion/chat response shapes
-- streaming surfaces forward delegated text deltas through AX envelopes; they are
-  route-contract evidence, not AX-owned token IDs, KV state, or MLX throughput
-- token-array prompts and multimodal inputs fail closed
-- benchmark evidence must be labeled as delegated route-contract evidence, not
-  repo-owned MLX throughput
-- `mlx-swift-lm` remains a secondary benchmark/reference adapter, not the
-  default delegated backend
-
-### `unsupported`
-
-Meaning:
-
-- AX does not currently have a credible path for that model request
-
-## Current Runtime Direction
-
-The current runtime direction is:
-
-- use `mlx` for explicit repo-owned MLX runtime requests
-- use `mlx_lm_delegated` only when explicitly requested for MLX text-model
-  compatibility
-- use `llama_cpp` for all non-MLX inference
-- promote MLX preview models only after reference-runtime comparison,
-  correctness smoke coverage, and public benchmark artifacts are available
-
-## Current Repo-Owned MLX Preview Models
-
-| Family | Model | Evidence |
-|---|---|---|
-| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-26b-a4b-it, gemma-4-31b-it | MLX stack benchmark + workload-contract scenario; E2B affine 4/5/6/8-bit, E4B 4-bit, 26B A4B MoE, and 31B dense have public MLX stack benchmark rows |
-| Qwen 3.5 | Qwen3.5-9B | MLX stack benchmark + workload-contract scenario |
-| Qwen 3.6 | Qwen3.6-35B-A3B 4/5/6/8-bit MLX | MLX stack benchmark, server smoke, Qwen3.5-MoE manifest regression test |
-| Qwen 3 Coder Next | Qwen3-Coder-Next-4bit | MLX stack benchmark, server smoke, Qwen3Next MoE/linear-attention regression tests |
-
-## Reference-Only MLX Community Checks
-
-The following checks answer a narrower question: can upstream `mlx-lm` load and
-benchmark the downloaded community model today? They are not repo-owned AX
-runtime support until the model has an AX `model-manifest.json`, a hand-written
-graph in `ax-engine-mlx`, server smoke coverage, and MLX stack benchmark rows
-that include AX runtime results.
-
-Use `scripts/probe_mlx_model_support.py --model-dir <model-dir>` before
-starting or promoting a repo-owned implementation for a new MLX architecture.
-The probe reads the model config, safetensors index, manifest readiness, and
-local reference implementations, then classifies the artifact as
-repo-owned-runtime-ready, an implementation candidate, known family, partial
-reference, or unknown architecture with explicit blockers.
-
-| Model | Config model_type | Current AX status | Latest local evidence |
+| Path | Use it for | Who runs the model | What the result means |
 |---|---|---|---|
-| `mlx-community/GLM-4.7-Flash-4bit` | `glm4_moe_lite` | Repo-owned MLX runtime ready | `mlx_lm.benchmark`, `mlx_swift_lm`, refreshed `ax_engine_mlx` direct, and `ax_engine_mlx_ngram_accel` benchmark rows passed in the current README composite; support probe reports `repo_owned_runtime_ready`; latest median AX direct decode is 103.4 tok/s at 128 prompt tokens and 103.5 tok/s at 512 prompt tokens from `benchmarks/results/mlx-inference/2026-05-12-full-fresh-readme-refresh/`; n-gram effective decode is 275.1 tok/s at 128 prompt tokens and 270.6 tok/s at 512 prompt tokens; long-context scaling evidence is still tracked separately |
-| `mlx-community/DeepSeek-V4-Flash-2bit-DQ` | `deepseek_v4` | Fail closed: partial reference only, not repo-owned AX support | Downloaded on 2026-05-06; `mlx_lm.benchmark` failed with `Model type deepseek_v4 not supported`; support probe finds the available SwiftLM port drops compressor/indexer and `tid2eid` hash-routing weights that are present in the checkpoint |
+| Direct support | Model families with a repo-owned `ax-engine-mlx` graph | AX Engine on MLX | AX-owned token/KV/runtime behavior; performance claims still require benchmark artifacts |
+| `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | A user-provided `mlx_lm.server` | AX server/SDK compatibility over delegated text generation; not AX-owned MLX throughput |
+| `llama_cpp` | GGUF models and non-MLX local inference | llama.cpp server or CLI | Delegated route-contract evidence; not AX-owned MLX throughput |
+| Unsupported | Requests with no credible direct or delegated path | None | Fail closed |
 
-## Current Limitations And Problems
+Runtime metadata exposes the selected path through fields such as
+`selected_backend`, `support_tier`, and `resolution_policy`. Preserve those
+labels in benchmark artifacts and user-facing claims.
 
-Public model-inference rows cover the MLX inference-stack prompt shapes used in
-the root README. Long-context serving, continuous batching, and certification
-claims still require their separate promotion artifacts.
-Gemma 4 26B A4B MoE, Gemma 4 E4B, and Gemma 4 E2B 5/6/8-bit rows include both
-`mlx_lm` and admitted `mlx_swift_lm` reference rows.
-N-gram acceleration rows remain effective-throughput measurements from AX's
-n-gram policy and must not be described as raw model-kernel speedups.
+## Direct Support
 
-## Future Model Generations
+Direct support means AX has a hand-written `ax-engine-mlx` model graph and
+loads MLX safetensors through the AX manifest path. AX owns the request
+lifecycle, token/KV handling, direct decode path, n-gram acceleration policy,
+route telemetry, and benchmark artifact attribution for these models.
 
-If a newer model appears in the future, for example a later Qwen or Gemma
-generation, AX should not force an all-or-nothing answer.
+Direct support requires:
 
-Depending on readiness, that model may resolve to:
+- MLX safetensors weights
+- an AX `model-manifest.json`
+- a repo-owned model implementation in `ax-engine-mlx`
+- server or SDK smoke coverage
 
-- `mlx_preview`
-- `mlx_lm_delegated`
-- `llama_cpp`
-- `unsupported`
+Public performance claims additionally require MLX inference-stack benchmark
+evidence with a matching `mlx_lm.benchmark` baseline.
 
-where `mlx_preview` means repo-owned MLX runtime, and `mlx_lm_delegated`
-means upstream `mlx-lm` compatibility through AX surfaces.
+Current direct-support LLM families:
 
-## Not A Broad Model Matrix
+| Family | Direct model IDs | Current scope | Notes |
+|---|---|---|---|
+| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6/8-bit weights where available | Dense, per-layer embedding, and MoE variants; sliding-window + full attention; K=V full-attention layers; logit softcapping |
+| Gemma 3 | `gemma-3-1b-it` through `gemma-3-27b-it` | Repo-owned MLX runtime | GeGLU dense FFN; per-head QK norm; sliding-window local + global attention interleaving; embedding scale (`sqrt(hidden_size)`) |
+| Qwen 3.5 | `Qwen3.5-9B` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
+| Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4/5/6/8-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
+| Qwen 3 | `Qwen3-0.6B` through `Qwen3-32B` | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional sparse MoE variants (e.g. `Qwen3-30B-A3B`) |
+| GLM 4.7 Flash | `mlx-community/GLM-4.7-Flash-4bit` | Repo-owned MLX runtime after community-model promotion | MLA attention; sigmoid router; latent-KV cache support |
+| LLaMA 3 / 3.1 / 3.2 / 3.3 | `Llama-3.1-8B-Instruct`, `Llama-3.2-3B-Instruct`, `Llama-3.3-70B-Instruct` and related | Repo-owned MLX runtime | SwiGLU dense FFN; LLaMA-3 RoPE scaling (`rope_scaling` dict) |
+| LLaMA 4 | `Llama-4-Scout-17B-16E`, `Llama-4-Maverick-17B-128E` | Repo-owned MLX runtime | iRoPE; interleaved MoE with `interleave_moe_layer_step` frequency dispatch; attention temperature scaling; `text_config` nesting |
+| Mistral 3 / Ministral | `Mistral-Small-3.1-24B`, `Ministral-3B`, `Ministral-8B` | Repo-owned MLX runtime | SwiGLU dense FFN; sliding-window attention on all layers |
+| Mixtral | `Mixtral-8x7B-Instruct-v0.1`, `Mixtral-8x22B-Instruct-v0.1` | Repo-owned MLX runtime | SWA + sparse top-2 MoE; `block_sparse_moe` weight layout |
+| DeepSeek V3 / V3.2 | `DeepSeek-V3`, `DeepSeek-V3-0324` | Repo-owned MLX runtime | MLA attention (reuses GLM MLA path); sigmoid MoE routing with optional correction bias; shared experts; `first_k_dense_replace` dense-layer guard |
 
-AX Engine is not trying to support every architecture through the repo-owned
-runtime early. Unsupported models should resolve to a delegated compatibility
-path or to `unsupported`, with that route visible in runtime metadata.
+All direct-support models use MLX safetensors format with the AX
+`model-manifest.json` descriptor. Adding a new direct-support architecture
+means implementing the model graph, not wiring up a generic loader.
 
-Deferred from the main path:
+Before promoting another architecture, run:
 
-- multimodal models
-- hybrid-only architectures
-- MoE-first support
-- broad delegated exceptions that lack route-contract evidence
+```text
+scripts/probe_mlx_model_support.py --model-dir <model-dir>
+```
 
-## Important Note
+A model should report `repo_owned_runtime_ready` only when its manifest, local
+reference files, and runtime path are all present.
 
-This document describes product direction and support strategy, not a universal
-backend guarantee.
-The implementation is still in progress, and support claims must be earned by
-actual benchmark and validation evidence. For MLX support claims, that evidence
-must name the MLX reference runtime, AX decode mode, model identity, prompt
-shape, host readiness state, and whether the row came from the MLX inference
-stack or from an `ax-engine-bench` workload-contract artifact.
+## `mlx_lm_delegated`
+
+Use `mlx_lm_delegated` when upstream `mlx-lm` can serve an MLX text model but
+AX does not yet have a repo-owned graph for that architecture.
+
+This path requires a running `mlx_lm.server`:
+
+```text
+mlx_lm.server --model /path/to/local/mlx-model --host 127.0.0.1 --port 8090
+
+ax-engine-server \
+  --support-tier mlx_lm_delegated \
+  --mlx-lm-server-url http://127.0.0.1:8090
+```
+
+Supported delegated surfaces:
+
+- blocking text generation
+- SSE text generation
+- OpenAI-compatible text completion and chat response shapes
+- text sampling fields forwarded to upstream where supported
+
+Boundaries:
+
+- text-only
+- token-array prompts fail closed
+- multimodal inputs fail closed
+- streamed chunks are delegated text deltas, not AX-owned token IDs
+- KV state and model-kernel throughput belong to upstream `mlx-lm`, not AX
+- benchmark rows must be labeled as delegated route-contract evidence
+
+`mlx-swift-lm` remains a benchmark/reference adapter where admitted by the
+benchmark harness. It is not the default delegated backend.
+
+## `llama_cpp`
+
+Use `llama_cpp` for GGUF models and non-MLX local inference. AX keeps the same
+server, SDK, and benchmark surfaces, but model execution is delegated to
+llama.cpp.
+
+This path can target a running llama.cpp server:
+
+```text
+llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8081
+
+ax-engine-server \
+  --support-tier llama_cpp \
+  --llama-server-url http://127.0.0.1:8081
+```
+
+or a configured llama.cpp CLI path where the SDK/server command supports it.
+
+Supported delegated surfaces depend on the configured llama.cpp adapter, but
+the intended route is local text generation through AX's server and SDK
+contracts.
+
+Boundaries:
+
+- not AX-owned MLX runtime support
+- not prompt-hash parity with MLX rows unless an artifact explicitly proves it
+- benchmark rows are delegated route-contract or shape-compatible external
+  reference evidence
+- performance numbers must not be merged into AX-owned MLX throughput tables
+  without clear labeling
+
+Local `.gguf` paths resolve to `llama_cpp` rather than the repo-owned MLX
+runtime.
+
+## Choosing A Path
+
+| Situation | Choose | Why |
+|---|---|---|
+| You want AX-owned performance and token/KV behavior for a listed family | Direct support | AX owns the MLX graph and runtime policy |
+| You have an MLX text model that `mlx-lm` already serves but AX does not own | `mlx_lm_delegated` | Keeps AX API surfaces while upstream runs the model |
+| You have GGUF weights or a non-MLX local model | `llama_cpp` | llama.cpp is the delegated local inference route |
+| You need multimodal, visual, or unsupported prompt shapes | Unsupported unless explicitly documented elsewhere | Current delegated routes are text-first and fail closed outside their contract |
+
+## Evidence Rules
+
+Do not merge the three paths into one unlabeled model-support or throughput
+table.
+
+| Evidence type | Supports | Does not support |
+|---|---|---|
+| MLX inference-stack artifacts from `scripts/bench_mlx_inference_stack.py` | Direct-support AX-vs-reference performance claims with matching `mlx_lm.benchmark` rows | Broad serving, concurrency, or unsupported-model claims |
+| `ax-engine-bench` scenario/replay/matrix artifacts | Route, correctness, determinism, replay, regression, and delegated contract evidence | Raw model-inference throughput unless explicitly designed for that metric |
+| `mlx_lm_delegated` checks | AX API compatibility with upstream `mlx_lm.server` | AX-owned token IDs, KV state, or MLX throughput |
+| llama.cpp delegated artifacts | Non-MLX route-contract and backend prompt-cache behavior | AX-owned MLX throughput |
+
+For benchmark methodology and artifact contracts, see
+[`BENCHMARKS.md`](BENCHMARKS.md) and [`PERFORMANCE.md`](PERFORMANCE.md).
+
+## Future Models
+
+AX should not force an all-or-nothing answer for new model generations.
+Depending on readiness, a new model may be:
+
+- direct support after repo-owned graph implementation and evidence
+- `mlx_lm_delegated` if upstream `mlx-lm` can serve it as text
+- `llama_cpp` if the user has a GGUF/non-MLX route
+- unsupported until one of those paths is credible
+
+Support claims must be earned by actual validation evidence. For MLX support
+claims, that evidence must name the reference runtime, AX decode mode, model
+identity, prompt shape, host readiness state, and whether the row came from the
+MLX inference stack or an `ax-engine-bench` workload-contract artifact.

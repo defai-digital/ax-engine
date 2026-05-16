@@ -12,8 +12,10 @@ those paths explicit:
 Start here:
 
 - `GETTING-STARTED.md`: installation, first commands, and runtime-path choice
-- `SUPPORTED-MODELS.md`: model support tiers and what each tier means
-- `FAQ.md`: common runtime-path and performance-boundary questions
+- `SUPPORTED-MODELS.md`: supported LLM model paths: direct support,
+  `mlx_lm_delegated`, `llama_cpp`, and unsupported requests
+- `FAQ.md`: hardware support, model-stack guidance, runtime paths,
+  limitations, and performance-boundary questions
 - `PERFORMANCE.md`: current performance-table methodology, interpretation, and
   artifact provenance
 - `LONG-CONTEXT.md`: long-context evidence, prefix-reuse boundaries, and
@@ -26,6 +28,8 @@ Start here:
 - `CLI.md`: `ax-engine-bench` and server command surfaces
 - `MANAGER.md`: `ax-engine-manager` web quick start, support bundles, and
   release gate
+- `ROADMAP.md`: current serving runtime direction, shipped v4.9.0 baseline, and
+  evidence gates for future claims
 - `BENCHMARKS.md`: how to interpret performance and workload-contract evidence
 - `SERVING-BENCHMARKS.md`: online serving benchmark contract for prompt-mix,
   concurrency, request-rate, latency percentile, throughput, and SLO-goodput
