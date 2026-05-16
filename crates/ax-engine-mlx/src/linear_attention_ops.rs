@@ -7,6 +7,7 @@ use mlx_sys::{
 #[cfg(test)]
 use mlx_sys::{add, exp, less, log1p, negative, where_cond};
 
+use crate::attention_mask::scalar_i32;
 use crate::model::LinearAttentionConfig;
 
 /// Split Qwen3.5 gated-delta conv output into shaped q/k/v tensors.
@@ -285,15 +286,6 @@ pub fn rms_norm_gated(
     let normed_f32 = astype(&normed, MlxDtype::Float32, None);
     let gated = multiply(&mlx_sys::ops::silu(&gate_f32, None), &normed_f32, None);
     astype(&gated, hidden_states.dtype(), None)
-}
-
-fn scalar_i32(value: i32) -> MlxArray {
-    MlxArray::from_raw_data(
-        &value as *const i32 as *const u8,
-        std::mem::size_of::<i32>(),
-        &[1],
-        MlxDtype::Int32,
-    )
 }
 
 fn scalar_f32_as(value: f32, dtype: MlxDtype) -> MlxArray {

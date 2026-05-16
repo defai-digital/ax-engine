@@ -1,9 +1,12 @@
 # Performance
 
-This page explains how to interpret the public performance snapshot in the root
-`README.md`. The README intentionally keeps only the common Gemma 4 and Qwen
-3.6 rows; this page carries methodology, artifact provenance, limitations, and
-additional benchmark context.
+This page is the public performance-results reference. It keeps the result
+tables, artifact summaries, interpretation, and claim boundaries for the
+current public snapshot. The root `README.md` intentionally keeps only the
+common Gemma 4 and Qwen 3.6 rows.
+
+For benchmark methodology, test setup, commands, reproduction details, and
+evidence classification, see [`docs/BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Current Result Set
 
@@ -453,40 +456,8 @@ Gemma 4 E4B 4-bit benchmark rows are included in the current README refresh.
 The model manifest and scenario manifest remain the canonical inputs for
 rerunning that model.
 
-## Reproduction
+## Method And Reproduction
 
-To reproduce the benchmark procedure on an Apple Silicon host, use:
-
-```text
-scripts/reproduce-mlx-inference-benchmark.sh \
-  --model-dir /path/to/mlx-model \
-  --run-label local-refresh
-```
-
-The script records doctor output, command logs, prompt artifacts, and raw JSON
-results under `benchmarks/community-results/local/` by default.
-
-Before submitting or comparing external rows, read:
-
-- `docs/BENCHMARKS.md`
-- `benchmarks/community-results/README.md`
-
-Community runs reproduce the procedure, not identical numbers. Compare rows
-only after checking model artifact identity, prompt-token hashes, generated
-token count, repetitions, reference runtime, AX decode policy, host class, and
-thermal context.
-
-## Workload Contracts
-
-The README throughput tables are MLX model-inference comparisons. Workload
-contracts are a separate `ax-engine-bench` surface for checked-in scenario,
-replay, matrix, route, correctness, determinism, and regression gates.
-
-Canonical manifests live under:
-
-- `benchmarks/manifests/scenario/`
-- `benchmarks/manifests/replay/`
-- `benchmarks/manifests/matrix/`
-
-See `docs/BENCHMARKS.md` for the evidence split, methodology, and
-prompt-provenance requirements.
+Performance tables are results. Benchmark setup, reproduction commands,
+community-run submission rules, workload-contract manifests, and
+prompt-provenance requirements live in [`docs/BENCHMARKS.md`](BENCHMARKS.md).

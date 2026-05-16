@@ -3023,7 +3023,7 @@ mod tests {
     fn support_report_excludes_linear_attention_layers() {
         let mut cfg = support_test_model(4, 128);
         cfg.linear_attention = Some({
-            let (q_scale, k_scale) = crate::linear_attention::linear_attention_qk_scale(64);
+            let (q_scale, k_scale) = crate::linear_attention_ops::linear_attention_qk_scale(64);
             LinearAttentionConfig {
                 full_attention_interval: 4,
                 num_value_heads: 2,

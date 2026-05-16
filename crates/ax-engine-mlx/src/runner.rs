@@ -2444,7 +2444,7 @@ impl MlxRunner {
         // empty) set of architectures that have no kernel-side cap.
         let linear_attention_chunk_cap =
             if (0..cfg.layer_count).any(|i| cfg.is_linear_attention_layer(i)) {
-                Some(crate::linear_attention::GATED_DELTA_THREADGROUP_CACHE_CAPACITY)
+                Some(crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY)
             } else {
                 None
             };

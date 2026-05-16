@@ -26,11 +26,11 @@ pub fn create_causal_mask(seq_len: usize, offset: usize, window_size: Option<usi
     }
 }
 
-fn scalar_i32(value: i32) -> MlxArray {
+pub(crate) fn scalar_i32(value: i32) -> MlxArray {
     MlxArray::from_raw_data(
         &value as *const i32 as *const u8,
-        std::mem::size_of_val(&value),
-        &[],
+        std::mem::size_of::<i32>(),
+        &[1_i32],
         MlxDtype::Int32,
     )
 }

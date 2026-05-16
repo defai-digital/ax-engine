@@ -4,7 +4,7 @@ use std::time::Instant;
 use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
 
 use crate::kv_cache::MlxKVCache;
-use crate::linear_attention::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
+use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward,
     forward_lazy_single_with_turboquant_context, forward_with_turboquant_context,

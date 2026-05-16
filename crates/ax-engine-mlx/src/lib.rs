@@ -1,9 +1,9 @@
-pub mod attention_mask;
+pub(crate) mod attention_mask;
 pub mod disk_prefix_cache;
 pub mod fastpath;
 pub mod generate;
 pub mod kv_cache;
-pub mod linear_attention;
+pub(crate) mod linear_attention_ops;
 pub mod model;
 pub mod ngram_accel;
 pub mod runner;

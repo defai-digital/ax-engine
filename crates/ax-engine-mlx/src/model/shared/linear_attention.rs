@@ -8,7 +8,7 @@ use super::super::profile::{
 };
 use super::utils::qw;
 use crate::kv_cache::MlxKVCache;
-use crate::linear_attention::{
+use crate::linear_attention_ops::{
     gated_delta_kernel, linear_attention_conv1d, normalize_linear_attention_qk, rms_norm_gated,
     split_linear_attention_qkv,
 };

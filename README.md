@@ -194,10 +194,9 @@ and runtime path are all present.
 
 <!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
-visible and leaves the full benchmarking contract, longer tables, caveats, and
-reproduction method in
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) and
-[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+visible. Full result tables and interpretation live in
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
+and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 These rows are a provenance-tracked composite from
 `benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/`. All rows use

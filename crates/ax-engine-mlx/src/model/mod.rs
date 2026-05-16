@@ -2611,7 +2611,7 @@ mod tests {
         let mut cfg = cfg(true);
         cfg.hidden_size = 8;
         cfg.linear_attention = Some({
-            let (q_scale, k_scale) = crate::linear_attention::linear_attention_qk_scale(32);
+            let (q_scale, k_scale) = crate::linear_attention_ops::linear_attention_qk_scale(32);
             LinearAttentionConfig {
                 full_attention_interval: 4,
                 num_value_heads: 1,
