@@ -39,7 +39,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, glm4_moe_lite draft manifests"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, glm4_moe_lite, llama3, mistral3, mixtral, deepseek_v3, llama4 draft manifests"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -98,6 +98,14 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let (rope_theta, rope_theta_swa, partial_rotary_factor) =
         parse_rope_params(&config, &model_type);
 
+    let (
+        rope_scaling_type,
+        rope_scaling_factor,
+        rope_low_freq_factor,
+        rope_high_freq_factor,
+        rope_original_context_len,
+    ) = parse_rope_scaling(&config, &model_type);
+
     let query_pre_attn_scalar =
         arch_f64(&config, &model_type, "query_pre_attn_scalar").and_then(f64_to_u32);
 
@@ -139,15 +147,21 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         tie_word_embeddings,
         rope_theta,
         rope_theta_swa,
-        rope_scaling_type: None,
-        rope_scaling_factor: None,
-        rope_low_freq_factor: None,
-        rope_high_freq_factor: None,
-        rope_original_context_len: None,
-        no_rope_layer_interval: 0,
-        attn_temperature_floor: None,
-        attn_temperature_scale: None,
-        intermediate_size_mlp: 0,
+        rope_scaling_type,
+        rope_scaling_factor,
+        rope_low_freq_factor,
+        rope_high_freq_factor,
+        rope_original_context_len,
+        no_rope_layer_interval: arch_u64(&config, &model_type, "interleave_moe_layer_step")
+            .and_then(u64_to_u32)
+            .unwrap_or(0),
+        attn_temperature_floor: arch_f64(&config, &model_type, "floor_scale")
+            .and_then(f64_to_u32),
+        attn_temperature_scale: arch_f64(&config, &model_type, "attn_scale")
+            .map(|v| v as f32),
+        intermediate_size_mlp: arch_u64(&config, &model_type, "intermediate_size_mlp")
+            .and_then(u64_to_u32)
+            .unwrap_or(0),
         query_pre_attn_scalar,
         attention_logit_softcap,
         // Qwen3.5/Qwen3Next full-attention layers split q_proj into queries and a sigmoid
@@ -336,6 +350,75 @@ const GLM4_MOE_LITE_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
     (
         "mlp.shared_experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
+    ),
+];
+
+/// Per-layer tensor patterns for Mixtral sparse MoE layers.
+const MIXTRAL_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "block_sparse_moe.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "block_sparse_moe.switch_mlp.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "block_sparse_moe.switch_mlp.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "block_sparse_moe.switch_mlp.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+];
+
+/// Per-layer tensor patterns for LLaMA 4 (uses feed_forward.* instead of mlp.*,
+/// plus MoE experts and shared expert paths).
+const LLAMA4_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    // Dense FFN layers (non-MoE)
+    (
+        "feed_forward.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGate),
+    ),
+    (
+        "feed_forward.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUp),
+    ),
+    (
+        "feed_forward.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDown),
+    ),
+    // MoE router
+    (
+        "feed_forward.router.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    // Packed expert weights (SwitchGLU)
+    (
+        "feed_forward.experts.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "feed_forward.experts.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "feed_forward.experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    // Shared expert
+    (
+        "feed_forward.shared_expert.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "feed_forward.shared_expert.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "feed_forward.shared_expert.down_proj.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
     ),
 ];
@@ -656,6 +739,36 @@ fn model_family_for_type(model_type: &str) -> Result<ModelFamily, ConvertError> 
             extra_tensor_map: Some(GLM4_MOE_LITE_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,
         }),
+        "llama" => Ok(ModelFamily {
+            family_name: "llama3",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: None,
+            uses_language_model_prefix: false,
+        }),
+        "mistral3" | "ministral3" => Ok(ModelFamily {
+            family_name: "mistral3",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: None,
+            uses_language_model_prefix: false,
+        }),
+        "mixtral" => Ok(ModelFamily {
+            family_name: "mixtral",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(MIXTRAL_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: false,
+        }),
+        "deepseek_v3" | "deepseek_v32" => Ok(ModelFamily {
+            family_name: "deepseek_v3",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(GLM4_MOE_LITE_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: false,
+        }),
+        "llama4" => Ok(ModelFamily {
+            family_name: "llama4",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(LLAMA4_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: true,
+        }),
         other => Err(ConvertError::UnsupportedModelType {
             model_type: other.to_string(),
         }),
@@ -703,6 +816,7 @@ fn uses_text_config(model_type: &str) -> bool {
     matches!(
         model_type,
         "gemma4"
+            | "llama4"
             | "qwen3_5"
             | "qwen3_5_moe"
             | "qwen3_5_text"
@@ -730,6 +844,10 @@ fn is_qwen_family_model_type(model_type: &str) -> bool {
 
 fn is_glm4_moe_lite(model_type: &str) -> bool {
     model_type == "glm4_moe_lite"
+}
+
+fn is_mla_family(model_type: &str) -> bool {
+    is_glm4_moe_lite(model_type) || matches!(model_type, "deepseek_v3" | "deepseek_v32")
 }
 
 fn defaults_attn_output_gate(model_type: &str) -> bool {
@@ -810,7 +928,7 @@ fn linear_attention_config(
 }
 
 fn mla_attention_config(config: &serde_json::Value, model_type: &str) -> NativeMlaAttentionConfig {
-    if !is_glm4_moe_lite(model_type) {
+    if !is_mla_family(model_type) {
         return NativeMlaAttentionConfig::default();
     }
 
@@ -848,7 +966,17 @@ fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
     let is_qwen3_moe = matches!(model_type, "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_text");
     let is_qwen3_next_moe = matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6");
     let is_glm_moe = is_glm4_moe_lite(model_type);
-    if !is_gemma4_moe && !is_qwen3_moe && !is_qwen3_next_moe && !is_glm_moe {
+    let is_mixtral = model_type == "mixtral";
+    let is_deepseek_v3 = matches!(model_type, "deepseek_v3" | "deepseek_v32");
+    let is_llama4 = model_type == "llama4";
+    if !is_gemma4_moe
+        && !is_qwen3_moe
+        && !is_qwen3_next_moe
+        && !is_glm_moe
+        && !is_mixtral
+        && !is_deepseek_v3
+        && !is_llama4
+    {
         return NativeMoeConfig::default();
     }
 
@@ -859,15 +987,39 @@ fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
     let experts_per_token = arch_u64(config, model_type, "top_k_experts")
         .or_else(|| arch_u64(config, model_type, "num_experts_per_tok"))
         .and_then(u64_to_u32);
+
+    let layer_freq = if is_deepseek_v3 {
+        arch_u64(config, model_type, "moe_layer_freq").and_then(u64_to_u32)
+    } else if is_llama4 {
+        arch_u64(config, model_type, "interleave_moe_layer_step").and_then(u64_to_u32)
+    } else {
+        None
+    };
+
+    let first_dense_layers = if is_deepseek_v3 {
+        arch_u64(config, model_type, "first_k_dense_replace").and_then(u64_to_u32)
+    } else {
+        None
+    };
+
+    let shared_expert_count = if is_deepseek_v3 {
+        arch_u64(config, model_type, "n_shared_experts").and_then(u64_to_u32)
+    } else if is_llama4 {
+        // LLaMA 4 always has 1 shared expert when MoE is active
+        Some(1)
+    } else {
+        None
+    };
+
     NativeMoeConfig {
         expert_count,
         experts_per_token,
         expert_intermediate_size: arch_u64(config, model_type, "moe_intermediate_size")
             .and_then(u64_to_u32),
-        layer_freq: None,
-        first_dense_layers: None,
-        shared_expert_count: None,
-        sigmoid_routing: false,
+        layer_freq,
+        first_dense_layers,
+        shared_expert_count,
+        sigmoid_routing: is_deepseek_v3,
     }
 }
 
@@ -928,6 +1080,41 @@ fn parse_rope_params(
         .filter(|&v| v <= 1.0);
 
     (theta, None, partial_rotary)
+}
+
+/// Parse LLaMA 3 / LLaMA 4 rope_scaling dict from config.json.
+#[allow(clippy::type_complexity)]
+fn parse_rope_scaling(
+    config: &serde_json::Value,
+    model_type: &str,
+) -> (Option<String>, Option<f32>, Option<f32>, Option<f32>, Option<u32>) {
+    let rs = if uses_text_config(model_type) {
+        config.get("text_config").and_then(|tc| tc.get("rope_scaling"))
+    } else {
+        config.get("rope_scaling")
+    };
+    let Some(rs) = rs else {
+        return (None, None, None, None, None);
+    };
+    let rope_type = rs
+        .get("rope_type")
+        .or_else(|| rs.get("type"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let factor = rs.get("factor").and_then(|v| v.as_f64()).map(|f| f as f32);
+    let low_freq_factor = rs
+        .get("low_freq_factor")
+        .and_then(|v| v.as_f64())
+        .map(|f| f as f32);
+    let high_freq_factor = rs
+        .get("high_freq_factor")
+        .and_then(|v| v.as_f64())
+        .map(|f| f as f32);
+    let original_context_len = rs
+        .get("original_max_position_embeddings")
+        .and_then(|v| v.as_u64())
+        .and_then(u64_to_u32);
+    (rope_type, factor, low_freq_factor, high_freq_factor, original_context_len)
 }
 
 /// Parse per-layer type list from config (e.g. Gemma4's `layer_types` field).
@@ -3714,7 +3901,7 @@ mod tests {
         write_config(
             &dir,
             serde_json::json!({
-                "model_type": "llama",
+                "model_type": "gpt2",
                 "hidden_size": 4096,
                 "num_attention_heads": 32,
                 "num_hidden_layers": 2,
@@ -3723,7 +3910,7 @@ mod tests {
         );
         write_fake_safetensors(&dir, "model.safetensors", &[]);
 
-        let error = convert_hf_model_dir(&dir).expect_err("llama should be unsupported");
+        let error = convert_hf_model_dir(&dir).expect_err("gpt2 should be unsupported");
         assert!(matches!(error, ConvertError::UnsupportedModelType { .. }));
 
         let _ = fs::remove_dir_all(dir);
