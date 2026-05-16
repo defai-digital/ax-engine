@@ -73,11 +73,12 @@ use crate::generate_manifest::handle_generate_manifest;
 use crate::inference_args::{InferenceArgs, build_inference_session, parse_inference_args};
 use crate::inference_render::{render_generate_response, render_stream_event};
 use crate::json_io::{
-    json_value_label, load_json_value, load_optional_json_value, nested_string, nested_value,
-    validate_matching_json_field, validate_matching_optional_json_field,
+    json_string_label, json_value_label, load_json_value, load_optional_json_value, nested_string,
+    nested_value, validate_matching_json_field, validate_matching_optional_json_field,
 };
 use crate::labels::{
-    compare_result_label, compare_summary_note, stop_reason_from_generate_finish_reason,
+    compare_result_label, compare_summary_note, llama_cpp_final_request_state_label,
+    llama_cpp_request_is_terminal, stop_reason_from_generate_finish_reason,
 };
 use crate::logging::init_tracing;
 use crate::metal_build::{map_metal_build_error, metal_build_status_label, parse_metal_build_args};
@@ -8697,13 +8698,6 @@ fn output_token_count_source(
     }
 }
 
-fn json_string_label<T: Serialize>(value: T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
 fn synthetic_prompt_tokens(
     target_len: u32,
     prompt_ref: Option<&str>,
@@ -9952,27 +9946,6 @@ impl RuntimeObservation {
             }
             .to_string(),
         );
-    }
-}
-
-fn llama_cpp_request_is_terminal(state: SessionRequestState) -> bool {
-    matches!(
-        state,
-        SessionRequestState::Finished
-            | SessionRequestState::Cancelled
-            | SessionRequestState::Failed
-    )
-}
-
-fn llama_cpp_final_request_state_label(state: SessionRequestState) -> &'static str {
-    match state {
-        SessionRequestState::Finished => "Finished",
-        SessionRequestState::Cancelled => "Cancelled",
-        SessionRequestState::Failed => "Failed",
-        SessionRequestState::Waiting
-        | SessionRequestState::Runnable
-        | SessionRequestState::Running
-        | SessionRequestState::BlockedOnMemory => "Running",
     }
 }
 

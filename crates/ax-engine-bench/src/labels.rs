@@ -33,6 +33,27 @@ pub(crate) fn request_state_label(state: SessionRequestState) -> &'static str {
     }
 }
 
+pub(crate) fn llama_cpp_request_is_terminal(state: SessionRequestState) -> bool {
+    matches!(
+        state,
+        SessionRequestState::Finished
+            | SessionRequestState::Cancelled
+            | SessionRequestState::Failed
+    )
+}
+
+pub(crate) fn llama_cpp_final_request_state_label(state: SessionRequestState) -> &'static str {
+    match state {
+        SessionRequestState::Finished => "Finished",
+        SessionRequestState::Cancelled => "Cancelled",
+        SessionRequestState::Failed => "Failed",
+        SessionRequestState::Waiting
+        | SessionRequestState::Runnable
+        | SessionRequestState::Running
+        | SessionRequestState::BlockedOnMemory => "Running",
+    }
+}
+
 pub(crate) fn generate_status_label(status: GenerateStatus) -> &'static str {
     match status {
         GenerateStatus::Pending => "pending",

@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::CliError;
@@ -94,4 +95,11 @@ fn validate_matching_values(
 
 pub(crate) fn json_value_label(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}"))
+}
+
+pub(crate) fn json_string_label<T: Serialize>(value: T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
 }
