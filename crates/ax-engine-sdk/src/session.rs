@@ -2507,7 +2507,7 @@ mod tests {
     fn sample_submission() -> RequestSubmission {
         RequestSubmission {
             request_id: RequestId(1),
-            model_id: ModelId("qwen3_dense".into()),
+            model_id: ModelId("qwen3".into()),
             input_tokens: vec![1, 2, 3, 4],
             sampling_params: SamplingParams::default(),
             max_output_tokens: 2,
@@ -2529,7 +2529,7 @@ mod tests {
     fn sample_terminal_llama_report(request_id: u64) -> SessionRequestReport {
         SessionRequestReport {
             request_id,
-            model_id: "qwen3_dense".to_string(),
+            model_id: "qwen3".to_string(),
             state: SessionRequestState::Finished,
             prompt_tokens: vec![1, 2, 3],
             processed_prompt_tokens: 3,
@@ -2729,7 +2729,7 @@ mod tests {
                 model_buffer_bytes: 4096,
                 native_dense_kernel_coverage: Default::default(),
                 model: Some(NativeModelArtifactsSummary {
-                    model_family: "qwen3_dense".to_string(),
+                    model_family: "qwen3".to_string(),
                     tensor_format: NativeTensorFormat::Safetensors,
                     source_quantization: None,
                     runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
@@ -3076,7 +3076,7 @@ mod tests {
             .expect("native model weights should write");
         let manifest = NativeModelManifest {
             schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
@@ -3090,6 +3090,11 @@ mod tests {
             tie_word_embeddings: false,
             rope_theta: None,
             rope_theta_swa: None,
+            rope_scaling_type: None,
+            rope_scaling_factor: None,
+            rope_low_freq_factor: None,
+            rope_high_freq_factor: None,
+            rope_original_context_len: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,
@@ -3331,7 +3336,7 @@ sys.stdout.write(f"session::{prompt}")
             report,
             NativeModelReport {
                 artifacts_source: NativeModelArtifactsSource::ExplicitConfig,
-                model_family: "qwen3_dense".to_string(),
+                model_family: "qwen3".to_string(),
                 tensor_format: NativeTensorFormat::Safetensors,
                 source_quantization: None,
                 runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
@@ -3504,6 +3509,7 @@ sys.stdout.write(f"session::{prompt}")
             mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
             mlx_disable_ngram_acceleration: true,
             mlx_kv_compression: MlxKvCompressionConfig::turboquant_shadow(),
+            mlx_prefill_chunk: None,
         });
 
         assert_eq!(
@@ -3646,7 +3652,7 @@ sys.stdout.write(f"session::{prompt}")
 
         let events = session
             .stream_generate(GenerateRequest {
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 input_tokens: vec![1, 2, 3],
                 input_text: None,
                 max_output_tokens: 2,
@@ -3736,7 +3742,7 @@ sys.stdout.write(f"session::{prompt}")
 
         let error = session
             .stream_generate(GenerateRequest {
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 input_tokens: Vec::new(),
                 input_text: Some("cli fallback stream".to_string()),
                 max_output_tokens: 2,
@@ -3776,7 +3782,7 @@ sys.stdout.write(f"session::{prompt}")
 
         let error = session
             .submit_generate(GenerateRequest {
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 input_tokens: Vec::new(),
                 input_text: Some("unsupported lifecycle".to_string()),
                 max_output_tokens: 2,
@@ -3824,7 +3830,7 @@ sys.stdout.write(f"session::{prompt}")
 
         let request_id = session
             .submit_generate(GenerateRequest {
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 input_tokens: vec![1, 2, 3],
                 input_text: None,
                 max_output_tokens: 2,
@@ -3921,7 +3927,7 @@ sys.stdout.write(f"session::{prompt}")
 
         let request_id = session
             .submit_generate(GenerateRequest {
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 input_tokens: vec![1, 2, 3],
                 input_text: None,
                 max_output_tokens: 2,
@@ -4013,7 +4019,7 @@ sys.stdout.write(f"session::{prompt}")
 
         let first_request_id = session
             .submit_generate(GenerateRequest {
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 input_tokens: vec![1, 2, 3],
                 input_text: None,
                 max_output_tokens: 2,
@@ -4025,7 +4031,7 @@ sys.stdout.write(f"session::{prompt}")
 
         let second_request_id = session
             .submit_generate(GenerateRequest {
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 input_tokens: vec![7, 8, 9],
                 input_text: None,
                 max_output_tokens: 2,
@@ -4107,7 +4113,7 @@ sys.stdout.write(f"session::{prompt}")
 
         let first_request_id = session
             .submit_generate(GenerateRequest {
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 input_tokens: vec![1, 2, 3],
                 input_text: None,
                 max_output_tokens: 2,
@@ -4118,7 +4124,7 @@ sys.stdout.write(f"session::{prompt}")
             .expect("first llama.cpp submit should succeed");
         let second_request_id = session
             .submit_generate(GenerateRequest {
-                model_id: "qwen3_dense".to_string(),
+                model_id: "qwen3".to_string(),
                 input_tokens: vec![7, 8, 9],
                 input_text: None,
                 max_output_tokens: 2,
@@ -4274,7 +4280,7 @@ sys.stdout.write(f"session::{prompt}")
             step.metal_dispatch
                 .as_ref()
                 .and_then(|dispatch| dispatch.runtime_model_family.as_deref()),
-            Some("qwen3_dense")
+            Some("qwen3")
         );
         assert_eq!(
             step.metal_dispatch
@@ -4369,7 +4375,7 @@ sys.stdout.write(f"session::{prompt}")
             .generate_with_request_id(
                 41,
                 GenerateRequest {
-                    model_id: "qwen3_dense".to_string(),
+                    model_id: "qwen3".to_string(),
                     input_tokens: vec![1, 2, 3, 4],
                     input_text: None,
                     max_output_tokens: 1,

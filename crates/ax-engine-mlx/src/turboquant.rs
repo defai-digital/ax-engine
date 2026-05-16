@@ -2839,6 +2839,7 @@ mod tests {
 
     fn support_test_model(layer_count: usize, head_dim: usize) -> ModelConfig {
         ModelConfig {
+            model_family: "qwen3".to_string(),
             layer_count,
             hidden_size: 0,
             intermediate_size: 0,
@@ -2855,6 +2856,7 @@ mod tests {
             moe_experts_per_token: 0,
             moe_expert_intermediate_size: 0,
             layer_configs: Vec::new(),
+            global_sliding_window: None,
             gemma4_moe_router: false,
             uses_geglu: false,
             hidden_states_scale: None,
@@ -2864,6 +2866,7 @@ mod tests {
             glm_mla_attention: None,
             glm_router: None,
             rms_norm_eps: 1e-6,
+            rope_freqs: None,
         }
     }
 

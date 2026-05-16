@@ -447,6 +447,22 @@ pub struct NativeModelManifest {
     /// Corresponds to GGUF key `{arch}.rope.freq_base_swa`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rope_theta_swa: Option<u32>,
+    /// RoPE scaling strategy. Supported values: "llama3", "linear", "dynamic".
+    /// Absent for standard (unscaled) RoPE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_scaling_type: Option<String>,
+    /// RoPE scaling factor (divisor applied to low-frequency components).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_scaling_factor: Option<f32>,
+    /// LLaMA-3 low-frequency correction factor (default 1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_low_freq_factor: Option<f32>,
+    /// LLaMA-3 high-frequency correction factor (default 4.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_high_freq_factor: Option<f32>,
+    /// LLaMA-3 original training context length for wavelen boundary computation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_original_context_len: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_pre_attn_scalar: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3189,7 +3205,7 @@ mod tests {
     fn packed_layer_manifest() -> NativeModelManifest {
         NativeModelManifest {
             schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-            model_family: "qwen3_dense".to_string(),
+            model_family: "qwen3".to_string(),
             tensor_format: NativeTensorFormat::Safetensors,
             source_quantization: None,
             runtime_status: NativeRuntimeStatus::default(),
@@ -3203,6 +3219,11 @@ mod tests {
             tie_word_embeddings: false,
             rope_theta: None,
             rope_theta_swa: None,
+            rope_scaling_type: None,
+            rope_scaling_factor: None,
+            rope_low_freq_factor: None,
+            rope_high_freq_factor: None,
+            rope_original_context_len: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,
@@ -3680,11 +3701,11 @@ mod tests {
         let artifacts =
             NativeModelArtifacts::from_dir(&dir).expect("packed manifest should validate");
 
-        assert_eq!(artifacts.manifest().model_family, "qwen3_dense");
+        assert_eq!(artifacts.manifest().model_family, "qwen3");
         assert_eq!(
             artifacts.summary(),
             NativeModelArtifactsSummary {
-                model_family: "qwen3_dense".to_string(),
+                model_family: "qwen3".to_string(),
                 tensor_format: NativeTensorFormat::Safetensors,
                 source_quantization: None,
                 runtime_status: NativeRuntimeStatus::default(),

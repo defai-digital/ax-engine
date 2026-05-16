@@ -4639,8 +4639,11 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
     if manifest.linear_attention.is_enabled() || has_linear_attention_tensors(artifacts) {
         validate_qwen_gated_delta_linear_attention(manifest)?;
     }
-    if manifest.sliding_window_size.is_some()
-        || !manifest.layer_types.is_empty()
+    // Interleaved SWA validation (Gemma3/4): triggered by layer_types, KV sharing,
+    // a separate global head dim, or a separate SWA rope theta. Families with
+    // uniform SWA (mistral3, mixtral) use only sliding_window_size with no
+    // layer_types, so they skip this gate.
+    if !manifest.layer_types.is_empty()
         || !manifest.kv_shared_source_layers.is_empty()
         || manifest.global_head_dim.is_some()
         || manifest.rope_theta_swa.is_some()
@@ -5045,15 +5048,15 @@ fn validate_qwen_gated_delta_linear_attention(
 fn validate_gemma4_interleaved_attention(
     manifest: &NativeModelManifest,
 ) -> Result<(), MlxRunnerError> {
-    if manifest.model_family != "gemma4" {
-        return Err(MlxRunnerError::UnsupportedFeature(
-            "interleaved sliding/full attention is only implemented for Gemma4 manifests"
-                .to_string(),
-        ));
+    if !matches!(manifest.model_family.as_str(), "gemma4" | "gemma3") {
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "interleaved sliding/full attention is not implemented for {} manifests",
+            manifest.model_family
+        )));
     }
     if manifest.layer_types.len() != manifest.layer_count as usize {
         return Err(MlxRunnerError::UnsupportedFeature(format!(
-            "Gemma4 interleaved attention requires one layer_type per layer, got {} for {} layers",
+            "interleaved attention requires one layer_type per layer, got {} for {} layers",
             manifest.layer_types.len(),
             manifest.layer_count
         )));
@@ -5062,7 +5065,7 @@ fn validate_gemma4_interleaved_attention(
     for (idx, layer_type) in manifest.layer_types.iter().enumerate() {
         if layer_type != "sliding_attention" && layer_type != "full_attention" {
             return Err(MlxRunnerError::UnsupportedFeature(format!(
-                "Gemma4 layer {idx} uses unsupported layer_type {layer_type:?}"
+                "layer {idx} uses unsupported layer_type {layer_type:?}"
             )));
         }
     }
@@ -5075,7 +5078,7 @@ fn validate_gemma4_interleaved_attention(
         match manifest.sliding_window_size {
             None => {
                 return Err(MlxRunnerError::UnsupportedFeature(
-                    "Gemma4 sliding_attention layers require sliding_window_size".to_string(),
+                    "sliding_attention layers require sliding_window_size".to_string(),
                 ));
             }
             Some(0) => {
@@ -5084,7 +5087,7 @@ fn validate_gemma4_interleaved_attention(
                 // grow-forever window. Reject up front instead of running with a layout
                 // the user did not ask for.
                 return Err(MlxRunnerError::UnsupportedFeature(
-                    "Gemma4 sliding_window_size must be greater than zero".to_string(),
+                    "sliding_window_size must be greater than zero".to_string(),
                 ));
             }
             Some(_) => {}
@@ -5094,14 +5097,14 @@ fn validate_gemma4_interleaved_attention(
     for (&layer, &source) in &manifest.kv_shared_source_layers {
         if layer >= manifest.layer_count || source >= manifest.layer_count || source >= layer {
             return Err(MlxRunnerError::UnsupportedFeature(format!(
-                "Gemma4 KV-shared layer {layer} has invalid source layer {source}"
+                "KV-shared layer {layer} has invalid source layer {source}"
             )));
         }
         let layer_type = &manifest.layer_types[layer as usize];
         let source_type = &manifest.layer_types[source as usize];
         if layer_type != source_type {
             return Err(MlxRunnerError::UnsupportedFeature(format!(
-                "Gemma4 KV-shared layer {layer} type {layer_type:?} cannot reuse source {source} type {source_type:?}"
+                "KV-shared layer {layer} type {layer_type:?} cannot reuse source {source} type {source_type:?}"
             )));
         }
         // Chained KV sharing would panic at runtime in `MlxKVCache::peek_source_kv`
@@ -5110,7 +5113,7 @@ fn validate_gemma4_interleaved_attention(
         // here so the manifest fails closed instead of producing a midstream panic.
         if manifest.kv_shared_source_layers.contains_key(&source) {
             return Err(MlxRunnerError::UnsupportedFeature(format!(
-                "Gemma4 KV-shared layer {layer} cannot use shared layer {source} as its source"
+                "KV-shared layer {layer} cannot use shared layer {source} as its source"
             )));
         }
     }
@@ -5826,6 +5829,11 @@ mod tests {
             tie_word_embeddings: false,
             rope_theta: None,
             rope_theta_swa: None,
+            rope_scaling_type: None,
+            rope_scaling_factor: None,
+            rope_low_freq_factor: None,
+            rope_high_freq_factor: None,
+            rope_original_context_len: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,
@@ -5984,7 +5992,7 @@ mod tests {
     #[test]
     fn terminal_token_ids_resolve_common_chatml_eot_from_tokenizer_json() {
         let mut manifest = dense_manifest();
-        manifest.model_family = "qwen3_dense".to_string();
+        manifest.model_family = "qwen3".to_string();
         set_vocab_size(&mut manifest, 200_000);
         let artifacts = write_artifacts(manifest);
         fs::write(
@@ -7797,9 +7805,9 @@ mod tests {
         let artifacts = write_artifacts(manifest);
 
         let error = validate_mlx_supported_manifest(&artifacts)
-            .expect_err("non-Gemma4 interleaved attention should fail closed");
+            .expect_err("unknown family interleaved attention should fail closed");
 
-        assert!(error.to_string().contains("Gemma4"));
+        assert!(error.to_string().contains("not implemented"));
     }
 
     #[test]

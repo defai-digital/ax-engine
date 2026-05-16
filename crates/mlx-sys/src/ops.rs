@@ -735,6 +735,105 @@ pub fn cached_scalar(value: f32, dtype: MlxDtype) -> MlxArray {
     out
 }
 
+/// Top-k values along the last axis.
+pub fn topk(a: &MlxArray, k: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_topk(&mut res.inner, a.inner, k, stream);
+        res
+    }
+}
+
+/// Top-k values along `axis`.
+pub fn topk_axis(a: &MlxArray, k: i32, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_topk_axis(&mut res.inner, a.inner, k, axis, stream);
+        res
+    }
+}
+
+/// Flatten axes `start_axis..=end_axis` into a single axis.
+pub fn flatten(a: &MlxArray, start_axis: i32, end_axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_flatten(&mut res.inner, a.inner, start_axis, end_axis, stream);
+        res
+    }
+}
+
+/// Repeat the array `repeats` times along a new leading axis.
+///
+/// Unlike `repeat_axis` (interleave semantics), this tiles the entire array.
+pub fn repeat(a: &MlxArray, repeats: i32, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_repeat(&mut res.inner, a.inner, repeats, stream);
+        res
+    }
+}
+
+unary_op!(cos, mlx_cos);
+unary_op!(sin, mlx_sin);
+unary_op!(stop_gradient, mlx_stop_gradient);
+binary_op!(outer, mlx_outer);
+
+/// Pad array along specified axes with constant value.
+pub fn pad(
+    a: &MlxArray,
+    axes: &[i32],
+    low_pad: &[i32],
+    high_pad: &[i32],
+    pad_value: &MlxArray,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_pad(
+            &mut res.inner,
+            a.inner,
+            axes.as_ptr(),
+            axes.len(),
+            low_pad.as_ptr(),
+            low_pad.len(),
+            high_pad.as_ptr(),
+            high_pad.len(),
+            pad_value.inner,
+            c"constant".as_ptr(),
+            stream,
+        );
+        res
+    }
+}
+
+/// Unflatten axis into a new shape (inverse of `flatten`).
+pub fn unflatten(a: &MlxArray, axis: i32, shape: &[i32], s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_unflatten(
+            &mut res.inner,
+            a.inner,
+            axis,
+            shape.as_ptr(),
+            shape.len(),
+            stream,
+        );
+        res
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

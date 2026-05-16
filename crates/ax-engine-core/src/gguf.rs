@@ -511,8 +511,8 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
 
     // Normalise arch variants to the canonical AX family name
     let family = match arch.as_str() {
-        "qwen3" => "qwen3_dense",
-        "qwen3moe" | "qwen3_moe" => "qwen3_dense",
+        "qwen3" => "qwen3",
+        "qwen3moe" | "qwen3_moe" => "qwen3",
         "qwen35" | "qwen3.5" | "qwen3_5" | "qwen3_5_text" | "qwen3_5_moe" => "qwen35_dense",
         "qwen3next" | "qwen3.6" | "qwen3_6" => "qwen3next_dense",
         "gemma4" => "gemma4_dense",
@@ -802,6 +802,11 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         tie_word_embeddings: !has_lm_head,
         rope_theta,
         rope_theta_swa,
+        rope_scaling_type: None,
+        rope_scaling_factor: None,
+        rope_low_freq_factor: None,
+        rope_high_freq_factor: None,
+        rope_original_context_len: None,
         query_pre_attn_scalar: None,
         attention_logit_softcap: None,
         attn_output_gate: false,
