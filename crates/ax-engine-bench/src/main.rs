@@ -9,6 +9,7 @@ mod doctor_workflow;
 mod environment_probe;
 mod error;
 mod generate_manifest;
+mod inference_render;
 mod json_io;
 mod labels;
 mod logging;
@@ -62,14 +63,13 @@ use crate::environment_probe::{
 };
 use crate::error::CliError;
 use crate::generate_manifest::handle_generate_manifest;
+use crate::inference_render::{render_generate_response, render_stream_event};
 use crate::json_io::{
     json_value_label, load_json_value, load_optional_json_value, nested_string, nested_value,
     validate_matching_json_field, validate_matching_optional_json_field,
 };
 use crate::labels::{
-    compare_result_label, compare_summary_note, generate_finish_reason_label,
-    generate_status_label, optional_route_label, request_state_label, selected_backend_label,
-    stop_reason_from_generate_finish_reason, support_tier_label,
+    compare_result_label, compare_summary_note, stop_reason_from_generate_finish_reason,
 };
 use crate::logging::init_tracing;
 use crate::metal_build::{map_metal_build_error, metal_build_status_label, parse_metal_build_args};
@@ -91,6 +91,8 @@ use crate::generate_manifest::{
 };
 #[cfg(test)]
 use crate::labels::optional_u32_label;
+#[cfg(test)]
+use crate::labels::selected_backend_label;
 #[cfg(test)]
 use crate::stats::{percentile_f64, percentile_u64};
 
@@ -792,121 +794,6 @@ fn collect_inference_stream_events(
         .map_err(|error| CliError::Runtime(format!("stream request failed: {error}")))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| CliError::Runtime(format!("stream request failed: {error}")))
-}
-
-fn render_generate_response(
-    response: &GenerateResponse,
-    json_output: bool,
-) -> Result<String, CliError> {
-    if json_output {
-        return serde_json::to_string_pretty(response)
-            .map(|json| format!("{json}\n"))
-            .map_err(|error| {
-                CliError::Runtime(format!("failed to serialize generate response: {error}"))
-            });
-    }
-
-    if let Some(output_text) = response.output_text.as_deref() {
-        let mut rendered = output_text.to_string();
-        if !rendered.ends_with('\n') {
-            rendered.push('\n');
-        }
-        rendered.push_str(&format_generate_metadata_suffix(response));
-        return Ok(rendered);
-    }
-
-    let rendered_tokens = response
-        .output_tokens
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut rendered = format!("{rendered_tokens}\n");
-    rendered.push_str(&format_generate_metadata_suffix(response));
-    Ok(rendered)
-}
-
-fn render_stream_event(event: &GenerateStreamEvent, json_output: bool) -> Result<String, CliError> {
-    if json_output {
-        return serde_json::to_string(event)
-            .map(|json| format!("{json}\n"))
-            .map_err(|error| {
-                CliError::Runtime(format!("failed to serialize stream event: {error}"))
-            });
-    }
-
-    let rendered = match event {
-        GenerateStreamEvent::Request(payload) => format!(
-            "request id={} backend={} support_tier={} state={} execution_plan={}\n",
-            payload.request.request_id,
-            selected_backend_label(payload.runtime.selected_backend),
-            support_tier_label(payload.runtime.support_tier),
-            request_state_label(payload.request.state),
-            optional_route_label(payload.request.route.execution_plan.as_deref()),
-        ),
-        GenerateStreamEvent::Step(payload) => {
-            let finish_reason = payload
-                .request
-                .finish_reason
-                .map(generate_finish_reason_label)
-                .unwrap_or("none");
-            let delta_text = payload.delta_text.as_deref().unwrap_or("");
-            format!(
-                "step id={} state={} execution_plan={} delta_tokens={:?} delta_token_logprobs={:?} delta_text={delta_text:?} total_output_tokens={} finish_reason={finish_reason}\n",
-                payload.request.request_id,
-                request_state_label(payload.request.state),
-                optional_route_label(payload.request.route.execution_plan.as_deref()),
-                payload.delta_tokens,
-                payload.delta_token_logprobs,
-                payload.request.output_tokens.len(),
-            )
-        }
-        GenerateStreamEvent::Response(payload) => {
-            let finish_reason = payload
-                .response
-                .finish_reason
-                .map(generate_finish_reason_label)
-                .unwrap_or("none");
-            if let Some(output_text) = payload.response.output_text.as_deref() {
-                format!(
-                    "response id={} status={} finish_reason={} execution_plan={} output_text={output_text:?} output_token_logprobs={:?}\n",
-                    payload.response.request_id,
-                    generate_status_label(payload.response.status),
-                    finish_reason,
-                    optional_route_label(payload.response.route.execution_plan.as_deref()),
-                    payload.response.output_token_logprobs,
-                )
-            } else {
-                format!(
-                    "response id={} status={} finish_reason={} execution_plan={} output_tokens={:?} output_token_logprobs={:?}\n",
-                    payload.response.request_id,
-                    generate_status_label(payload.response.status),
-                    finish_reason,
-                    optional_route_label(payload.response.route.execution_plan.as_deref()),
-                    payload.response.output_tokens,
-                    payload.response.output_token_logprobs,
-                )
-            }
-        }
-    };
-
-    Ok(rendered)
-}
-
-fn format_generate_metadata_suffix(response: &GenerateResponse) -> String {
-    let finish_reason = response
-        .finish_reason
-        .map(generate_finish_reason_label)
-        .unwrap_or("none");
-    let execution_plan = optional_route_label(response.route.execution_plan.as_deref());
-    format!(
-        "request_id={}\nstatus={}\nfinish_reason={}\nexecution_plan={}\noutput_token_logprobs={:?}\n",
-        response.request_id,
-        generate_status_label(response.status),
-        finish_reason,
-        execution_plan,
-        response.output_token_logprobs,
-    )
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
