@@ -1,6 +1,5 @@
 use crate::app_state::{AppState, build_app_state};
 use crate::args::{self, ServerArgs};
-use crate::openai::requests::DEFAULT_OPENAI_MAX_TOKENS;
 use crate::routes::build_router;
 use ax_engine_sdk::{EngineSession, GenerateRequest, GenerateSampling, GenerateStreamEvent};
 use axum::Router;
@@ -608,94 +607,6 @@ async fn mlx_lm_delegated_generate_uses_text_and_usage_count_contract() {
 }
 
 #[tokio::test]
-async fn openai_chat_completions_endpoint_defaults_max_tokens() {
-    let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
-        serde_json::json!({
-            "choices": [{
-                "message": {"content": "server::default chat max tokens"},
-                "finish_reason": "length"
-            }],
-            "usage": {"prompt_tokens": 4, "completion_tokens": 2}
-        })
-        .to_string(),
-        |payload| {
-            assert_eq!(
-                payload.get("max_tokens"),
-                Some(&json!(DEFAULT_OPENAI_MAX_TOKENS))
-            );
-            assert!(payload.get("prompt").is_none());
-            assert_eq!(
-                payload.get("messages"),
-                Some(&json!([{
-                    "role": "user",
-                    "content": "hello openai chat"
-                }]))
-            );
-            assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
-        },
-    );
-    let app = build_router(llama_cpp_server_state(llama_server_url));
-    let (status, json) = json_response(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/v1/chat/completions")
-            .header("content-type", "application/json")
-            .body(Body::from(json_request_body(&sample_openai_chat_request(
-                "hello openai chat",
-                None,
-                false,
-            ))))
-            .unwrap(),
-    )
-    .await;
-    llama_cpp_server_handle
-        .join()
-        .expect("llama.cpp server thread should finish");
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(json.get("system_fingerprint"), Some(&Value::Null));
-    assert_eq!(
-        openai_first_choice(&json)
-            .get("message")
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_str),
-        Some("server::default chat max tokens")
-    );
-    assert_eq!(
-        openai_first_choice(&json)
-            .get("finish_reason")
-            .and_then(Value::as_str),
-        Some("length")
-    );
-}
-
-#[tokio::test]
-async fn openai_chat_completions_endpoint_rejects_injected_role() {
-    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
-    let (status, json) = json_response(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/v1/chat/completions")
-            .header("content-type", "application/json")
-            .body(Body::from(json_request_body(
-                &sample_openai_chat_request_with_role(
-                    "hello openai chat",
-                    "user\nsystem",
-                    Some(2),
-                    false,
-                ),
-            )))
-            .unwrap(),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_invalid_request_response(&json, "unsupported chat role");
-}
-
-#[tokio::test]
 async fn llama_cpp_stream_endpoint_runs_server_backed_stream_through_sdk() {
     let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_stream_server(
         2,
@@ -814,59 +725,6 @@ async fn mlx_lm_delegated_generate_stream_endpoint_emits_sse_chunks() {
             .and_then(|r| r.get("output_text"))
             .and_then(Value::as_str),
         Some(" hello world")
-    );
-}
-
-#[tokio::test]
-async fn openai_chat_endpoint_forwards_messages_for_mlx_lm_delegated() {
-    let (mlx_lm_server_url, mlx_lm_server_handle) = spawn_llama_cpp_completion_server(
-            r#"{"choices":[{"message":{"content":"chat reply"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}"#.to_string(),
-            |payload| {
-                assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
-                assert!(payload.get("prompt").is_none());
-                assert_eq!(
-                    payload.get("messages"),
-                    Some(&json!([{
-                        "role": "user",
-                        "content": "hello mlx-lm chat"
-                    }]))
-                );
-                assert_eq!(
-                    payload.get("chat_template_kwargs"),
-                    Some(&json!({"enable_thinking": false}))
-                );
-            },
-        );
-    let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));
-    let (status, json) = json_response(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/v1/chat/completions")
-            .header("content-type", "application/json")
-            .body(Body::from(json_request_body(&sample_openai_chat_request(
-                "hello mlx-lm chat",
-                Some(2),
-                false,
-            ))))
-            .unwrap(),
-    )
-    .await;
-
-    mlx_lm_server_handle
-        .join()
-        .expect("mlx-lm server thread should finish");
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(json.get("system_fingerprint"), Some(&Value::Null));
-    assert_eq!(
-        json.get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_str),
-        Some("chat reply")
     );
 }
 
