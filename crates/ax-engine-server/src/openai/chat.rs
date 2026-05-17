@@ -5,6 +5,10 @@ use axum::http::StatusCode;
 
 use crate::app_state::AppState;
 use crate::errors::ErrorResponse;
+use crate::openai::generation::{
+    run_openai_llama_cpp_chat_generation, run_openai_mlx_lm_chat_generation,
+    run_openai_text_generation,
+};
 use crate::openai::requests::build_openai_chat_request;
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::validation::validate_openai_request;
@@ -15,7 +19,7 @@ pub(crate) async fn openai_chat_completions(
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     validate_openai_request(&state, request.model.as_deref())?;
     if state.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated {
-        return crate::run_openai_mlx_lm_chat_generation(state, request).await;
+        return run_openai_mlx_lm_chat_generation(state, request).await;
     }
     if state.runtime_report.selected_backend == SelectedBackend::LlamaCpp
         && matches!(
@@ -23,9 +27,9 @@ pub(crate) async fn openai_chat_completions(
             Some(LlamaCppConfig::ServerCompletion(_))
         )
     {
-        return crate::run_openai_llama_cpp_chat_generation(state, request).await;
+        return run_openai_llama_cpp_chat_generation(state, request).await;
     }
     let request = build_openai_chat_request(&state, request)?;
 
-    crate::run_openai_text_generation(state, request, OpenAiStreamKind::ChatCompletion).await
+    run_openai_text_generation(state, request, OpenAiStreamKind::ChatCompletion).await
 }
