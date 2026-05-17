@@ -8,10 +8,10 @@ use std::time::Duration;
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent,
-    GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppChatMessage, LlamaCppConfig,
-    LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmChatMessage, MlxLmStreamHandle,
-    RuntimeReport, SelectedBackend, SessionRequestReport, StatelessGenerateContext,
-    finish_reason_from_mlx_lm, run_blocking_chat_generate, run_blocking_llama_cpp_chat_generate,
+    GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppConfig, LlamaCppStreamHandle,
+    MlxLmChatGenerateRequest, MlxLmStreamHandle, RuntimeReport, SelectedBackend,
+    SessionRequestReport, StatelessGenerateContext, finish_reason_from_mlx_lm,
+    run_blocking_chat_generate, run_blocking_llama_cpp_chat_generate,
     start_streaming_chat_generate, start_streaming_llama_cpp_chat_generate,
 };
 use axum::extract::{Path, State};
@@ -47,21 +47,29 @@ use errors::{
     ErrorResponse, error_response, map_blocking_task_error, map_session_error,
     request_not_found_response,
 };
+#[cfg(test)]
+use openai::requests::{
+    DEFAULT_OPENAI_MAX_TOKENS, chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
+    render_openai_chat_prompt,
+};
+use openai::requests::{
+    OpenAiBuiltRequest, build_generate_request_internal, build_openai_chat_request,
+    build_openai_completion_request, build_openai_llama_cpp_chat_request,
+    build_openai_mlx_lm_chat_request,
+};
 use openai::responses::{
     finish_reason_from_llama_cpp_chat, openai_finish_reason, unix_timestamp_secs,
 };
 use openai::schema::{
     OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatCompletionHttpRequest,
-    OpenAiChatContent, OpenAiChatDelta, OpenAiChatMessage, OpenAiCompletionChunk,
-    OpenAiCompletionChunkChoice, OpenAiCompletionHttpRequest, OpenAiEmbeddingObject,
-    OpenAiEmbeddingRequest, OpenAiEmbeddingResponse, OpenAiEmbeddingUsage, OpenAiPromptInput,
-    OpenAiStopInput, OpenAiStreamKind,
+    OpenAiChatDelta, OpenAiChatMessage, OpenAiCompletionChunk, OpenAiCompletionChunkChoice,
+    OpenAiCompletionHttpRequest, OpenAiEmbeddingObject, OpenAiEmbeddingRequest,
+    OpenAiEmbeddingResponse, OpenAiEmbeddingUsage, OpenAiStopInput, OpenAiStreamKind,
 };
 use openai::validation::{validate_model, validate_openai_request};
 use routes::build_router;
 
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
-const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 const STREAM_CHANNEL_CAPACITY: usize = 128;
 
 type StreamEvent = Result<Event, Infallible>;
@@ -1187,28 +1195,6 @@ fn runtime_response(state: &AppState) -> RuntimeResponse {
     state.runtime_report.clone()
 }
 
-struct OpenAiBuiltRequest {
-    generate_request: GenerateRequest,
-    stream: bool,
-}
-
-struct OpenAiBuiltPayload {
-    sampling: GenerateSampling,
-    stop_sequences: Vec<String>,
-    stream: bool,
-    metadata: Option<String>,
-}
-
-struct OpenAiBuiltMlxLmChatRequest {
-    chat_request: MlxLmChatGenerateRequest,
-    stream: bool,
-}
-
-struct OpenAiBuiltLlamaCppChatRequest {
-    chat_request: LlamaCppChatGenerateRequest,
-    stream: bool,
-}
-
 fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> GenerateRequest {
     build_generate_request_internal(
         state,
@@ -1219,328 +1205,6 @@ fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> Gen
         Vec::new(),
         request.metadata,
     )
-}
-
-fn build_openai_completion_request(
-    state: &AppState,
-    request: OpenAiCompletionHttpRequest,
-) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
-    let max_output_tokens = openai_max_tokens(request.max_tokens);
-    let (input_tokens, input_text) = match request.prompt {
-        OpenAiPromptInput::Text(text) => (Vec::new(), Some(text)),
-        OpenAiPromptInput::TextBatch(prompts) => {
-            return Err(error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                format!(
-                    "batch completion prompts are not supported by this preview endpoint; send one prompt per request (received {})",
-                    prompts.len()
-                ),
-            ));
-        }
-        OpenAiPromptInput::Tokens(tokens) => (tokens, None),
-    };
-
-    let payload = OpenAiBuiltPayload {
-        sampling: build_openai_sampling(
-            request.temperature,
-            request.top_p,
-            request.top_k,
-            request.min_p,
-            request.repetition_penalty,
-            request.repetition_context_size,
-            request.seed,
-        ),
-        stop_sequences: request
-            .stop
-            .map(OpenAiStopInput::into_vec)
-            .unwrap_or_default(),
-        stream: request.stream,
-        metadata: request.metadata,
-    };
-
-    Ok(build_openai_generate_request(
-        state,
-        input_tokens,
-        input_text,
-        max_output_tokens,
-        payload,
-    ))
-}
-
-fn build_openai_chat_request(
-    state: &AppState,
-    request: OpenAiChatCompletionHttpRequest,
-) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
-    let max_output_tokens = openai_max_tokens(request.max_tokens);
-    let input_text = render_openai_chat_prompt(state.model_id.as_ref(), &request.messages)?;
-
-    let payload = OpenAiBuiltPayload {
-        sampling: build_openai_sampling(
-            request.temperature,
-            request.top_p,
-            request.top_k,
-            request.min_p,
-            request.repetition_penalty,
-            request.repetition_context_size,
-            request.seed,
-        ),
-        stop_sequences: openai_chat_stop_sequences(state.model_id.as_ref(), request.stop),
-        stream: request.stream,
-        metadata: request.metadata,
-    };
-
-    Ok(build_openai_generate_request(
-        state,
-        Vec::new(),
-        Some(input_text),
-        max_output_tokens,
-        payload,
-    ))
-}
-
-fn build_openai_mlx_lm_chat_request(
-    state: &AppState,
-    request: OpenAiChatCompletionHttpRequest,
-) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
-    let max_output_tokens = openai_max_tokens(request.max_tokens);
-    let messages = build_mlx_lm_chat_messages(&request.messages)?;
-    let sampling = build_openai_sampling(
-        request.temperature,
-        request.top_p,
-        request.top_k,
-        request.min_p,
-        request.repetition_penalty,
-        request.repetition_context_size,
-        request.seed,
-    );
-    let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
-
-    Ok(OpenAiBuiltMlxLmChatRequest {
-        chat_request: MlxLmChatGenerateRequest {
-            model_id: state.model_id.to_string(),
-            messages,
-            max_output_tokens,
-            sampling,
-            stop_sequences,
-            metadata: request.metadata,
-            chat_template_kwargs: chat_template_kwargs_for_model_id(state.model_id.as_ref()),
-        },
-        stream: request.stream,
-    })
-}
-
-fn build_openai_llama_cpp_chat_request(
-    state: &AppState,
-    request: OpenAiChatCompletionHttpRequest,
-) -> Result<OpenAiBuiltLlamaCppChatRequest, (StatusCode, Json<ErrorResponse>)> {
-    let max_output_tokens = openai_max_tokens(request.max_tokens);
-    let messages = build_llama_cpp_chat_messages(&request.messages)?;
-    let sampling = build_openai_sampling(
-        request.temperature,
-        request.top_p,
-        request.top_k,
-        request.min_p,
-        request.repetition_penalty,
-        request.repetition_context_size,
-        request.seed,
-    );
-    let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
-
-    Ok(OpenAiBuiltLlamaCppChatRequest {
-        chat_request: LlamaCppChatGenerateRequest {
-            model_id: state.model_id.to_string(),
-            messages,
-            max_output_tokens,
-            sampling,
-            stop_sequences,
-            metadata: request.metadata,
-        },
-        stream: request.stream,
-    })
-}
-
-fn build_openai_generate_request(
-    state: &AppState,
-    input_tokens: Vec<u32>,
-    input_text: Option<String>,
-    max_output_tokens: u32,
-    payload: OpenAiBuiltPayload,
-) -> OpenAiBuiltRequest {
-    OpenAiBuiltRequest {
-        generate_request: build_generate_request_internal(
-            state,
-            input_tokens,
-            input_text,
-            max_output_tokens,
-            payload.sampling,
-            payload.stop_sequences,
-            payload.metadata,
-        ),
-        stream: payload.stream,
-    }
-}
-
-fn build_generate_request_internal(
-    state: &AppState,
-    input_tokens: Vec<u32>,
-    input_text: Option<String>,
-    max_output_tokens: u32,
-    sampling: GenerateSampling,
-    stop_sequences: Vec<String>,
-    metadata: Option<String>,
-) -> GenerateRequest {
-    GenerateRequest {
-        model_id: state.model_id.to_string(),
-        input_tokens,
-        input_text,
-        max_output_tokens,
-        sampling,
-        stop_sequences,
-        metadata,
-    }
-}
-
-fn build_openai_sampling(
-    temperature: Option<f32>,
-    top_p: Option<f32>,
-    top_k: Option<u32>,
-    min_p: Option<f32>,
-    repetition_penalty: Option<f32>,
-    repetition_context_size: Option<u32>,
-    seed: Option<u64>,
-) -> GenerateSampling {
-    GenerateSampling {
-        temperature: temperature.unwrap_or(0.0),
-        top_p: top_p.unwrap_or(1.0),
-        top_k: top_k.unwrap_or(0),
-        min_p,
-        repetition_penalty: repetition_penalty.unwrap_or(1.0),
-        repetition_context_size,
-        seed: seed.unwrap_or(0),
-        deterministic: None,
-    }
-}
-
-fn openai_max_tokens(max_tokens: Option<u32>) -> u32 {
-    max_tokens.unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
-}
-
-fn render_openai_chat_prompt(
-    model_id: &str,
-    messages: &[OpenAiChatMessage],
-) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
-    let rendered_messages = render_openai_chat_message_pairs(messages)?;
-    chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
-}
-
-fn build_mlx_lm_chat_messages(
-    messages: &[OpenAiChatMessage],
-) -> Result<Vec<MlxLmChatMessage>, (StatusCode, Json<ErrorResponse>)> {
-    if messages.is_empty() {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "chat.completions requires at least one message".to_string(),
-        ));
-    }
-
-    messages
-        .iter()
-        .map(|message| {
-            let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
-            let content = render_openai_chat_content(&message.content)?;
-            Ok(MlxLmChatMessage::new(role, content))
-        })
-        .collect()
-}
-
-fn build_llama_cpp_chat_messages(
-    messages: &[OpenAiChatMessage],
-) -> Result<Vec<LlamaCppChatMessage>, (StatusCode, Json<ErrorResponse>)> {
-    if messages.is_empty() {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "chat.completions requires at least one message".to_string(),
-        ));
-    }
-
-    messages
-        .iter()
-        .map(|message| {
-            let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
-            let content = render_openai_chat_content(&message.content)?;
-            Ok(LlamaCppChatMessage::new(role, content))
-        })
-        .collect()
-}
-
-fn chat_template_kwargs_for_model_id(model_id: &str) -> Option<serde_json::Value> {
-    chat::template_kwargs_for_model_id(model_id)
-}
-
-fn openai_chat_stop_sequences(model_id: &str, stop: Option<OpenAiStopInput>) -> Vec<String> {
-    chat::stop_sequences(
-        model_id,
-        stop.map(OpenAiStopInput::into_vec).unwrap_or_default(),
-    )
-}
-
-fn render_openai_chat_message_pairs(
-    messages: &[OpenAiChatMessage],
-) -> Result<Vec<(String, String)>, (StatusCode, Json<ErrorResponse>)> {
-    if messages.is_empty() {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "chat.completions requires at least one message".to_string(),
-        ));
-    }
-    messages
-        .iter()
-        .map(|message| {
-            let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
-            let content = render_openai_chat_content(&message.content)?;
-            Ok((role.to_string(), content))
-        })
-        .collect()
-}
-
-fn chat_error_response(message: String) -> (StatusCode, Json<ErrorResponse>) {
-    error_response(StatusCode::BAD_REQUEST, "invalid_request", message)
-}
-
-fn render_openai_chat_content(
-    content: &OpenAiChatContent,
-) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
-    match content {
-        OpenAiChatContent::Text(text) => Ok(text.clone()),
-        OpenAiChatContent::Parts(parts) => {
-            let mut rendered = String::new();
-            for part in parts {
-                if part.part_type != "text" {
-                    return Err(error_response(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        format!(
-                            "unsupported chat content part type {}; AX preview currently accepts text-only chat messages",
-                            part.part_type
-                        ),
-                    ));
-                }
-                let text = part.text.as_deref().ok_or_else(|| {
-                    error_response(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        "text chat content parts require a text field".to_string(),
-                    )
-                })?;
-                rendered.push_str(text);
-            }
-            Ok(rendered)
-        }
-    }
 }
 
 #[cfg(test)]
