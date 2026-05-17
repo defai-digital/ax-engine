@@ -4,6 +4,31 @@
 server, Python bindings, CLI tools) and the execution core. It owns backend
 resolution, session lifecycle, and all public request/response types.
 
+## Public Rust Surface
+
+The crate root is the stable Rust facade. Callers should prefer the re-exported
+`EngineSessionConfig`, `EngineSession`, `StatelessGenerateContext`,
+`GenerateRequest`, `GenerateResponse`, streaming event types, backend reports,
+and request reports from `ax_engine_sdk::*`.
+
+Backend-specific modules remain public for advanced configuration and delegated
+runtime wiring:
+
+| Module | Use when |
+|---|---|
+| `ax_engine_sdk::session` | You want the same session facade exports through their ownership module |
+| `ax_engine_sdk::backend` | You need backend resolution inputs, reports, or policy types |
+| `ax_engine_sdk::llama_cpp` | You configure llama.cpp CLI or server-completion integration directly |
+| `ax_engine_sdk::mlx_lm` | You configure `mlx_lm.server` integration or consume mlx-lm stream helpers |
+| `ax_engine_sdk::generate` | You need request, response, route, or stream event types by module path |
+| `ax_engine_sdk::request` | You need step/request lifecycle report types by module path |
+
+The internal `session/` module tree separates config, artifacts, route
+retention, native execution, delegated dispatch, llama.cpp lifecycle, stream
+state, and errors. That ownership split is intentionally hidden behind the
+existing crate-root and `session` re-exports so downstream code can keep using
+the same public paths.
+
 ## Position in the Stack
 
 ```

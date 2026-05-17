@@ -5,6 +5,19 @@
     clippy::unnecessary_lazy_evaluations
 )]
 
+//! Rust SDK facade for AX Engine runtimes.
+//!
+//! Most callers should build an [`EngineSessionConfig`] and use
+//! [`EngineSession`] or [`StatelessGenerateContext`] from the crate root. The
+//! root re-exports are the compatibility surface used by the server, Python
+//! bindings, CLI tools, and downstream integrations.
+//!
+//! Backend-specific modules such as [`llama_cpp`] and [`mlx_lm`] remain public
+//! for advanced configuration and delegated runtime wiring. Prefer the session
+//! facade unless the integration needs backend-native request or stream types.
+//! The internal `session/*` module tree owns lifecycle details while preserving
+//! the existing crate-root exports.
+
 pub use ax_engine_core::{
     CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvManagerConfig, MlxKvCompressionConfig,
     MlxKvCompressionMode, MlxTurboQuantPreset,
