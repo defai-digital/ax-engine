@@ -93,3 +93,47 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MetalRuntime(_) => EngineInferenceError::new_err(error.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::exceptions::{PyRuntimeError, PyValueError};
+    use std::sync::Once;
+
+    fn init_python() {
+        static PYTHON_INIT: Once = Once::new();
+        PYTHON_INIT.call_once(pyo3::prepare_freethreaded_python);
+    }
+
+    #[test]
+    fn python_engine_errors_use_custom_exception_hierarchy() {
+        init_python();
+
+        Python::with_gil(|py| {
+            let backend_error = to_py_runtime_error(EngineSessionError::LlamaCpp(
+                LlamaCppBackendError::HttpStatus {
+                    endpoint: "http://127.0.0.1:8081/completion".to_string(),
+                    status: 502,
+                    body: "bad gateway".to_string(),
+                },
+            ));
+            assert!(backend_error.is_instance_of::<EngineBackendError>(py));
+            assert!(backend_error.is_instance_of::<EngineError>(py));
+            assert!(backend_error.is_instance_of::<PyRuntimeError>(py));
+
+            let inference_error = to_py_runtime_error(EngineSessionError::EmbeddingNotSupported);
+            assert!(inference_error.is_instance_of::<EngineInferenceError>(py));
+            assert!(inference_error.is_instance_of::<EngineError>(py));
+            assert!(inference_error.is_instance_of::<PyRuntimeError>(py));
+
+            let state_error = py_engine_state_error("session is closed");
+            assert!(state_error.is_instance_of::<EngineStateError>(py));
+            assert!(state_error.is_instance_of::<EngineError>(py));
+            assert!(state_error.is_instance_of::<PyRuntimeError>(py));
+
+            let validation_error = to_py_runtime_error(EngineSessionError::EmptyInputTokens);
+            assert!(validation_error.is_instance_of::<PyValueError>(py));
+            assert!(!validation_error.is_instance_of::<EngineError>(py));
+        });
+    }
+}

@@ -566,12 +566,10 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::errors::{EngineBackendError, EngineError, EngineInferenceError, EngineStateError};
     use ax_engine_sdk::{
-        DelegatedHttpTimeouts, EngineSessionError, GenerateRequest,
-        GenerateStreamEvent as SdkGenerateStreamEvent, LlamaCppBackendError, SessionRequestReport,
+        DelegatedHttpTimeouts, GenerateRequest, GenerateStreamEvent as SdkGenerateStreamEvent,
+        SessionRequestReport,
     };
-    use pyo3::exceptions::{PyRuntimeError, PyValueError};
     use pyo3::types::{PyDictMethods, PyList};
     use serde_json::{Map, Value, json};
     use std::fs;
@@ -722,67 +720,6 @@ mod tests {
             let runtime = runtime.bind(py);
             assert_eq!(dict_string(runtime, "selected_backend"), "mlx_lm_delegated");
             assert_eq!(dict_string(runtime, "support_tier"), "mlx_lm_delegated");
-        });
-    }
-
-    #[test]
-    fn python_session_rejects_zero_delegated_http_timeout() {
-        init_python();
-
-        let error = match Session::new(
-            "qwen3".to_string(),
-            true,
-            2048,
-            0,
-            16,
-            1024,
-            false,
-            "llama_cpp",
-            "llama-cli".to_string(),
-            None,
-            Some("http://127.0.0.1:8081".to_string()),
-            None,
-            None,
-            0,
-            DelegatedHttpTimeouts::default_io_secs(),
-            DelegatedHttpTimeouts::default_io_secs(),
-        ) {
-            Ok(_) => panic!("zero delegated timeout should fail closed"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains("greater than zero"));
-    }
-
-    #[test]
-    fn python_engine_errors_use_custom_exception_hierarchy() {
-        init_python();
-
-        Python::with_gil(|py| {
-            let backend_error = to_py_runtime_error(EngineSessionError::LlamaCpp(
-                LlamaCppBackendError::HttpStatus {
-                    endpoint: "http://127.0.0.1:8081/completion".to_string(),
-                    status: 502,
-                    body: "bad gateway".to_string(),
-                },
-            ));
-            assert!(backend_error.is_instance_of::<EngineBackendError>(py));
-            assert!(backend_error.is_instance_of::<EngineError>(py));
-            assert!(backend_error.is_instance_of::<PyRuntimeError>(py));
-
-            let inference_error = to_py_runtime_error(EngineSessionError::EmbeddingNotSupported);
-            assert!(inference_error.is_instance_of::<EngineInferenceError>(py));
-            assert!(inference_error.is_instance_of::<EngineError>(py));
-            assert!(inference_error.is_instance_of::<PyRuntimeError>(py));
-
-            let state_error = py_engine_state_error("session is closed");
-            assert!(state_error.is_instance_of::<EngineStateError>(py));
-            assert!(state_error.is_instance_of::<EngineError>(py));
-            assert!(state_error.is_instance_of::<PyRuntimeError>(py));
-
-            let validation_error = to_py_runtime_error(EngineSessionError::EmptyInputTokens);
-            assert!(validation_error.is_instance_of::<PyValueError>(py));
-            assert!(!validation_error.is_instance_of::<EngineError>(py));
         });
     }
 

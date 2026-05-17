@@ -28,3 +28,45 @@ pub(crate) fn floats_to_pybytes<'py>(
         Ok(())
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Once;
+
+    fn init_python() {
+        static PYTHON_INIT: Once = Once::new();
+        PYTHON_INIT.call_once(pyo3::prepare_freethreaded_python);
+    }
+
+    #[test]
+    fn parse_pooling_accepts_supported_labels() {
+        assert_eq!(parse_pooling("last").unwrap(), EmbeddingPooling::Last);
+        assert_eq!(parse_pooling("mean").unwrap(), EmbeddingPooling::Mean);
+        assert_eq!(parse_pooling("cls").unwrap(), EmbeddingPooling::Cls);
+    }
+
+    #[test]
+    fn parse_pooling_rejects_unknown_label() {
+        let error = parse_pooling("sum").expect_err("unsupported pooling should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("expected 'last', 'mean', or 'cls'")
+        );
+    }
+
+    #[test]
+    fn floats_to_pybytes_uses_little_endian_f32_layout() {
+        init_python();
+
+        Python::with_gil(|py| {
+            let bytes = floats_to_pybytes(py, &[1.0, -2.5]).expect("floats should encode");
+            assert_eq!(
+                bytes.as_bytes(),
+                &[0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x20, 0xc0]
+            );
+        });
+    }
+}
