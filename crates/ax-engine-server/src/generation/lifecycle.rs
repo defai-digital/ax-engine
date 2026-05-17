@@ -7,6 +7,7 @@ use crate::app_state::AppState;
 use crate::errors::{ErrorResponse, map_session_error, request_not_found_response};
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
 use crate::openai::validation::validate_model;
+use crate::tasks::run_blocking_session_task;
 
 pub(crate) async fn submit_request(
     State(state): State<AppState>,
@@ -17,7 +18,7 @@ pub(crate) async fn submit_request(
     let request_id = state.allocate_request_id();
     let request = build_generate_request(&state, request);
     let request_session = state.request_session.clone();
-    let report = crate::run_blocking_session_task(move || {
+    let report = run_blocking_session_task(move || {
         let mut session = request_session.blocking_lock();
         let request_id = session.submit_generate_with_request_id(request_id, request)?;
         session.request_report(request_id).ok_or(
@@ -67,7 +68,7 @@ pub(crate) async fn step_request(
     State(state): State<AppState>,
 ) -> Result<Json<EngineStepReport>, (StatusCode, Json<ErrorResponse>)> {
     let request_session = state.request_session.clone();
-    let report = crate::run_blocking_session_task(move || {
+    let report = run_blocking_session_task(move || {
         let mut session = request_session.blocking_lock();
         session.step_report()
     })

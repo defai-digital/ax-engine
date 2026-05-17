@@ -14,6 +14,7 @@ use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::streaming::{
     stream_openai_llama_cpp_chat_request, stream_openai_mlx_lm_chat_request, stream_openai_request,
 };
+use crate::tasks::run_blocking_session_task;
 
 pub(crate) async fn run_openai_llama_cpp_chat_generation(
     state: AppState,
@@ -34,7 +35,7 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
             selected_backend: state.runtime_report.selected_backend,
         })
         .map_err(map_session_error)?;
-    let response = crate::run_blocking_session_task(move || {
+    let response = run_blocking_session_task(move || {
         run_blocking_llama_cpp_chat_generate(
             request_id,
             &runtime,
@@ -65,7 +66,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         .clone()
         .ok_or(EngineSessionError::MissingMlxLmConfig)
         .map_err(map_session_error)?;
-    let response = crate::run_blocking_session_task(move || {
+    let response = run_blocking_session_task(move || {
         run_blocking_chat_generate(request_id, &runtime, &mlx_lm_backend, &request.chat_request)
             .map_err(EngineSessionError::from)
     })

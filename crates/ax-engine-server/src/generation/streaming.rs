@@ -17,6 +17,7 @@ use crate::app_state::AppState;
 use crate::errors::{ErrorResponse, map_session_error};
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
 use crate::openai::validation::validate_model;
+use crate::tasks::run_blocking_session_task;
 
 const STREAM_CHANNEL_CAPACITY: usize = 128;
 
@@ -70,7 +71,7 @@ pub(crate) async fn build_stream_state(
     {
         let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
         let stream_context = Arc::clone(&stateless_generate_context);
-        let stream_state = crate::run_blocking_session_task(move || {
+        let stream_state = run_blocking_session_task(move || {
             stream_context.stream_state_with_request_id(request_id, request)
         })
         .await?;
@@ -82,7 +83,7 @@ pub(crate) async fn build_stream_state(
     }
 
     let session_config = state.session_config.as_ref().clone();
-    let (session, stream_state) = crate::run_blocking_session_task(move || {
+    let (session, stream_state) = run_blocking_session_task(move || {
         let mut session = EngineSession::new(session_config)?;
         let stream_state = session.stream_generate_state_with_request_id(request_id, request)?;
         Ok((session, stream_state))

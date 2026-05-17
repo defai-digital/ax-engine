@@ -24,6 +24,7 @@ use crate::openai::schema::{
     OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatDelta,
     OpenAiCompletionChunk, OpenAiCompletionChunkChoice, OpenAiStreamKind,
 };
+use crate::tasks::run_blocking_session_task;
 
 const STREAM_CHANNEL_CAPACITY: usize = 128;
 
@@ -68,7 +69,7 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
         .clone()
         .ok_or(EngineSessionError::MissingMlxLmConfig)
         .map_err(map_session_error)?;
-    let stream = crate::run_blocking_session_task(move || {
+    let stream = run_blocking_session_task(move || {
         start_streaming_chat_generate(&runtime, &mlx_lm_backend, &request)
             .map_err(EngineSessionError::from)
     })
@@ -97,7 +98,7 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
             selected_backend: state.runtime_report.selected_backend,
         })
         .map_err(map_session_error)?;
-    let stream = crate::run_blocking_session_task(move || {
+    let stream = run_blocking_session_task(move || {
         start_streaming_llama_cpp_chat_generate(&runtime, &llama_backend, &request)
             .map_err(EngineSessionError::from)
     })

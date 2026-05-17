@@ -9,6 +9,7 @@ use crate::app_state::AppState;
 use crate::errors::ErrorResponse;
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
 use crate::openai::validation::validate_model;
+use crate::tasks::run_blocking_session_task;
 
 pub(crate) async fn generate(
     State(state): State<AppState>,
@@ -28,10 +29,9 @@ pub(crate) async fn run_stateless_generate_request(
 ) -> Result<(u64, GenerateResponse), (StatusCode, Json<ErrorResponse>)> {
     let request_id = state.allocate_request_id();
     let context = Arc::clone(&state.stateless_generate_context);
-    let response = crate::run_blocking_session_task(move || {
-        context.generate_with_request_id(request_id, request)
-    })
-    .await?;
+    let response =
+        run_blocking_session_task(move || context.generate_with_request_id(request_id, request))
+            .await?;
 
     Ok((request_id, response))
 }

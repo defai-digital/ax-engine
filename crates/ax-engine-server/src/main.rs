@@ -4,8 +4,7 @@ use std::env;
 
 #[cfg(test)]
 use ax_engine_sdk::{EmbeddingPooling, GenerateFinishReason, GenerateRequest, GenerateStreamEvent};
-use ax_engine_sdk::{EngineSession, EngineSessionConfig, EngineSessionError};
-use axum::Json;
+use ax_engine_sdk::{EngineSession, EngineSessionConfig};
 #[cfg(test)]
 use axum::Router;
 use axum::http::StatusCode;
@@ -25,6 +24,7 @@ mod grpc;
 mod metadata;
 mod openai;
 mod routes;
+mod tasks;
 
 #[cfg(test)]
 use app_state::AppState;
@@ -34,7 +34,6 @@ use app_state::{EmbeddingBatchKey, EmbeddingBatchRequestOptions};
 use args::{ServerArgs, render_presets};
 #[cfg(test)]
 use embeddings::microbatch::{collect_embedding_batch_groups, pooling_code};
-use errors::{ErrorResponse, map_blocking_task_error, map_session_error};
 #[cfg(test)]
 use openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request, chat_template_kwargs_for_model_id,
@@ -175,19 +174,6 @@ fn init_tracing() -> bool {
         .compact()
         .try_init()
         .is_ok()
-}
-
-pub(crate) async fn run_blocking_session_task<T, F>(
-    operation: F,
-) -> Result<T, (StatusCode, Json<ErrorResponse>)>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, EngineSessionError> + Send + 'static,
-{
-    tokio::task::spawn_blocking(operation)
-        .await
-        .map_err(map_blocking_task_error)?
-        .map_err(map_session_error)
 }
 
 #[cfg(test)]
