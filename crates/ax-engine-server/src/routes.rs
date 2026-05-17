@@ -3,11 +3,13 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 
 use super::app_state::AppState;
+use super::generation::lifecycle::{
+    cancel_request, request_snapshot, step_request, submit_request,
+};
 use super::metadata::{health, models, runtime_info};
 use super::openai::embeddings::openai_embeddings;
 use super::{
-    MAX_REQUEST_BODY_BYTES, cancel_request, generate, generate_stream, openai_chat_completions,
-    openai_completions, request_snapshot, step_request, submit_request,
+    MAX_REQUEST_BODY_BYTES, generate, generate_stream, openai_chat_completions, openai_completions,
 };
 
 pub(crate) fn build_router(state: AppState) -> Router {

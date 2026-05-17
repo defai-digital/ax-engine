@@ -6,15 +6,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ax_engine_sdk::{
-    EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
-    GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateStreamEvent,
-    GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppConfig, LlamaCppStreamHandle,
-    MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend, SessionRequestReport,
-    StatelessGenerateContext, finish_reason_from_mlx_lm, run_blocking_chat_generate,
-    run_blocking_llama_cpp_chat_generate, start_streaming_chat_generate,
-    start_streaming_llama_cpp_chat_generate,
+    EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, GenerateFinishReason,
+    GenerateRequest, GenerateResponse, GenerateStreamEvent, GenerateStreamState,
+    LlamaCppChatGenerateRequest, LlamaCppConfig, LlamaCppStreamHandle, MlxLmChatGenerateRequest,
+    MlxLmStreamHandle, SelectedBackend, StatelessGenerateContext, finish_reason_from_mlx_lm,
+    run_blocking_chat_generate, run_blocking_llama_cpp_chat_generate,
+    start_streaming_chat_generate, start_streaming_llama_cpp_chat_generate,
 };
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -45,9 +44,7 @@ use app_state::{EmbeddingBatchKey, EmbeddingBatchRequestOptions};
 use args::{ServerArgs, render_presets};
 #[cfg(test)]
 use embeddings::microbatch::{collect_embedding_batch_groups, pooling_code};
-use errors::{
-    ErrorResponse, map_blocking_task_error, map_session_error, request_not_found_response,
-};
+use errors::{ErrorResponse, map_blocking_task_error, map_session_error};
 use generation::requests::{GenerateHttpRequest, build_generate_request};
 #[cfg(test)]
 use openai::requests::{
@@ -495,30 +492,6 @@ async fn build_stream_state(
     Ok((stream_state, StreamStateSource::Stateful(Box::new(session))))
 }
 
-async fn submit_request(
-    State(state): State<AppState>,
-    Json(request): Json<GenerateHttpRequest>,
-) -> Result<(StatusCode, Json<SessionRequestReport>), (StatusCode, Json<ErrorResponse>)> {
-    validate_model(&state, request.model.as_deref())?;
-
-    let request_id = allocate_request_id(&state);
-    let request = build_generate_request(&state, request);
-    let request_session = state.request_session.clone();
-    let report = run_blocking_session_task(move || {
-        let mut session = request_session.blocking_lock();
-        let request_id = session.submit_generate_with_request_id(request_id, request)?;
-        session.request_report(request_id).ok_or(
-            EngineSessionError::RequestReportInvariantViolation {
-                request_id,
-                message: "request missing immediately after submission",
-            },
-        )
-    })
-    .await?;
-
-    Ok((StatusCode::CREATED, Json(report)))
-}
-
 fn allocate_request_id(state: &AppState) -> u64 {
     state.allocate_request_id()
 }
@@ -945,50 +918,7 @@ fn send_openai_stream_chunk<T: Serialize>(tx: &StreamEventSender, payload: &T) -
     }
 }
 
-async fn request_snapshot(
-    State(state): State<AppState>,
-    Path(request_id): Path<u64>,
-) -> Result<Json<SessionRequestReport>, (StatusCode, Json<ErrorResponse>)> {
-    let session = state.request_session.lock().await;
-    let report = session
-        .request_report(request_id)
-        .ok_or_else(|| request_not_found_response(request_id))?;
-
-    Ok(Json(report))
-}
-
-async fn cancel_request(
-    State(state): State<AppState>,
-    Path(request_id): Path<u64>,
-) -> Result<Json<SessionRequestReport>, (StatusCode, Json<ErrorResponse>)> {
-    let mut session = state.request_session.lock().await;
-    if session.request_report(request_id).is_none() {
-        return Err(request_not_found_response(request_id));
-    }
-
-    session
-        .cancel_request(request_id)
-        .map_err(map_session_error)?;
-    let report = session
-        .request_report(request_id)
-        .ok_or_else(|| request_not_found_response(request_id))?;
-
-    Ok(Json(report))
-}
-
-async fn step_request(
-    State(state): State<AppState>,
-) -> Result<Json<EngineStepReport>, (StatusCode, Json<ErrorResponse>)> {
-    let request_session = state.request_session.clone();
-    let report = run_blocking_session_task(move || {
-        let mut session = request_session.blocking_lock();
-        session.step_report()
-    })
-    .await?;
-    Ok(Json(report))
-}
-
-async fn run_blocking_session_task<T, F>(
+pub(crate) async fn run_blocking_session_task<T, F>(
     operation: F,
 ) -> Result<T, (StatusCode, Json<ErrorResponse>)>
 where
