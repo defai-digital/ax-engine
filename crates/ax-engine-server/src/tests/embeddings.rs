@@ -6,13 +6,13 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 
-use super::{
+use super::fixtures::{
     assert_invalid_request_response, json_request_body, json_response, llama_cpp_server_state,
 };
 
 fn sample_openai_embedding_request(input: &[u32], pooling: Option<&str>) -> Value {
     let mut request = serde_json::Map::new();
-    request.insert("model".to_string(), json!(super::TEST_MODEL_ID));
+    request.insert("model".to_string(), json!(super::fixtures::TEST_MODEL_ID));
     request.insert("input".to_string(), json!(input));
     if let Some(pooling) = pooling {
         request.insert("pooling".to_string(), json!(pooling));

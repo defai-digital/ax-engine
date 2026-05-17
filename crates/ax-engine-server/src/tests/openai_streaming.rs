@@ -3,7 +3,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 
-use super::{
+use super::fixtures::{
     json_request_body, llama_cpp_server_state, mlx_lm_delegated_state, openai_first_choice,
     parse_openai_sse_payloads, sample_openai_chat_request, sample_openai_completion_request,
     spawn_llama_cpp_completion_stream_server, text_response,

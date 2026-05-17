@@ -3,7 +3,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 
-use super::{
+use super::fixtures::{
     json_request_body, json_response, llama_cpp_server_state, normalize_measurement_fields,
     sample_http_request, sample_sdk_request, sdk_session_for_state,
     spawn_llama_cpp_completion_stream_server,

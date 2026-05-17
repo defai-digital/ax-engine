@@ -4,7 +4,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 
-use super::{
+use super::fixtures::{
     assert_invalid_request_response, json_request_body, json_response, llama_cpp_server_state,
     mlx_lm_delegated_state, openai_first_choice, sample_openai_completion_request,
     sample_openai_request_base, spawn_llama_cpp_completion_server,
