@@ -9,8 +9,8 @@ use std::time::Duration;
 use ax_engine_sdk::{EmbeddingPooling, GenerateFinishReason};
 use ax_engine_sdk::{
     EngineSession, EngineSessionConfig, EngineSessionError, GenerateRequest, GenerateStreamEvent,
-    GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppConfig, LlamaCppStreamHandle,
-    MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend, StatelessGenerateContext,
+    GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppStreamHandle,
+    MlxLmChatGenerateRequest, MlxLmStreamHandle, StatelessGenerateContext,
     finish_reason_from_mlx_lm, run_blocking_chat_generate, run_blocking_llama_cpp_chat_generate,
     start_streaming_chat_generate, start_streaming_llama_cpp_chat_generate,
 };
@@ -52,12 +52,11 @@ use generation::native::run_stateless_generate_request;
 use generation::requests::{GenerateHttpRequest, build_generate_request};
 #[cfg(test)]
 use openai::requests::{
-    DEFAULT_OPENAI_MAX_TOKENS, chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
-    render_openai_chat_prompt,
+    DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request, chat_template_kwargs_for_model_id,
+    openai_chat_stop_sequences, render_openai_chat_prompt,
 };
 use openai::requests::{
-    OpenAiBuiltRequest, build_openai_chat_request, build_openai_llama_cpp_chat_request,
-    build_openai_mlx_lm_chat_request,
+    OpenAiBuiltRequest, build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
 };
 use openai::responses::{
     finish_reason_from_llama_cpp_chat, openai_finish_reason, unix_timestamp_secs,
@@ -68,7 +67,7 @@ use openai::schema::{
 };
 #[cfg(test)]
 use openai::schema::{OpenAiChatMessage, OpenAiStopInput};
-use openai::validation::{validate_model, validate_openai_request};
+use openai::validation::validate_model;
 use routes::build_router;
 
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -207,28 +206,7 @@ fn init_tracing() -> bool {
         .is_ok()
 }
 
-async fn openai_chat_completions(
-    State(state): State<AppState>,
-    Json(request): Json<OpenAiChatCompletionHttpRequest>,
-) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_request(&state, request.model.as_deref())?;
-    if state.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated {
-        return run_openai_mlx_lm_chat_generation(state, request).await;
-    }
-    if state.runtime_report.selected_backend == SelectedBackend::LlamaCpp
-        && matches!(
-            state.session_config.llama_backend.as_ref(),
-            Some(LlamaCppConfig::ServerCompletion(_))
-        )
-    {
-        return run_openai_llama_cpp_chat_generation(state, request).await;
-    }
-    let request = build_openai_chat_request(&state, request)?;
-
-    run_openai_text_generation(state, request, OpenAiStreamKind::ChatCompletion).await
-}
-
-async fn run_openai_llama_cpp_chat_generation(
+pub(crate) async fn run_openai_llama_cpp_chat_generation(
     state: AppState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
@@ -261,7 +239,7 @@ async fn run_openai_llama_cpp_chat_generation(
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(&response, request_id))
 }
 
-async fn run_openai_mlx_lm_chat_generation(
+pub(crate) async fn run_openai_mlx_lm_chat_generation(
     state: AppState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {

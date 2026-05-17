@@ -8,9 +8,10 @@ use super::generation::lifecycle::{
 };
 use super::generation::native::generate;
 use super::metadata::{health, models, runtime_info};
+use super::openai::chat::openai_chat_completions;
 use super::openai::completions::openai_completions;
 use super::openai::embeddings::openai_embeddings;
-use super::{MAX_REQUEST_BODY_BYTES, generate_stream, openai_chat_completions};
+use super::{MAX_REQUEST_BODY_BYTES, generate_stream};
 
 pub(crate) fn build_router(state: AppState) -> Router {
     Router::new()
