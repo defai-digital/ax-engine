@@ -1,6 +1,6 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, add, arange, argpartition_axis, astype, divide, floor, log, multiply,
-    negative, reshape, rms_norm, rope, slice_last_dim, take_along_axis, transpose,
+    MlxArray, MlxDtype, add, arange, argpartition_axis, astype, broadcast_to, divide, floor, log,
+    multiply, negative, reshape, rms_norm, rope, slice_last_dim, take_along_axis, transpose,
 };
 
 use super::super::ModelConfig;
@@ -15,8 +15,7 @@ use crate::weights::LayerWeights;
 
 /// Returns true when this layer uses RoPE, false for iRoPE (no-rope) layers.
 fn layer_uses_rope(cfg: &ModelConfig, layer_idx: usize) -> bool {
-    cfg.no_rope_layer_interval == 0
-        || !(layer_idx + 1).is_multiple_of(cfg.no_rope_layer_interval)
+    cfg.no_rope_layer_interval == 0 || !(layer_idx + 1).is_multiple_of(cfg.no_rope_layer_interval)
 }
 
 /// Returns true when this layer is a MoE layer (same interval as no-rope).
@@ -61,13 +60,25 @@ pub(crate) fn layer_forward(
         .expect("k projection output must divide by head_dim");
 
     // Reshape to BSHD for norm/RoPE.
-    let q = reshape(&q_raw, &[1, seq as i32, cfg.n_heads as i32, head_dim as i32], None);
-    let k = reshape(&k_raw, &[1, seq as i32, kv_heads as i32, head_dim as i32], None);
-    let v = reshape(&v_raw, &[1, seq as i32, kv_heads as i32, head_dim as i32], None);
+    let q = reshape(
+        &q_raw,
+        &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
+        None,
+    );
+    let k = reshape(
+        &k_raw,
+        &[1, seq as i32, kv_heads as i32, head_dim as i32],
+        None,
+    );
+    let v = reshape(
+        &v_raw,
+        &[1, seq as i32, kv_heads as i32, head_dim as i32],
+        None,
+    );
 
-    // 3. QK norm without weight (rope layers only in LLaMA4).
-    //    LLaMA4 applies no-weight RMSNorm on rope layers (qk_norm weight absent).
-    let (q, k) = if use_rope && cfg.no_rope_layer_interval > 0 {
+    // 3. QK norm without weight (all rope layers, regardless of iRoPE interval config).
+    //    LLaMA4 applies no-weight RMSNorm on every rope layer.
+    let (q, k) = if use_rope {
         (
             rms_norm(&q, None, 1e-6, None),
             rms_norm(&k, None, 1e-6, None),
@@ -82,7 +93,9 @@ pub(crate) fn layer_forward(
     let v = prepare_value_bhsd(v, false, kv_heads, head_dim, seq, cfg.rms_norm_eps);
 
     // 5. RoPE (traditional=true for LLaMA4, rope layers only).
-    let (rope_base, rope_freqs_ref) = cfg.rope_freqs.as_ref()
+    let (rope_base, rope_freqs_ref) = cfg
+        .rope_freqs
+        .as_ref()
         .map(|f| (None, Some(f)))
         .unwrap_or((Some(rope_theta), None));
 
@@ -127,11 +140,13 @@ pub(crate) fn layer_forward(
             MlxDtype::Float32,
             None,
         );
-        let floor_scale_arr = mlx_sys::ops::cached_scalar(cfg.attn_temperature_floor, MlxDtype::Float32);
+        let floor_scale_arr =
+            mlx_sys::ops::cached_scalar(cfg.attn_temperature_floor, MlxDtype::Float32);
         let floored = floor(&divide(&positions, &floor_scale_arr, None), None);
         let one = mlx_sys::ops::cached_scalar(1.0, MlxDtype::Float32);
         let log_part = log(&add(&floored, &one, None), None);
-        let attn_scale_arr = mlx_sys::ops::cached_scalar(cfg.attn_temperature_scale, MlxDtype::Float32);
+        let attn_scale_arr =
+            mlx_sys::ops::cached_scalar(cfg.attn_temperature_scale, MlxDtype::Float32);
         let attn_scales = add(&multiply(&log_part, &attn_scale_arr, None), &one, None);
         // scales: [seq] → [1, 1, seq, 1] to broadcast over [B, H, seq, D].
         let scales = reshape(&attn_scales, &[1, 1, seq as i32, 1], None);
@@ -201,10 +216,25 @@ pub(crate) fn layer_forward(
 /// matching LLaMA3. The `intermediate_size_mlp` field controls the projection
 /// size for dense layers; the weights are already the correct shape at load time.
 fn llama4_dense_ffn(w: &LayerWeights, x: &MlxArray) -> MlxArray {
-    let gate = qw(x, w.gate_proj.as_ref().expect("LLaMA4 dense FFN layer must have gate_proj"));
-    let up = qw(x, w.up_proj.as_ref().expect("LLaMA4 dense FFN layer must have up_proj"));
+    let gate = qw(
+        x,
+        w.gate_proj
+            .as_ref()
+            .expect("LLaMA4 dense FFN layer must have gate_proj"),
+    );
+    let up = qw(
+        x,
+        w.up_proj
+            .as_ref()
+            .expect("LLaMA4 dense FFN layer must have up_proj"),
+    );
     let act = multiply(&mlx_sys::ops::silu(&gate, None), &up, None);
-    qw(&act, w.down_proj.as_ref().expect("LLaMA4 dense FFN layer must have down_proj"))
+    qw(
+        &act,
+        w.down_proj
+            .as_ref()
+            .expect("LLaMA4 dense FFN layer must have down_proj"),
+    )
 }
 
 /// LLaMA-4 MoE: top-1 sigmoid routing + shared expert.
@@ -212,7 +242,10 @@ fn llama4_dense_ffn(w: &LayerWeights, x: &MlxArray) -> MlxArray {
 /// Router uses sigmoid (not softmax) scores. Top-1 selection via argpartition.
 /// The expert output is summed with a shared expert applied to the same input.
 fn llama4_moe_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
-    let router = w.router_proj.as_ref().expect("LLaMA4 MoE layer must have router_proj");
+    let router = w
+        .router_proj
+        .as_ref()
+        .expect("LLaMA4 MoE layer must have router_proj");
     let logits = qw(x, router);
 
     // Top-1 by argpartition on negated logits (select the maximum logit).
@@ -230,8 +263,15 @@ fn llama4_moe_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxA
         None,
     );
 
-    // Expert dispatch (reuses existing gather_qmm / gather_mm path).
-    let expert_out = moe_experts_forward(cfg, w, x, &indices, &scores);
+    // LLaMA4 uses input-weighted routing: expert receives (score * x), not score * expert(x).
+    // silu(W_gate * (s*x)) ≠ s * silu(W_gate * x), so input- and output-weighting differ.
+    let x_scaled = multiply(x, &scores, None);
+    let ones_scores = broadcast_to(
+        &mlx_sys::ops::cached_scalar(1.0_f32, scores.dtype()),
+        &scores.shape(),
+        None,
+    );
+    let expert_out = moe_experts_forward(cfg, w, &x_scaled, &indices, &ones_scores);
 
     // Shared expert: applied to the pre-normed input and added directly.
     let shared_out = shared_expert_forward(cfg, w, x);

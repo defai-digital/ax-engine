@@ -4052,8 +4052,7 @@ fn deterministic_model_bound_sampleable_items_omit_all_logits_payloads() {
         .iter_mut()
         .for_each(|context| context.deterministic_argmax_sampling = true);
     let mut decode_only_input = input.clone();
-    decode_only_input.execution_batch.execution_plan_ref =
-        Some("phase1.qwen3.decode_only".into());
+    decode_only_input.execution_batch.execution_plan_ref = Some("phase1.qwen3.decode_only".into());
     decode_only_input
         .execution_batch
         .items

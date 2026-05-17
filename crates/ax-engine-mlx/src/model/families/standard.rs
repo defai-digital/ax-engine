@@ -4,9 +4,9 @@ use std::time::Instant;
 use super::super::ModelConfig;
 use super::super::config::layer_params;
 use super::super::profile::{
-    DecodeProfileStage, Gemma4MoeProfileStage, decode_profile_enabled, forward_profile_eval_elapsed,
-    gemma4_moe_profile_enabled, prefill_profile_enabled, profile_eval_elapsed,
-    record_gemma4_moe_decode_layer,
+    DecodeProfileStage, Gemma4MoeProfileStage, decode_profile_enabled,
+    forward_profile_eval_elapsed, gemma4_moe_profile_enabled, prefill_profile_enabled,
+    profile_eval_elapsed, record_gemma4_moe_decode_layer,
 };
 use super::super::shared::{
     attention_mask_array, attention_output_projection, ffn_swiglu, full_precision_attention,
@@ -89,7 +89,9 @@ pub(crate) fn layer_forward(
             }
             let rope_kv_started = profile_forward_layer.then(Instant::now);
             let q = transpose(&q, &[0, 2, 1, 3], None);
-            let (rope_base, rope_freqs_ref) = cfg.rope_freqs.as_ref()
+            let (rope_base, rope_freqs_ref) = cfg
+                .rope_freqs
+                .as_ref()
                 .map(|f| (None, Some(f)))
                 .unwrap_or((Some(rope_theta), None));
             let q_rope = rope(
@@ -189,7 +191,9 @@ pub(crate) fn layer_forward(
                 cfg.rms_norm_eps,
             );
 
-            let (rope_base, rope_freqs_ref) = cfg.rope_freqs.as_ref()
+            let (rope_base, rope_freqs_ref) = cfg
+                .rope_freqs
+                .as_ref()
                 .map(|f| (None, Some(f)))
                 .unwrap_or((Some(rope_theta), None));
             let q_rope = rope(

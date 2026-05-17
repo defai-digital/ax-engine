@@ -379,8 +379,10 @@ impl RequestManager {
                     summary.ttft_events += 1;
                 }
                 let stop = sampled_token.stop_reason;
-                record.generated_tokens.push(sampled_token.token_id);
-                record.generated_token_logprobs.push(sampled_token.logprob);
+                if !matches!(stop, Some(StopReason::EosToken)) {
+                    record.generated_tokens.push(sampled_token.token_id);
+                    record.generated_token_logprobs.push(sampled_token.logprob);
+                }
                 stop
             } else {
                 let next_processed_prompt_tokens = record

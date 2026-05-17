@@ -31,8 +31,8 @@ pub(crate) fn build_llama3_rope_freqs(
             } else if wavelen > low_wavelen {
                 base_freq / factor
             } else {
-                let smooth = (orig / wavelen - low_freq_factor)
-                    / (high_freq_factor - low_freq_factor);
+                let smooth =
+                    (orig / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor);
                 (1.0 - smooth) * base_freq / factor + smooth * base_freq
             }
         })

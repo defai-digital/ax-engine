@@ -1,6 +1,6 @@
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, dequantize,
-    reshape, rms_norm, rope, slice, split, take, take_along_axis, transpose,
+    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, dequantize, reshape,
+    rms_norm, rope, slice, split, take, take_along_axis, transpose,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -29,7 +29,7 @@ pub use turboquant_context::{
 mod config;
 use config::layer_params;
 pub use config::{
-    MlaAttentionConfig, GlmRouterConfig, LayerConfig, LinearAttentionConfig, ModelConfig,
+    GlmRouterConfig, LayerConfig, LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
 };
 
 pub(crate) mod shared;
@@ -47,7 +47,10 @@ use ax_engine_core::{MlxKvCompressionConfig, MlxTurboQuantPreset, NativeModelMan
 #[cfg(test)]
 use mlx_sys::expand_dims_axes;
 #[cfg(test)]
-use mlx_sys::{ScaledDotProductAttentionMask, gelu_approx, matmul, multiply, scaled_dot_product_attention_with_mask};
+use mlx_sys::{
+    ScaledDotProductAttentionMask, gelu_approx, matmul, multiply,
+    scaled_dot_product_attention_with_mask,
+};
 #[cfg(test)]
 use profile::record_linear_attention_profile_layer;
 
@@ -124,25 +127,52 @@ pub fn layer_forward_with_turboquant_context(
             shared_mask,
             turboquant_context,
         ),
-        "qwen3_5" | "qwen3_next" => families::qwen3_linear::layer_forward(
-            cfg, w, hidden, cache, layer_idx,
+        "qwen3_5" | "qwen3_next" => families::standard::layer_forward(
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            token_offset,
+            per_layer_input,
+            shared_mask,
+            turboquant_context,
         ),
-        "glm4_moe_lite" => families::glm4_moe_lite::layer_forward(
-            cfg, w, hidden, cache, layer_idx, token_offset,
-        ),
+        "glm4_moe_lite" => {
+            families::glm4_moe_lite::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset)
+        }
         "deepseek_v3" | "deepseek_v32" => families::deepseek_v3::layer_forward(
-            cfg, w, hidden, cache, layer_idx, token_offset, turboquant_context,
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            token_offset,
+            turboquant_context,
         ),
         "mistral3" => families::mistral3::layer_forward(
-            cfg, w, hidden, cache, layer_idx, token_offset, shared_mask, turboquant_context,
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            token_offset,
+            shared_mask,
+            turboquant_context,
         ),
         "mixtral" => families::mixtral::layer_forward(
-            cfg, w, hidden, cache, layer_idx, token_offset, shared_mask, turboquant_context,
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            token_offset,
+            shared_mask,
+            turboquant_context,
         ),
         f => panic!("unknown model_family in layer_forward: {f}"),
     }
 }
-
 
 /// Embed token IDs and return hidden states of shape [1, seq_len, hidden].
 /// Embed tokens from a pre-built 1-D `[seq]` token-ID array.

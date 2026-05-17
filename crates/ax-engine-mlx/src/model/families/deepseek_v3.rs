@@ -21,8 +21,7 @@ pub(crate) fn layer_forward(
 ) -> MlxArray {
     // 1. Attention norm + MLA forward (same as GLM4MoELite).
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
-    let attn_out =
-        glm_mla_attention_forward(cfg, w, &normed, cache, layer_idx, token_offset);
+    let attn_out = glm_mla_attention_forward(cfg, w, &normed, cache, layer_idx, token_offset);
     let post_attn = add(hidden, &attn_out, None);
 
     // 2. FFN norm.

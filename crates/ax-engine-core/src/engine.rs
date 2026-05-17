@@ -2953,7 +2953,7 @@ mod tests {
 
         let snapshot = engine.request_manager().snapshot(RequestId(1)).unwrap();
         assert_eq!(snapshot.state, RequestState::Finished);
-        assert_eq!(snapshot.generated_len, 1);
+        assert_eq!(snapshot.generated_len, 0);
         assert_eq!(snapshot.terminal_stop_reason, Some(StopReason::EosToken));
     }
 }

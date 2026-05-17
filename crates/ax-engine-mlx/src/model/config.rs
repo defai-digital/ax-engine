@@ -39,7 +39,8 @@ impl LinearAttentionConfig {
         let key_head_dim = cfg
             .key_head_dim
             .expect("validated linear_attention.key_head_dim") as usize;
-        let (q_scale, k_scale) = crate::linear_attention_ops::linear_attention_qk_scale(key_head_dim);
+        let (q_scale, k_scale) =
+            crate::linear_attention_ops::linear_attention_qk_scale(key_head_dim);
         Some(Self {
             full_attention_interval: cfg
                 .resolved_full_attention_interval(&m.model_family)

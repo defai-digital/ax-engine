@@ -155,10 +155,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         no_rope_layer_interval: arch_u64(&config, &model_type, "interleave_moe_layer_step")
             .and_then(u64_to_u32)
             .unwrap_or(0),
-        attn_temperature_floor: arch_f64(&config, &model_type, "floor_scale")
-            .and_then(f64_to_u32),
-        attn_temperature_scale: arch_f64(&config, &model_type, "attn_scale")
-            .map(|v| v as f32),
+        attn_temperature_floor: arch_f64(&config, &model_type, "floor_scale").and_then(f64_to_u32),
+        attn_temperature_scale: arch_f64(&config, &model_type, "attn_scale").map(|v| v as f32),
         intermediate_size_mlp: arch_u64(&config, &model_type, "intermediate_size_mlp")
             .and_then(u64_to_u32)
             .unwrap_or(0),
@@ -1087,9 +1085,17 @@ fn parse_rope_params(
 fn parse_rope_scaling(
     config: &serde_json::Value,
     model_type: &str,
-) -> (Option<String>, Option<f32>, Option<f32>, Option<f32>, Option<u32>) {
+) -> (
+    Option<String>,
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+    Option<u32>,
+) {
     let rs = if uses_text_config(model_type) {
-        config.get("text_config").and_then(|tc| tc.get("rope_scaling"))
+        config
+            .get("text_config")
+            .and_then(|tc| tc.get("rope_scaling"))
     } else {
         config.get("rope_scaling")
     };
@@ -1114,7 +1120,13 @@ fn parse_rope_scaling(
         .get("original_max_position_embeddings")
         .and_then(|v| v.as_u64())
         .and_then(u64_to_u32);
-    (rope_type, factor, low_freq_factor, high_freq_factor, original_context_len)
+    (
+        rope_type,
+        factor,
+        low_freq_factor,
+        high_freq_factor,
+        original_context_len,
+    )
 }
 
 /// Parse per-layer type list from config (e.g. Gemma4's `layer_types` field).
