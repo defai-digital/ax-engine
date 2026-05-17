@@ -1,7 +1,20 @@
-//! Safe Rust wrappers around the mlx-c C API.
+//! Internal MLX runtime boundary for AX Engine.
 //!
-//! The raw FFI bindings are in the `ffi` module. All other modules expose
-//! safe RAII types and functions. Callers should use the safe layer only.
+//! This crate intentionally contains both the raw bindgen output for `mlx-c`
+//! and the safe Rust wrappers used by the rest of the workspace. That is a
+//! pragmatic internal layout: the `-sys` suffix normally means raw FFI only,
+//! but AX Engine currently keeps the safe layer here to avoid an extra crate
+//! boundary around code that is not published as an independent API.
+//!
+//! Callers should use the safe modules and re-exports such as [`MlxArray`],
+//! [`MlxStream`], ops, transforms, safetensors loading, and Metal kernel
+//! wrappers. The raw [`ffi`] module is public only for wrapper implementation
+//! and emergency escape hatches. New runtime code should add a safe wrapper
+//! instead of calling `ffi` directly.
+//!
+//! If this crate becomes a published or shared dependency, split the raw
+//! bindings into `mlx-sys` and move the safe layer into a wrapper crate such as
+//! `mlx-rs` or `mlx-runtime`.
 
 #![allow(unsafe_code)]
 
@@ -15,7 +28,11 @@ pub mod ops;
 pub mod stream;
 pub mod transforms;
 
-/// Raw auto-generated FFI bindings. Prefer the safe modules above.
+/// Raw auto-generated FFI bindings.
+///
+/// Prefer the safe modules above. This module remains public so wrappers can
+/// cover new `mlx-c` APIs incrementally without changing crate boundaries.
+#[doc(hidden)]
 #[allow(
     non_camel_case_types,
     non_snake_case,

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [lints.rust]
-# FFI crate requires unsafe
+# Internal MLX boundary: raw bindgen FFI plus safe wrappers live here for now.
 unsafe_code = "allow"
 
 [build-dependencies]
