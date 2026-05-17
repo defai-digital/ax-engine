@@ -31,6 +31,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod args;
+mod chat;
 mod grpc;
 
 use args::{ServerArgs, render_presets};
@@ -40,14 +41,6 @@ const DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS: u64 = 2;
 const DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH: usize = 32;
 const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 const STREAM_CHANNEL_CAPACITY: usize = 128;
-// Pre-fills `<think>\n\n</think>\n\n` to signal the model to skip reasoning;
-// applied to Qwen models whose chat templates default to this when
-// `enable_thinking=false`. For reasoning-trained Qwen3.6 / Qwen3-Next /
-// Qwen3-Coder-Next this is the wrong prefix (see #13), so those models use
-// `QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING` instead.
-const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT: &str =
-    "<|im_start|>assistant\n<think>\n\n</think>\n\n";
-const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING: &str = "<|im_start|>assistant\n<think>\n";
 
 type StreamEvent = Result<Event, Infallible>;
 type StreamEventSender = mpsc::Sender<StreamEvent>;
@@ -461,35 +454,6 @@ impl OpenAiStreamKind {
             OpenAiStreamKind::ChatCompletion => {
                 Json(openai_chat_completion_response(response, id)).into_response()
             }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ChatPromptTemplate {
-    QwenChatMl,
-    Llama3,
-    Gemma4,
-    Glm47,
-    PlainRolePrefix,
-}
-
-impl ChatPromptTemplate {
-    fn for_model_id(model_id: &str) -> Self {
-        let normalized = model_id.to_ascii_lowercase();
-        if normalized.contains("qwen") {
-            Self::QwenChatMl
-        } else if normalized.contains("gemma-4") || normalized.contains("gemma4") {
-            Self::Gemma4
-        } else if normalized.contains("glm") {
-            Self::Glm47
-        } else if normalized.contains("llama-3")
-            || normalized.contains("llama3")
-            || normalized.contains("llama_3")
-        {
-            Self::Llama3
-        } else {
-            Self::PlainRolePrefix
         }
     }
 }
@@ -1910,19 +1874,8 @@ fn render_openai_chat_prompt(
     model_id: &str,
     messages: &[OpenAiChatMessage],
 ) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
-    if messages.is_empty() {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "chat.completions requires at least one message".to_string(),
-        ));
-    }
-
-    render_openai_chat_prompt_with_template(
-        ChatPromptTemplate::for_model_id(model_id),
-        messages,
-        is_qwen_thinking_model(model_id),
-    )
+    let rendered_messages = render_openai_chat_message_pairs(messages)?;
+    chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
 }
 
 fn build_mlx_lm_chat_messages(
@@ -1939,7 +1892,7 @@ fn build_mlx_lm_chat_messages(
     messages
         .iter()
         .map(|message| {
-            let role = normalize_openai_chat_role(&message.role)?;
+            let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
             let content = render_openai_chat_content(&message.content)?;
             Ok(MlxLmChatMessage::new(role, content))
         })
@@ -1947,149 +1900,38 @@ fn build_mlx_lm_chat_messages(
 }
 
 fn chat_template_kwargs_for_model_id(model_id: &str) -> Option<serde_json::Value> {
-    // Qwen3.6 / Qwen3-Next / Qwen3-Coder-Next are reasoning models: their chat
-    // templates inject `<think>\n\n</think>\n\n` when `enable_thinking=false`,
-    // forcing the model to skip the reasoning step it was trained to produce.
-    // On prompts that require reasoning (e.g. math), the model emits a short
-    // preamble followed by `<|im_end|>` (in the stop sequence list) and the
-    // response truncates after a handful of tokens. Leave the kwarg unset so
-    // the template's default (thinking enabled) applies.
-    if is_qwen_thinking_model(model_id) {
-        return None;
-    }
-    matches!(
-        ChatPromptTemplate::for_model_id(model_id),
-        ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Glm47
-    )
-    .then(|| json!({"enable_thinking": false}))
-}
-
-fn is_qwen_thinking_model(model_id: &str) -> bool {
-    let m = model_id.to_ascii_lowercase();
-    m.contains("qwen") && (m.contains("3.6") || m.contains("3_6") || m.contains("next"))
+    chat::template_kwargs_for_model_id(model_id)
 }
 
 fn openai_chat_stop_sequences(model_id: &str, stop: Option<OpenAiStopInput>) -> Vec<String> {
-    match stop {
-        Some(stop) => stop.into_vec(),
-        None => default_chat_stop_sequences(ChatPromptTemplate::for_model_id(model_id)),
-    }
+    chat::stop_sequences(
+        model_id,
+        stop.map(OpenAiStopInput::into_vec).unwrap_or_default(),
+    )
 }
 
-fn default_chat_stop_sequences(template: ChatPromptTemplate) -> Vec<String> {
-    match template {
-        ChatPromptTemplate::QwenChatMl => vec!["<|im_end|>".to_string()],
-        ChatPromptTemplate::Llama3 => vec!["<|eot_id|>".to_string()],
-        ChatPromptTemplate::Gemma4 => vec!["<turn|>".to_string()],
-        ChatPromptTemplate::Glm47 => vec![
-            "<|endoftext|>".to_string(),
-            "<|user|>".to_string(),
-            "<|observation|>".to_string(),
-        ],
-        ChatPromptTemplate::PlainRolePrefix => Vec::new(),
-    }
-}
-
-fn render_openai_chat_prompt_with_template(
-    template: ChatPromptTemplate,
+fn render_openai_chat_message_pairs(
     messages: &[OpenAiChatMessage],
-    qwen_thinking_enabled: bool,
-) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
-    let mut prompt = String::new();
-    match template {
-        ChatPromptTemplate::Llama3 => prompt.push_str("<|begin_of_text|>"),
-        ChatPromptTemplate::Gemma4 => prompt.push_str("<bos>"),
-        ChatPromptTemplate::Glm47 => prompt.push_str("[gMASK]<sop>"),
-        ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::PlainRolePrefix => {}
-    }
-    for message in messages {
-        let role = normalize_openai_chat_role(&message.role)?;
-        let content = render_openai_chat_content(&message.content)?;
-        match template {
-            ChatPromptTemplate::QwenChatMl => {
-                prompt.push_str("<|im_start|>");
-                prompt.push_str(role);
-                prompt.push('\n');
-                prompt.push_str(&content);
-                prompt.push_str("<|im_end|>\n");
-            }
-            ChatPromptTemplate::Llama3 => {
-                prompt.push_str("<|start_header_id|>");
-                prompt.push_str(role);
-                prompt.push_str("<|end_header_id|>\n\n");
-                prompt.push_str(&content);
-                prompt.push_str("<|eot_id|>");
-            }
-            ChatPromptTemplate::Gemma4 => {
-                let turn = if role == "assistant" { "model" } else { role };
-                prompt.push_str("<|turn>");
-                prompt.push_str(turn);
-                prompt.push('\n');
-                prompt.push_str(&content);
-                prompt.push_str("<turn|>\n");
-            }
-            ChatPromptTemplate::Glm47 => {
-                if matches!(role, "tool" | "function") {
-                    prompt.push_str("<|observation|><tool_response>");
-                    prompt.push_str(&content);
-                    prompt.push_str("</tool_response>");
-                } else {
-                    let tag = match role {
-                        "assistant" => "<|assistant|>",
-                        "system" => "<|system|>",
-                        _ => "<|user|>",
-                    };
-                    prompt.push_str(tag);
-                    if role == "assistant" {
-                        prompt.push_str("</think>");
-                        prompt.push_str(content.trim());
-                    } else {
-                        prompt.push_str(&content);
-                    }
-                }
-            }
-            ChatPromptTemplate::PlainRolePrefix => {
-                prompt.push_str(role);
-                prompt.push_str(": ");
-                prompt.push_str(&content);
-                prompt.push('\n');
-            }
-        }
-    }
-    match template {
-        ChatPromptTemplate::QwenChatMl => {
-            if qwen_thinking_enabled {
-                prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING);
-            } else {
-                prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT);
-            }
-        }
-        ChatPromptTemplate::Llama3 => {
-            prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
-        }
-        ChatPromptTemplate::Gemma4 => prompt.push_str("<|turn>model\n"),
-        ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|></think>"),
-        ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
-    }
-    Ok(prompt)
-}
-
-fn normalize_openai_chat_role(
-    role: &str,
-) -> Result<&'static str, (StatusCode, Json<ErrorResponse>)> {
-    match role.trim() {
-        "system" => Ok("system"),
-        "user" => Ok("user"),
-        "assistant" => Ok("assistant"),
-        "tool" => Ok("tool"),
-        "function" => Ok("function"),
-        _ => Err(error_response(
+) -> Result<Vec<(String, String)>, (StatusCode, Json<ErrorResponse>)> {
+    if messages.is_empty() {
+        return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            "unsupported chat role; expected one of system, user, assistant, tool, function"
-                .to_string(),
-        )),
+            "chat.completions requires at least one message".to_string(),
+        ));
     }
+    messages
+        .iter()
+        .map(|message| {
+            let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+            let content = render_openai_chat_content(&message.content)?;
+            Ok((role.to_string(), content))
+        })
+        .collect()
+}
+
+fn chat_error_response(message: String) -> (StatusCode, Json<ErrorResponse>) {
+    error_response(StatusCode::BAD_REQUEST, "invalid_request", message)
 }
 
 fn render_openai_chat_content(
@@ -2418,7 +2260,10 @@ mod tests {
     }
 
     fn expected_qwen_chatml_user_prompt(message: &str) -> String {
-        format!("<|im_start|>user\n{message}<|im_end|>\n{QWEN_CHATML_ASSISTANT_GENERATION_PROMPT}")
+        format!(
+            "<|im_start|>user\n{message}<|im_end|>\n{}",
+            chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
+        )
     }
 
     fn sample_openai_chat_request_with_role(
@@ -3363,7 +3208,7 @@ sys.stdout.write(f"server::{prompt}")
     }
 
     #[test]
-    fn openai_chat_stop_sequences_use_family_defaults_unless_user_supplies_stop() {
+    fn openai_chat_stop_sequences_merge_family_defaults_with_user_stop() {
         assert_eq!(
             openai_chat_stop_sequences("qwen3", None),
             vec!["<|im_end|>".to_string()]
@@ -3389,8 +3234,43 @@ sys.stdout.write(f"server::{prompt}")
                 "gemma4-e2b",
                 Some(OpenAiStopInput::Multiple(vec!["custom".to_string()]))
             ),
-            vec!["custom".to_string()]
+            vec!["custom".to_string(), "<turn|>".to_string()]
         );
+        assert_eq!(
+            openai_chat_stop_sequences(
+                "gemma4-e2b",
+                Some(OpenAiStopInput::Multiple(vec![
+                    "custom".to_string(),
+                    "<turn|>".to_string()
+                ]))
+            ),
+            vec!["custom".to_string(), "<turn|>".to_string()]
+        );
+    }
+
+    #[test]
+    fn openai_chat_prompt_renderer_rejects_known_families_without_verified_fallback() {
+        let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+            {"role": "user", "content": "Hello"}
+        ]))
+        .expect("sample messages should deserialize");
+
+        for model_id in [
+            "google/gemma-3-4b-it",
+            "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            "mistral3-small",
+            "mixtral-8x7b-instruct",
+            "deepseek-ai/DeepSeek-V3",
+        ] {
+            let error = render_openai_chat_prompt(model_id, &messages)
+                .expect_err("known unsupported chat fallback should fail closed");
+            assert_eq!(error.0, StatusCode::BAD_REQUEST);
+            assert!(
+                error.1.error.message.contains("not supported yet"),
+                "unexpected error for {model_id}: {}",
+                error.1.error.message
+            );
+        }
     }
 
     #[test]
@@ -3404,6 +3284,10 @@ sys.stdout.write(f"server::{prompt}")
             Some(json!({"enable_thinking": false}))
         );
         assert_eq!(chat_template_kwargs_for_model_id("gemma4-e2b"), None);
+        assert_eq!(
+            chat_template_kwargs_for_model_id("deepseek-ai/DeepSeek-V3"),
+            None
+        );
     }
 
     #[test]
@@ -3415,12 +3299,9 @@ sys.stdout.write(f"server::{prompt}")
         // the same #13 failure mode (premature stop / repetition loop on
         // reasoning prompts) reproduces on the native path even though the
         // delegated path is fixed.
-        let messages = vec![OpenAiChatMessage {
-            role: "user".to_string(),
-            content: OpenAiChatContent::Text("hi".to_string()),
-        }];
-        let thinking = render_openai_chat_prompt_with_template(
-            ChatPromptTemplate::QwenChatMl,
+        let messages = vec![("user".to_string(), "hi".to_string())];
+        let thinking = chat::render_prompt_with_template(
+            chat::ChatPromptTemplate::QwenChatMl,
             &messages,
             true,
         )
@@ -3434,8 +3315,8 @@ sys.stdout.write(f"server::{prompt}")
             "thinking-enabled suffix must not pre-close the think block: {thinking}"
         );
 
-        let no_thinking = render_openai_chat_prompt_with_template(
-            ChatPromptTemplate::QwenChatMl,
+        let no_thinking = chat::render_prompt_with_template(
+            chat::ChatPromptTemplate::QwenChatMl,
             &messages,
             false,
         )
@@ -3505,6 +3386,26 @@ sys.stdout.write(f"server::{prompt}")
             built.generate_request.stop_sequences,
             vec!["<turn|>".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn openai_chat_request_rejects_unsupported_ax_rendered_family() {
+        let state = test_app_state(|args| {
+            args.model_id = "deepseek-ai/DeepSeek-V3".to_string();
+            args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+        });
+        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 8
+        }))
+        .expect("sample chat request should deserialize");
+
+        let error = match build_openai_chat_request(&state, request) {
+            Ok(_) => panic!("AX-rendered fallback should fail closed"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.error.message.contains("deepseek"));
     }
 
     #[tokio::test]
