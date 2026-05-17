@@ -45,10 +45,8 @@ use app_state::{EmbeddingBatchKey, EmbeddingBatchRequestOptions};
 use args::{ServerArgs, render_presets};
 #[cfg(test)]
 use embeddings::microbatch::{collect_embedding_batch_groups, pooling_code};
-use embeddings::parse_embedding_pooling;
 use errors::{
-    ErrorResponse, error_response, map_blocking_task_error, map_session_error,
-    request_not_found_response,
+    ErrorResponse, map_blocking_task_error, map_session_error, request_not_found_response,
 };
 use generation::requests::{GenerateHttpRequest, build_generate_request};
 #[cfg(test)]
@@ -66,8 +64,7 @@ use openai::responses::{
 use openai::schema::{
     OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatCompletionHttpRequest,
     OpenAiChatDelta, OpenAiChatMessage, OpenAiCompletionChunk, OpenAiCompletionChunkChoice,
-    OpenAiCompletionHttpRequest, OpenAiEmbeddingObject, OpenAiEmbeddingRequest,
-    OpenAiEmbeddingResponse, OpenAiEmbeddingUsage, OpenAiStopInput, OpenAiStreamKind,
+    OpenAiCompletionHttpRequest, OpenAiStopInput, OpenAiStreamKind,
 };
 use openai::validation::{validate_model, validate_openai_request};
 use routes::build_router;
@@ -239,99 +236,6 @@ async fn generate(
     let (_, response) = run_stateless_generate_request(&state, request).await?;
 
     Ok(Json(response))
-}
-
-async fn openai_embeddings(
-    State(state): State<AppState>,
-    Json(request): Json<OpenAiEmbeddingRequest>,
-) -> Result<Json<OpenAiEmbeddingResponse>, (StatusCode, Json<ErrorResponse>)> {
-    validate_model(&state, request.model.as_deref())?;
-
-    let pooling = parse_embedding_pooling(request.pooling.as_deref())
-        .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))?;
-    let normalize = request.normalize.unwrap_or(true);
-    let model_id = state.model_id.as_ref().clone();
-    let was_single = request.input.is_single();
-    let batch = request.input.into_batch();
-
-    // Treat both `input: []` (Single empty) and `input: [[]]` / `input: []`
-    // (Batch empty / batch with empty inner) as the same user-facing
-    // error, with a per-index hint when the position is non-trivial.
-    if batch.is_empty() || (was_single && batch[0].is_empty()) {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "input must not be empty".into(),
-        ));
-    }
-    for (i, ids) in batch.iter().enumerate() {
-        if ids.is_empty() {
-            return Err(error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                format!("input[{i}] must not be empty"),
-            ));
-        }
-    }
-    let token_count: usize = batch.iter().map(Vec::len).sum();
-
-    // Single input → microbatcher (lets concurrent callers coalesce into
-    // one batched runner call). Multi-input → direct `embed_batch_flat`
-    // since the caller already pre-batched; double-batching with the
-    // microbatcher would just add a queueing delay.
-    let embeddings: Vec<Vec<f32>> = if was_single {
-        let single = batch
-            .into_iter()
-            .next()
-            .expect("batch.len() == 1 because input was Single");
-        vec![
-            state
-                .embedding_batcher
-                .embed(single, pooling, normalize)
-                .await
-                .map_err(map_session_error)?,
-        ]
-    } else {
-        let session = state.request_session.clone();
-        tokio::task::spawn_blocking(move || {
-            let s = session.blocking_lock();
-            s.embed_batch_flat(&batch, pooling, normalize)
-        })
-        .await
-        .map_err(|_| {
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "embedding worker join failed".into(),
-            )
-        })?
-        .map_err(map_session_error)
-        .map(|m| {
-            (0..m.batch_size)
-                .map(|i| m.row(i).to_vec())
-                .collect::<Vec<_>>()
-        })?
-    };
-
-    let data = embeddings
-        .into_iter()
-        .enumerate()
-        .map(|(index, embedding)| OpenAiEmbeddingObject {
-            object: "embedding",
-            embedding,
-            index: index as u32,
-        })
-        .collect();
-
-    Ok(Json(OpenAiEmbeddingResponse {
-        object: "list",
-        data,
-        model: model_id,
-        usage: OpenAiEmbeddingUsage {
-            prompt_tokens: token_count,
-            total_tokens: token_count,
-        },
-    }))
 }
 
 async fn openai_completions(

@@ -4,9 +4,10 @@ use axum::routing::{get, post};
 
 use super::app_state::AppState;
 use super::metadata::{health, models, runtime_info};
+use super::openai::embeddings::openai_embeddings;
 use super::{
     MAX_REQUEST_BODY_BYTES, cancel_request, generate, generate_stream, openai_chat_completions,
-    openai_completions, openai_embeddings, request_snapshot, step_request, submit_request,
+    openai_completions, request_snapshot, step_request, submit_request,
 };
 
 pub(crate) fn build_router(state: AppState) -> Router {
