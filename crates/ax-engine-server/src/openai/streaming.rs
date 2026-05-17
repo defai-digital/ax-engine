@@ -16,13 +16,11 @@ use crate::generation::streaming::{
     StreamEventSender, StreamStateSource, build_keep_alive_stream, build_stream_state,
     drive_stream_events, send_stream_error, spawn_stream_task,
 };
-use crate::openai::responses::{
-    finish_reason_from_llama_cpp_chat, openai_finish_reason, unix_timestamp_secs,
+use crate::openai::chunks::{
+    chat_delta_chunk, chat_final_chunk, completion_delta_chunk, completion_final_chunk,
 };
-use crate::openai::schema::{
-    OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatDelta,
-    OpenAiCompletionChunk, OpenAiCompletionChunkChoice, OpenAiStreamKind,
-};
+use crate::openai::responses::finish_reason_from_llama_cpp_chat;
+use crate::openai::schema::OpenAiStreamKind;
 use crate::openai::sse::send_openai_stream_chunk;
 use crate::tasks::run_blocking_session_task;
 
@@ -135,18 +133,11 @@ fn send_openai_stream_event(
                 if delta_text.is_empty() {
                     return true;
                 }
-                let chunk = OpenAiCompletionChunk {
-                    id: stream_kind.response_id(payload.request.request_id),
-                    object: stream_kind.stream_chunk_object(),
-                    created: unix_timestamp_secs(),
-                    model: payload.request.model_id,
-                    system_fingerprint: None,
-                    choices: vec![OpenAiCompletionChunkChoice {
-                        index: 0,
-                        text: delta_text,
-                        finish_reason: None,
-                    }],
-                };
+                let chunk = completion_delta_chunk(
+                    payload.request.request_id,
+                    payload.request.model_id,
+                    delta_text,
+                );
                 send_openai_stream_chunk(tx, &chunk)
             }
             OpenAiStreamKind::ChatCompletion => {
@@ -156,61 +147,43 @@ fn send_openai_stream_event(
                 if delta_text.is_empty() {
                     return true;
                 }
-                let chunk = OpenAiChatCompletionChunk {
-                    id: stream_kind.response_id(payload.request.request_id),
-                    object: stream_kind.stream_chunk_object(),
-                    created: unix_timestamp_secs(),
-                    model: payload.request.model_id,
-                    system_fingerprint: None,
-                    choices: vec![OpenAiChatCompletionChunkChoice {
-                        index: 0,
-                        delta: OpenAiChatDelta {
-                            role: if *chat_role_emitted {
-                                None
-                            } else {
-                                *chat_role_emitted = true;
-                                Some("assistant")
-                            },
-                            content: Some(delta_text),
-                        },
-                        finish_reason: None,
-                    }],
-                };
+                let role = next_chat_delta_role(chat_role_emitted);
+                let chunk = chat_delta_chunk(
+                    payload.request.request_id,
+                    payload.request.model_id,
+                    role,
+                    delta_text,
+                );
                 send_openai_stream_chunk(tx, &chunk)
             }
         },
         GenerateStreamEvent::Response(payload) => match stream_kind {
             OpenAiStreamKind::Completion => {
-                let chunk = OpenAiCompletionChunk {
-                    id: stream_kind.response_id(payload.response.request_id),
-                    object: stream_kind.stream_chunk_object(),
-                    created: unix_timestamp_secs(),
-                    model: payload.response.model_id,
-                    system_fingerprint: None,
-                    choices: vec![OpenAiCompletionChunkChoice {
-                        index: 0,
-                        text: String::new(),
-                        finish_reason: openai_finish_reason(payload.response.finish_reason),
-                    }],
-                };
+                let chunk = completion_final_chunk(
+                    payload.response.request_id,
+                    payload.response.model_id,
+                    payload.response.finish_reason,
+                );
                 send_openai_stream_chunk(tx, &chunk)
             }
             OpenAiStreamKind::ChatCompletion => {
-                let chunk = OpenAiChatCompletionChunk {
-                    id: stream_kind.response_id(payload.response.request_id),
-                    object: stream_kind.stream_chunk_object(),
-                    created: unix_timestamp_secs(),
-                    model: payload.response.model_id,
-                    system_fingerprint: None,
-                    choices: vec![OpenAiChatCompletionChunkChoice {
-                        index: 0,
-                        delta: OpenAiChatDelta::default(),
-                        finish_reason: openai_finish_reason(payload.response.finish_reason),
-                    }],
-                };
+                let chunk = chat_final_chunk(
+                    payload.response.request_id,
+                    payload.response.model_id,
+                    payload.response.finish_reason,
+                );
                 send_openai_stream_chunk(tx, &chunk)
             }
         },
+    }
+}
+
+fn next_chat_delta_role(chat_role_emitted: &mut bool) -> Option<&'static str> {
+    if *chat_role_emitted {
+        None
+    } else {
+        *chat_role_emitted = true;
+        Some("assistant")
     }
 }
 
@@ -225,26 +198,8 @@ fn drive_openai_mlx_lm_chat_stream(
         match stream.next_chunk() {
             Ok(Some(chunk)) => {
                 if !chunk.text.is_empty() {
-                    let delta = OpenAiChatCompletionChunk {
-                        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
-                        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
-                        created: unix_timestamp_secs(),
-                        model: model_id.clone(),
-                        system_fingerprint: None,
-                        choices: vec![OpenAiChatCompletionChunkChoice {
-                            index: 0,
-                            delta: OpenAiChatDelta {
-                                role: if chat_role_emitted {
-                                    None
-                                } else {
-                                    chat_role_emitted = true;
-                                    Some("assistant")
-                                },
-                                content: Some(chunk.text),
-                            },
-                            finish_reason: None,
-                        }],
-                    };
+                    let role = next_chat_delta_role(&mut chat_role_emitted);
+                    let delta = chat_delta_chunk(request_id, model_id.clone(), role, chunk.text);
                     if !send_openai_stream_chunk(&tx, &delta) {
                         return;
                     }
@@ -286,26 +241,8 @@ fn drive_openai_llama_cpp_chat_stream(
         match stream.next_chunk() {
             Ok(Some(chunk)) => {
                 if !chunk.content.is_empty() {
-                    let delta = OpenAiChatCompletionChunk {
-                        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
-                        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
-                        created: unix_timestamp_secs(),
-                        model: model_id.clone(),
-                        system_fingerprint: None,
-                        choices: vec![OpenAiChatCompletionChunkChoice {
-                            index: 0,
-                            delta: OpenAiChatDelta {
-                                role: if chat_role_emitted {
-                                    None
-                                } else {
-                                    chat_role_emitted = true;
-                                    Some("assistant")
-                                },
-                                content: Some(chunk.content),
-                            },
-                            finish_reason: None,
-                        }],
-                    };
+                    let role = next_chat_delta_role(&mut chat_role_emitted);
+                    let delta = chat_delta_chunk(request_id, model_id.clone(), role, chunk.content);
                     if !send_openai_stream_chunk(&tx, &delta) {
                         return;
                     }
@@ -342,18 +279,11 @@ fn send_openai_mlx_lm_chat_final_chunk(
     model_id: &str,
     finish_reason: Option<&str>,
 ) -> bool {
-    let chunk = OpenAiChatCompletionChunk {
-        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
-        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
-        created: unix_timestamp_secs(),
-        model: model_id.to_string(),
-        system_fingerprint: None,
-        choices: vec![OpenAiChatCompletionChunkChoice {
-            index: 0,
-            delta: OpenAiChatDelta::default(),
-            finish_reason: openai_finish_reason(finish_reason_from_mlx_lm(finish_reason)),
-        }],
-    };
+    let chunk = chat_final_chunk(
+        request_id,
+        model_id.to_string(),
+        finish_reason_from_mlx_lm(finish_reason),
+    );
     send_openai_stream_chunk(tx, &chunk)
 }
 
@@ -363,17 +293,10 @@ fn send_openai_llama_cpp_chat_final_chunk(
     model_id: &str,
     finish_reason: Option<&str>,
 ) -> bool {
-    let chunk = OpenAiChatCompletionChunk {
-        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
-        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
-        created: unix_timestamp_secs(),
-        model: model_id.to_string(),
-        system_fingerprint: None,
-        choices: vec![OpenAiChatCompletionChunkChoice {
-            index: 0,
-            delta: OpenAiChatDelta::default(),
-            finish_reason: openai_finish_reason(finish_reason_from_llama_cpp_chat(finish_reason)),
-        }],
-    };
+    let chunk = chat_final_chunk(
+        request_id,
+        model_id.to_string(),
+        finish_reason_from_llama_cpp_chat(finish_reason),
+    );
     send_openai_stream_chunk(tx, &chunk)
 }
