@@ -1,32 +1,26 @@
 #![allow(clippy::collapsible_if)]
 
-use std::convert::Infallible;
 use std::env;
-use std::sync::Arc;
-use std::time::Duration;
 
 #[cfg(test)]
 use ax_engine_sdk::{EmbeddingPooling, GenerateFinishReason};
 use ax_engine_sdk::{
     EngineSession, EngineSessionConfig, EngineSessionError, GenerateRequest, GenerateStreamEvent,
     GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppStreamHandle,
-    MlxLmChatGenerateRequest, MlxLmStreamHandle, StatelessGenerateContext,
-    finish_reason_from_mlx_lm, start_streaming_chat_generate,
-    start_streaming_llama_cpp_chat_generate,
+    MlxLmChatGenerateRequest, MlxLmStreamHandle, finish_reason_from_mlx_lm,
+    start_streaming_chat_generate, start_streaming_llama_cpp_chat_generate,
 };
 use axum::Json;
 #[cfg(test)]
 use axum::Router;
-use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::sse::Event;
 use clap::Parser;
 use serde::Serialize;
 #[cfg(test)]
 use serde_json::json;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -48,7 +42,10 @@ use args::{ServerArgs, render_presets};
 #[cfg(test)]
 use embeddings::microbatch::{collect_embedding_batch_groups, pooling_code};
 use errors::{ErrorResponse, map_blocking_task_error, map_session_error};
-use generation::requests::{GenerateHttpRequest, build_generate_request};
+use generation::streaming::{
+    StreamEventSender, StreamStateSource, build_keep_alive_stream, build_stream_state,
+    drive_stream_events, send_stream_error, spawn_stream_task,
+};
 #[cfg(test)]
 use openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request, chat_template_kwargs_for_model_id,
@@ -63,15 +60,10 @@ use openai::schema::{
 };
 #[cfg(test)]
 use openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
-use openai::validation::validate_model;
 use routes::build_router;
 
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 const STREAM_CHANNEL_CAPACITY: usize = 128;
-
-type StreamEvent = Result<Event, Infallible>;
-type StreamEventSender = mpsc::Sender<StreamEvent>;
-type StreamEventReceiver = mpsc::Receiver<StreamEvent>;
 
 fn log_host_detection_warnings(session_config: &EngineSessionConfig) {
     let host = ax_engine_sdk::current_host_report();
@@ -202,36 +194,6 @@ fn init_tracing() -> bool {
         .is_ok()
 }
 
-async fn generate_stream(
-    State(state): State<AppState>,
-    Json(request): Json<GenerateHttpRequest>,
-) -> Result<Sse<ReceiverStream<StreamEvent>>, (StatusCode, Json<ErrorResponse>)> {
-    validate_model(&state, request.model.as_deref())?;
-
-    let request = build_generate_request(&state, request);
-    let (stream_state, stream_context) = build_stream_state(&state, request).await?;
-
-    let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    spawn_stream_task(
-        tx,
-        stream_state,
-        move |stream_state, tx| match stream_context {
-            StreamStateSource::Stateless(context) => {
-                drive_generate_stream_state(stream_state, tx, |state| {
-                    context.next_stream_event(state)
-                });
-            }
-            StreamStateSource::Stateful(mut session) => {
-                drive_generate_stream_state(stream_state, tx, |state| {
-                    session.next_stream_event(state)
-                });
-            }
-        },
-    );
-
-    Ok(build_keep_alive_stream(rx))
-}
-
 pub(crate) async fn stream_openai_request(
     state: AppState,
     request: GenerateRequest,
@@ -316,72 +278,8 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     Ok(build_keep_alive_stream(rx).into_response())
 }
 
-enum StreamStateSource {
-    Stateless(Arc<StatelessGenerateContext>),
-    Stateful(Box<EngineSession>),
-}
-
-async fn build_stream_state(
-    state: &AppState,
-    request: GenerateRequest,
-) -> Result<(GenerateStreamState, StreamStateSource), (StatusCode, Json<ErrorResponse>)> {
-    let request_id = allocate_request_id(state);
-    if state
-        .stateless_generate_context
-        .supports_stateless_streaming()
-    {
-        let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
-        let stream_context = Arc::clone(&stateless_generate_context);
-        let stream_state = run_blocking_session_task(move || {
-            stream_context.stream_state_with_request_id(request_id, request)
-        })
-        .await?;
-
-        return Ok((
-            stream_state,
-            StreamStateSource::Stateless(stateless_generate_context),
-        ));
-    }
-
-    let session_config = state.session_config.as_ref().clone();
-    let (session, stream_state) = run_blocking_session_task(move || {
-        let mut session = EngineSession::new(session_config)?;
-        let stream_state = session.stream_generate_state_with_request_id(request_id, request)?;
-        Ok((session, stream_state))
-    })
-    .await?;
-
-    Ok((stream_state, StreamStateSource::Stateful(Box::new(session))))
-}
-
 fn allocate_request_id(state: &AppState) -> u64 {
     state.allocate_request_id()
-}
-
-fn spawn_stream_task<F>(tx: StreamEventSender, stream_state: GenerateStreamState, driver: F)
-where
-    F: FnOnce(&mut GenerateStreamState, StreamEventSender) + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || {
-        let mut stream_state = stream_state;
-        driver(&mut stream_state, tx);
-    });
-}
-
-fn drive_generate_stream_state<N>(
-    state: &mut GenerateStreamState,
-    tx: StreamEventSender,
-    next_event: N,
-) where
-    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
-{
-    drive_generate_or_openai_stream_events(
-        state,
-        &tx,
-        next_event,
-        |event| send_sdk_stream_event(&tx, event),
-        || {},
-    );
 }
 
 fn drive_openai_stream_state<N>(
@@ -394,7 +292,7 @@ fn drive_openai_stream_state<N>(
 {
     let mut chat_role_emitted = false;
 
-    drive_generate_or_openai_stream_events(
+    drive_stream_events(
         state,
         &tx,
         next_event,
@@ -403,61 +301,6 @@ fn drive_openai_stream_state<N>(
             let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
         },
     );
-}
-
-fn drive_generate_or_openai_stream_events<N, E, D>(
-    state: &mut GenerateStreamState,
-    tx: &StreamEventSender,
-    mut next_event: N,
-    mut emit_event: E,
-    mut on_done: D,
-) where
-    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
-    E: FnMut(GenerateStreamEvent) -> bool,
-    D: FnMut(),
-{
-    drive_stream_events(state, tx, &mut next_event, &mut emit_event, &mut on_done);
-}
-
-fn drive_stream_events<N, E, D>(
-    state: &mut GenerateStreamState,
-    tx: &StreamEventSender,
-    mut next_event: N,
-    mut emit_event: E,
-    mut on_done: D,
-) where
-    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
-    E: FnMut(GenerateStreamEvent) -> bool,
-    D: FnMut(),
-{
-    loop {
-        match next_event(state) {
-            Ok(Some(event)) => {
-                if !emit_event(event) {
-                    return;
-                }
-            }
-            Ok(None) => {
-                on_done();
-                return;
-            }
-            Err(error) => {
-                let (_, Json(error)) = map_session_error(error);
-                send_stream_error(tx, error);
-                return;
-            }
-        }
-    }
-}
-
-fn send_sdk_stream_event(tx: &StreamEventSender, event: GenerateStreamEvent) -> bool {
-    let event_name = event.event_name();
-
-    match event {
-        GenerateStreamEvent::Request(payload) => send_stream_event(tx, event_name, &payload),
-        GenerateStreamEvent::Step(payload) => send_stream_event(tx, event_name, &payload),
-        GenerateStreamEvent::Response(payload) => send_stream_event(tx, event_name, &payload),
-    }
 }
 
 fn send_openai_stream_event(
@@ -717,39 +560,6 @@ fn send_openai_llama_cpp_chat_final_chunk(
         }],
     };
     send_openai_stream_chunk(tx, &chunk)
-}
-
-fn send_stream_event<T: Serialize>(tx: &StreamEventSender, event_name: &str, payload: &T) -> bool {
-    match serde_json::to_string(payload) {
-        Ok(data) => tx
-            .blocking_send(Ok(Event::default().event(event_name).data(data)))
-            .is_ok(),
-        Err(error) => {
-            send_stream_error(
-                tx,
-                ErrorResponse::server_error(format!(
-                    "failed to serialize {event_name} event: {error}"
-                )),
-            );
-            false
-        }
-    }
-}
-
-fn build_keep_alive_stream(rx: StreamEventReceiver) -> Sse<ReceiverStream<StreamEvent>> {
-    Sse::new(ReceiverStream::new(rx)).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(5))
-            .text("keep-alive"),
-    )
-}
-
-fn send_stream_error(tx: &StreamEventSender, error: ErrorResponse) {
-    let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
-        "{\"error\":{\"type\":\"server_error\",\"code\":\"engine_error\",\"param\":null,\"message\":\"failed to serialize stream error\"}}".to_string()
-    });
-    let _ = tx.blocking_send(Ok(Event::default().event("error").data(payload)));
-    let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
 }
 
 fn send_openai_stream_chunk<T: Serialize>(tx: &StreamEventSender, payload: &T) -> bool {

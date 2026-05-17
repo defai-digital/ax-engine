@@ -2,16 +2,17 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 
+use super::MAX_REQUEST_BODY_BYTES;
 use super::app_state::AppState;
 use super::generation::lifecycle::{
     cancel_request, request_snapshot, step_request, submit_request,
 };
 use super::generation::native::generate;
+use super::generation::streaming::generate_stream;
 use super::metadata::{health, models, runtime_info};
 use super::openai::chat::openai_chat_completions;
 use super::openai::completions::openai_completions;
 use super::openai::embeddings::openai_embeddings;
-use super::{MAX_REQUEST_BODY_BYTES, generate_stream};
 
 pub(crate) fn build_router(state: AppState) -> Router {
     Router::new()
