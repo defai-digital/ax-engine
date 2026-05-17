@@ -56,16 +56,15 @@ use openai::requests::{
     render_openai_chat_prompt,
 };
 use openai::requests::{
-    OpenAiBuiltRequest, build_openai_chat_request, build_openai_completion_request,
-    build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
+    OpenAiBuiltRequest, build_openai_chat_request, build_openai_llama_cpp_chat_request,
+    build_openai_mlx_lm_chat_request,
 };
 use openai::responses::{
     finish_reason_from_llama_cpp_chat, openai_finish_reason, unix_timestamp_secs,
 };
 use openai::schema::{
     OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatCompletionHttpRequest,
-    OpenAiChatDelta, OpenAiCompletionChunk, OpenAiCompletionChunkChoice,
-    OpenAiCompletionHttpRequest, OpenAiStreamKind,
+    OpenAiChatDelta, OpenAiCompletionChunk, OpenAiCompletionChunkChoice, OpenAiStreamKind,
 };
 #[cfg(test)]
 use openai::schema::{OpenAiChatMessage, OpenAiStopInput};
@@ -208,16 +207,6 @@ fn init_tracing() -> bool {
         .is_ok()
 }
 
-async fn openai_completions(
-    State(state): State<AppState>,
-    Json(request): Json<OpenAiCompletionHttpRequest>,
-) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_request(&state, request.model.as_deref())?;
-    let request = build_openai_completion_request(&state, request)?;
-
-    run_openai_text_generation(state, request, OpenAiStreamKind::Completion).await
-}
-
 async fn openai_chat_completions(
     State(state): State<AppState>,
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
@@ -298,7 +287,7 @@ async fn run_openai_mlx_lm_chat_generation(
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(&response, request_id))
 }
 
-async fn run_openai_text_generation(
+pub(crate) async fn run_openai_text_generation(
     state: AppState,
     request: OpenAiBuiltRequest,
     kind: OpenAiStreamKind,
