@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, GenerateFinishReason,
-    GenerateRequest, GenerateResponse, GenerateStreamEvent, GenerateStreamState,
-    LlamaCppChatGenerateRequest, LlamaCppConfig, LlamaCppStreamHandle, MlxLmChatGenerateRequest,
-    MlxLmStreamHandle, SelectedBackend, StatelessGenerateContext, finish_reason_from_mlx_lm,
+    GenerateRequest, GenerateStreamEvent, GenerateStreamState, LlamaCppChatGenerateRequest,
+    LlamaCppConfig, LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle,
+    SelectedBackend, StatelessGenerateContext, finish_reason_from_mlx_lm,
     run_blocking_chat_generate, run_blocking_llama_cpp_chat_generate,
     start_streaming_chat_generate, start_streaming_llama_cpp_chat_generate,
 };
@@ -45,6 +45,7 @@ use args::{ServerArgs, render_presets};
 #[cfg(test)]
 use embeddings::microbatch::{collect_embedding_batch_groups, pooling_code};
 use errors::{ErrorResponse, map_blocking_task_error, map_session_error};
+use generation::native::run_stateless_generate_request;
 use generation::requests::{GenerateHttpRequest, build_generate_request};
 #[cfg(test)]
 use openai::requests::{
@@ -221,18 +222,6 @@ fn init_tracing() -> bool {
         .compact()
         .try_init()
         .is_ok()
-}
-
-async fn generate(
-    State(state): State<AppState>,
-    Json(request): Json<GenerateHttpRequest>,
-) -> Result<Json<ax_engine_sdk::GenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    validate_model(&state, request.model.as_deref())?;
-
-    let request = build_generate_request(&state, request);
-    let (_, response) = run_stateless_generate_request(&state, request).await?;
-
-    Ok(Json(response))
 }
 
 async fn openai_completions(
@@ -494,19 +483,6 @@ async fn build_stream_state(
 
 fn allocate_request_id(state: &AppState) -> u64 {
     state.allocate_request_id()
-}
-
-async fn run_stateless_generate_request(
-    state: &AppState,
-    request: GenerateRequest,
-) -> Result<(u64, GenerateResponse), (StatusCode, Json<ErrorResponse>)> {
-    let request_id = allocate_request_id(state);
-    let context = Arc::clone(&state.stateless_generate_context);
-    let response =
-        run_blocking_session_task(move || context.generate_with_request_id(request_id, request))
-            .await?;
-
-    Ok((request_id, response))
 }
 
 fn spawn_stream_task<F>(tx: StreamEventSender, stream_state: GenerateStreamState, driver: F)
@@ -1197,9 +1173,9 @@ mod tests {
             prefill_chunk: None,
             experimental_mlx_kv_compression: args::PreviewMlxKvCompression::Disabled,
             experimental_mlx_kv_compression_hot_window_tokens:
-                ax_engine_sdk::MlxKvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS,
+                ax_engine_sdk::KvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS,
             experimental_mlx_kv_compression_min_context_tokens:
-                ax_engine_sdk::MlxKvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
+                ax_engine_sdk::KvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
             grpc_bind_address: None,
         }
     }
