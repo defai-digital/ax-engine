@@ -11,6 +11,9 @@ use crate::openai::requests::{
     OpenAiBuiltRequest, build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
+use crate::openai::streaming::{
+    stream_openai_llama_cpp_chat_request, stream_openai_mlx_lm_chat_request, stream_openai_request,
+};
 
 pub(crate) async fn run_openai_llama_cpp_chat_generation(
     state: AppState,
@@ -18,7 +21,7 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let request = build_openai_llama_cpp_chat_request(&state, request)?;
     if request.stream {
-        return crate::stream_openai_llama_cpp_chat_request(state, request.chat_request).await;
+        return stream_openai_llama_cpp_chat_request(state, request.chat_request).await;
     }
 
     let request_id = state.allocate_request_id();
@@ -51,7 +54,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let request = build_openai_mlx_lm_chat_request(&state, request)?;
     if request.stream {
-        return crate::stream_openai_mlx_lm_chat_request(state, request.chat_request).await;
+        return stream_openai_mlx_lm_chat_request(state, request.chat_request).await;
     }
 
     let request_id = state.allocate_request_id();
@@ -77,7 +80,7 @@ pub(crate) async fn run_openai_text_generation(
     kind: OpenAiStreamKind,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     if request.stream {
-        return crate::stream_openai_request(state, request.generate_request, kind).await;
+        return stream_openai_request(state, request.generate_request, kind).await;
     }
 
     let (request_id, response) =

@@ -5,4 +5,5 @@ pub(crate) mod generation;
 pub(crate) mod requests;
 pub(crate) mod responses;
 pub(crate) mod schema;
+pub(crate) mod streaming;
 pub(crate) mod validation;
