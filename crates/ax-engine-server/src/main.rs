@@ -9,10 +9,10 @@ use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent,
     GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppConfig, LlamaCppStreamHandle,
-    MlxLmChatGenerateRequest, MlxLmStreamHandle, RuntimeReport, SelectedBackend,
-    SessionRequestReport, StatelessGenerateContext, finish_reason_from_mlx_lm,
-    run_blocking_chat_generate, run_blocking_llama_cpp_chat_generate,
-    start_streaming_chat_generate, start_streaming_llama_cpp_chat_generate,
+    MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend, SessionRequestReport,
+    StatelessGenerateContext, finish_reason_from_mlx_lm, run_blocking_chat_generate,
+    run_blocking_llama_cpp_chat_generate, start_streaming_chat_generate,
+    start_streaming_llama_cpp_chat_generate,
 };
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -21,6 +21,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{Json, Router};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::json;
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -33,6 +34,7 @@ mod chat;
 mod embeddings;
 mod errors;
 mod grpc;
+mod metadata;
 mod openai;
 mod routes;
 
@@ -91,32 +93,6 @@ struct GenerateHttpRequest {
     #[serde(default)]
     metadata: Option<String>,
 }
-
-#[derive(Debug, Serialize)]
-struct ServerInfoResponse {
-    service: &'static str,
-    model_id: String,
-    deterministic: bool,
-    max_batch_tokens: u32,
-    block_size_tokens: u32,
-    runtime: RuntimeResponse,
-}
-
-#[derive(Debug, Serialize)]
-struct ModelsResponse {
-    object: &'static str,
-    data: Vec<ModelCard>,
-}
-
-#[derive(Debug, Serialize)]
-struct ModelCard {
-    id: String,
-    object: &'static str,
-    owned_by: &'static str,
-    runtime: RuntimeResponse,
-}
-
-type RuntimeResponse = RuntimeReport;
 
 fn log_host_detection_warnings(session_config: &EngineSessionConfig) {
     let host = ax_engine_sdk::current_host_report();
@@ -266,50 +242,6 @@ fn init_tracing() -> bool {
         .compact()
         .try_init()
         .is_ok()
-}
-
-async fn health(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    // `/health` is the readiness probe most callers (bench harness,
-    // k8s, load balancers) poll while a server starts. Returning 200
-    // when the server has bound a port but the inference session is
-    // wedged (deadlocked on another in-flight call, runtime panicked,
-    // weights not loadable on this device, etc.) sends those callers
-    // into the failure pattern below. A `try_lock` is a sub-µs probe
-    // that confirms the session mutex is grabbable, which is the
-    // strongest "ready" signal we can give without doing real work.
-    let session_lock = state.request_session.try_lock();
-    if session_lock.is_err() {
-        return Err(error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "session_busy",
-            "ax-engine-server has not finished initialising its inference session".into(),
-        ));
-    }
-    drop(session_lock);
-    Ok(Json(json!({
-        "status": "ok",
-        "service": "ax-engine-server",
-        "model_id": state.model_id.as_ref(),
-        "runtime": runtime_response(&state),
-    })))
-}
-
-async fn runtime_info(State(state): State<AppState>) -> Json<ServerInfoResponse> {
-    Json(server_info_response(&state))
-}
-
-async fn models(State(state): State<AppState>) -> Json<ModelsResponse> {
-    Json(ModelsResponse {
-        object: "list",
-        data: vec![ModelCard {
-            id: state.model_id.to_string(),
-            object: "model",
-            owned_by: "ax-engine-v4",
-            runtime: runtime_response(&state),
-        }],
-    })
 }
 
 async fn generate(
@@ -1178,21 +1110,6 @@ where
         .await
         .map_err(map_blocking_task_error)?
         .map_err(map_session_error)
-}
-
-fn server_info_response(state: &AppState) -> ServerInfoResponse {
-    ServerInfoResponse {
-        service: "ax-engine-server",
-        model_id: state.model_id.to_string(),
-        deterministic: state.session_config.deterministic,
-        max_batch_tokens: state.session_config.max_batch_tokens,
-        block_size_tokens: state.session_config.kv_config.block_size_tokens,
-        runtime: runtime_response(state),
-    }
-}
-
-fn runtime_response(state: &AppState) -> RuntimeResponse {
-    state.runtime_report.clone()
 }
 
 fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> GenerateRequest {
