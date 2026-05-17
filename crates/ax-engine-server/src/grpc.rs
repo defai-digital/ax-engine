@@ -5,7 +5,6 @@
 #![allow(clippy::result_large_err)]
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_sdk::{
@@ -16,7 +15,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use super::{AppState, StreamStateSource, chat};
+use super::{StreamStateSource, app_state::AppState, chat};
 
 // Include the tonic-generated server code.
 pub mod proto {
@@ -203,17 +202,13 @@ where
         .map_err(|e| Status::internal(e.to_string()))
 }
 
-fn next_request_id(state: &AppState) -> u64 {
-    state.next_request_id.fetch_add(1, Ordering::AcqRel)
-}
-
 // ─── Stream state setup ───────────────────────────────────────────────────────
 
 async fn build_grpc_stream_state(
     state: &AppState,
     request: GenerateRequest,
 ) -> Result<(GenerateStreamState, StreamStateSource), Status> {
-    let request_id = next_request_id(state);
+    let request_id = state.allocate_request_id();
 
     if state
         .stateless_generate_context
@@ -538,7 +533,7 @@ impl AxEngine for AxEngineGrpcService {
         request: Request<proto::GenerateRequest>,
     ) -> Result<Response<proto::GenerateResponse>, Status> {
         let req = proto_to_generate_request(&self.state, request.into_inner());
-        let request_id = next_request_id(&self.state);
+        let request_id = self.state.allocate_request_id();
         let ctx = Arc::clone(&self.state.stateless_generate_context);
         let response = run_blocking(move || ctx.generate_with_request_id(request_id, req)).await?;
         Ok(Response::new(sdk_response_to_proto(response)))
@@ -567,7 +562,7 @@ impl AxEngine for AxEngineGrpcService {
     ) -> Result<Response<proto::ChatCompletionResponse>, Status> {
         let req = request.into_inner();
         let generate_req = build_chat_generate_request(&self.state, &req)?;
-        let request_id = next_request_id(&self.state);
+        let request_id = self.state.allocate_request_id();
         let ctx = Arc::clone(&self.state.stateless_generate_context);
         let r =
             run_blocking(move || ctx.generate_with_request_id(request_id, generate_req)).await?;
@@ -619,7 +614,7 @@ impl AxEngine for AxEngineGrpcService {
     ) -> Result<Response<proto::CompletionResponse>, Status> {
         let req = request.into_inner();
         let generate_req = build_completion_generate_request(&self.state, &req);
-        let request_id = next_request_id(&self.state);
+        let request_id = self.state.allocate_request_id();
         let ctx = Arc::clone(&self.state.stateless_generate_context);
         let r =
             run_blocking(move || ctx.generate_with_request_id(request_id, generate_req)).await?;

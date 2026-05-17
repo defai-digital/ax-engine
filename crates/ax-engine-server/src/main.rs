@@ -4,24 +4,21 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::env;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent,
-    GenerateStreamState, LlamaCppBackendError, LlamaCppChatGenerateRequest, LlamaCppChatMessage,
-    LlamaCppConfig, LlamaCppStreamHandle, MlxLmBackendError, MlxLmChatGenerateRequest,
-    MlxLmChatMessage, MlxLmStreamHandle, RuntimeReport, SelectedBackend, SessionRequestReport,
-    StatelessGenerateContext, finish_reason_from_mlx_lm, run_blocking_chat_generate,
-    run_blocking_llama_cpp_chat_generate, start_streaming_chat_generate,
-    start_streaming_llama_cpp_chat_generate,
+    GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppChatMessage, LlamaCppConfig,
+    LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmChatMessage, MlxLmStreamHandle,
+    RuntimeReport, SelectedBackend, SessionRequestReport, StatelessGenerateContext,
+    finish_reason_from_mlx_lm, run_blocking_chat_generate, run_blocking_llama_cpp_chat_generate,
+    start_streaming_chat_generate, start_streaming_llama_cpp_chat_generate,
 };
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -32,11 +29,23 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod app_state;
 mod args;
 mod chat;
+mod errors;
 mod grpc;
+mod routes;
 
+use app_state::{
+    AppState, EmbeddingBatchItem, EmbeddingBatchKey, EmbeddingBatchRequestOptions,
+    EmbeddingBatchRunItem, EmbeddingMicroBatcher,
+};
 use args::{ServerArgs, render_presets};
+use errors::{
+    ErrorResponse, error_response, map_blocking_task_error, map_session_error,
+    request_not_found_response,
+};
+use routes::build_router;
 
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS: u64 = 2;
@@ -47,48 +56,6 @@ const STREAM_CHANNEL_CAPACITY: usize = 128;
 type StreamEvent = Result<Event, Infallible>;
 type StreamEventSender = mpsc::Sender<StreamEvent>;
 type StreamEventReceiver = mpsc::Receiver<StreamEvent>;
-
-#[derive(Clone)]
-struct AppState {
-    model_id: Arc<String>,
-    session_config: Arc<EngineSessionConfig>,
-    stateless_generate_context: Arc<StatelessGenerateContext>,
-    runtime_report: RuntimeReport,
-    request_session: Arc<Mutex<EngineSession>>,
-    embedding_batcher: Arc<EmbeddingMicroBatcher>,
-    next_request_id: Arc<AtomicU64>,
-}
-
-#[derive(Clone)]
-struct EmbeddingMicroBatcher {
-    sender: mpsc::UnboundedSender<EmbeddingBatchItem>,
-}
-
-struct EmbeddingBatchItem {
-    input: Vec<u32>,
-    pooling: EmbeddingPooling,
-    normalize: bool,
-    response_tx: oneshot::Sender<Result<Vec<f32>, EngineSessionError>>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct EmbeddingBatchKey {
-    pooling_code: u8,
-    normalize: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct EmbeddingBatchRequestOptions {
-    pooling: EmbeddingPooling,
-    normalize: bool,
-}
-
-#[derive(Clone)]
-struct EmbeddingBatchRunItem {
-    input: Vec<u32>,
-    pooling: EmbeddingPooling,
-    normalize: bool,
-}
 
 #[derive(Debug, Deserialize)]
 struct GenerateHttpRequest {
@@ -131,20 +98,6 @@ struct ModelCard {
 }
 
 type RuntimeResponse = RuntimeReport;
-
-#[derive(Debug, Serialize)]
-struct ErrorResponse {
-    error: ErrorBody,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorBody {
-    #[serde(rename = "type")]
-    error_type: &'static str,
-    code: Option<String>,
-    param: Option<String>,
-    message: String,
-}
 
 /// Pre-tokenized input for the embedding endpoint. Mirrors OpenAI's
 /// `input` shape support: one sequence (`[1,2,3]`) or a batch of
@@ -575,15 +528,14 @@ fn build_app_state(
     let request_session = Arc::new(Mutex::new(session));
     let embedding_batcher = EmbeddingMicroBatcher::spawn(request_session.clone());
 
-    Ok(AppState {
-        model_id: Arc::new(model_id),
-        session_config: Arc::new(session_config),
+    Ok(AppState::new(
+        model_id,
+        session_config,
         stateless_generate_context,
         runtime_report,
         request_session,
         embedding_batcher,
-        next_request_id: Arc::new(AtomicU64::new(1)),
-    })
+    ))
 }
 
 fn init_tracing() -> bool {
@@ -609,25 +561,6 @@ fn init_tracing() -> bool {
         .compact()
         .try_init()
         .is_ok()
-}
-
-fn build_router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health))
-        .route("/healthz", get(health))
-        .route("/v1/runtime", get(runtime_info))
-        .route("/v1/models", get(models))
-        .route("/v1/embeddings", post(openai_embeddings))
-        .route("/v1/completions", post(openai_completions))
-        .route("/v1/chat/completions", post(openai_chat_completions))
-        .route("/v1/step", post(step_request))
-        .route("/v1/requests", post(submit_request))
-        .route("/v1/requests/:request_id", get(request_snapshot))
-        .route("/v1/requests/:request_id/cancel", post(cancel_request))
-        .route("/v1/generate/stream", post(generate_stream))
-        .route("/v1/generate", post(generate))
-        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
-        .with_state(state)
 }
 
 async fn health(
@@ -1298,7 +1231,7 @@ async fn submit_request(
 }
 
 fn allocate_request_id(state: &AppState) -> u64 {
-    state.next_request_id.fetch_add(1, Ordering::AcqRel)
+    state.allocate_request_id()
 }
 
 async fn run_stateless_generate_request(
@@ -1700,14 +1633,9 @@ fn send_stream_event<T: Serialize>(tx: &StreamEventSender, event_name: &str, pay
         Err(error) => {
             send_stream_error(
                 tx,
-                ErrorResponse {
-                    error: ErrorBody {
-                        error_type: "server_error",
-                        code: Some("engine_error".to_string()),
-                        param: None,
-                        message: format!("failed to serialize {event_name} event: {error}"),
-                    },
-                },
+                ErrorResponse::server_error(format!(
+                    "failed to serialize {event_name} event: {error}"
+                )),
             );
             false
         }
@@ -1736,14 +1664,9 @@ fn send_openai_stream_chunk<T: Serialize>(tx: &StreamEventSender, payload: &T) -
         Err(error) => {
             send_stream_error(
                 tx,
-                ErrorResponse {
-                    error: ErrorBody {
-                        error_type: "server_error",
-                        code: Some("engine_error".to_string()),
-                        param: None,
-                        message: format!("failed to serialize OpenAI stream chunk: {error}"),
-                    },
-                },
+                ErrorResponse::server_error(format!(
+                    "failed to serialize OpenAI stream chunk: {error}"
+                )),
             );
             false
         }
@@ -1804,14 +1727,6 @@ where
         .await
         .map_err(map_blocking_task_error)?
         .map_err(map_session_error)
-}
-
-fn map_blocking_task_error(error: tokio::task::JoinError) -> (StatusCode, Json<ErrorResponse>) {
-    error_response(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "engine_error",
-        format!("blocking server task failed: {error}"),
-    )
 }
 
 fn server_info_response(state: &AppState) -> ServerInfoResponse {
@@ -2280,122 +2195,6 @@ fn validate_model(
     }
 
     Ok(())
-}
-
-fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorResponse>) {
-    match error {
-        EngineSessionError::EmptyInputTokens
-        | EngineSessionError::InvalidMaxOutputTokens
-        | EngineSessionError::MlxBackendRequiresTokenizedInput
-        | EngineSessionError::InvalidMaxBatchTokens
-        | EngineSessionError::InvalidRequestId
-        | EngineSessionError::UnsupportedSupportTier
-        | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
-        | EngineSessionError::MlxLmDoesNotSupportLifecycle { .. }
-        | EngineSessionError::MlxLmDoesNotSupportStreaming
-        | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
-        | EngineSessionError::RequestDidNotTerminate { .. }
-        | EngineSessionError::MissingRequestSnapshot { .. } => error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            error.to_string(),
-        ),
-        EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingInputText { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingPromptInput { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::UnsupportedTokenPrompt { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::AmbiguousPromptInput { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::MissingInputText)
-        | EngineSessionError::MlxLm(MlxLmBackendError::UnsupportedTokenPrompt)
-        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. }) => {
-            error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                error.to_string(),
-            )
-        }
-        EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingCompletionChoice { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. }) => {
-            error_response(StatusCode::BAD_GATEWAY, "backend_error", error.to_string())
-        }
-        EngineSessionError::BackendContract(_)
-        | EngineSessionError::MissingLlamaCppConfig { .. }
-        | EngineSessionError::MissingMlxLmConfig
-        | EngineSessionError::MissingDelegatedRuntime { .. }
-        | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
-        | EngineSessionError::MlxRuntimeArtifactsRequired
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandTimedOut { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::NonUtf8Output { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::SerializeRequestJson { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpRequest { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpStatus { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpResponseRead { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::InvalidResponseJson { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::SerializeRequestJson { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::HttpRequest { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::HttpStatus { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::InvalidResponseJson { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::SseRead { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::InvalidStreamChunk { .. })
-        | EngineSessionError::UnsupportedHostHardware { .. } => error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unsupported_host",
-            error.to_string(),
-        ),
-        EngineSessionError::EmbeddingNotSupported => error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            error.to_string(),
-        ),
-        EngineSessionError::RequestReportInvariantViolation { .. }
-        | EngineSessionError::StreamEndedWithoutResponse { .. }
-        | EngineSessionError::EmbeddingFailed { .. }
-        | EngineSessionError::Core(_)
-        | EngineSessionError::MetalRuntime(_)
-        | EngineSessionError::MlxRuntimeUnavailable => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "engine_error",
-            error.to_string(),
-        ),
-    }
-}
-
-fn error_response(
-    status: StatusCode,
-    code: &'static str,
-    message: String,
-) -> (StatusCode, Json<ErrorResponse>) {
-    (
-        status,
-        Json(ErrorResponse {
-            error: ErrorBody {
-                error_type: openai_error_type(status),
-                code: Some(code.to_string()),
-                param: None,
-                message,
-            },
-        }),
-    )
-}
-
-fn openai_error_type(status: StatusCode) -> &'static str {
-    if status.is_client_error() {
-        "invalid_request_error"
-    } else {
-        "server_error"
-    }
-}
-
-fn request_not_found_response(request_id: u64) -> (StatusCode, Json<ErrorResponse>) {
-    error_response(
-        StatusCode::NOT_FOUND,
-        "request_not_found",
-        format!("request {request_id} is missing from preview session state"),
-    )
 }
 
 #[cfg(test)]
