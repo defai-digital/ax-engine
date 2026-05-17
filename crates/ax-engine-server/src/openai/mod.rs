@@ -1,4 +1,5 @@
 pub(crate) mod chat;
+pub(crate) mod chat_requests;
 pub(crate) mod chunks;
 pub(crate) mod completions;
 pub(crate) mod embeddings;
