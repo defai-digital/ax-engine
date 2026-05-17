@@ -10,10 +10,11 @@ use std::time::Duration;
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent,
-    GenerateStreamState, LlamaCppBackendError, MlxLmBackendError, MlxLmChatGenerateRequest,
-    MlxLmChatMessage, MlxLmStreamHandle, RuntimeReport, SelectedBackend, SessionRequestReport,
+    GenerateStreamState, LlamaCppBackendError, LlamaCppChatGenerateRequest, LlamaCppChatMessage,
+    LlamaCppConfig, MlxLmBackendError, MlxLmChatGenerateRequest, MlxLmChatMessage,
+    MlxLmStreamHandle, RuntimeReport, SelectedBackend, SessionRequestReport,
     StatelessGenerateContext, finish_reason_from_mlx_lm, run_blocking_chat_generate,
-    start_streaming_chat_generate,
+    run_blocking_llama_cpp_chat_generate, start_streaming_chat_generate,
 };
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
@@ -1032,9 +1033,47 @@ async fn openai_chat_completions(
     if state.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated {
         return run_openai_mlx_lm_chat_generation(state, request).await;
     }
+    if state.runtime_report.selected_backend == SelectedBackend::LlamaCpp
+        && !request.stream
+        && matches!(
+            state.session_config.llama_backend.as_ref(),
+            Some(LlamaCppConfig::ServerCompletion(_))
+        )
+    {
+        return run_openai_llama_cpp_chat_generation(state, request).await;
+    }
     let request = build_openai_chat_request(&state, request)?;
 
     run_openai_text_generation(state, request, OpenAiStreamKind::ChatCompletion).await
+}
+
+async fn run_openai_llama_cpp_chat_generation(
+    state: AppState,
+    request: OpenAiChatCompletionHttpRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let request = build_openai_llama_cpp_chat_request(&state, request)?;
+    let request_id = allocate_request_id(&state);
+    let runtime = state.runtime_report.clone();
+    let llama_backend = state
+        .session_config
+        .llama_backend
+        .clone()
+        .ok_or(EngineSessionError::MissingLlamaCppConfig {
+            selected_backend: state.runtime_report.selected_backend,
+        })
+        .map_err(map_session_error)?;
+    let response = run_blocking_session_task(move || {
+        run_blocking_llama_cpp_chat_generate(
+            request_id,
+            &runtime,
+            &llama_backend,
+            &request.chat_request,
+        )
+        .map_err(EngineSessionError::from)
+    })
+    .await?;
+
+    Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(&response, request_id))
 }
 
 async fn run_openai_mlx_lm_chat_generation(
@@ -1683,6 +1722,10 @@ struct OpenAiBuiltMlxLmChatRequest {
     stream: bool,
 }
 
+struct OpenAiBuiltLlamaCppChatRequest {
+    chat_request: LlamaCppChatGenerateRequest,
+}
+
 fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> GenerateRequest {
     build_generate_request_internal(
         state,
@@ -1804,6 +1847,35 @@ fn build_openai_mlx_lm_chat_request(
     })
 }
 
+fn build_openai_llama_cpp_chat_request(
+    state: &AppState,
+    request: OpenAiChatCompletionHttpRequest,
+) -> Result<OpenAiBuiltLlamaCppChatRequest, (StatusCode, Json<ErrorResponse>)> {
+    let max_output_tokens = openai_max_tokens(request.max_tokens);
+    let messages = build_llama_cpp_chat_messages(&request.messages)?;
+    let sampling = build_openai_sampling(
+        request.temperature,
+        request.top_p,
+        request.top_k,
+        request.min_p,
+        request.repetition_penalty,
+        request.repetition_context_size,
+        request.seed,
+    );
+    let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
+
+    Ok(OpenAiBuiltLlamaCppChatRequest {
+        chat_request: LlamaCppChatGenerateRequest {
+            model_id: state.model_id.to_string(),
+            messages,
+            max_output_tokens,
+            sampling,
+            stop_sequences,
+            metadata: request.metadata,
+        },
+    })
+}
+
 fn build_openai_generate_request(
     state: &AppState,
     input_tokens: Vec<u32>,
@@ -1895,6 +1967,27 @@ fn build_mlx_lm_chat_messages(
             let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
             let content = render_openai_chat_content(&message.content)?;
             Ok(MlxLmChatMessage::new(role, content))
+        })
+        .collect()
+}
+
+fn build_llama_cpp_chat_messages(
+    messages: &[OpenAiChatMessage],
+) -> Result<Vec<LlamaCppChatMessage>, (StatusCode, Json<ErrorResponse>)> {
+    if messages.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "chat.completions requires at least one message".to_string(),
+        ));
+    }
+
+    messages
+        .iter()
+        .map(|message| {
+            let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+            let content = render_openai_chat_content(&message.content)?;
+            Ok(LlamaCppChatMessage::new(role, content))
         })
         .collect()
 }
@@ -2096,7 +2189,8 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
                 error.to_string(),
             )
         }
-        EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
+        EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingCompletionChoice { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. }) => {
             error_response(StatusCode::BAD_GATEWAY, "backend_error", error.to_string())
         }
@@ -2760,7 +2854,8 @@ sys.stdout.write(f"server::{prompt}")
                 "content": "server::hello openai",
                 "tokens": [4, 5],
                 "stop": true,
-                "stop_type": "limit"
+                "stop_type": "limit",
+                "tokens_evaluated": 4
             })
             .to_string(),
             |payload| {
@@ -2805,6 +2900,10 @@ sys.stdout.write(f"server::{prompt}")
                 .get("finish_reason")
                 .and_then(Value::as_str),
             Some("length")
+        );
+        assert_eq!(
+            json.get("usage"),
+            Some(&json!({"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}))
         );
     }
 
@@ -3133,17 +3232,27 @@ sys.stdout.write(f"server::{prompt}")
     async fn openai_chat_completions_endpoint_defaults_max_tokens() {
         let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
             serde_json::json!({
-                "content": "server::default chat max tokens",
-                "tokens": [4, 5],
-                "stop": true,
-                "stop_type": "limit"
+                "choices": [{
+                    "message": {"content": "server::default chat max tokens"},
+                    "finish_reason": "length"
+                }],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2}
             })
             .to_string(),
             |payload| {
                 assert_eq!(
-                    payload.get("n_predict"),
+                    payload.get("max_tokens"),
                     Some(&json!(DEFAULT_OPENAI_MAX_TOKENS))
                 );
+                assert!(payload.get("prompt").is_none());
+                assert_eq!(
+                    payload.get("messages"),
+                    Some(&json!([{
+                        "role": "user",
+                        "content": "hello openai chat"
+                    }]))
+                );
+                assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
             },
         );
         let app = build_router(llama_cpp_server_state(llama_server_url));
@@ -3173,6 +3282,12 @@ sys.stdout.write(f"server::{prompt}")
                 .and_then(|message| message.get("content"))
                 .and_then(Value::as_str),
             Some("server::default chat max tokens")
+        );
+        assert_eq!(
+            openai_first_choice(&json)
+                .get("finish_reason")
+                .and_then(Value::as_str),
+            Some("length")
         );
     }
 

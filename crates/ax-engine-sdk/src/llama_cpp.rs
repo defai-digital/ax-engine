@@ -78,6 +78,10 @@ impl LlamaCppServerCompletionConfig {
     pub fn completion_url(&self) -> String {
         format!("{}/completion", self.base_url)
     }
+
+    pub fn chat_completions_url(&self) -> String {
+        format!("{}/v1/chat/completions", self.base_url)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -197,6 +201,31 @@ pub(crate) struct LlamaCppPromptProgress {
     pub processed: u32,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct LlamaCppChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl LlamaCppChatMessage {
+    pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LlamaCppChatGenerateRequest {
+    pub model_id: String,
+    pub messages: Vec<LlamaCppChatMessage>,
+    pub max_output_tokens: u32,
+    pub sampling: GenerateSampling,
+    pub stop_sequences: Vec<String>,
+    pub metadata: Option<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum LlamaCppBackendError {
     #[error("llama.cpp backend {selected_backend:?} requires input_text")]
@@ -271,6 +300,8 @@ pub enum LlamaCppBackendError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("llama.cpp backend HTTP response from {endpoint} did not include a completion choice")]
+    MissingCompletionChoice { endpoint: String },
     #[error(
         "llama.cpp backend {selected_backend:?} does not support streaming generate in this preview contract"
     )]
@@ -286,6 +317,24 @@ pub fn run_blocking_generate(
     ensure_llama_cpp_backend(runtime)?;
 
     run_llama_cpp_generate(request_id, runtime, config, request)
+}
+
+pub fn run_blocking_chat_generate(
+    request_id: u64,
+    runtime: &RuntimeReport,
+    config: &LlamaCppConfig,
+    request: &LlamaCppChatGenerateRequest,
+) -> Result<GenerateResponse, LlamaCppBackendError> {
+    ensure_llama_cpp_backend(runtime)?;
+
+    match config {
+        LlamaCppConfig::Cli(_) => Err(LlamaCppBackendError::StreamingNotSupported {
+            selected_backend: SelectedBackend::LlamaCpp,
+        }),
+        LlamaCppConfig::ServerCompletion(config) => {
+            run_llama_cpp_server_chat_completion_generate(request_id, runtime, config, request)
+        }
+    }
 }
 
 pub(crate) fn start_streaming_generate(
@@ -408,6 +457,7 @@ fn run_llama_cpp_cli_generate(
         output_text,
         None,
         None,
+        None,
         GenerateRouteReport::with_execution_plan("llama_cpp.blocking_cli"),
     ))
 }
@@ -443,8 +493,43 @@ fn run_llama_cpp_server_completion_generate(
         output_token_logprobs,
         strip_bos_leading_space(response.content),
         prompt_token_count,
+        None,
         finish_reason_from_stop_type(response.stop, response.stop_type.as_deref()),
         llama_cpp_server_completion_route("llama_cpp.server_completion", response.tokens_cached),
+    ))
+}
+
+fn run_llama_cpp_server_chat_completion_generate(
+    request_id: u64,
+    runtime: &RuntimeReport,
+    config: &LlamaCppServerCompletionConfig,
+    request: &LlamaCppChatGenerateRequest,
+) -> Result<GenerateResponse, LlamaCppBackendError> {
+    let endpoint = config.chat_completions_url();
+    let payload = build_llama_cpp_chat_completion_request(request, false);
+
+    let response = send_llama_cpp_json_post_request(&endpoint, &payload, None, config.timeouts)?;
+    let response: LlamaCppChatCompletionResponse =
+        parse_llama_cpp_json_response(response, &endpoint)?;
+    let choice = response.choices.into_iter().next().ok_or_else(|| {
+        LlamaCppBackendError::MissingCompletionChoice {
+            endpoint: endpoint.clone(),
+        }
+    })?;
+
+    Ok(build_llama_cpp_blocking_response(
+        request_id,
+        &request.model_id,
+        runtime,
+        Vec::new(),
+        None,
+        Vec::new(),
+        Vec::new(),
+        choice.message.content,
+        response.usage.as_ref().map(|usage| usage.prompt_tokens),
+        response.usage.as_ref().map(|usage| usage.completion_tokens),
+        finish_reason_from_openai_finish_reason(choice.finish_reason.as_deref()),
+        GenerateRouteReport::with_execution_plan("llama_cpp.server_chat_completion"),
     ))
 }
 
@@ -458,6 +543,7 @@ fn build_llama_cpp_blocking_response(
     output_token_logprobs: Vec<Option<f32>>,
     output_text: String,
     prompt_token_count: Option<u32>,
+    output_token_count: Option<u32>,
     finish_reason: Option<GenerateFinishReason>,
     route: GenerateRouteReport,
 ) -> GenerateResponse {
@@ -470,7 +556,7 @@ fn build_llama_cpp_blocking_response(
         output_token_logprobs,
         output_text: Some(output_text),
         prompt_token_count,
-        output_token_count: None,
+        output_token_count,
         status: GenerateStatus::Finished,
         finish_reason,
         step_count: 0,
@@ -567,6 +653,27 @@ fn build_llama_cpp_completion_request<'a>(
     }
 }
 
+fn build_llama_cpp_chat_completion_request(
+    request: &LlamaCppChatGenerateRequest,
+    stream: bool,
+) -> LlamaCppChatCompletionRequest<'_> {
+    LlamaCppChatCompletionRequest {
+        model: &request.model_id,
+        messages: &request.messages,
+        max_tokens: request.max_output_tokens,
+        temperature: request.sampling.temperature,
+        top_p: request.sampling.top_p,
+        top_k: request.sampling.top_k,
+        min_p: request.sampling.min_p,
+        repeat_penalty: request.sampling.repetition_penalty,
+        repeat_last_n: request.sampling.repetition_context_size,
+        seed: request.sampling.seed,
+        stream,
+        stop: request.stop_sequences.clone(),
+        metadata: request.metadata.as_deref(),
+    }
+}
+
 fn build_llama_cpp_prompt(
     request: &GenerateRequest,
 ) -> Result<LlamaCppPrompt<'_>, LlamaCppBackendError> {
@@ -605,6 +712,15 @@ fn finish_reason_from_stop_type(
             );
             Some(GenerateFinishReason::Stop)
         }
+    }
+}
+
+fn finish_reason_from_openai_finish_reason(value: Option<&str>) -> Option<GenerateFinishReason> {
+    match value {
+        Some("stop") => Some(GenerateFinishReason::Stop),
+        Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
+        Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
+        Some(_) | None => None,
     }
 }
 
@@ -735,6 +851,27 @@ struct LlamaCppCompletionRequest<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct LlamaCppChatCompletionRequest<'a> {
+    model: &'a str,
+    messages: &'a [LlamaCppChatMessage],
+    max_tokens: u32,
+    temperature: f32,
+    top_p: f32,
+    top_k: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_p: Option<f32>,
+    repeat_penalty: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeat_last_n: Option<u32>,
+    seed: u64,
+    stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stop: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum LlamaCppPrompt<'a> {
     Text(&'a str),
@@ -755,6 +892,35 @@ struct LlamaCppCompletionResponse {
     tokens_cached: u32,
     #[serde(default)]
     tokens_evaluated: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlamaCppCompletionUsage {
+    #[serde(default)]
+    prompt_tokens: u32,
+    #[serde(default)]
+    completion_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlamaCppChatCompletionMessage {
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlamaCppChatCompletionChoice {
+    message: LlamaCppChatCompletionMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlamaCppChatCompletionResponse {
+    #[serde(default)]
+    choices: Vec<LlamaCppChatCompletionChoice>,
+    #[serde(default)]
+    usage: Option<LlamaCppCompletionUsage>,
 }
 
 fn llama_cpp_server_completion_route(
