@@ -1,8 +1,7 @@
 use ax_engine_sdk::{
     EngineSessionError, GenerateRequest, GenerateStreamEvent, GenerateStreamState,
     LlamaCppChatGenerateRequest, LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle,
-    finish_reason_from_mlx_lm, start_streaming_chat_generate,
-    start_streaming_llama_cpp_chat_generate,
+    finish_reason_from_mlx_lm,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -66,8 +65,7 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     let runtime = state.runtime_report.clone();
     let mlx_lm_backend = mlx_lm::config(&state).map_err(map_session_error)?;
     let stream = run_blocking_session_task(move || {
-        start_streaming_chat_generate(&runtime, &mlx_lm_backend, &request)
-            .map_err(EngineSessionError::from)
+        mlx_lm::start_chat_stream(&runtime, &mlx_lm_backend, &request)
     })
     .await?;
 
@@ -88,8 +86,7 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     let runtime = state.runtime_report.clone();
     let llama_backend = llama_cpp::config(&state).map_err(map_session_error)?;
     let stream = run_blocking_session_task(move || {
-        start_streaming_llama_cpp_chat_generate(&runtime, &llama_backend, &request)
-            .map_err(EngineSessionError::from)
+        llama_cpp::start_streaming_chat_generate(&runtime, &llama_backend, &request)
     })
     .await?;
 

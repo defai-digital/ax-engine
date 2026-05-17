@@ -1,6 +1,3 @@
-use ax_engine_sdk::{
-    EngineSessionError, run_blocking_chat_generate, run_blocking_llama_cpp_chat_generate,
-};
 use axum::Json;
 use axum::http::StatusCode;
 
@@ -30,13 +27,7 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
     let runtime = state.runtime_report.clone();
     let llama_backend = llama_cpp::config(&state).map_err(map_session_error)?;
     let response = run_blocking_session_task(move || {
-        run_blocking_llama_cpp_chat_generate(
-            request_id,
-            &runtime,
-            &llama_backend,
-            &request.chat_request,
-        )
-        .map_err(EngineSessionError::from)
+        llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &request.chat_request)
     })
     .await?;
 
@@ -56,8 +47,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
     let runtime = state.runtime_report.clone();
     let mlx_lm_backend = mlx_lm::config(&state).map_err(map_session_error)?;
     let response = run_blocking_session_task(move || {
-        run_blocking_chat_generate(request_id, &runtime, &mlx_lm_backend, &request.chat_request)
-            .map_err(EngineSessionError::from)
+        mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &request.chat_request)
     })
     .await?;
 
