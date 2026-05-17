@@ -1,9 +1,9 @@
-use ax_engine_sdk::{LlamaCppConfig, SelectedBackend};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 
 use crate::app_state::AppState;
+use crate::backends::{llama_cpp, mlx_lm};
 use crate::errors::ErrorResponse;
 use crate::openai::generation::{
     run_openai_llama_cpp_chat_generation, run_openai_mlx_lm_chat_generation,
@@ -18,15 +18,10 @@ pub(crate) async fn openai_chat_completions(
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     validate_openai_request(&state, request.model.as_deref())?;
-    if state.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated {
+    if mlx_lm::is_selected(&state) {
         return run_openai_mlx_lm_chat_generation(state, request).await;
     }
-    if state.runtime_report.selected_backend == SelectedBackend::LlamaCpp
-        && matches!(
-            state.session_config.llama_backend.as_ref(),
-            Some(LlamaCppConfig::ServerCompletion(_))
-        )
-    {
+    if llama_cpp::supports_server_chat(&state) {
         return run_openai_llama_cpp_chat_generation(state, request).await;
     }
     let request = build_openai_chat_request(&state, request)?;
