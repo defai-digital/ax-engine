@@ -1,18 +1,13 @@
-use crate::app_state::{
-    AppState, EmbeddingBatchKey, EmbeddingBatchRequestOptions, build_app_state,
-};
+use crate::app_state::{AppState, build_app_state};
 use crate::args::{self, ServerArgs};
 use crate::chat;
-use crate::embeddings::microbatch::{collect_embedding_batch_groups, pooling_code};
 use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request, chat_template_kwargs_for_model_id,
     openai_chat_stop_sequences, render_openai_chat_prompt,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::routes::build_router;
-use ax_engine_sdk::{
-    EmbeddingPooling, EngineSession, GenerateRequest, GenerateSampling, GenerateStreamEvent,
-};
+use ax_engine_sdk::{EngineSession, GenerateRequest, GenerateSampling, GenerateStreamEvent};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -24,6 +19,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;
 
+mod embeddings;
 mod openai_responses;
 
 const TEST_MODEL_ID: &str = "qwen3";
@@ -900,60 +896,6 @@ async fn openai_embeddings_endpoint_rejects_unknown_pooling() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_invalid_request_response(&json, "unknown pooling strategy");
-}
-
-#[test]
-fn embedding_microbatch_groups_requests_by_options() {
-    let groups = collect_embedding_batch_groups(&[
-        EmbeddingBatchRequestOptions {
-            pooling: EmbeddingPooling::Last,
-            normalize: true,
-        },
-        EmbeddingBatchRequestOptions {
-            pooling: EmbeddingPooling::Last,
-            normalize: true,
-        },
-        EmbeddingBatchRequestOptions {
-            pooling: EmbeddingPooling::Mean,
-            normalize: true,
-        },
-        EmbeddingBatchRequestOptions {
-            pooling: EmbeddingPooling::Last,
-            normalize: false,
-        },
-    ]);
-
-    assert_eq!(groups.len(), 3);
-    assert_eq!(
-        groups[0],
-        (
-            EmbeddingBatchKey {
-                pooling_code: pooling_code(EmbeddingPooling::Mean),
-                normalize: true
-            },
-            vec![2]
-        )
-    );
-    assert_eq!(
-        groups[1],
-        (
-            EmbeddingBatchKey {
-                pooling_code: pooling_code(EmbeddingPooling::Last),
-                normalize: false
-            },
-            vec![3]
-        )
-    );
-    assert_eq!(
-        groups[2],
-        (
-            EmbeddingBatchKey {
-                pooling_code: pooling_code(EmbeddingPooling::Last),
-                normalize: true
-            },
-            vec![0, 1]
-        )
-    );
 }
 
 #[tokio::test]
