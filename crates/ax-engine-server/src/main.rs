@@ -1,17 +1,8 @@
 #![allow(clippy::collapsible_if)]
 
-use std::env;
-
-#[cfg(test)]
-use ax_engine_sdk::{EmbeddingPooling, GenerateFinishReason, GenerateRequest, GenerateStreamEvent};
 use ax_engine_sdk::{EngineSession, EngineSessionConfig};
-#[cfg(test)]
-use axum::Router;
-#[cfg(test)]
-use axum::http::StatusCode;
 use clap::Parser;
-#[cfg(test)]
-use serde_json::json;
+use std::env;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -27,23 +18,8 @@ mod openai;
 mod routes;
 mod tasks;
 
-#[cfg(test)]
-use app_state::AppState;
 use app_state::build_app_state;
-#[cfg(test)]
-use app_state::{EmbeddingBatchKey, EmbeddingBatchRequestOptions};
 use args::{ServerArgs, render_presets};
-#[cfg(test)]
-use embeddings::microbatch::{collect_embedding_batch_groups, pooling_code};
-#[cfg(test)]
-use openai::requests::{
-    DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request, chat_template_kwargs_for_model_id,
-    openai_chat_stop_sequences, render_openai_chat_prompt,
-};
-#[cfg(test)]
-use openai::responses::openai_finish_reason;
-#[cfg(test)]
-use openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use routes::build_router;
 
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
