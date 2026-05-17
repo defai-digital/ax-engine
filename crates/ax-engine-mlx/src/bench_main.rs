@@ -49,8 +49,7 @@ fn main() {
             &weights,
             0,
             &mut cache,
-            MlxSamplingParams::greedy(),
-            &[],
+            MlxSamplingRequest::new(MlxSamplingParams::greedy(), &[]),
             &mut rng,
         );
         clear_cache();
@@ -114,8 +113,7 @@ fn main() {
                 &weights,
                 tok,
                 &mut cache,
-                MlxSamplingParams::greedy(),
-                &[],
+                MlxSamplingRequest::new(MlxSamplingParams::greedy(), &[]),
                 &mut rng,
             );
             step_times.push(t0.elapsed().as_secs_f64() * 1000.0);

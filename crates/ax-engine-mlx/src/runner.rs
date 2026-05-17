@@ -2470,8 +2470,7 @@ impl MlxRunner {
                 &weights,
                 0,
                 &mut dummy_cache,
-                MlxSamplingParams::greedy(),
-                &[],
+                MlxSamplingRequest::new(MlxSamplingParams::greedy(), &[]),
                 &mut dummy_rng,
             );
             dummy_cache.reset();
