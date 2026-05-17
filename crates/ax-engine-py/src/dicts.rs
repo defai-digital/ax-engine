@@ -764,3 +764,159 @@ where
         .unwrap_or_else(|| "unknown".to_string());
     PyString::new(py, &string).into_any().unbind()
 }
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use ax_engine_sdk::SessionRequestReport;
+    use pyo3::types::{PyAny, PyDictMethods, PyList};
+    use serde_json::{Map, Value, json};
+
+    pub(crate) fn dict_string(dict: &Bound<'_, PyDict>, key: &str) -> String {
+        dict.get_item(key)
+            .unwrap()
+            .unwrap()
+            .extract::<String>()
+            .unwrap()
+    }
+
+    pub(crate) fn dict_tokens(dict: &Bound<'_, PyDict>, key: &str) -> Vec<u32> {
+        dict.get_item(key)
+            .unwrap()
+            .unwrap()
+            .extract::<Vec<u32>>()
+            .unwrap()
+    }
+
+    fn py_any_to_json(value: &Bound<'_, PyAny>) -> Value {
+        if value.is_none() {
+            return Value::Null;
+        }
+        if let Ok(dict) = value.downcast::<PyDict>() {
+            return py_dict_to_json(dict);
+        }
+        if let Ok(list) = value.downcast::<PyList>() {
+            return Value::Array(list.iter().map(|item| py_any_to_json(&item)).collect());
+        }
+        if let Ok(string) = value.extract::<String>() {
+            return Value::String(string);
+        }
+        if let Ok(boolean) = value.extract::<bool>() {
+            return Value::Bool(boolean);
+        }
+        if let Ok(number) = value.extract::<i64>() {
+            return Value::Number(number.into());
+        }
+        if let Ok(number) = value.extract::<u64>() {
+            return Value::Number(number.into());
+        }
+        if let Ok(number) = value.extract::<f64>() {
+            return Value::Number(
+                serde_json::Number::from_f64(number)
+                    .expect("finite python float should convert to json number"),
+            );
+        }
+
+        panic!("unsupported python value in test json conversion");
+    }
+
+    pub(crate) fn py_dict_to_json(dict: &Bound<'_, PyDict>) -> Value {
+        let mut object = Map::new();
+        for (key, value) in dict.iter() {
+            object.insert(
+                key.extract::<String>()
+                    .expect("python dict keys should be strings"),
+                py_any_to_json(&value),
+            );
+        }
+        Value::Object(object)
+    }
+
+    pub(crate) fn normalize_measurement_fields(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                map.remove("cpu_time_us");
+                map.remove("runner_time_us");
+                for value in map.values_mut() {
+                    normalize_measurement_fields(value);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    normalize_measurement_fields(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn strip_unobserved_logprobs(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for key in ["output_token_logprobs", "delta_token_logprobs"] {
+                    let remove = map.get(key).is_some_and(|value| {
+                        value
+                            .as_array()
+                            .is_some_and(|values| values.iter().all(Value::is_null))
+                    });
+                    if remove {
+                        map.remove(key);
+                    }
+                }
+                for value in map.values_mut() {
+                    strip_unobserved_logprobs(value);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    strip_unobserved_logprobs(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn sdk_stream_event_json(event: &SdkGenerateStreamEvent) -> Value {
+        let mut value = match event {
+            SdkGenerateStreamEvent::Request(payload) => json!({
+                "event": "request",
+                "runtime": payload.runtime,
+                "request": payload.request,
+            }),
+            SdkGenerateStreamEvent::Step(payload) => {
+                let mut json = json!({
+                    "event": "step",
+                    "request": payload.request,
+                    "step": payload.step,
+                    "delta_tokens": payload.delta_tokens,
+                });
+                if !payload.delta_token_logprobs.is_empty() {
+                    json.as_object_mut()
+                        .expect("step event json should be object")
+                        .insert(
+                            "delta_token_logprobs".to_string(),
+                            json!(payload.delta_token_logprobs),
+                        );
+                }
+                if let Some(delta_text) = payload.delta_text.as_deref() {
+                    json.as_object_mut()
+                        .expect("step event json should be object")
+                        .insert("delta_text".to_string(), json!(delta_text));
+                }
+                json
+            }
+            SdkGenerateStreamEvent::Response(payload) => json!({
+                "event": "response",
+                "response": payload.response,
+            }),
+        };
+        strip_unobserved_logprobs(&mut value);
+        value
+    }
+
+    pub(crate) fn sdk_request_report_json(report: SessionRequestReport) -> Value {
+        let mut value = serde_json::to_value(report).expect("sdk request report should serialize");
+        strip_unobserved_logprobs(&mut value);
+        value
+    }
+}
