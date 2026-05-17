@@ -1,16 +1,11 @@
-use ax_engine_sdk::{
-    DelegatedHttpTimeouts, EngineSessionConfig, KvCompressionConfig, KvCompressionMode,
-    PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier, TurboQuantPreset,
-};
+use ax_engine_sdk::{DelegatedHttpTimeouts, KvCompressionConfig};
 use clap::{Parser, ValueEnum};
-use std::env;
 use std::path::PathBuf;
 
 mod artifacts;
 mod presets;
+mod session;
 
-use artifacts::{hf_cache_roots, resolve_hf_cache_model_artifacts};
-use presets::PresetDefinition;
 pub use presets::{ServerPreset, render_presets};
 
 const MODEL_ARTIFACTS_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
@@ -33,45 +28,10 @@ pub enum PreviewMlxKvCompression {
     TurboQuantFusedExperimental,
 }
 
-impl PreviewMlxKvCompression {
-    fn as_config(self, hot_window_tokens: usize, min_context_tokens: usize) -> KvCompressionConfig {
-        match self {
-            Self::Disabled => KvCompressionConfig {
-                hot_window_tokens,
-                min_context_tokens,
-                ..KvCompressionConfig::disabled()
-            },
-            Self::TurboQuantShadow => KvCompressionConfig {
-                mode: KvCompressionMode::TurboQuantShadow,
-                preset: TurboQuantPreset::K8V4,
-                hot_window_tokens,
-                min_context_tokens,
-            },
-            Self::TurboQuantFusedExperimental => KvCompressionConfig {
-                mode: KvCompressionMode::TurboQuantFusedExperimental,
-                preset: TurboQuantPreset::K8V4,
-                hot_window_tokens,
-                min_context_tokens,
-            },
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ModelArtifactResolution {
     ExplicitOnly,
     HfCache,
-}
-
-impl PreviewSupportTier {
-    pub fn as_sdk_support_tier(self) -> SupportTier {
-        match self {
-            Self::MlxCertified => SupportTier::MlxCertified,
-            Self::MlxPreview => SupportTier::MlxPreview,
-            Self::MlxLmDelegated => SupportTier::MlxLmDelegated,
-            Self::LlamaCpp => SupportTier::LlamaCpp,
-        }
-    }
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -180,128 +140,14 @@ pub struct ServerArgs {
     pub grpc_bind_address: Option<String>,
 }
 
-impl ServerArgs {
-    pub fn bind_address(&self) -> String {
-        format!("{}:{}", self.host, self.port)
-    }
-
-    pub fn effective_model_id(&self) -> &str {
-        self.preset
-            .map(|preset| preset.definition().model_id)
-            .unwrap_or(self.model_id.as_str())
-    }
-
-    pub fn effective_support_tier(&self) -> PreviewSupportTier {
-        self.preset
-            .map(|preset| preset.definition().support_tier)
-            .unwrap_or(self.support_tier)
-    }
-
-    pub fn session_config(&self) -> Result<EngineSessionConfig, String> {
-        let preset = self.preset.map(ServerPreset::definition);
-        let effective_mlx = self.mlx || preset.is_some();
-        let effective_support_tier = self.effective_support_tier();
-        let effective_max_batch_tokens = preset
-            .map(|definition| definition.max_batch_tokens)
-            .unwrap_or(self.max_batch_tokens);
-        let delegated_http_timeouts = self.delegated_http_timeouts()?;
-        let mlx_model_artifacts_dir =
-            self.resolve_mlx_model_artifacts_dir(preset.as_ref(), effective_mlx)?;
-
-        let backend_request = if effective_mlx {
-            PreviewBackendRequest::shipping_mlx()
-        } else if effective_support_tier == PreviewSupportTier::LlamaCpp {
-            PreviewBackendRequest::shipping_default_llama_cpp(
-                PathBuf::from(&self.llama_cli_path),
-                self.llama_model_path.clone(),
-                self.llama_server_url.clone(),
-            )
-            .with_delegated_http_timeouts(delegated_http_timeouts)
-        } else {
-            PreviewBackendRequest {
-                support_tier: effective_support_tier.as_sdk_support_tier(),
-                llama_cli_path: PathBuf::from(&self.llama_cli_path),
-                llama_model_path: self.llama_model_path.clone(),
-                llama_server_url: self.llama_server_url.clone(),
-                mlx_lm_server_url: self.mlx_lm_server_url.clone(),
-                delegated_http_timeouts,
-                ..PreviewBackendRequest::default()
-            }
-        };
-
-        EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
-            cache_group_id: ax_engine_sdk::CacheGroupId(self.cache_group_id),
-            block_size_tokens: self.block_size_tokens,
-            total_blocks: self.total_blocks,
-            deterministic: self.deterministic,
-            max_batch_tokens: effective_max_batch_tokens,
-            backend_request,
-            mlx_runtime_artifacts_dir: None,
-            mlx_model_artifacts_dir,
-            mlx_disable_ngram_acceleration: self.disable_ngram_acceleration,
-            mlx_kv_compression: self.experimental_mlx_kv_compression.as_config(
-                self.experimental_mlx_kv_compression_hot_window_tokens,
-                self.experimental_mlx_kv_compression_min_context_tokens,
-            ),
-            mlx_prefill_chunk: self.prefill_chunk,
-        })
-        .map_err(|error| error.to_string())
-    }
-
-    fn delegated_http_timeouts(&self) -> Result<DelegatedHttpTimeouts, String> {
-        if self.delegated_http_connect_timeout_secs == 0
-            || self.delegated_http_read_timeout_secs == 0
-            || self.delegated_http_write_timeout_secs == 0
-        {
-            return Err("delegated HTTP timeout values must be greater than zero".to_string());
-        }
-        Ok(DelegatedHttpTimeouts::from_secs(
-            self.delegated_http_connect_timeout_secs,
-            self.delegated_http_read_timeout_secs,
-            self.delegated_http_write_timeout_secs,
-        ))
-    }
-
-    fn resolve_mlx_model_artifacts_dir(
-        &self,
-        preset: Option<&PresetDefinition>,
-        effective_mlx: bool,
-    ) -> Result<Option<PathBuf>, String> {
-        if effective_mlx {
-            if let Some(path) = self
-                .mlx_model_artifacts_dir
-                .clone()
-                .or_else(|| self.llama_model_path.clone())
-            {
-                return Ok(Some(path));
-            }
-            if env::var_os(MODEL_ARTIFACTS_ENV).is_some_and(|v| !v.is_empty()) {
-                return Ok(None);
-            }
-            if self.resolve_model_artifacts == ModelArtifactResolution::HfCache {
-                let Some(preset) = preset else {
-                    return Err(
-                        "--resolve-model-artifacts hf-cache requires --preset so AX can validate the expected model family"
-                            .to_string(),
-                    );
-                };
-                return resolve_hf_cache_model_artifacts(
-                    preset,
-                    hf_cache_roots(self.hf_cache_root.clone()),
-                )
-                .map(Some);
-            }
-            return Ok(None);
-        }
-
-        Ok(self.mlx_model_artifacts_dir.clone())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ax_engine_sdk::{BackendPolicy, LlamaCppConfig, ResolvedBackend, SelectedBackend};
+    use ax_engine_sdk::{
+        BackendPolicy, EngineSessionConfig, KvCompressionMode, LlamaCppConfig,
+        PreviewBackendRequest, PreviewSessionConfigRequest, ResolvedBackend, SelectedBackend,
+        SupportTier, TurboQuantPreset,
+    };
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
