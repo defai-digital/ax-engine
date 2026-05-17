@@ -46,14 +46,15 @@ use errors::{
     ErrorResponse, error_response, map_blocking_task_error, map_session_error,
     request_not_found_response,
 };
+use openai::responses::{
+    finish_reason_from_llama_cpp_chat, openai_finish_reason, unix_timestamp_secs,
+};
 use openai::schema::{
-    OpenAiChatCompletionChoice, OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice,
-    OpenAiChatCompletionHttpRequest, OpenAiChatCompletionResponse, OpenAiChatContent,
-    OpenAiChatDelta, OpenAiChatMessage, OpenAiChatMessageResponse, OpenAiCompletionChoice,
-    OpenAiCompletionChunk, OpenAiCompletionChunkChoice, OpenAiCompletionHttpRequest,
-    OpenAiCompletionResponse, OpenAiEmbeddingObject, OpenAiEmbeddingRequest,
-    OpenAiEmbeddingResponse, OpenAiEmbeddingUsage, OpenAiPromptInput, OpenAiStopInput,
-    OpenAiStreamKind, OpenAiUsage,
+    OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatCompletionHttpRequest,
+    OpenAiChatContent, OpenAiChatDelta, OpenAiChatMessage, OpenAiCompletionChunk,
+    OpenAiCompletionChunkChoice, OpenAiCompletionHttpRequest, OpenAiEmbeddingObject,
+    OpenAiEmbeddingRequest, OpenAiEmbeddingResponse, OpenAiEmbeddingUsage, OpenAiPromptInput,
+    OpenAiStopInput, OpenAiStreamKind,
 };
 use routes::build_router;
 
@@ -108,38 +109,6 @@ struct ModelCard {
 }
 
 type RuntimeResponse = RuntimeReport;
-
-impl OpenAiStreamKind {
-    fn response_id(self, request_id: u64) -> String {
-        match self {
-            OpenAiStreamKind::Completion => format!("cmpl-{request_id}"),
-            OpenAiStreamKind::ChatCompletion => format!("chatcmpl-{request_id}"),
-        }
-    }
-
-    fn stream_chunk_object(self) -> &'static str {
-        match self {
-            OpenAiStreamKind::Completion => "text_completion.chunk",
-            OpenAiStreamKind::ChatCompletion => "chat.completion.chunk",
-        }
-    }
-
-    fn build_non_stream_response(
-        self,
-        response: &GenerateResponse,
-        request_id: u64,
-    ) -> axum::response::Response {
-        let id = self.response_id(request_id);
-        match self {
-            OpenAiStreamKind::Completion => {
-                Json(openai_completion_response(response, id)).into_response()
-            }
-            OpenAiStreamKind::ChatCompletion => {
-                Json(openai_chat_completion_response(response, id)).into_response()
-            }
-        }
-    }
-}
 
 fn log_host_detection_warnings(session_config: &EngineSessionConfig) {
     let host = ax_engine_sdk::current_host_report();
@@ -1344,15 +1313,6 @@ fn send_openai_llama_cpp_chat_final_chunk(
     send_openai_stream_chunk(tx, &chunk)
 }
 
-fn finish_reason_from_llama_cpp_chat(value: Option<&str>) -> Option<GenerateFinishReason> {
-    match value {
-        Some("stop") => Some(GenerateFinishReason::Stop),
-        Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
-        Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
-        Some(_) | None => None,
-    }
-}
-
 fn send_stream_event<T: Serialize>(tx: &StreamEventSender, event_name: &str, payload: &T) -> bool {
     match serde_json::to_string(payload) {
         Ok(data) => tx
@@ -1828,62 +1788,6 @@ fn render_openai_chat_content(
     }
 }
 
-fn openai_completion_response(response: &GenerateResponse, id: String) -> OpenAiCompletionResponse {
-    OpenAiCompletionResponse {
-        id,
-        object: "text_completion",
-        created: unix_timestamp_secs(),
-        model: response.model_id.clone(),
-        system_fingerprint: None,
-        choices: vec![OpenAiCompletionChoice {
-            index: 0,
-            text: response.output_text.clone().unwrap_or_default(),
-            finish_reason: openai_finish_reason(response.finish_reason),
-        }],
-        usage: openai_usage(response),
-    }
-}
-
-fn openai_chat_completion_response(
-    response: &GenerateResponse,
-    id: String,
-) -> OpenAiChatCompletionResponse {
-    OpenAiChatCompletionResponse {
-        id,
-        object: "chat.completion",
-        created: unix_timestamp_secs(),
-        model: response.model_id.clone(),
-        system_fingerprint: None,
-        choices: vec![OpenAiChatCompletionChoice {
-            index: 0,
-            message: OpenAiChatMessageResponse {
-                role: "assistant",
-                content: response.output_text.clone().unwrap_or_default(),
-            },
-            finish_reason: openai_finish_reason(response.finish_reason),
-        }],
-        usage: openai_usage(response),
-    }
-}
-
-fn openai_usage(response: &GenerateResponse) -> Option<OpenAiUsage> {
-    let (prompt_tokens, completion_tokens) = response.known_usage()?;
-    Some(OpenAiUsage {
-        prompt_tokens,
-        completion_tokens,
-        total_tokens: prompt_tokens.saturating_add(completion_tokens),
-    })
-}
-
-fn openai_finish_reason(finish_reason: Option<GenerateFinishReason>) -> Option<&'static str> {
-    match finish_reason {
-        Some(GenerateFinishReason::MaxOutputTokens) => Some("length"),
-        Some(GenerateFinishReason::Stop) => Some("stop"),
-        Some(GenerateFinishReason::ContentFilter) => Some("content_filter"),
-        Some(GenerateFinishReason::Cancelled) | Some(GenerateFinishReason::Error) | None => None,
-    }
-}
-
 fn validate_openai_text_backend(state: &AppState) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     if !matches!(
         state.runtime_report.selected_backend,
@@ -1896,13 +1800,6 @@ fn validate_openai_text_backend(state: &AppState) -> Result<(), (StatusCode, Jso
         ));
     }
     Ok(())
-}
-
-fn unix_timestamp_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 fn validate_model(
