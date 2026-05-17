@@ -25,9 +25,6 @@ use crate::backend::{
     ResolvedBackend, SupportTier,
 };
 use crate::generate::GenerateFinishReason;
-use crate::session::stream::{
-    finish_reason_from_stop_type, terminal_stop_reason_from_finish_reason,
-};
 use crate::{LlamaCppBackendError, MlxLmConfig};
 
 fn sample_submission() -> RequestSubmission {
@@ -1422,38 +1419,6 @@ fn native_generate_response_surfaces_runner_route_metadata() {
             .crossover_decisions
             .get("metal_dispatch_completed"),
         Some(&1)
-    );
-}
-
-#[test]
-fn slice_output_token_logprobs_fails_closed_on_length_mismatch() {
-    let mut report = sample_terminal_llama_report(41);
-    report.output_token_logprobs.pop();
-
-    let error = slice_output_token_logprobs(&report, 0, 2)
-        .expect_err("mismatched logprob lengths should fail closed");
-
-    assert!(matches!(
-        error,
-        EngineSessionError::RequestReportInvariantViolation { request_id: 41, .. }
-    ));
-}
-
-#[test]
-fn llama_cpp_stream_finish_reason_preserves_content_filter() {
-    assert_eq!(
-        finish_reason_from_stop_type(true, Some("content_filter")),
-        Some(crate::generate::GenerateFinishReason::ContentFilter)
-    );
-    assert_eq!(
-        finish_reason_from_stop_type(true, Some("backend_error")),
-        Some(crate::generate::GenerateFinishReason::Error)
-    );
-    assert_eq!(
-        terminal_stop_reason_from_finish_reason(Some(
-            crate::generate::GenerateFinishReason::ContentFilter
-        )),
-        Some(ax_engine_core::StopReason::Error)
     );
 }
 

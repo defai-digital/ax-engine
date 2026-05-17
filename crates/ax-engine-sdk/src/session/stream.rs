@@ -674,3 +674,60 @@ pub(super) fn terminal_stop_reason_from_finish_reason(
         None => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generate::GenerateFinishReason;
+
+    fn sample_finished_request_report(request_id: u64) -> SessionRequestReport {
+        SessionRequestReport {
+            request_id,
+            model_id: "qwen3".to_string(),
+            state: SessionRequestState::Finished,
+            prompt_tokens: vec![1, 2, 3],
+            processed_prompt_tokens: 3,
+            output_tokens: vec![4, 5],
+            output_token_logprobs: vec![Some(-0.25), Some(-0.5)],
+            prompt_len: 3,
+            output_len: 2,
+            max_output_tokens: 2,
+            cancel_requested: false,
+            execution_plan_ref: None,
+            route: GenerateRouteReport::default(),
+            finish_reason: Some(GenerateFinishReason::Stop),
+            terminal_stop_reason: None,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn slice_output_token_logprobs_fails_closed_on_length_mismatch() {
+        let mut report = sample_finished_request_report(41);
+        report.output_token_logprobs.pop();
+
+        let error = slice_output_token_logprobs(&report, 0, 2)
+            .expect_err("mismatched logprob lengths should fail closed");
+
+        assert!(matches!(
+            error,
+            EngineSessionError::RequestReportInvariantViolation { request_id: 41, .. }
+        ));
+    }
+
+    #[test]
+    fn llama_cpp_stream_finish_reason_preserves_content_filter() {
+        assert_eq!(
+            finish_reason_from_stop_type(true, Some("content_filter")),
+            Some(GenerateFinishReason::ContentFilter)
+        );
+        assert_eq!(
+            finish_reason_from_stop_type(true, Some("backend_error")),
+            Some(GenerateFinishReason::Error)
+        );
+        assert_eq!(
+            terminal_stop_reason_from_finish_reason(Some(GenerateFinishReason::ContentFilter)),
+            Some(ax_engine_core::StopReason::Error)
+        );
+    }
+}
