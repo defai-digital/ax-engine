@@ -250,6 +250,10 @@ pub struct ModelConfig {
     pub moe_sigmoid_routing: bool,
     /// Scale applied to selected expert weights (DeepSeek V3: 2.5, others: 1.0).
     pub moe_routed_scaling_factor: f32,
+    /// Number of expert groups for group-based top-k (DeepSeek V3: 8, others: 1).
+    pub moe_n_group: usize,
+    /// Number of groups retained after group scoring (DeepSeek V3: 4, others: 1).
+    pub moe_topk_group: usize,
 }
 
 impl ModelConfig {
@@ -338,6 +342,8 @@ impl ModelConfig {
             moe_shared_expert_count: m.moe.shared_expert_count.unwrap_or(0) as usize,
             moe_sigmoid_routing: m.moe.sigmoid_routing,
             moe_routed_scaling_factor: m.moe.routed_scaling_factor.unwrap_or(1.0),
+            moe_n_group: m.moe.n_group.unwrap_or(1) as usize,
+            moe_topk_group: m.moe.topk_group.unwrap_or(1) as usize,
         }
     }
 

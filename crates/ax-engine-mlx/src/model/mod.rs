@@ -1002,6 +1002,8 @@ mod tests {
             moe_shared_expert_count: 0,
             moe_sigmoid_routing: false,
             moe_routed_scaling_factor: 1.0,
+            moe_n_group: 1,
+            moe_topk_group: 1,
         }
     }
 
@@ -1514,6 +1516,8 @@ mod tests {
                 shared_expert_count: None,
                 sigmoid_routing: false,
                 routed_scaling_factor: None,
+                n_group: None,
+                topk_group: None,
             },
             glm_router: NativeGlmRouterConfig {
                 first_dense_layer_count: Some(1),

@@ -264,6 +264,12 @@ pub struct NativeMoeConfig {
     /// Scale factor applied to selected expert weights after routing (DeepSeek V3: 2.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routed_scaling_factor: Option<f32>,
+    /// Number of expert groups for group-based top-k selection (DeepSeek V3: 8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_group: Option<u32>,
+    /// Number of groups to retain after group scoring (DeepSeek V3: 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topk_group: Option<u32>,
 }
 
 impl NativeMoeConfig {
@@ -3500,6 +3506,8 @@ mod tests {
             shared_expert_count: None,
             sigmoid_routing: false,
             routed_scaling_factor: None,
+            n_group: None,
+            topk_group: None,
         };
         manifest.tensors.extend([
             tensor(
@@ -3639,6 +3647,8 @@ mod tests {
             shared_expert_count: None,
             sigmoid_routing: false,
             routed_scaling_factor: None,
+            n_group: None,
+            topk_group: None,
         };
         manifest.tensors.retain(|tensor| {
             tensor.layer_index != Some(1)
@@ -3847,6 +3857,8 @@ mod tests {
             shared_expert_count: None,
             sigmoid_routing: false,
             routed_scaling_factor: None,
+            n_group: None,
+            topk_group: None,
         };
         let artifacts = NativeModelArtifacts {
             root_dir: PathBuf::new(),

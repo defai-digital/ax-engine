@@ -6138,6 +6138,8 @@ mod tests {
             shared_expert_count: None,
             sigmoid_routing: false,
             routed_scaling_factor: None,
+            n_group: None,
+            topk_group: None,
         };
         manifest.glm_router = NativeGlmRouterConfig {
             first_dense_layer_count: Some(1),

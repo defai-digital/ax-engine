@@ -2876,6 +2876,8 @@ mod tests {
             moe_shared_expert_count: 0,
             moe_sigmoid_routing: false,
             moe_routed_scaling_factor: 1.0,
+            moe_n_group: 1,
+            moe_topk_group: 1,
         }
     }
 

@@ -472,6 +472,8 @@ pub(super) fn write_projection_moe_native_model_fixture() -> PathBuf {
         shared_expert_count: None,
         sigmoid_routing: false,
         routed_scaling_factor: None,
+        n_group: None,
+        topk_group: None,
     };
     manifest.tensors.extend([
         native_model_tensor_with_file(

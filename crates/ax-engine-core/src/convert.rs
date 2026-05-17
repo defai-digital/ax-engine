@@ -1023,6 +1023,16 @@ fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
         } else {
             None
         },
+        n_group: if is_deepseek_v3 {
+            arch_u64(config, model_type, "n_group").and_then(u64_to_u32)
+        } else {
+            None
+        },
+        topk_group: if is_deepseek_v3 {
+            arch_u64(config, model_type, "topk_group").and_then(u64_to_u32)
+        } else {
+            None
+        },
     }
 }
 

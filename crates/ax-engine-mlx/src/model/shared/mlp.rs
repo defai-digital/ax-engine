@@ -613,11 +613,18 @@ pub(crate) fn top_k_by_argpartition(
     (top_k_indices, top_k_weights)
 }
 
-/// DeepSeek V3 router: sigmoid routing with optional correction bias.
+/// DeepSeek V3 router: sigmoid routing with group-based expert pre-selection.
 ///
-/// Algorithm: sigmoid(logits) + correction_bias → argpartition top-k →
-/// gather original sigmoid scores (pre-bias) → optionally normalise → scale.
-/// This matches `group_expert_select` from mlx-lm deepseek_v3.py when n_group=1.
+/// Algorithm (matches `group_expert_select` in mlx-lm deepseek_v3.py):
+///   sigmoid(logits) + correction_bias
+///   → group masking (n_group > 1: zero out experts in worst n_group-topk_group groups)
+///   → argpartition top-k
+///   → gather original sigmoid scores (pre-bias)
+///   → optionally normalise
+///   → scale by routed_scaling_factor
+///
+/// All router arithmetic stays in f32; dtype cast happens after the weighted sum
+/// in `moe_experts_forward`.
 pub(crate) fn moe_router_deepseek_v3(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -630,17 +637,22 @@ pub(crate) fn moe_router_deepseek_v3(
     let logits = qw(x, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
 
-    // sigmoid scores (f32 for precision, downcast after selection).
+    // sigmoid scores kept in f32 throughout all router arithmetic.
     let orig_scores = mlx_sys::ops::sigmoid(&astype(&logits, MlxDtype::Float32, None), None);
 
     // Selection scores: add correction bias if present.
     let selection_scores = if let Some(bias) = w.router_correction_bias.as_ref() {
-        add(&orig_scores, bias, None)
+        add(&orig_scores, &astype(bias, MlxDtype::Float32, None), None)
     } else {
         orig_scores.clone()
     };
 
-    // Top-k by argpartition on negated selection scores.
+    // Group-based pre-selection: zero experts in the worst (n_group - topk_group) groups.
+    // For n_group=1 this is a no-op (all experts visible to top-k selection).
+    let selection_scores =
+        deepseek_group_expert_mask(cfg, &selection_scores, cfg.moe_n_group, cfg.moe_topk_group);
+
+    // Top-k by argpartition on the (possibly group-masked) selection scores.
     let (top_k_indices, _) = top_k_by_argpartition(
         &selection_scores,
         cfg.moe_expert_count,
@@ -648,11 +660,10 @@ pub(crate) fn moe_router_deepseek_v3(
         false,
     );
 
-    // Gather original (pre-bias) scores for the selected experts.
+    // Gather original (pre-bias) scores for the selected experts — still f32.
     let top_k_weights = take_along_axis(&orig_scores, &top_k_indices, last_axis, None);
-    let top_k_weights = astype(&top_k_weights, x.dtype(), None);
 
-    // Optionally normalise top-k weights to sum to 1.
+    // Optionally normalise top-k weights to sum to 1 (done in f32 for precision).
     let top_k_weights = if cfg.moe_experts_per_token > 1 && cfg.moe_norm_topk_prob {
         let denominator = sum_axis(&top_k_weights, last_axis, true, None);
         divide(&top_k_weights, &denominator, None)
@@ -660,7 +671,7 @@ pub(crate) fn moe_router_deepseek_v3(
         top_k_weights
     };
 
-    // Scale by routed_scaling_factor (DeepSeek V3: 2.5, others: 1.0).
+    // Scale by routed_scaling_factor (DeepSeek V3: 2.5, others: 1.0) — still f32.
     let scaling = cfg.moe_routed_scaling_factor;
     let top_k_weights = if (scaling - 1.0).abs() > 1e-6 {
         scale_hidden(&top_k_weights, scaling)
@@ -668,7 +679,74 @@ pub(crate) fn moe_router_deepseek_v3(
         top_k_weights
     };
 
+    // dtype cast deferred to here — after all f32 arithmetic — matching the GLM router pattern.
+    let top_k_weights = astype(&top_k_weights, x.dtype(), None);
+
     (top_k_indices, top_k_weights)
+}
+
+/// Zero out experts belonging to the worst (n_group - topk_group) groups.
+///
+/// Matches `group_expert_select` in mlx-lm deepseek_v3.py lines 206–216:
+///   scores reshaped → top-2 per group → sum → argpartition worst groups → zero them.
+fn deepseek_group_expert_mask(
+    cfg: &ModelConfig,
+    scores: &MlxArray,
+    n_group: usize,
+    topk_group: usize,
+) -> MlxArray {
+    if n_group <= 1 {
+        return scores.clone();
+    }
+    let zero_group_count = n_group.saturating_sub(topk_group);
+    if zero_group_count == 0 {
+        return scores.clone();
+    }
+
+    let shape = scores.shape();
+    assert_eq!(shape.len(), 3, "DeepSeek router scores must be [batch, seq, experts]");
+    let batch = shape[0];
+    let seq = shape[1];
+    let experts_per_group = cfg.moe_expert_count / n_group;
+
+    // Reshape to [batch, seq, n_group, experts_per_group].
+    let grouped = reshape(
+        scores,
+        &[batch, seq, n_group as i32, experts_per_group as i32],
+        None,
+    );
+
+    // Top-2 score sum per group → [batch, seq, n_group, 1].
+    let (_, group_top2) = top_k_by_argpartition(&grouped, experts_per_group, 2, false);
+    let group_scores = sum_axis(&group_top2, -1, true, None);
+
+    // argpartition to find the zero_group_count worst group indices.
+    let group_axis = group_scores.ndim() as i32 - 2;
+    let group_idx = argpartition_axis(
+        &group_scores,
+        (zero_group_count as i32) - 1,
+        group_axis,
+        None,
+    );
+    use mlx_sys::slice;
+    let group_idx = slice(
+        &group_idx,
+        &[0, 0, 0, 0],
+        &[batch, seq, zero_group_count as i32, 1],
+        &[1, 1, 1, 1],
+        None,
+    );
+    use mlx_sys::broadcast_to;
+    let group_idx = broadcast_to(
+        &group_idx,
+        &[batch, seq, zero_group_count as i32, experts_per_group as i32],
+        None,
+    );
+
+    use mlx_sys::put_along_axis;
+    let zero = scalar_like(0.0, grouped.dtype());
+    let masked = put_along_axis(&grouped, &group_idx, &zero, group_axis, None);
+    reshape(&masked, &[batch, seq, cfg.moe_expert_count as i32], None)
 }
 
 /// Expert forward: applies selected experts to `x` and returns the weighted sum.
