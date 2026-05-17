@@ -12,6 +12,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::app_state::AppState;
+use crate::backends::{llama_cpp, mlx_lm};
 use crate::errors::{ErrorResponse, map_session_error};
 use crate::generation::streaming::{
     StreamEventSender, StreamStateSource, build_keep_alive_stream, build_stream_state,
@@ -63,12 +64,7 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
     let runtime = state.runtime_report.clone();
-    let mlx_lm_backend = state
-        .session_config
-        .mlx_lm_backend
-        .clone()
-        .ok_or(EngineSessionError::MissingMlxLmConfig)
-        .map_err(map_session_error)?;
+    let mlx_lm_backend = mlx_lm::config(&state).map_err(map_session_error)?;
     let stream = run_blocking_session_task(move || {
         start_streaming_chat_generate(&runtime, &mlx_lm_backend, &request)
             .map_err(EngineSessionError::from)
@@ -90,14 +86,7 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
     let runtime = state.runtime_report.clone();
-    let llama_backend = state
-        .session_config
-        .llama_backend
-        .clone()
-        .ok_or(EngineSessionError::MissingLlamaCppConfig {
-            selected_backend: state.runtime_report.selected_backend,
-        })
-        .map_err(map_session_error)?;
+    let llama_backend = llama_cpp::config(&state).map_err(map_session_error)?;
     let stream = run_blocking_session_task(move || {
         start_streaming_llama_cpp_chat_generate(&runtime, &llama_backend, &request)
             .map_err(EngineSessionError::from)

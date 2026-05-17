@@ -5,6 +5,7 @@ use axum::Json;
 use axum::http::StatusCode;
 
 use crate::app_state::AppState;
+use crate::backends::{llama_cpp, mlx_lm};
 use crate::errors::{ErrorResponse, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
 use crate::openai::requests::{
@@ -27,14 +28,7 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
 
     let request_id = state.allocate_request_id();
     let runtime = state.runtime_report.clone();
-    let llama_backend = state
-        .session_config
-        .llama_backend
-        .clone()
-        .ok_or(EngineSessionError::MissingLlamaCppConfig {
-            selected_backend: state.runtime_report.selected_backend,
-        })
-        .map_err(map_session_error)?;
+    let llama_backend = llama_cpp::config(&state).map_err(map_session_error)?;
     let response = run_blocking_session_task(move || {
         run_blocking_llama_cpp_chat_generate(
             request_id,
@@ -60,12 +54,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
 
     let request_id = state.allocate_request_id();
     let runtime = state.runtime_report.clone();
-    let mlx_lm_backend = state
-        .session_config
-        .mlx_lm_backend
-        .clone()
-        .ok_or(EngineSessionError::MissingMlxLmConfig)
-        .map_err(map_session_error)?;
+    let mlx_lm_backend = mlx_lm::config(&state).map_err(map_session_error)?;
     let response = run_blocking_session_task(move || {
         run_blocking_chat_generate(request_id, &runtime, &mlx_lm_backend, &request.chat_request)
             .map_err(EngineSessionError::from)
