@@ -7,7 +7,6 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::Event;
-use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::app_state::AppState;
@@ -24,6 +23,7 @@ use crate::openai::schema::{
     OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatDelta,
     OpenAiCompletionChunk, OpenAiCompletionChunkChoice, OpenAiStreamKind,
 };
+use crate::openai::sse::send_openai_stream_chunk;
 use crate::tasks::run_blocking_session_task;
 
 const STREAM_CHANNEL_CAPACITY: usize = 128;
@@ -376,19 +376,4 @@ fn send_openai_llama_cpp_chat_final_chunk(
         }],
     };
     send_openai_stream_chunk(tx, &chunk)
-}
-
-fn send_openai_stream_chunk<T: Serialize>(tx: &StreamEventSender, payload: &T) -> bool {
-    match serde_json::to_string(payload) {
-        Ok(data) => tx.blocking_send(Ok(Event::default().data(data))).is_ok(),
-        Err(error) => {
-            send_stream_error(
-                tx,
-                ErrorResponse::server_error(format!(
-                    "failed to serialize OpenAI stream chunk: {error}"
-                )),
-            );
-            false
-        }
-    }
 }
