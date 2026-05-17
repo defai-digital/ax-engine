@@ -12,6 +12,7 @@ mod doctor_workflow;
 mod environment_probe;
 mod error;
 mod generate_manifest;
+mod harness;
 mod inference_args;
 mod inference_render;
 mod json_io;
@@ -25,6 +26,7 @@ mod route_readiness;
 mod stats;
 mod synthetic;
 mod token_sources;
+mod workloads;
 
 use ax_engine_core::{
     CacheGroupId, EngineCore, MetalBuildStatus, MetalDispatchTrace, MetalKernelBuildRequest,
@@ -202,6 +204,7 @@ fn run() -> Result<(), CliError> {
         "doctor" => handle_doctor(&remaining),
         "generate-manifest" => handle_generate_manifest(&remaining),
         "metal-build" => handle_metal_build(&remaining),
+        "serving-stress" => handle_serving_stress(&remaining),
         "help" | "--help" | "-h" => {
             println!("{}", usage());
             Ok(())
@@ -582,6 +585,117 @@ fn handle_generate(args: &[String]) -> Result<(), CliError> {
         render_generate_response(&response, inference_args.json)?
     );
     Ok(())
+}
+
+fn handle_serving_stress(args: &[String]) -> Result<(), CliError> {
+    use crate::workloads::Workload;
+    use crate::workloads::long_prefill_vs_decode::LongPrefillVsDecode;
+    use crate::workloads::{WorkloadContext, WorkloadOutcome};
+
+    let workload_name = optional_named_flag(args, "--workload")
+        .unwrap_or_else(|| "long_prefill_vs_decode".to_string());
+    let cli_artifacts_dir =
+        optional_named_flag(args, "--mlx-model-artifacts-dir").map(PathBuf::from);
+    let cli_model_id = optional_named_flag(args, "--model-id");
+    let prefill_tokens = parse_optional_u32_flag(args, "--prefill-tokens")?;
+    let decode_tokens = parse_optional_u32_flag(args, "--decode-tokens")?;
+    let concurrent_short_requests = parse_optional_u32_flag(args, "--concurrent-short-requests")?;
+    let short_prefix_tokens = parse_optional_u32_flag(args, "--short-prefix-tokens")?;
+    let seed = parse_optional_u64_flag(args, "--seed")?.unwrap_or(0);
+    let output_path = optional_named_flag(args, "--output-path").map(PathBuf::from);
+    let json = has_flag(args, "--json");
+
+    let ctx_artifacts = cli_artifacts_dir.filter(|p| p.exists()).or_else(|| {
+        std::env::var_os("AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR")
+            .map(PathBuf::from)
+            .filter(|p| p.exists())
+    });
+    let ctx = WorkloadContext {
+        mlx_model_artifacts_dir: ctx_artifacts,
+        seed,
+    };
+
+    let outcome = match workload_name.as_str() {
+        "long_prefill_vs_decode" => {
+            let mut fixture = LongPrefillVsDecode::default();
+            if let Some(model_id) = cli_model_id {
+                fixture.model_id = model_id;
+            }
+            if let Some(value) = prefill_tokens {
+                fixture.prefill_tokens = value;
+            }
+            if let Some(value) = decode_tokens {
+                fixture.decode_tokens = value;
+            }
+            if let Some(value) = concurrent_short_requests {
+                fixture.concurrent_short_requests = value;
+            }
+            if let Some(value) = short_prefix_tokens {
+                fixture.short_prefix_tokens = value;
+            }
+            fixture.run(&ctx)
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown workload: {other}\n\nsupported workloads: long_prefill_vs_decode"
+            )));
+        }
+    };
+
+    let outcome_json = outcome.to_json();
+    let rendered = if json {
+        outcome_json.to_string()
+    } else {
+        serde_json::to_string_pretty(&outcome_json)
+            .map_err(|error| CliError::Runtime(format!("failed to render outcome JSON: {error}")))?
+    };
+    println!("{rendered}");
+
+    if let Some(path) = output_path {
+        fs::write(&path, rendered.as_bytes()).map_err(|error| {
+            CliError::Runtime(format!(
+                "failed to write outcome to {}: {error}",
+                path.display()
+            ))
+        })?;
+    }
+
+    match outcome {
+        WorkloadOutcome::Skipped { .. } | WorkloadOutcome::Completed { .. } => Ok(()),
+        WorkloadOutcome::Failed { error, .. } => {
+            Err(CliError::Runtime(format!("serving-stress failed: {error}")))
+        }
+    }
+}
+
+fn optional_named_flag(args: &[String], name: &str) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(candidate) = iter.next() {
+        if candidate == name {
+            return iter.next().cloned();
+        }
+    }
+    None
+}
+
+fn parse_optional_u32_flag(args: &[String], name: &str) -> Result<Option<u32>, CliError> {
+    optional_named_flag(args, name)
+        .map(|raw| {
+            raw.parse::<u32>().map_err(|error| {
+                CliError::Usage(format!("invalid value for {name}: {raw} ({error})"))
+            })
+        })
+        .transpose()
+}
+
+fn parse_optional_u64_flag(args: &[String], name: &str) -> Result<Option<u64>, CliError> {
+    optional_named_flag(args, name)
+        .map(|raw| {
+            raw.parse::<u64>().map_err(|error| {
+                CliError::Usage(format!("invalid value for {name}: {raw} ({error})"))
+            })
+        })
+        .transpose()
 }
 
 fn handle_stream(args: &[String]) -> Result<(), CliError> {

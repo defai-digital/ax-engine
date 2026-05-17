@@ -13,6 +13,7 @@ Usage:
   ax-engine-bench doctor [--json] [--mlx-model-artifacts-dir <path>]
   ax-engine-bench generate-manifest <model-dir> [--json] [--validate]
   ax-engine-bench metal-build [--manifest <path>] [--output-dir <path>]
+  ax-engine-bench serving-stress --workload <name> [--mlx-model-artifacts-dir <path>] [--model-id <id>] [--prefill-tokens <n>] [--decode-tokens <n>] [--concurrent-short-requests <n>] [--short-prefix-tokens <n>] [--seed <n>] [--output-path <path>] [--json]
 "#;
 
     text.to_string()
