@@ -704,7 +704,11 @@ fn deepseek_group_expert_mask(
     }
 
     let shape = scores.shape();
-    assert_eq!(shape.len(), 3, "DeepSeek router scores must be [batch, seq, experts]");
+    assert_eq!(
+        shape.len(),
+        3,
+        "DeepSeek router scores must be [batch, seq, experts]"
+    );
     let batch = shape[0];
     let seq = shape[1];
     let experts_per_group = cfg.moe_expert_count / n_group;
@@ -739,7 +743,12 @@ fn deepseek_group_expert_mask(
     use mlx_sys::broadcast_to;
     let group_idx = broadcast_to(
         &group_idx,
-        &[batch, seq, zero_group_count as i32, experts_per_group as i32],
+        &[
+            batch,
+            seq,
+            zero_group_count as i32,
+            experts_per_group as i32,
+        ],
         None,
     );
 

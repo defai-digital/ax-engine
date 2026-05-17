@@ -15,7 +15,8 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use super::{StreamStateSource, app_state::AppState, chat};
+use super::{app_state::AppState, chat};
+use crate::generation::streaming::StreamStateSource;
 
 // Include the tonic-generated server code.
 pub mod proto {
