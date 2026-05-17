@@ -87,9 +87,10 @@ impl LlamaCppServerCompletionConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LlamaCppStreamFormat {
     LlamaCppCompletion,
+    OpenAiChatCompletion,
 }
 
-pub(crate) struct LlamaCppStreamHandle {
+pub struct LlamaCppStreamHandle {
     endpoint: String,
     format: LlamaCppStreamFormat,
     reader: BufReader<Box<dyn Read + Send>>,
@@ -106,9 +107,7 @@ impl LlamaCppStreamHandle {
         }
     }
 
-    pub(crate) fn next_chunk(
-        &mut self,
-    ) -> Result<Option<LlamaCppStreamChunk>, LlamaCppBackendError> {
+    pub fn next_chunk(&mut self) -> Result<Option<LlamaCppStreamChunk>, LlamaCppBackendError> {
         let mut payload = String::new();
 
         loop {
@@ -148,13 +147,20 @@ impl LlamaCppStreamHandle {
 
         let mut chunk: LlamaCppStreamChunk = match self.format {
             LlamaCppStreamFormat::LlamaCppCompletion => serde_json::from_str(&payload),
+            LlamaCppStreamFormat::OpenAiChatCompletion => {
+                serde_json::from_str::<LlamaCppChatCompletionStreamChunk>(&payload)
+                    .map(|chunk| chunk.into_stream_chunk())
+            }
         }
         .map_err(|source| LlamaCppBackendError::InvalidResponseJson {
             endpoint: self.endpoint.clone(),
             source,
         })?;
 
-        if !self.bos_space_stripped && !chunk.content.is_empty() {
+        if self.format == LlamaCppStreamFormat::LlamaCppCompletion
+            && !self.bos_space_stripped
+            && !chunk.content.is_empty()
+        {
             self.bos_space_stripped = true;
             if chunk.content.starts_with(' ') {
                 chunk.content.remove(0);
@@ -174,7 +180,7 @@ impl std::fmt::Debug for LlamaCppStreamHandle {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct LlamaCppStreamChunk {
+pub struct LlamaCppStreamChunk {
     #[serde(default)]
     pub content: String,
     #[serde(default)]
@@ -192,7 +198,7 @@ pub(crate) struct LlamaCppStreamChunk {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-pub(crate) struct LlamaCppPromptProgress {
+pub struct LlamaCppPromptProgress {
     #[serde(default)]
     pub total: u32,
     #[serde(default)]
@@ -333,6 +339,23 @@ pub fn run_blocking_chat_generate(
         }),
         LlamaCppConfig::ServerCompletion(config) => {
             run_llama_cpp_server_chat_completion_generate(request_id, runtime, config, request)
+        }
+    }
+}
+
+pub fn start_streaming_chat_generate(
+    runtime: &RuntimeReport,
+    config: &LlamaCppConfig,
+    request: &LlamaCppChatGenerateRequest,
+) -> Result<LlamaCppStreamHandle, LlamaCppBackendError> {
+    ensure_llama_cpp_backend(runtime)?;
+
+    match config {
+        LlamaCppConfig::Cli(_) => Err(LlamaCppBackendError::StreamingNotSupported {
+            selected_backend: SelectedBackend::LlamaCpp,
+        }),
+        LlamaCppConfig::ServerCompletion(config) => {
+            start_llama_cpp_server_chat_completion_stream(config, request)
         }
     }
 }
@@ -585,6 +608,28 @@ fn start_llama_cpp_server_completion_stream(
     Ok(LlamaCppStreamHandle::new(
         endpoint,
         LlamaCppStreamFormat::LlamaCppCompletion,
+        reader,
+    ))
+}
+
+fn start_llama_cpp_server_chat_completion_stream(
+    config: &LlamaCppServerCompletionConfig,
+    request: &LlamaCppChatGenerateRequest,
+) -> Result<LlamaCppStreamHandle, LlamaCppBackendError> {
+    let endpoint = config.chat_completions_url();
+    let payload = build_llama_cpp_chat_completion_request(request, true);
+
+    let response = send_llama_cpp_json_post_request(
+        &endpoint,
+        &payload,
+        Some("text/event-stream"),
+        config.timeouts,
+    )?;
+
+    let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
+    Ok(LlamaCppStreamHandle::new(
+        endpoint,
+        LlamaCppStreamFormat::OpenAiChatCompletion,
         reader,
     ))
 }
@@ -923,6 +968,47 @@ struct LlamaCppChatCompletionResponse {
     usage: Option<LlamaCppCompletionUsage>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct LlamaCppChatCompletionStreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct LlamaCppChatCompletionStreamChoice {
+    #[serde(default)]
+    delta: Option<LlamaCppChatCompletionStreamDelta>,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlamaCppChatCompletionStreamChunk {
+    #[serde(default)]
+    choices: Vec<LlamaCppChatCompletionStreamChoice>,
+    #[serde(default)]
+    usage: Option<LlamaCppCompletionUsage>,
+}
+
+impl LlamaCppChatCompletionStreamChunk {
+    fn into_stream_chunk(self) -> LlamaCppStreamChunk {
+        let choice = self.choices.into_iter().next().unwrap_or_default();
+        let finish_reason = choice.finish_reason;
+        LlamaCppStreamChunk {
+            content: choice
+                .delta
+                .and_then(|delta| delta.content)
+                .unwrap_or_default(),
+            tokens: Vec::new(),
+            stop: finish_reason.is_some(),
+            stop_type: finish_reason,
+            prompt_progress: None,
+            prompt_token_count: self.usage.as_ref().map(|usage| usage.prompt_tokens),
+            output_token_count: self.usage.as_ref().map(|usage| usage.completion_tokens),
+        }
+    }
+}
+
 fn llama_cpp_server_completion_route(
     execution_plan: &str,
     tokens_cached: u32,
@@ -1018,5 +1104,56 @@ mod tests {
         assert_eq!(strip_bos_leading_space(" hello".to_string()), "hello");
         assert_eq!(strip_bos_leading_space("hello".to_string()), "hello");
         assert_eq!(strip_bos_leading_space("  hi".to_string()), " hi");
+    }
+
+    #[test]
+    fn openai_chat_stream_chunks_map_to_llama_cpp_stream_chunks() {
+        let body = b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}],\"usage\":null}\n\n\
+                     data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}],\"usage\":null}\n\n\
+                     data: {\"choices\":[{\"delta\":{\"content\":\" world\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n\
+                     data: [DONE]\n\n";
+        let mut stream = LlamaCppStreamHandle::new(
+            "http://127.0.0.1:8081/v1/chat/completions".to_string(),
+            LlamaCppStreamFormat::OpenAiChatCompletion,
+            Box::new(std::io::Cursor::new(body.to_vec())),
+        );
+
+        assert_eq!(
+            stream.next_chunk().expect("role chunk should parse"),
+            Some(LlamaCppStreamChunk {
+                content: String::new(),
+                tokens: Vec::new(),
+                stop: false,
+                stop_type: None,
+                prompt_progress: None,
+                prompt_token_count: None,
+                output_token_count: None,
+            })
+        );
+        assert_eq!(
+            stream.next_chunk().expect("content chunk should parse"),
+            Some(LlamaCppStreamChunk {
+                content: "hello".to_string(),
+                tokens: Vec::new(),
+                stop: false,
+                stop_type: None,
+                prompt_progress: None,
+                prompt_token_count: None,
+                output_token_count: None,
+            })
+        );
+        assert_eq!(
+            stream.next_chunk().expect("terminal chunk should parse"),
+            Some(LlamaCppStreamChunk {
+                content: " world".to_string(),
+                tokens: Vec::new(),
+                stop: true,
+                stop_type: Some("stop".to_string()),
+                prompt_progress: None,
+                prompt_token_count: Some(3),
+                output_token_count: Some(2),
+            })
+        );
+        assert_eq!(stream.next_chunk().expect("done should parse"), None);
     }
 }

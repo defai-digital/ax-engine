@@ -11,10 +11,11 @@ use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent,
     GenerateStreamState, LlamaCppBackendError, LlamaCppChatGenerateRequest, LlamaCppChatMessage,
-    LlamaCppConfig, MlxLmBackendError, MlxLmChatGenerateRequest, MlxLmChatMessage,
-    MlxLmStreamHandle, RuntimeReport, SelectedBackend, SessionRequestReport,
+    LlamaCppConfig, LlamaCppStreamHandle, MlxLmBackendError, MlxLmChatGenerateRequest,
+    MlxLmChatMessage, MlxLmStreamHandle, RuntimeReport, SelectedBackend, SessionRequestReport,
     StatelessGenerateContext, finish_reason_from_mlx_lm, run_blocking_chat_generate,
     run_blocking_llama_cpp_chat_generate, start_streaming_chat_generate,
+    start_streaming_llama_cpp_chat_generate,
 };
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
@@ -1034,7 +1035,6 @@ async fn openai_chat_completions(
         return run_openai_mlx_lm_chat_generation(state, request).await;
     }
     if state.runtime_report.selected_backend == SelectedBackend::LlamaCpp
-        && !request.stream
         && matches!(
             state.session_config.llama_backend.as_ref(),
             Some(LlamaCppConfig::ServerCompletion(_))
@@ -1052,6 +1052,10 @@ async fn run_openai_llama_cpp_chat_generation(
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let request = build_openai_llama_cpp_chat_request(&state, request)?;
+    if request.stream {
+        return stream_openai_llama_cpp_chat_request(state, request.chat_request).await;
+    }
+
     let request_id = allocate_request_id(&state);
     let runtime = state.runtime_report.clone();
     let llama_backend = state
@@ -1197,6 +1201,35 @@ async fn stream_openai_mlx_lm_chat_request(
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     tokio::task::spawn_blocking(move || {
         drive_openai_mlx_lm_chat_stream(tx, request_id, model_id, stream);
+    });
+
+    Ok(build_keep_alive_stream(rx).into_response())
+}
+
+async fn stream_openai_llama_cpp_chat_request(
+    state: AppState,
+    request: LlamaCppChatGenerateRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let request_id = allocate_request_id(&state);
+    let model_id = request.model_id.clone();
+    let runtime = state.runtime_report.clone();
+    let llama_backend = state
+        .session_config
+        .llama_backend
+        .clone()
+        .ok_or(EngineSessionError::MissingLlamaCppConfig {
+            selected_backend: state.runtime_report.selected_backend,
+        })
+        .map_err(map_session_error)?;
+    let stream = run_blocking_session_task(move || {
+        start_streaming_llama_cpp_chat_generate(&runtime, &llama_backend, &request)
+            .map_err(EngineSessionError::from)
+    })
+    .await?;
+
+    let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
+    tokio::task::spawn_blocking(move || {
+        drive_openai_llama_cpp_chat_stream(tx, request_id, model_id, stream);
     });
 
     Ok(build_keep_alive_stream(rx).into_response())
@@ -1547,6 +1580,67 @@ fn drive_openai_mlx_lm_chat_stream(
     }
 }
 
+fn drive_openai_llama_cpp_chat_stream(
+    tx: StreamEventSender,
+    request_id: u64,
+    model_id: String,
+    mut stream: LlamaCppStreamHandle,
+) {
+    let mut chat_role_emitted = false;
+    loop {
+        match stream.next_chunk() {
+            Ok(Some(chunk)) => {
+                if !chunk.content.is_empty() {
+                    let delta = OpenAiChatCompletionChunk {
+                        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
+                        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
+                        created: unix_timestamp_secs(),
+                        model: model_id.clone(),
+                        system_fingerprint: None,
+                        choices: vec![OpenAiChatCompletionChunkChoice {
+                            index: 0,
+                            delta: OpenAiChatDelta {
+                                role: if chat_role_emitted {
+                                    None
+                                } else {
+                                    chat_role_emitted = true;
+                                    Some("assistant")
+                                },
+                                content: Some(chunk.content),
+                            },
+                            finish_reason: None,
+                        }],
+                    };
+                    if !send_openai_stream_chunk(&tx, &delta) {
+                        return;
+                    }
+                }
+
+                if chunk.stop {
+                    send_openai_llama_cpp_chat_final_chunk(
+                        &tx,
+                        request_id,
+                        &model_id,
+                        chunk.stop_type.as_deref(),
+                    );
+                    let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
+                    return;
+                }
+            }
+            Ok(None) => {
+                send_openai_llama_cpp_chat_final_chunk(&tx, request_id, &model_id, None);
+                let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
+                return;
+            }
+            Err(error) => {
+                let (_, Json(error)) = map_session_error(EngineSessionError::from(error));
+                send_stream_error(&tx, error);
+                return;
+            }
+        }
+    }
+}
+
 fn send_openai_mlx_lm_chat_final_chunk(
     tx: &StreamEventSender,
     request_id: u64,
@@ -1566,6 +1660,36 @@ fn send_openai_mlx_lm_chat_final_chunk(
         }],
     };
     send_openai_stream_chunk(tx, &chunk)
+}
+
+fn send_openai_llama_cpp_chat_final_chunk(
+    tx: &StreamEventSender,
+    request_id: u64,
+    model_id: &str,
+    finish_reason: Option<&str>,
+) -> bool {
+    let chunk = OpenAiChatCompletionChunk {
+        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
+        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
+        created: unix_timestamp_secs(),
+        model: model_id.to_string(),
+        system_fingerprint: None,
+        choices: vec![OpenAiChatCompletionChunkChoice {
+            index: 0,
+            delta: OpenAiChatDelta::default(),
+            finish_reason: openai_finish_reason(finish_reason_from_llama_cpp_chat(finish_reason)),
+        }],
+    };
+    send_openai_stream_chunk(tx, &chunk)
+}
+
+fn finish_reason_from_llama_cpp_chat(value: Option<&str>) -> Option<GenerateFinishReason> {
+    match value {
+        Some("stop") => Some(GenerateFinishReason::Stop),
+        Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
+        Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
+        Some(_) | None => None,
+    }
 }
 
 fn send_stream_event<T: Serialize>(tx: &StreamEventSender, event_name: &str, payload: &T) -> bool {
@@ -1724,6 +1848,7 @@ struct OpenAiBuiltMlxLmChatRequest {
 
 struct OpenAiBuiltLlamaCppChatRequest {
     chat_request: LlamaCppChatGenerateRequest,
+    stream: bool,
 }
 
 fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> GenerateRequest {
@@ -1873,6 +1998,7 @@ fn build_openai_llama_cpp_chat_request(
             stop_sequences,
             metadata: request.metadata,
         },
+        stream: request.stream,
     })
 }
 
@@ -2351,13 +2477,6 @@ mod tests {
 
     fn sample_openai_chat_request(message: &str, max_tokens: Option<u32>, stream: bool) -> Value {
         sample_openai_chat_request_with_role(message, "user", max_tokens, stream)
-    }
-
-    fn expected_qwen_chatml_user_prompt(message: &str) -> String {
-        format!(
-            "<|im_start|>user\n{message}<|im_end|>\n{}",
-            chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
-        )
     }
 
     fn sample_openai_chat_request_with_role(
@@ -3744,23 +3863,26 @@ sys.stdout.write(f"server::{prompt}")
             1,
             vec![
                 serde_json::json!({
-                    "content": "chat",
-                    "tokens": [4],
-                    "stop": false
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}],
+                    "usage": null
                 }),
                 serde_json::json!({
-                    "content": " stream",
-                    "tokens": [5],
-                    "stop": true,
-                    "stop_type": "limit"
+                    "choices": [{"index": 0, "delta": {"content": "chat"}, "finish_reason": null}],
+                    "usage": null
+                }),
+                serde_json::json!({
+                    "choices": [{"index": 0, "delta": {"content": " stream"}, "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
                 }),
             ],
             |payload| {
+                assert!(payload.get("prompt").is_none());
                 assert_eq!(
-                    payload.get("prompt"),
-                    Some(&Value::String(expected_qwen_chatml_user_prompt(
-                        "hello chat stream"
-                    )))
+                    payload.get("messages"),
+                    Some(&json!([{
+                        "role": "user",
+                        "content": "hello chat stream"
+                    }]))
                 );
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
             },

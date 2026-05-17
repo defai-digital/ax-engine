@@ -55,8 +55,9 @@ pub use generate::{
 };
 pub use llama_cpp::{
     LlamaCppBackendError, LlamaCppChatGenerateRequest, LlamaCppChatMessage, LlamaCppCliConfig,
-    LlamaCppConfig, LlamaCppServerCompletionConfig,
+    LlamaCppConfig, LlamaCppServerCompletionConfig, LlamaCppStreamChunk, LlamaCppStreamHandle,
     run_blocking_chat_generate as run_blocking_llama_cpp_chat_generate,
+    start_streaming_chat_generate as start_streaming_llama_cpp_chat_generate,
 };
 pub use mlx_lm::{
     MlxLmBackendError, MlxLmChatGenerateRequest, MlxLmChatMessage, MlxLmConfig,
