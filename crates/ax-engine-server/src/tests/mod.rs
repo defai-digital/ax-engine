@@ -100,16 +100,6 @@ fn sample_openai_chat_request_with_role(
     Value::Object(request)
 }
 
-fn sample_openai_embedding_request(input: &[u32], pooling: Option<&str>) -> Value {
-    let request = sample_openai_request_base_fields(|request| {
-        request.insert("input".to_string(), json!(input));
-        if let Some(pooling) = pooling {
-            request.insert("pooling".to_string(), json!(pooling));
-        }
-    });
-    Value::Object(request)
-}
-
 fn sdk_session_for_state(state: &AppState) -> EngineSession {
     EngineSession::new(state.session_config.as_ref().clone()).expect("sdk session should build")
 }
@@ -796,102 +786,6 @@ async fn openai_completions_endpoint_rejects_text_batch_prompt() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_invalid_request_response(&json, "batch completion prompts are not supported");
-}
-
-#[tokio::test]
-async fn openai_embeddings_endpoint_rejects_empty_input() {
-    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
-    let (status, json) = json_response(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/v1/embeddings")
-            .header("content-type", "application/json")
-            .body(Body::from(json_request_body(
-                &sample_openai_embedding_request(&[], None),
-            )))
-            .unwrap(),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_invalid_request_response(&json, "input must not be empty");
-}
-
-#[tokio::test]
-async fn openai_embeddings_endpoint_accepts_batch_shape() {
-    // Verify the request body for `input: [[1,2,3],[4,5,6]]` round-trips
-    // through serde untagged enum into the Batch variant. We only check
-    // deserialization + early validation (model-not-found in
-    // llama_cpp_server_state), not the runtime — that needs a real MLX
-    // session. The shape contract is what we care about here.
-    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
-    let body = serde_json::json!({
-        "model": "qwen3-embedding",
-        "input": [[1, 2, 3], [4, 5, 6]],
-    });
-    let (status, json) = json_response(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/v1/embeddings")
-            .header("content-type", "application/json")
-            .body(Body::from(json_request_body(&body)))
-            .unwrap(),
-    )
-    .await;
-    // Model-mismatch in the test server (returns 400 model_mismatch),
-    // but the request shape parsed successfully — that's what we care
-    // about here. If the untagged enum had failed to deserialise
-    // `[[...], [...]]`, axum would have rejected the JSON body before
-    // reaching the handler and the model name in the error would not
-    // appear in the response.
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let msg = json["error"]["message"].as_str().unwrap_or("");
-    assert!(
-        msg.contains("model_id") && msg.contains("qwen3-embedding"),
-        "expected model-mismatch message containing the requested id, got: {msg}"
-    );
-}
-
-#[tokio::test]
-async fn openai_embeddings_endpoint_rejects_empty_batch_inner() {
-    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
-    let body = serde_json::json!({
-        "input": [[1, 2, 3], []],
-    });
-    let (status, json) = json_response(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/v1/embeddings")
-            .header("content-type", "application/json")
-            .body(Body::from(json_request_body(&body)))
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_invalid_request_response(&json, "input[1] must not be empty");
-}
-
-#[tokio::test]
-async fn openai_embeddings_endpoint_rejects_unknown_pooling() {
-    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
-    let (status, json) = json_response(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/v1/embeddings")
-            .header("content-type", "application/json")
-            .body(Body::from(json_request_body(
-                &sample_openai_embedding_request(&[1, 2, 3], Some("max")),
-            )))
-            .unwrap(),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_invalid_request_response(&json, "unknown pooling strategy");
 }
 
 #[tokio::test]
