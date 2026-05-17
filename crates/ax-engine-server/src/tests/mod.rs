@@ -8,12 +8,10 @@ use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request, chat_template_kwargs_for_model_id,
     openai_chat_stop_sequences, render_openai_chat_prompt,
 };
-use crate::openai::responses::openai_finish_reason;
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::routes::build_router;
 use ax_engine_sdk::{
-    EmbeddingPooling, EngineSession, GenerateFinishReason, GenerateRequest, GenerateSampling,
-    GenerateStreamEvent,
+    EmbeddingPooling, EngineSession, GenerateRequest, GenerateSampling, GenerateStreamEvent,
 };
 use axum::Router;
 use axum::body::Body;
@@ -25,6 +23,8 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;
+
+mod openai_responses;
 
 const TEST_MODEL_ID: &str = "qwen3";
 
@@ -1820,31 +1820,6 @@ async fn llama_cpp_stepwise_request_endpoints_share_sdk_lifecycle() {
     llama_cpp_server_handle
         .join()
         .expect("llama.cpp server thread should finish");
-}
-
-#[test]
-fn openai_finish_reason_preserves_only_real_openai_terminal_labels() {
-    assert_eq!(
-        openai_finish_reason(Some(GenerateFinishReason::Stop)),
-        Some("stop")
-    );
-    assert_eq!(
-        openai_finish_reason(Some(GenerateFinishReason::MaxOutputTokens)),
-        Some("length")
-    );
-    assert_eq!(
-        openai_finish_reason(Some(GenerateFinishReason::ContentFilter)),
-        Some("content_filter")
-    );
-    assert_eq!(
-        openai_finish_reason(Some(GenerateFinishReason::Cancelled)),
-        None
-    );
-    assert_eq!(
-        openai_finish_reason(Some(GenerateFinishReason::Error)),
-        None
-    );
-    assert_eq!(openai_finish_reason(None), None);
 }
 
 #[tokio::test]
