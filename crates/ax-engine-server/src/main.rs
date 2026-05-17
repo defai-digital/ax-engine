@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
-    GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent,
+    GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateStreamEvent,
     GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppConfig, LlamaCppStreamHandle,
     MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend, SessionRequestReport,
     StatelessGenerateContext, finish_reason_from_mlx_lm, run_blocking_chat_generate,
@@ -20,7 +20,7 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{Json, Router};
 use clap::Parser;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 #[cfg(test)]
 use serde_json::json;
 use tokio::sync::{Mutex, mpsc};
@@ -33,6 +33,7 @@ mod args;
 mod chat;
 mod embeddings;
 mod errors;
+mod generation;
 mod grpc;
 mod metadata;
 mod openai;
@@ -49,15 +50,15 @@ use errors::{
     ErrorResponse, error_response, map_blocking_task_error, map_session_error,
     request_not_found_response,
 };
+use generation::requests::{GenerateHttpRequest, build_generate_request};
 #[cfg(test)]
 use openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
     render_openai_chat_prompt,
 };
 use openai::requests::{
-    OpenAiBuiltRequest, build_generate_request_internal, build_openai_chat_request,
-    build_openai_completion_request, build_openai_llama_cpp_chat_request,
-    build_openai_mlx_lm_chat_request,
+    OpenAiBuiltRequest, build_openai_chat_request, build_openai_completion_request,
+    build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
 };
 use openai::responses::{
     finish_reason_from_llama_cpp_chat, openai_finish_reason, unix_timestamp_secs,
@@ -77,22 +78,6 @@ const STREAM_CHANNEL_CAPACITY: usize = 128;
 type StreamEvent = Result<Event, Infallible>;
 type StreamEventSender = mpsc::Sender<StreamEvent>;
 type StreamEventReceiver = mpsc::Receiver<StreamEvent>;
-
-#[derive(Debug, Deserialize)]
-struct GenerateHttpRequest {
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    input_tokens: Vec<u32>,
-    #[serde(default)]
-    input_text: Option<String>,
-    #[serde(default)]
-    max_output_tokens: Option<u32>,
-    #[serde(default)]
-    sampling: Option<GenerateSampling>,
-    #[serde(default)]
-    metadata: Option<String>,
-}
 
 fn log_host_detection_warnings(session_config: &EngineSessionConfig) {
     let host = ax_engine_sdk::current_host_report();
@@ -1112,21 +1097,10 @@ where
         .map_err(map_session_error)
 }
 
-fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> GenerateRequest {
-    build_generate_request_internal(
-        state,
-        request.input_tokens,
-        request.input_text,
-        request.max_output_tokens.unwrap_or(256),
-        request.sampling.unwrap_or_default(),
-        Vec::new(),
-        request.metadata,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_engine_sdk::GenerateSampling;
     use axum::body::Body;
     use axum::http::{Request, header};
     use serde_json::Value;
