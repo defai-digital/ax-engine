@@ -42,6 +42,7 @@ use app_state::{EmbeddingBatchKey, EmbeddingBatchRequestOptions};
 use args::{ServerArgs, render_presets};
 #[cfg(test)]
 use embeddings::microbatch::{collect_embedding_batch_groups, pooling_code};
+use embeddings::parse_embedding_pooling;
 use errors::{
     ErrorResponse, error_response, map_blocking_task_error, map_session_error,
     request_not_found_response,
@@ -56,6 +57,7 @@ use openai::schema::{
     OpenAiEmbeddingRequest, OpenAiEmbeddingResponse, OpenAiEmbeddingUsage, OpenAiPromptInput,
     OpenAiStopInput, OpenAiStreamKind,
 };
+use openai::validation::{validate_model, validate_openai_request};
 use routes::build_router;
 
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -407,17 +409,6 @@ async fn openai_embeddings(
     }))
 }
 
-fn parse_embedding_pooling(pooling: Option<&str>) -> Result<EmbeddingPooling, String> {
-    match pooling.unwrap_or("last") {
-        "last" => Ok(EmbeddingPooling::Last),
-        "mean" => Ok(EmbeddingPooling::Mean),
-        "cls" => Ok(EmbeddingPooling::Cls),
-        other => Err(format!(
-            "unknown pooling strategy {other:?}; expected \"last\", \"mean\", or \"cls\""
-        )),
-    }
-}
-
 async fn openai_completions(
     State(state): State<AppState>,
     Json(request): Json<OpenAiCompletionHttpRequest>,
@@ -724,14 +715,6 @@ where
         let mut stream_state = stream_state;
         driver(&mut stream_state, tx);
     });
-}
-
-fn validate_openai_request(
-    state: &AppState,
-    model: Option<&str>,
-) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_text_backend(state)?;
-    validate_model(state, model)
 }
 
 fn drive_generate_stream_state<N>(
@@ -1558,40 +1541,6 @@ fn render_openai_chat_content(
             Ok(rendered)
         }
     }
-}
-
-fn validate_openai_text_backend(state: &AppState) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if !matches!(
-        state.runtime_report.selected_backend,
-        SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated
-    ) {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "OpenAI-compatible text endpoints require a llama.cpp or mlx_lm_delegated backend; use /v1/generate for repo-owned MLX preview".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_model(
-    state: &AppState,
-    request_model: Option<&str>,
-) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if let Some(model) = request_model {
-        if model != state.model_id.as_ref() {
-            return Err(error_response(
-                StatusCode::BAD_REQUEST,
-                "model_mismatch",
-                format!(
-                    "requested model_id {model} does not match configured preview model {}",
-                    state.model_id.as_ref()
-                ),
-            ));
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
