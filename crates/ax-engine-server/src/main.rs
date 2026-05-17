@@ -7,6 +7,7 @@ use ax_engine_sdk::{EmbeddingPooling, GenerateFinishReason, GenerateRequest, Gen
 use ax_engine_sdk::{EngineSession, EngineSessionConfig};
 #[cfg(test)]
 use axum::Router;
+#[cfg(test)]
 use axum::http::StatusCode;
 use clap::Parser;
 #[cfg(test)]
