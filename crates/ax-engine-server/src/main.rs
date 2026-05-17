@@ -5,24 +5,27 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
+use ax_engine_sdk::{EmbeddingPooling, GenerateFinishReason};
 use ax_engine_sdk::{
-    EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, GenerateFinishReason,
-    GenerateRequest, GenerateStreamEvent, GenerateStreamState, LlamaCppChatGenerateRequest,
-    LlamaCppConfig, LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle,
-    SelectedBackend, StatelessGenerateContext, finish_reason_from_mlx_lm,
-    run_blocking_chat_generate, run_blocking_llama_cpp_chat_generate,
+    EngineSession, EngineSessionConfig, EngineSessionError, GenerateRequest, GenerateStreamEvent,
+    GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppConfig, LlamaCppStreamHandle,
+    MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend, StatelessGenerateContext,
+    finish_reason_from_mlx_lm, run_blocking_chat_generate, run_blocking_llama_cpp_chat_generate,
     start_streaming_chat_generate, start_streaming_llama_cpp_chat_generate,
 };
+use axum::Json;
+#[cfg(test)]
+use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::{Json, Router};
 use clap::Parser;
 use serde::Serialize;
 #[cfg(test)]
 use serde_json::json;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -38,7 +41,7 @@ mod metadata;
 mod openai;
 mod routes;
 
-use app_state::{AppState, EmbeddingMicroBatcher};
+use app_state::{AppState, build_app_state};
 #[cfg(test)]
 use app_state::{EmbeddingBatchKey, EmbeddingBatchRequestOptions};
 use args::{ServerArgs, render_presets};
@@ -61,9 +64,11 @@ use openai::responses::{
 };
 use openai::schema::{
     OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatCompletionHttpRequest,
-    OpenAiChatDelta, OpenAiChatMessage, OpenAiCompletionChunk, OpenAiCompletionChunkChoice,
-    OpenAiCompletionHttpRequest, OpenAiStopInput, OpenAiStreamKind,
+    OpenAiChatDelta, OpenAiCompletionChunk, OpenAiCompletionChunkChoice,
+    OpenAiCompletionHttpRequest, OpenAiStreamKind,
 };
+#[cfg(test)]
+use openai::schema::{OpenAiChatMessage, OpenAiStopInput};
 use openai::validation::{validate_model, validate_openai_request};
 use routes::build_router;
 
@@ -176,27 +181,6 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-}
-
-fn build_app_state(
-    model_id: String,
-    session: EngineSession,
-) -> Result<AppState, EngineSessionError> {
-    let session_config = session.config().clone();
-    let stateless_generate_context =
-        StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
-    let runtime_report = session.runtime_report();
-    let request_session = Arc::new(Mutex::new(session));
-    let embedding_batcher = EmbeddingMicroBatcher::spawn(request_session.clone());
-
-    Ok(AppState::new(
-        model_id,
-        session_config,
-        stateless_generate_context,
-        runtime_report,
-        request_session,
-        embedding_batcher,
-    ))
 }
 
 fn init_tracing() -> bool {

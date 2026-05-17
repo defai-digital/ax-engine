@@ -43,6 +43,27 @@ impl AppState {
     }
 }
 
+pub(crate) fn build_app_state(
+    model_id: String,
+    session: EngineSession,
+) -> Result<AppState, EngineSessionError> {
+    let session_config = session.config().clone();
+    let stateless_generate_context =
+        StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
+    let runtime_report = session.runtime_report();
+    let request_session = Arc::new(Mutex::new(session));
+    let embedding_batcher = EmbeddingMicroBatcher::spawn(request_session.clone());
+
+    Ok(AppState::new(
+        model_id,
+        session_config,
+        stateless_generate_context,
+        runtime_report,
+        request_session,
+        embedding_batcher,
+    ))
+}
+
 #[derive(Clone)]
 pub(crate) struct EmbeddingMicroBatcher {
     pub(crate) sender: mpsc::UnboundedSender<EmbeddingBatchItem>,
