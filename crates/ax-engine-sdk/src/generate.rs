@@ -145,7 +145,7 @@ impl GenerateRouteReport {
     }
 
     /// Returns the TurboQuant preset route code when KV compression is active.
-    /// Maps to `MlxTurboQuantPreset::route_code()`: K8V4=1, K4V4=2, K3V4Research=3.
+    /// Maps to `TurboQuantPreset::route_code()`: K8V4=1, K4V4=2, K3V4Research=3.
     pub fn kv_compression_preset_code(&self) -> Option<u32> {
         self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET)
     }

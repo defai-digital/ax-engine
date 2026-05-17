@@ -43,7 +43,7 @@ use crate::attention_mask::create_causal_mask;
 #[cfg(test)]
 use crate::kv_cache::MlxKvCompressionDecodeOutcome;
 #[cfg(test)]
-use ax_engine_core::{MlxKvCompressionConfig, MlxTurboQuantPreset, NativeModelManifest};
+use ax_engine_core::{KvCompressionConfig, NativeModelManifest, TurboQuantPreset};
 #[cfg(test)]
 use mlx_sys::expand_dims_axes;
 #[cfg(test)]
@@ -1001,14 +1001,15 @@ mod tests {
             moe_first_dense_layers: 0,
             moe_shared_expert_count: 0,
             moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 1.0,
         }
     }
 
-    fn turboquant_decode_config() -> MlxKvCompressionConfig {
-        MlxKvCompressionConfig {
+    fn turboquant_decode_config() -> KvCompressionConfig {
+        KvCompressionConfig {
             hot_window_tokens: 2,
             min_context_tokens: 4,
-            ..MlxKvCompressionConfig::turboquant_fused_experimental()
+            ..KvCompressionConfig::turboquant_fused_experimental()
         }
     }
 
@@ -1050,7 +1051,7 @@ mod tests {
     }
 
     fn turboquant_cache_with_runtime_storage_and_current_decode_token_for_config(
-        compression: MlxKvCompressionConfig,
+        compression: KvCompressionConfig,
     ) -> MlxKVCache {
         let mut cache = MlxKVCache::new(1);
         let initial_elements = 2 * 6 * 128;
@@ -1259,7 +1260,7 @@ mod tests {
     #[test]
     fn turboquant_decode_attention_experimental_does_not_use_cpu_oracle_in_runtime_path() {
         let mut compression = turboquant_decode_config();
-        compression.preset = MlxTurboQuantPreset::K4V4;
+        compression.preset = TurboQuantPreset::K4V4;
         let cache =
             turboquant_cache_with_runtime_storage_and_current_decode_token_for_config(compression);
         let q_data = (0..(2 * 128))
@@ -1512,6 +1513,7 @@ mod tests {
                 first_dense_layers: None,
                 shared_expert_count: None,
                 sigmoid_routing: false,
+                routed_scaling_factor: None,
             },
             glm_router: NativeGlmRouterConfig {
                 first_dense_layer_count: Some(1),

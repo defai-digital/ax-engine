@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use ax_engine_core::MlxTurboQuantPreset;
+use ax_engine_core::TurboQuantPreset;
 use ax_engine_mlx::turboquant::{
     TurboQuantAttentionPartitionStatsBatch, TurboQuantBlockLayout, TurboQuantBlockLayoutConfig,
     TurboQuantCompressedBlockBuffer, TurboQuantCompressedDecodePlan,
@@ -186,7 +186,7 @@ fn run(config: Config) -> Result<serde_json::Value, String> {
 
 fn run_case(config: &Config, cold_tokens: usize) -> Result<serde_json::Value, String> {
     let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-        preset: MlxTurboQuantPreset::K8V4,
+        preset: TurboQuantPreset::K8V4,
         block_tokens: config.block_tokens,
         n_kv_heads: config.n_kv_heads,
         head_dim: config.head_dim,

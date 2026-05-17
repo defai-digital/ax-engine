@@ -1787,6 +1787,7 @@ fn native_model_bindings_accept_moe_manifest_and_materialize_layer_moe_bindings(
         first_dense_layers: None,
         shared_expert_count: None,
         sigmoid_routing: false,
+        routed_scaling_factor: None,
     };
     manifest.tensors.extend([
         native_model_tensor(

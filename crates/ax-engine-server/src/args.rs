@@ -1,6 +1,6 @@
 use ax_engine_sdk::{
-    DelegatedHttpTimeouts, EngineSessionConfig, MlxKvCompressionConfig, MlxKvCompressionMode,
-    MlxTurboQuantPreset, PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier,
+    DelegatedHttpTimeouts, EngineSessionConfig, KvCompressionConfig, KvCompressionMode,
+    PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier, TurboQuantPreset,
 };
 use clap::{Parser, ValueEnum};
 use serde_json::Value;
@@ -30,26 +30,22 @@ pub enum PreviewMlxKvCompression {
 }
 
 impl PreviewMlxKvCompression {
-    fn as_config(
-        self,
-        hot_window_tokens: usize,
-        min_context_tokens: usize,
-    ) -> MlxKvCompressionConfig {
+    fn as_config(self, hot_window_tokens: usize, min_context_tokens: usize) -> KvCompressionConfig {
         match self {
-            Self::Disabled => MlxKvCompressionConfig {
+            Self::Disabled => KvCompressionConfig {
                 hot_window_tokens,
                 min_context_tokens,
-                ..MlxKvCompressionConfig::disabled()
+                ..KvCompressionConfig::disabled()
             },
-            Self::TurboQuantShadow => MlxKvCompressionConfig {
-                mode: MlxKvCompressionMode::TurboQuantShadow,
-                preset: MlxTurboQuantPreset::K8V4,
+            Self::TurboQuantShadow => KvCompressionConfig {
+                mode: KvCompressionMode::TurboQuantShadow,
+                preset: TurboQuantPreset::K8V4,
                 hot_window_tokens,
                 min_context_tokens,
             },
-            Self::TurboQuantFusedExperimental => MlxKvCompressionConfig {
-                mode: MlxKvCompressionMode::TurboQuantFusedExperimental,
-                preset: MlxTurboQuantPreset::K8V4,
+            Self::TurboQuantFusedExperimental => KvCompressionConfig {
+                mode: KvCompressionMode::TurboQuantFusedExperimental,
+                preset: TurboQuantPreset::K8V4,
                 hot_window_tokens,
                 min_context_tokens,
             },
@@ -269,11 +265,11 @@ pub struct ServerArgs {
     pub experimental_mlx_kv_compression: PreviewMlxKvCompression,
 
     /// Full-precision tail retained when experimental MLX KV compression is enabled.
-    #[arg(long = "experimental-mlx-kv-compression-hot-window-tokens", default_value_t = MlxKvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS)]
+    #[arg(long = "experimental-mlx-kv-compression-hot-window-tokens", default_value_t = KvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS)]
     pub experimental_mlx_kv_compression_hot_window_tokens: usize,
 
     /// Minimum context before experimental MLX KV compression becomes eligible.
-    #[arg(long = "experimental-mlx-kv-compression-min-context-tokens", default_value_t = MlxKvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS)]
+    #[arg(long = "experimental-mlx-kv-compression-min-context-tokens", default_value_t = KvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS)]
     pub experimental_mlx_kv_compression_min_context_tokens: usize,
 
     /// When set, also bind a tonic gRPC server at this address. Omit to run
@@ -655,9 +651,9 @@ mod tests {
             prefill_chunk: None,
             experimental_mlx_kv_compression: PreviewMlxKvCompression::Disabled,
             experimental_mlx_kv_compression_hot_window_tokens:
-                MlxKvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS,
+                KvCompressionConfig::DEFAULT_HOT_WINDOW_TOKENS,
             experimental_mlx_kv_compression_min_context_tokens:
-                MlxKvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
+                KvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
             grpc_bind_address: None,
         }
     }
@@ -721,7 +717,7 @@ mod tests {
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
             mlx_disable_ngram_acceleration: false,
-            mlx_kv_compression: MlxKvCompressionConfig::disabled(),
+            mlx_kv_compression: KvCompressionConfig::disabled(),
             mlx_prefill_chunk: None,
             backend_request: PreviewBackendRequest {
                 support_tier: SupportTier::MlxPreview,
@@ -761,7 +757,7 @@ mod tests {
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
             mlx_disable_ngram_acceleration: false,
-            mlx_kv_compression: MlxKvCompressionConfig::disabled(),
+            mlx_kv_compression: KvCompressionConfig::disabled(),
             mlx_prefill_chunk: None,
             backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
                 PathBuf::from("llama-cli"),
@@ -854,7 +850,7 @@ mod tests {
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
             mlx_disable_ngram_acceleration: false,
-            mlx_kv_compression: MlxKvCompressionConfig::disabled(),
+            mlx_kv_compression: KvCompressionConfig::disabled(),
             mlx_prefill_chunk: None,
             backend_request: PreviewBackendRequest {
                 support_tier: SupportTier::MlxLmDelegated,
@@ -1160,10 +1156,7 @@ mod tests {
 
         let actual = args.session_config().expect("session config should build");
 
-        assert_eq!(
-            actual.mlx_kv_compression,
-            MlxKvCompressionConfig::disabled()
-        );
+        assert_eq!(actual.mlx_kv_compression, KvCompressionConfig::disabled());
     }
 
     #[test]
@@ -1180,9 +1173,9 @@ mod tests {
 
         assert_eq!(
             actual.mlx_kv_compression,
-            MlxKvCompressionConfig {
-                mode: MlxKvCompressionMode::TurboQuantShadow,
-                preset: MlxTurboQuantPreset::K8V4,
+            KvCompressionConfig {
+                mode: KvCompressionMode::TurboQuantShadow,
+                preset: TurboQuantPreset::K8V4,
                 hot_window_tokens: 384,
                 min_context_tokens: 768,
             }
@@ -1203,9 +1196,9 @@ mod tests {
 
         assert_eq!(
             actual.mlx_kv_compression,
-            MlxKvCompressionConfig {
-                mode: MlxKvCompressionMode::TurboQuantFusedExperimental,
-                preset: MlxTurboQuantPreset::K8V4,
+            KvCompressionConfig {
+                mode: KvCompressionMode::TurboQuantFusedExperimental,
+                preset: TurboQuantPreset::K8V4,
                 hot_window_tokens: 384,
                 min_context_tokens: 768,
             }

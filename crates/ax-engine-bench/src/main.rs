@@ -3386,7 +3386,7 @@ fn session_config_from_runtime(
         mlx_model_artifacts_dir: runtime.mlx_model_artifacts_dir.clone(),
         mlx_model_artifacts_source: runtime.mlx_model_artifacts_source,
         mlx_disable_ngram_acceleration: false,
-        mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
+        mlx_kv_compression: ax_engine_sdk::KvCompressionConfig::disabled(),
         mlx_prefill_chunk: None,
     })
 }

@@ -823,7 +823,9 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         layer_types: Vec::new(),
         kv_shared_source_layers: Default::default(),
         final_logit_softcapping: None,
-        hidden_states_scale: None,
+        hidden_states_scale: family
+            .starts_with("gemma")
+            .then(|| (hidden_size as f32).sqrt()),
         moe_norm_topk_prob: false,
         hidden_size_per_layer_input: 0,
         vocab_size_per_layer_input: None,

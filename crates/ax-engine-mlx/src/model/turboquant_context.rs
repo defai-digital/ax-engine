@@ -1,4 +1,4 @@
-use ax_engine_core::{MlxKvCompressionConfig, MlxTurboQuantPreset};
+use ax_engine_core::{KvCompressionConfig, TurboQuantPreset};
 
 use crate::fastpath;
 use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeCandidate};
@@ -31,7 +31,7 @@ pub struct TurboQuantModelDecodeCandidate {
 
 #[derive(Clone, Copy, Debug)]
 pub struct TurboQuantModelDecodeContext<'a> {
-    pub config: MlxKvCompressionConfig,
+    pub config: KvCompressionConfig,
     pub layer_eligible: &'a [bool],
 }
 
@@ -114,7 +114,7 @@ impl<'a> TurboQuantModelDecodeContext<'a> {
             TurboQuantModelDecodeCandidateStatus::KvSharedLayer
         } else if !self.layer_eligible.get(layer_idx).copied().unwrap_or(false) {
             TurboQuantModelDecodeCandidateStatus::IneligibleLayer
-        } else if self.config.preset != MlxTurboQuantPreset::K8V4 {
+        } else if self.config.preset != TurboQuantPreset::K8V4 {
             TurboQuantModelDecodeCandidateStatus::UnsupportedPreset
         } else if !turboquant_fused_decode_head_dim_supported(head_dim) {
             TurboQuantModelDecodeCandidateStatus::UnsupportedHeadDim

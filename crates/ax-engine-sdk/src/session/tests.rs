@@ -10,10 +10,10 @@ use ax_engine_core::metal::{
     MetalDispatchRuntimeInfo, MetalNumericValidationSummary,
 };
 use ax_engine_core::{
-    CacheGroupId, DeterministicSampler, ExecutionRunner, ExecutionStatus, KvManagerConfig,
-    KvWriteSummary, MetalBinaryArchiveInfo, MetalBinaryArchiveState, MetalCommandBufferStatus,
-    MetalDispatchArenaInfo, MetalDispatchKernelTrace, MetalDispatchTrace, MetalDispatchWorkload,
-    MetalThreadgroupSize, MlxKvCompressionConfig, ModelId, NativeModelArtifactsSummary,
+    CacheGroupId, DeterministicSampler, ExecutionRunner, ExecutionStatus, KvCompressionConfig,
+    KvManagerConfig, KvWriteSummary, MetalBinaryArchiveInfo, MetalBinaryArchiveState,
+    MetalCommandBufferStatus, MetalDispatchArenaInfo, MetalDispatchKernelTrace, MetalDispatchTrace,
+    MetalDispatchWorkload, MetalThreadgroupSize, ModelId, NativeModelArtifactsSummary,
     NativeTensorFormat, RequestExecutionUpdate, RunnerInput, RunnerOutput, SamplingParams,
     SequenceNo,
 };
@@ -533,7 +533,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         mlx_model_artifacts_dir: Some(Path::new("/tmp/ax-model").to_path_buf()),
         mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
         mlx_disable_ngram_acceleration: true,
-        mlx_kv_compression: MlxKvCompressionConfig::turboquant_shadow(),
+        mlx_kv_compression: KvCompressionConfig::turboquant_shadow(),
         mlx_prefill_chunk: None,
     });
 
@@ -571,7 +571,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
     assert!(config.mlx_disable_ngram_acceleration);
     assert_eq!(
         config.mlx_kv_compression,
-        MlxKvCompressionConfig::turboquant_shadow()
+        KvCompressionConfig::turboquant_shadow()
     );
 }
 

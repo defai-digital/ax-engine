@@ -1086,8 +1086,8 @@ fn recompute_committed_prefix(
 /// Falls back to `argmax_tok` when temperature is 0 or the buffer is empty.
 /// Sample one token from `logits_all` at sequence position `pos`.
 ///
-/// `logits_all` has shape `[1, verify_len, vocab]` and is already materialised.
-/// Slices one `[1, 1, vocab]` row — avoids copying the full multi-position
+/// `logits_all` has shape `[verify_len, vocab]` and is already materialised.
+/// Slices one `[1, vocab]` row — avoids copying the full multi-position
 /// tensor to CPU when temperature > 0.
 fn sample_logit_row(
     logits_all: &MlxArray,
@@ -1101,7 +1101,7 @@ fn sample_logit_row(
         return argmax_tok;
     }
     let p = pos as i32;
-    let row = slice(logits_all, &[0, p, 0], &[1, p + 1, vocab], &[1, 1, 1], None);
+    let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
     sample_categorical(row.data_f32(), sampling, &[], rng)
 }
 

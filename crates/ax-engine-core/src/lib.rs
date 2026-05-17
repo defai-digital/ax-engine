@@ -49,10 +49,12 @@ pub use request::{
 pub use request_manager::{RequestManager, RequestManagerError};
 pub use runner::{
     DeterministicRunner, EmbeddingMatrix, EmbeddingPooling, ExecutionRunner, ExecutionStatus,
-    KvWriteSummary, MlxKvCompressionConfig, MlxKvCompressionMode, MlxTurboQuantPreset,
-    NativeModelBindingSummary, RequestExecutionUpdate, RequestLogitsOutput, ResolvedBlockTable,
-    RunnerInput, RunnerOutput,
+    KvCompressionConfig, KvCompressionMode, KvWriteSummary, NativeModelBindingSummary,
+    RequestExecutionUpdate, RequestLogitsOutput, ResolvedBlockTable, RunnerInput, RunnerOutput,
+    TurboQuantPreset,
 };
+#[allow(deprecated)]
+pub use runner::{MlxKvCompressionConfig, MlxKvCompressionMode, MlxTurboQuantPreset};
 pub use sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, SamplingParams, StopReason,
     TokenSampler,

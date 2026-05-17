@@ -92,7 +92,7 @@ pub struct RunnerOutput {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum MlxKvCompressionMode {
+pub enum KvCompressionMode {
     #[default]
     Disabled,
     /// Opt-in accounting-only TurboQuant path. It does not change KV storage or logits.
@@ -102,7 +102,7 @@ pub enum MlxKvCompressionMode {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum MlxTurboQuantPreset {
+pub enum TurboQuantPreset {
     /// 8-bit keys and 4-bit values; conservative first preset from the reference survey.
     #[default]
     K8V4,
@@ -112,7 +112,7 @@ pub enum MlxTurboQuantPreset {
     K3V4Research,
 }
 
-impl MlxTurboQuantPreset {
+impl TurboQuantPreset {
     pub fn key_bits(self) -> u32 {
         match self {
             Self::K8V4 => 8,
@@ -135,27 +135,27 @@ impl MlxTurboQuantPreset {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MlxKvCompressionConfig {
-    pub mode: MlxKvCompressionMode,
-    pub preset: MlxTurboQuantPreset,
+pub struct KvCompressionConfig {
+    pub mode: KvCompressionMode,
+    pub preset: TurboQuantPreset,
     pub hot_window_tokens: usize,
     pub min_context_tokens: usize,
 }
 
-impl Default for MlxKvCompressionConfig {
+impl Default for KvCompressionConfig {
     fn default() -> Self {
         Self::disabled()
     }
 }
 
-impl MlxKvCompressionConfig {
+impl KvCompressionConfig {
     pub const DEFAULT_HOT_WINDOW_TOKENS: usize = 256;
     pub const DEFAULT_MIN_CONTEXT_TOKENS: usize = 512;
 
     pub fn disabled() -> Self {
         Self {
-            mode: MlxKvCompressionMode::Disabled,
-            preset: MlxTurboQuantPreset::K8V4,
+            mode: KvCompressionMode::Disabled,
+            preset: TurboQuantPreset::K8V4,
             hot_window_tokens: Self::DEFAULT_HOT_WINDOW_TOKENS,
             min_context_tokens: Self::DEFAULT_MIN_CONTEXT_TOKENS,
         }
@@ -163,26 +163,35 @@ impl MlxKvCompressionConfig {
 
     pub fn turboquant_shadow() -> Self {
         Self {
-            mode: MlxKvCompressionMode::TurboQuantShadow,
+            mode: KvCompressionMode::TurboQuantShadow,
             ..Self::disabled()
         }
     }
 
     pub fn turboquant_fused_experimental() -> Self {
         Self {
-            mode: MlxKvCompressionMode::TurboQuantFusedExperimental,
+            mode: KvCompressionMode::TurboQuantFusedExperimental,
             ..Self::disabled()
         }
     }
 
     pub fn is_enabled(self) -> bool {
-        !matches!(self.mode, MlxKvCompressionMode::Disabled)
+        !matches!(self.mode, KvCompressionMode::Disabled)
     }
 
     pub fn requests_fused_decode(self) -> bool {
-        matches!(self.mode, MlxKvCompressionMode::TurboQuantFusedExperimental)
+        matches!(self.mode, KvCompressionMode::TurboQuantFusedExperimental)
     }
 }
+
+#[deprecated(note = "use KvCompressionMode")]
+pub type MlxKvCompressionMode = KvCompressionMode;
+
+#[deprecated(note = "use TurboQuantPreset")]
+pub type MlxTurboQuantPreset = TurboQuantPreset;
+
+#[deprecated(note = "use KvCompressionConfig")]
+pub type MlxKvCompressionConfig = KvCompressionConfig;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NativeModelBindingSummary {

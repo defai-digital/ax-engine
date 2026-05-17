@@ -248,6 +248,8 @@ pub struct ModelConfig {
     pub moe_shared_expert_count: usize,
     /// Use sigmoid routing (DeepSeek V3). False → softmax (Qwen3/GLM).
     pub moe_sigmoid_routing: bool,
+    /// Scale applied to selected expert weights (DeepSeek V3: 2.5, others: 1.0).
+    pub moe_routed_scaling_factor: f32,
 }
 
 impl ModelConfig {
@@ -335,6 +337,7 @@ impl ModelConfig {
             moe_first_dense_layers: m.moe.first_dense_layers.unwrap_or(0) as usize,
             moe_shared_expert_count: m.moe.shared_expert_count.unwrap_or(0) as usize,
             moe_sigmoid_routing: m.moe.sigmoid_routing,
+            moe_routed_scaling_factor: m.moe.routed_scaling_factor.unwrap_or(1.0),
         }
     }
 

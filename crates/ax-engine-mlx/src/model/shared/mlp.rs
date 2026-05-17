@@ -660,12 +660,8 @@ pub(crate) fn moe_router_deepseek_v3(
         top_k_weights
     };
 
-    // Scale by routed_scaling_factor (from glm_router config if present, else 1.0).
-    let scaling = cfg
-        .glm_router
-        .as_ref()
-        .map(|r| r.routed_scaling_factor)
-        .unwrap_or(1.0);
+    // Scale by routed_scaling_factor (DeepSeek V3: 2.5, others: 1.0).
+    let scaling = cfg.moe_routed_scaling_factor;
     let top_k_weights = if (scaling - 1.0).abs() > 1e-6 {
         scale_hidden(&top_k_weights, scaling)
     } else {

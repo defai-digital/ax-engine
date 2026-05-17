@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode};
+use ax_engine_core::{KvCompressionConfig, KvCompressionMode};
 use mlx_sys::{MlxArray, MlxDtype, astype, contiguous, eval, slice, slice_update, zeros};
 
 use crate::turboquant::{
@@ -454,7 +454,7 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
 
 fn turboquant_shadow_layout_for_layer(
     lkv: &LayerKV,
-    compression: MlxKvCompressionConfig,
+    compression: KvCompressionConfig,
 ) -> Option<TurboQuantBlockLayout> {
     let head_dim = usize::try_from(lkv.head_dim).ok()?;
     let n_kv_heads = usize::try_from(lkv.n_kv_heads).ok()?;
@@ -1785,7 +1785,7 @@ impl MlxKVCache {
     pub fn sync_turboquant_shadow_storage(
         &mut self,
         layer_windows: &[Option<usize>],
-        compression: MlxKvCompressionConfig,
+        compression: KvCompressionConfig,
         compression_eligible_layers: Option<&[bool]>,
     ) -> TurboQuantShadowStorageUsage {
         let Some(cold_tokens) = self.turboquant_shadow_sync_cold_tokens(compression) else {
@@ -1886,7 +1886,7 @@ impl MlxKVCache {
     pub fn turboquant_shadow_storage_sync_due(
         &self,
         layer_windows: &[Option<usize>],
-        compression: MlxKvCompressionConfig,
+        compression: KvCompressionConfig,
         compression_eligible_layers: Option<&[bool]>,
     ) -> bool {
         if !compression.is_enabled() {
@@ -1926,7 +1926,7 @@ impl MlxKVCache {
 
     fn turboquant_shadow_sync_cold_tokens(
         &self,
-        compression: MlxKvCompressionConfig,
+        compression: KvCompressionConfig,
     ) -> Option<usize> {
         if !compression.is_enabled() || self.seq_len < compression.min_context_tokens {
             return None;
@@ -1939,7 +1939,7 @@ impl MlxKVCache {
         &self,
         layer_idx: usize,
         layer_windows: &[Option<usize>],
-        compression: MlxKvCompressionConfig,
+        compression: KvCompressionConfig,
         compression_eligible_layers: Option<&[bool]>,
     ) -> Option<TurboQuantBlockLayout> {
         if layer_windows.get(layer_idx).copied().flatten().is_some() {
@@ -2486,14 +2486,14 @@ impl MlxKVCache {
     ) -> MlxKVCacheUsage {
         self.usage_snapshot_with_layer_windows_and_compression(
             layer_windows,
-            MlxKvCompressionConfig::disabled(),
+            KvCompressionConfig::disabled(),
         )
     }
 
     pub fn usage_snapshot_with_layer_windows_and_compression(
         &self,
         layer_windows: &[Option<usize>],
-        compression: MlxKvCompressionConfig,
+        compression: KvCompressionConfig,
     ) -> MlxKVCacheUsage {
         self.usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
             layer_windows,
@@ -2505,7 +2505,7 @@ impl MlxKVCache {
     pub fn usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
         &self,
         layer_windows: &[Option<usize>],
-        compression: MlxKvCompressionConfig,
+        compression: KvCompressionConfig,
         compression_eligible_layers: Option<&[bool]>,
     ) -> MlxKVCacheUsage {
         let mut usage = MlxKVCacheUsage {
@@ -2596,7 +2596,7 @@ impl MlxKVCache {
     fn estimate_kv_compression_usage(
         &self,
         layer_windows: &[Option<usize>],
-        compression: MlxKvCompressionConfig,
+        compression: KvCompressionConfig,
         compression_eligible_layers: Option<&[bool]>,
     ) -> MlxKvCompressionUsage {
         if !compression.is_enabled() {
@@ -2690,7 +2690,7 @@ impl MlxKVCache {
                 .min(u32::MAX as u64) as u32
         };
 
-        if matches!(compression.mode, MlxKvCompressionMode::TurboQuantShadow) {
+        if matches!(compression.mode, KvCompressionMode::TurboQuantShadow) {
             usage.status_code = 1;
         }
 
@@ -3038,7 +3038,7 @@ mod tests {
 
         let usage = cache.usage_snapshot_with_layer_windows_and_compression(
             &[None],
-            MlxKvCompressionConfig::turboquant_shadow(),
+            KvCompressionConfig::turboquant_shadow(),
         );
 
         assert!(usage.kv_compression.policy_enabled);
@@ -3072,10 +3072,10 @@ mod tests {
             &[1, 2, 6, 4],
             MlxDtype::Float32,
         );
-        let compression = MlxKvCompressionConfig {
+        let compression = KvCompressionConfig {
             hot_window_tokens: 2,
             min_context_tokens: 4,
-            ..MlxKvCompressionConfig::turboquant_shadow()
+            ..KvCompressionConfig::turboquant_shadow()
         };
 
         cache.append(0, k, v);
@@ -3121,10 +3121,10 @@ mod tests {
             &[1, 2, 6, 4],
             MlxDtype::Float32,
         );
-        let compression = MlxKvCompressionConfig {
+        let compression = KvCompressionConfig {
             hot_window_tokens: 2,
             min_context_tokens: 4,
-            ..MlxKvCompressionConfig::turboquant_shadow()
+            ..KvCompressionConfig::turboquant_shadow()
         };
         let queries = vec![vec![0.15, -0.25, 0.35, -0.45], vec![-0.2, 0.1, 0.4, -0.3]];
 
@@ -3347,10 +3347,10 @@ mod tests {
             &[1, 2, 6, 4],
             MlxDtype::Float32,
         );
-        let compression = MlxKvCompressionConfig {
+        let compression = KvCompressionConfig {
             hot_window_tokens: 2,
             min_context_tokens: 4,
-            ..MlxKvCompressionConfig::turboquant_shadow()
+            ..KvCompressionConfig::turboquant_shadow()
         };
 
         cache.append(0, k, v);
@@ -3381,10 +3381,10 @@ mod tests {
         let v0 = zeros(&[1, 2, 600, 4], MlxDtype::Float32, None);
         let k1 = zeros(&[1, 2, 600, 4], MlxDtype::Float32, None);
         let v1 = zeros(&[1, 2, 600, 4], MlxDtype::Float32, None);
-        let compression = MlxKvCompressionConfig {
+        let compression = KvCompressionConfig {
             hot_window_tokens: 2,
             min_context_tokens: 4,
-            ..MlxKvCompressionConfig::turboquant_shadow()
+            ..KvCompressionConfig::turboquant_shadow()
         };
 
         cache.append(0, k0, v0);
@@ -3434,7 +3434,7 @@ mod tests {
 
         let usage = cache.usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
             &[None, None],
-            MlxKvCompressionConfig::turboquant_shadow(),
+            KvCompressionConfig::turboquant_shadow(),
             Some(&[false, true]),
         );
 
@@ -3444,7 +3444,7 @@ mod tests {
 
         let usage = cache.usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
             &[None, None],
-            MlxKvCompressionConfig::turboquant_shadow(),
+            KvCompressionConfig::turboquant_shadow(),
             Some(&[false]),
         );
 
@@ -3463,7 +3463,7 @@ mod tests {
 
         let usage = cache.usage_snapshot_with_layer_windows_and_compression(
             &[None, None],
-            MlxKvCompressionConfig::turboquant_shadow(),
+            KvCompressionConfig::turboquant_shadow(),
         );
         assert_eq!(usage.kv_compression.status_code, 2);
         assert_eq!(usage.kv_compression.candidate_token_layers, 0);
@@ -3476,7 +3476,7 @@ mod tests {
 
         let usage = cache.usage_snapshot_with_layer_windows_and_compression(
             &[Some(512)],
-            MlxKvCompressionConfig::turboquant_shadow(),
+            KvCompressionConfig::turboquant_shadow(),
         );
         assert_eq!(usage.kv_compression.status_code, 3);
         assert_eq!(usage.kv_compression.eligible_layers, 0);

@@ -169,7 +169,7 @@ pub fn sample_categorical(
         return argmax_f32(logits);
     }
 
-    apply_top_k_top_p(&mut candidates, sampling.top_k, sampling.top_p, sum);
+    apply_top_k_top_p(&mut candidates, sampling.top_k, sampling.top_p);
     let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
     if filtered_sum == 0.0 || !filtered_sum.is_finite() {
         return argmax_f32(logits);
@@ -222,7 +222,7 @@ fn logits_with_repetition_penalty(
     adjusted
 }
 
-fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32, total_mass: f32) {
+fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32) {
     let filters_enabled = top_k > 0 || top_p < 1.0;
     if !filters_enabled {
         return;
@@ -240,7 +240,10 @@ fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32,
     }
 
     if top_p.is_finite() && top_p < 1.0 {
-        let cutoff = top_p.max(0.0) * total_mass;
+        // Recompute mass over the post-top-k set; using pre-top-k total_mass would make
+        // top-p a no-op (cutoff always below remaining candidates' cumulative sum).
+        let topk_mass: f32 = candidates.iter().map(|(_, p)| *p).sum();
+        let cutoff = top_p.max(0.0) * topk_mass;
         let mut cumulative = 0.0;
         let mut keep = 0usize;
         for (_, prob) in candidates.iter() {

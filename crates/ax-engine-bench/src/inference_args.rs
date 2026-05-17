@@ -224,7 +224,7 @@ pub(crate) fn build_inference_session(args: &InferenceArgs) -> Result<EngineSess
             backend_request,
             mlx_model_artifacts_dir,
             mlx_disable_ngram_acceleration: disable_ngram,
-            mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
+            mlx_kv_compression: ax_engine_sdk::KvCompressionConfig::disabled(),
             mlx_prefill_chunk: None,
         })
         .map_err(|error| CliError::Usage(format!("invalid inference configuration: {error}")))?;

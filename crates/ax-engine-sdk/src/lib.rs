@@ -19,9 +19,11 @@
 //! the existing crate-root exports.
 
 pub use ax_engine_core::{
-    CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvManagerConfig, MlxKvCompressionConfig,
-    MlxKvCompressionMode, MlxTurboQuantPreset,
+    CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvCompressionConfig, KvCompressionMode,
+    KvManagerConfig, TurboQuantPreset,
 };
+#[allow(deprecated)]
+pub use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode, MlxTurboQuantPreset};
 
 pub mod backend;
 mod delegated_http;

@@ -241,7 +241,7 @@ impl NativeMlaAttentionConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct NativeMoeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expert_count: Option<u32>,
@@ -261,6 +261,9 @@ pub struct NativeMoeConfig {
     /// Use sigmoid routing instead of softmax (DeepSeek V3). Default false.
     #[serde(default)]
     pub sigmoid_routing: bool,
+    /// Scale factor applied to selected expert weights after routing (DeepSeek V3: 2.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed_scaling_factor: Option<f32>,
 }
 
 impl NativeMoeConfig {
@@ -3496,6 +3499,7 @@ mod tests {
             first_dense_layers: None,
             shared_expert_count: None,
             sigmoid_routing: false,
+            routed_scaling_factor: None,
         };
         manifest.tensors.extend([
             tensor(
@@ -3634,6 +3638,7 @@ mod tests {
             first_dense_layers: None,
             shared_expert_count: None,
             sigmoid_routing: false,
+            routed_scaling_factor: None,
         };
         manifest.tensors.retain(|tensor| {
             tensor.layer_index != Some(1)
@@ -3841,6 +3846,7 @@ mod tests {
             first_dense_layers: None,
             shared_expert_count: None,
             sigmoid_routing: false,
+            routed_scaling_factor: None,
         };
         let artifacts = NativeModelArtifacts {
             root_dir: PathBuf::new(),

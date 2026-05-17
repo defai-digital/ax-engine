@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use ax_engine_core::MlxTurboQuantPreset;
+use ax_engine_core::TurboQuantPreset;
 use thiserror::Error;
 
 use crate::model::ModelConfig;
@@ -202,10 +202,10 @@ impl TurboQuantDecodeQualityProfile {
         }
     }
 
-    pub const fn for_quantization_preset(preset: MlxTurboQuantPreset) -> Self {
+    pub const fn for_quantization_preset(preset: TurboQuantPreset) -> Self {
         match preset {
-            MlxTurboQuantPreset::K8V4 => Self::ReferenceK8V4,
-            MlxTurboQuantPreset::K4V4 | MlxTurboQuantPreset::K3V4Research => Self::ResearchLoose,
+            TurboQuantPreset::K8V4 => Self::ReferenceK8V4,
+            TurboQuantPreset::K4V4 | TurboQuantPreset::K3V4Research => Self::ResearchLoose,
         }
     }
 
@@ -277,14 +277,14 @@ pub struct TurboQuantDecodeQualityDecision {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TurboQuantDecodeQualityEvaluation {
-    pub preset: MlxTurboQuantPreset,
+    pub preset: TurboQuantPreset,
     pub profile: TurboQuantDecodeQualityProfile,
     pub gate: TurboQuantDecodeQualityGate,
     pub decision: TurboQuantDecodeQualityDecision,
 }
 
 pub fn evaluate_decode_quality_for_preset(
-    preset: MlxTurboQuantPreset,
+    preset: TurboQuantPreset,
     report: &TurboQuantDecodeComparisonReport,
 ) -> TurboQuantDecodeQualityEvaluation {
     let profile = TurboQuantDecodeQualityProfile::for_quantization_preset(preset);
@@ -306,7 +306,7 @@ pub struct TurboQuantDecodeQualityCheck {
 
 impl TurboQuantDecodeQualityCheck {
     pub fn for_preset(
-        preset: MlxTurboQuantPreset,
+        preset: TurboQuantPreset,
         comparison: TurboQuantDecodeComparisonReport,
     ) -> Self {
         let evaluation = evaluate_decode_quality_for_preset(preset, &comparison);
@@ -360,7 +360,7 @@ impl TurboQuantSupportReport {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TurboQuantBlockLayoutConfig {
-    pub preset: MlxTurboQuantPreset,
+    pub preset: TurboQuantPreset,
     pub block_tokens: usize,
     pub n_kv_heads: usize,
     pub head_dim: usize,
@@ -416,7 +416,7 @@ pub struct TurboQuantCompressedDecodePlan {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TurboQuantCompressedDecodeReadiness {
-    pub preset: MlxTurboQuantPreset,
+    pub preset: TurboQuantPreset,
     pub key_bits: u32,
     pub value_bits: u32,
     pub decode_path: TurboQuantCompressedDecodePath,
@@ -472,7 +472,7 @@ pub fn turboquant_query_head_to_kv_head(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TurboQuantFusedDecodeCandidate {
     pub status: TurboQuantFusedDecodeCandidateStatus,
-    pub preset: MlxTurboQuantPreset,
+    pub preset: TurboQuantPreset,
     pub head_dim: usize,
     pub compressed_blocks: usize,
     pub compressed_buffer_bytes: usize,
@@ -491,7 +491,7 @@ impl TurboQuantCompressedDecodeReadiness {
             TurboQuantFusedDecodeCandidateStatus::FullPrecisionOnly
         } else if !turboquant_fused_decode_head_dim_supported(self.query_head_dim) {
             TurboQuantFusedDecodeCandidateStatus::UnsupportedHeadDim
-        } else if self.preset != MlxTurboQuantPreset::K8V4 {
+        } else if self.preset != TurboQuantPreset::K8V4 {
             TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset
         } else {
             TurboQuantFusedDecodeCandidateStatus::Candidate
@@ -510,7 +510,7 @@ impl TurboQuantCompressedDecodeReadiness {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TurboQuantFusedDecodeLaunchDescriptor {
-    pub preset: MlxTurboQuantPreset,
+    pub preset: TurboQuantPreset,
     pub key_bits: u32,
     pub value_bits: u32,
     pub total_tokens: usize,
@@ -562,7 +562,7 @@ pub struct TurboQuantFusedDecodeLaunchWorkload {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TurboQuantFusedDecodeBenchmarkEstimate {
-    pub preset: MlxTurboQuantPreset,
+    pub preset: TurboQuantPreset,
     pub key_bits: u32,
     pub value_bits: u32,
     pub total_tokens: usize,
@@ -608,7 +608,7 @@ impl TurboQuantFusedDecodePromotionStatus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TurboQuantFusedDecodePromotionReadiness {
     pub status: TurboQuantFusedDecodePromotionStatus,
-    pub preset: MlxTurboQuantPreset,
+    pub preset: TurboQuantPreset,
     pub quality_profile: TurboQuantDecodeQualityProfile,
     pub benchmark_estimate: TurboQuantFusedDecodeBenchmarkEstimate,
 }
@@ -1587,7 +1587,7 @@ impl TurboQuantCompressedBlockBuffer {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TurboQuantKvPrototypeConfig {
-    pub preset: MlxTurboQuantPreset,
+    pub preset: TurboQuantPreset,
     pub vector_dim: usize,
     pub hot_window_tokens: usize,
     pub value_group_size: usize,
@@ -1595,7 +1595,7 @@ pub struct TurboQuantKvPrototypeConfig {
 
 impl TurboQuantKvPrototypeConfig {
     pub fn new(
-        preset: MlxTurboQuantPreset,
+        preset: TurboQuantPreset,
         vector_dim: usize,
         hot_window_tokens: usize,
         value_group_size: usize,
@@ -1619,7 +1619,7 @@ impl TurboQuantKvPrototypeConfig {
 
 pub fn turboquant_support_report(
     cfg: &ModelConfig,
-    preset: MlxTurboQuantPreset,
+    preset: TurboQuantPreset,
 ) -> Result<TurboQuantSupportReport, TurboQuantCodecError> {
     key_centroids(preset.key_bits())?;
     let mut report = TurboQuantSupportReport {
@@ -2372,7 +2372,7 @@ fn validate_attention_token(
 
 pub fn encode_key_vector(
     vector: &[f32],
-    preset: MlxTurboQuantPreset,
+    preset: TurboQuantPreset,
 ) -> Result<QuantizedKeyVector, TurboQuantCodecError> {
     let bit_width = preset.key_bits();
     validate_supported_key_bits(bit_width)?;
@@ -2875,6 +2875,7 @@ mod tests {
             moe_first_dense_layers: 0,
             moe_shared_expert_count: 0,
             moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 1.0,
         }
     }
 
@@ -2911,7 +2912,7 @@ mod tests {
     fn support_report_marks_dense_full_attention_layers_eligible() {
         let cfg = support_test_model(3, 128);
         let report =
-            turboquant_support_report(&cfg, MlxTurboQuantPreset::K8V4).expect("support report");
+            turboquant_support_report(&cfg, TurboQuantPreset::K8V4).expect("support report");
 
         assert_eq!(report.eligible_layers, 3);
         assert_eq!(report.linear_attention_layers, 0);
@@ -2994,7 +2995,7 @@ mod tests {
         cfg.layer_configs = vec![sliding, full, shared, unsupported];
 
         let report =
-            turboquant_support_report(&cfg, MlxTurboQuantPreset::K8V4).expect("support report");
+            turboquant_support_report(&cfg, TurboQuantPreset::K8V4).expect("support report");
 
         assert_eq!(report.eligible_layers, 1);
         assert_eq!(report.sliding_window_layers, 1);
@@ -3037,7 +3038,7 @@ mod tests {
         });
 
         let report =
-            turboquant_support_report(&cfg, MlxTurboQuantPreset::K4V4).expect("support report");
+            turboquant_support_report(&cfg, TurboQuantPreset::K4V4).expect("support report");
 
         assert_eq!(report.eligible_layers, 1);
         assert_eq!(report.linear_attention_layers, 3);
@@ -3063,7 +3064,7 @@ mod tests {
     #[test]
     fn block_layout_computes_aligned_slot_and_block_sizes() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 16,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3093,7 +3094,7 @@ mod tests {
     #[test]
     fn block_layout_aligns_low_bit_research_slots() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K3V4Research,
+            preset: TurboQuantPreset::K3V4Research,
             block_tokens: 4,
             n_kv_heads: 1,
             head_dim: 8,
@@ -3113,7 +3114,7 @@ mod tests {
     #[test]
     fn block_layout_maps_token_and_head_to_slot_offsets() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 16,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3150,7 +3151,7 @@ mod tests {
     #[test]
     fn block_layout_rejects_invalid_config_and_out_of_range_addresses() {
         let error = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 0,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3166,7 +3167,7 @@ mod tests {
         );
 
         let error = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 16,
             n_kv_heads: 2,
             head_dim: 12,
@@ -3176,7 +3177,7 @@ mod tests {
         assert_eq!(error, TurboQuantCodecError::NonPowerOfTwoDimension(12));
 
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 16,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3211,7 +3212,7 @@ mod tests {
     #[test]
     fn compressed_decode_plan_splits_cold_and_hot_history() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 16,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3241,7 +3242,7 @@ mod tests {
     #[test]
     fn compressed_decode_plan_falls_back_when_history_is_inside_hot_window() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K4V4,
+            preset: TurboQuantPreset::K4V4,
             block_tokens: 16,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3270,7 +3271,7 @@ mod tests {
     #[test]
     fn compressed_decode_plan_fails_closed_for_empty_history() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 16,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3293,7 +3294,7 @@ mod tests {
     #[test]
     fn compressed_decode_plan_validates_required_cold_slots() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3337,7 +3338,7 @@ mod tests {
     #[test]
     fn compressed_decode_plan_rejects_mismatched_buffer_layout() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3345,7 +3346,7 @@ mod tests {
         })
         .expect("layout should build");
         let other_layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K4V4,
+            preset: TurboQuantPreset::K4V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3368,7 +3369,7 @@ mod tests {
     #[test]
     fn compressed_decode_plan_skips_buffer_validation_for_hot_window_only_path() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3376,7 +3377,7 @@ mod tests {
         })
         .expect("layout should build");
         let other_layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K4V4,
+            preset: TurboQuantPreset::K4V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3394,7 +3395,7 @@ mod tests {
     #[test]
     fn compressed_decode_plan_validates_query_shapes() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3434,7 +3435,7 @@ mod tests {
     #[test]
     fn compressed_decode_plan_validates_buffer_and_queries_together() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3465,7 +3466,7 @@ mod tests {
     #[test]
     fn compressed_decode_plan_reports_decode_readiness() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -3485,7 +3486,7 @@ mod tests {
         assert_eq!(
             readiness,
             TurboQuantCompressedDecodeReadiness {
-                preset: MlxTurboQuantPreset::K8V4,
+                preset: TurboQuantPreset::K8V4,
                 key_bits: 8,
                 value_bits: 4,
                 decode_path: TurboQuantCompressedDecodePath::CompressedColdWithHotWindow,
@@ -3506,7 +3507,7 @@ mod tests {
     #[test]
     fn compressed_decode_readiness_marks_initial_fused_decode_candidate() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 1,
             head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
@@ -3534,7 +3535,7 @@ mod tests {
             candidate,
             TurboQuantFusedDecodeCandidate {
                 status: TurboQuantFusedDecodeCandidateStatus::Candidate,
-                preset: MlxTurboQuantPreset::K8V4,
+                preset: TurboQuantPreset::K8V4,
                 head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
                 compressed_blocks: 1,
                 compressed_buffer_bytes: layout.block_bytes,
@@ -3546,7 +3547,7 @@ mod tests {
     #[test]
     fn compressed_decode_plan_builds_fused_decode_launch_descriptor() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 1,
             head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
@@ -3575,7 +3576,7 @@ mod tests {
         assert_eq!(
             descriptor,
             TurboQuantFusedDecodeLaunchDescriptor {
-                preset: MlxTurboQuantPreset::K8V4,
+                preset: TurboQuantPreset::K8V4,
                 key_bits: 8,
                 value_bits: 4,
                 total_tokens: 2,
@@ -3610,7 +3611,7 @@ mod tests {
     #[test]
     fn fused_decode_launch_descriptor_reports_workload_estimate() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 1,
             head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
@@ -3663,7 +3664,7 @@ mod tests {
     #[test]
     fn fused_decode_launch_descriptor_reports_benchmark_estimate() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 1,
             head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
@@ -3693,7 +3694,7 @@ mod tests {
         assert_eq!(
             estimate,
             TurboQuantFusedDecodeBenchmarkEstimate {
-                preset: MlxTurboQuantPreset::K8V4,
+                preset: TurboQuantPreset::K8V4,
                 key_bits: 8,
                 value_bits: 4,
                 total_tokens: 2,
@@ -3722,7 +3723,7 @@ mod tests {
     #[test]
     fn fused_decode_launch_descriptor_reports_promotion_readiness() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 1,
             head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
@@ -3752,7 +3753,7 @@ mod tests {
         )
         .expect("comparison should pass");
         let quality_check =
-            TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, comparison);
+            TurboQuantDecodeQualityCheck::for_preset(TurboQuantPreset::K8V4, comparison);
 
         let readiness = descriptor.promotion_readiness(&quality_check);
 
@@ -3761,7 +3762,7 @@ mod tests {
             readiness.status,
             TurboQuantFusedDecodePromotionStatus::Ready
         );
-        assert_eq!(readiness.preset, MlxTurboQuantPreset::K8V4);
+        assert_eq!(readiness.preset, TurboQuantPreset::K8V4);
         assert_eq!(
             readiness.quality_profile,
             TurboQuantDecodeQualityProfile::ReferenceK8V4
@@ -3776,7 +3777,7 @@ mod tests {
     #[test]
     fn fused_decode_launch_descriptor_reports_promotion_evidence() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 1,
             head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
@@ -3806,7 +3807,7 @@ mod tests {
         )
         .expect("comparison should pass");
         let quality_check =
-            TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, comparison);
+            TurboQuantDecodeQualityCheck::for_preset(TurboQuantPreset::K8V4, comparison);
 
         let evidence = descriptor.promotion_evidence(&quality_check);
 
@@ -3830,7 +3831,7 @@ mod tests {
     #[test]
     fn fused_decode_promotion_evidence_reports_artifact_summary() {
         let descriptor = TurboQuantFusedDecodeLaunchDescriptor {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             key_bits: 8,
             value_bits: 4,
             total_tokens: 2,
@@ -3865,7 +3866,7 @@ mod tests {
         )
         .expect("comparison should pass");
         let quality_check =
-            TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, comparison);
+            TurboQuantDecodeQualityCheck::for_preset(TurboQuantPreset::K8V4, comparison);
 
         let summary = descriptor.promotion_evidence(&quality_check).summary();
 
@@ -3893,7 +3894,7 @@ mod tests {
     #[test]
     fn fused_decode_promotion_readiness_fails_closed() {
         let descriptor = TurboQuantFusedDecodeLaunchDescriptor {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             key_bits: 8,
             value_bits: 4,
             total_tokens: 2,
@@ -3928,7 +3929,7 @@ mod tests {
         )
         .expect("comparison should pass");
         let mismatched_quality_check = TurboQuantDecodeQualityCheck::for_preset(
-            MlxTurboQuantPreset::K4V4,
+            TurboQuantPreset::K4V4,
             passing_comparison.clone(),
         );
         let failing_comparison = compare_decode_outputs(
@@ -3937,9 +3938,9 @@ mod tests {
         )
         .expect("comparison should report failure metrics");
         let failing_quality_check =
-            TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, failing_comparison);
+            TurboQuantDecodeQualityCheck::for_preset(TurboQuantPreset::K8V4, failing_comparison);
         let passing_quality_check =
-            TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, passing_comparison);
+            TurboQuantDecodeQualityCheck::for_preset(TurboQuantPreset::K8V4, passing_comparison);
 
         assert_eq!(
             descriptor
@@ -3969,7 +3970,7 @@ mod tests {
     #[test]
     fn compressed_decode_launch_descriptor_rejects_non_candidates() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 1,
             head_dim: 8,
@@ -3997,7 +3998,7 @@ mod tests {
     #[test]
     fn compressed_decode_readiness_fails_closed_for_non_candidate_launches() {
         let unsupported_head_layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 1,
             head_dim: 8,
@@ -4023,7 +4024,7 @@ mod tests {
         assert!(!unsupported_head.is_candidate());
 
         let unsupported_preset_layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K4V4,
+            preset: TurboQuantPreset::K4V4,
             block_tokens: 2,
             n_kv_heads: 1,
             head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
@@ -4061,7 +4062,7 @@ mod tests {
     #[test]
     fn compressed_decode_readiness_skips_buffer_layout_for_hot_window_only_path() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K4V4,
+            preset: TurboQuantPreset::K4V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -4069,7 +4070,7 @@ mod tests {
         })
         .expect("layout should build");
         let other_layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -4102,7 +4103,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_writes_and_reads_slot_layout() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 4,
             n_kv_heads: 2,
             head_dim: 8,
@@ -4154,7 +4155,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_keeps_token_heads_independent() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 4,
@@ -4198,7 +4199,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_fails_closed_for_bad_writes_and_unwritten_reads() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 4,
@@ -4245,7 +4246,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_writes_and_reads_full_token_heads() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -4293,7 +4294,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_token_write_fails_closed_for_head_count() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 4,
@@ -4318,7 +4319,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_token_write_does_not_leave_partial_slots() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 4,
@@ -4359,7 +4360,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_decodes_attention_for_one_head_history() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -4420,7 +4421,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_partition_stats_merge_with_hot_tail() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -4547,7 +4548,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_partition_stats_validate_query_heads() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -4571,7 +4572,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_head_decode_fails_closed_for_invalid_history() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 4,
@@ -4621,7 +4622,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_decodes_attention_for_all_heads() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -4678,7 +4679,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_decodes_attention_for_grouped_query_heads() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -4737,7 +4738,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_all_heads_decode_fails_closed_for_query_count() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 4,
@@ -4862,17 +4863,15 @@ mod tests {
             TurboQuantDecodeQualityGate::RESEARCH_LOOSE
         );
         assert_eq!(
-            TurboQuantDecodeQualityProfile::for_quantization_preset(MlxTurboQuantPreset::K8V4),
+            TurboQuantDecodeQualityProfile::for_quantization_preset(TurboQuantPreset::K8V4),
             TurboQuantDecodeQualityProfile::ReferenceK8V4
         );
         assert_eq!(
-            TurboQuantDecodeQualityProfile::for_quantization_preset(MlxTurboQuantPreset::K4V4),
+            TurboQuantDecodeQualityProfile::for_quantization_preset(TurboQuantPreset::K4V4),
             TurboQuantDecodeQualityProfile::ResearchLoose
         );
         assert_eq!(
-            TurboQuantDecodeQualityProfile::for_quantization_preset(
-                MlxTurboQuantPreset::K3V4Research
-            ),
+            TurboQuantDecodeQualityProfile::for_quantization_preset(TurboQuantPreset::K3V4Research),
             TurboQuantDecodeQualityProfile::ResearchLoose
         );
     }
@@ -4883,9 +4882,9 @@ mod tests {
             compare_decode_outputs(&[vec![1.0, 0.0, 0.0, 0.0]], &[vec![0.97, 0.0, 0.0, 0.0]])
                 .expect("compare outputs");
 
-        let evaluation = evaluate_decode_quality_for_preset(MlxTurboQuantPreset::K8V4, &report);
+        let evaluation = evaluate_decode_quality_for_preset(TurboQuantPreset::K8V4, &report);
 
-        assert_eq!(evaluation.preset, MlxTurboQuantPreset::K8V4);
+        assert_eq!(evaluation.preset, TurboQuantPreset::K8V4);
         assert_eq!(
             evaluation.profile,
             TurboQuantDecodeQualityProfile::ReferenceK8V4
@@ -4900,8 +4899,8 @@ mod tests {
             compare_decode_outputs(&[vec![1.0, 1.0, 1.0, 1.0]], &[vec![1.06, 1.0, 1.0, 1.0]])
                 .expect("compare outputs");
 
-        let reference = evaluate_decode_quality_for_preset(MlxTurboQuantPreset::K8V4, &report);
-        let research = evaluate_decode_quality_for_preset(MlxTurboQuantPreset::K4V4, &report);
+        let reference = evaluate_decode_quality_for_preset(TurboQuantPreset::K8V4, &report);
+        let research = evaluate_decode_quality_for_preset(TurboQuantPreset::K4V4, &report);
 
         assert_eq!(
             research.profile,
@@ -4917,9 +4916,9 @@ mod tests {
             compare_decode_outputs(&[vec![1.0, 0.0, 0.0, 0.0]], &[vec![0.99, 0.0, 0.0, 0.0]])
                 .expect("compare outputs");
 
-        let check = TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, comparison);
+        let check = TurboQuantDecodeQualityCheck::for_preset(TurboQuantPreset::K8V4, comparison);
 
-        assert_eq!(check.evaluation.preset, MlxTurboQuantPreset::K8V4);
+        assert_eq!(check.evaluation.preset, TurboQuantPreset::K8V4);
         assert_eq!(
             check.evaluation.profile,
             TurboQuantDecodeQualityProfile::ReferenceK8V4
@@ -4931,7 +4930,7 @@ mod tests {
     #[test]
     fn compressed_block_buffer_compares_all_head_decode_against_full_precision_oracle() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 2,
             n_kv_heads: 2,
             head_dim: 8,
@@ -5007,7 +5006,7 @@ mod tests {
                 .passed
         );
         assert_eq!(check.comparison, report);
-        assert_eq!(check.evaluation.preset, MlxTurboQuantPreset::K8V4);
+        assert_eq!(check.evaluation.preset, TurboQuantPreset::K8V4);
         assert_eq!(
             check.evaluation.profile,
             TurboQuantDecodeQualityProfile::ReferenceK8V4
@@ -5118,7 +5117,7 @@ mod tests {
     fn key_codec_preserves_direction_for_fixed_vector() {
         let vector = vec![0.5, -1.0, 2.0, 0.25, -0.75, 1.5, -2.5, 0.0];
         let encoded =
-            encode_key_vector(&vector, MlxTurboQuantPreset::K8V4).expect("encode key vector");
+            encode_key_vector(&vector, TurboQuantPreset::K8V4).expect("encode key vector");
         let decoded = decode_key_vector(&encoded).expect("decode key vector");
 
         assert_eq!(encoded.dim, vector.len());
@@ -5155,7 +5154,7 @@ mod tests {
 
     #[test]
     fn key_codec_rejects_non_power_of_two_dimensions() {
-        let error = encode_key_vector(&[1.0, 2.0, 3.0], MlxTurboQuantPreset::K8V4)
+        let error = encode_key_vector(&[1.0, 2.0, 3.0], TurboQuantPreset::K8V4)
             .expect_err("non power-of-two dimensions should fail");
         assert_eq!(error, TurboQuantCodecError::NonPowerOfTwoDimension(3));
     }
@@ -5260,7 +5259,7 @@ mod tests {
 
     #[test]
     fn prototype_decode_attention_matches_full_precision_when_all_tokens_are_hot() {
-        let config = TurboQuantKvPrototypeConfig::new(MlxTurboQuantPreset::K8V4, 4, 4, 2)
+        let config = TurboQuantKvPrototypeConfig::new(TurboQuantPreset::K8V4, 4, 4, 2)
             .expect("prototype config should build");
         let mut store = TurboQuantKvPrototypeStore::new(config);
         let tokens = vec![
@@ -5284,7 +5283,7 @@ mod tests {
 
     #[test]
     fn prototype_decode_attention_stays_close_to_full_precision_oracle() {
-        let config = TurboQuantKvPrototypeConfig::new(MlxTurboQuantPreset::K8V4, 8, 2, 4)
+        let config = TurboQuantKvPrototypeConfig::new(TurboQuantPreset::K8V4, 8, 2, 4)
             .expect("prototype config should build");
         let mut store = TurboQuantKvPrototypeStore::new(config);
         let tokens = (0..6)
@@ -5344,7 +5343,7 @@ mod tests {
 
     #[test]
     fn prototype_store_keeps_hot_window_and_compresses_cold_tokens() {
-        let config = TurboQuantKvPrototypeConfig::new(MlxTurboQuantPreset::K8V4, 8, 2, 4)
+        let config = TurboQuantKvPrototypeConfig::new(TurboQuantPreset::K8V4, 8, 2, 4)
             .expect("prototype config should build");
         let mut store = TurboQuantKvPrototypeStore::new(config);
         let tokens = (0..5)
@@ -5402,7 +5401,7 @@ mod tests {
 
     #[test]
     fn prototype_store_with_zero_hot_window_compresses_every_token() {
-        let config = TurboQuantKvPrototypeConfig::new(MlxTurboQuantPreset::K4V4, 4, 0, 2)
+        let config = TurboQuantKvPrototypeConfig::new(TurboQuantPreset::K4V4, 4, 0, 2)
             .expect("prototype config should build");
         let mut store = TurboQuantKvPrototypeStore::new(config);
 
@@ -5417,7 +5416,7 @@ mod tests {
 
     #[test]
     fn prototype_store_rejects_shape_drift() {
-        let config = TurboQuantKvPrototypeConfig::new(MlxTurboQuantPreset::K8V4, 4, 2, 2)
+        let config = TurboQuantKvPrototypeConfig::new(TurboQuantPreset::K8V4, 4, 2, 2)
             .expect("prototype config should build");
         let mut store = TurboQuantKvPrototypeStore::new(config);
 
@@ -5469,7 +5468,7 @@ mod tests {
     #[test]
     fn written_slot_count_is_maintained_incrementally() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 4,
             n_kv_heads: 2,
             head_dim: 8,

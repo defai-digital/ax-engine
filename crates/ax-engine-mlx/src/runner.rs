@@ -13,7 +13,7 @@ use mlx_sys::{
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
-    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary, MlxKvCompressionConfig,
+    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvCompressionConfig, KvWriteSummary,
     NativeModelArtifacts, NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
     ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
@@ -2295,7 +2295,7 @@ pub struct MlxRunner {
     disable_ngram_acceleration: bool,
     ngram_policy_variant: NgramPolicyVariant,
     /// Optional KV compression policy. Disabled by default and never changes logits in shadow mode.
-    kv_compression: MlxKvCompressionConfig,
+    kv_compression: KvCompressionConfig,
     /// Per-layer compression eligibility. Empty when compression is disabled.
     kv_compression_layer_eligible: Vec<bool>,
     /// Immutable MLX KV snapshots for block-aligned exact prompt prefixes.
@@ -2361,7 +2361,7 @@ impl MlxRunner {
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
-        kv_compression: MlxKvCompressionConfig,
+        kv_compression: KvCompressionConfig,
     ) -> Result<Self, MlxRunnerError> {
         // AX_NO_SPEC is the CLAUDE.md-documented kill switch. Honor it at
         // the runner boundary so server and SDK paths behave the same as
@@ -6137,6 +6137,7 @@ mod tests {
             first_dense_layers: None,
             shared_expert_count: None,
             sigmoid_routing: false,
+            routed_scaling_factor: None,
         };
         manifest.glm_router = NativeGlmRouterConfig {
             first_dense_layer_count: Some(1),
@@ -6427,7 +6428,7 @@ mod tests {
         let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
             .expect("real MLX manifest should load");
 
-        MlxRunner::from_artifacts(&artifacts, 8, true, MlxKvCompressionConfig::disabled())
+        MlxRunner::from_artifacts(&artifacts, 8, true, KvCompressionConfig::disabled())
             .expect("real Qwen3.5 MLX runner should warm up");
     }
 

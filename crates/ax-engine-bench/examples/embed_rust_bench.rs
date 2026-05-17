@@ -117,7 +117,7 @@ fn main() {
         backend_request: PreviewBackendRequest::shipping_mlx(),
         mlx_model_artifacts_dir: Some(args.model_dir.clone()),
         mlx_disable_ngram_acceleration: false,
-        mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
+        mlx_kv_compression: ax_engine_sdk::KvCompressionConfig::disabled(),
         mlx_prefill_chunk: None,
     })
     .expect("config");

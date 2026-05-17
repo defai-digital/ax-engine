@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use ax_engine_core::MlxTurboQuantPreset;
+use ax_engine_core::TurboQuantPreset;
 use mlx_sys::{KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, eval};
 
 use crate::turboquant::{
@@ -75,7 +75,7 @@ fn validate_fused_decode_launch_for_query_count(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
     n_query_heads: usize,
 ) -> Result<(), TurboQuantCodecError> {
-    if descriptor.preset != MlxTurboQuantPreset::K8V4 {
+    if descriptor.preset != TurboQuantPreset::K8V4 {
         return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
             status: crate::turboquant::TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset,
         });
@@ -960,7 +960,7 @@ mod tests {
     #[test]
     fn turboquant_fused_cold_decode_metal_matches_reference_for_k8v4() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 256,
             n_kv_heads: 1,
             head_dim: 128,
@@ -1069,7 +1069,7 @@ mod tests {
 
     fn assert_two_stage_metal_matches_reference_for_dim(head_dim: usize) {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-            preset: MlxTurboQuantPreset::K8V4,
+            preset: TurboQuantPreset::K8V4,
             block_tokens: 256,
             n_kv_heads: 2,
             head_dim,

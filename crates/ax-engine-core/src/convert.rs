@@ -1018,6 +1018,11 @@ fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
         first_dense_layers,
         shared_expert_count,
         sigmoid_routing: is_deepseek_v3,
+        routed_scaling_factor: if is_deepseek_v3 {
+            arch_f64(config, model_type, "routed_scaling_factor").map(|v| v as f32)
+        } else {
+            None
+        },
     }
 }
 

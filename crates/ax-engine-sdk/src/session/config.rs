@@ -1,7 +1,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use ax_engine_core::{CacheGroupId, KvManagerConfig, MlxKvCompressionConfig};
+use ax_engine_core::{CacheGroupId, KvCompressionConfig, KvManagerConfig};
 use thiserror::Error;
 
 use crate::backend::{
@@ -38,7 +38,7 @@ pub struct EngineSessionConfig {
     /// When true, MLX runner disables n-gram acceleration and uses the direct path.
     pub mlx_disable_ngram_acceleration: bool,
     /// Optional MLX KV compression policy. Disabled by default.
-    pub mlx_kv_compression: MlxKvCompressionConfig,
+    pub mlx_kv_compression: KvCompressionConfig,
     /// Override the MLX runner's prefill chunk size. `None` keeps the
     /// runner's `DEFAULT_PREFILL_CHUNK` (sized to the GatedDelta linear-
     /// attention threadgroup cache). Setting this lets callers (benchmark
@@ -61,7 +61,7 @@ pub struct PreviewSessionConfigRequest {
     /// When true, MLX runner disables n-gram acceleration and uses the direct path.
     pub mlx_disable_ngram_acceleration: bool,
     /// Optional MLX KV compression policy. Disabled by default.
-    pub mlx_kv_compression: MlxKvCompressionConfig,
+    pub mlx_kv_compression: KvCompressionConfig,
     /// Optional MLX prefill chunk override. `None` keeps the runner's
     /// `DEFAULT_PREFILL_CHUNK`. The bench harness uses this to match the
     /// `--prefill-step-size` mlx_lm and mlx-swift-lm receive so the three
@@ -81,7 +81,7 @@ impl Default for PreviewSessionConfigRequest {
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
             mlx_disable_ngram_acceleration: false,
-            mlx_kv_compression: MlxKvCompressionConfig::disabled(),
+            mlx_kv_compression: KvCompressionConfig::disabled(),
             mlx_prefill_chunk: None,
         }
     }
@@ -103,7 +103,7 @@ pub struct ResolvedSessionConfigRequest {
     pub mlx_model_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
     pub mlx_disable_ngram_acceleration: bool,
-    pub mlx_kv_compression: MlxKvCompressionConfig,
+    pub mlx_kv_compression: KvCompressionConfig,
     pub mlx_prefill_chunk: Option<usize>,
 }
 
@@ -158,7 +158,7 @@ impl Default for EngineSessionConfig {
                 .map(|selection| selection.dir.clone()),
             mlx_model_artifacts_source: mlx_model_artifacts.map(|selection| selection.source),
             mlx_disable_ngram_acceleration: false,
-            mlx_kv_compression: MlxKvCompressionConfig::disabled(),
+            mlx_kv_compression: KvCompressionConfig::disabled(),
             mlx_prefill_chunk: None,
         }
     }
@@ -175,10 +175,10 @@ impl EngineSessionConfig {
         self
     }
 
-    /// Sets the KV compression policy. Use `MlxKvCompressionConfig::turboquant_shadow()` for
-    /// accounting-only TurboQuant, or `MlxKvCompressionConfig::turboquant_fused_experimental()`
+    /// Sets the KV compression policy. Use `KvCompressionConfig::turboquant_shadow()` for
+    /// accounting-only TurboQuant, or `KvCompressionConfig::turboquant_fused_experimental()`
     /// for the experimental fused-decode path.
-    pub fn with_kv_compression(mut self, config: MlxKvCompressionConfig) -> Self {
+    pub fn with_kv_compression(mut self, config: KvCompressionConfig) -> Self {
         self.mlx_kv_compression = config;
         self
     }
@@ -186,14 +186,14 @@ impl EngineSessionConfig {
     /// Enables TurboQuant shadow mode: KV compression accounting runs alongside full-precision
     /// inference. Output tokens and logits are not affected. Safe for production monitoring.
     pub fn with_turboquant_shadow(mut self) -> Self {
-        self.mlx_kv_compression = MlxKvCompressionConfig::turboquant_shadow();
+        self.mlx_kv_compression = KvCompressionConfig::turboquant_shadow();
         self
     }
 
     /// Enables TurboQuant fused-decode mode: compressed KV paths are used when all quality
     /// gates pass; falls back to full precision otherwise. **Experimental — not production-ready.**
     pub fn with_turboquant_fused_experimental(mut self) -> Self {
-        self.mlx_kv_compression = MlxKvCompressionConfig::turboquant_fused_experimental();
+        self.mlx_kv_compression = KvCompressionConfig::turboquant_fused_experimental();
         self
     }
 

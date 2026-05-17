@@ -15,6 +15,9 @@ use crate::openai::schema::{
 
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 
+type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
+type ChatMessagePairs = Vec<(String, String)>;
+
 pub(crate) struct OpenAiBuiltRequest {
     pub(crate) generate_request: GenerateRequest,
     pub(crate) stream: bool,
@@ -308,7 +311,7 @@ pub(crate) fn openai_chat_stop_sequences(
 
 fn render_openai_chat_message_pairs(
     messages: &[OpenAiChatMessage],
-) -> Result<Vec<(String, String)>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<ChatMessagePairs, HttpErrorResponse> {
     if messages.is_empty() {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
@@ -326,7 +329,7 @@ fn render_openai_chat_message_pairs(
         .collect()
 }
 
-fn chat_error_response(message: String) -> (StatusCode, Json<ErrorResponse>) {
+fn chat_error_response(message: String) -> HttpErrorResponse {
     error_response(StatusCode::BAD_REQUEST, "invalid_request", message)
 }
 
