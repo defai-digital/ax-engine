@@ -18,6 +18,7 @@ use crate::generation::streaming::{
 };
 use crate::openai::chunks::{
     chat_delta_chunk, chat_final_chunk, completion_delta_chunk, completion_final_chunk,
+    next_chat_delta_role,
 };
 use crate::openai::responses::finish_reason_from_llama_cpp_chat;
 use crate::openai::schema::OpenAiStreamKind;
@@ -175,15 +176,6 @@ fn send_openai_stream_event(
                 send_openai_stream_chunk(tx, &chunk)
             }
         },
-    }
-}
-
-fn next_chat_delta_role(chat_role_emitted: &mut bool) -> Option<&'static str> {
-    if *chat_role_emitted {
-        None
-    } else {
-        *chat_role_emitted = true;
-        Some("assistant")
     }
 }
 

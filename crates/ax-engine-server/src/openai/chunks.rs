@@ -67,6 +67,15 @@ pub(crate) fn chat_delta_chunk(
     }
 }
 
+pub(crate) fn next_chat_delta_role(chat_role_emitted: &mut bool) -> Option<&'static str> {
+    if *chat_role_emitted {
+        None
+    } else {
+        *chat_role_emitted = true;
+        Some("assistant")
+    }
+}
+
 pub(crate) fn chat_final_chunk(
     request_id: u64,
     model: String,
