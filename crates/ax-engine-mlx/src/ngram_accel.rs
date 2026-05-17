@@ -857,6 +857,7 @@ pub fn ngram_accel_decode_step(
     last_token: u32,
     draft: &[u32],
     sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
     rng: &mut Xorshift64,
 ) -> Vec<u32> {
     if draft.is_empty() || sampling.uses_repetition_penalty() {
@@ -866,7 +867,7 @@ pub fn ngram_accel_decode_step(
             cache,
             ngram,
             last_token,
-            MlxSamplingRequest::new(sampling, &[last_token]),
+            MlxSamplingRequest::new(sampling, repetition_tokens),
             rng,
         );
     }

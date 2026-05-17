@@ -513,9 +513,9 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
     let family = match arch.as_str() {
         "qwen3" => "qwen3",
         "qwen3moe" | "qwen3_moe" => "qwen3",
-        "qwen35" | "qwen3.5" | "qwen3_5" | "qwen3_5_text" | "qwen3_5_moe" => "qwen35_dense",
-        "qwen3next" | "qwen3.6" | "qwen3_6" => "qwen3next_dense",
-        "gemma4" => "gemma4_dense",
+        "qwen35" | "qwen3.5" | "qwen3_5" | "qwen3_5_text" | "qwen3_5_moe" => "qwen3_5",
+        "qwen3next" | "qwen3.6" | "qwen3_6" => "qwen3_next",
+        "gemma4" => "gemma4",
         _ => return Err(GgufError::UnknownArch(arch.clone())),
     };
 

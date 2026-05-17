@@ -272,9 +272,19 @@ pub fn decode_step(
     last_token: u32,
     cache: &mut MlxKVCache,
     sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
     rng: &mut Xorshift64,
 ) -> u32 {
-    decode_step_with_turboquant_context(cfg, weights, last_token, cache, sampling, rng, None)
+    decode_step_with_turboquant_context(
+        cfg,
+        weights,
+        last_token,
+        cache,
+        sampling,
+        repetition_tokens,
+        rng,
+        None,
+    )
 }
 
 pub fn decode_step_with_turboquant_context(
@@ -283,6 +293,7 @@ pub fn decode_step_with_turboquant_context(
     last_token: u32,
     cache: &mut MlxKVCache,
     sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
     rng: &mut Xorshift64,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> u32 {
@@ -300,10 +311,10 @@ pub fn decode_step_with_turboquant_context(
     if sampling.temperature > 0.0 {
         eval_with_kv_refs(&logits, cache);
         let logits_data = logits.data_f32();
-        sample_categorical(logits_data, sampling, &[last_token], rng)
+        sample_categorical(logits_data, sampling, repetition_tokens, rng)
     } else if sampling.uses_repetition_penalty() {
         eval_with_kv_refs(&logits, cache);
-        sample_categorical(logits.data_f32(), sampling, &[last_token], rng)
+        sample_categorical(logits.data_f32(), sampling, repetition_tokens, rng)
     } else {
         // Deterministic argmax path: GPU argmax, no CPU data movement.
         let token_arr = argmax(&logits, None);

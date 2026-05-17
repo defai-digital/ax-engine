@@ -262,7 +262,9 @@ pub(crate) fn build_layer_masks(
     key_len: usize,
 ) -> Vec<Option<MlxArray>> {
     if cfg.layer_configs.is_empty() {
-        let m = attention_mask_array(seq, key_len, None);
+        // For uniform-SWA models (Mistral3, Mixtral) cfg.global_sliding_window is set.
+        // Pass it so prefill masks correctly limit attention to the window.
+        let m = attention_mask_array(seq, key_len, cfg.global_sliding_window);
         if m.is_none() {
             return vec![None; n_layers];
         }

@@ -152,9 +152,13 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         rope_low_freq_factor,
         rope_high_freq_factor,
         rope_original_context_len,
-        no_rope_layer_interval: arch_u64(&config, &model_type, "interleave_moe_layer_step")
-            .and_then(u64_to_u32)
-            .unwrap_or(0),
+        no_rope_layer_interval: if model_type == "llama4" {
+            arch_u64(&config, &model_type, "interleave_moe_layer_step")
+                .and_then(u64_to_u32)
+                .unwrap_or(0)
+        } else {
+            0
+        },
         attn_temperature_floor: arch_f64(&config, &model_type, "floor_scale").and_then(f64_to_u32),
         attn_temperature_scale: arch_f64(&config, &model_type, "attn_scale").map(|v| v as f32),
         intermediate_size_mlp: arch_u64(&config, &model_type, "intermediate_size_mlp")
@@ -720,7 +724,7 @@ fn model_family_for_type(model_type: &str) -> Result<ModelFamily, ConvertError> 
             uses_language_model_prefix: true,
         }),
         "qwen3_moe" => Ok(ModelFamily {
-            family_name: "qwen3_moe",
+            family_name: "qwen3",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(QWEN3_MOE_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,

@@ -2471,6 +2471,7 @@ impl MlxRunner {
                 0,
                 &mut dummy_cache,
                 MlxSamplingParams::greedy(),
+                &[],
                 &mut dummy_rng,
             );
             dummy_cache.reset();
@@ -4360,6 +4361,7 @@ impl MlxRunner {
 
         let draft_len = draft.len();
         let branch_started = Instant::now();
+        let repetition_history = state.repetition_history(&[], sampling);
         let result = ngram_accel_decode_step(
             &self.cfg,
             &self.weights,
@@ -4368,6 +4370,7 @@ impl MlxRunner {
             last_token,
             &draft,
             sampling,
+            &repetition_history,
             &mut state.rng,
         );
         state

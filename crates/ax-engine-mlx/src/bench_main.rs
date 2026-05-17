@@ -50,6 +50,7 @@ fn main() {
             0,
             &mut cache,
             MlxSamplingParams::greedy(),
+            &[],
             &mut rng,
         );
         clear_cache();
@@ -114,6 +115,7 @@ fn main() {
                 tok,
                 &mut cache,
                 MlxSamplingParams::greedy(),
+                &[],
                 &mut rng,
             );
             step_times.push(t0.elapsed().as_secs_f64() * 1000.0);
@@ -178,6 +180,7 @@ fn main() {
                 tok,
                 &draft,
                 MlxSamplingParams::greedy(),
+                &[],
                 &mut rng,
             );
             // emitted[0]       — output token for this step
