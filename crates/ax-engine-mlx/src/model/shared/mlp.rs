@@ -218,66 +218,11 @@ pub(crate) fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
 }
 
 pub(crate) fn per_layer_input_gate(gate: &MlxArray, per_layer_input: &MlxArray) -> MlxArray {
-    if !fastpath::per_layer_gate_compile_enabled() {
-        return per_layer_input_gate_imperative(gate, per_layer_input);
-    }
-
-    per_layer_input_gate_compiled(gate, per_layer_input)
-        .unwrap_or_else(|| per_layer_input_gate_imperative(gate, per_layer_input))
-}
-
-fn per_layer_input_gate_imperative(gate: &MlxArray, per_layer_input: &MlxArray) -> MlxArray {
+    // Keep this path identical to mlx_lm's Gemma4DecoderLayer per-layer input
+    // gate. Unlike the dense FFN `geglu()` helper, upstream does not wrap this
+    // call site in `mx.compile`; repeated W5 attempts aborted inside MLX C
+    // `mlx_closure_apply` on Gemma 4 E2B 4-bit.
     multiply(&gelu_approx(gate, None), per_layer_input, None)
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn per_layer_input_gate_compiled(
-    gate: &MlxArray,
-    per_layer_input: &MlxArray,
-) -> Option<MlxArray> {
-    use std::collections::HashMap;
-    use std::thread::ThreadId;
-
-    const COMPILE_WRAP_LAST_DIM_CEILING: usize = 16_384;
-    let last_dim = *gate.shape().last().unwrap_or(&0) as usize;
-    if gate.ndim() > 3 || last_dim > COMPILE_WRAP_LAST_DIM_CEILING {
-        return None;
-    }
-
-    type PerLayerGateCompileKey = (ThreadId, Vec<i32>, Vec<i32>, MlxDtype, MlxDtype);
-    static PER_LAYER_GATE_COMPILE_CACHE: OnceLock<
-        Mutex<HashMap<PerLayerGateCompileKey, MlxClosure>>,
-    > = OnceLock::new();
-
-    let cache = PER_LAYER_GATE_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (
-        std::thread::current().id(),
-        gate.shape().to_vec(),
-        per_layer_input.shape().to_vec(),
-        gate.dtype(),
-        per_layer_input.dtype(),
-    );
-    let outputs = {
-        let mut guard = cache
-            .lock()
-            .expect("per-layer gate compile cache mutex poisoned");
-        if !guard.contains_key(&key)
-            && let Ok(compiled) = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
-                let gate = inputs.get(0);
-                let per_layer_input = inputs.get(1);
-                let activated = gelu_approx(&gate, None);
-                vec![multiply(&activated, &per_layer_input, None)]
-            })
-            .compile(false)
-        {
-            guard.insert(key.clone(), compiled);
-        }
-        guard
-            .get(&key)
-            .and_then(|cls| cls.try_apply(&[gate, per_layer_input]).ok())
-    };
-
-    outputs.and_then(|mut outputs| outputs.pop())
 }
 
 /// SwiGLU compiled helper — mirrors `geglu()` but with SiLU activation.

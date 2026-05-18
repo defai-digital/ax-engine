@@ -141,24 +141,6 @@ env_flag_default_on!(
     "AX_MLX_PREFILL_FFN_COMPILE_SWIGLU"
 );
 
-env_flag_default_on!(
-    /// `AX_MLX_PER_LAYER_GATE_COMPILE` — Gemma 4 per-layer-input gate compile
-    /// fusion.
-    ///
-    /// **Default: ON** (kill-switch via `AX_MLX_PER_LAYER_GATE_COMPILE=0`).
-    ///
-    /// The helper uses a call-site dedicated, shape-specific cache keyed by
-    /// thread, input shapes, and dtypes. The earlier W5 attempts were unsafe:
-    /// first they reused the FFN GeGLU closure, then they used a dedicated but
-    /// shapeless `(ThreadId, last_dim)` cache. Gemma 4 E2B 4-bit still aborted
-    /// inside `mlx_closure_apply` with the shapeless cache, likely because the
-    /// per-layer input is a split/reshape view. Shape-specific
-    /// `compile(false)` avoids that MLX quirk while preserving repeat reuse
-    /// for the same prompt/decode shape.
-    per_layer_gate_compile_enabled,
-    "AX_MLX_PER_LAYER_GATE_COMPILE"
-);
-
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
 /// cold and warm-extend prefill paths produce the same SDPA Q/K shape
 /// sequence over the same absolute positions, avoiding the reproduced
