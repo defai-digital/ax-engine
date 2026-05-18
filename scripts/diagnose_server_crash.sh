@@ -4,9 +4,16 @@
 # server stderr visible.
 set -uo pipefail
 [ "$#" -lt 2 ] && { echo "usage: $0 SLUG MODEL_DIR [PORT]"; exit 1; }
-SLUG="$1"; MODEL_DIR="$2"; PORT="${3:-8093}"
-REPO_ROOT="/Users/akiralam/code/ax-engine-v4"
+SLUG="$1"; MODEL_DIR="$2"; PORT="${3:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+REPO_ROOT="$AX_REPO_ROOT"
 cd "$REPO_ROOT"
+
+if [[ -z "$PORT" ]]; then
+    PORT="$(ax_allocate_port)"
+fi
 
 LOG_DIR="/tmp/ax-diagnose"
 mkdir -p "$LOG_DIR"
@@ -18,20 +25,24 @@ DIAG_LOG="$LOG_DIR/${SLUG}-diag.log"
 : > "$SERVER_STDOUT"
 : > "$DIAG_LOG"
 
-pkill -f 'ax-engine-server' >/dev/null 2>&1 || true
-sleep 2
+SERVER_PID=""
+
+cleanup() {
+    ax_kill_pid "$SERVER_PID"
+}
+
+trap cleanup EXIT
 
 echo "[diag] launching ax-engine-server (stderr → $SERVER_STDERR)" | tee -a "$DIAG_LOG"
 AX_MLX_PREFILL_FFN_COMPILE=1 AX_MLX_PREFILL_FFN_COMPILE_SWIGLU=1 \
 RUST_LOG=info AX_BENCH_LOG=1 \
-nohup target/release/ax-engine-server \
+target/release/ax-engine-server \
     --mlx --mlx-model-artifacts-dir "$MODEL_DIR" \
-    --port "$PORT" \
+    --host 127.0.0.1 --port "$PORT" \
     --prefill-chunk 2048 --max-batch-tokens 2048 \
     > "$SERVER_STDOUT" 2> "$SERVER_STDERR" &
 SERVER_PID=$!
-echo "[diag] server pid=$SERVER_PID" | tee -a "$DIAG_LOG"
-disown
+echo "[diag] server pid=$SERVER_PID port=$PORT" | tee -a "$DIAG_LOG"
 
 # Wait up to 180s for /health
 for i in $(seq 1 180); do
@@ -51,7 +62,6 @@ done
 if ! curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     echo "[diag] FAIL_TYPE=health_timeout" | tee -a "$DIAG_LOG"
     tail -80 "$SERVER_STDERR" | tee -a "$DIAG_LOG"
-    kill "$SERVER_PID" 2>/dev/null
     exit 3
 fi
 
@@ -102,8 +112,6 @@ STATUS2=$(curl -sS -m 120 -o /dev/null -w "%{http_code}" \
     2>&1) || STATUS2="curl_fail"
 echo "[diag] second request status: $STATUS2" | tee -a "$DIAG_LOG"
 
-kill "$SERVER_PID" 2>/dev/null || true
-sleep 2
-kill -9 "$SERVER_PID" 2>/dev/null || true
+cleanup
 echo "[diag] done" | tee -a "$DIAG_LOG"
 exit $OUTCOME
