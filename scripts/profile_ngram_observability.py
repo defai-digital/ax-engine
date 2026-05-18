@@ -13,10 +13,17 @@ policy. Its purpose is to make per-family tuning of
 `AX_NGRAM_CONFIDENCE_THRESHOLD` (see `ngram_accel.rs::parse_confidence_threshold`)
 debuggable from a benchmark row instead of a profiler attach.
 
-Artifact schema: ax.ngram_observability.v1
+Artifact schema: ax.ngram_observability.v2
+
+The v2 schema bumps from v1 to surface PRD §8 Phase 6 / I-6 release-claim
+fields: per-class `claim_mode` and `claim_status` distributions, the
+acceptance-by-depth histogram, and the full fallback-reason breakdown
+(not just the three covered in v1). v1 artifacts are still parseable;
+the bump is so a downstream tool that requires the new fields can refuse
+to load a v1 file without guessing.
 
     {
-      "schema_version": "ax.ngram_observability.v1",
+      "schema_version": "ax.ngram_observability.v2",
       "generated_at_utc": "...",
       "model": { "model_id": str, "artifacts_dir": str },
       "host": { "platform": str },
@@ -36,14 +43,24 @@ Artifact schema: ax.ngram_observability.v1
 
     <stats> = {
         "request_count": int,
+        "total_output_tokens": int,
         "total_draft_attempts": int,
         "total_draft_tokens": int,
         "total_accepted_tokens": int,
         "accept_rate": float | null,                      # accepted / draft tokens
-        "no_candidate_fallback_steps": int,
-        "confidence_filtered_fallback_steps": int,
-        "short_output_fallback_steps": int,
-        "cooldown_steps": int
+        "claim_mode_counts": dict[str, int],              # PRD §7.1
+        "claim_status_counts": dict[str, int],            # PRD §7.1
+        "accept_at_depth": ax.ngram_accept_at_depth.v1,   # PRD §8 Phase 6
+        "fallback_reasons": {
+            "no_candidate_steps": int,
+            "confidence_filtered_steps": int,
+            "short_output_steps": int,
+            "linear_no_draft_steps": int,                 # new in v2
+            "cooldown_steps": int,
+            "cooldown_events": int,
+            "request_disable_events": int,
+            "request_disabled_steps": int,
+        }
     }
 
 Usage:
@@ -71,7 +88,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = "ax.ngram_observability.v1"
+SCHEMA_VERSION = "ax.ngram_observability.v2"
 CONFIDENCE_THRESHOLD_ENV = "AX_NGRAM_CONFIDENCE_THRESHOLD"
 PROMPT_CLASS_CODE_KEY = "ax_prompt_class_code"
 PROMPT_CLASS_UNSET = 0
@@ -183,6 +200,9 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+ACCEPT_AT_DEPTH_KEYS = [f"ax_ngram_accept_at_depth_{i}" for i in range(8)]
+
+
 def empty_stats() -> dict:
     return {
         "request_count": 0,
@@ -191,29 +211,92 @@ def empty_stats() -> dict:
         "total_draft_tokens": 0,
         "total_accepted_tokens": 0,
         "accept_rate": None,
-        "no_candidate_fallback_steps": 0,
-        "confidence_filtered_fallback_steps": 0,
-        "short_output_fallback_steps": 0,
-        "cooldown_steps": 0,
+        # PRD §7.1 release-claim fields: distribute observed claim modes
+        # and statuses across requests so per-class drift is visible
+        # without digging into individual rows.
+        "claim_mode_counts": {},
+        "claim_status_counts": {},
+        # PRD §8 Phase 6: cumulative per-attempt acceptance-by-depth
+        # histogram. Bucket k counts draft attempts whose accept_count
+        # was exactly k; bucket 7 saturates for any attempt ≥ 7.
+        "accept_at_depth": {f"depth_{i}": 0 for i in range(8)},
+        # Full fallback-reason taxonomy. v1 covered only three reasons;
+        # v2 surfaces all six emitted by the runtime so a future tuning
+        # decision can pick on something other than overall accept_rate.
+        "fallback_reasons": {
+            "no_candidate_steps": 0,
+            "confidence_filtered_steps": 0,
+            "short_output_steps": 0,
+            "linear_no_draft_steps": 0,
+            "cooldown_steps": 0,
+            "cooldown_events": 0,
+            "request_disable_events": 0,
+            "request_disabled_steps": 0,
+        },
     }
+
+
+def claim_mode_for_decisions(decisions: dict[str, int]) -> str:
+    """Mirror ``bench_mlx_inference_stack.ax_decode_claim_mode`` semantics.
+
+    Profile runs use ``temperature=0.0`` (greedy), so the result is always
+    a greedy candidate or baseline. We still classify so a future profile
+    run with non-zero temperature does not silently mislabel its rows.
+    """
+    # All runs in this script are n-gram-enabled (no direct_mode flag),
+    # so the row is a candidate, not a baseline.
+    return "ngram_greedy_exact_candidate"
+
+
+def claim_status_for_decisions(decisions: dict[str, int]) -> str:
+    """Compute claim status from the same telemetry used by
+    ``ax_decode_claim_status`` in the bench script (PRD §7.1)."""
+    if (
+        int(decisions.get("ax_ngram_draft_attempts", 0)) == 0
+        and int(decisions.get("ax_ngram_no_draft_steps", 0)) == 0
+        and int(decisions.get("ax_ngram_request_disabled_steps", 0)) == 0
+    ):
+        return "ngram_no_observed_draft_path"
+    if int(decisions.get("ax_ngram_draft_attempts", 0)) == 0 and (
+        int(decisions.get("ax_ngram_no_draft_steps", 0)) > 0
+        or int(decisions.get("ax_ngram_request_disabled_steps", 0)) > 0
+    ):
+        return "ngram_no_draft_direct_fallback"
+    if int(decisions.get("ax_ngram_accepted_tokens", 0)) == 0:
+        return "ngram_no_accept_fallback"
+    return "ngram_acceleration_effective_throughput"
 
 
 def update_stats(stats: dict, decisions: dict[str, int], output_tokens: int) -> None:
     stats["request_count"] += 1
     stats["total_output_tokens"] += output_tokens
-    stats["total_draft_attempts"] += decisions.get("ax_ngram_draft_attempts", 0)
-    stats["total_draft_tokens"] += decisions.get("ax_ngram_draft_tokens", 0)
-    stats["total_accepted_tokens"] += decisions.get("ax_ngram_accepted_tokens", 0)
-    stats["no_candidate_fallback_steps"] += decisions.get(
-        "ax_ngram_fallback_no_candidate_steps", 0
+    stats["total_draft_attempts"] += int(decisions.get("ax_ngram_draft_attempts", 0))
+    stats["total_draft_tokens"] += int(decisions.get("ax_ngram_draft_tokens", 0))
+    stats["total_accepted_tokens"] += int(decisions.get("ax_ngram_accepted_tokens", 0))
+
+    mode = claim_mode_for_decisions(decisions)
+    status = claim_status_for_decisions(decisions)
+    stats["claim_mode_counts"][mode] = stats["claim_mode_counts"].get(mode, 0) + 1
+    stats["claim_status_counts"][status] = (
+        stats["claim_status_counts"].get(status, 0) + 1
     )
-    stats["confidence_filtered_fallback_steps"] += decisions.get(
-        "ax_ngram_fallback_confidence_filtered_steps", 0
+
+    for idx, key in enumerate(ACCEPT_AT_DEPTH_KEYS):
+        stats["accept_at_depth"][f"depth_{idx}"] += int(decisions.get(key, 0))
+
+    fb = stats["fallback_reasons"]
+    fb["no_candidate_steps"] += int(decisions.get("ax_ngram_fallback_no_candidate_steps", 0))
+    fb["confidence_filtered_steps"] += int(
+        decisions.get("ax_ngram_fallback_confidence_filtered_steps", 0)
     )
-    stats["short_output_fallback_steps"] += decisions.get(
-        "ax_ngram_fallback_short_output_steps", 0
+    fb["short_output_steps"] += int(decisions.get("ax_ngram_fallback_short_output_steps", 0))
+    fb["linear_no_draft_steps"] += int(
+        decisions.get("ax_ngram_fallback_linear_no_draft_steps", 0)
     )
-    stats["cooldown_steps"] += decisions.get("ax_ngram_cooldown_steps", 0)
+    fb["cooldown_steps"] += int(decisions.get("ax_ngram_cooldown_steps", 0))
+    fb["cooldown_events"] += int(decisions.get("ax_ngram_cooldown_events", 0))
+    fb["request_disable_events"] += int(decisions.get("ax_ngram_request_disable_events", 0))
+    fb["request_disabled_steps"] += int(decisions.get("ax_ngram_request_disabled_steps", 0))
 
 
 def finalize_stats(stats: dict) -> None:

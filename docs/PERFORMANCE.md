@@ -432,10 +432,8 @@ direct-decode result.
 Qwen Coder Next uses MLX affine 4-bit globally, with 8-bit overrides for router
 and shared-expert gate tensors.
 
-Qwen 3.6 35B A3B includes the Unsloth UD-MLX 4-bit checkpoint plus
-MLX-community 5/6/8-bit checkpoints. The 5/6-bit checkpoints are affine 5/6-bit
-globally with 8-bit router and shared-expert gate overrides; the 8-bit
-checkpoint is affine 8-bit throughout.
+Qwen 3.6 35B A3B uses the MLX-community 4-bit checkpoint in the README GGUF
+comparison set. Qwen 3.6 27B carries the 4/5/6/8-bit sweep coverage.
 
 Gemma 4 26B A4B is the public Gemma 4 MoE MLX model. Its checkpoint uses affine
 4-bit globally, with 8-bit overrides for dense MLP and router projections. The

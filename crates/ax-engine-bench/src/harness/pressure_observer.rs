@@ -13,6 +13,7 @@
 use ax_engine_core::{
     DeviceResidentSnapshot, HostRssSnapshot, PressureLevel, PressureObservation, PressureThresholds,
 };
+use mlx_sys::{device_active_bytes, device_recommended_working_set_bytes, host_resident_bytes};
 
 use super::WorkloadReport;
 
@@ -37,6 +38,76 @@ impl PressureProbes for StaticProbes {
     }
     fn device_resident(&self) -> Option<DeviceResidentSnapshot> {
         self.device
+    }
+}
+
+/// Real platform probes for invariant I-4. Reads the current process RSS
+/// via `mlx_sys::host_resident_bytes` (POSIX `getrusage`) and the device
+/// working-set via `mlx_get_active_memory` + Metal
+/// `recommendedMaxWorkingSetSize`.
+///
+/// `host_budget_bytes` and `device_budget_bytes` are stored at construction
+/// so the classifier can compare against a stable budget for the entire
+/// fixture run. The host budget defaults to the device budget (Apple
+/// Silicon unified memory) and can be overridden via the constructor when
+/// a deployment has a separate per-process RSS ceiling.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlatformProbes {
+    host_budget_bytes: u64,
+    device_budget_bytes: u64,
+}
+
+impl PlatformProbes {
+    /// Construct a probe pair using Metal's recommended working-set size
+    /// as both budgets. Returns `None` when the Metal budget is
+    /// unavailable (CPU-only hosts, non-macOS targets without an MLX
+    /// runtime backing), so the caller can fall back to
+    /// [`StaticProbes::default()`].
+    ///
+    /// On a fresh process that has not yet touched MLX, the Metal
+    /// device-info pathway returns 0 for `recommendedMaxWorkingSetSize`
+    /// (the platform driver lazy-initializes on first GPU touch). To
+    /// avoid mis-reporting the budget as unavailable for session-free
+    /// fixtures that nonetheless run alongside Metal-using ones, this
+    /// constructor first creates and drops a default GPU stream, which
+    /// is sufficient to force MLX's Metal context to come up. If Metal
+    /// is genuinely unavailable (no GPU, CPU-only target), the stream
+    /// creation is harmless and the probe returns None as before.
+    pub fn from_metal_runtime() -> Option<Self> {
+        // Drop the stream immediately; we don't need to keep it around,
+        // we just need MLX to have queried the device once.
+        let _bootstrap = mlx_sys::MlxStream::default_gpu();
+        let device_budget_bytes = device_recommended_working_set_bytes()?;
+        Some(Self {
+            host_budget_bytes: device_budget_bytes,
+            device_budget_bytes,
+        })
+    }
+
+    /// Construct a probe pair with an explicit host budget. Useful when a
+    /// deployment caps per-process RSS below the device working-set size.
+    #[allow(dead_code)]
+    pub fn with_host_budget(host_budget_bytes: u64, device_budget_bytes: u64) -> Self {
+        Self {
+            host_budget_bytes,
+            device_budget_bytes,
+        }
+    }
+}
+
+impl PressureProbes for PlatformProbes {
+    fn host_rss(&self) -> Option<HostRssSnapshot> {
+        host_resident_bytes().map(|used_bytes| HostRssSnapshot {
+            used_bytes,
+            budget_bytes: self.host_budget_bytes,
+        })
+    }
+
+    fn device_resident(&self) -> Option<DeviceResidentSnapshot> {
+        device_active_bytes().map(|used_bytes| DeviceResidentSnapshot {
+            used_bytes,
+            budget_bytes: self.device_budget_bytes,
+        })
     }
 }
 
@@ -136,6 +207,28 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn platform_probes_from_metal_runtime_provides_host_and_device_on_apple_silicon() {
+        // On a Metal-capable host the platform probes must produce a
+        // non-empty observation: a positive RSS via getrusage and a
+        // non-zero working-set budget via Metal recommendedMaxWorkingSetSize.
+        // On CPU-only / non-macOS hosts the constructor returns None; the
+        // bench dispatch then falls back to StaticProbes::default(). This
+        // test asserts the happy path *when* PlatformProbes constructs.
+        if let Some(probes) = PlatformProbes::from_metal_runtime() {
+            let host = probes.host_rss().expect("host RSS available on Unix");
+            assert!(host.used_bytes > 0, "host RSS must be positive");
+            assert!(host.budget_bytes > 0, "host budget must be positive");
+
+            // device_active_bytes() may return None if MLX has not yet
+            // touched the GPU; we accept both states, but the budget side
+            // of the snapshot must reflect what the constructor captured.
+            if let Some(dev) = probes.device_resident() {
+                assert!(dev.budget_bytes > 0, "device budget must be positive");
+            }
+        }
     }
 
     #[test]

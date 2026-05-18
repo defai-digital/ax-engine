@@ -90,15 +90,15 @@ class InjectorTests(unittest.TestCase):
     def test_lookup_accepts_qwen_gguf_quant_rows(self) -> None:
         doc = {
             "rows": [
-                _row("qwen3_6-35b-a3b-5bit", 1500.0, 2500.0, 95.0, 85.0, 205.0),
-                _row("qwen3_6-35b-a3b-6bit", 1400.0, 2400.0, 90.0, 90.0, 215.0),
-                _row("qwen3_6-35b-a3b-8bit", 1300.0, 2300.0, 85.0, 95.0, 225.0),
+                _row("qwen3_6-27b-5bit", 1500.0, 2500.0, 95.0, 85.0, 205.0),
+                _row("qwen3_6-27b-6bit", 1400.0, 2400.0, 90.0, 90.0, 215.0),
+                _row("qwen3_6-27b-8bit", 1300.0, 2300.0, 85.0, 95.0, 225.0),
             ],
         }
         lookup = inj.build_llama_lookup(doc)
-        self.assertEqual(lookup[("Qwen 3.6 35B A3B", "MLX 5-bit", 128)]["decode"], 95.0)
-        self.assertEqual(lookup[("Qwen 3.6 35B A3B", "MLX 6-bit", 512)]["prefill"], 2400.0)
-        self.assertEqual(lookup[("Qwen 3.6 35B A3B", "MLX 8-bit", 512)]["ttft"], 225.0)
+        self.assertEqual(lookup[("Qwen 3.6 27B", "MLX 5-bit", 128)]["decode"], 95.0)
+        self.assertEqual(lookup[("Qwen 3.6 27B", "MLX 6-bit", 512)]["prefill"], 2400.0)
+        self.assertEqual(lookup[("Qwen 3.6 27B", "MLX 8-bit", 512)]["ttft"], 225.0)
 
     def test_apply_injects_column_in_all_three_tables(self) -> None:
         out, stats = inj.apply(SAMPLE_README, self.sweep_doc)

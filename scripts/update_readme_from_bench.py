@@ -19,11 +19,11 @@ SLUG_TO_README = {
     "gemma-4-26b-a4b-it-4bit":     ("Gemma 4 26B A4B",  "4-bit"),
     "gemma-4-31b-it-4bit":         ("Gemma 4 31B",      "4-bit"),
     "qwen3_5-9b-mlx-4bit":         ("Qwen 3.5 9B",      "4-bit"),
+    "qwen3_6-27b-4bit":            ("Qwen 3.6 27B",     "4-bit"),
+    "qwen3_6-27b-5bit":            ("Qwen 3.6 27B",     "MLX 5-bit"),
+    "qwen3_6-27b-6bit":            ("Qwen 3.6 27B",     "MLX 6-bit"),
+    "qwen3_6-27b-8bit":            ("Qwen 3.6 27B",     "MLX 8-bit"),
     "qwen3_6-35b-a3b-4bit":        ("Qwen 3.6 35B A3B", "4-bit"),
-    "qwen3_6-35b-a3b-ud-mlx-4bit": ("Qwen 3.6 35B A3B", "4-bit"),
-    "qwen3_6-35b-a3b-5bit":        ("Qwen 3.6 35B A3B", "MLX 5-bit"),
-    "qwen3_6-35b-a3b-6bit":        ("Qwen 3.6 35B A3B", "MLX 6-bit"),
-    "qwen3_6-35b-a3b-8bit":        ("Qwen 3.6 35B A3B", "MLX 8-bit"),
     "qwen3-coder-next-4bit":       ("Qwen Coder Next",  "4-bit"),
     "glm-4.7-flash-4bit":          ("GLM 4.7 Flash",    "4-bit"),
 }
@@ -115,6 +115,71 @@ def find_anchor_line(lines: list[str], model_name: str, quant: str, section_head
     return -1
 
 
+def _split_cells(line: str) -> list[str]:
+    parts = line.split("|")
+    if len(parts) < 3:
+        return []
+    return [part.strip() for part in parts[1:-1]]
+
+
+def _join_cells(cells: list[str]) -> str:
+    return "| " + " | ".join(cells) + " |"
+
+
+def _table_column_count(lines: list[str], section_header: str) -> int:
+    in_target = False
+    for line in lines:
+        if line.startswith("### ") and section_header in line:
+            in_target = True
+            continue
+        if line.startswith("### ") and in_target:
+            break
+        if in_target and line.startswith("| Model |"):
+            return len(_split_cells(line))
+    return 0
+
+
+def find_insert_line(lines: list[str], section_header: str, model_name: str) -> int:
+    """Find where to insert a missing model block in a README performance table."""
+    in_target = False
+    fallback = -1
+    for i, line in enumerate(lines):
+        if line.startswith("### ") and section_header in line:
+            in_target = True
+            continue
+        if line.startswith("### ") and in_target:
+            return fallback if fallback >= 0 else i
+        if not in_target:
+            continue
+        if model_name == "Qwen 3.6 27B" and "Qwen 3.6 35B A3B" in line and "| 128 |" in line:
+            return i
+        if line.startswith("|") and "| 128 |" in line:
+            fallback = i + len(collect_prompt_rows(lines, i))
+    return fallback if fallback >= 0 else len(lines)
+
+
+def ensure_model_rows(lines: list[str], model_name: str, quant: str, section_header: str) -> int:
+    anchor = find_anchor_line(lines, model_name, quant, section_header)
+    if anchor >= 0:
+        return anchor
+
+    column_count = _table_column_count(lines, section_header)
+    if column_count <= 0:
+        return -1
+
+    metric_count = column_count - 3
+    insert_at = find_insert_line(lines, section_header, model_name)
+    new_rows = []
+    for idx, pt in enumerate((128, 512, 2048)):
+        if idx == 0:
+            cells = [model_name, quant, str(pt), *(["—"] * metric_count)]
+        else:
+            cells = ["", "", str(pt), *(["—"] * metric_count)]
+        new_rows.append(_join_cells(cells))
+    lines[insert_at:insert_at] = new_rows
+    return insert_at
+
+
 def find_next_512_line(lines: list[str], after: int) -> int:
     """Find the pt=512 continuation row immediately after index `after`."""
     for i in range(after + 1, min(after + 4, len(lines))):
@@ -148,7 +213,7 @@ def collect_prompt_rows(lines: list[str], anchor: int) -> list[tuple[int, int]]:
 
 def update_prefill_rows(lines: list[str], model_name: str, quant: str, vals: dict) -> int:
     changed = 0
-    anchor = find_anchor_line(lines, model_name, quant, "Prefill throughput")
+    anchor = ensure_model_rows(lines, model_name, quant, "Prefill throughput")
     if anchor < 0:
         print(f"  WARN: prefill pt=128 row not found for {model_name!r} {quant!r}")
         return 0
@@ -158,7 +223,7 @@ def update_prefill_rows(lines: list[str], model_name: str, quant: str, vals: dic
         ax  = vals.get(("ax_engine_mlx", pt), {}).get("prefill")
         if ref is None or ax is None:
             continue
-        lines[idx] = replace_trailing_cells(lines[idx], [cell_prefill(ax, ref)])
+        lines[idx] = replace_trailing_cells(lines[idx], [fmt_num(ref), cell_prefill(ax, ref)])
         changed += 1
 
     return changed
@@ -166,7 +231,7 @@ def update_prefill_rows(lines: list[str], model_name: str, quant: str, vals: dic
 
 def update_decode_rows(lines: list[str], model_name: str, quant: str, vals: dict) -> int:
     changed = 0
-    anchor = find_anchor_line(lines, model_name, quant, "Decode throughput")
+    anchor = ensure_model_rows(lines, model_name, quant, "Decode throughput")
     if anchor < 0:
         print(f"  WARN: decode pt=128 row not found for {model_name!r} {quant!r}")
         return 0
@@ -177,7 +242,7 @@ def update_decode_rows(lines: list[str], model_name: str, quant: str, vals: dict
         ax_ngram  = vals.get(("ax_engine_mlx_ngram_accel", pt), {}).get("decode")
         if ref is None or ax_direct is None:
             continue
-        new_cells = [cell_decode_direct(ax_direct, ref)]
+        new_cells = [fmt_num(ref), cell_decode_direct(ax_direct, ref)]
         if ax_ngram is not None:
             new_cells.append(cell_decode_ngram(ax_ngram, ref))
         lines[idx] = replace_trailing_cells(lines[idx], new_cells)
@@ -188,7 +253,7 @@ def update_decode_rows(lines: list[str], model_name: str, quant: str, vals: dict
 
 def update_ttft_rows(lines: list[str], model_name: str, quant: str, vals: dict) -> int:
     changed = 0
-    anchor = find_anchor_line(lines, model_name, quant, "Time to first token")
+    anchor = ensure_model_rows(lines, model_name, quant, "Time to first token")
     if anchor < 0:
         print(f"  WARN: ttft pt=128 row not found for {model_name!r} {quant!r}")
         return 0
@@ -198,7 +263,7 @@ def update_ttft_rows(lines: list[str], model_name: str, quant: str, vals: dict) 
         ax_ttft  = vals.get(("ax_engine_mlx", pt), {}).get("ttft")
         if ref_ttft is None or ax_ttft is None:
             continue
-        lines[idx] = replace_trailing_cells(lines[idx], [cell_ttft(ax_ttft, ref_ttft)])
+        lines[idx] = replace_trailing_cells(lines[idx], [fmt_num(ref_ttft), cell_ttft(ax_ttft, ref_ttft)])
         changed += 1
 
     return changed

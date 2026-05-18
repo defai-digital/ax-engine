@@ -22,22 +22,20 @@ ARTIFACT_LABELS = {
     "gemma-4-26b-a4b-it-4bit": ("Gemma 4 26B A4B", "4-bit"),
     "gemma-4-31b-it-4bit": ("Gemma 4 31B", "4-bit"),
     "qwen3_5-9b-mlx-4bit": ("Qwen 3.5 9B", "4-bit"),
-    "qwen3_6-35b-a3b-ud-mlx-4bit": (
-        "Qwen 3.6 35B A3B",
-        "4-bit",
-    ),
-    "qwen3_6-35b-a3b-5bit": (
-        "Qwen 3.6 35B A3B",
+    "qwen3_6-27b-4bit": ("Qwen 3.6 27B", "4-bit"),
+    "qwen3_6-27b-5bit": (
+        "Qwen 3.6 27B",
         "MLX 5-bit",
     ),
-    "qwen3_6-35b-a3b-6bit": (
-        "Qwen 3.6 35B A3B",
+    "qwen3_6-27b-6bit": (
+        "Qwen 3.6 27B",
         "MLX 6-bit",
     ),
-    "qwen3_6-35b-a3b-8bit": (
-        "Qwen 3.6 35B A3B",
+    "qwen3_6-27b-8bit": (
+        "Qwen 3.6 27B",
         "MLX 8-bit",
     ),
+    "qwen3_6-35b-a3b-4bit": ("Qwen 3.6 35B A3B", "4-bit"),
     "qwen3-coder-next-4bit": ("Qwen Coder Next", "4-bit"),
     "glm-4.7-flash-4bit": ("GLM 4.7 Flash", "4-bit"),
 }

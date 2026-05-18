@@ -357,6 +357,67 @@ def update_readme_source_marker(readme: Path, output_root: Path) -> None:
     readme.write_text(text)
 
 
+PERFORMANCE_TABLE_PREFIXES = (
+    "### Prefill throughput",
+    "### Decode throughput",
+    "### Time to first token",
+)
+
+
+def _split_table_cells(line: str) -> list[str]:
+    parts = line.split("|")
+    if len(parts) < 3:
+        return []
+    return [part.strip() for part in parts[1:-1]]
+
+
+def prune_readme_performance_rows(
+    readme: Path,
+    *,
+    allowed_rows: set[tuple[str, str]],
+) -> None:
+    """Remove README performance table rows outside the selected sweep set.
+
+    Full-stack README refreshes should describe exactly the models that were
+    freshly measured. This prevents old rows, such as Qwen 3.6 5/6/8-bit, from
+    surviving under a new artifact marker when the sweep intentionally covers
+    only Qwen 3.6 4-bit.
+    """
+    lines = readme.read_text().splitlines()
+    out: list[str] = []
+    in_perf_table = False
+    current_pair: tuple[str, str] | None = None
+
+    for line in lines:
+        if line.startswith("### ") or line.startswith("## "):
+            in_perf_table = any(line.startswith(prefix) for prefix in PERFORMANCE_TABLE_PREFIXES)
+            current_pair = None
+            out.append(line)
+            continue
+
+        if not in_perf_table or not line.startswith("|"):
+            out.append(line)
+            continue
+
+        cells = _split_table_cells(line)
+        if len(cells) < 3:
+            out.append(line)
+            continue
+
+        if cells[0] == "Model" or set(cells[0]) <= {"-"}:
+            out.append(line)
+            continue
+
+        if cells[0]:
+            current_pair = (cells[0], cells[1])
+
+        if current_pair is not None and current_pair not in allowed_rows:
+            continue
+        out.append(line)
+
+    readme.write_text("\n".join(out) + "\n")
+
+
 def update_readme_from_sweep(
     *,
     readme: Path,
@@ -380,6 +441,12 @@ def update_readme_from_sweep(
             )
 
     if full_stack:
+        allowed_rows = {
+            (row["readme_model"], row["readme_quant"])
+            for row in sweep_doc["rows"]
+            if row.get("status") == "ok"
+        }
+        prune_readme_performance_rows(readme, allowed_rows=allowed_rows)
         for row in sweep_doc["rows"]:
             if row.get("status") != "ok" or not row.get("output_path"):
                 continue

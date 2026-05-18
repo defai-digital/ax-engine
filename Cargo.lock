@@ -125,6 +125,7 @@ dependencies = [
  "ax-engine-core",
  "ax-engine-mlx",
  "ax-engine-sdk",
+ "mlx-sys",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1266,6 +1267,7 @@ name = "mlx-sys"
 version = "4.9.0"
 dependencies = [
  "bindgen",
+ "libc",
  "memmap2",
  "regex",
  "serde_json",

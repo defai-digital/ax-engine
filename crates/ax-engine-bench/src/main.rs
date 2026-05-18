@@ -589,7 +589,7 @@ fn handle_generate(args: &[String]) -> Result<(), CliError> {
 }
 
 fn handle_serving_stress(args: &[String]) -> Result<(), CliError> {
-    use crate::harness::pressure_observer::{StaticProbes, observe_and_record};
+    use crate::harness::pressure_observer::{PlatformProbes, StaticProbes, observe_and_record};
     use crate::workloads::Workload;
     use crate::workloads::cancellation_during_prefill::CancellationDuringPrefill;
     use crate::workloads::concurrent_short_inserts::ConcurrentShortInserts;
@@ -709,14 +709,24 @@ fn handle_serving_stress(args: &[String]) -> Result<(), CliError> {
         }
     };
 
-    // I-4 observe-mode: record an empty pressure snapshot onto every Completed
-    // report. Real host/device probes are wired in a follow-up (PRD §8 Phase 4
-    // calls for observe-mode telemetry first; this stub keeps the artifact
-    // contract stable so consumers can find the decisions even before real
-    // probes ship).
+    // I-4 observe-mode: record a real pressure snapshot onto every
+    // Completed report. PlatformProbes uses POSIX getrusage for host RSS
+    // and mlx_get_active_memory + Metal recommendedMaxWorkingSetSize for
+    // the device. On hosts where Metal is unavailable (CPU-only CI,
+    // non-macOS targets) we fall back to StaticProbes::default() so the
+    // level decisions still appear with Normal values; absence of the
+    // byte counters then signals "probe unavailable" to downstream
+    // tooling (PRD §7.2).
     if let WorkloadOutcome::Completed { report } = &mut outcome {
-        let probes = StaticProbes::default();
-        let _ = observe_and_record(&probes, PressureThresholds::default(), report);
+        match PlatformProbes::from_metal_runtime() {
+            Some(probes) => {
+                let _ = observe_and_record(&probes, PressureThresholds::default(), report);
+            }
+            None => {
+                let probes = StaticProbes::default();
+                let _ = observe_and_record(&probes, PressureThresholds::default(), report);
+            }
+        }
     }
 
     let outcome_json = outcome.to_json();

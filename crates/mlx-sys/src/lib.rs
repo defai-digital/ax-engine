@@ -22,6 +22,7 @@ pub mod array;
 pub mod closure;
 pub mod fast;
 pub mod io;
+pub mod mempressure;
 pub mod metal;
 pub mod op_count;
 pub mod ops;
@@ -51,6 +52,9 @@ pub use fast::{
     scaled_dot_product_attention_with_mask,
 };
 pub use io::{load_safetensors, load_safetensors_mmap};
+pub use mempressure::{
+    device_active_bytes, device_recommended_working_set_bytes, host_resident_bytes,
+};
 pub use metal::{KernelOutputSpec, KernelTemplateArg, MlxMetalKernel};
 pub use op_count::{op_count_snapshot, op_count_take};
 pub use ops::{

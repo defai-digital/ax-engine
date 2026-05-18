@@ -70,11 +70,19 @@ pub fn set_wired_limit(limit: usize) -> usize {
     prev
 }
 
-/// Return Metal's `recommendedMaxWorkingSetSize` in bytes.
+/// Return Metal's recommended max working-set size in bytes.
 ///
 /// This is the safe upper bound for `set_wired_limit` on Apple Silicon —
 /// wiring more than this value is rejected by the driver. Returns 0 if the
 /// query fails (e.g., running on CPU-only hardware).
+///
+/// The key MLX exposes via `mlx_device_info_get` is the snake_case
+/// `max_recommended_working_set_size` (see
+/// `mlx/backend/metal/device_info.cpp`). Earlier revisions of this wrapper
+/// queried `recommendedMaxWorkingSetSize` (camelCase from the underlying
+/// Objective-C selector) which is *not* in MLX's keys map and silently
+/// returned 0 — that broke `set_wired_limit(max_recommended_working_set_size())`
+/// in `ax-engine-mlx::runner` and the I-4 device-pressure probe.
 pub fn max_recommended_working_set_size() -> usize {
     unsafe {
         // MLX_GPU = 1 (enum mlx_device_type_: MLX_CPU=0, MLX_GPU=1).
@@ -85,7 +93,7 @@ pub fn max_recommended_working_set_size() -> usize {
 
         let mut size = 0usize;
         if ok {
-            let key = CString::new("recommendedMaxWorkingSetSize").unwrap();
+            let key = CString::new("max_recommended_working_set_size").unwrap();
             ffi::mlx_device_info_get_size(&mut size, info, key.as_ptr());
         }
         ffi::mlx_device_info_free(info);
