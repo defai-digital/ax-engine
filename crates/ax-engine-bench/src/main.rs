@@ -589,9 +589,16 @@ fn handle_generate(args: &[String]) -> Result<(), CliError> {
 }
 
 fn handle_serving_stress(args: &[String]) -> Result<(), CliError> {
+    use crate::harness::pressure_observer::{StaticProbes, observe_and_record};
     use crate::workloads::Workload;
+    use crate::workloads::cancellation_during_prefill::CancellationDuringPrefill;
+    use crate::workloads::concurrent_short_inserts::ConcurrentShortInserts;
     use crate::workloads::long_prefill_vs_decode::LongPrefillVsDecode;
+    use crate::workloads::partial_prefix_hit::PartialPrefixHit;
+    use crate::workloads::post_restart_cache_safety::PostRestartCacheSafety;
+    use crate::workloads::tool_output_repetition::ToolOutputRepetition;
     use crate::workloads::{WorkloadContext, WorkloadOutcome};
+    use ax_engine_core::PressureThresholds;
 
     let workload_name = optional_named_flag(args, "--workload")
         .unwrap_or_else(|| "long_prefill_vs_decode".to_string());
@@ -616,7 +623,10 @@ fn handle_serving_stress(args: &[String]) -> Result<(), CliError> {
         seed,
     };
 
-    let outcome = match workload_name.as_str() {
+    let supported_workloads = "long_prefill_vs_decode, partial_prefix_hit, tool_output_repetition, \
+         cancellation_during_prefill, post_restart_cache_safety, concurrent_short_inserts";
+
+    let mut outcome = match workload_name.as_str() {
         "long_prefill_vs_decode" => {
             let mut fixture = LongPrefillVsDecode::default();
             if let Some(model_id) = cli_model_id {
@@ -636,12 +646,78 @@ fn handle_serving_stress(args: &[String]) -> Result<(), CliError> {
             }
             fixture.run(&ctx)
         }
+        "partial_prefix_hit" => {
+            let mut fixture = PartialPrefixHit::default();
+            if let Some(model_id) = cli_model_id {
+                fixture.model_id = model_id;
+            }
+            if let Some(value) = decode_tokens {
+                fixture.decode_tokens = value;
+            }
+            fixture.run(&ctx)
+        }
+        "tool_output_repetition" => {
+            let mut fixture = ToolOutputRepetition::default();
+            if let Some(model_id) = cli_model_id {
+                fixture.model_id = model_id;
+            }
+            if let Some(value) = decode_tokens {
+                fixture.decode_tokens = value;
+            }
+            fixture.run(&ctx)
+        }
+        "cancellation_during_prefill" => {
+            let mut fixture = CancellationDuringPrefill::default();
+            if let Some(model_id) = cli_model_id {
+                fixture.model_id = model_id;
+            }
+            if let Some(value) = prefill_tokens {
+                fixture.prefill_tokens = value;
+            }
+            if let Some(value) = decode_tokens {
+                fixture.decode_tokens = value;
+            }
+            fixture.run(&ctx)
+        }
+        "post_restart_cache_safety" => {
+            let fixture = PostRestartCacheSafety::default();
+            fixture.run(&ctx)
+        }
+        "concurrent_short_inserts" => {
+            let mut fixture = ConcurrentShortInserts::default();
+            if let Some(model_id) = cli_model_id {
+                fixture.model_id = model_id;
+            }
+            if let Some(value) = prefill_tokens {
+                fixture.long_prefill_tokens = value;
+            }
+            if let Some(value) = decode_tokens {
+                fixture.long_decode_tokens = value;
+            }
+            if let Some(value) = short_prefix_tokens {
+                fixture.short_prefix_tokens = value;
+            }
+            if let Some(value) = concurrent_short_requests {
+                fixture.short_request_count = value;
+            }
+            fixture.run(&ctx)
+        }
         other => {
             return Err(CliError::Usage(format!(
-                "unknown workload: {other}\n\nsupported workloads: long_prefill_vs_decode"
+                "unknown workload: {other}\n\nsupported workloads: {supported_workloads}"
             )));
         }
     };
+
+    // I-4 observe-mode: record an empty pressure snapshot onto every Completed
+    // report. Real host/device probes are wired in a follow-up (PRD §8 Phase 4
+    // calls for observe-mode telemetry first; this stub keeps the artifact
+    // contract stable so consumers can find the decisions even before real
+    // probes ship).
+    if let WorkloadOutcome::Completed { report } = &mut outcome {
+        let probes = StaticProbes::default();
+        let _ = observe_and_record(&probes, PressureThresholds::default(), report);
+    }
 
     let outcome_json = outcome.to_json();
     let rendered = if json {

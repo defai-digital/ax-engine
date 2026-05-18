@@ -698,6 +698,94 @@ def ax_decode_claim_status(direct_mode: bool, telemetry: dict[str, int]) -> str:
     return "ngram_acceleration_effective_throughput"
 
 
+def ax_decode_claim_mode(
+    direct_mode: bool, sampler: dict[str, Any] | None = None
+) -> str:
+    """Return the *correctness mode* an n-gram or direct row is claiming.
+
+    Distinct from `ax_decode_claim_status`, which reports fallback / promotion
+    state. `claim_mode` records what kind of claim the row can support at all:
+
+    - ``direct_greedy_exact_baseline``: direct decode with greedy sampling.
+      A row in this mode is the canonical same-policy baseline against which
+      `ngram_greedy_exact_candidate` rows are compared (PRD §7.1).
+    - ``ngram_greedy_exact_candidate``: n-gram-accelerated decode with greedy
+      sampling. May be promoted to a same-policy baseline-equivalent claim if
+      the direct baseline row has identical model identity, prompt hash, seed,
+      token budget, and sampler config, *and* the generated token IDs match.
+    - ``direct_sampling_not_distribution_exact``: direct decode with
+      ``temperature > 0`` or top-p / top-k / repetition penalty active.
+    - ``ngram_sampling_not_distribution_exact``: n-gram-accelerated decode
+      with any of the above sampling knobs active. PRD §7.1 forbids promoting
+      these rows as distribution-exact under the current n-gram verifier;
+      such a claim would require probability-ratio acceptance plus residual
+      correction (out of scope for the current PRD).
+
+    `sampler` is the row's sampler config dict (`{"temperature": ..., ...}`).
+    A missing or empty dict is interpreted as greedy.
+    """
+    sampling_active = _sampler_breaks_greedy_exactness(sampler)
+    if direct_mode and sampling_active:
+        return "direct_sampling_not_distribution_exact"
+    if direct_mode:
+        return "direct_greedy_exact_baseline"
+    if sampling_active:
+        return "ngram_sampling_not_distribution_exact"
+    return "ngram_greedy_exact_candidate"
+
+
+def _sampler_breaks_greedy_exactness(sampler: dict[str, Any] | None) -> bool:
+    """Return True when any sampler knob breaks deterministic argmax decode.
+
+    The set of knobs is intentionally narrow: each is a documented PRD §7.2
+    "sampling-mode warning" trigger. New knobs added later should be appended
+    here so future rows produced under them are not silently promoted.
+    """
+    if not sampler:
+        return False
+    if float(sampler.get("temperature", 0.0)) > 0.0:
+        return True
+    top_p = sampler.get("top_p")
+    if top_p is not None and float(top_p) < 1.0:
+        return True
+    top_k = sampler.get("top_k")
+    if top_k is not None and int(top_k) > 0:
+        return True
+    rep_pen = sampler.get("repetition_penalty")
+    if rep_pen is not None and float(rep_pen) != 1.0:
+        return True
+    return False
+
+
+def assert_no_distribution_exact_promotion_under_sampling(row: dict[str, Any]) -> None:
+    """Promotion gate: refuse to label a sampling-mode row as distribution-exact.
+
+    PRD §7.1: sampling-mode n-gram rows may report throughput and acceptance
+    telemetry, but must not be labeled distribution-exact. This helper is the
+    single chokepoint test harnesses and aggregation jobs use to enforce
+    that rule; it raises `ValueError` rather than returning so a misused
+    pipeline halts before publishing a misleading claim.
+    """
+    mode = row.get("ax_decode_claim_mode")
+    status = row.get("ax_decode_claim_status")
+    if mode in (
+        "direct_sampling_not_distribution_exact",
+        "ngram_sampling_not_distribution_exact",
+    ) and status == "ngram_acceleration_effective_throughput":
+        # The status field is allowed to record effective throughput, but the
+        # *promotion* — labeling the row as distribution-exact — is forbidden.
+        # Currently nothing in this script emits a distribution_exact label
+        # for sampling rows; this guard exists so a future patch cannot do so
+        # without intentionally removing the check.
+        promoted = bool(row.get("ax_decode_distribution_exact_claim"))
+        if promoted:
+            raise ValueError(
+                "sampling-mode n-gram row cannot be promoted as distribution-exact "
+                "without a probability-ratio acceptance + residual-correction implementation; "
+                f"got mode={mode!r}, status={status!r}"
+            )
+
+
 MLX_AVERAGES_RE = re.compile(
     r"Averages:\s+prompt_tps=(?P<prompt>[0-9.]+),\s+"
     r"generation_tps=(?P<generation>[0-9.]+),\s+"
@@ -1955,6 +2043,7 @@ def bench_axengine(
         "runtime_identity": dict(AX_MLX_RUNTIME_IDENTITY),
         "ax_decode_policy": decode_policy,
         "ax_decode_claim_status": ax_decode_claim_status(direct_mode, ngram_summary),
+        "ax_decode_claim_mode": ax_decode_claim_mode(direct_mode, sampler=None),
         "prompt_contract": "mlx_lm_random_tokens_seed_0",
         "random_seed": MLX_LM_RANDOM_SEED,
         "batch_size": 1,

@@ -12,7 +12,12 @@ use serde_json::{Value, json};
 
 use crate::harness::WorkloadReport;
 
+pub(crate) mod cancellation_during_prefill;
+pub(crate) mod concurrent_short_inserts;
 pub(crate) mod long_prefill_vs_decode;
+pub(crate) mod partial_prefix_hit;
+pub(crate) mod post_restart_cache_safety;
+pub(crate) mod tool_output_repetition;
 
 /// Environment available to a workload fixture at invocation time.
 ///

@@ -106,6 +106,20 @@ run_timed "$TARGET_TIMEOUT_SECS" cargo test -p ax-engine-mlx --quiet
 run_timed "$TARGET_TIMEOUT_SECS" bash scripts/check-bench-inference-stack.sh
 run_timed "$TARGET_TIMEOUT_SECS" bash scripts/check-scripts.sh
 
+# Serving-invariant probe gates (ADR-007 / PRD §10): the invariant probes are
+# self-contained and run without an MLX model artifact directory. We exercise:
+#   - mempressure module unit tests (I-4 PressureLevel / PressureObservation)
+#   - bench harness pressure_observer (I-4 observe-mode adapter)
+#   - bench harness ngram_claim_gate (I-6 same-policy greedy promotion)
+#   - bench post_restart_cache_safety fixture session-free completion path
+# Heavier fixtures (`long_prefill_vs_decode` etc.) require a real MLX model
+# and are exercised by `scripts/run-serving-stress.sh` with
+# AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR set.
+run_timed "$TARGET_TIMEOUT_SECS" cargo test -p ax-engine-core --quiet mempressure
+run_timed "$TARGET_TIMEOUT_SECS" cargo test -p ax-engine-bench --quiet pressure_observer
+run_timed "$TARGET_TIMEOUT_SECS" cargo test -p ax-engine-bench --quiet ngram_claim_gate
+run_timed "$TARGET_TIMEOUT_SECS" cargo test -p ax-engine-bench --quiet post_restart_cache_safety
+
 if [[ "$RUN_FULL_WORKSPACE" -eq 1 ]]; then
     full_cargo_test() {
         local package="$1"
