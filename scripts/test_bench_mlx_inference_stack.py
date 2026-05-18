@@ -211,6 +211,41 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertFalse(ready)
         urlopen.assert_not_called()
 
+    def test_ensure_port_available_rejects_existing_listener(self) -> None:
+        class ConnectedSocket:
+            def __enter__(self) -> "ConnectedSocket":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def settimeout(self, _timeout: float) -> None:
+                return None
+
+            def connect_ex(self, _address: tuple[str, int]) -> int:
+                return 0
+
+        with patch.object(bench.socket, "socket", return_value=ConnectedSocket()):
+            with self.assertRaisesRegex(RuntimeError, "--axengine-port"):
+                bench.ensure_port_available(19091)
+
+    def test_ensure_port_available_allows_closed_listener_port(self) -> None:
+        class DisconnectedSocket:
+            def __enter__(self) -> "DisconnectedSocket":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def settimeout(self, _timeout: float) -> None:
+                return None
+
+            def connect_ex(self, _address: tuple[str, int]) -> int:
+                return 61
+
+        with patch.object(bench.socket, "socket", return_value=DisconnectedSocket()):
+            bench.ensure_port_available(19091)
+
     def test_ensure_ax_engine_server_binary_builds_before_checking_binary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp) / "ax-engine-server"
@@ -356,6 +391,67 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(row["engine"], bench.AX_ENGINE_LINEAR_ATTENTION_PACK_KEY)
         self.assertEqual(row["ax_decode_policy"], "direct_no_ngram_acceleration")
+
+    def test_axengine_direct_summary_rejects_ngram_telemetry(self) -> None:
+        contaminated = {
+            "prefill_s": 0.2,
+            "decode_s": 0.1,
+            "ttft_ms": 200.0,
+            "prefill_tok_s": 15.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+            "ngram_acceleration_telemetry": {
+                "ax_ngram_draft_attempts": 1,
+                "ax_ngram_draft_tokens": 2,
+                "ax_ngram_accepted_tokens": 1,
+            },
+            "ax_mlx_telemetry": {
+                "ax_mlx_decode_steps": 2,
+                "ax_mlx_ngram_decode_steps": 2,
+            },
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[contaminated, contaminated]):
+            with self.assertRaisesRegex(RuntimeError, "direct AX benchmark row"):
+                bench.bench_axengine(
+                    19091,
+                    [1, 2, 3],
+                    3,
+                    1,
+                    0.0,
+                    model_metadata={},
+                    direct_mode=True,
+                )
+
+    def test_axengine_ngram_summary_allows_ngram_telemetry(self) -> None:
+        ngram_run = {
+            "prefill_s": 0.2,
+            "decode_s": 0.1,
+            "ttft_ms": 200.0,
+            "prefill_tok_s": 15.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+            "ngram_acceleration_telemetry": {
+                "ax_ngram_draft_attempts": 1,
+                "ax_ngram_draft_tokens": 2,
+                "ax_ngram_accepted_tokens": 1,
+            },
+            "ax_mlx_telemetry": {
+                "ax_mlx_decode_steps": 2,
+                "ax_mlx_ngram_decode_steps": 2,
+            },
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[ngram_run, ngram_run]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=False,
+            )
+
+        self.assertEqual(row["ax_mlx_decode_route"]["classification"], "ngram")
 
     def test_parse_llama_cpp_bench_json_combines_pp_and_tg_rows(self) -> None:
         parsed = bench.parse_llama_cpp_bench_json(
@@ -1992,7 +2088,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(events[0][1]["response"]["output_tokens"], [7])
 
     def test_axengine_command_can_enable_experimental_kv_compression(self) -> None:
-        with patch.object(bench.subprocess, "Popen") as popen:
+        with (
+            patch.object(bench, "ensure_port_available") as ensure_port_available,
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
             bench.start_axengine(
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
@@ -2003,6 +2102,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 kv_compression_min_context_tokens=1024,
             )
 
+        ensure_port_available.assert_called_once_with(19091)
         command = popen.call_args.args[0]
         self.assertIn("--disable-ngram-acceleration", command)
         self.assertIn("--experimental-mlx-kv-compression", command)
@@ -2011,7 +2111,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIn("--experimental-mlx-kv-compression-min-context-tokens", command)
 
     def test_axengine_command_can_request_fused_experimental_kv_compression(self) -> None:
-        with patch.object(bench.subprocess, "Popen") as popen:
+        with (
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
             bench.start_axengine(
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
@@ -2025,7 +2128,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIn("turboquant-fused-experimental", command)
 
     def test_axengine_command_can_enable_gemma4_moe_profile(self) -> None:
-        with patch.object(bench.subprocess, "Popen") as popen:
+        with (
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
             bench.start_axengine(
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
@@ -2038,7 +2144,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(env["AX_MLX_GEMMA4_MOE_PROFILE"], "1")
 
     def test_axengine_command_can_enable_linear_attention_profile(self) -> None:
-        with patch.object(bench.subprocess, "Popen") as popen:
+        with (
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
             bench.start_axengine(
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
@@ -2051,7 +2160,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(env["AX_MLX_LINEAR_ATTENTION_PROFILE"], "1")
 
     def test_axengine_command_can_enable_decode_profile(self) -> None:
-        with patch.object(bench.subprocess, "Popen") as popen:
+        with (
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
             bench.start_axengine(
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
@@ -2064,7 +2176,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(env["AX_MLX_DECODE_PROFILE"], "1")
 
     def test_axengine_command_can_enable_linear_attention_projection_pack(self) -> None:
-        with patch.object(bench.subprocess, "Popen") as popen:
+        with (
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
             bench.start_axengine(
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
@@ -2321,6 +2436,40 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 bench.load_reused_reference_rows(
                     path,
                     prompt_lengths=[8],
+                    generation_tokens=2,
+                )
+
+    def test_load_reused_reference_rows_rejects_duplicate_mlx_lm_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "artifact.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "test",
+                        "results": [
+                            {
+                                "engine": "mlx_lm",
+                                "prompt_tokens": 4,
+                                "generation_tokens": 2,
+                                "prefill_tok_s": {"median": 100.0},
+                                "decode_tok_s": {"median": 50.0},
+                            },
+                            {
+                                "engine": "mlx_lm",
+                                "prompt_tokens": 4,
+                                "generation_tokens": 2,
+                                "prefill_tok_s": {"median": 90.0},
+                                "decode_tok_s": {"median": 45.0},
+                            },
+                        ],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "duplicate mlx_lm reference rows"):
+                bench.load_reused_reference_rows(
+                    path,
+                    prompt_lengths=[4],
                     generation_tokens=2,
                 )
 

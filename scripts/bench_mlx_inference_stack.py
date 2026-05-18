@@ -44,6 +44,7 @@ import os
 import re
 import shlex
 import signal
+import socket
 import statistics
 import subprocess
 import sys
@@ -930,6 +931,18 @@ def wait_for_server(
     return False
 
 
+def ensure_port_available(port: int, host: str = "127.0.0.1") -> None:
+    """Fail closed when an existing listener could contaminate benchmark rows."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        if sock.connect_ex((host, port)) == 0:
+            raise RuntimeError(
+                f"AX Engine benchmark port {host}:{port} is already in use; "
+                "stop the existing ax-engine-server process or pass "
+                "--axengine-port with a free port before benchmarking."
+            )
+
+
 def process_stderr_snapshot(proc: subprocess.Popen[Any], limit: int = 2000) -> str:
     if proc.stderr is None:
         return ""
@@ -951,6 +964,10 @@ def kill_proc(proc: subprocess.Popen[Any]) -> None:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 def process_rss_gb(pid: int | None) -> float | None:
@@ -1285,6 +1302,7 @@ def start_axengine(
     prefill_chunk: int | None = None,
     max_batch_tokens: int | None = None,
 ) -> subprocess.Popen[Any]:
+    ensure_port_available(port)
     cmd = [
         str(binary),
         "--mlx",
@@ -2117,6 +2135,35 @@ def summarize_runs(runs: list[dict[str, float]], key: str) -> dict[str, float]:
     }
 
 
+def validate_axengine_policy_telemetry(
+    *,
+    direct_mode: bool,
+    ngram_summary: dict[str, int],
+    ax_mlx_telemetry: dict[str, int],
+) -> None:
+    if not direct_mode:
+        return
+    observed = {
+        key: int(ngram_summary.get(key, 0))
+        for key in (
+            "ax_ngram_draft_attempts",
+            "ax_ngram_draft_tokens",
+            "ax_ngram_accepted_tokens",
+        )
+        if int(ngram_summary.get(key, 0)) > 0
+    }
+    for key in ("ax_mlx_ngram_decode_steps", "ax_mlx_ngram_decode_wall_us"):
+        value = int(ax_mlx_telemetry.get(key, 0))
+        if value > 0:
+            observed[key] = value
+    if observed:
+        raise RuntimeError(
+            "direct AX benchmark row observed n-gram telemetry; "
+            "the server may not be honoring --disable-ngram-acceleration, "
+            f"or the harness may be connected to the wrong server: {observed}"
+        )
+
+
 def bench_axengine(
     port: int,
     tokens: list[int],
@@ -2167,6 +2214,11 @@ def bench_axengine(
 
     ngram_summary = summarize_telemetry(runs)
     ax_mlx_telemetry = summarize_ax_mlx_telemetry(runs)
+    validate_axengine_policy_telemetry(
+        direct_mode=direct_mode,
+        ngram_summary=ngram_summary,
+        ax_mlx_telemetry=ax_mlx_telemetry,
+    )
     row = {
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
@@ -2760,9 +2812,13 @@ def load_reused_reference_rows(
         key = (int(cell["prompt_tokens"]), int(cell["generation_tokens"]))
         if key not in wanted:
             continue
+        if key in seen_mlx_lm:
+            raise RuntimeError(
+                f"{path} has duplicate mlx_lm reference rows for "
+                f"prompt_tokens={key[0]} generation_tokens={key[1]}"
+            )
         rows.append(copy.deepcopy(cell))
-        if engine == "mlx_lm":
-            seen_mlx_lm.add(key)
+        seen_mlx_lm.add(key)
 
     missing = sorted(wanted - seen_mlx_lm)
     if missing:

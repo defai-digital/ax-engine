@@ -1360,7 +1360,7 @@ def check_readme_performance(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 220,
+    expected_metric_count: int | None = 187,
 ) -> list[str]:
     return check_readme_performance_summary(
         repo_root=repo_root,
@@ -1375,7 +1375,7 @@ def check_readme_performance_summary(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 220,
+    expected_metric_count: int | None = 187,
 ) -> ReadmeCheckResult:
     resolved_readme = readme_path.resolve()
     artifact_sources = (

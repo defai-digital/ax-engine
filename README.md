@@ -251,9 +251,6 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 | Qwen 3.6 27B | 5-bit | 128 | 527.6 | 393.6 | **722.3 (+83.5%)** |
 |  |  | 512 | 742.5 | 697.3 | **859.5 (+23.3%)** |
 |  |  | 2048 | 611.9 | 868.0 | 862.3 (-0.7%) |
-| Qwen 3.6 35B A3B | 4-bit | 128 | n/a | 575.0 | **1,134.4 (+97.3%)** |
-|         |         | 512 | n/a | 1,702.2 | **2,842.1 (+67.0%)** |
-|         |         | 2048 | n/a | — | — |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
@@ -290,9 +287,6 @@ effective throughput, not raw model-kernel speed.
 | Qwen 3.6 27B | 5-bit | 128 | 22.6 | 28.2 | 26.6 (-5.8%) | 12.7 (-55.0%)‡ |
 |  |  | 512 | 22.5 | 28.0 | 27.4 (-2.2%) | 27.0 (-3.8%) |
 |  |  | 2048 | 21.2 | 27.8 | 27.2 (-2.3%) | 26.8 (-3.9%) |
-| Qwen 3.6 35B A3B | 4-bit | 128 | n/a | 120.8 | **123.3 (+2.0%)** | **284.2 (+135.2%)** |
-|         |         | 512 | n/a | 120.6 | **122.4 (+1.5%)** | **281.2 (+133.2%)** |
-|         |         | 2048 | n/a | — | — | — |
 
 † Qwen 3.6 27B 4-bit at prompt=2048 completed prefill but produced zero
 decode tokens across all 5 trials (early EOS at decode step 0). Cell is
@@ -340,9 +334,6 @@ stream.
 | Qwen 3.6 27B | 5-bit | 128 | 242.6 | 325.2 | **177.2 (-45.5%)** |
 |  |  | 512 | 689.5 | 734.3 | **595.7 (-18.9%)** |
 |  |  | 2048 | 3,346.8 | 2,359.4 | 2,375.1 (+0.7%) |
-| Qwen 3.6 35B A3B | 4-bit | 128 | n/a | 222.6 | **112.8 (-49.3%)** |
-|         |         | 512 | n/a | 300.8 | **180.1 (-40.1%)** |
-|         |         | 2048 | n/a | — | — |
 
 Embedding benchmarks are kept out of this README summary; see
 [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md) for embedding throughput, serving,

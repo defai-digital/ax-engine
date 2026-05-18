@@ -20,6 +20,9 @@ bash -n scripts/*.sh scripts/lib/common.sh
 "$PYTHON_BIN" -m py_compile \
   scripts/bench_ax_serving.py \
   scripts/test_bench_ax_serving.py \
+  scripts/bench_embedding_models.py \
+  scripts/verify_embedding_models.py \
+  scripts/test_embedding_server_ports.py \
   scripts/check_ax_serving_benchmark_artifact.py \
   scripts/test_ax_serving_benchmark_artifact.py \
   scripts/render_ax_serving_benchmark_report.py \
@@ -101,6 +104,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_profile_kv_multiturn_chat_evidence.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
+  scripts/test_embedding_server_ports.py \
   scripts/test_ax_serving_benchmark_artifact.py \
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/test_update_readme_from_bench.py \

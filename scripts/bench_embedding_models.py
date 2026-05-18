@@ -86,6 +86,17 @@ def wait_for_port(host: str, port: int, timeout: float = 120.0) -> bool:
     return False
 
 
+def ensure_port_available(port: int, host: str = "127.0.0.1") -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        if sock.connect_ex((host, port)) == 0:
+            raise RuntimeError(
+                f"ax-engine embedding benchmark port {host}:{port} is already in use; "
+                "stop the existing ax-engine-server process, pass --skip-ax-server "
+                "to benchmark that running server, or choose a free --port."
+            )
+
+
 def http_post(url: str, body: dict) -> dict:
     data = json.dumps(body).encode()
     req = urllib.request.Request(
@@ -398,6 +409,7 @@ def _start_axengine_server(
     port: int,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.Popen:
+    ensure_port_available(port)
     server_bin = REPO_ROOT / "target" / "release" / "ax-engine-server"
     if not server_bin.exists():
         server_bin = REPO_ROOT / "target" / "debug" / "ax-engine-server"
@@ -477,6 +489,10 @@ def bench_ax_engine_http(
                 server_proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 server_proc.kill()
+                try:
+                    server_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +568,10 @@ def bench_ax_engine_http_concurrent(
                 server_proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 server_proc.kill()
+                try:
+                    server_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
 
 
 # ---------------------------------------------------------------------------

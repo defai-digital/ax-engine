@@ -254,7 +254,11 @@ QUALITY_GATE_JSON="$RUN_DIR/quality-gate.json"
 READINESS_JSON="$RUN_DIR/promotion-readiness.json"
 COMMAND_LOG="$RUN_DIR/command.log"
 COMMAND_TXT="$RUN_DIR/commands.txt"
-PORT="$(ax_allocate_port)"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    PORT="${AX_TURBOQUANT_PORT:-19091}"
+else
+    PORT="$(ax_allocate_port)"
+fi
 
 mkdir -p "$RUN_DIR" "$PROMPT_ARTIFACT_ROOT"
 
