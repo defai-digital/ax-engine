@@ -58,6 +58,19 @@ impl MlxArray {
         }
     }
 
+    /// Create a scalar f32 array (shape `[]`).
+    pub fn from_f32(value: f32) -> Self {
+        unsafe {
+            let arr = ffi::mlx_array_new_data(
+                &value as *const f32 as *const _,
+                ptr::null(),
+                0,
+                ffi::mlx_dtype_::MLX_FLOAT32,
+            );
+            Self::from_raw(arr)
+        }
+    }
+
     /// Create a 1-D f16 array from raw bytes (already packed as f16).
     pub fn from_f16_bytes(data: &[u8]) -> Self {
         assert!(

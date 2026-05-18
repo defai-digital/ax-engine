@@ -9,7 +9,7 @@ use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward,
     forward_lazy_single_with_turboquant_context, forward_with_turboquant_context,
 };
-use crate::sampling::{MlxSamplingRequest, Xorshift64, sample_categorical};
+use crate::sampling::{MlxSamplingRequest, Xorshift64, sample_categorical, sample_categorical_gpu};
 use crate::weights::ModelWeights;
 
 /// Default chunk size for chunked prefill, matching SwiftLM's default and the
@@ -333,19 +333,18 @@ pub fn decode_step_with_turboquant_context(
     );
     cache.seq_len += 1;
 
-    if sampling.temperature > 0.0 {
+    if sampling.temperature > 0.0
+        && !sampling.uses_repetition_penalty()
+        && sampling.top_k == 0
+        && sampling.top_p >= 1.0
+    {
+        // GPU-side sampling: no logits transfer to CPU.
+        sample_categorical_gpu(&logits, sampling.temperature)
+    } else if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
         eval_with_kv_refs(&logits, cache);
         let logits_data = logits.data_f32();
         sample_categorical(
             logits_data,
-            sampling,
-            sampling_request.repetition_tokens,
-            rng,
-        )
-    } else if sampling.uses_repetition_penalty() {
-        eval_with_kv_refs(&logits, cache);
-        sample_categorical(
-            logits.data_f32(),
             sampling,
             sampling_request.repetition_tokens,
             rng,

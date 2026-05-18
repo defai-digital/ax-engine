@@ -835,6 +835,24 @@ pub fn unflatten(a: &MlxArray, axis: i32, shape: &[i32], s: Option<&MlxStream>) 
     }
 }
 
+/// GPU-side categorical sampling from logits.
+///
+/// Returns a `[1]` shaped `u32` array containing the sampled token index.
+/// Equivalent to `mx.random.categorical(logits * (1/temperature), axis=-1)`.
+/// The caller must scale logits by `1/temperature` before calling this
+/// (or pass unscaled logits for temperature=1.0).
+///
+/// Uses MLX's internal RNG state (`key=null`). Not reproducible across runs.
+pub fn random_categorical(logits: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_random_categorical(&mut res.inner, logits.inner, -1, null_ffi_array(), stream);
+        res
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

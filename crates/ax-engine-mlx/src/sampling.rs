@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use mlx_sys::{MlxArray, eval, multiply, random_categorical};
+
 /// Minimal xorshift64 PRNG — no external dependency.
 ///
 /// Used for per-request temperature sampling.  Each request gets its own
@@ -189,6 +191,27 @@ pub fn sample_categorical(
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i as u32)
         .unwrap_or(0)
+}
+
+/// GPU-side categorical sampling from logits.
+///
+/// Returns the sampled token ID. Uses MLX's `random_categorical` which runs
+/// entirely on GPU — no logits data transfer to CPU.
+///
+/// **Constraints:** only valid when:
+/// - `temperature > 0.0`
+/// - No repetition penalty (`sampling.uses_repetition_penalty() == false`)
+/// - No top-k/top-p filtering (`sampling.top_k == 0 && sampling.top_p >= 1.0`)
+///
+/// When any of these constraints are violated, fall back to `sample_categorical`.
+pub fn sample_categorical_gpu(logits: &MlxArray, temperature: f32) -> u32 {
+    // Scale logits by 1/temperature on GPU, then sample.
+    let inv_temp = 1.0 / temperature;
+    let inv_temp_arr = MlxArray::from_f32(inv_temp);
+    let scaled = multiply(logits, &inv_temp_arr, None);
+    let token_arr = random_categorical(&scaled, None);
+    eval(&[&token_arr]);
+    token_arr.data_u32().first().copied().unwrap_or(0)
 }
 
 fn recent_repetition_tokens(tokens: &[u32], context_size: Option<u32>) -> &[u32] {

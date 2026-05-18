@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use mlx_sys::{MlxArray, argmax, eval, slice};
 
-use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical};
+use crate::sampling::{
+    MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical, sample_categorical_gpu,
+};
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
@@ -1154,8 +1156,17 @@ pub fn single_decode_with_turboquant_context(
     );
     cache.seq_len += 1;
 
-    let kv_refs = cache.collect_eval_refs();
-    let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+    let tok = if sampling.temperature > 0.0
+        && !sampling.uses_repetition_penalty()
+        && sampling.top_k == 0
+        && sampling.top_p >= 1.0
+    {
+        // GPU-side sampling: no logits transfer to CPU.
+        // The forward pass already updated the KV cache (it's in logits' graph);
+        // sample_categorical_gpu evals the token internally.
+        sample_categorical_gpu(&logits, sampling.temperature)
+    } else if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+        let kv_refs = cache.collect_eval_refs();
         let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
         targets.push(&logits);
         targets.extend(kv_refs);
@@ -1163,6 +1174,7 @@ pub fn single_decode_with_turboquant_context(
         sample_categorical(logits.data_f32(), sampling, repetition_tokens, rng)
     } else {
         let token_arr = argmax(&logits, None);
+        let kv_refs = cache.collect_eval_refs();
         let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
         targets.push(&token_arr);
         targets.extend(kv_refs);
