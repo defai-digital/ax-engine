@@ -19,7 +19,7 @@ COOLDOWN="${AX_MLX_P2_COOLDOWN:-5}"
 MODEL_ID="${AX_MLX_P2_MODEL_ID:-}"
 RUN_LABEL="${AX_MLX_P2_RUN_LABEL:-}"
 HOST_LABEL="${AX_MLX_P2_HOST_LABEL:-unknown_apple_silicon}"
-AXENGINE_PORT="${AX_MLX_P2_AXENGINE_PORT:-8092}"
+AXENGINE_PORT="${AX_MLX_P2_AXENGINE_PORT:-0}"
 SKIP_STARTUP=0
 SKIP_CONCURRENT=0
 DRY_RUN=0
@@ -41,7 +41,7 @@ Options:
   --model-id ID                     Artifact model id. Defaults to the model directory path used by the runner.
   --run-label LABEL                 Human-readable output directory label.
   --host-label LABEL                Host label recorded in artifacts. Defaults to unknown_apple_silicon.
-  --axengine-port N                 AX server port. Defaults to 8092.
+  --axengine-port N                 AX server port. Defaults to 0, which auto-allocates at run time.
   --skip-startup                    Only capture concurrent-prefill artifact/report section.
   --skip-concurrent                 Only capture startup artifact/report section.
   --dry-run                         Print planned command without building or starting the server.

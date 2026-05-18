@@ -16,7 +16,7 @@ COOLDOWN="${AX_GATEDDELTA_PROFILE_COOLDOWN:-5}"
 PREFILL_STEP_SIZE="${AX_GATEDDELTA_PROFILE_PREFILL_STEP_SIZE:-2048}"
 MODEL_ID="${AX_GATEDDELTA_PROFILE_MODEL_ID:-}"
 RUN_LABEL="${AX_GATEDDELTA_PROFILE_RUN_LABEL:-}"
-AXENGINE_PORT="${AX_GATEDDELTA_PROFILE_AXENGINE_PORT:-8091}"
+AXENGINE_PORT="${AX_GATEDDELTA_PROFILE_AXENGINE_PORT:-0}"
 DRY_RUN=0
 
 usage() {
@@ -33,7 +33,7 @@ Options:
   --prefill-step-size N     MLX prefill step size. Defaults to 2048.
   --model-id ID             Artifact model id. Defaults to the model directory path used by the harness.
   --run-label LABEL         Human-readable output directory label.
-  --axengine-port N         AX server port. Defaults to 8091.
+  --axengine-port N         AX server port. Defaults to 0, which auto-allocates at run time.
   --dry-run                 Print planned commands without running them.
   -h, --help                Show this help.
 

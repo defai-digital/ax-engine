@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import socket
 import statistics
 import subprocess
 import sys
@@ -80,6 +81,12 @@ def repo_revision() -> str | None:
         ).strip()
     except Exception:
         return None
+
+
+def allocate_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def build_prompt_docs(
@@ -603,7 +610,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--concurrent-generation-tokens", type=int, default=1)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--cooldown", type=float, default=5.0)
-    parser.add_argument("--axengine-port", type=int, default=8092)
+    parser.add_argument(
+        "--axengine-port",
+        type=int,
+        default=0,
+        help="AX server port. Use 0 to auto-allocate a loopback port.",
+    )
     parser.add_argument(
         "--concurrency-levels",
         type=parse_concurrency_levels,
@@ -642,6 +654,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print("Dry run only; no server will be started.")
         return 0
+
+    if args.axengine_port == 0:
+        args.axengine_port = allocate_port()
 
     prompt_root = args.output_dir / "prompts"
     if not args.skip_startup:

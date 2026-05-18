@@ -31,7 +31,7 @@ Usage:
         --model-label qwen3-embedding-0.6b-8bit \\
         [--trials 5] \\
         [--cooldown 2] \\
-        [--port 8083] \\
+        [--port 0] \\
         [--skip-ax-http]     # skip HTTP backend \\
         [--skip-swift]       # skip mlx-swift backend \\
         [--output-dir benchmarks/results/embedding]
@@ -68,7 +68,7 @@ SENTENCES = [
     "On-device inference preserves user privacy and reduces latency",
 ]
 
-AXENGINE_PORT_DEFAULT = 8083
+AXENGINE_PORT_DEFAULT = 0
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +87,8 @@ def wait_for_port(host: str, port: int, timeout: float = 120.0) -> bool:
 
 
 def ensure_port_available(port: int, host: str = "127.0.0.1") -> None:
+    if port == 0:
+        return
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.2)
         if sock.connect_ex((host, port)) == 0:
@@ -95,6 +97,12 @@ def ensure_port_available(port: int, host: str = "127.0.0.1") -> None:
                 "stop the existing ax-engine-server process, pass --skip-ax-server "
                 "to benchmark that running server, or choose a free --port."
             )
+
+
+def allocate_port(host: str = "127.0.0.1") -> int:
+    with socket.socket() as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
 
 
 def http_post(url: str, body: dict) -> dict:
@@ -662,7 +670,7 @@ def main() -> int:
     parser.add_argument("--trials", type=int, default=5, help="Timed trials per backend")
     parser.add_argument("--cooldown", type=float, default=2.0, help="Seconds between trials")
     parser.add_argument("--port", type=int, default=AXENGINE_PORT_DEFAULT,
-                        help=f"ax-engine HTTP server port (default {AXENGINE_PORT_DEFAULT})")
+                        help="ax-engine HTTP server port (default 0: auto-allocate)")
     parser.add_argument("--skip-ax-http", action="store_true",
                         help="Skip the HTTP backend (keep only direct Python/Swift comparisons)")
     parser.add_argument("--skip-ax-server", action="store_true",
@@ -706,6 +714,12 @@ def main() -> int:
 
     all_results: dict[str, dict] = {}
     errors: list[str] = []
+
+    if (not args.skip_ax_http or args.include_concurrent_http) and args.port == 0:
+        if args.skip_ax_server:
+            print("ERROR: --skip-ax-server requires an explicit non-zero --port", file=sys.stderr)
+            return 1
+        args.port = allocate_port()
 
     # --- mlx-lm (reference) ---
     try:

@@ -10,7 +10,7 @@ Usage:
     python scripts/verify_embedding_models.py \
         --model-dir .internal/models/qwen3-embedding-0.6b-8bit \
         --hf-model Qwen/Qwen3-Embedding-0.6B \
-        [--port 8082]
+        [--port 0]
 """
 from __future__ import annotations
 
@@ -65,6 +65,8 @@ def wait_for_port(host: str, port: int, timeout: float = 60.0) -> bool:
 
 
 def ensure_port_available(port: int, host: str = "127.0.0.1") -> None:
+    if port == 0:
+        return
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.2)
         if sock.connect_ex((host, port)) == 0:
@@ -73,6 +75,12 @@ def ensure_port_available(port: int, host: str = "127.0.0.1") -> None:
                 "stop the existing ax-engine-server process, pass --skip-server "
                 "to verify that running server, or choose a free --port."
             )
+
+
+def allocate_port(host: str = "127.0.0.1") -> int:
+    with socket.socket() as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
 
 
 def http_post(url: str, body: dict) -> dict:
@@ -209,7 +217,12 @@ def main() -> int:
         "--hf-model",
         help="Deprecated — ignored. Reference now uses --model-dir directly.",
     )
-    parser.add_argument("--port", type=int, default=8082, help="Server port (default 8082)")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Server port (default 0: auto-allocate when starting a server)",
+    )
     parser.add_argument(
         "--skip-server",
         action="store_true",
@@ -221,6 +234,12 @@ def main() -> int:
     if not (model_dir / "model-manifest.json").exists():
         print(f"ERROR: model-manifest.json not found in {model_dir}", file=sys.stderr)
         return 1
+
+    if args.port == 0:
+        if args.skip_server:
+            print("ERROR: --skip-server requires an explicit non-zero --port", file=sys.stderr)
+            return 1
+        args.port = allocate_port()
 
     server_url = f"http://127.0.0.1:{args.port}"
     server_proc: subprocess.Popen | None = None

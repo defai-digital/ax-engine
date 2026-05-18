@@ -62,7 +62,7 @@ DEFAULT_PROMPT_TOKENS = "128,512,2048"
 DEFAULT_GENERATION_TOKENS = 128
 DEFAULT_REPETITIONS = 5
 DEFAULT_COOLDOWN = 5.0
-AXENGINE_PORT = 8091
+AXENGINE_PORT = 0
 MLX_LM_RANDOM_SEED = 0
 GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS = [512, 2048, 8192, 32768]
 
@@ -933,6 +933,8 @@ def wait_for_server(
 
 def ensure_port_available(port: int, host: str = "127.0.0.1") -> None:
     """Fail closed when an existing listener could contaminate benchmark rows."""
+    if port == 0:
+        return
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.2)
         if sock.connect_ex((host, port)) == 0:
@@ -941,6 +943,12 @@ def ensure_port_available(port: int, host: str = "127.0.0.1") -> None:
                 "stop the existing ax-engine-server process or pass "
                 "--axengine-port with a free port before benchmarking."
             )
+
+
+def allocate_port(host: str = "127.0.0.1") -> int:
+    with socket.socket() as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
 
 
 def process_stderr_snapshot(proc: subprocess.Popen[Any], limit: int = 2000) -> str:
@@ -3383,6 +3391,8 @@ def main() -> None:
                 results.append(llama_cpp_row)
 
         if not args.skip_ax_engine:
+            if args.axengine_port == 0:
+                args.axengine_port = allocate_port()
             ax_run_configs = []
             if args.ax_compare_linear_attention_projection_pack:
                 ax_run_configs = [
