@@ -108,7 +108,17 @@ pub(crate) fn template_kwargs_for_model_id(model_id: &str) -> Option<Value> {
 
 pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
     let m = model_id.to_ascii_lowercase();
-    m.contains("qwen") && (m.contains("3.6") || m.contains("3_6") || m.contains("next"))
+    if !m.contains("qwen") {
+        return false;
+    }
+    if m.contains("3.6") || m.contains("3_6") {
+        return true;
+    }
+    let normalized: String = m
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect();
+    normalized.contains("qwen3-next") || normalized.contains("qwen3-coder-next")
 }
 
 pub(crate) fn stop_sequences(model_id: &str, mut user_stops: Vec<String>) -> Vec<String> {
@@ -295,5 +305,26 @@ mod tests {
             render_prompt_with_template(ChatPromptTemplate::QwenChatMl, &messages, false)
                 .expect("render");
         assert!(no_thinking.ends_with(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+    }
+
+    #[test]
+    fn qwen_thinking_model_match_is_limited_to_known_reasoning_families() {
+        for model_id in [
+            "Qwen3.6-35B-A3B-5bit",
+            "qwen3_6-35b-a3b-ud-mlx-4bit",
+            "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
+            "Qwen3-Coder-Next-4bit",
+        ] {
+            assert!(is_qwen_thinking_model(model_id), "{model_id}");
+        }
+
+        for model_id in ["qwen-nextgen-v2", "qwen2.5-next-demo", "qwen4-next"] {
+            assert!(!is_qwen_thinking_model(model_id), "{model_id}");
+            assert_eq!(
+                template_kwargs_for_model_id(model_id),
+                Some(json!({"enable_thinking": false})),
+                "{model_id}"
+            );
+        }
     }
 }

@@ -17,7 +17,7 @@ fn finish_reason_preserves_only_real_openai_terminal_labels() {
     );
     assert_eq!(
         openai_finish_reason(Some(GenerateFinishReason::Cancelled)),
-        None
+        Some("stop")
     );
     assert_eq!(
         openai_finish_reason(Some(GenerateFinishReason::Error)),
