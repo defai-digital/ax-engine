@@ -7,6 +7,91 @@ state; rejected drafts fall back to a single target-model step. The path
 lives at `crates/ax-engine-mlx/src/ngram_accel.rs` and is enabled by
 default for greedy decode.
 
+## When n-gram acceleration helps
+
+The README decode-throughput tables show the n-gram column at large
+percentages above `mlx_lm`. Those numbers are correctly measured on the
+mlx_lm.benchmark random-token contract (seed=0 uniform random IDs over
+the full vocab, greedy decode, batch=1, gen=128). They are the same
+prompt contract every published row uses, which is why prompt-hash
+parity holds across the table.
+
+What that contract *cannot* tell you is which real workloads will see
+the same uplift. The literature is unambiguous about this — n-gram
+speculative decoding is an **input-output overlap** technique, not a
+"coding" technique. Whenever the model's output reuses chunks of the
+prompt (or chunks of its own earlier decoded output), the drafter
+proposes long correct sequences and the row throughput climbs. When the
+output is fresh content unrelated to the prompt, the drafter's accepts
+are short and the verifier overhead can outweigh the gains.
+
+The split, from published benchmarks:
+
+| Workload shape | Typical n-gram speedup | Source |
+|---|---:|---|
+| Summarization (CNN/DailyMail) | **2.4×–2.8×** | Saxena 2024; vLLM blog |
+| Context-QA over a retrieved doc | **2.4×** | Saxena 2024 |
+| Code **editing / refactor** (output reuses input) | **2.1×** (n-gram alone, InstructCoder batch=1) — even beats EAGLE / EAGLE-3 on 8B models when BLEU-4 overlap ≥ 0.6 | SpecDecode-Bench 2025; SGLang |
+| Code editing with reuse-aware drafting | up to **8.26×** (Qwen2.5-Coder), **13.09×** (DeepSeek-Coder) | EfficientEdit (arXiv 2506.02780) |
+| Code **generation / completion** (output is fresh code) | **~1.10×** | vLLM blog |
+| Multi-turn chat, turn 1 (some prior content to copy) | "very high gain" | Saxena 2024 |
+| Multi-turn chat, turn 0 (no prior content) | "much smaller gain" | Saxena 2024 |
+| Roleplay / open-ended generation | worst case, near-baseline or slower | Saxena 2024 |
+
+The pattern is consistent across sources: **input-output overlap is the
+single variable that predicts n-gram speedup**, not "is it code". Code
+editing is great for n-gram because ~70% of the post-edit code is
+unchanged from the pre-edit code, so the drafter can directly copy
+multi-token spans. Code generation from a brief is not great for
+n-gram because the model is producing new content.
+
+### What our own measurements show
+
+Two evidence sets, both Gemma 4 E2B 4-bit, batch=1, gen=128, 3 trials
+per row, greedy decode:
+
+| Prompt source | Direct decode | N-gram decode | N-gram uplift | Accept rate | Decode degenerate? |
+|---|---:|---:|---:|---:|:---:|
+| Random tokens (mlx_lm contract), p=128 | 205.4 | 609.1 | **+196%** | ~100% | **Yes** — 8-gram repeats 121× in 128-token window |
+| Random tokens, p=512 | 196.8 | 599.5 | **+205%** | ~100% | **Yes** |
+| Random tokens, p=2048 | 190.1 | 550.0 | **+189%** | ~100% | **Yes** |
+| Real coding *generation*, lru_cache (90t prompt) | 203.5 | 173.1 | **−15%** | 11.9% | no |
+| Real coding *generation*, axum_handler (184t) | 203.5 | 183.5 | **−9.8%** | 37.1% | no |
+| Real coding *generation*, repo_refactor (447t) | 193.5 | 189.0 | **−2.3%** | 51.4% | no |
+
+Evidence directories:
+- `benchmarks/results/mlx-inference/2026-05-18-decode-degeneracy-validator/` — random-token rows; every AX row labeled `*_degenerate_decode`
+- `benchmarks/results/mlx-inference/2026-05-18-real-prompt-coding/` — real coding **generation** prompts (not editing); every AX row labeled `ngram_acceleration_effective_throughput` with healthy decode
+
+The direct-decode column is stable (~190–205 tok/s) across both
+sources, so the model and the kernel are not the variable. The n-gram
+column collapses from +196% on random degenerate output to a small
+negative on real generation prompts. Neither evidence set has covered
+the workload where n-gram is known to dominate (code editing); a
+follow-up suite is the next planned bench.
+
+### Practical guidance
+
+If the workload is editing, refactoring, structured diffs, JSON/tool
+payload completion, or any chat turn where the output naturally echoes
+the input or echoes prior turns, expect the n-gram path to help and
+the README-style headline numbers to be representative direction
+(even if the absolute multiple differs by model and host).
+
+If the workload is fresh generation from a brief — "write a function
+that …", "summarize what we should do", first-turn answers, novel
+prose — expect the n-gram path to perform near direct decode, possibly
+slightly slower under verifier overhead. The fallback statuses
+documented below (`ngram_no_draft_direct_fallback`,
+`ngram_no_accept_fallback`) explicitly record this regime so it does
+not silently degrade.
+
+If the workload is open-ended creative / roleplay, prefer direct
+decode by passing `--disable-ngram-acceleration` to the server. The
+n-gram drafter is correctness-safe on rejection (the verifier owns
+the final token decision) but it costs draft work that the workload
+will not reward.
+
 ## Correctness contract
 
 The current verifier accepts a drafted token iff the target model's

@@ -256,13 +256,25 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 
 Higher is better. `ax direct baseline` disables n-gram acceleration.
 `ax default n-gram` is the default AX decode policy and reports observed
-effective throughput, not raw model-kernel speed. For how the n-gram
-drafter works, when it accelerates, and when bench rows can collapse
-into a repeated-output regime that magnifies the reported speedup, see
-[`docs/NGRAM-ACCELERATION.md`](docs/NGRAM-ACCELERATION.md) — in
-particular the
-[decode degeneracy](docs/NGRAM-ACCELERATION.md#decode-degeneracy-on-synthetic-benchmark-prompts)
-section.
+effective throughput, not raw model-kernel speed.
+
+The bench prompts are `mlx_lm.benchmark` seed-0 random tokens, which is
+the only way to keep prompt-hash parity across all four columns. The
+n-gram column is sensitive to workload shape — published benchmarks
+(Saxena 2024, vLLM, SpecDecode-Bench 2025, EfficientEdit 2025) all
+report n-gram speculative decoding is an input-output overlap
+technique: code editing / refactoring / summarization see large
+speedups; fresh code generation and open-ended chat see modest
+speedups or none.
+[`docs/NGRAM-ACCELERATION.md`](docs/NGRAM-ACCELERATION.md) covers how
+the drafter works, when each workload regime is expected to accelerate,
+the
+[when-it-helps section](docs/NGRAM-ACCELERATION.md#when-n-gram-acceleration-helps)
+with literature citations and our own random-vs-real measurements,
+and the
+[decode-degeneracy](docs/NGRAM-ACCELERATION.md#decode-degeneracy-on-synthetic-benchmark-prompts)
+validator that flags rows whose throughput was measured on a collapsed
+output loop.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|
