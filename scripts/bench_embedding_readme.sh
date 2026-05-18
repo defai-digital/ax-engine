@@ -40,9 +40,24 @@ MODELS=(
 # 10-sentence corpus, lengths [10,15,13,8,3,8,10,8,10,10] — canonical.
 BATCH_LENS="10,15,13,8,3,8,10,8,10,10"
 
+server_pid=""
+
+allocate_port() {
+    python - <<'PY'
+import socket
+
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+}
+
 cleanup() {
-    pkill -f 'ax-engine-server' >/dev/null 2>&1 || true
-    sleep 2
+    if [[ -n "${server_pid:-}" ]] && kill -0 "$server_pid" >/dev/null 2>&1; then
+        kill "$server_pid" >/dev/null 2>&1 || true
+        wait "$server_pid" >/dev/null 2>&1 || true
+    fi
+    server_pid=""
 }
 trap cleanup EXIT
 
@@ -153,33 +168,38 @@ for spec in "${MODELS[@]}"; do
     echo "  $label"
 
     cleanup
+    port="$(allocate_port)"
     AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS=20 \
         ./target/release/ax-engine-server \
         --model-id qwen3 --support-tier mlx-preview --mlx \
         --mlx-model-artifacts-dir "$model_dir" \
-        --host 127.0.0.1 --port 8083 >"$sub/server.log" 2>&1 &
+        --host 127.0.0.1 --port "$port" >"$sub/server.log" 2>&1 &
     server_pid=$!
     for _ in $(seq 1 120); do
-        if curl -sSf http://127.0.0.1:8083/health >/dev/null 2>&1; then break; fi
+        if ! kill -0 "$server_pid" >/dev/null 2>&1; then break; fi
+        if curl -sSf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then break; fi
         sleep 0.5
     done
-    if ! curl -sSf http://127.0.0.1:8083/health >/dev/null 2>&1; then
-        echo "  server failed to start for $label"; kill $server_pid 2>/dev/null; continue
+    if ! kill -0 "$server_pid" >/dev/null 2>&1 || ! curl -sSf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+        echo "  server failed to start for $label"
+        cleanup
+        continue
     fi
 
-    PYTHONUNBUFFERED=1 python - "$label" "$sub" "$BATCH_LENS" <<'PYEND' >"$sub/log.txt" 2>&1 || true
+    PYTHONUNBUFFERED=1 python - "$label" "$sub" "$BATCH_LENS" "$port" <<'PYEND' >"$sub/log.txt" 2>&1 || true
 import json, statistics, sys, time
 import http.client
 from concurrent.futures import ThreadPoolExecutor
 
-label, outdir, batch_spec = sys.argv[1:]
+label, outdir, batch_spec, port_arg = sys.argv[1:]
+port = int(port_arg)
 lens = [int(x) for x in batch_spec.split(",")]
 sentences = [list(range(l)) for l in lens]
 total_tokens = sum(lens)
 N_TRIALS = 10
 
 def post(payload):
-    conn = http.client.HTTPConnection("127.0.0.1", 8083, timeout=60)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
     conn.request("POST", "/v1/embeddings",
                  body=json.dumps(payload).encode(),
                  headers={"Content-Type": "application/json"})
@@ -236,8 +256,8 @@ pathlib.Path(outdir, "http.json").write_text(json.dumps(out, indent=2) + "\n")
 print(json.dumps(out, indent=2))
 PYEND
 
-    kill $server_pid 2>/dev/null
-    sleep 3
+    cleanup
+    sleep 1
 done
 
 # ---------------------------------------------------------------------------
