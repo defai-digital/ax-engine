@@ -533,6 +533,19 @@ pub(crate) fn layer_forward(
     let mut out = add(&hidden, &ffn_out, None);
 
     // 19. Per-layer input gating (Gemma4 2B/4B): gate(h) * per_layer_embed → proj → norm + h.
+    //
+    // W5 NOTE (mlx-lm-prefill-parity PRD §7): tried reusing the shared
+    // `geglu()` compile cache here. It aborts MLX inside
+    // `mlx_closure_apply` because the cache is keyed only by `ThreadId`,
+    // so the FFN's `[1, seq, intermediate_size=6144]` compile entry gets
+    // re-used (incorrectly) for the per-layer gate's
+    // `[1, seq, hidden_per_layer_input=256]` call. `mx.compile`'s
+    // `shapeless=true` promise does not hold across input ranks/last-dims
+    // when the cache key collapses them. Closing this requires a
+    // dedicated compile cache for this call site (keyed by
+    // `(ThreadId, last_dim)` or a per-site `OnceLock<MlxClosure>`); kept
+    // out of this PRD so the W5 net-perf retest is not gated on a
+    // separate refactor.
     if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
         w.per_layer_gate.as_ref(),
         w.per_layer_proj_w.as_ref(),

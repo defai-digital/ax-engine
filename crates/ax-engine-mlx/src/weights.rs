@@ -614,7 +614,26 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                         idx,
                         "v_proj",
                     )?;
-                    (None, Some(q), Some(k), Some(v), None)
+                    // W6 (mlx-lm-prefill-parity PRD §7): materialize a packed
+                    // QKV at load time so the runtime dispatches one quantized
+                    // matmul + last-dim slice instead of three separate
+                    // matmuls. Mirrors the FFN gate/up packing flow in W4a.
+                    // Fail-soft: if Q/K/V have asymmetric quantization metadata
+                    // (group_size / bits / bias presence / dtype),
+                    // `concat_quantized_weight_rows` errors out and we keep
+                    // the split path. Kill switch:
+                    // `AX_MLX_PACK_QKV_PROJECTIONS=0`.
+                    if dense_attention_qkv_packing_enabled() {
+                        if let Ok(qk) = concat_quantized_weight_rows(&q, &k)
+                            && let Ok(qkv) = concat_quantized_weight_rows(&qk, &v)
+                        {
+                            (Some(qkv), None, None, None, None)
+                        } else {
+                            (None, Some(q), Some(k), Some(v), None)
+                        }
+                    } else {
+                        (None, Some(q), Some(k), Some(v), None)
+                    }
                 }
             }
         };
@@ -1503,6 +1522,28 @@ fn linear_attention_projection_packing_enabled() -> bool {
     // projections at load time while keeping the default artifact contract
     // unchanged until the benchmark delta is proven.
     std::env::var("AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS")
+        .map(|value| !value.is_empty() && value != "0")
+        .unwrap_or(false)
+}
+
+fn dense_attention_qkv_packing_enabled() -> bool {
+    // W6 (`mlx-lm-prefill-parity` PRD §7): counterpart to
+    // `dense_ffn_gate_up_packing_enabled`. Materializes packed Q/K/V at
+    // weight load time when the artifact ships them split, so the layer's
+    // attention dispatch runs one quantized matmul instead of three.
+    //
+    // **Default OFF pending investigation.** A 2026-05-18 bench on
+    // Gemma 4 E2B 4-bit with default-on crashed the inference server on
+    // the warmup request (`http.client.RemoteDisconnected: Remote end
+    // closed connection without response`). The W5 per-layer-input gate
+    // compile path is independent and was verified working with W6=off
+    // on the same binary. Possible root causes still under investigation:
+    // mismatched per-layer head_dim resolution (Gemma 4 mixes
+    // sliding-attention head_dim=256 with full-attention global_head_dim
+    // = 512), or a `quantized_matmul` shape constraint that only surfaces
+    // with the merged QKV last-dim. Enable via
+    // `AX_MLX_PACK_QKV_PROJECTIONS=1` once root-caused.
+    std::env::var("AX_MLX_PACK_QKV_PROJECTIONS")
         .map(|value| !value.is_empty() && value != "0")
         .unwrap_or(false)
 }
