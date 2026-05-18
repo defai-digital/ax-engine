@@ -139,6 +139,19 @@ def _table_column_count(lines: list[str], section_header: str) -> int:
     return 0
 
 
+def _table_header_cells(lines: list[str], section_header: str) -> list[str]:
+    in_target = False
+    for line in lines:
+        if line.startswith("### ") and section_header in line:
+            in_target = True
+            continue
+        if line.startswith("### ") and in_target:
+            break
+        if in_target and line.startswith("| Model |"):
+            return _split_cells(line)
+    return []
+
+
 def find_insert_line(lines: list[str], section_header: str, model_name: str) -> int:
     """Find where to insert a missing model block in a README performance table."""
     in_target = False
@@ -236,16 +249,29 @@ def update_decode_rows(lines: list[str], model_name: str, quant: str, vals: dict
         print(f"  WARN: decode pt=128 row not found for {model_name!r} {quant!r}")
         return 0
 
+    headers = _table_header_cells(lines, "Decode throughput")
+    try:
+        mlx_col = headers.index("mlx_lm")
+        direct_col = headers.index("ax direct baseline")
+    except ValueError:
+        print("  WARN: decode table does not contain mlx_lm and ax direct baseline columns")
+        return 0
+    ngram_col = headers.index("ax default n-gram") if "ax default n-gram" in headers else None
+
     for pt, idx in collect_prompt_rows(lines, anchor):
         ref       = vals.get(("mlx_lm", pt), {}).get("decode")
         ax_direct = vals.get(("ax_engine_mlx", pt), {}).get("decode")
         ax_ngram  = vals.get(("ax_engine_mlx_ngram_accel", pt), {}).get("decode")
         if ref is None or ax_direct is None:
             continue
-        new_cells = [fmt_num(ref), cell_decode_direct(ax_direct, ref)]
-        if ax_ngram is not None:
-            new_cells.append(cell_decode_ngram(ax_ngram, ref))
-        lines[idx] = replace_trailing_cells(lines[idx], new_cells)
+        cells = _split_cells(lines[idx])
+        if len(cells) <= max(mlx_col, direct_col):
+            continue
+        cells[mlx_col] = fmt_num(ref)
+        cells[direct_col] = cell_decode_direct(ax_direct, ref)
+        if ax_ngram is not None and ngram_col is not None and len(cells) > ngram_col:
+            cells[ngram_col] = cell_decode_ngram(ax_ngram, ref)
+        lines[idx] = _join_cells(cells)
         changed += 1
 
     return changed

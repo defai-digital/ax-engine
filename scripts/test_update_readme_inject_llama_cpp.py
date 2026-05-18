@@ -41,6 +41,22 @@ def _row(slug: str, prefill_128: float, prefill_512: float, decode: float, ttft_
     }
 
 
+def _row_with_depth_decode(
+    slug: str,
+    prefill_128: float,
+    prefill_512: float,
+    decode: float,
+    depth_decode: float,
+    ttft_128: float,
+    ttft_512: float,
+) -> dict:
+    row = _row(slug, prefill_128, prefill_512, decode, ttft_128, ttft_512)
+    for cell in row["result_doc"]["results"]:
+        offset = 0.0 if int(cell["prompt_tokens"]) == 128 else 1.0
+        cell["decode_at_depth_tok_s"] = {"median": depth_decode + offset}
+    return row
+
+
 SAMPLE_README = """\
 # Title
 
@@ -99,6 +115,26 @@ class InjectorTests(unittest.TestCase):
         self.assertEqual(lookup[("Qwen 3.6 27B", "5-bit", 128)]["decode"], 95.0)
         self.assertEqual(lookup[("Qwen 3.6 27B", "6-bit", 512)]["prefill"], 2400.0)
         self.assertEqual(lookup[("Qwen 3.6 27B", "8-bit", 512)]["ttft"], 225.0)
+
+    def test_lookup_prefers_llama_cpp_decode_at_depth_when_present(self) -> None:
+        doc = {
+            "rows": [
+                _row_with_depth_decode(
+                    "gemma-4-e2b-it-4bit",
+                    3500.0,
+                    7000.0,
+                    160.0,
+                    140.0,
+                    36.0,
+                    73.0,
+                )
+            ],
+        }
+
+        lookup = inj.build_llama_lookup(doc)
+
+        self.assertEqual(lookup[("Gemma 4 E2B", "4-bit", 128)]["decode"], 140.0)
+        self.assertEqual(lookup[("Gemma 4 E2B", "4-bit", 512)]["decode"], 141.0)
 
     def test_apply_injects_column_in_all_three_tables(self) -> None:
         out, stats = inj.apply(SAMPLE_README, self.sweep_doc)
@@ -185,6 +221,20 @@ class InjectorTests(unittest.TestCase):
         stripped = [c.strip() for c in qwen_128_line.split("|")[1:-1]]
         self.assertEqual(stripped[3], "n/a")
         self.assertEqual(stripped[4], "968.2")
+
+    def test_partial_update_preserves_existing_llama_cells(self) -> None:
+        full, _ = inj.apply(SAMPLE_README, self.sweep_doc)
+        partial = {"rows": [_row("gemma-4-e2b-it-4bit", 3600.0, 7100.0, 170.0, 35.0, 72.0)]}
+
+        out, _ = inj.apply(full, partial)
+
+        gemma_128_line = next(l for l in out.splitlines() if "2,615.9" in l)
+        gemma_128 = [c.strip() for c in gemma_128_line.split("|")[1:-1]]
+        self.assertEqual(gemma_128[3], "3,600.0")
+
+        qwen_128_line = next(l for l in out.splitlines() if "968.2" in l)
+        qwen_128 = [c.strip() for c in qwen_128_line.split("|")[1:-1]]
+        self.assertEqual(qwen_128[3], "1,800.0")
 
 
 if __name__ == "__main__":

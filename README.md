@@ -195,10 +195,15 @@ visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
 and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-These rows are a provenance-tracked composite from
-`benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/`. All rows use
-the same prompt contract, generation=128 shape, prompt SHA checks, 5
-repetitions, a 15-second cooldown between trials, and production-build binaries.
+These rows are a provenance-tracked composite. The base artifact set is
+`benchmarks/results/mlx-inference/2026-05-18-gguf-full-stack/`; refreshed
+Gemma 4 E2B 4-bit overlays come from
+`benchmarks/results/mlx-inference/2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/`
+for the `llama.cpp Metal*` column and
+`benchmarks/results/mlx-inference/2026-05-18-ax-direct-gemma-e2b-4bit-sanity/`
+for AX direct rows. All rows use the same generation=128 shape, 5 repetitions,
+a 15-second cooldown between trials, and production-build binaries. MLX and AX
+rows also use matching prompt SHA checks.
 Percentages are versus `mlx_lm`. The `llama.cpp Metal*` column is a
 shape-compatible external reference; it does not share prompt-token hashes with
 the MLX rows.
@@ -210,9 +215,9 @@ the MLX rows.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 3,431.8 | 2,536.3 | **3,780.4 (+49.0%)** |
-|         |         | 512 | 7,125.8 | 8,243.4 | **8,272.6 (+0.4%)** |
-|         |         | 2048 | 7,062.2 | 17,851.0 | 8,011.4 (-55.1%) |
+| Gemma 4 E2B | 4-bit | 128 | 3,662.6 | 2,536.3 | **3,884.1 (+53.1%)** |
+|         |         | 512 | 7,167.4 | 8,243.4 | **8,367.8 (+1.5%)** |
+|         |         | 2048 | 7,273.7 | 17,851.0 | 7,917.3 (-55.6%) |
 | Gemma 4 E2B | 5-bit | 128 | 3,382.0 | 2,399.6 | **3,783.3 (+57.7%)** |
 |         |         | 512 | 7,175.2 | 8,064.6 | **8,257.1 (+2.4%)** |
 |         |         | 2048 | 7,165.1 | 17,725.6 | 7,516.3 (-57.6%) |
@@ -249,9 +254,9 @@ effective throughput, not raw model-kernel speed.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 157.6 | 211.2 | 183.1 (-13.3%) | **580.1 (+174.6%)** |
-|         |         | 512 | 158.5 | 206.0 | 178.3 (-13.5%) | **576.1 (+179.7%)** |
-|         |         | 2048 | 154.3 | 192.2 | 176.9 (-7.9%) | **531.0 (+176.3%)** |
+| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 187.2 (-11.4%) | **580.1 (+174.6%)** |
+|  |  | 512 | 154.5 | 206.0 | 179.2 (-13.0%) | **576.1 (+179.7%)** |
+|  |  | 2048 | 162.2 | 192.2 | 173.1 (-10.0%) | **531.0 (+176.3%)** |
 | Gemma 4 E2B | 5-bit | 128 | 151.4 | 195.1 | 174.3 (-10.6%) | **448.4 (+129.9%)** |
 |         |         | 512 | 153.8 | 188.3 | 168.0 (-10.8%) | **444.2 (+136.0%)** |
 |         |         | 2048 | 154.2 | 181.3 | 157.0 (-13.4%) | **425.7 (+134.9%)** |
@@ -299,9 +304,9 @@ stream.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 37.3 | 50.5 | **33.9 (-32.9%)** |
-|         |         | 512 | 71.9 | 62.1 | **61.9 (-0.4%)** |
-|         |         | 2048 | 290.0 | 114.7 | 255.6 (+122.8%) |
+| Gemma 4 E2B | 4-bit | 128 | 34.9 | 50.5 | **33.0 (-34.7%)** |
+|         |         | 512 | 71.4 | 62.1 | **61.2 (-1.5%)** |
+|         |         | 2048 | 281.6 | 114.7 | 258.7 (+125.5%) |
 | Gemma 4 E2B | 5-bit | 128 | 37.8 | 53.3 | **33.8 (-36.6%)** |
 |         |         | 512 | 71.4 | 63.5 | **62.0 (-2.3%)** |
 |         |         | 2048 | 285.8 | 115.5 | 272.5 (+135.8%) |

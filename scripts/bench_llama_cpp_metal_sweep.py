@@ -305,6 +305,8 @@ def run_bench_for_row(
     cooldown: float,
     n_gpu_layers: int,
     extra_args: str | None,
+    flash_attn: bool,
+    decode_at_depth: bool,
     model_args: list[str],
     full_stack: bool,
     build_ax_engine: bool,
@@ -343,14 +345,19 @@ def run_bench_for_row(
         "--output",
         str(out_json),
     ]
+    llama_cpp_extra_args = extra_args
+    if flash_attn:
+        llama_cpp_extra_args = "-fa 1" if not llama_cpp_extra_args else f"-fa 1 {llama_cpp_extra_args}"
+    if decode_at_depth:
+        cmd.append("--llama-cpp-decode-at-depth")
     if full_stack:
         cmd.append("--ax-compare-policies")
         if not build_ax_engine:
             cmd.append("--no-build-ax-engine")
     else:
         cmd.extend(["--skip-mlx-lm", "--skip-ax-engine", "--no-build-ax-engine"])
-    if extra_args:
-        cmd.extend(["--llama-cpp-extra-args", extra_args])
+    if llama_cpp_extra_args:
+        cmd.extend(["--llama-cpp-extra-args", llama_cpp_extra_args])
 
     log(f"  invoke: {' '.join(cmd)}")
     with log_path.open("w") as fh:
@@ -569,6 +576,20 @@ def main() -> None:
         help="Forwarded to bench_mlx_inference_stack.py --llama-cpp-extra-args.",
     )
     parser.add_argument(
+        "--llama-cpp-flash-attn",
+        action="store_true",
+        help="Forward '-fa 1' to llama-bench for llama.cpp Metal rows.",
+    )
+    parser.add_argument(
+        "--llama-cpp-decode-at-depth",
+        action="store_true",
+        help=(
+            "Forward --llama-cpp-decode-at-depth so each llama.cpp row also "
+            "records `llama-bench -p 0 -n <generation> -d <prompt>` decode "
+            "evidence."
+        ),
+    )
+    parser.add_argument(
         "--keep-gguf",
         action="store_true",
         help="Keep downloaded GGUFs after each row (default: delete to save disk).",
@@ -732,6 +753,8 @@ def main() -> None:
             cooldown=args.cooldown,
             n_gpu_layers=args.n_gpu_layers,
             extra_args=args.extra_args,
+            flash_attn=args.llama_cpp_flash_attn,
+            decode_at_depth=args.llama_cpp_decode_at_depth,
             model_args=model_args,
             full_stack=args.full_stack,
             build_ax_engine=not args.no_build_ax_engine,
@@ -758,6 +781,8 @@ def main() -> None:
         "repetitions": args.repetitions,
         "n_gpu_layers": args.n_gpu_layers,
         "extra_args": args.extra_args,
+        "llama_cpp_flash_attn": args.llama_cpp_flash_attn,
+        "llama_cpp_decode_at_depth": args.llama_cpp_decode_at_depth,
         "full_stack": args.full_stack,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)),
         "elapsed_seconds": round(elapsed, 1),

@@ -24,7 +24,14 @@ sys.modules["bench_llama_cpp_metal_sweep"] = sweep
 
 
 class BenchLlamaCppMetalSweepTests(unittest.TestCase):
-    def _run_one(self, *, full_stack: bool) -> list[str]:
+    def _run_one(
+        self,
+        *,
+        full_stack: bool,
+        flash_attn: bool = False,
+        decode_at_depth: bool = False,
+        extra_args: str | None = None,
+    ) -> list[str]:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             model_dir = tmp_path / "model"
@@ -56,7 +63,9 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
                     repetitions=3,
                     cooldown=0.0,
                     n_gpu_layers=99,
-                    extra_args=None,
+                    extra_args=extra_args,
+                    flash_attn=flash_attn,
+                    decode_at_depth=decode_at_depth,
                     model_args=["--model-dir", str(model_dir)],
                     full_stack=full_stack,
                     build_ax_engine=False,
@@ -78,6 +87,18 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
         self.assertIn("--no-build-ax-engine", cmd)
         self.assertNotIn("--skip-mlx-lm", cmd)
         self.assertNotIn("--skip-ax-engine", cmd)
+
+    def test_forwards_llama_cpp_depth_and_flash_attention(self) -> None:
+        cmd = self._run_one(
+            full_stack=False,
+            flash_attn=True,
+            decode_at_depth=True,
+            extra_args="-ctk q8_0",
+        )
+        self.assertIn("--llama-cpp-decode-at-depth", cmd)
+        self.assertIn("--llama-cpp-extra-args", cmd)
+        forwarded = cmd[cmd.index("--llama-cpp-extra-args") + 1]
+        self.assertEqual(forwarded, "-fa 1 -ctk q8_0")
 
     def test_resolve_mlx_model_args_falls_back_to_ready_hf_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -95,7 +95,9 @@ def build_llama_lookup(sweep_doc: dict[str, Any]) -> dict[tuple[str, str, int], 
                 continue
             pt = int(cell["prompt_tokens"])
             prefill = cell["prefill_tok_s"].get("median")
-            decode = cell["decode_tok_s"].get("median")
+            decode_source = cell.get("decode_at_depth_tok_s")
+            decode_metric = decode_source if isinstance(decode_source, dict) else cell["decode_tok_s"]
+            decode = decode_metric.get("median")
             ttft_raw = cell.get("ttft_ms")
             ttft = ttft_raw.get("median") if isinstance(ttft_raw, dict) else None
             out[(model_name, quant, pt)] = {
@@ -180,6 +182,15 @@ def _strip_existing_llama_column(cells: list[str]) -> tuple[list[str], bool]:
     return cells, False
 
 
+def _pop_existing_llama_cell(cells: list[str], strip_position: int | None) -> str | None:
+    if strip_position is None:
+        return None
+    pop_index = strip_position if strip_position >= 0 else len(cells) + strip_position
+    if 0 <= pop_index < len(cells):
+        return cells.pop(pop_index).strip()
+    return None
+
+
 def inject_column(
     lines: list[str],
     section_header_prefix: str,
@@ -227,8 +238,7 @@ def inject_column(
 
             if _SEPARATOR_RE.match(row):
                 cells = _split_cells(row)
-                if strip_position is not None and len(cells) > abs(strip_position):
-                    cells.pop(strip_position)
+                _pop_existing_llama_cell(cells, strip_position)
                 cells.insert(_LLAMA_COL_INDEX, f" {LLAMA_SEPARATOR_CELL} ")
                 out.append(_join_cells(cells))
                 i += 1
@@ -238,14 +248,18 @@ def inject_column(
             if pt_match:
                 pt = int(pt_match.group(1))
                 cells = _split_cells(row)
-                if strip_position is not None and len(cells) > abs(strip_position):
-                    cells.pop(strip_position)
+                existing_llama_cell = _pop_existing_llama_cell(cells, strip_position)
                 if cells[0].strip():
                     current_model = cells[0].strip()
                 if cells[1].strip():
                     current_quant = cells[1].strip()
                 value = lookup.get((current_model, current_quant, pt))
-                cell_text = fmt_num(value[metric_key] if value else None)
+                if value:
+                    cell_text = fmt_num(value[metric_key])
+                elif existing_llama_cell:
+                    cell_text = existing_llama_cell
+                else:
+                    cell_text = fmt_num(None)
                 cells.insert(_LLAMA_COL_INDEX, f" {cell_text} ")
                 out.append(_join_cells(cells))
                 i += 1

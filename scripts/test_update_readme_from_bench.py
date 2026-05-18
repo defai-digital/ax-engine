@@ -35,6 +35,30 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
             ("Qwen 3.6 35B A3B", "4-bit"),
         )
 
+    def test_decode_direct_only_update_preserves_existing_ngram_column(self) -> None:
+        lines = [
+            "### Decode throughput (tok/s) — generation=128 tokens, temp=0",
+            "",
+            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |",
+            "|---|---|---:| ---: |---:|---:|---:|",
+            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) | **580.1 (+174.6%)** |",
+            "|         |         | 512 | 154.5 | 206.0 | 178.3 (-13.5%) | **576.1 (+179.7%)** |",
+            "",
+            "### Time to first token",
+        ]
+        vals = {
+            ("mlx_lm", 128): {"decode": 200.0},
+            ("ax_engine_mlx", 128): {"decode": 180.0},
+            ("mlx_lm", 512): {"decode": 190.0},
+            ("ax_engine_mlx", 512): {"decode": 195.0},
+        }
+
+        changed = updater.update_decode_rows(lines, "Gemma 4 E2B", "4-bit", vals)
+
+        self.assertEqual(changed, 2)
+        self.assertIn("| Gemma 4 E2B | 4-bit | 128 | 157.5 | 200.0 | 180.0 (-10.0%) | **580.1 (+174.6%)** |", lines)
+        self.assertIn("|  |  | 512 | 154.5 | 190.0 | **195.0 (+2.6%)** | **576.1 (+179.7%)** |", lines)
+
 
 if __name__ == "__main__":
     unittest.main()
