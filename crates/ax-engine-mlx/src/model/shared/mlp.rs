@@ -218,18 +218,39 @@ pub(crate) fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
 }
 
 pub(crate) fn per_layer_input_gate(gate: &MlxArray, per_layer_input: &MlxArray) -> MlxArray {
+    // W5 known limitation (2026-05-18): even with a dedicated
+    // `(ThreadId, last_dim)` cache, calling the compiled path from
+    // `families::standard::layer_forward` aborts MLX C inside
+    // `mlx_closure_apply` on the Gemma 4 E2B 4-bit warmup request. The
+    // compile path is therefore disabled by default
+    // (`AX_MLX_PER_LAYER_GATE_COMPILE=0`) until the remaining trigger is
+    // root-caused. Operators can enable for repro with
+    // `AX_MLX_PER_LAYER_GATE_COMPILE=1`.
+    if !fastpath::per_layer_gate_compile_enabled() {
+        return per_layer_input_gate_imperative(gate, per_layer_input);
+    }
+
+    per_layer_input_gate_compiled(gate, per_layer_input)
+        .unwrap_or_else(|| per_layer_input_gate_imperative(gate, per_layer_input))
+}
+
+fn per_layer_input_gate_imperative(gate: &MlxArray, per_layer_input: &MlxArray) -> MlxArray {
+    multiply(&gelu_approx(gate, None), per_layer_input, None)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn per_layer_input_gate_compiled(
+    gate: &MlxArray,
+    per_layer_input: &MlxArray,
+) -> Option<MlxArray> {
     use std::collections::HashMap;
     use std::collections::hash_map::Entry;
     use std::thread::ThreadId;
 
-    if !fastpath::per_layer_gate_compile_enabled() {
-        return multiply(&gelu_approx(gate, None), per_layer_input, None);
-    }
-
     const COMPILE_WRAP_LAST_DIM_CEILING: usize = 16_384;
     let last_dim = *gate.shape().last().unwrap_or(&0) as usize;
     if gate.ndim() > 3 || last_dim > COMPILE_WRAP_LAST_DIM_CEILING {
-        return multiply(&gelu_approx(gate, None), per_layer_input, None);
+        return None;
     }
 
     type PerLayerGateCompileKey = (ThreadId, usize);
@@ -259,12 +280,7 @@ pub(crate) fn per_layer_input_gate(gate: &MlxArray, per_layer_input: &MlxArray) 
             .and_then(|cls| cls.try_apply(&[gate, per_layer_input]).ok())
     };
 
-    if let Some(mut outputs) = outputs
-        && let Some(out) = outputs.pop()
-    {
-        return out;
-    }
-    multiply(&gelu_approx(gate, None), per_layer_input, None)
+    outputs.and_then(|mut outputs| outputs.pop())
 }
 
 /// SwiGLU compiled helper — mirrors `geglu()` but with SiLU activation.

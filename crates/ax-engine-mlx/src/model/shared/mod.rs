@@ -35,6 +35,8 @@ pub(super) use mla::{
     glm_mla_project_inputs, glm_mla_unembed_out,
 };
 #[cfg(test)]
-pub(super) use mlp::{geglu, moe_router_glm_from_logits, swiglu, switch_gather_inputs};
+pub(super) use mlp::{
+    geglu, moe_router_glm_from_logits, per_layer_input_gate_compiled, swiglu, switch_gather_inputs,
+};
 #[cfg(test)]
 pub(super) use utils::{QkvSlices, qkv_slices, scalar_like};

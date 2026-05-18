@@ -141,17 +141,23 @@ env_flag_default_on!(
     "AX_MLX_PREFILL_FFN_COMPILE_SWIGLU"
 );
 
-env_flag_default_on!(
+env_flag!(
     /// `AX_MLX_PER_LAYER_GATE_COMPILE` — Gemma 4 per-layer-input gate compile
     /// fusion.
     ///
-    /// **Default: ON** (kill-switch via `AX_MLX_PER_LAYER_GATE_COMPILE=0`).
-    ///
-    /// The helper uses a call-site dedicated cache keyed by `(ThreadId,
-    /// last_dim)` instead of reusing the GeGLU FFN cache. This avoids applying
-    /// the FFN closure compiled for `[1, seq, intermediate_size]` to Gemma 4
-    /// per-layer gate tensors shaped `[1, seq, hidden_size_per_layer_input]`,
-    /// which can abort inside `mlx_closure_apply`.
+    /// **Default: OFF** pending root-cause investigation. The helper uses a
+    /// call-site dedicated cache keyed by `(ThreadId, last_dim)` so it does
+    /// not collide with the FFN GeGLU cache (which is keyed by `ThreadId`
+    /// only). Even with the dedicated cache, a 2026-05-18 bench on Gemma 4
+    /// E2B 4-bit aborted inside `mlx_closure_apply` on the warmup request.
+    /// Same crash signature as the original shared-cache attempt. The
+    /// compile path is therefore kept off the default-on track until the
+    /// remaining trigger (suspected: per-layer-input dtype / tensor
+    /// identity pattern not covered by `mx.compile(shapeless=true)`) is
+    /// root-caused. Set to 1 only for crash-repro and follow-up
+    /// investigation; the call site in
+    /// `families::standard::layer_forward` step 19 will then take the
+    /// compile path and abort on this model class.
     per_layer_gate_compile_enabled,
     "AX_MLX_PER_LAYER_GATE_COMPILE"
 );

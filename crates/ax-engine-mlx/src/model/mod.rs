@@ -3563,7 +3563,8 @@ mod tests {
 
         let imperative = multiply(&gelu_approx(&gate, None), &pli, None);
         let imperative_f32 = astype(&imperative, MlxDtype::Float32, None);
-        let compiled = per_layer_input_gate(&gate, &pli);
+        let compiled = per_layer_input_gate_compiled(&gate, &pli)
+            .expect("small per-layer gate shape should be compile-eligible");
         let compiled_f32 = astype(&compiled, MlxDtype::Float32, None);
 
         eval(&[&imperative_f32, &compiled_f32]);
@@ -3589,7 +3590,8 @@ mod tests {
             None,
         );
         let compiled_short = astype(
-            &per_layer_input_gate(&gate_short, &pli_short),
+            &per_layer_input_gate_compiled(&gate_short, &pli_short)
+                .expect("same last-dim per-layer gate shape should be compile-eligible"),
             MlxDtype::Float32,
             None,
         );
