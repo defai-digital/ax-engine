@@ -25,15 +25,15 @@ ARTIFACT_LABELS = {
     "qwen3_6-27b-4bit": ("Qwen 3.6 27B", "4-bit"),
     "qwen3_6-27b-5bit": (
         "Qwen 3.6 27B",
-        "MLX 5-bit",
+        "5-bit",
     ),
     "qwen3_6-27b-6bit": (
         "Qwen 3.6 27B",
-        "MLX 6-bit",
+        "6-bit",
     ),
     "qwen3_6-27b-8bit": (
         "Qwen 3.6 27B",
-        "MLX 8-bit",
+        "8-bit",
     ),
     "qwen3_6-35b-a3b-4bit": ("Qwen 3.6 35B A3B", "4-bit"),
     "qwen3-coder-next-4bit": ("Qwen Coder Next", "4-bit"),
@@ -191,7 +191,7 @@ def parse_percent_cell(cell: str) -> float | None:
 
 def is_unavailable_cell(cell: str) -> bool:
     normalized = cell.strip().lower()
-    return normalized in {"n/a", "na", "-"}
+    return normalized in {"n/a", "na", "-", "—"} or normalized.startswith("— ")
 
 
 def split_markdown_row(line: str) -> list[str]:
@@ -895,7 +895,20 @@ def validate_ax_prefill_decode_split(
         key="prefill_s",
     )
     generation_tokens = int(row.get("generation_tokens", 0))
-    if generation_tokens > 1:
+    telemetry = row.get("ax_mlx_telemetry")
+    if not isinstance(telemetry, dict):
+        raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks AX MLX telemetry")
+    for key in ("ax_mlx_prefill_steps", "ax_mlx_decode_steps"):
+        if key not in telemetry:
+            raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks {key}")
+    decode_route = row.get("ax_mlx_decode_route")
+    no_decode_steps = (
+        generation_tokens > 1
+        and int(telemetry.get("ax_mlx_decode_steps", 0)) == 0
+        and isinstance(decode_route, dict)
+        and decode_route.get("classification") == "no_decode_steps"
+    )
+    if generation_tokens > 1 and not no_decode_steps:
         validate_positive_metric_summary(
             artifact_path=artifact_path,
             row=row,
@@ -903,17 +916,15 @@ def validate_ax_prefill_decode_split(
         )
     else:
         validate_metric_summary(artifact_path=artifact_path, row=row, key="decode_s")
-    telemetry = row.get("ax_mlx_telemetry")
-    if not isinstance(telemetry, dict):
-        raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks AX MLX telemetry")
-    for key in ("ax_mlx_prefill_steps", "ax_mlx_decode_steps"):
-        if key not in telemetry:
-            raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks {key}")
     if int(telemetry.get("ax_mlx_prefill_steps", 0)) <= 0:
         raise ArtifactCheckError(
             f"{artifact_path} {row.get('engine')} lacks positive ax_mlx_prefill_steps"
         )
-    if generation_tokens > 1 and int(telemetry.get("ax_mlx_decode_steps", 0)) <= 0:
+    if (
+        generation_tokens > 1
+        and not no_decode_steps
+        and int(telemetry.get("ax_mlx_decode_steps", 0)) <= 0
+    ):
         raise ArtifactCheckError(
             f"{artifact_path} {row.get('engine')} lacks positive ax_mlx_decode_steps"
         )
@@ -948,6 +959,11 @@ def validate_ngram_claim_telemetry(
             f"{artifact_path} n-gram row lacks telemetry counters: {', '.join(missing)}"
         )
     status = row.get("ax_decode_claim_status")
+    decode_route = row.get("ax_mlx_decode_route")
+    no_decode_steps = (
+        isinstance(decode_route, dict)
+        and decode_route.get("classification") == "no_decode_steps"
+    )
     attempts = int(telemetry.get("ax_ngram_draft_attempts", 0))
     accepted = int(telemetry.get("ax_ngram_accepted_tokens", 0))
     fallback_steps = int(telemetry.get("ax_ngram_no_draft_steps", 0)) + int(
@@ -969,6 +985,12 @@ def validate_ngram_claim_telemetry(
         raise ArtifactCheckError(
             f"{artifact_path} claims n-gram no-accept fallback with inconsistent telemetry"
         )
+    if status == "ngram_no_observed_draft_path" and (
+        not no_decode_steps or attempts != 0 or accepted != 0
+    ):
+        raise ArtifactCheckError(
+            f"{artifact_path} claims no observed n-gram draft path with inconsistent telemetry"
+        )
 
 
 def validate_delegated_metrics_if_present(
@@ -978,7 +1000,9 @@ def validate_delegated_metrics_if_present(
         return
     engine = str(row.get("engine", ""))
     delegated = row.get("delegated_backend") == "llama.cpp" or engine.startswith("llama_cpp")
-    if delegated and not isinstance(row.get("llama_cpp_delegated_metrics"), dict):
+    has_legacy_metrics = isinstance(row.get("llama_cpp_delegated_metrics"), dict)
+    has_current_metadata = isinstance(row.get("llama_cpp"), dict)
+    if delegated and not (has_legacy_metrics or has_current_metadata):
         raise ArtifactCheckError(f"{artifact_path} llama.cpp delegated row lacks metrics")
 
 
@@ -1153,6 +1177,7 @@ def validate_artifact_row(
             "ngram_acceleration_effective_throughput",
             "ngram_no_draft_direct_fallback",
             "ngram_no_accept_fallback",
+            "ngram_no_observed_draft_path",
         }:
             raise ArtifactCheckError(f"{artifact_path} n-gram row lacks claim status")
         validate_ax_prefill_decode_split(

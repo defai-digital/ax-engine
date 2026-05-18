@@ -90,13 +90,13 @@ class UpdateReadmeLlamaCppTests(unittest.TestCase):
             _ok_row(
                 "qwen3_6-27b-5bit",
                 "Qwen 3.6 27B",
-                "MLX 5-bit",
+                "5-bit",
                 quant_target="Q5_K_M",
             )
         ])
         out = upd.render_section(doc)
         self.assertIn("Qwen 3.6 27B", out)
-        self.assertIn("MLX 5-bit", out)
+        self.assertIn("5-bit", out)
         self.assertIn("Q5_K_M", out)
 
     def test_splice_section_inserts_before_embedding_header(self) -> None:

@@ -122,7 +122,7 @@
     {
       "slug": "qwen3_6-27b-5bit",
       "readme_model": "Qwen 3.6 27B",
-      "readme_quant": "MLX 5-bit",
+      "readme_quant": "5-bit",
       "mlx_local_dir": ".internal/models/Qwen3.6-27B-5bit",
       "mlx_repo_id": "mlx-community/Qwen3.6-27B-5bit",
       "hf_arch": "Qwen3_5ForConditionalGeneration",
@@ -136,7 +136,7 @@
     {
       "slug": "qwen3_6-27b-6bit",
       "readme_model": "Qwen 3.6 27B",
-      "readme_quant": "MLX 6-bit",
+      "readme_quant": "6-bit",
       "mlx_local_dir": ".internal/models/Qwen3.6-27B-6bit",
       "mlx_repo_id": "mlx-community/Qwen3.6-27B-6bit",
       "hf_arch": "Qwen3_5ForConditionalGeneration",
@@ -150,7 +150,7 @@
     {
       "slug": "qwen3_6-27b-8bit",
       "readme_model": "Qwen 3.6 27B",
-      "readme_quant": "MLX 8-bit",
+      "readme_quant": "8-bit",
       "mlx_local_dir": ".internal/models/Qwen3.6-27B-8bit",
       "mlx_repo_id": "mlx-community/Qwen3.6-27B-8bit",
       "hf_arch": "Qwen3_5ForConditionalGeneration",

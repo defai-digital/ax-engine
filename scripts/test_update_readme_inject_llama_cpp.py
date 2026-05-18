@@ -96,9 +96,9 @@ class InjectorTests(unittest.TestCase):
             ],
         }
         lookup = inj.build_llama_lookup(doc)
-        self.assertEqual(lookup[("Qwen 3.6 27B", "MLX 5-bit", 128)]["decode"], 95.0)
-        self.assertEqual(lookup[("Qwen 3.6 27B", "MLX 6-bit", 512)]["prefill"], 2400.0)
-        self.assertEqual(lookup[("Qwen 3.6 27B", "MLX 8-bit", 512)]["ttft"], 225.0)
+        self.assertEqual(lookup[("Qwen 3.6 27B", "5-bit", 128)]["decode"], 95.0)
+        self.assertEqual(lookup[("Qwen 3.6 27B", "6-bit", 512)]["prefill"], 2400.0)
+        self.assertEqual(lookup[("Qwen 3.6 27B", "8-bit", 512)]["ttft"], 225.0)
 
     def test_apply_injects_column_in_all_three_tables(self) -> None:
         out, stats = inj.apply(SAMPLE_README, self.sweep_doc)

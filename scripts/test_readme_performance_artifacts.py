@@ -189,6 +189,51 @@ def add_boundary_readme_claims(
 
 
 class ReadmePerformanceArtifactTests(unittest.TestCase):
+    def test_unavailable_cells_allow_annotated_no_decode_text(self) -> None:
+        self.assertTrue(checker.is_unavailable_cell("— (no decode)†"))
+        self.assertTrue(checker.is_unavailable_cell("—"))
+        self.assertFalse(checker.is_unavailable_cell("12.7 (-55.0%)"))
+
+    def test_llama_cpp_rows_accept_current_metadata_key(self) -> None:
+        checker.validate_delegated_metrics_if_present(
+            artifact_path=Path("artifact.json"),
+            row={"engine": "llama_cpp_metal", "llama_cpp": {"build_commit": "abc"}},
+            require_phase0=True,
+        )
+
+    def test_ax_split_allows_explicit_no_decode_steps(self) -> None:
+        row = {
+            "engine": "ax_engine_mlx",
+            "generation_tokens": 128,
+            "prefill_s": metric(1.0),
+            "decode_s": metric(0.0),
+            "ax_mlx_telemetry": {
+                "ax_mlx_prefill_steps": 1,
+                "ax_mlx_decode_steps": 0,
+            },
+            "ax_mlx_decode_route": {"classification": "no_decode_steps"},
+        }
+        checker.validate_ax_prefill_decode_split(
+            artifact_path=Path("artifact.json"),
+            row=row,
+            require_phase0=False,
+        )
+
+    def test_ngram_telemetry_allows_no_observed_draft_path_for_no_decode(self) -> None:
+        row = {
+            "ax_decode_claim_status": "ngram_no_observed_draft_path",
+            "ax_mlx_decode_route": {"classification": "no_decode_steps"},
+            "ngram_acceleration_telemetry": ngram_telemetry(
+                attempts=0,
+                accepted=0,
+            ),
+        }
+        checker.validate_ngram_claim_telemetry(
+            artifact_path=Path("artifact.json"),
+            row=row,
+            require_phase0=True,
+        )
+
     def write_fixture(
         self,
         root: Path,
