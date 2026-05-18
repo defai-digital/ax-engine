@@ -256,7 +256,13 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 
 Higher is better. `ax direct baseline` disables n-gram acceleration.
 `ax default n-gram` is the default AX decode policy and reports observed
-effective throughput, not raw model-kernel speed.
+effective throughput, not raw model-kernel speed. For how the n-gram
+drafter works, when it accelerates, and when bench rows can collapse
+into a repeated-output regime that magnifies the reported speedup, see
+[`docs/NGRAM-ACCELERATION.md`](docs/NGRAM-ACCELERATION.md) — in
+particular the
+[decode degeneracy](docs/NGRAM-ACCELERATION.md#decode-degeneracy-on-synthetic-benchmark-prompts)
+section.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|
