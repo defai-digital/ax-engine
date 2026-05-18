@@ -458,6 +458,58 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         delay_value = command_args[command_args.index("--delay") + 1]
         self.assertEqual(delay_value, "3")
 
+    def test_run_llama_cpp_metal_benchmark_sets_ubatch_to_match_prompt(self) -> None:
+        # Regression guard: llama-bench defaults `-ub` to 512, which silently
+        # caps p=2048 prefill throughput at ~7k tok/s. The bench harness must
+        # set `-ub` to match the prompt length (capped at 2048) so the
+        # comparison against mlx-lm is apples-to-apples instead of
+        # llama.cpp-fighting-with-one-hand.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "llama-bench"
+            gguf = root / "model.gguf"
+            binary.write_text("#!/bin/sh\n")
+            gguf.write_text("gguf")
+            prompt = bench.write_prompt_tokens(
+                root,
+                prompt_tokens=2048,
+                generation_tokens=128,
+                vocab_size=100,
+                tokens=list(range(2048)),
+            )
+            prompt["token_ids"] = list(range(2048))
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {"backends": "Metal", "n_prompt": 2048, "n_gen": 0, "avg_ts": 1.0, "samples_ts": [1.0]},
+                        {"backends": "Metal", "n_prompt": 0, "n_gen": 128, "avg_ts": 1.0, "samples_ts": [1.0]},
+                    ]
+                ),
+                stderr="",
+            )
+            with (
+                patch.object(bench.subprocess, "run", return_value=completed) as run,
+                patch.object(bench, "collect_llama_cpp_device_evidence", return_value=None),
+            ):
+                bench.run_llama_cpp_metal_benchmark(
+                    binary,
+                    gguf,
+                    prompt_tokens=2048,
+                    generation_tokens=128,
+                    repetitions=1,
+                    cooldown=1,
+                    n_gpu_layers=99,
+                    prompt_doc=prompt,
+                    extra_args=None,
+                )
+        command_args = run.call_args.args[0]
+        ub_value = command_args[command_args.index("-ub") + 1]
+        b_value = command_args[command_args.index("-b") + 1]
+        self.assertEqual(ub_value, "2048")
+        self.assertEqual(b_value, "2048")
+
     def test_parse_llama_cpp_bench_json_requires_metal_backend(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "Metal/MTL backend"):
             bench.parse_llama_cpp_bench_json(

@@ -55,6 +55,33 @@ fn direct_pipeline_barrier_enabled() -> bool {
 /// Process the full prompt in chunks of `chunk_size` tokens.
 ///
 /// Returns the sampled next-token ID from the last-token logits.
+///
+/// # Known prefill-throughput gap vs `mlx-lm`
+///
+/// Empirically (`benchmarks/results/mlx-inference/2026-05-18-gguf-full-stack/`),
+/// AX prefill on Gemma 4 E2B 4-bit @ p=2048 measures ~8k tok/s while
+/// `mlx-lm` measures ~17.8k tok/s. The gap is **not** in this function's
+/// flow control — AX already runs the full prompt in a single forward when
+/// `chunk_size >= prompt_len`, and `forward()` already slices to the last
+/// position before final-norm + `lm_head` (see
+/// `crates/ax-engine-mlx/src/model/mod.rs::forward` line 287-295).
+///
+/// The remaining gap is `mlx-lm`'s lazy-evaluation prune of the **last
+/// layer's MLP**: `mlx-lm` discards the model's `[seq, vocab]` output, then
+/// only forces `mx.eval([c.state for c in cache])`. Because MLX evaluates
+/// top-down from the requested outputs, the last transformer layer's MLP +
+/// residual (whose `h` output is not in any cache) is pruned for all `seq`
+/// positions. AX materialises that MLP for all positions before slicing
+/// to last in `forward()`.
+///
+/// A future PR can close this gap by threading a `LogitsScope::LastOnly`
+/// flag through `forward()` and every model family's `layer_forward` so
+/// the last layer slices to last position **before** MLP. That change
+/// touches `families::{standard, qwen3_linear, llama4, glm4_moe_lite,
+/// deepseek_v3, mistral3, mixtral}::layer_forward` and is scoped to a
+/// follow-up because the surface is broad. See
+/// `benchmarks/results/mlx-inference/2026-05-18-gguf-full-stack/`
+/// `gemma-4-e2b-it-4bit.json` for the baseline this should improve.
 pub fn chunked_prefill(
     cfg: &ModelConfig,
     weights: &ModelWeights,

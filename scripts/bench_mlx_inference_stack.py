@@ -2513,6 +2513,14 @@ def run_llama_cpp_metal_benchmark(
             file=sys.stderr,
         )
 
+    # llama-bench defaults to `-ub 512` (physical batch size) regardless of
+    # `-p`, which artificially caps prefill throughput on prompts longer than
+    # 512 tokens because the work is internally chunked four times for a
+    # p=2048 prompt. Match the physical batch to the prompt length (capped at
+    # 2048 to match mlx-lm's prefill_step_size default) so prefill is a single
+    # full forward pass — the apples-to-apples comparison the bench claims.
+    ubatch = min(max(prompt_tokens, 512), 2048)
+    lbatch = max(ubatch, 2048)
     cmd = [
         str(binary),
         "-m",
@@ -2527,6 +2535,10 @@ def run_llama_cpp_metal_benchmark(
         str(delay_seconds),
         "-ngl",
         str(n_gpu_layers),
+        "-b",
+        str(lbatch),
+        "-ub",
+        str(ubatch),
         "-o",
         "json",
     ]
@@ -2604,6 +2616,12 @@ def attach_llama_cpp_decode_at_depth_benchmark(
         raise RuntimeError(f"llama.cpp GGUF model not found: {gguf}")
 
     delay_seconds = max(0, round(cooldown))
+    # See run_llama_cpp_metal_benchmark: ubatch defaults to 512 unless we set
+    # it to match the context-depth that's being pre-filled. Without this,
+    # decode-at-depth understates llama.cpp's throughput because the
+    # depth-pre-fill itself runs in 512-token chunks.
+    ubatch = min(max(context_depth_tokens, 512), 2048)
+    lbatch = max(ubatch, 2048)
     cmd = [
         str(binary),
         "-m",
@@ -2620,6 +2638,10 @@ def attach_llama_cpp_decode_at_depth_benchmark(
         str(delay_seconds),
         "-ngl",
         str(n_gpu_layers),
+        "-b",
+        str(lbatch),
+        "-ub",
+        str(ubatch),
         "-o",
         "json",
     ]
