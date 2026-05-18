@@ -1,0 +1,5 @@
+[env]
+# MLX/Metal runtime state is thread-local but process-shared enough that the
+# ax-engine-mlx unit suite can crash under libtest's default parallel runner.
+# Keep the repository test harness deterministic unless a caller overrides it.
+RUST_TEST_THREADS = "1"
