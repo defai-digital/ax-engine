@@ -115,6 +115,24 @@ server URL, and `llama_cpp_preset` captures the parallel slot, batching, and
 cache-prompt configuration that must otherwise live in llama.cpp launch flags.
 This ensures the delegated controls are auditable from the artifact.
 
+#### Prefill chunk size
+
+`ax-engine-bench` defaults `mlx_prefill_chunk` to **2048** to match
+`mlx-lm`'s `prefill_step_size=2048` so dense-model comparisons are
+like-for-like. The MLX runner auto-clamps this per model family:
+
+| Model family | Effective chunk | Reason |
+|---|---|---|
+| Dense / full-attention (Qwen3, Llama-style) | 2048 | Bench default; matches `mlx_lm.generate` |
+| GatedDelta linear attention (Qwen3.5, Gemma 4, GLM 4.7 linear branch) | 512 | `GATED_DELTA_THREADGROUP_CACHE_CAPACITY` Metal kernel cap |
+| MLA (GLM 4 Flash MLA) | 16 | `MLA_DEFAULT_PREFILL_CHUNK` warm-extend alignment |
+
+Override on the CLI with `--prefill-chunk N` when a specific comparison
+needs a different size (for example, sweeping prefill geometry under
+`autotune`). The previous default (512 for all models) caused dense-model
+bench numbers to read ~4× slower than `mlx_lm.benchmark` purely from chunk
+asymmetry, not from runtime cost; the 2048 default closes that gap.
+
 ### sampling
 
 ```json

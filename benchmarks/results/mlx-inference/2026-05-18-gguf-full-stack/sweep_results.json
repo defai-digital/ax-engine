@@ -1,0 +1,140 @@
+{
+  "schema_version": "ax.llama_cpp_metal_sweep.v1",
+  "claim_boundary": "Rows produced from this manifest are shape-compatible external GGUF baselines only. llama-bench does not consume the ax/MLX prompt-token JSON, so the resulting numbers are NOT prompt-hash parity evidence. They may be shown side-by-side in README only with an explicit shape-compatible disclaimer, no llama.cpp percentage deltas, and no claim that the llama.cpp column is repo-owned MLX throughput evidence.",
+  "quant_mapping_policy": "MLX bit-width is mapped to the closest standard bartowski GGUF K-quant: 4-bit -> Q4_K_M, 5-bit -> Q5_K_M, 6-bit -> Q6_K, 8-bit -> Q8_0. bartowski is the required GGUF publisher for this inventory so llama.cpp rows stay on standard imatrix K-quants instead of Unsloth Dynamic UD variants. Architectural bit-for-bit equivalence is NOT claimed.",
+  "manifest_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/manifests/llama_cpp_metal/inventory.json",
+  "llama_bench": "/opt/homebrew/bin/llama-bench",
+  "prompt_tokens": "128,512,2048",
+  "generation_tokens": 128,
+  "repetitions": 5,
+  "n_gpu_layers": 99,
+  "extra_args": null,
+  "full_stack": true,
+  "started_at": "2026-05-18T01:31:42-0400",
+  "elapsed_seconds": 0.1,
+  "total_bytes_downloaded": 0,
+  "total_bytes_freed": 0,
+  "keep_gguf": true,
+  "rows": [
+    {
+      "slug": "gemma-4-e2b-it-4bit",
+      "readme_model": "Gemma 4 E2B",
+      "readme_quant": "4-bit",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q4_K_M",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "gemma-4-e2b-it-5bit",
+      "readme_model": "Gemma 4 E2B",
+      "readme_quant": "5-bit",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q5_K_M",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "gemma-4-e2b-it-6bit",
+      "readme_model": "Gemma 4 E2B",
+      "readme_quant": "6-bit",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q6_K",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "gemma-4-e2b-it-8bit",
+      "readme_model": "Gemma 4 E2B",
+      "readme_quant": "8-bit",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q8_0",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "gemma-4-e4b-it-4bit",
+      "readme_model": "Gemma 4 E4B",
+      "readme_quant": "4-bit",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q4_K_M",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "gemma-4-26b-a4b-it-4bit",
+      "readme_model": "Gemma 4 26B A4B",
+      "readme_quant": "4-bit",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q4_K_M",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "gemma-4-31b-it-4bit",
+      "readme_model": "Gemma 4 31B",
+      "readme_quant": "4-bit",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q4_K_M",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "qwen3_6-27b-4bit",
+      "readme_model": "Qwen 3.6 27B",
+      "readme_quant": "4-bit",
+      "llama_cpp_arch": "qwen35",
+      "gguf_quant_target": "Q4_K_M",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "qwen3_6-27b-5bit",
+      "readme_model": "Qwen 3.6 27B",
+      "readme_quant": "MLX 5-bit",
+      "llama_cpp_arch": "qwen35",
+      "gguf_quant_target": "Q5_K_M",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "qwen3_6-27b-6bit",
+      "readme_model": "Qwen 3.6 27B",
+      "readme_quant": "MLX 6-bit",
+      "llama_cpp_arch": "qwen35",
+      "gguf_quant_target": "Q6_K",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "qwen3_6-27b-8bit",
+      "readme_model": "Qwen 3.6 27B",
+      "readme_quant": "MLX 8-bit",
+      "llama_cpp_arch": "qwen35",
+      "gguf_quant_target": "Q8_0",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-4bit",
+      "readme_model": "Qwen 3.6 35B A3B",
+      "readme_quant": "4-bit",
+      "llama_cpp_arch": "qwen35moe",
+      "gguf_quant_target": "Q4_K_M",
+      "started_at": "2026-05-18T01:31:42-0400",
+      "status": "unresolved",
+      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+    }
+  ]
+}

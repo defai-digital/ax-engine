@@ -9,6 +9,27 @@ use crate::args::{next_flag_value, parse_flag_value, parse_token_list};
 use crate::cli::usage;
 use crate::error::CliError;
 
+/// Bench-default MLX prefill chunk size.
+///
+/// Matches `mlx-lm`'s `prefill_step_size=2048` default (see
+/// `.internal/reference/mlx-lm/mlx_lm/generate.py::generate`). The AX runner
+/// auto-clamps this value per model family:
+///
+/// - Dense / full-attention models (Qwen3, Llama-style): use 2048 as-is.
+/// - Models with GatedDelta linear-attention layers (Qwen3.5, Gemma 4,
+///   GLM 4.7 linear branch): clamped to 512 by
+///   `crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY`.
+/// - MLA models (GLM 4 Flash MLA): forced to
+///   `MLA_DEFAULT_PREFILL_CHUNK = 16` by
+///   `crate::fastpath::resolve_prefill_chunk`.
+///
+/// Using `None` here (the previous default) caused the runner to fall back
+/// to `DEFAULT_PREFILL_CHUNK = 512`, which made dense-model bench numbers
+/// roughly 4× slower than `mlx_lm.benchmark` on long prompts — not because
+/// the engine was slower, but because the comparison was unfair. Override
+/// with `--prefill-chunk N` when needed.
+pub(crate) const BENCH_DEFAULT_MLX_PREFILL_CHUNK: usize = 2048;
+
 #[derive(Clone, Debug)]
 pub(crate) struct InferenceArgs {
     pub(crate) model_id: String,
@@ -25,6 +46,7 @@ pub(crate) struct InferenceArgs {
     pub(crate) llama_server_url: Option<String>,
     pub(crate) mlx_lm_server_url: Option<String>,
     pub(crate) mlx_model_artifacts_dir: Option<PathBuf>,
+    pub(crate) mlx_prefill_chunk: Option<usize>,
     pub(crate) json: bool,
 }
 
@@ -45,6 +67,7 @@ impl Default for InferenceArgs {
             llama_server_url: None,
             mlx_lm_server_url: None,
             mlx_model_artifacts_dir: None,
+            mlx_prefill_chunk: Some(BENCH_DEFAULT_MLX_PREFILL_CHUNK),
             json: false,
         }
     }
@@ -148,6 +171,12 @@ pub(crate) fn parse_inference_args(
                     "--mlx-model-artifacts-dir",
                 )?))
             }
+            "--prefill-chunk" => {
+                parsed.mlx_prefill_chunk = Some(parse_flag_value::<usize>(
+                    next_flag_value(&mut iter, "--prefill-chunk")?,
+                    "--prefill-chunk",
+                )?)
+            }
             "--json" => parsed.json = true,
             other => {
                 return Err(CliError::Usage(format!(
@@ -225,7 +254,7 @@ pub(crate) fn build_inference_session(args: &InferenceArgs) -> Result<EngineSess
             mlx_model_artifacts_dir,
             mlx_disable_ngram_acceleration: disable_ngram,
             mlx_kv_compression: ax_engine_sdk::KvCompressionConfig::disabled(),
-            mlx_prefill_chunk: None,
+            mlx_prefill_chunk: args.mlx_prefill_chunk,
         })
         .map_err(|error| CliError::Usage(format!("invalid inference configuration: {error}")))?;
 

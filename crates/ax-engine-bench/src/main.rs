@@ -3588,7 +3588,12 @@ fn session_config_from_runtime(
         mlx_model_artifacts_source: runtime.mlx_model_artifacts_source,
         mlx_disable_ngram_acceleration: false,
         mlx_kv_compression: ax_engine_sdk::KvCompressionConfig::disabled(),
-        mlx_prefill_chunk: None,
+        // Match mlx-lm's prefill_step_size=2048 default for like-for-like
+        // bench comparisons. The runner auto-clamps for linear-attention
+        // (512) and MLA (16) model families. See
+        // crates/ax-engine-bench/src/inference_args.rs::BENCH_DEFAULT_MLX_PREFILL_CHUNK
+        // for the rationale.
+        mlx_prefill_chunk: Some(crate::inference_args::BENCH_DEFAULT_MLX_PREFILL_CHUNK),
     })
 }
 
