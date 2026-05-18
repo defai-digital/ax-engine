@@ -111,8 +111,8 @@
       "readme_quant": "4-bit",
       "mlx_local_dir": ".internal/models/Qwen3.6-27B-4bit",
       "mlx_repo_id": "mlx-community/Qwen3.6-27B-4bit",
-      "hf_arch": "Qwen3ForConditionalGeneration",
-      "llama_cpp_arch": "qwen3",
+      "hf_arch": "Qwen3_5ForConditionalGeneration",
+      "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q4_K_M",
       "gguf_candidates": [
         {"repo": "bartowski/Qwen_Qwen3.6-27B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
@@ -125,8 +125,8 @@
       "readme_quant": "MLX 5-bit",
       "mlx_local_dir": ".internal/models/Qwen3.6-27B-5bit",
       "mlx_repo_id": "mlx-community/Qwen3.6-27B-5bit",
-      "hf_arch": "Qwen3ForConditionalGeneration",
-      "llama_cpp_arch": "qwen3",
+      "hf_arch": "Qwen3_5ForConditionalGeneration",
+      "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q5_K_M",
       "gguf_candidates": [
         {"repo": "bartowski/Qwen_Qwen3.6-27B-GGUF", "filename_pattern": "*Q5_K_M*.gguf"}
@@ -139,8 +139,8 @@
       "readme_quant": "MLX 6-bit",
       "mlx_local_dir": ".internal/models/Qwen3.6-27B-6bit",
       "mlx_repo_id": "mlx-community/Qwen3.6-27B-6bit",
-      "hf_arch": "Qwen3ForConditionalGeneration",
-      "llama_cpp_arch": "qwen3",
+      "hf_arch": "Qwen3_5ForConditionalGeneration",
+      "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q6_K",
       "gguf_candidates": [
         {"repo": "bartowski/Qwen_Qwen3.6-27B-GGUF", "filename_pattern": "*Q6_K*.gguf"}
@@ -153,8 +153,8 @@
       "readme_quant": "MLX 8-bit",
       "mlx_local_dir": ".internal/models/Qwen3.6-27B-8bit",
       "mlx_repo_id": "mlx-community/Qwen3.6-27B-8bit",
-      "hf_arch": "Qwen3ForConditionalGeneration",
-      "llama_cpp_arch": "qwen3",
+      "hf_arch": "Qwen3_5ForConditionalGeneration",
+      "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q8_0",
       "gguf_candidates": [
         {"repo": "bartowski/Qwen_Qwen3.6-27B-GGUF", "filename_pattern": "*Q8_0*.gguf"}

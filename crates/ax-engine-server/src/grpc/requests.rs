@@ -109,7 +109,7 @@ mod tests {
         // pre-closes the `<think>` block, which causes Qwen3.6 / Qwen3-Next /
         // Qwen3-Coder-Next to truncate or loop on reasoning prompts.
         let thinking =
-            render_grpc_chat_prompt("Qwen3.6-35B-A3B-5bit", &user("hi")).expect("render");
+            render_grpc_chat_prompt("Qwen3.6-35B-A3B-4bit", &user("hi")).expect("render");
         assert!(
             thinking.ends_with("<|im_start|>assistant\n<think>\n"),
             "thinking-enabled suffix should be `<think>\\n` only: {thinking}"

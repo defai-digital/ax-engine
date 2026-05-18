@@ -310,8 +310,8 @@ mod tests {
     #[test]
     fn qwen_thinking_model_match_is_limited_to_known_reasoning_families() {
         for model_id in [
-            "Qwen3.6-35B-A3B-5bit",
-            "qwen3_6-35b-a3b-ud-mlx-4bit",
+            "qwen3_6-35b-a3b-4bit",
+            "Qwen3.6-35B-A3B-4bit",
             "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
             "Qwen3-Coder-Next-4bit",
         ] {

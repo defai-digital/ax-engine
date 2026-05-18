@@ -12168,7 +12168,7 @@ mod tests {
     #[test]
     fn doctor_report_adds_qwen36_quantization_advice_from_model_config() {
         let root = unique_test_dir("doctor-qwen36");
-        let model_dir = root.join("Qwen3.6-35B-A3B-UD-MLX-4bit");
+        let model_dir = root.join("Qwen3.6-35B-A3B-4bit");
         fs::create_dir_all(&model_dir).expect("model dir should create");
         fs::write(
             model_dir.join("config.json"),

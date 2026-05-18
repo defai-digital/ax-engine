@@ -68,7 +68,7 @@ README throughput table.
 ## Latest Prefill Breakdown
 
 The 2026-05-13 short-prompt TTFT follow-up decomposes AX MLX prefill wall time
-for Qwen Coder Next, Qwen 3.6 35B A3B 8-bit, and GLM 4.7 Flash:
+for Qwen Coder Next, a retired Qwen 3.6 candidate, and GLM 4.7 Flash:
 [prefill breakdown](../benchmarks/results/mlx-inference/2026-05-13-ttft-breakdown/prefill-breakdown.md).
 It separates model forward time from prefix-cache snapshot storage and
 generation-state initialization. Diagnostic profile artifacts in the same

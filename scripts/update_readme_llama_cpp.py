@@ -31,6 +31,10 @@ SLUG_ORDER = [
     "gemma-4-e4b-it-4bit",
     "gemma-4-26b-a4b-it-4bit",
     "gemma-4-31b-it-4bit",
+    "qwen3_6-27b-4bit",
+    "qwen3_6-27b-5bit",
+    "qwen3_6-27b-6bit",
+    "qwen3_6-27b-8bit",
     "qwen3_6-35b-a3b-4bit",
 ]
 

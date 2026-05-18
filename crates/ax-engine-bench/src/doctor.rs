@@ -531,18 +531,17 @@ fn doctor_model_performance_advice(hint: &DoctorModelArtifactsHint) -> Vec<Docto
             }
         }
         "qwen3_next" | "qwen3_6" | "qwen3.6" => {
-            if quantization.and_then(|q| q.bits) == Some(4) || hint.path_label.contains("ud-mlx")
-            {
+            if quantization.and_then(|q| q.bits) == Some(4) {
                 advice.push(DoctorAdvice::warning(
                     "qwen36_quantization_compare",
                     "Do not assume Qwen 3.6 4-bit is the fastest checkpoint.",
-                    "Current Qwen 3.6 35B rows show the MLX 5-bit checkpoint ahead of the UD-MLX 4-bit checkpoint on decode throughput; compare both on the target prompt mix.",
+                    "Current Qwen 3.6 comparison coverage keeps 35B A3B to 4-bit and sweeps 27B at 4/5/6/8-bit; compare the target checkpoint on the target prompt mix.",
                 ));
             } else if quantization.and_then(|q| q.bits) == Some(5) {
                 advice.push(DoctorAdvice::info(
                     "qwen36_5bit_throughput_candidate",
                     "Qwen 3.6 5-bit is a strong throughput candidate.",
-                    "Current Qwen 3.6 35B rows show 5-bit leading decode throughput, but memory pressure and quality targets still need workload-specific validation.",
+                    "Current Qwen 3.6 27B sweep coverage includes 5-bit, but memory pressure and quality targets still need workload-specific validation.",
                 ));
             }
             advice.push(DoctorAdvice::info(

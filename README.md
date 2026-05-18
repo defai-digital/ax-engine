@@ -79,7 +79,7 @@ for the full recommendation.
 | Role | Recommended model | Setup | App | Why |
 |---|---|---|---|---|
 | Default chatbot | Gemma 4 26B-A4B / 31B | 4-bit or 6-bit, 16K-32K | [ax-studio](https://github.com/defai-digital/ax-studio) | General assistant path for reasoning, chat, JSON/function calling, and on-device agent workflows |
-| General agentic model | Qwen3.6-35B-A3B | 4-bit or 6-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
+| General agentic model | Qwen3.6-35B-A3B / Qwen3.6-27B | 35B A3B 4-bit; 27B 4/5/6/8-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
 | Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
 
 ## Why AX Engine ([FAQ](docs/FAQ.md#is-ax-faster-because-it-replaces-mlx-kernels))
@@ -167,7 +167,7 @@ delegated rows are not AX-owned throughput claims.
 | Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6/8-bit weights where available | Dense, per-layer embedding, and MoE variants; sliding-window + full attention, K=V full-attention layers, logit softcapping |
 | Gemma 3 | `gemma-3-1b-it` through `gemma-3-27b-it` | Repo-owned MLX runtime | GeGLU dense FFN; per-head QK norm; sliding-window local + global attention interleaving; embedding scale |
 | Qwen 3.5 | `Qwen3.5-9B` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
-| Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4/5/6/8-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
+| Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6/8-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
 | Qwen 3 | `Qwen3-0.6B` through `Qwen3-32B` | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants |
 | GLM 4.7 Flash | `mlx-community/GLM-4.7-Flash-4bit` | Repo-owned MLX runtime after community-model promotion | MLA attention, sigmoid router, latent-KV cache support |
 | LLaMA 3 / 3.1 / 3.2 / 3.3 | `Llama-3.1-8B-Instruct` and related | Repo-owned MLX runtime | SwiGLU dense FFN; LLaMA-3 RoPE scaling |
@@ -231,15 +231,6 @@ the MLX rows.
 | Qwen 3.6 35B A3B | 4-bit | 128 | 1,711.4 | 575.0 | **1,134.4 (+97.3%)** |
 |         |         | 512 | 3,137.6 | 1,702.2 | **2,842.1 (+67.0%)** |
 |         |         | 2048 | — | — | — |
-| Qwen 3.6 35B A3B | MLX 5-bit | 128 | 1,563.4 | 499.2 | **1,122.3 (+124.8%)** |
-|         |         | 512 | 2,882.8 | 1,585.8 | **2,742.0 (+72.9%)** |
-|         |         | 2048 | — | — | — |
-| Qwen 3.6 35B A3B | MLX 6-bit | 128 | 1,598.4 | 438.6 | **1,022.2 (+133.0%)** |
-|         |         | 512 | 2,988.3 | 1,440.3 | **2,622.9 (+82.1%)** |
-|         |         | 2048 | — | — | — |
-| Qwen 3.6 35B A3B | MLX 8-bit | 128 | 1,664.2 | 406.4 | **1,038.4 (+155.5%)** |
-|         |         | 512 | 3,122.8 | 1,298.5 | **2,606.6 (+100.7%)** |
-|         |         | 2048 | — | — | — |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
@@ -273,15 +264,6 @@ effective throughput, not raw model-kernel speed.
 | Qwen 3.6 35B A3B | 4-bit | 128 | 89.7 | 120.8 | **123.3 (+2.0%)** | **284.2 (+135.2%)** |
 |         |         | 512 | 90.9 | 120.6 | **122.4 (+1.5%)** | **281.2 (+133.2%)** |
 |         |         | 2048 | — | — | — | — |
-| Qwen 3.6 35B A3B | MLX 5-bit | 128 | 98.5 | 125.7 | **137.2 (+9.1%)** | **284.2 (+126.1%)** |
-|         |         | 512 | 86.9 | 125.8 | **136.5 (+8.5%)** | **281.4 (+123.7%)** |
-|         |         | 2048 | — | — | — | — |
-| Qwen 3.6 35B A3B | MLX 6-bit | 128 | 95.7 | 114.8 | **120.2 (+4.7%)** | **261.1 (+127.4%)** |
-|         |         | 512 | 95.5 | 114.4 | **119.6 (+4.6%)** | **258.4 (+125.9%)** |
-|         |         | 2048 | — | — | — | — |
-| Qwen 3.6 35B A3B | MLX 8-bit | 128 | 90.3 | 105.1 | **108.0 (+2.8%)** | **263.1 (+150.4%)** |
-|         |         | 512 | 90.1 | 104.4 | **107.2 (+2.7%)** | **259.4 (+148.5%)** |
-|         |         | 2048 | — | — | — | — |
 
 ### Time to first token (ms) — generation=128 tokens, temp=0
 
@@ -314,15 +296,6 @@ stream.
 |         |         | 2048 | — | — | — |
 | Qwen 3.6 35B A3B | 4-bit | 128 | 74.8 | 222.6 | **112.8 (-49.3%)** |
 |         |         | 512 | 163.2 | 300.8 | **180.1 (-40.1%)** |
-|         |         | 2048 | — | — | — |
-| Qwen 3.6 35B A3B | MLX 5-bit | 128 | 81.9 | 256.4 | **114.0 (-55.5%)** |
-|         |         | 512 | 177.6 | 322.9 | **186.7 (-42.2%)** |
-|         |         | 2048 | — | — | — |
-| Qwen 3.6 35B A3B | MLX 6-bit | 128 | 80.1 | 291.8 | **125.2 (-57.1%)** |
-|         |         | 512 | 171.3 | 355.5 | **195.2 (-45.1%)** |
-|         |         | 2048 | — | — | — |
-| Qwen 3.6 35B A3B | MLX 8-bit | 128 | 76.9 | 314.9 | **123.3 (-60.9%)** |
-|         |         | 512 | 164.0 | 394.3 | **196.4 (-50.2%)** |
 |         |         | 2048 | — | — | — |
 
 Embedding benchmarks are kept out of this README summary; see

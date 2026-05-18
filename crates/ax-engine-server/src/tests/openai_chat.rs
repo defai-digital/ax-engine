@@ -166,11 +166,11 @@ fn openai_chat_template_kwargs_omitted_for_qwen_reasoning_models() {
     // <think></think> block that breaks reasoning-required prompts (math,
     // multi-step) by causing premature <|im_end|> emission.
     assert_eq!(
-        chat_template_kwargs_for_model_id("Qwen3.6-35B-A3B-5bit"),
+        chat_template_kwargs_for_model_id("Qwen3.6-35B-A3B-4bit"),
         None
     );
     assert_eq!(
-        chat_template_kwargs_for_model_id("qwen3_6-35b-a3b-ud-mlx-4bit"),
+        chat_template_kwargs_for_model_id("qwen3_6-35b-a3b-4bit"),
         None
     );
     assert_eq!(
