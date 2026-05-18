@@ -116,6 +116,7 @@ pub fn layer_forward_with_turboquant_context(
             per_layer_input,
             shared_mask,
             turboquant_context,
+            false,
         ),
         "llama4" => families::llama4::layer_forward(
             cfg,
@@ -137,6 +138,7 @@ pub fn layer_forward_with_turboquant_context(
             per_layer_input,
             shared_mask,
             turboquant_context,
+            false,
         ),
         "glm4_moe_lite" => {
             families::glm4_moe_lite::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset)
@@ -171,6 +173,77 @@ pub fn layer_forward_with_turboquant_context(
             turboquant_context,
         ),
         f => panic!("unknown model_family in layer_forward: {f}"),
+    }
+}
+
+/// Run a transformer layer with the "last-position-only after attention"
+/// optimization enabled. Equivalent to
+/// [`layer_forward_with_turboquant_context`] except that, for `seq > 1`,
+/// the layer's pre-FFN slice happens **inside** the layer (between the
+/// attention residual and the pre-FFN norm) instead of after the layer
+/// returns. The MLP / MoE / per-layer-gate / layer-scalar steps then run
+/// on `[1, 1, hidden]`, matching `mlx-lm`'s lazy-eval prune of the
+/// terminal layer's post-attention work.
+///
+/// **Caller obligation:** only invoke this for the *last* transformer
+/// layer of a prefill pass. Passing a 1-position hidden into the next
+/// layer's attention would corrupt the KV cache (positions would no
+/// longer align with `token_offset`).
+///
+/// Supported families: `gemma4`, `gemma3`, `qwen3`, `llama3`, `qwen3_5`,
+/// `qwen3_next` (full-attention layers only). Linear-attention layers
+/// and other families fall back to the normal `layer_forward` path; the
+/// post-loop slice in [`forward_with_turboquant_context`] keeps
+/// correctness while losing this specific perf win until those families
+/// pick up the same optimization.
+#[allow(clippy::too_many_arguments)]
+pub fn layer_forward_with_turboquant_context_last_only(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    token_offset: usize,
+    per_layer_input: Option<&MlxArray>,
+    shared_mask: Option<&Option<MlxArray>>,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> MlxArray {
+    if cfg.is_linear_attention_layer(layer_idx) {
+        // qwen3_linear layers haven't been extended yet; fall back to the
+        // normal path. The outer post-loop slice in `forward()` still
+        // ensures correctness for the final returned hidden tensor.
+        return families::qwen3_linear::layer_forward(cfg, w, hidden, cache, layer_idx);
+    }
+    match cfg.model_family.as_str() {
+        "gemma4" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next" => {
+            families::standard::layer_forward(
+                cfg,
+                w,
+                hidden,
+                cache,
+                layer_idx,
+                token_offset,
+                per_layer_input,
+                shared_mask,
+                turboquant_context,
+                true,
+            )
+        }
+        // Other families: fall back to the unoptimized path. Correctness
+        // is preserved by the post-loop slice in
+        // `forward_with_turboquant_context`; perf gain is deferred until
+        // the family is extended.
+        _ => layer_forward_with_turboquant_context(
+            cfg,
+            w,
+            hidden,
+            cache,
+            layer_idx,
+            token_offset,
+            per_layer_input,
+            shared_mask,
+            turboquant_context,
+        ),
     }
 }
 
@@ -269,24 +342,51 @@ pub fn forward_with_turboquant_context(
             &refs,
         );
     }
+    // Last-position-only prefill optimization (matches mlx-lm's implicit
+    // lazy-eval prune): for `seq > 1`, the final transformer layer slices
+    // its attention-residual stream to the last position before running
+    // the post-attention FFN / gate / scalar. Saves ~50% of the last
+    // layer's wall time on long prompts (Gemma 4 E2B p=2048: ~8k → target
+    // mlx-lm parity at ~16-18k tok/s prefill). Decode path (seq == 1)
+    // never triggers the inner slice. See
+    // `layer_forward_with_turboquant_context_last_only` for the contract.
+    let last_layer_idx = weights.layers.len().saturating_sub(1);
+    let use_last_layer_optimization = seq > 1;
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
-        hidden = layer_forward_with_turboquant_context(
-            cfg,
-            layer_w,
-            &hidden,
-            cache,
-            li,
-            token_offset,
-            pli,
-            Some(&masks[li]),
-            turboquant_context,
-        );
+        hidden = if use_last_layer_optimization && li == last_layer_idx {
+            layer_forward_with_turboquant_context_last_only(
+                cfg,
+                layer_w,
+                &hidden,
+                cache,
+                li,
+                token_offset,
+                pli,
+                Some(&masks[li]),
+                turboquant_context,
+            )
+        } else {
+            layer_forward_with_turboquant_context(
+                cfg,
+                layer_w,
+                &hidden,
+                cache,
+                li,
+                token_offset,
+                pli,
+                Some(&masks[li]),
+                turboquant_context,
+            )
+        };
     }
 
-    // Slice to last token only: [1, seq, hidden] → [1, 1, hidden].
-    // slice() is a zero-copy strided view; cheaper than take() (gather) here.
-    let last_hidden = if token_ids.len() > 1 {
+    // Post-loop slice: idempotent when the last layer already collapsed to
+    // a 1-position output (the supported standard families). For
+    // unsupported families that fall back to the unoptimized last-layer
+    // path, this slice still trims `[1, seq, hidden]` to `[1, 1, hidden]`
+    // before the final norm + lm_head.
+    let last_hidden = if hidden.shape().get(1).copied().unwrap_or(1) > 1 {
         let last = (token_ids.len() - 1) as i32;
         let hs = cfg.hidden_size as i32;
         slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None)
@@ -2067,6 +2167,106 @@ mod tests {
             2,
             "KV-shared consumer must not append its own K/V cache"
         );
+    }
+
+    #[test]
+    fn standard_layer_forward_last_position_only_matches_full_seq_last_row() {
+        // PRD §6.2 / standard.rs::layer_forward correctness contract:
+        // running with `last_position_only_after_attention = true` must
+        // produce the exact same output as running unoptimised and then
+        // slicing the result to the last sequence position. The cache
+        // writes happen *inside* attention, so both paths must produce
+        // identical cache state too.
+        //
+        // We use the gemma4-kv-shared fixture because it is the lowest-
+        // overhead standard-family fixture in this file. Both calls use
+        // separate caches so the optimised call cannot accidentally
+        // depend on residual state from the unoptimised one.
+        let cfg = gemma4_kv_shared_config();
+        let mut weights = empty_layer_weights(cfg.hidden_size);
+        weights.q_proj = Some(dense_weight(&[
+            (cfg.n_heads * cfg.head_dim) as i32,
+            cfg.hidden_size as i32,
+        ]));
+        weights.q_norm = Some(zeros(&[cfg.head_dim as i32], MlxDtype::Float32, None));
+        weights.o_proj = Some(dense_weight(&[
+            cfg.hidden_size as i32,
+            (cfg.n_heads * cfg.head_dim) as i32,
+        ]));
+        attach_dense_ffn(&mut weights, &cfg);
+
+        // Use a non-trivial input so the slice/no-slice paths are exercising
+        // real arithmetic, not a zero degenerate case.
+        let mut data = Vec::with_capacity(2 * cfg.hidden_size);
+        for i in 0..(2 * cfg.hidden_size) {
+            data.push((i as f32) * 0.01 - 0.1);
+        }
+        let hidden = array_f32(&data, &[1, 2, cfg.hidden_size as i32]);
+
+        // Path A: unoptimised. Layer returns full [1, 2, hidden]; we slice
+        // to the last position for comparison.
+        let mut cache_full = MlxKVCache::new(cfg.layer_count);
+        let source_k = zeros(
+            &[1, cfg.n_kv_heads as i32, 2, cfg.head_dim as i32],
+            MlxDtype::Float32,
+            None,
+        );
+        let source_v = zeros(
+            &[1, cfg.n_kv_heads as i32, 2, cfg.head_dim as i32],
+            MlxDtype::Float32,
+            None,
+        );
+        cache_full.append(0, source_k, source_v);
+        let out_full = families::standard::layer_forward(
+            &cfg,
+            &weights,
+            &hidden,
+            &mut cache_full,
+            1,
+            0,
+            None,
+            None,
+            None,
+            /* last_position_only_after_attention */ false,
+        );
+        assert_eq!(out_full.shape(), vec![1, 2, cfg.hidden_size as i32]);
+        let hs = cfg.hidden_size as i32;
+        let last_full = mlx_sys::slice(&out_full, &[0, 1, 0], &[1, 2, hs], &[1, 1, 1], None);
+
+        // Path B: optimised. Layer slices internally and returns
+        // [1, 1, hidden] directly.
+        let mut cache_opt = MlxKVCache::new(cfg.layer_count);
+        let source_k = zeros(
+            &[1, cfg.n_kv_heads as i32, 2, cfg.head_dim as i32],
+            MlxDtype::Float32,
+            None,
+        );
+        let source_v = zeros(
+            &[1, cfg.n_kv_heads as i32, 2, cfg.head_dim as i32],
+            MlxDtype::Float32,
+            None,
+        );
+        cache_opt.append(0, source_k, source_v);
+        let out_opt = families::standard::layer_forward(
+            &cfg,
+            &weights,
+            &hidden,
+            &mut cache_opt,
+            1,
+            0,
+            None,
+            None,
+            None,
+            /* last_position_only_after_attention */ true,
+        );
+        assert_eq!(
+            out_opt.shape(),
+            vec![1, 1, cfg.hidden_size as i32],
+            "optimised path must collapse the seq dimension to 1"
+        );
+
+        eval(&[&last_full, &out_opt]);
+        assert_close(out_opt.data_f32(), last_full.data_f32(), 1e-4);
     }
 
     #[test]

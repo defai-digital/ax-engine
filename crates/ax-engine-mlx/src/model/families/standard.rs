@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, add, gelu_approx, multiply, reshape, rms_norm, rope, transpose};
+use mlx_sys::{MlxArray, add, gelu_approx, multiply, reshape, rms_norm, rope, slice, transpose};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -29,6 +29,21 @@ const SWITCH_GLU_SORT_THRESHOLD: usize = 64;
 /// Handles per-head QK norm, KV-sharing (Gemma4), sliding window attention,
 /// Gemma4 dual-path MoE, Qwen3 MoE, dense FFN, per-layer input gating (Gemma4),
 /// and the TurboQuant experimental decode path.
+///
+/// `last_position_only_after_attention`: when `true` and `seq > 1`, the layer
+/// slices its attention-residual stream to the last sequence position before
+/// running pre-FFN norm + FFN + post-FFN residual. The KV cache writes have
+/// already happened inside attention, so the slice is safe; the FFN, gating,
+/// and layer-scalar steps then operate on a `[1, 1, hidden]` tensor instead
+/// of `[1, seq, hidden]`. This matches the lazy-eval prune that mlx-lm gets
+/// for free on the last layer when the model output is discarded.
+///
+/// Callers must only set this flag for the **last transformer layer** in a
+/// prefill pass, and only when the downstream consumer needs just the
+/// last-position output (i.e. argmax/sample for the first decode token).
+/// Setting it on a non-terminal layer breaks correctness: the next layer
+/// would receive a 1-position hidden but the cache still expects matching
+/// sequence positions.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layer_forward(
     cfg: &ModelConfig,
@@ -40,6 +55,7 @@ pub(crate) fn layer_forward(
     per_layer_input: Option<&MlxArray>,
     shared_mask: Option<&Option<MlxArray>>,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+    last_position_only_after_attention: bool,
 ) -> MlxArray {
     let (head_dim, rope_theta, rope_dims, sliding_window, kv_source, v_norm_no_scale) =
         layer_params(cfg, layer_idx);
@@ -376,6 +392,38 @@ pub(crate) fn layer_forward(
     // 15. Residual.
     let residual_norm_started = profile_forward_layer.then(Instant::now);
     let hidden = add(hidden, &attn_proj, None);
+
+    // 15a. Optional last-position-only slice for the terminal prefill layer.
+    // KV cache writes happened inside attention; downstream consumers (final
+    // norm + lm_head + argmax) only need the last-position output. Slicing
+    // here lets the FFN run on `[1, 1, hidden]` instead of `[1, seq, hidden]`,
+    // which is the dominant cost on long prompts. See the function-level
+    // doc for the correctness contract.
+    let last_only_active = last_position_only_after_attention && seq > 1;
+    let (hidden, per_layer_input_owned) = if last_only_active {
+        let last = (seq - 1) as i32;
+        let hs = cfg.hidden_size as i32;
+        let sliced_hidden = slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None);
+        let sliced_pli = per_layer_input.map(|pli| {
+            let dims = pli.shape();
+            let pli_last_dim = *dims.last().unwrap_or(&hs);
+            slice(
+                pli,
+                &[0, last, 0],
+                &[1, last + 1, pli_last_dim],
+                &[1, 1, 1],
+                None,
+            )
+        });
+        (sliced_hidden, sliced_pli)
+    } else {
+        (hidden, None)
+    };
+    let per_layer_input: Option<&MlxArray> = if last_only_active {
+        per_layer_input_owned.as_ref()
+    } else {
+        per_layer_input
+    };
 
     // 16. Pre-FFN norm.
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);

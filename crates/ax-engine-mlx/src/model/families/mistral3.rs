@@ -36,5 +36,6 @@ pub(crate) fn layer_forward(
         None, // no per-layer inputs
         shared_mask,
         turboquant_context,
+        false,
     )
 }
