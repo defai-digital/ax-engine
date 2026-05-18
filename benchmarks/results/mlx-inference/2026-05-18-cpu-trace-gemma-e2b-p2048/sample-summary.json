@@ -1,0 +1,250 @@
+{
+  "schema_version": "ax.cpu_trace_summary.v1",
+  "source_file": "sample-p2048-prefill.txt",
+  "sample_tool": "macOS sample(1) @ 1ms",
+  "sample_duration_s": 8,
+  "workload": {
+    "model": "mlx-community/gemma-4-e2b-it-4bit",
+    "prompt_tokens": 2048,
+    "max_output_tokens": 1,
+    "requests_total": 30,
+    "requests_warmup": 2,
+    "ngram_acceleration": "disabled",
+    "prefill_chunk": 2048,
+    "mean_request_ms": 466.4
+  },
+  "totals": {
+    "stack_occurrence_count": 2371
+  },
+  "family_breakdown": [
+    {
+      "family": "system:libs",
+      "count": 985,
+      "pct": 41.54
+    },
+    {
+      "family": "metal_runtime:command_submit",
+      "count": 366,
+      "pct": 15.44
+    },
+    {
+      "family": "mlx_core:metal_dispatch",
+      "count": 166,
+      "pct": 7.0
+    },
+    {
+      "family": "metal_runtime:agx_driver",
+      "count": 156,
+      "pct": 6.58
+    },
+    {
+      "family": "other:IOKit",
+      "count": 150,
+      "pct": 6.33
+    },
+    {
+      "family": "mlx_core:other",
+      "count": 134,
+      "pct": 5.65
+    },
+    {
+      "family": "mlx_core:array_lifecycle",
+      "count": 116,
+      "pct": 4.89
+    },
+    {
+      "family": "cxx_runtime",
+      "count": 109,
+      "pct": 4.6
+    },
+    {
+      "family": "rust:tokio_runtime",
+      "count": 87,
+      "pct": 3.67
+    },
+    {
+      "family": "rust:ax_engine",
+      "count": 53,
+      "pct": 2.24
+    },
+    {
+      "family": "mlx_core:hashtable_dealloc",
+      "count": 18,
+      "pct": 0.76
+    },
+    {
+      "family": "other:libobjc.A.dylib",
+      "count": 13,
+      "pct": 0.55
+    },
+    {
+      "family": "mlx_c_binding",
+      "count": 12,
+      "pct": 0.51
+    },
+    {
+      "family": "other:IOSurface",
+      "count": 6,
+      "pct": 0.25
+    }
+  ],
+  "top_symbols": [
+    {
+      "count": 68,
+      "lib": "libdispatch.dylib",
+      "symbol": "_dispatch_lane_serial_drain"
+    },
+    {
+      "count": 53,
+      "lib": "IOKit",
+      "symbol": "io_connect_method"
+    },
+    {
+      "count": 53,
+      "lib": "libsystem_kernel.dylib",
+      "symbol": "mach_msg2_internal"
+    },
+    {
+      "count": 53,
+      "lib": "libsystem_kernel.dylib",
+      "symbol": "mach_msg2_trap"
+    },
+    {
+      "count": 49,
+      "lib": "libsystem_malloc.dylib",
+      "symbol": "_xzm_free"
+    },
+    {
+      "count": 44,
+      "lib": "IOKit",
+      "symbol": "iokit_user_client_trap"
+    },
+    {
+      "count": 39,
+      "lib": "libc++abi.dylib",
+      "symbol": "operator new(unsigned long)"
+    },
+    {
+      "count": 38,
+      "lib": "libsystem_kernel.dylib",
+      "symbol": "__psynch_cvwait"
+    },
+    {
+      "count": 37,
+      "lib": "libsystem_pthread.dylib",
+      "symbol": "_pthread_cond_wait"
+    },
+    {
+      "count": 37,
+      "lib": "libsystem_malloc.dylib",
+      "symbol": "_xzm_xzone_malloc_tiny"
+    },
+    {
+      "count": 37,
+      "lib": "libsystem_pthread.dylib",
+      "symbol": "start_wqthread"
+    },
+    {
+      "count": 36,
+      "lib": "libsystem_pthread.dylib",
+      "symbol": "_pthread_wqthread"
+    },
+    {
+      "count": 34,
+      "lib": "libdispatch.dylib",
+      "symbol": "_dispatch_lane_invoke"
+    },
+    {
+      "count": 34,
+      "lib": "libdispatch.dylib",
+      "symbol": "_dispatch_root_queue_drain_deferred_wlh"
+    },
+    {
+      "count": 34,
+      "lib": "libdispatch.dylib",
+      "symbol": "_dispatch_workloop_worker_thread"
+    },
+    {
+      "count": 33,
+      "lib": "libmlx.dylib",
+      "symbol": "<deduplicated_symbol>"
+    },
+    {
+      "count": 29,
+      "lib": "libsystem_pthread.dylib",
+      "symbol": "_pthread_start"
+    },
+    {
+      "count": 29,
+      "lib": "libsystem_pthread.dylib",
+      "symbol": "thread_start"
+    },
+    {
+      "count": 27,
+      "lib": "IOKit",
+      "symbol": "IOConnectCallMethod"
+    },
+    {
+      "count": 26,
+      "lib": "IOKit",
+      "symbol": "IOConnectCallMethod"
+    },
+    {
+      "count": 25,
+      "lib": "libsystem_platform.dylib",
+      "symbol": "_platform_memmove"
+    },
+    {
+      "count": 25,
+      "lib": "libc++.1.dylib",
+      "symbol": "std::mutex::lock()"
+    },
+    {
+      "count": 24,
+      "lib": "libsystem_kernel.dylib",
+      "symbol": "__psynch_mutexwait"
+    },
+    {
+      "count": 24,
+      "lib": "libsystem_pthread.dylib",
+      "symbol": "_pthread_mutex_firstfit_lock_slow"
+    },
+    {
+      "count": 24,
+      "lib": "libsystem_pthread.dylib",
+      "symbol": "_pthread_mutex_firstfit_lock_wait"
+    },
+    {
+      "count": 24,
+      "lib": "libmlx.dylib",
+      "symbol": "mlx::core::array::Data::~Data()"
+    },
+    {
+      "count": 23,
+      "lib": "libmlx.dylib",
+      "symbol": "std::__hash_table<std::shared_ptr<mlx::core::array::Data>>::~__hash_table()"
+    },
+    {
+      "count": 22,
+      "lib": "libmlx.dylib",
+      "symbol": "std::__hash_table<std::shared_ptr<mlx::core::array::Data>>::__deallocate_node(std::__hash_node_base<std::__hash_node<std"
+    },
+    {
+      "count": 21,
+      "lib": "AGXMetalG17X",
+      "symbol": "-[AGXG17XFamilyResidencySet _commitAddedAllocations:count:removedAllocations:count:]"
+    },
+    {
+      "count": 21,
+      "lib": "IOGPU",
+      "symbol": "-[IOGPUMetalResidencySet commit]"
+    }
+  ],
+  "interpretation": {
+    "our_rust_forward_pct": 2.24,
+    "libmlx_core_pct": 18.3,
+    "metal_runtime_pct": 22.02,
+    "system_kernel_pct": 47.87,
+    "conclusion": "CPU is dominated by Metal command-buffer submission, fence/array lifecycle in libmlx, and kernel-side mach_msg/IOKit calls. Our Rust forward code is 2.2% of CPU. The p=2048 gap vs mlx_lm is consistent with per-op MLX dispatch overhead amortized over ~35 layers x N ops/layer, not GPU work or our Rust code."
+  }
+}
