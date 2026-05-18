@@ -218,14 +218,6 @@ pub(crate) fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
 }
 
 pub(crate) fn per_layer_input_gate(gate: &MlxArray, per_layer_input: &MlxArray) -> MlxArray {
-    // W5 known limitation (2026-05-18): even with a dedicated
-    // `(ThreadId, last_dim)` cache, calling the compiled path from
-    // `families::standard::layer_forward` aborts MLX C inside
-    // `mlx_closure_apply` on the Gemma 4 E2B 4-bit warmup request. The
-    // compile path is therefore disabled by default
-    // (`AX_MLX_PER_LAYER_GATE_COMPILE=0`) until the remaining trigger is
-    // root-caused. Operators can enable for repro with
-    // `AX_MLX_PER_LAYER_GATE_COMPILE=1`.
     if !fastpath::per_layer_gate_compile_enabled() {
         return per_layer_input_gate_imperative(gate, per_layer_input);
     }
@@ -244,7 +236,6 @@ pub(crate) fn per_layer_input_gate_compiled(
     per_layer_input: &MlxArray,
 ) -> Option<MlxArray> {
     use std::collections::HashMap;
-    use std::collections::hash_map::Entry;
     use std::thread::ThreadId;
 
     const COMPILE_WRAP_LAST_DIM_CEILING: usize = 16_384;
@@ -253,27 +244,33 @@ pub(crate) fn per_layer_input_gate_compiled(
         return None;
     }
 
-    type PerLayerGateCompileKey = (ThreadId, usize);
+    type PerLayerGateCompileKey = (ThreadId, Vec<i32>, Vec<i32>, MlxDtype, MlxDtype);
     static PER_LAYER_GATE_COMPILE_CACHE: OnceLock<
         Mutex<HashMap<PerLayerGateCompileKey, MlxClosure>>,
     > = OnceLock::new();
 
     let cache = PER_LAYER_GATE_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (std::thread::current().id(), last_dim);
+    let key = (
+        std::thread::current().id(),
+        gate.shape().to_vec(),
+        per_layer_input.shape().to_vec(),
+        gate.dtype(),
+        per_layer_input.dtype(),
+    );
     let outputs = {
         let mut guard = cache
             .lock()
             .expect("per-layer gate compile cache mutex poisoned");
-        if let Entry::Vacant(slot) = guard.entry(key)
+        if !guard.contains_key(&key)
             && let Ok(compiled) = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
                 let gate = inputs.get(0);
                 let per_layer_input = inputs.get(1);
                 let activated = gelu_approx(&gate, None);
                 vec![multiply(&activated, &per_layer_input, None)]
             })
-            .compile(true)
+            .compile(false)
         {
-            slot.insert(compiled);
+            guard.insert(key.clone(), compiled);
         }
         guard
             .get(&key)

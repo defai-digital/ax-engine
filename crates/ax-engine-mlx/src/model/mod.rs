@@ -3591,7 +3591,7 @@ mod tests {
         );
         let compiled_short = astype(
             &per_layer_input_gate_compiled(&gate_short, &pli_short)
-                .expect("same last-dim per-layer gate shape should be compile-eligible"),
+                .expect("same last-dim but different seq shape should compile independently"),
             MlxDtype::Float32,
             None,
         );
@@ -3600,7 +3600,44 @@ mod tests {
         assert_eq!(
             expected_short.data_f32().to_vec(),
             compiled_short.data_f32().to_vec(),
-            "same-last-dim cache entry must tolerate sequence-length changes"
+            "shape-specific per-layer gate compile must handle sequence-length changes"
+        );
+    }
+
+    #[test]
+    fn per_layer_input_gate_compiled_accepts_split_reshape_view() {
+        // Gemma 4 per-layer inputs come from split(..., axis=2) followed by
+        // reshape from [1, seq, 1, per_layer_dim] to [1, seq, per_layer_dim].
+        // W5 must compile that real call-site view shape, not just contiguous
+        // synthetic arrays.
+        let combined_f32: Vec<f32> = (0..24).map(|i| ((i as f32) + 1.0) * 0.01).collect();
+        let combined = astype(
+            &array_f32(&combined_f32, &[1, 4, 2, 3]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let parts = split(&combined, 2, 2, None);
+        let pli = reshape(&parts[1], &[1, 4, 3], None);
+
+        let gate_f32: Vec<f32> = (0..12).map(|i| ((i as f32) - 6.0) * 0.04).collect();
+        let gate = astype(&array_f32(&gate_f32, &[1, 4, 3]), MlxDtype::Bfloat16, None);
+        let expected = astype(
+            &multiply(&gelu_approx(&gate, None), &pli, None),
+            MlxDtype::Float32,
+            None,
+        );
+        let compiled = astype(
+            &per_layer_input_gate_compiled(&gate, &pli)
+                .expect("split/reshape per-layer input view should compile"),
+            MlxDtype::Float32,
+            None,
+        );
+
+        eval(&[&expected, &compiled]);
+        assert_eq!(
+            expected.data_f32().to_vec(),
+            compiled.data_f32().to_vec(),
+            "compiled per-layer gate must match imperative output for split/reshape views"
         );
     }
 

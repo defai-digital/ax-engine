@@ -15,6 +15,7 @@ use std::thread::{self, ThreadId};
 
 use crate::array::{MlxArray, null_ffi_array};
 use crate::ffi;
+use crate::stream::MlxStream;
 
 fn null_vector_array() -> ffi::mlx_vector_array {
     ffi::mlx_vector_array {
@@ -256,6 +257,11 @@ impl MlxClosure {
                 });
             }
         }
+        // `mlx_closure_apply` does not accept an explicit stream argument,
+        // unlike the regular op wrappers. Ensure this thread has registered a
+        // current default GPU stream before crossing into MLX C; otherwise MLX
+        // can abort with "There is no Stream(gpu, 0) in current thread".
+        MlxStream::default_gpu().set_as_default();
         // Count one MLX dispatch per closure invocation. For a compiled
         // closure this is the single underlying graph dispatch; for an
         // uncompiled closure it is the trampoline call. Either way, this

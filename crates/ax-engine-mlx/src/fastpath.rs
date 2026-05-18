@@ -141,23 +141,20 @@ env_flag_default_on!(
     "AX_MLX_PREFILL_FFN_COMPILE_SWIGLU"
 );
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_PER_LAYER_GATE_COMPILE` — Gemma 4 per-layer-input gate compile
     /// fusion.
     ///
-    /// **Default: OFF** pending root-cause investigation. The helper uses a
-    /// call-site dedicated cache keyed by `(ThreadId, last_dim)` so it does
-    /// not collide with the FFN GeGLU cache (which is keyed by `ThreadId`
-    /// only). Even with the dedicated cache, a 2026-05-18 bench on Gemma 4
-    /// E2B 4-bit aborted inside `mlx_closure_apply` on the warmup request.
-    /// Same crash signature as the original shared-cache attempt. The
-    /// compile path is therefore kept off the default-on track until the
-    /// remaining trigger (suspected: per-layer-input dtype / tensor
-    /// identity pattern not covered by `mx.compile(shapeless=true)`) is
-    /// root-caused. Set to 1 only for crash-repro and follow-up
-    /// investigation; the call site in
-    /// `families::standard::layer_forward` step 19 will then take the
-    /// compile path and abort on this model class.
+    /// **Default: ON** (kill-switch via `AX_MLX_PER_LAYER_GATE_COMPILE=0`).
+    ///
+    /// The helper uses a call-site dedicated, shape-specific cache keyed by
+    /// thread, input shapes, and dtypes. The earlier W5 attempts were unsafe:
+    /// first they reused the FFN GeGLU closure, then they used a dedicated but
+    /// shapeless `(ThreadId, last_dim)` cache. Gemma 4 E2B 4-bit still aborted
+    /// inside `mlx_closure_apply` with the shapeless cache, likely because the
+    /// per-layer input is a split/reshape view. Shape-specific
+    /// `compile(false)` avoids that MLX quirk while preserving repeat reuse
+    /// for the same prompt/decode shape.
     per_layer_gate_compile_enabled,
     "AX_MLX_PER_LAYER_GATE_COMPILE"
 );
