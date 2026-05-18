@@ -217,6 +217,56 @@ pub(crate) fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
     multiply(&gelu_approx(gate, None), x, None)
 }
 
+pub(crate) fn per_layer_input_gate(gate: &MlxArray, per_layer_input: &MlxArray) -> MlxArray {
+    use std::collections::HashMap;
+    use std::collections::hash_map::Entry;
+    use std::thread::ThreadId;
+
+    if !fastpath::per_layer_gate_compile_enabled() {
+        return multiply(&gelu_approx(gate, None), per_layer_input, None);
+    }
+
+    const COMPILE_WRAP_LAST_DIM_CEILING: usize = 16_384;
+    let last_dim = *gate.shape().last().unwrap_or(&0) as usize;
+    if gate.ndim() > 3 || last_dim > COMPILE_WRAP_LAST_DIM_CEILING {
+        return multiply(&gelu_approx(gate, None), per_layer_input, None);
+    }
+
+    type PerLayerGateCompileKey = (ThreadId, usize);
+    static PER_LAYER_GATE_COMPILE_CACHE: OnceLock<
+        Mutex<HashMap<PerLayerGateCompileKey, MlxClosure>>,
+    > = OnceLock::new();
+
+    let cache = PER_LAYER_GATE_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (std::thread::current().id(), last_dim);
+    let outputs = {
+        let mut guard = cache
+            .lock()
+            .expect("per-layer gate compile cache mutex poisoned");
+        if let Entry::Vacant(slot) = guard.entry(key)
+            && let Ok(compiled) = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
+                let gate = inputs.get(0);
+                let per_layer_input = inputs.get(1);
+                let activated = gelu_approx(&gate, None);
+                vec![multiply(&activated, &per_layer_input, None)]
+            })
+            .compile(true)
+        {
+            slot.insert(compiled);
+        }
+        guard
+            .get(&key)
+            .and_then(|cls| cls.try_apply(&[gate, per_layer_input]).ok())
+    };
+
+    if let Some(mut outputs) = outputs
+        && let Some(out) = outputs.pop()
+    {
+        return out;
+    }
+    multiply(&gelu_approx(gate, None), per_layer_input, None)
+}
+
 /// SwiGLU compiled helper — mirrors `geglu()` but with SiLU activation.
 /// Wraps `silu(gate) * up` in a per-thread `Mutex<HashMap<ThreadId,
 /// MlxClosure>>` compile cache. Same thread-locality + fail-closed

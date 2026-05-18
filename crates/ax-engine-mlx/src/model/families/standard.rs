@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, add, gelu_approx, multiply, reshape, rms_norm, rope, slice, transpose};
+use mlx_sys::{MlxArray, add, multiply, reshape, rms_norm, rope, slice, transpose};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -10,9 +10,9 @@ use super::super::profile::{
 };
 use super::super::shared::{
     attention_mask_array, attention_output_projection, ffn_swiglu, full_precision_attention,
-    moe_experts_forward, moe_router_gemma4, moe_router_glm, moe_router_qwen3, prepare_value_bhsd,
-    qk_norm_bshd, qkv_project, qw, rms_norm_opt, shape_element_count, shared_expert_forward,
-    turboquant_decode_attention_experimental,
+    moe_experts_forward, moe_router_gemma4, moe_router_glm, moe_router_qwen3, per_layer_input_gate,
+    prepare_value_bhsd, qk_norm_bshd, qkv_project, qw, rms_norm_opt, shape_element_count,
+    shared_expert_forward, turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
@@ -534,26 +534,17 @@ pub(crate) fn layer_forward(
 
     // 19. Per-layer input gating (Gemma4 2B/4B): gate(h) * per_layer_embed → proj → norm + h.
     //
-    // W5 NOTE (mlx-lm-prefill-parity PRD §7): tried reusing the shared
-    // `geglu()` compile cache here. It aborts MLX inside
-    // `mlx_closure_apply` because the cache is keyed only by `ThreadId`,
-    // so the FFN's `[1, seq, intermediate_size=6144]` compile entry gets
-    // re-used (incorrectly) for the per-layer gate's
-    // `[1, seq, hidden_per_layer_input=256]` call. `mx.compile`'s
-    // `shapeless=true` promise does not hold across input ranks/last-dims
-    // when the cache key collapses them. Closing this requires a
-    // dedicated compile cache for this call site (keyed by
-    // `(ThreadId, last_dim)` or a per-site `OnceLock<MlxClosure>`); kept
-    // out of this PRD so the W5 net-perf retest is not gated on a
-    // separate refactor.
+    // W5: compile only the `gelu_approx + multiply` sub-chain with a
+    // call-site-specific cache. Reusing the FFN `geglu()` cache is unsafe:
+    // that cache can hold a closure compiled for `[1, seq, intermediate]`,
+    // while this path applies `[1, seq, hidden_size_per_layer_input]`.
     if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
         w.per_layer_gate.as_ref(),
         w.per_layer_proj_w.as_ref(),
         w.per_layer_post_norm.as_ref(),
         per_layer_input,
     ) {
-        let gate = gelu_approx(&qw(&out, gate_w), None);
-        let gated = multiply(&gate, pli, None);
+        let gated = per_layer_input_gate(&qw(&out, gate_w), pli);
         let projected = qw(&gated, proj_w);
         let normed = rms_norm(&projected, Some(post_norm), cfg.rms_norm_eps, None);
         out = add(&out, &normed, None);

@@ -3538,6 +3538,71 @@ mod tests {
     }
 
     #[test]
+    fn per_layer_input_gate_compile_cache_is_independent_from_ffn_geglu() {
+        // Regression for W5: the per-layer gate compile path must not reuse
+        // the FFN GeGLU closure compiled on the same thread with a different
+        // last dimension.
+        let ffn_gate_f32: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.05).collect();
+        let ffn_up_f32: Vec<f32> = (0..32).map(|i| ((i as f32) + 1.0) * 0.07).collect();
+        let ffn_gate = astype(
+            &array_f32(&ffn_gate_f32, &[1, 4, 8]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let ffn_up = astype(
+            &array_f32(&ffn_up_f32, &[1, 4, 8]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let _ = geglu(&ffn_gate, &ffn_up);
+
+        let gate_f32: Vec<f32> = (0..12).map(|i| ((i as f32) - 6.0) * 0.04).collect();
+        let pli_f32: Vec<f32> = (0..12).map(|i| ((i as f32) + 1.0) * 0.03).collect();
+        let gate = astype(&array_f32(&gate_f32, &[1, 4, 3]), MlxDtype::Bfloat16, None);
+        let pli = astype(&array_f32(&pli_f32, &[1, 4, 3]), MlxDtype::Bfloat16, None);
+
+        let imperative = multiply(&gelu_approx(&gate, None), &pli, None);
+        let imperative_f32 = astype(&imperative, MlxDtype::Float32, None);
+        let compiled = per_layer_input_gate(&gate, &pli);
+        let compiled_f32 = astype(&compiled, MlxDtype::Float32, None);
+
+        eval(&[&imperative_f32, &compiled_f32]);
+        assert_eq!(
+            imperative_f32.data_f32().to_vec(),
+            compiled_f32.data_f32().to_vec(),
+            "per-layer gate compile path must match the imperative fallback"
+        );
+
+        let gate_short = astype(
+            &array_f32(&gate_f32[..6], &[1, 2, 3]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let pli_short = astype(
+            &array_f32(&pli_f32[..6], &[1, 2, 3]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let expected_short = astype(
+            &multiply(&gelu_approx(&gate_short, None), &pli_short, None),
+            MlxDtype::Float32,
+            None,
+        );
+        let compiled_short = astype(
+            &per_layer_input_gate(&gate_short, &pli_short),
+            MlxDtype::Float32,
+            None,
+        );
+
+        eval(&[&expected_short, &compiled_short]);
+        assert_eq!(
+            expected_short.data_f32().to_vec(),
+            compiled_short.data_f32().to_vec(),
+            "same-last-dim cache entry must tolerate sequence-length changes"
+        );
+    }
+
+    #[test]
     fn swiglu_compiled_matches_imperative() {
         // Same shape and dtype the Qwen 3 dense FFN call site produces:
         // gate_proj output and up_proj output, both bf16.
