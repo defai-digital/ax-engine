@@ -6,15 +6,15 @@
 
 | slug | status | repo | quant | notes |
 |---|---|---|---|---|
-| gemma-4-e2b-it-4bit | unresolved | - | Q4_K_M | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| gemma-4-e2b-it-5bit | unresolved | - | Q5_K_M | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| gemma-4-e2b-it-6bit | unresolved | - | Q6_K | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| gemma-4-e2b-it-8bit | unresolved | - | Q8_0 | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| gemma-4-e4b-it-4bit | unresolved | - | Q4_K_M | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| gemma-4-26b-a4b-it-4bit | unresolved | - | Q4_K_M | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| gemma-4-31b-it-4bit | unresolved | - | Q4_K_M | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| qwen3_6-27b-4bit | unresolved | - | Q4_K_M | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| qwen3_6-27b-5bit | unresolved | - | Q5_K_M | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| qwen3_6-27b-6bit | unresolved | - | Q6_K | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| qwen3_6-27b-8bit | unresolved | - | Q8_0 | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
-| qwen3_6-35b-a3b-4bit | unresolved | - | Q4_K_M | No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion. |
+| gemma-4-e2b-it-4bit | dry_run_resolved | bartowski/google_gemma-4-E2B-it-GGUF | Q4_K_M |  |
+| gemma-4-e2b-it-5bit | dry_run_resolved | bartowski/google_gemma-4-E2B-it-GGUF | Q5_K_M |  |
+| gemma-4-e2b-it-6bit | dry_run_resolved | bartowski/google_gemma-4-E2B-it-GGUF | Q6_K |  |
+| gemma-4-e2b-it-8bit | dry_run_resolved | bartowski/google_gemma-4-E2B-it-GGUF | Q8_0 |  |
+| gemma-4-e4b-it-4bit | dry_run_resolved | bartowski/google_gemma-4-E4B-it-GGUF | Q4_K_M |  |
+| gemma-4-26b-a4b-it-4bit | dry_run_resolved | bartowski/google_gemma-4-26B-A4B-it-GGUF | Q4_K_M |  |
+| gemma-4-31b-it-4bit | dry_run_resolved | bartowski/google_gemma-4-31B-it-GGUF | Q4_K_M |  |
+| qwen3_6-27b-4bit | dry_run_resolved | bartowski/Qwen_Qwen3.6-27B-GGUF | Q4_K_M |  |
+| qwen3_6-27b-5bit | dry_run_resolved | bartowski/Qwen_Qwen3.6-27B-GGUF | Q5_K_M |  |
+| qwen3_6-27b-6bit | dry_run_resolved | bartowski/Qwen_Qwen3.6-27B-GGUF | Q6_K |  |
+| qwen3_6-27b-8bit | dry_run_resolved | bartowski/Qwen_Qwen3.6-27B-GGUF | Q8_0 |  |
+| qwen3_6-35b-a3b-4bit | dry_run_resolved | bartowski/Qwen_Qwen3.6-35B-A3B-GGUF | Q4_K_M |  |

@@ -2,8 +2,10 @@
 """Sweep llama.cpp Metal benchmarks across README MLX-inference rows.
 
 Reads benchmarks/manifests/llama_cpp_metal/inventory.json and, for each row:
-  1) Resolves the first GGUF candidate that exists on Hugging Face.
-  2) Downloads the GGUF to --cache-dir (default ~/.cache/huggingface/hub).
+  1) Resolves the first GGUF candidate from the local Hugging Face cache, or
+     from Hugging Face metadata when not running --cache-only.
+  2) Reuses the cached GGUF, or downloads it to --cache-dir when not running
+     --cache-only.
   3) Invokes scripts/bench_mlx_inference_stack.py with --llama-cpp-bench /
      --llama-cpp-gguf, --skip-mlx-lm, --skip-ax-engine to produce ONLY the
      external GGUF baseline row.
@@ -73,19 +75,34 @@ def validate_bartowski_inventory(manifest: dict[str, Any], rows: list[dict[str, 
 def resolve_gguf_candidate(
     candidates: list[dict[str, str]],
     *,
+    cache_dir: Path,
     hf_token: str | None,
+    cache_only: bool,
 ) -> tuple[str, str, list[dict[str, Any]]] | None:
     """Walk candidates in priority order. Return (repo, filename, probe_log)
     for the first candidate that resolves; None if all fail."""
-    from huggingface_hub import HfApi
-    from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
-
-    api = HfApi(token=hf_token)
     probe_log: list[dict[str, Any]] = []
     for candidate in candidates:
         repo = candidate["repo"]
         pattern = candidate["filename_pattern"]
         entry: dict[str, Any] = {"repo": repo, "filename_pattern": pattern}
+
+        cached_match = resolve_cached_hf_file(repo, pattern, cache_dir)
+        if cached_match is not None:
+            entry["result"] = "resolved_from_cache"
+            entry["filename"] = cached_match.name
+            probe_log.append(entry)
+            return repo, cached_match.name, probe_log
+
+        if cache_only:
+            entry["result"] = "cache_miss"
+            probe_log.append(entry)
+            continue
+
+        from huggingface_hub import HfApi
+        from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+
+        api = HfApi(token=hf_token)
         try:
             files = api.list_repo_files(repo)
         except RepositoryNotFoundError:
@@ -132,18 +149,51 @@ def _shard_siblings(filename: str) -> list[str]:
     return [f"{prefix}{i:05d}-of-{total:05d}{suffix}" for i in range(1, total + 1)]
 
 
+def resolve_cached_hf_file(repo: str, filename_pattern: str, cache_dir: Path) -> Path | None:
+    snapshot = latest_hf_cache_snapshot(repo, cache_dir)
+    if snapshot is None:
+        return None
+    matches = sorted(
+        path
+        for path in snapshot.rglob("*.gguf")
+        if fnmatch.fnmatch(path.name, filename_pattern) or fnmatch.fnmatch(str(path.relative_to(snapshot)), filename_pattern)
+    )
+    return matches[0] if matches else None
+
+
+def cached_hf_file(repo: str, filename: str, cache_dir: Path) -> Path | None:
+    snapshot = latest_hf_cache_snapshot(repo, cache_dir)
+    if snapshot is None:
+        return None
+    candidate = snapshot / filename
+    if candidate.is_file():
+        return candidate
+    matches = sorted(path for path in snapshot.rglob(Path(filename).name) if path.is_file())
+    return matches[0] if matches else None
+
+
 def download_gguf(
     repo: str,
     filename: str,
     *,
     cache_dir: Path,
     hf_token: str | None,
+    cache_only: bool,
 ) -> Path:
-    from huggingface_hub import hf_hub_download
-
     shards = _shard_siblings(filename)
     first_path: Path | None = None
     for shard in shards:
+        cached = cached_hf_file(repo, shard, cache_dir)
+        if cached is not None:
+            log(f"  reuse cached {repo} :: {shard}")
+            if first_path is None:
+                first_path = cached
+            continue
+        if cache_only:
+            raise FileNotFoundError(f"cached GGUF shard not found for {repo}: {shard}")
+
+        from huggingface_hub import hf_hub_download
+
         log(f"  download {repo} :: {shard}")
         local = hf_hub_download(
             repo_id=repo,
@@ -497,6 +547,14 @@ def main() -> None:
         help="HF download cache root. Existing files are reused.",
     )
     parser.add_argument(
+        "--cache-only",
+        action="store_true",
+        help=(
+            "Resolve GGUF and MLX artifacts only from --cache-dir. Do not call "
+            "Hugging Face metadata APIs and do not download missing files."
+        ),
+    )
+    parser.add_argument(
         "--rows-filter",
         nargs="*",
         help="If set, only process rows whose slug is in this list.",
@@ -605,7 +663,9 @@ def main() -> None:
         try:
             resolved = resolve_gguf_candidate(
                 row["gguf_candidates"],
+                cache_dir=args.cache_dir,
                 hf_token=args.hf_token,
+                cache_only=args.cache_only,
             )
         except Exception as exc:
             record["status"] = "resolution_error"
@@ -645,6 +705,7 @@ def main() -> None:
                 filename,
                 cache_dir=args.cache_dir,
                 hf_token=args.hf_token,
+                cache_only=args.cache_only,
             )
         except Exception as exc:
             record["status"] = "download_failed"
@@ -657,7 +718,7 @@ def main() -> None:
         size_bytes = gguf_disk_bytes(gguf_path)
         record["gguf_size_bytes"] = size_bytes
         total_bytes_downloaded += size_bytes
-        log(f"  -> downloaded ({size_bytes / 1e9:.2f} GB)")
+        log(f"  -> GGUF ready ({size_bytes / 1e9:.2f} GB)")
 
         bench_result = run_bench_for_row(
             row,
@@ -703,6 +764,7 @@ def main() -> None:
         "total_bytes_downloaded": total_bytes_downloaded,
         "total_bytes_freed": total_bytes_freed,
         "keep_gguf": args.keep_gguf,
+        "cache_only": args.cache_only,
         "rows": summary_rows,
     }
     sweep_path = args.output_root / "sweep_results.json"

@@ -10,11 +10,12 @@
   "n_gpu_layers": 99,
   "extra_args": null,
   "full_stack": true,
-  "started_at": "2026-05-18T01:31:42-0400",
-  "elapsed_seconds": 0.1,
+  "started_at": "2026-05-18T01:34:35-0400",
+  "elapsed_seconds": 0.0,
   "total_bytes_downloaded": 0,
   "total_bytes_freed": 0,
   "keep_gguf": true,
+  "cache_only": true,
   "rows": [
     {
       "slug": "gemma-4-e2b-it-4bit",
@@ -22,9 +23,18 @@
       "readme_quant": "4-bit",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q4_K_M",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/google_gemma-4-E2B-it-GGUF",
+      "resolved_filename": "google_gemma-4-E2B-it-Q4_K_M.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/google_gemma-4-E2B-it-GGUF",
+          "filename_pattern": "*Q4_K_M*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "google_gemma-4-E2B-it-Q4_K_M.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "gemma-4-e2b-it-5bit",
@@ -32,9 +42,18 @@
       "readme_quant": "5-bit",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q5_K_M",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/google_gemma-4-E2B-it-GGUF",
+      "resolved_filename": "google_gemma-4-E2B-it-Q5_K_M.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/google_gemma-4-E2B-it-GGUF",
+          "filename_pattern": "*Q5_K_M*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "google_gemma-4-E2B-it-Q5_K_M.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "gemma-4-e2b-it-6bit",
@@ -42,9 +61,18 @@
       "readme_quant": "6-bit",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q6_K",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/google_gemma-4-E2B-it-GGUF",
+      "resolved_filename": "google_gemma-4-E2B-it-Q6_K.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/google_gemma-4-E2B-it-GGUF",
+          "filename_pattern": "*Q6_K*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "google_gemma-4-E2B-it-Q6_K.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "gemma-4-e2b-it-8bit",
@@ -52,9 +80,18 @@
       "readme_quant": "8-bit",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q8_0",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/google_gemma-4-E2B-it-GGUF",
+      "resolved_filename": "google_gemma-4-E2B-it-Q8_0.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/google_gemma-4-E2B-it-GGUF",
+          "filename_pattern": "*Q8_0*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "google_gemma-4-E2B-it-Q8_0.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "gemma-4-e4b-it-4bit",
@@ -62,9 +99,18 @@
       "readme_quant": "4-bit",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q4_K_M",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/google_gemma-4-E4B-it-GGUF",
+      "resolved_filename": "google_gemma-4-E4B-it-Q4_K_M.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/google_gemma-4-E4B-it-GGUF",
+          "filename_pattern": "*Q4_K_M*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "google_gemma-4-E4B-it-Q4_K_M.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "gemma-4-26b-a4b-it-4bit",
@@ -72,9 +118,18 @@
       "readme_quant": "4-bit",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q4_K_M",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/google_gemma-4-26B-A4B-it-GGUF",
+      "resolved_filename": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/google_gemma-4-26B-A4B-it-GGUF",
+          "filename_pattern": "*Q4_K_M*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "gemma-4-31b-it-4bit",
@@ -82,9 +137,18 @@
       "readme_quant": "4-bit",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q4_K_M",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/google_gemma-4-31B-it-GGUF",
+      "resolved_filename": "google_gemma-4-31B-it-Q4_K_M.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/google_gemma-4-31B-it-GGUF",
+          "filename_pattern": "*Q4_K_M*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "google_gemma-4-31B-it-Q4_K_M.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "qwen3_6-27b-4bit",
@@ -92,9 +156,18 @@
       "readme_quant": "4-bit",
       "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q4_K_M",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/Qwen_Qwen3.6-27B-GGUF",
+      "resolved_filename": "Qwen_Qwen3.6-27B-Q4_K_M.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/Qwen_Qwen3.6-27B-GGUF",
+          "filename_pattern": "*Q4_K_M*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "Qwen_Qwen3.6-27B-Q4_K_M.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "qwen3_6-27b-5bit",
@@ -102,9 +175,18 @@
       "readme_quant": "MLX 5-bit",
       "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q5_K_M",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/Qwen_Qwen3.6-27B-GGUF",
+      "resolved_filename": "Qwen_Qwen3.6-27B-Q5_K_M.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/Qwen_Qwen3.6-27B-GGUF",
+          "filename_pattern": "*Q5_K_M*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "Qwen_Qwen3.6-27B-Q5_K_M.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "qwen3_6-27b-6bit",
@@ -112,9 +194,18 @@
       "readme_quant": "MLX 6-bit",
       "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q6_K",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/Qwen_Qwen3.6-27B-GGUF",
+      "resolved_filename": "Qwen_Qwen3.6-27B-Q6_K.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/Qwen_Qwen3.6-27B-GGUF",
+          "filename_pattern": "*Q6_K*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "Qwen_Qwen3.6-27B-Q6_K.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "qwen3_6-27b-8bit",
@@ -122,9 +213,18 @@
       "readme_quant": "MLX 8-bit",
       "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q8_0",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/Qwen_Qwen3.6-27B-GGUF",
+      "resolved_filename": "Qwen_Qwen3.6-27B-Q8_0.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/Qwen_Qwen3.6-27B-GGUF",
+          "filename_pattern": "*Q8_0*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "Qwen_Qwen3.6-27B-Q8_0.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     },
     {
       "slug": "qwen3_6-35b-a3b-4bit",
@@ -132,9 +232,18 @@
       "readme_quant": "4-bit",
       "llama_cpp_arch": "qwen35moe",
       "gguf_quant_target": "Q4_K_M",
-      "started_at": "2026-05-18T01:31:42-0400",
-      "status": "unresolved",
-      "note": "No GGUF candidate matched on HF. Architecture may not yet have a public GGUF conversion."
+      "started_at": "2026-05-18T01:34:35-0400",
+      "resolved_repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF",
+      "resolved_filename": "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",
+      "probe_log": [
+        {
+          "repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF",
+          "filename_pattern": "*Q4_K_M*.gguf",
+          "result": "resolved_from_cache",
+          "filename": "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf"
+        }
+      ],
+      "status": "dry_run_resolved"
     }
   ]
 }

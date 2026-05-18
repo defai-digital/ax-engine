@@ -112,6 +112,47 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
             ],
         )
 
+    def test_resolve_gguf_candidate_uses_cache_without_network(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            snapshot = (
+                cache
+                / "models--bartowski--Qwen_Qwen3.6-27B-GGUF"
+                / "snapshots"
+                / "abc"
+            )
+            snapshot.mkdir(parents=True)
+            (snapshot / "Qwen_Qwen3.6-27B-Q5_K_M.gguf").write_text("fake")
+
+            resolved = sweep.resolve_gguf_candidate(
+                [
+                    {
+                        "repo": "bartowski/Qwen_Qwen3.6-27B-GGUF",
+                        "filename_pattern": "*Q5_K_M*.gguf",
+                    }
+                ],
+                cache_dir=cache,
+                hf_token=None,
+                cache_only=True,
+            )
+
+        self.assertIsNotNone(resolved)
+        repo, filename, probe_log = resolved
+        self.assertEqual(repo, "bartowski/Qwen_Qwen3.6-27B-GGUF")
+        self.assertEqual(filename, "Qwen_Qwen3.6-27B-Q5_K_M.gguf")
+        self.assertEqual(probe_log[0]["result"], "resolved_from_cache")
+
+    def test_download_gguf_cache_only_refuses_missing_shard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                sweep.download_gguf(
+                    "bartowski/Qwen_Qwen3.6-27B-GGUF",
+                    "Qwen_Qwen3.6-27B-Q5_K_M.gguf",
+                    cache_dir=Path(tmp),
+                    hf_token=None,
+                    cache_only=True,
+                )
+
     def test_full_stack_readme_update_refuses_partial_sweep(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
