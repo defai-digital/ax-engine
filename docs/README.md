@@ -26,8 +26,6 @@ Start here:
   compatibility boundaries
 - `SERVER.md`: local HTTP server routes and backend behavior
 - `CLI.md`: `ax-engine-bench` and server command surfaces
-- `MANAGER.md`: `ax-engine-manager` web quick start, support bundles, and
-  release gate
 - `ROADMAP.md`: current serving runtime direction, shipped v4.9.0 baseline, and
   evidence gates for future claims
 - `BENCHMARKS.md`: benchmark methodology, test setup, commands, evidence

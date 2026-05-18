@@ -67,7 +67,7 @@ README_MODELS = [
     ("Gemma 4 26B A4B",    "gemma-4-26b-a4b-it-4bit",     "4-bit",        "mlx_lm"),
     ("Gemma 4 31B",        "gemma-4-31b-it-4bit",         "4-bit",        "mlx_lm"),
     ("Qwen 3.5 9B",        "qwen3_5-9b-mlx-4bit",         "4-bit",        "mlx_lm"),
-    ("Qwen 3.6 35B A3B",   "qwen3_6-35b-a3b-ud-mlx-4bit", "UD-MLX 4-bit", "mlx_lm"),
+    ("Qwen 3.6 35B A3B",   "qwen3_6-35b-a3b-ud-mlx-4bit", "4-bit",        "mlx_lm"),
     ("Qwen 3.6 35B A3B",   "qwen3_6-35b-a3b-5bit",        "MLX 5-bit",    "mlx_lm"),
     ("Qwen 3.6 35B A3B",   "qwen3_6-35b-a3b-6bit",        "MLX 6-bit",    "mlx_lm"),
     ("Qwen 3.6 35B A3B",   "qwen3_6-35b-a3b-8bit",        "MLX 8-bit",    "mlx_lm"),
@@ -75,7 +75,7 @@ README_MODELS = [
     ("GLM 4.7 Flash",      "glm-4.7-flash-4bit",           "4-bit",        "mlx_lm"),
 ]
 
-PROMPT_TOKENS = [128, 512]
+PROMPT_TOKENS = [128, 512, 2048]
 
 
 def bold_if_better(val_str, better):
@@ -92,7 +92,40 @@ def main():
     print("=" * 90)
     print("PREFILL TABLE")
     print("=" * 90)
-    print("| Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |")
+    print("| Model | MLX quantization | Prompt tok | mlx_lm | ax engine |")
+    print("|---|---|---:|---:|---:|")
+
+    for label, slug, quant, _ in README_MODELS:
+        d = load_result(rdir / f"{slug}.json")
+        if d is None:
+            print(f"| {label} | {quant} | — | (not yet) | |")
+            continue
+        rows = extract_rows(d)
+        first = True
+        for pt in PROMPT_TOKENS:
+            lm  = rows.get(("mlx_lm", pt))
+            ax  = rows.get(("ax_engine_mlx", pt))
+            if lm is None:
+                continue
+            lm_p  = get_prefill_median(lm)
+            ax_p  = get_prefill_median(ax)  if ax  else None
+
+            lm_s  = fmt(lm_p)  if lm_p  else "—"
+            ax_s  = f"{fmt(ax_p)} ({pct(ax_p, lm_p)})"  if ax_p  and lm_p else "—"
+            if ax_p and lm_p and ax_p > lm_p:
+                ax_s = f"**{ax_s}**"
+
+            if first:
+                print(f"| {label} | {quant} | {pt} | {lm_s} | {ax_s} |")
+                first = False
+            else:
+                print(f"|        |        | {pt} | {lm_s} | {ax_s} |")
+
+    print()
+    print("=" * 90)
+    print("DECODE TABLE")
+    print("=" * 90)
+    print("| Model | MLX quantization | Prompt tok | mlx_lm | ax direct baseline | ax default n-gram |")
     print("|---|---|---:|---:|---:|---:|")
 
     for label, slug, quant, _ in README_MODELS:
@@ -103,44 +136,7 @@ def main():
         rows = extract_rows(d)
         first = True
         for pt in PROMPT_TOKENS:
-            lm  = rows.get(("mlx_lm", pt))
-            swl = rows.get(("mlx_swift_lm", pt))
-            ax  = rows.get(("ax_engine_mlx", pt))
-            if lm is None:
-                continue
-            lm_p  = get_prefill_median(lm)
-            swl_p = get_prefill_median(swl) if swl else None
-            ax_p  = get_prefill_median(ax)  if ax  else None
-
-            lm_s  = fmt(lm_p)  if lm_p  else "—"
-            swl_s = f"{fmt(swl_p)} ({pct(swl_p, lm_p)})" if swl_p and lm_p else "—"
-            ax_s  = f"{fmt(ax_p)} ({pct(ax_p, lm_p)})"  if ax_p  and lm_p else "—"
-            if ax_p and lm_p and ax_p > lm_p:
-                ax_s = f"**{ax_s}**"
-
-            if first:
-                print(f"| {label} | {quant} | {pt} | {lm_s} | {swl_s} | {ax_s} |")
-                first = False
-            else:
-                print(f"|        |        | {pt} | {lm_s} | {swl_s} | {ax_s} |")
-
-    print()
-    print("=" * 90)
-    print("DECODE TABLE")
-    print("=" * 90)
-    print("| Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax direct baseline | ax default n-gram |")
-    print("|---|---|---:|---:|---:|---:|---:|")
-
-    for label, slug, quant, _ in README_MODELS:
-        d = load_result(rdir / f"{slug}.json")
-        if d is None:
-            print(f"| {label} | {quant} | — | (not yet) | | | |")
-            continue
-        rows = extract_rows(d)
-        first = True
-        for pt in PROMPT_TOKENS:
             lm    = rows.get(("mlx_lm", pt))
-            swl   = rows.get(("mlx_swift_lm", pt))
             ax    = rows.get(("ax_engine_mlx", pt))
             ax_ng = rows.get(("ax_engine_mlx_ngram_accel", pt))
 
@@ -148,12 +144,10 @@ def main():
                 continue
 
             lm_d   = get_decode_median(lm)
-            swl_d  = get_decode_median(swl)   if swl   else None
             ax_d   = get_decode_median(ax)    if ax    else None
             axng_d = get_decode_median(ax_ng) if ax_ng else None
 
             lm_s   = fmt(lm_d)  if lm_d  else "—"
-            swl_s  = f"{fmt(swl_d)} ({pct(swl_d, lm_d)})"  if swl_d  and lm_d else "—"
             ax_s   = f"{fmt(ax_d)} ({pct(ax_d, lm_d)})"    if ax_d   and lm_d else "—"
             axng_s = f"{fmt(axng_d)} ({pct(axng_d, lm_d)})" if axng_d and lm_d else "—"
 
@@ -163,50 +157,46 @@ def main():
                 axng_s = f"**{axng_s}**"
 
             if first:
-                print(f"| {label} | {quant} | {pt} | {lm_s} | {swl_s} | {ax_s} | {axng_s} |")
+                print(f"| {label} | {quant} | {pt} | {lm_s} | {ax_s} | {axng_s} |")
                 first = False
             else:
-                print(f"|        |        | {pt} | {lm_s} | {swl_s} | {ax_s} | {axng_s} |")
+                print(f"|        |        | {pt} | {lm_s} | {ax_s} | {axng_s} |")
 
     print()
     print("=" * 90)
     print("TTFT TABLE")
     print("=" * 90)
-    print("| Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |")
-    print("|---|---|---:|---:|---:|---:|")
+    print("| Model | MLX quantization | Prompt tok | mlx_lm | ax engine |")
+    print("|---|---|---:|---:|---:|")
 
     for label, slug, quant, _ in README_MODELS:
         d = load_result(rdir / f"{slug}.json")
         if d is None:
-            print(f"| {label} | {quant} | — | (not yet) | | |")
+            print(f"| {label} | {quant} | — | (not yet) | |")
             continue
         rows = extract_rows(d)
         first = True
         for pt in PROMPT_TOKENS:
             lm  = rows.get(("mlx_lm", pt))
-            swl = rows.get(("mlx_swift_lm", pt))
             ax  = rows.get(("ax_engine_mlx", pt))
             if lm is None:
                 continue
 
             lm_p  = get_prefill_median(lm)
-            swl_p = get_prefill_median(swl) if swl else None
             ax_t  = get_ttft(ax) if ax else None
 
             lm_ttft  = (pt / lm_p * 1000)  if lm_p  else None
-            swl_ttft = (pt / swl_p * 1000) if swl_p else None
 
             lm_s  = fmt(lm_ttft, 1)  if lm_ttft  else "—"
-            swl_s = f"{fmt(swl_ttft, 1)} ({pct(swl_ttft, lm_ttft)})" if swl_ttft and lm_ttft else "—"
             ax_s  = f"{fmt(ax_t, 1)} ({pct(ax_t, lm_ttft)})"         if ax_t     and lm_ttft else "—"
             if ax_t and lm_ttft and ax_t < lm_ttft:
                 ax_s = f"**{ax_s}**"
 
             if first:
-                print(f"| {label} | {quant} | {pt} | {lm_s} | {swl_s} | {ax_s} |")
+                print(f"| {label} | {quant} | {pt} | {lm_s} | {ax_s} |")
                 first = False
             else:
-                print(f"|        |        | {pt} | {lm_s} | {swl_s} | {ax_s} |")
+                print(f"|        |        | {pt} | {lm_s} | {ax_s} |")
 
 
 if __name__ == "__main__":

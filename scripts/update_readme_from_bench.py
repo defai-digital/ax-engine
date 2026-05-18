@@ -19,7 +19,7 @@ SLUG_TO_README = {
     "gemma-4-26b-a4b-it-4bit":     ("Gemma 4 26B A4B",  "4-bit"),
     "gemma-4-31b-it-4bit":         ("Gemma 4 31B",      "4-bit"),
     "qwen3_5-9b-mlx-4bit":         ("Qwen 3.5 9B",      "4-bit"),
-    "qwen3_6-35b-a3b-ud-mlx-4bit": ("Qwen 3.6 35B A3B", "UD-MLX 4-bit"),
+    "qwen3_6-35b-a3b-ud-mlx-4bit": ("Qwen 3.6 35B A3B", "4-bit"),
     "qwen3_6-35b-a3b-5bit":        ("Qwen 3.6 35B A3B", "MLX 5-bit"),
     "qwen3_6-35b-a3b-6bit":        ("Qwen 3.6 35B A3B", "MLX 6-bit"),
     "qwen3_6-35b-a3b-8bit":        ("Qwen 3.6 35B A3B", "MLX 8-bit"),
@@ -122,26 +122,26 @@ def find_next_512_line(lines: list[str], after: int) -> int:
     return -1
 
 
-def find_next_4096_line(lines: list[str], after: int) -> int:
-    """Find the pt=4096 continuation row immediately after the pt=512 row.
-    Returns -1 if no 4096 row exists (older README without the long-context row)."""
+def find_next_2048_line(lines: list[str], after: int) -> int:
+    """Find the pt=2048 continuation row immediately after the pt=512 row.
+    Returns -1 if no 2048 row exists (older README without the long-context row)."""
     for i in range(after + 1, min(after + 4, len(lines))):
-        if "| 4096 |" in lines[i]:
+        if "| 2048 |" in lines[i]:
             return i
     return -1
 
 
 def collect_prompt_rows(lines: list[str], anchor: int) -> list[tuple[int, int]]:
     """Return ordered list of (prompt_tokens, line_index) for this model.
-    The pt=128 row is the anchor; pt=512 and optional pt=4096 follow.
+    The pt=128 row is the anchor; pt=512 and optional pt=2048 follow.
     """
     rows: list[tuple[int, int]] = [(128, anchor)]
     idx_512 = find_next_512_line(lines, anchor)
     if idx_512 >= 0:
         rows.append((512, idx_512))
-        idx_4096 = find_next_4096_line(lines, idx_512)
-        if idx_4096 >= 0:
-            rows.append((4096, idx_4096))
+        idx_2048 = find_next_2048_line(lines, idx_512)
+        if idx_2048 >= 0:
+            rows.append((2048, idx_2048))
     return rows
 
 

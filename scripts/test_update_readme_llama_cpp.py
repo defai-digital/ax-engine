@@ -74,8 +74,8 @@ class UpdateReadmeLlamaCppTests(unittest.TestCase):
     def test_unresolved_row_renders_as_n_a_with_reason(self) -> None:
         doc = _make_sweep_doc([
             {
-                "slug": "qwen3-coder-next-4bit",
-                "readme_model": "Qwen Coder Next",
+                "slug": "qwen3_6-35b-a3b-4bit",
+                "readme_model": "Qwen 3.6 35B A3B",
                 "readme_quant": "4-bit",
                 "gguf_quant_target": "Q4_K_M",
                 "status": "unresolved",

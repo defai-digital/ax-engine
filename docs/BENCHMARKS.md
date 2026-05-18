@@ -91,7 +91,7 @@ python3 scripts/bench_ax_engine_three_modes.py \
 
 This harness records warmup/measured observations, median wall time, p25/p75,
 HTTP status, finish reason, and output token count. Its output is suitable for
-manager/product latency decisions, but it must be labeled as
+product latency decisions, but it must be labeled as
 `end_to_end_ax_generate_api_latency`. Keep it separate from
 `bench_mlx_inference_stack.py`, which is the repo-owned MLX throughput evidence
 path.
@@ -103,12 +103,20 @@ MLX-family reference:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \
-  --model-dir /path/to/local/mlx-model \
+  --model-repo-id mlx-community/Qwen3.5-9B-MLX-4bit \
   --prompt-tokens 512,2048 \
   --generation-tokens 128 \
   --repetitions 5 \
   --cooldown 5
 ```
+
+When `--model-dir` is omitted, the harness resolves `--model-repo-id` from the
+local Hugging Face Hub cache, checking `HF_HUB_CACHE`, `HF_HOME/hub`,
+`XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. Pass
+`--hf-cache-root` to pin a cache root, or pass `--model-dir` for an explicit
+AX-ready artifact directory. Legacy `.internal/models/<name>` symlinks are
+acceptable for older commands, but the benchmark source of truth should be the
+repo id plus the resolved cache snapshot.
 
 The reference contract is:
 
@@ -863,7 +871,7 @@ MLX inference-stack procedure on an Apple Silicon host:
 
 ```text
 scripts/reproduce-mlx-inference-benchmark.sh \
-  --model-dir /path/to/mlx-model \
+  --model-repo-id mlx-community/Qwen3.5-9B-MLX-4bit \
   --run-label qwen3-5-9b-m4-max
 ```
 
@@ -872,6 +880,13 @@ The wrapper keeps the existing benchmark contract intact. It runs
 `scripts/bench_mlx_inference_stack.py`, and writes a bundle containing raw JSON,
 prompt-token artifacts, doctor output, command logs, and host metadata under
 `benchmarks/community-results/local/` by default.
+
+By default, the wrapper resolves the model repo from the local Hugging Face Hub
+cache. Use `--hf-cache-root` to pin the cache root, or `--model-dir` to override
+with an explicit AX-ready artifact directory. A `.internal/models/<name>`
+symlink to a cache snapshot can keep older scripts working, but it should point
+at the prepared snapshot that contains `config.json`, `model-manifest.json`,
+and safetensors.
 
 Use `--direct-only` when the comparison should include only the direct
 same-policy AX row. By default, the wrapper uses `--ax-compare-policies` so the

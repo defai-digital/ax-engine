@@ -46,41 +46,24 @@ throughput baselines.
   mode runs `cargo test --workspace --no-run` first, then crate-by-crate tests
   with timeout and `AX_CARGO_JOBS=1` by default so a stuck full workspace run
   does not leave orphaned compiler processes.
-- `check-cli-tui-phase0.sh`: non-interactive Phase 0 gate for manager
-  contracts. It verifies the download, manifest-generation, doctor,
-  model-artifact readiness, benchmark-artifact, and server metadata JSON
-  contracts without requiring real model weights.
-- `check-cli-tui-phase1.sh`: non-interactive Phase 1 gate for
-  `ax-engine-manager`. It runs the manager crate tests plus `--check` with fixed
-  doctor, benchmark, and artifact fixtures, and verifies missing optional inputs
-  plus non-local server URLs produce clear diagnostic states.
-- `check-cli-tui-phase2.sh`: non-interactive Phase 2 gate for the local job
-  runner foundation. It verifies explicit job-plan labels, profile persistence,
-  fake-process cancellation, log-tail capture, the benchmark artifact guard, and
-  guarded job state.
-- `check-cli-tui-phase3.sh`: release-integration gate for `ax-engine-manager`.
-  It builds the release binaries, verifies the archive contains
-  `ax-engine-server`, `ax-engine-bench`, and `ax-engine-manager`, runs manager
-  help/check smoke tests, and checks support bundles do not copy model weights or
-  secret-like content.
 - `brew-release.sh`: local Homebrew release publisher. It packages
-  `ax-engine-server`, `ax-engine-bench`, and `ax-engine-manager`; with
-  `--sign-identity`, it codesigns and notarizes all packaged binaries before
-  upload. Without `--sign-identity`, binaries are intentionally left unsigned.
+  `ax-engine-server` and `ax-engine-bench`; with `--sign-identity`, it
+  codesigns and notarizes all packaged binaries before upload. Without
+  `--sign-identity`, binaries are intentionally left unsigned.
 - `download_model.py`: MLX LLM download helper. It delegates acquisition to
   `mlx-lm`, resolves the resulting cache snapshot, validates local model files,
   and generates the AX model manifest when `ax-engine-bench` or Cargo is
   available. It rejects embedding repo IDs; embedding artifacts are manual.
   Use `--dest` only when you want a custom local directory. Use `--json` for
-  automation and manager workflow integration.
+  automation.
 - `ax-engine-bench generate-manifest <model-dir> --json`: stable
-  `ax.generate_manifest.v1` summary for manager and automation callers that need to
+  `ax.generate_manifest.v1` summary for automation callers that need to
   distinguish newly written manifests from already-ready model directories.
 - `ax-engine-bench scenario|replay|matrix|compare|matrix-compare|baseline
   ... --json`: stable `ax.benchmark_artifact.v1` summary for callers that need
   the produced `result_dir` without parsing shell text.
 - `ax-engine-bench doctor --json`: readiness report plus workflow discovery for
-  source-checkout versus installed-tools mode. Manager callers should use its
+  source-checkout versus installed-tools mode. Automation callers should use its
   command `argv` fields instead of reconstructing Cargo/Homebrew command lines.
   With `--mlx-model-artifacts-dir`, the same JSON includes structured
   `model_artifacts` readiness for config, manifest, safetensors, model type, and

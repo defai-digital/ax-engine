@@ -24,7 +24,7 @@ ARTIFACT_LABELS = {
     "qwen3_5-9b-mlx-4bit": ("Qwen 3.5 9B", "4-bit"),
     "qwen3_6-35b-a3b-ud-mlx-4bit": (
         "Qwen 3.6 35B A3B",
-        "UD-MLX 4-bit",
+        "4-bit",
     ),
     "qwen3_6-35b-a3b-5bit": (
         "Qwen 3.6 35B A3B",
@@ -44,14 +44,12 @@ ARTIFACT_LABELS = {
 
 DECODE_TABLE_COLUMNS = {
     "mlx_lm": "mlx_lm",
-    "mlx_swift_lm": "mlx_swift_lm",
     "ax direct baseline": "ax_engine_mlx",
     "ax default n-gram": "ax_engine_mlx_ngram_accel",
 }
 
 PREFILL_TABLE_COLUMNS = {
     "mlx_lm": "mlx_lm",
-    "mlx_swift_lm": "mlx_swift_lm",
     "ax engine": "ax_engine_mlx",
 }
 
@@ -324,7 +322,7 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
         sources: list[ArtifactSource] = []
         source_kinds = {
             "base": None,
-            "reference": frozenset({"mlx_lm", "mlx_swift_lm"}),
+            "reference": frozenset({"mlx_lm"}),
             "ax": frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"}),
             "ax-base": frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"}),
             "ax-overlay": frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"}),
@@ -406,7 +404,7 @@ def default_marker_artifact_paths(readme_path: Path, *, marker_name: str) -> lis
 
 def metric_median(row: dict[str, Any], table: str) -> float:
     if table == "ttft":
-        if row.get("engine") in {"mlx_lm", "mlx_swift_lm"}:
+        if row.get("engine") == "mlx_lm":
             prompt_tokens = row.get("prompt_tokens")
             if not isinstance(prompt_tokens, int):
                 raise ArtifactCheckError("reference TTFT row lacks prompt_tokens")
@@ -1134,11 +1132,6 @@ def validate_artifact_row(
         baseline = row.get("baseline", {})
         if row.get("method") != "mlx_lm.benchmark" or baseline.get("role") != "primary_reference":
             raise ArtifactCheckError(f"{artifact_path} mlx_lm row lacks primary reference identity")
-    elif engine == "mlx_swift_lm":
-        if row.get("method") != "mlx_swift_lm_benchmark_adapter":
-            raise ArtifactCheckError(f"{artifact_path} mlx_swift_lm row lacks adapter method")
-        if "BenchmarkHelpers/MLXLMCommon" not in str(row.get("secondary_reference_role", "")):
-            raise ArtifactCheckError(f"{artifact_path} mlx_swift_lm row lacks adapter role")
     elif engine == "ax_engine_mlx":
         if row.get("ax_decode_policy") != "direct_no_ngram_acceleration":
             raise ArtifactCheckError(f"{artifact_path} direct AX row lacks direct policy")
@@ -1189,7 +1182,7 @@ def required_trial_count_for_row(
 def row_uses_reused_reference_source(
     *, artifact: dict[str, Any], row: dict[str, Any]
 ) -> bool:
-    if row.get("engine") not in {"mlx_lm", "mlx_swift_lm"}:
+    if row.get("engine") != "mlx_lm":
         return False
     ax_only_refresh = artifact.get("ax_only_refresh")
     return bool(
@@ -1243,7 +1236,6 @@ def collect_artifact_rows(
             engine = row.get("engine")
             if engine not in {
                 "mlx_lm",
-                "mlx_swift_lm",
                 "ax_engine_mlx",
                 "ax_engine_mlx_ngram_accel",
             }:

@@ -85,7 +85,7 @@ class UpdateReadmeFromResultsTests(unittest.TestCase):
         prefill_table = stdout.getvalue().split("DECODE TABLE", maxsplit=1)[0]
 
         self.assertIn("**120.0 (+20.0%)**", prefill_table)
-        self.assertIn("|        |        | 512 | 100.0 | — | 80.0 (-20.0%) |", prefill_table)
+        self.assertIn("|        |        | 512 | 100.0 | 80.0 (-20.0%) |", prefill_table)
         self.assertNotIn("**80.0 (-20.0%)**", prefill_table)
 
 

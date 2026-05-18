@@ -8,7 +8,7 @@ Why in-table:
 
 Why the asterisk + footnote:
   llama-bench uses its own internal synthetic prompt tokens, so the column
-  is NOT prompt-hash parity with mlx_lm / mlx_swift_lm / ax engine columns.
+  is NOT prompt-hash parity with mlx_lm / ax engine columns.
   The disclaimer paragraph above the tables explains this once, and every
   table header carries an asterisk pointing back to it. No percentages are
   shown in the llama.cpp column because the comparison is shape-only.
@@ -26,20 +26,14 @@ from pathlib import Path
 from typing import Any
 
 SLUG_TO_README = {
-    "gemma-4-e2b-it-4bit":         ("Gemma 4 E2B",      "4-bit"),
-    "gemma-4-e2b-it-5bit":         ("Gemma 4 E2B",      "5-bit"),
-    "gemma-4-e2b-it-6bit":         ("Gemma 4 E2B",      "6-bit"),
-    "gemma-4-e2b-it-8bit":         ("Gemma 4 E2B",      "8-bit"),
-    "gemma-4-e4b-it-4bit":         ("Gemma 4 E4B",      "4-bit"),
-    "gemma-4-26b-a4b-it-4bit":     ("Gemma 4 26B A4B",  "4-bit"),
-    "gemma-4-31b-it-4bit":         ("Gemma 4 31B",      "4-bit"),
-    "qwen3_5-9b-mlx-4bit":         ("Qwen 3.5 9B",      "4-bit"),
-    "qwen3_6-35b-a3b-ud-mlx-4bit": ("Qwen 3.6 35B A3B", "UD-MLX 4-bit"),
-    "qwen3_6-35b-a3b-5bit":        ("Qwen 3.6 35B A3B", "MLX 5-bit"),
-    "qwen3_6-35b-a3b-6bit":        ("Qwen 3.6 35B A3B", "MLX 6-bit"),
-    "qwen3_6-35b-a3b-8bit":        ("Qwen 3.6 35B A3B", "MLX 8-bit"),
-    "qwen3-coder-next-4bit":       ("Qwen Coder Next",  "4-bit"),
-    "glm-4.7-flash-4bit":          ("GLM 4.7 Flash",    "4-bit"),
+    "gemma-4-e2b-it-4bit":     ("Gemma 4 E2B",      "4-bit"),
+    "gemma-4-e2b-it-5bit":     ("Gemma 4 E2B",      "5-bit"),
+    "gemma-4-e2b-it-6bit":     ("Gemma 4 E2B",      "6-bit"),
+    "gemma-4-e2b-it-8bit":     ("Gemma 4 E2B",      "8-bit"),
+    "gemma-4-e4b-it-4bit":     ("Gemma 4 E4B",      "4-bit"),
+    "gemma-4-26b-a4b-it-4bit": ("Gemma 4 26B A4B",  "4-bit"),
+    "gemma-4-31b-it-4bit":     ("Gemma 4 31B",      "4-bit"),
+    "qwen3_6-35b-a3b-4bit":    ("Qwen 3.6 35B A3B", "4-bit"),
 }
 
 LLAMA_HEADER_CELL = "llama.cpp Metal*"
@@ -54,8 +48,8 @@ DISCLAIMER_PARAGRAPH = (
     "these numbers are NOT prompt-hash parity with the other columns. The "
     "intent is rough side-by-side context against a well-known third-party "
     "Metal runtime, not head-to-head comparison. MLX bit-widths are mapped "
-    "to the nearest standard GGUF K-quant "
-    "(4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0; UD-MLX → unsloth UD-Q4_K_XL). No "
+    "to the nearest standard bartowski GGUF K-quant "
+    "(4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0). No "
     "percentage delta is shown for this column because the prompt is not "
     "shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, "
     "`scripts/bench_llama_cpp_metal_sweep.py`."
@@ -145,7 +139,7 @@ def ensure_disclaimer(lines: list[str]) -> tuple[list[str], bool]:
     raise RuntimeError("Could not locate '### Prefill throughput' section to anchor disclaimer.")
 
 
-_ROW_PT_RE = re.compile(r"^\s*\|.*?\|.*?\|\s*(128|512)\s*\|")
+_ROW_PT_RE = re.compile(r"^\s*\|.*?\|.*?\|\s*(128|512|2048)\s*\|")
 _HEADER_RE = re.compile(r"^\s*\|\s*Model\s*\|")
 _SEPARATOR_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
 

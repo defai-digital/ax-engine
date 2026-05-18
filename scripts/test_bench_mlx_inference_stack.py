@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,76 @@ def write_gateddelta_model(
 
 
 class MlxInferenceStackBenchTests(unittest.TestCase):
+    def test_hf_cache_roots_follow_hugging_face_env_order(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "HF_HUB_CACHE": "/tmp/hf-hub",
+                "HF_HOME": "/tmp/hf-home",
+                "XDG_CACHE_HOME": "/tmp/xdg-cache",
+            },
+            clear=True,
+        ):
+            roots = bench.hf_cache_roots()
+
+        self.assertEqual(
+            roots[:4],
+            [
+                Path("/tmp/hf-hub"),
+                Path("/tmp/hf-home/hub"),
+                Path("/tmp/xdg-cache/huggingface/hub"),
+                Path.home() / ".cache" / "huggingface" / "hub",
+            ],
+        )
+
+    def test_resolve_model_dir_uses_hugging_face_cache_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_cache = root / "models--mlx-community--Qwen3.5-9B-MLX-4bit"
+            snapshot = repo_cache / "snapshots" / "abc123"
+            snapshot.mkdir(parents=True)
+            (repo_cache / "refs").mkdir()
+            (repo_cache / "refs" / "main").write_text("abc123")
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model-manifest.json").write_text("{}")
+            (snapshot / "model.safetensors").write_bytes(b"")
+
+            resolved = bench.resolve_model_dir(
+                None,
+                "mlx-community/Qwen3.5-9B-MLX-4bit",
+                root,
+            )
+
+        self.assertEqual(resolved, snapshot)
+
+    def test_resolve_model_dir_rejects_unprepared_hugging_face_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_cache = root / "models--mlx-community--Qwen3.5-9B-MLX-4bit"
+            snapshot = repo_cache / "snapshots" / "abc123"
+            snapshot.mkdir(parents=True)
+            (repo_cache / "refs").mkdir()
+            (repo_cache / "refs" / "main").write_text("abc123")
+
+            with self.assertRaisesRegex(RuntimeError, "not AX-ready"):
+                bench.resolve_model_dir(
+                    None,
+                    "mlx-community/Qwen3.5-9B-MLX-4bit",
+                    root,
+                )
+
+    def test_resolve_model_dir_prefers_explicit_model_dir(self) -> None:
+        explicit = Path("/tmp/ax-model")
+
+        self.assertEqual(
+            bench.resolve_model_dir(
+                explicit,
+                "mlx-community/Qwen3.5-9B-MLX-4bit",
+                Path("/missing-cache"),
+            ),
+            explicit,
+        )
+
     def test_kv_compression_blocker_keys_match_quality_gate_contract(self) -> None:
         self.assertEqual(
             bench.KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS,
@@ -191,23 +262,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     generation_tokens=2,
                 )
 
-    def test_swift_adapter_trial_json_is_summarized(self) -> None:
-        parsed = bench.parse_swift_adapter_json(
-            json.dumps(
-                {
-                    "trials": [
-                        {"prefill_tok_s": 100.0, "decode_tok_s": 50.0},
-                        {"prompt_tps": 120.0, "generation_tps": 70.0},
-                    ],
-                    "peak_memory_gb": 12.0,
-                }
-            )
-        )
-
-        self.assertEqual(parsed["prefill_tok_s"]["mean"], 110.0)
-        self.assertEqual(parsed["decode_tok_s"]["median"], 60.0)
-        self.assertEqual(len(parsed["trials"]), 2)
-
     def test_axengine_summary_includes_ttft_and_memory(self) -> None:
         runs = [
             {"prefill_s": 0.3, "decode_s": 0.1, "ttft_ms": 300.0, "prefill_tok_s": 10.0, "decode_tok_s": 20.0, "output_tokens": 3.0, "peak_memory_gb": 11.0},
@@ -302,41 +356,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(row["engine"], bench.AX_ENGINE_LINEAR_ATTENTION_PACK_KEY)
         self.assertEqual(row["ax_decode_policy"], "direct_no_ngram_acceleration")
-
-    def test_swift_adapter_command_gets_prompt_artifact_placeholders(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            prompt = bench.write_prompt_tokens(
-                Path(tmp),
-                prompt_tokens=4,
-                generation_tokens=2,
-                vocab_size=100,
-                tokens=[1, 2, 3, 4],
-            )
-            prompt["token_ids"] = [1, 2, 3, 4]
-
-            completed = subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout=json.dumps({"prefill_tok_s": 100.0, "decode_tok_s": 50.0}),
-                stderr="",
-            )
-            with patch.object(bench.subprocess, "run", return_value=completed) as run:
-                row = bench.run_mlx_swift_lm_adapter(
-                    "swift-bench --prompt {prompt_token_ids_path} --hash {prompt_token_ids_sha256}",
-                    "model",
-                    4,
-                    2,
-                    3,
-                    0.0,
-                    2048,
-                    prompt,
-                )
-
-            command_args = run.call_args.args[0]
-            self.assertIn(prompt["token_ids_path"], command_args)
-            self.assertIn(prompt["token_ids_sha256"], command_args)
-            self.assertEqual(row["method"], "mlx_swift_lm_benchmark_adapter")
-            self.assertEqual(row["prompt_token_ids_sha256"], prompt["token_ids_sha256"])
 
     def test_parse_llama_cpp_bench_json_combines_pp_and_tg_rows(self) -> None:
         parsed = bench.parse_llama_cpp_bench_json(
@@ -2161,13 +2180,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                                 "decode_tok_s": {"median": 50.0},
                             },
                             {
-                                "engine": "mlx_swift_lm",
-                                "prompt_tokens": 4,
-                                "generation_tokens": 2,
-                                "prefill_tok_s": {"median": 90.0},
-                                "decode_tok_s": {"median": 45.0},
-                            },
-                            {
                                 "engine": "ax_engine_mlx",
                                 "prompt_tokens": 4,
                                 "generation_tokens": 2,
@@ -2184,7 +2196,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             )
 
             self.assertEqual(doc["schema_version"], "test")
-            self.assertEqual([row["engine"] for row in rows], ["mlx_lm", "mlx_swift_lm"])
+            self.assertEqual([row["engine"] for row in rows], ["mlx_lm"])
 
             with self.assertRaisesRegex(RuntimeError, "missing mlx_lm reference rows"):
                 bench.load_reused_reference_rows(

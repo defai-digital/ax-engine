@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """Benchmark AX Engine MLX inference against MLX reference runtimes.
 
-The primary reference is upstream `mlx_lm.benchmark`, not the older SwiftLM
-application harness. `mlx-swift-lm` is supported as an optional command adapter
-because the reference package exposes libraries and benchmark helpers, but no
-repo-stable inference benchmark CLI.
+The primary reference is upstream `mlx_lm.benchmark`.
 
 Every comparison run includes `mlx_lm.benchmark`. If that baseline fails, the
 run fails instead of emitting AX-only numbers.
@@ -13,33 +10,11 @@ Examples:
   cargo build -p ax-engine-server --release
 
   python3 scripts/bench_mlx_inference_stack.py \
-    --model-dir .internal/models/Qwen3.5-9B-MLX-4bit \
-    --prompt-tokens 512,2048 \
+    --model-repo-id mlx-community/Qwen3.5-9B-MLX-4bit \
+    --prompt-tokens 128,512,2048 \
     --generation-tokens 128 \
     --repetitions 5 \
     --cooldown 5
-
-Optional mlx-swift-lm adapter:
-  python3 scripts/bench_mlx_inference_stack.py \
-    --mlx-swift-lm-command './.internal/tools/mlx-swift-bench \
-      --model {model} --prompt-tokens {prompt_tokens} \
-      --generation-tokens {generation_tokens} --trials {trials} --delay {delay} \
-      --prefill-step-size {prefill_step_size} \
-      --prompt-token-ids {prompt_token_ids_path}'
-
-The optional mlx-swift-lm adapter is treated as a secondary reference only when
-it follows the mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation contract and
-uses the prompt token JSON emitted by this script. The command template may use:
-  {model}, {prompt_tokens}, {generation_tokens}, {trials}, {delay},
-  {prefill_step_size}, {random_seed}, {batch_size}, {prompt_token_ids_path},
-  {prompt_token_ids_sha256}
-
-The adapter command must print JSON with either:
-  {"prompt_tps": 123.4, "generation_tps": 56.7, "peak_memory": 12.3}
-or:
-  {"prefill_tok_s": 123.4, "decode_tok_s": 56.7, "peak_memory_gb": 12.3}
-or trial rows:
-  {"trials": [{"prefill_tok_s": 123.4, "decode_tok_s": 56.7}]}
 
 Optional llama.cpp Metal baseline:
   python3 scripts/bench_mlx_inference_stack.py \
@@ -80,9 +55,9 @@ from typing import Any, Iterable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AX_ENGINE_SERVER = REPO_ROOT / "target/release/ax-engine-server"
-DEFAULT_MODEL_DIR = REPO_ROOT / ".internal/models/Qwen3.5-9B-MLX-4bit"
-DEFAULT_MODEL_ID = str(DEFAULT_MODEL_DIR)
-DEFAULT_PROMPT_TOKENS = "512,2048"
+DEFAULT_MODEL_REPO_ID = "mlx-community/Qwen3.5-9B-MLX-4bit"
+DEFAULT_MODEL_ID = DEFAULT_MODEL_REPO_ID
+DEFAULT_PROMPT_TOKENS = "128,512,2048"
 DEFAULT_GENERATION_TOKENS = 128
 DEFAULT_REPETITIONS = 5
 DEFAULT_COOLDOWN = 5.0
@@ -109,6 +84,91 @@ LLAMA_CPP_METAL_RUNTIME_IDENTITY = {
     "resolution_policy": "external_gguf_baseline",
     "benchmark_surface": "llama_cpp_bench",
 }
+
+
+def _slug_repo_id(repo_id: str) -> str:
+    return repo_id.replace("/", "--")
+
+
+def hf_cache_roots(explicit_root: Path | None = None) -> list[Path]:
+    """Return Hugging Face Hub cache roots in the same order users expect."""
+    if explicit_root is not None:
+        return [explicit_root.expanduser()]
+
+    roots: list[Path] = []
+    if hf_hub_cache := os.environ.get("HF_HUB_CACHE"):
+        roots.append(Path(hf_hub_cache).expanduser())
+    if hf_home := os.environ.get("HF_HOME"):
+        roots.append(Path(hf_home).expanduser() / "hub")
+    if xdg_cache_home := os.environ.get("XDG_CACHE_HOME"):
+        roots.append(Path(xdg_cache_home).expanduser() / "huggingface" / "hub")
+    roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+    deduped: list[Path] = []
+    for root in roots:
+        if root not in deduped:
+            deduped.append(root)
+    return deduped
+
+
+def latest_hf_cache_snapshot(repo_id: str, roots: list[Path]) -> Path | None:
+    """Resolve a repo id to the current local Hugging Face cache snapshot."""
+    repo_cache_name = f"models--{_slug_repo_id(repo_id)}"
+    candidates: list[Path] = []
+
+    for root in roots:
+        repo_cache = root / repo_cache_name
+        refs_main = repo_cache / "refs" / "main"
+        if refs_main.is_file():
+            revision = refs_main.read_text().strip()
+            if revision:
+                snapshot = repo_cache / "snapshots" / revision
+                if snapshot.is_dir():
+                    return snapshot
+
+        snapshots = repo_cache / "snapshots"
+        if snapshots.is_dir():
+            candidates.extend(path for path in snapshots.iterdir() if path.is_dir())
+
+    return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
+
+
+def missing_ax_model_artifacts(model_dir: Path) -> list[str]:
+    missing: list[str] = []
+    if not (model_dir / "config.json").is_file():
+        missing.append("config.json")
+    if not (model_dir / "model-manifest.json").is_file():
+        missing.append("model-manifest.json")
+    if not any(model_dir.glob("*.safetensors")):
+        missing.append("*.safetensors")
+    return missing
+
+
+def resolve_model_dir(model_dir: Path | None, repo_id: str, hf_cache_root: Path | None) -> Path:
+    if model_dir is not None:
+        return model_dir
+
+    roots = hf_cache_roots(hf_cache_root)
+    snapshot = latest_hf_cache_snapshot(repo_id, roots)
+    if snapshot is None:
+        roots_text = ", ".join(str(root) for root in roots)
+        raise RuntimeError(
+            f"no Hugging Face cache snapshot found for {repo_id}; searched: {roots_text}\n"
+            "Download and prepare it first, for example:\n"
+            f"  python3 scripts/download_model.py {repo_id}\n"
+            "or pass --model-dir /path/to/AX-ready/model-artifacts"
+        )
+    missing = missing_ax_model_artifacts(snapshot)
+    if missing:
+        missing_text = ", ".join(missing)
+        raise RuntimeError(
+            f"Hugging Face cache snapshot for {repo_id} is not AX-ready: {snapshot}\n"
+            f"Missing: {missing_text}\n"
+            "Prepare the snapshot first, for example:\n"
+            f"  ax-engine-bench generate-manifest {snapshot}\n"
+            "or pass --model-dir /path/to/AX-ready/model-artifacts"
+        )
+    return snapshot
 
 
 def ensure_ax_engine_server_binary(*, build: bool = True) -> None:
@@ -1838,15 +1898,6 @@ def summarize_runs(runs: list[dict[str, float]], key: str) -> dict[str, float]:
     }
 
 
-def _trial_metric(trial: dict[str, Any], primary: str, fallback: str) -> float:
-    value = trial.get(primary, trial.get(fallback))
-    if value is None:
-        raise RuntimeError(
-            f"mlx-swift-lm trial JSON must include {primary} or {fallback}"
-        )
-    return float(value)
-
-
 def bench_axengine(
     port: int,
     tokens: list[int],
@@ -1962,44 +2013,6 @@ def bench_axengine(
     if compression_summary:
         row["kv_compression_telemetry"] = compression_summary
     return row
-
-
-def parse_swift_adapter_json(stdout: str) -> dict[str, Any]:
-    payload = json.loads(stdout)
-    prefill = payload.get("prefill_tok_s", payload.get("prompt_tps"))
-    decode = payload.get("decode_tok_s", payload.get("generation_tps"))
-    memory = payload.get("peak_memory_gb", payload.get("peak_memory"))
-    trials = payload.get("trials")
-    if trials:
-        prefill_values = [
-            _trial_metric(trial, "prefill_tok_s", "prompt_tps") for trial in trials
-        ]
-        decode_values = [
-            _trial_metric(trial, "decode_tok_s", "generation_tps") for trial in trials
-        ]
-        parsed: dict[str, Any] = {
-            "prefill_tok_s": summarize_values(prefill_values),
-            "decode_tok_s": summarize_values(decode_values),
-            "trials": trials,
-        }
-        memory_values = [
-            trial.get("peak_memory_gb", trial.get("peak_memory")) for trial in trials
-        ]
-        if all(value is not None for value in memory_values):
-            parsed["peak_memory_gb"] = summarize_values(
-                [float(value) for value in memory_values]
-            )
-        return parsed
-
-    if prefill is None or decode is None:
-        raise RuntimeError("mlx-swift-lm adapter JSON must include prefill/decode throughput")
-    parsed = {
-        "prefill_tok_s": {"median": float(prefill)},
-        "decode_tok_s": {"median": float(decode)},
-    }
-    if memory is not None:
-        parsed["peak_memory_gb"] = {"median": float(memory)}
-    return parsed
 
 
 def _llama_cpp_metric_from_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -2385,71 +2398,6 @@ def attach_llama_cpp_decode_at_depth_benchmark(
     )
 
 
-def run_mlx_swift_lm_adapter(
-    command_template: str,
-    model: str,
-    prompt_tokens: int,
-    generation_tokens: int,
-    repetitions: int,
-    cooldown: float,
-    prefill_step_size: int,
-    prompt_doc: dict[str, Any],
-) -> dict[str, Any]:
-    validate_prompt_doc(
-        prompt_doc,
-        prompt_tokens=prompt_tokens,
-        generation_tokens=generation_tokens,
-    )
-    command = command_template.format(
-        model=model,
-        prompt_tokens=prompt_tokens,
-        generation_tokens=generation_tokens,
-        trials=repetitions,
-        delay=cooldown,
-        prefill_step_size=prefill_step_size,
-        random_seed=MLX_LM_RANDOM_SEED,
-        batch_size=1,
-        prompt_tokens_path=prompt_doc["token_ids_path"],
-        prompt_token_ids_path=prompt_doc["token_ids_path"],
-        prompt_token_ids_sha256=prompt_doc["token_ids_sha256"],
-    )
-    argv = shlex.split(command)
-    print(f"  [mlx-swift-lm] {command}", file=sys.stderr)
-    result = subprocess.run(argv, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"mlx-swift-lm adapter failed with exit={result.returncode}:\n"
-            f"{result.stdout}{result.stderr}"
-        )
-    metrics = parse_swift_adapter_json(result.stdout)
-    cell: dict[str, Any] = {
-        "engine": "mlx_swift_lm",
-        "method": "mlx_swift_lm_benchmark_adapter",
-        "timing_scope": "external_adapter_reported",
-        "prompt_contract": "mlx_lm_random_tokens_seed_0",
-        "secondary_reference_role": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
-        "random_seed": MLX_LM_RANDOM_SEED,
-        "batch_size": 1,
-        "prefill_step_size": prefill_step_size,
-        "prompt_token_ids_path": prompt_doc["token_ids_path"],
-        "prompt_token_ids_sha256": prompt_doc["token_ids_sha256"],
-        "prompt_tokens": prompt_tokens,
-        "generation_tokens": generation_tokens,
-        "prefill_tok_s": metrics["prefill_tok_s"],
-        "decode_tok_s": metrics["decode_tok_s"],
-    }
-    if "peak_memory_gb" in metrics:
-        cell["peak_memory_gb"] = metrics["peak_memory_gb"]
-    if "trials" in metrics:
-        cell["trials"] = metrics["trials"]
-    attach_derived_ttft_ms(
-        cell,
-        prompt_tokens=prompt_tokens,
-        source="derived_from_mlx_swift_lm_prefill_tok_s",
-    )
-    return cell
-
-
 def metric_value(cell: dict[str, Any], metric: str) -> float:
     data = cell.get(metric, {})
     if "median" in data:
@@ -2531,7 +2479,7 @@ def load_reused_reference_rows(
 
     for cell in doc.get("results", []):
         engine = cell.get("engine")
-        if engine not in {"mlx_lm", "mlx_swift_lm"}:
+        if engine != "mlx_lm":
             continue
         key = (int(cell["prompt_tokens"]), int(cell["generation_tokens"]))
         if key not in wanted:
@@ -2623,7 +2571,27 @@ def render_gateddelta_prefill_profile_output(path: Path, output: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark AX MLX against MLX reference runtimes")
     parser.add_argument("--model", default=DEFAULT_MODEL_ID)
-    parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
+    parser.add_argument(
+        "--model-repo-id",
+        default=DEFAULT_MODEL_REPO_ID,
+        help=(
+            "Hugging Face repo id used to resolve --model-dir from the local cache "
+            "when --model-dir is omitted."
+        ),
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        help=(
+            "AX-ready local MLX model artifact directory. When omitted, the "
+            "benchmark resolves --model-repo-id from the Hugging Face cache."
+        ),
+    )
+    parser.add_argument(
+        "--hf-cache-root",
+        type=Path,
+        help="Optional Hugging Face Hub cache root used when resolving --model-repo-id.",
+    )
     parser.add_argument("--prompt-tokens", default=DEFAULT_PROMPT_TOKENS)
     parser.add_argument("--generation-tokens", type=int, default=DEFAULT_GENERATION_TOKENS)
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
@@ -2672,7 +2640,7 @@ def main() -> None:
         "--reuse-reference-results-from",
         type=Path,
         help=(
-            "Reuse mlx_lm/mlx_swift_lm rows from an existing artifact and rerun "
+            "Reuse mlx_lm rows from an existing artifact and rerun "
             "only AX rows. This keeps AX refreshes apple-to-apple with the "
             "published reference rows and prompt contract."
         ),
@@ -2828,13 +2796,6 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--mlx-swift-lm-command",
-        help=(
-            "Optional mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation "
-            "adapter command template that returns benchmark JSON"
-        ),
-    )
-    parser.add_argument(
         "--llama-cpp-bench",
         type=Path,
         help=(
@@ -2873,9 +2834,22 @@ def main() -> None:
             "included in ax.long_context_decode_at_depth.v1 artifacts."
         ),
     )
+    model_arg_explicit = any(
+        value == "--model" or value.startswith("--model=") for value in sys.argv[1:]
+    )
     args = parser.parse_args()
-    if args.model == DEFAULT_MODEL_ID and args.model_dir != DEFAULT_MODEL_DIR:
-        args.model = str(args.model_dir)
+    model_dir_explicit = args.model_dir is not None
+    try:
+        resolved_model_dir = resolve_model_dir(
+            args.model_dir,
+            args.model_repo_id,
+            args.hf_cache_root,
+        )
+    except RuntimeError as error:
+        parser.error(str(error))
+    args.model_dir = resolved_model_dir
+    if not model_arg_explicit:
+        args.model = str(args.model_dir) if model_dir_explicit else args.model_repo_id
     if args.ax_ngram_accel and args.ax_direct:
         parser.error("--ax-ngram-accel conflicts with --ax-direct")
     if args.ax_ngram_accel and args.ax_compare_policies:
@@ -2914,8 +2888,6 @@ def main() -> None:
             "--ax-compare-linear-attention-projection-pack both run paired AX rows; "
             "run one comparison at a time"
         )
-    if args.reuse_reference_results_from and args.mlx_swift_lm_command:
-        parser.error("--reuse-reference-results-from conflicts with --mlx-swift-lm-command")
     if bool(args.llama_cpp_bench) != bool(args.llama_cpp_gguf):
         parser.error("--llama-cpp-bench and --llama-cpp-gguf must be provided together")
     if args.llama_cpp_decode_at_depth and not args.llama_cpp_bench:
@@ -2965,6 +2937,7 @@ def main() -> None:
         prompt_artifact_root = Path(tempfile.mkdtemp(prefix="ax-mlx-reference-prompts-"))
     print("\n=== AX Engine MLX inference stack ===", file=sys.stderr)
     print(f"  model: {args.model}", file=sys.stderr)
+    print(f"  model_repo_id: {args.model_repo_id}", file=sys.stderr)
     print(f"  model_dir: {args.model_dir}", file=sys.stderr)
     print(f"  prompt_tokens: {prompt_lengths}", file=sys.stderr)
     print(f"  generation_tokens: {args.generation_tokens}", file=sys.stderr)
@@ -3027,7 +3000,7 @@ def main() -> None:
         validate_reused_reference_prompt_hashes(reused_rows, prompts)
         results.extend(reused_rows)
         print(
-            f"  [reference] reused {len(reused_rows)} mlx_lm/mlx_swift_lm rows "
+            f"  [reference] reused {len(reused_rows)} mlx_lm rows "
             f"from {args.reuse_reference_results_from}",
             file=sys.stderr,
         )
@@ -3039,22 +3012,6 @@ def main() -> None:
                 prompt_tokens = int(prompt_doc["prompt_tokens"])
                 results.append(
                     run_mlx_lm_benchmark(
-                        args.model,
-                        prompt_tokens,
-                        args.generation_tokens,
-                        args.repetitions,
-                        args.cooldown,
-                        args.prefill_step_size,
-                        prompt_doc,
-                    )
-                )
-
-        if args.mlx_swift_lm_command:
-            for prompt_doc in prompts:
-                prompt_tokens = int(prompt_doc["prompt_tokens"])
-                results.append(
-                    run_mlx_swift_lm_adapter(
-                        args.mlx_swift_lm_command,
                         args.model,
                         prompt_tokens,
                         args.generation_tokens,
@@ -3232,9 +3189,6 @@ def main() -> None:
 
     attach_mlx_lm_baselines(results)
 
-    secondary_reference_present = bool(args.mlx_swift_lm_command) or any(
-        cell.get("engine") == "mlx_swift_lm" for cell in results
-    )
     llama_cpp_metal_present = bool(args.llama_cpp_bench) or any(
         cell.get("engine") == "llama_cpp_metal" for cell in results
     )
@@ -3245,7 +3199,7 @@ def main() -> None:
             "schema_version": PHASE0_CLAIM_GATE_SCHEMA_VERSION,
             "scope": "mlx_inference_stack_public_readme",
             "requires_prompt_hash_parity": True,
-            "prompt_hash_parity_scope": "mlx_lm_ax_engine_and_mlx_swift_lm_rows",
+            "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
             "shape_only_external_rows": ["llama_cpp_metal"],
             "requires_runtime_identity": True,
             "requires_decode_policy_identity": True,
@@ -3255,14 +3209,14 @@ def main() -> None:
         "host": collect_host_metadata(),
         "build": collect_build_metadata(),
         "model": args.model,
+        "model_repo_id": args.model_repo_id,
         "model_dir": str(args.model_dir),
+        "model_dir_source": "explicit" if model_dir_explicit else "huggingface_cache",
+        "hf_cache_root": str(args.hf_cache_root) if args.hf_cache_root else None,
         "model_config": model_metadata,
         "reference_contract": {
             "primary_reference": "mlx_lm.benchmark",
             "primary_reference_required": True,
-            "secondary_reference": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
-            "secondary_reference_present": secondary_reference_present,
-            "secondary_reference_required": False,
             "external_gguf_reference": "llama.cpp Metal llama-bench",
             "external_gguf_reference_present": llama_cpp_metal_present,
             "external_gguf_reference_required": False,
@@ -3277,12 +3231,6 @@ def main() -> None:
                 "llama_cpp_metal rows are shape-compatible external GGUF rows, "
                 "not prompt-hash parity or repo-owned MLX throughput evidence."
             ),
-            "secondary_reference_policy": (
-                "mlx-swift-lm rows are admitted only through an explicit "
-                "BenchmarkHelpers/MLXLMCommon generation adapter that reads "
-                "the prompt token JSON emitted by this harness and reports "
-                "prefill/decode metrics for the same random-token prompt/decode shape."
-            ),
             "prompt_contract": {
                 "source": "mlx_lm.benchmark",
                 "random_seed": MLX_LM_RANDOM_SEED,
@@ -3291,7 +3239,6 @@ def main() -> None:
                 "artifacts": [without_inline_tokens(prompt) for prompt in prompts],
             },
             "strictness": (
-                "same_prompt_tokens_for_ax_and_swift_adapter; "
                 "mlx_lm_prompt_algorithm_reproduced; "
                 "llama_cpp_metal_shape_compatible_only"
             ),
@@ -3337,7 +3284,7 @@ def main() -> None:
                 [
                     cell
                     for cell in results
-                    if cell.get("engine") in {"mlx_lm", "mlx_swift_lm"}
+                    if cell.get("engine") == "mlx_lm"
                 ]
             ),
             "ax_rows_refreshed": len(

@@ -6,13 +6,21 @@ not required to be committed.
 
 ## Reproduce A Run
 
-Use the wrapper script with a local MLX model artifact directory:
+Use the wrapper script with a Hugging Face model repo that is already present in
+the local Hub cache:
 
 ```text
 scripts/reproduce-mlx-inference-benchmark.sh \
-  --model-dir /path/to/mlx-model \
+  --model-repo-id mlx-community/Qwen3.5-9B-MLX-4bit \
   --run-label qwen3-5-9b-m4-max
 ```
+
+The wrapper searches `HF_HUB_CACHE`, `HF_HOME/hub`,
+`XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. Use
+`--hf-cache-root` to pin the cache root, or `--model-dir` to override with an
+explicit AX-ready artifact directory. A `.internal/models/<name>` symlink to a
+cache snapshot is only a compatibility layer for older commands; the snapshot
+still needs `config.json`, `model-manifest.json`, and safetensors.
 
 The wrapper runs:
 

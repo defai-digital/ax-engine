@@ -40,7 +40,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MAIN_REPO="defai-digital/ax-engine"
 TAP_REPO="defai-digital/homebrew-ax-engine"
 TAP_FORMULA="Formula/ax-engine.rb"
-RELEASE_BINS=(ax-engine-server ax-engine-bench ax-engine-manager)
+RELEASE_BINS=(ax-engine-server ax-engine-bench)
 
 # ── parse arguments ──────────────────────────────────────────────────────────
 
@@ -126,7 +126,7 @@ cd "$ROOT_DIR"
 
 if [[ "$SKIP_BUILD" = false ]]; then
     echo "▶ building release binaries…"
-    cargo build --release -p ax-engine-server -p ax-engine-bench -p ax-engine-tui
+    cargo build --release -p ax-engine-server -p ax-engine-bench
 else
     echo "▶ skipping build (--skip-build)"
     for bin in "${RELEASE_BINS[@]}"; do

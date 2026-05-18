@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sweep llama.cpp Metal benchmarks across the 14 README MLX-inference rows.
+"""Sweep llama.cpp Metal benchmarks across the 8 README MLX-inference rows.
 
 Reads benchmarks/manifests/llama_cpp_metal/inventory.json and, for each row:
   1) Resolves the first GGUF candidate that exists on Hugging Face.
@@ -36,10 +36,34 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "benchmarks" / "manifests" / "llama_cpp_metal" / "inventory.json"
 DEFAULT_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
 DEFAULT_LLAMA_BENCH = Path("/opt/homebrew/bin/llama-bench")
+REQUIRED_GGUF_PUBLISHER = "bartowski"
 
 
 def log(msg: str) -> None:
     print(f"[sweep] {msg}", flush=True)
+
+
+def validate_bartowski_inventory(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    publisher = manifest.get("required_gguf_publisher", REQUIRED_GGUF_PUBLISHER)
+    if publisher != REQUIRED_GGUF_PUBLISHER:
+        raise RuntimeError(
+            f"unsupported required_gguf_publisher={publisher!r}; expected {REQUIRED_GGUF_PUBLISHER!r}"
+        )
+
+    bad: list[str] = []
+    prefix = f"{REQUIRED_GGUF_PUBLISHER}/"
+    for row in rows:
+        for candidate in row.get("gguf_candidates", []):
+            repo = candidate.get("repo", "")
+            if not repo.startswith(prefix):
+                bad.append(f"{row.get('slug', '<unknown>')} -> {repo}")
+
+    if bad:
+        details = "; ".join(bad)
+        raise RuntimeError(
+            "llama.cpp Metal sweep inventory must use bartowski GGUF repos only: "
+            f"{details}"
+        )
 
 
 def resolve_gguf_candidate(
@@ -257,7 +281,7 @@ def main() -> None:
         nargs="*",
         help="If set, only process rows whose slug is in this list.",
     )
-    parser.add_argument("--prompt-tokens", default="128,512")
+    parser.add_argument("--prompt-tokens", default="128,512,2048")
     parser.add_argument("--generation-tokens", type=int, default=128)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--cooldown", type=float, default=15.0)
@@ -295,6 +319,12 @@ def main() -> None:
         if not rows:
             log("ERROR: --rows-filter matched zero rows")
             sys.exit(2)
+
+    try:
+        validate_bartowski_inventory(manifest, rows)
+    except RuntimeError as exc:
+        log(f"ERROR: {exc}")
+        sys.exit(2)
 
     if not args.dry_run and not args.llama_bench.exists():
         log(f"ERROR: llama-bench binary not found: {args.llama_bench}")

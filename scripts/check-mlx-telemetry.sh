@@ -120,5 +120,4 @@ if [[ "$RUN_FULL_WORKSPACE" -eq 1 ]]; then
     full_cargo_test ax-engine-bench
     full_cargo_test ax-engine-server
     full_cargo_test ax-engine-py
-    full_cargo_test ax-engine-tui
 fi

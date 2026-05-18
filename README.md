@@ -9,9 +9,9 @@
 <td align="center"><strong>TTFT</strong></td>
 </tr>
 <tr>
-<td><img src="docs/assets/perf-prefill-box-whisker.svg" alt="Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, mlx_swift_lm, ax_engine, and ax_engine plus n-gram prefill rates"></td>
-<td><img src="docs/assets/perf-decode-box-whisker.svg" alt="Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, mlx_swift_lm, ax_engine, and ax_engine plus n-gram decode rates"></td>
-<td><img src="docs/assets/perf-ttft-box-whisker.svg" alt="Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, mlx_swift_lm, ax_engine, and ax_engine plus n-gram TTFT"></td>
+<td><img src="docs/assets/perf-prefill-box-whisker.svg" alt="Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax_engine plus n-gram prefill rates"></td>
+<td><img src="docs/assets/perf-decode-box-whisker.svg" alt="Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax_engine plus n-gram decode rates"></td>
+<td><img src="docs/assets/perf-ttft-box-whisker.svg" alt="Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax_engine plus n-gram TTFT"></td>
 </tr>
 </table>
 
@@ -28,29 +28,28 @@ surface while repo-owned model coverage grows.
 
 ## 30-Second Setup
 
-Install the released command-line tools and open the local web manager:
+Install the released command-line tools and verify the runtime:
 
 ```bash
 brew install defai-digital/ax-engine/ax-engine
-ax-engine-manager --check
-ax-engine-manager
+ax-engine-bench doctor
 ```
 
-Then connect it to a model and server:
+Then download a model and start `ax-engine-server` from the CLI:
 
 ```bash
 # Download an mlx-community model and generate its manifest in one step
 MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
 
-# Start the server
-ax-engine-server --mlx --mlx-model-artifacts-dir "$MODEL_DIR" --port 8080
+# Start the local HTTP server. Keep this process running.
+ax-engine-server \
+  --mlx \
+  --mlx-model-artifacts-dir "$MODEL_DIR" \
+  --port 8080
 
-# In another terminal, open the web manager with live server metadata
-ax-engine-manager --model-dir "$MODEL_DIR" --server-url http://127.0.0.1:8080
+# In another terminal, inspect the running server.
+curl http://127.0.0.1:8080/v1/runtime
 ```
-
-The manager opens a localhost page with model type, family, and size dropdowns,
-a `[Download]` action, server port controls, and full local endpoint URLs.
 
 Or from Python (after `maturin develop` or `pip install ax-engine`):
 
@@ -62,8 +61,7 @@ with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
 ```
 
 `download_model()` downloads weights and auto-runs `ax-engine-bench generate-manifest`.
-See [Getting a Model](#getting-a-model) for all paths including raw HF checkpoints,
-and see [AX Engine Manager](docs/MANAGER.md) for the full web workflow.
+See [Getting a Model](#getting-a-model) for all paths including raw HF checkpoints.
 
 ## Typical Hardware Stack ([hardware FAQ](docs/FAQ.md#what-hardware-does-ax-engine-support))
 
@@ -100,11 +98,10 @@ AX Engine gives local inference work a stable runtime contract:
   compatibility cases without turning delegated results into AX-owned
   throughput claims.
 
-[mlx_lm](https://github.com/ml-explore/mlx-lm) and
-[mlx-swift-lm](https://github.com/ml-explore/mlx-swift) remain the canonical
-MLX references. AX Engine compares against both and keeps `mlx_lm.server` as
-the explicit delegated compatibility route when AX does not yet have a
-repo-owned graph.
+[mlx_lm](https://github.com/ml-explore/mlx-lm) is the canonical MLX reference.
+AX Engine compares against `mlx_lm.benchmark` and keeps `mlx_lm.server` as the
+explicit delegated compatibility route when AX does not yet have a repo-owned
+graph.
 
 For measured direct-support transformer families on Apple Silicon, the AX-owned
 runtime layer can produce higher effective throughput than the reference MLX
@@ -208,30 +205,41 @@ the MLX rows.
 
 ### Prefill throughput (tok/s) — percentages vs mlx_lm
 
-| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | mlx_swift_lm | ax engine |
-|---|---|---:| ---: |---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 3,532.9 | 2,443.1 | 2,211.5 (-9.5%) | **3,906.4 (+59.9%)** |
-|         |         | 512 | 7,232.1 | 7,768.5 | 6,087.7 (-21.6%) | **8,361.2 (+7.6%)** |
-| Gemma 4 E2B | 5-bit | 128 | 3,427.4 | 2,544.0 | 2,633.4 (+3.5%) | **3,818.0 (+50.1%)** |
-|         |         | 512 | 7,159.5 | 8,085.2 | 6,504.1 (-19.6%) | **8,251.7 (+2.1%)** |
-| Gemma 4 E2B | 6-bit | 128 | 3,431.5 | 2,374.6 | 2,417.5 (+1.8%) | **3,799.9 (+60.0%)** |
-|         |         | 512 | 7,061.6 | 7,742.7 | 6,491.7 (-16.2%) | **8,193.6 (+5.8%)** |
-| Gemma 4 E2B | 8-bit | 128 | 3,698.8 | 2,144.7 | 2,310.8 (+7.7%) | **3,801.7 (+77.3%)** |
-|         |         | 512 | 7,747.4 | 7,221.3 | 6,035.2 (-16.4%) | **8,237.2 (+14.1%)** |
-| Gemma 4 E4B | 4-bit | 128 | 2,238.1 | 1,757.9 | 1,983.1 (+12.8%) | **3,002.8 (+70.8%)** |
-|         |         | 512 | 4,343.5 | 4,502.1 | 4,280.9 (-4.9%) | **4,652.5 (+3.3%)** |
-| Gemma 4 26B A4B | 4-bit | 128 | 1,937.7 | 730.5 | 1,269.6 (+73.8%) | **1,318.5 (+80.5%)** |
-|         |         | 512 | 3,387.1 | 2,090.9 | 2,938.6 (+40.5%) | **3,149.3 (+50.6%)** |
-| Gemma 4 31B | 4-bit | 128 | 511.7 | 374.7 | 653.6 (+74.4%) | **657.3 (+75.4%)** |
-|         |         | 512 | 651.7 | 653.7 | 817.6 (+25.1%) | **783.6 (+19.9%)** |
-| Qwen 3.6 35B A3B | UD-MLX 4-bit | 128 | 1,711.4 | 575.0 | 1,032.6 (+79.6%) | **1,134.4 (+97.3%)** |
-|         |         | 512 | 3,137.6 | 1,702.2 | 2,589.5 (+52.1%) | **2,842.1 (+67.0%)** |
-| Qwen 3.6 35B A3B | MLX 5-bit | 128 | 1,563.4 | 499.2 | 919.1 (+84.1%) | **1,122.3 (+124.8%)** |
-|         |         | 512 | 2,882.8 | 1,585.8 | 2,486.8 (+56.8%) | **2,742.0 (+72.9%)** |
-| Qwen 3.6 35B A3B | MLX 6-bit | 128 | 1,598.4 | 438.6 | 813.8 (+85.5%) | **1,022.2 (+133.0%)** |
-|         |         | 512 | 2,988.3 | 1,440.3 | 2,404.2 (+66.9%) | **2,622.9 (+82.1%)** |
-| Qwen 3.6 35B A3B | MLX 8-bit | 128 | 1,664.2 | 406.4 | 667.9 (+64.3%) | **1,038.4 (+155.5%)** |
-|         |         | 512 | 3,122.8 | 1,298.5 | 2,373.6 (+82.8%) | **2,606.6 (+100.7%)** |
+| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
+|---|---|---:| ---: |---:|---:|
+| Gemma 4 E2B | 4-bit | 128 | 3,532.9 | 2,443.1 | **3,906.4 (+59.9%)** |
+|         |         | 512 | 7,232.1 | 7,768.5 | **8,361.2 (+7.6%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 E2B | 5-bit | 128 | 3,427.4 | 2,544.0 | **3,818.0 (+50.1%)** |
+|         |         | 512 | 7,159.5 | 8,085.2 | **8,251.7 (+2.1%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 E2B | 6-bit | 128 | 3,431.5 | 2,374.6 | **3,799.9 (+60.0%)** |
+|         |         | 512 | 7,061.6 | 7,742.7 | **8,193.6 (+5.8%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 E2B | 8-bit | 128 | 3,698.8 | 2,144.7 | **3,801.7 (+77.3%)** |
+|         |         | 512 | 7,747.4 | 7,221.3 | **8,237.2 (+14.1%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 E4B | 4-bit | 128 | 2,238.1 | 1,757.9 | **3,002.8 (+70.8%)** |
+|         |         | 512 | 4,343.5 | 4,502.1 | **4,652.5 (+3.3%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 26B A4B | 4-bit | 128 | 1,937.7 | 730.5 | **1,318.5 (+80.5%)** |
+|         |         | 512 | 3,387.1 | 2,090.9 | **3,149.3 (+50.6%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 31B | 4-bit | 128 | 511.7 | 374.7 | **657.3 (+75.4%)** |
+|         |         | 512 | 651.7 | 653.7 | **783.6 (+19.9%)** |
+|         |         | 2048 | — | — | — |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 1,711.4 | 575.0 | **1,134.4 (+97.3%)** |
+|         |         | 512 | 3,137.6 | 1,702.2 | **2,842.1 (+67.0%)** |
+|         |         | 2048 | — | — | — |
+| Qwen 3.6 35B A3B | MLX 5-bit | 128 | 1,563.4 | 499.2 | **1,122.3 (+124.8%)** |
+|         |         | 512 | 2,882.8 | 1,585.8 | **2,742.0 (+72.9%)** |
+|         |         | 2048 | — | — | — |
+| Qwen 3.6 35B A3B | MLX 6-bit | 128 | 1,598.4 | 438.6 | **1,022.2 (+133.0%)** |
+|         |         | 512 | 2,988.3 | 1,440.3 | **2,622.9 (+82.1%)** |
+|         |         | 2048 | — | — | — |
+| Qwen 3.6 35B A3B | MLX 8-bit | 128 | 1,664.2 | 406.4 | **1,038.4 (+155.5%)** |
+|         |         | 512 | 3,122.8 | 1,298.5 | **2,606.6 (+100.7%)** |
+|         |         | 2048 | — | — | — |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
@@ -239,61 +247,83 @@ Higher is better. `ax direct baseline` disables n-gram acceleration.
 `ax default n-gram` is the default AX decode policy and reports observed
 effective throughput, not raw model-kernel speed.
 
-| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | mlx_swift_lm | ax direct baseline | ax default n-gram |
-|---|---|---:| ---: |---:|---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 162.3 | 213.5 | 209.5 (-1.9%) | 190.1 (-10.9%) | **564.8 (+164.5%)** |
-|         |         | 512 | 157.8 | 210.1 | 200.2 (-4.7%) | 179.9 (-14.4%) | **573.3 (+172.8%)** |
-| Gemma 4 E2B | 5-bit | 128 | 147.0 | 196.9 | 188.7 (-4.1%) | 174.0 (-11.6%) | **452.5 (+129.9%)** |
-|         |         | 512 | 151.3 | 190.1 | 180.5 (-5.1%) | 164.9 (-13.2%) | **458.7 (+141.3%)** |
-| Gemma 4 E2B | 6-bit | 128 | 138.5 | 175.4 | 168.4 (-4.0%) | 156.2 (-11.0%) | **428.8 (+144.4%)** |
-|         |         | 512 | 137.6 | 170.7 | 162.0 (-5.1%) | 151.1 (-11.5%) | **424.6 (+148.8%)** |
-| Gemma 4 E2B | 8-bit | 128 | 131.4 | 154.3 | 148.9 (-3.5%) | 139.6 (-9.6%) | **465.8 (+201.8%)** |
-|         |         | 512 | 137.3 | 149.8 | 143.9 (-4.0%) | 135.6 (-9.5%) | **460.3 (+207.2%)** |
-| Gemma 4 E4B | 4-bit | 128 | 104.5 | 137.4 | 132.3 (-3.8%) | 122.6 (-10.8%) | **355.9 (+159.0%)** |
-|         |         | 512 | 104.1 | 133.8 | 127.7 (-4.6%) | 119.5 (-10.7%) | **355.9 (+165.9%)** |
-| Gemma 4 26B A4B | 4-bit | 128 | 107.2 | 128.2 | 120.7 (-5.9%) | 120.5 (-6.0%) | **274.2 (+113.9%)** |
-|         |         | 512 | 107.7 | 124.9 | 115.8 (-7.2%) | 117.6 (-5.9%) | **233.2 (+86.7%)** |
-| Gemma 4 31B | 4-bit | 128 | 24.5 | 29.0 | 28.4 (-2.2%) | 27.8 (-4.1%) | **65.4 (+125.7%)** |
-|         |         | 512 | 24.1 | 28.4 | 27.6 (-2.7%) | 27.0 (-5.1%) | **63.9 (+125.0%)** |
-| Qwen 3.6 35B A3B | UD-MLX 4-bit | 128 | 89.7 | 120.8 | 121.7 (+0.8%) | **123.3 (+2.0%)** | **284.2 (+135.2%)** |
-|         |         | 512 | 90.9 | 120.6 | 119.6 (-0.8%) | **122.4 (+1.5%)** | **281.2 (+133.2%)** |
-| Qwen 3.6 35B A3B | MLX 5-bit | 128 | 98.5 | 125.7 | 123.5 (-1.7%) | **137.2 (+9.1%)** | **284.2 (+126.1%)** |
-|         |         | 512 | 86.9 | 125.8 | 122.4 (-2.7%) | **136.5 (+8.5%)** | **281.4 (+123.7%)** |
-| Qwen 3.6 35B A3B | MLX 6-bit | 128 | 95.7 | 114.8 | 112.0 (-2.4%) | **120.2 (+4.7%)** | **261.1 (+127.4%)** |
-|         |         | 512 | 95.5 | 114.4 | 110.1 (-3.7%) | **119.6 (+4.6%)** | **258.4 (+125.9%)** |
-| Qwen 3.6 35B A3B | MLX 8-bit | 128 | 90.3 | 105.1 | 102.2 (-2.8%) | **108.0 (+2.8%)** | **263.1 (+150.4%)** |
-|         |         | 512 | 90.1 | 104.4 | 100.7 (-3.5%) | **107.2 (+2.7%)** | **259.4 (+148.5%)** |
+| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
+|---|---|---:| ---: |---:|---:|---:|
+| Gemma 4 E2B | 4-bit | 128 | 162.3 | 213.5 | 190.1 (-10.9%) | **564.8 (+164.5%)** |
+|         |         | 512 | 157.8 | 210.1 | 179.9 (-14.4%) | **573.3 (+172.8%)** |
+|         |         | 2048 | — | — | — | — |
+| Gemma 4 E2B | 5-bit | 128 | 147.0 | 196.9 | 174.0 (-11.6%) | **452.5 (+129.9%)** |
+|         |         | 512 | 151.3 | 190.1 | 164.9 (-13.2%) | **458.7 (+141.3%)** |
+|         |         | 2048 | — | — | — | — |
+| Gemma 4 E2B | 6-bit | 128 | 138.5 | 175.4 | 156.2 (-11.0%) | **428.8 (+144.4%)** |
+|         |         | 512 | 137.6 | 170.7 | 151.1 (-11.5%) | **424.6 (+148.8%)** |
+|         |         | 2048 | — | — | — | — |
+| Gemma 4 E2B | 8-bit | 128 | 131.4 | 154.3 | 139.6 (-9.6%) | **465.8 (+201.8%)** |
+|         |         | 512 | 137.3 | 149.8 | 135.6 (-9.5%) | **460.3 (+207.2%)** |
+|         |         | 2048 | — | — | — | — |
+| Gemma 4 E4B | 4-bit | 128 | 104.5 | 137.4 | 122.6 (-10.8%) | **355.9 (+159.0%)** |
+|         |         | 512 | 104.1 | 133.8 | 119.5 (-10.7%) | **355.9 (+165.9%)** |
+|         |         | 2048 | — | — | — | — |
+| Gemma 4 26B A4B | 4-bit | 128 | 107.2 | 128.2 | 120.5 (-6.0%) | **274.2 (+113.9%)** |
+|         |         | 512 | 107.7 | 124.9 | 117.6 (-5.9%) | **233.2 (+86.7%)** |
+|         |         | 2048 | — | — | — | — |
+| Gemma 4 31B | 4-bit | 128 | 24.5 | 29.0 | 27.8 (-4.1%) | **65.4 (+125.7%)** |
+|         |         | 512 | 24.1 | 28.4 | 27.0 (-5.1%) | **63.9 (+125.0%)** |
+|         |         | 2048 | — | — | — | — |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 89.7 | 120.8 | **123.3 (+2.0%)** | **284.2 (+135.2%)** |
+|         |         | 512 | 90.9 | 120.6 | **122.4 (+1.5%)** | **281.2 (+133.2%)** |
+|         |         | 2048 | — | — | — | — |
+| Qwen 3.6 35B A3B | MLX 5-bit | 128 | 98.5 | 125.7 | **137.2 (+9.1%)** | **284.2 (+126.1%)** |
+|         |         | 512 | 86.9 | 125.8 | **136.5 (+8.5%)** | **281.4 (+123.7%)** |
+|         |         | 2048 | — | — | — | — |
+| Qwen 3.6 35B A3B | MLX 6-bit | 128 | 95.7 | 114.8 | **120.2 (+4.7%)** | **261.1 (+127.4%)** |
+|         |         | 512 | 95.5 | 114.4 | **119.6 (+4.6%)** | **258.4 (+125.9%)** |
+|         |         | 2048 | — | — | — | — |
+| Qwen 3.6 35B A3B | MLX 8-bit | 128 | 90.3 | 105.1 | **108.0 (+2.8%)** | **263.1 (+150.4%)** |
+|         |         | 512 | 90.1 | 104.4 | **107.2 (+2.7%)** | **259.4 (+148.5%)** |
+|         |         | 2048 | — | — | — | — |
 
 ### Time to first token (ms) — generation=128 tokens, temp=0
 
-Lower is better. `mlx_lm` and `mlx_swift_lm` values are derived from reported
-prefill throughput. AX values are measured directly from per-step runner timing
-in the SSE event stream.
+Lower is better. `mlx_lm` values are derived from reported prefill throughput.
+AX values are measured directly from per-step runner timing in the SSE event
+stream.
 
-| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | mlx_swift_lm | ax engine |
-|---|---|---:| ---: |---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 36.2 | 52.4 | 57.9 (+10.5%) | **32.8 (-37.5%)** |
-|         |         | 512 | 70.8 | 65.9 | 84.1 (+27.6%) | **61.2 (-7.1%)** |
-| Gemma 4 E2B | 5-bit | 128 | 37.3 | 50.3 | 48.6 (-3.4%) | **33.5 (-33.4%)** |
-|         |         | 512 | 71.5 | 63.3 | 78.7 (+24.3%) | **62.0 (-2.0%)** |
-| Gemma 4 E2B | 6-bit | 128 | 37.3 | 53.9 | 52.9 (-1.8%) | **33.7 (-37.5%)** |
-|         |         | 512 | 72.5 | 66.1 | 78.9 (+19.3%) | **62.5 (-5.5%)** |
-| Gemma 4 E2B | 8-bit | 128 | 34.6 | 59.7 | 55.4 (-7.2%) | **33.7 (-43.6%)** |
-|         |         | 512 | 66.1 | 70.9 | 84.8 (+19.7%) | **62.2 (-12.3%)** |
-| Gemma 4 E4B | 4-bit | 128 | 57.2 | 72.8 | 64.5 (-11.4%) | **42.6 (-41.5%)** |
-|         |         | 512 | 117.9 | 113.7 | 119.6 (+5.2%) | **110.0 (-3.2%)** |
-| Gemma 4 26B A4B | 4-bit | 128 | 66.1 | 175.2 | 100.8 (-42.5%) | **97.1 (-44.6%)** |
-|         |         | 512 | 151.2 | 244.9 | 174.2 (-28.8%) | **162.6 (-33.6%)** |
-| Gemma 4 31B | 4-bit | 128 | 250.2 | 341.6 | 195.8 (-42.7%) | **194.7 (-43.0%)** |
-|         |         | 512 | 785.6 | 783.2 | 626.3 (-20.0%) | **653.4 (-16.6%)** |
-| Qwen 3.6 35B A3B | UD-MLX 4-bit | 128 | 74.8 | 222.6 | 124.0 (-44.3%) | **112.8 (-49.3%)** |
-|         |         | 512 | 163.2 | 300.8 | 197.7 (-34.3%) | **180.1 (-40.1%)** |
-| Qwen 3.6 35B A3B | MLX 5-bit | 128 | 81.9 | 256.4 | 139.3 (-45.7%) | **114.0 (-55.5%)** |
-|         |         | 512 | 177.6 | 322.9 | 205.9 (-36.2%) | **186.7 (-42.2%)** |
-| Qwen 3.6 35B A3B | MLX 6-bit | 128 | 80.1 | 291.8 | 157.3 (-46.1%) | **125.2 (-57.1%)** |
-|         |         | 512 | 171.3 | 355.5 | 213.0 (-40.1%) | **195.2 (-45.1%)** |
-| Qwen 3.6 35B A3B | MLX 8-bit | 128 | 76.9 | 314.9 | 191.7 (-39.1%) | **123.3 (-60.9%)** |
-|         |         | 512 | 164.0 | 394.3 | 215.7 (-45.3%) | **196.4 (-50.2%)** |
+| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
+|---|---|---:| ---: |---:|---:|
+| Gemma 4 E2B | 4-bit | 128 | 36.2 | 52.4 | **32.8 (-37.5%)** |
+|         |         | 512 | 70.8 | 65.9 | **61.2 (-7.1%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 E2B | 5-bit | 128 | 37.3 | 50.3 | **33.5 (-33.4%)** |
+|         |         | 512 | 71.5 | 63.3 | **62.0 (-2.0%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 E2B | 6-bit | 128 | 37.3 | 53.9 | **33.7 (-37.5%)** |
+|         |         | 512 | 72.5 | 66.1 | **62.5 (-5.5%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 E2B | 8-bit | 128 | 34.6 | 59.7 | **33.7 (-43.6%)** |
+|         |         | 512 | 66.1 | 70.9 | **62.2 (-12.3%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 E4B | 4-bit | 128 | 57.2 | 72.8 | **42.6 (-41.5%)** |
+|         |         | 512 | 117.9 | 113.7 | **110.0 (-3.2%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 26B A4B | 4-bit | 128 | 66.1 | 175.2 | **97.1 (-44.6%)** |
+|         |         | 512 | 151.2 | 244.9 | **162.6 (-33.6%)** |
+|         |         | 2048 | — | — | — |
+| Gemma 4 31B | 4-bit | 128 | 250.2 | 341.6 | **194.7 (-43.0%)** |
+|         |         | 512 | 785.6 | 783.2 | **653.4 (-16.6%)** |
+|         |         | 2048 | — | — | — |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 74.8 | 222.6 | **112.8 (-49.3%)** |
+|         |         | 512 | 163.2 | 300.8 | **180.1 (-40.1%)** |
+|         |         | 2048 | — | — | — |
+| Qwen 3.6 35B A3B | MLX 5-bit | 128 | 81.9 | 256.4 | **114.0 (-55.5%)** |
+|         |         | 512 | 177.6 | 322.9 | **186.7 (-42.2%)** |
+|         |         | 2048 | — | — | — |
+| Qwen 3.6 35B A3B | MLX 6-bit | 128 | 80.1 | 291.8 | **125.2 (-57.1%)** |
+|         |         | 512 | 171.3 | 355.5 | **195.2 (-45.1%)** |
+|         |         | 2048 | — | — | — |
+| Qwen 3.6 35B A3B | MLX 8-bit | 128 | 76.9 | 314.9 | **123.3 (-60.9%)** |
+|         |         | 512 | 164.0 | 394.3 | **196.4 (-50.2%)** |
+|         |         | 2048 | — | — | — |
 
 Embedding benchmarks are kept out of this README summary; see
 [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md) for embedding throughput, serving,
@@ -315,8 +345,6 @@ This installs:
 - `ax-engine-server`: local HTTP adapter over the SDK runtime
 - `ax-engine-bench`: workload-contract, readiness, direct-generate, and
   benchmark-support CLI
-- `ax-engine-manager`: local web manager for readiness, model downloads, server
-  metadata, endpoint URLs, guarded job plans, and redacted support bundles
 - the Homebrew `mlx-c` runtime dependency required by the released binaries
 
 Check the installed tools:
@@ -324,7 +352,6 @@ Check the installed tools:
 ```bash
 ax-engine-server --help
 ax-engine-bench doctor
-ax-engine-manager --check
 ```
 
 Homebrew is the quickest path for the released server and benchmark binaries.
@@ -360,15 +387,14 @@ The fastest local workflow is:
 
 1. install or build the command-line tools;
 2. download a supported MLX model and generate its manifest;
-3. start the local server;
-4. open `ax-engine-manager` to manage downloads, server port controls,
-   readiness, endpoint URLs, benchmark artifacts, and support bundles.
-
-For a complete manager walkthrough, see [docs/MANAGER.md](docs/MANAGER.md).
+3. check model readiness;
+4. start the local server and call its HTTP endpoints.
 
 The commands below use source-build paths. If you installed with Homebrew, use
-`ax-engine-server`, `ax-engine-bench`, and `ax-engine-manager` directly instead
-of `./target/release/...`.
+`ax-engine-server` and `ax-engine-bench` directly instead of
+`./target/release/...`.
+
+### Start `ax-engine-server` from the CLI
 
 ```bash
 # Download a model and generate its manifest
@@ -376,8 +402,8 @@ MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --jso
 # MODEL_DIR uses the Hugging Face Hub snapshot cache by default, e.g.
 # ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
 
-# Check readiness without opening the browser
-./target/release/ax-engine-manager --check --model-dir "$MODEL_DIR"
+# Check readiness
+./target/release/ax-engine-bench doctor --mlx-model-artifacts-dir "$MODEL_DIR"
 
 # HTTP inference server (repo-owned MLX runtime)
 ./target/release/ax-engine-server \
@@ -385,10 +411,23 @@ MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --jso
   --mlx-model-artifacts-dir "$MODEL_DIR" \
   --port 8080
 
-# Local web manager
-./target/release/ax-engine-manager \
-  --model-dir "$MODEL_DIR" \
-  --server-url http://127.0.0.1:8080
+# In another terminal, inspect the running server
+curl http://127.0.0.1:8080/v1/runtime
+
+# Optional smoke generation request
+curl http://127.0.0.1:8080/v1/generate \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "qwen3_dense",
+    "input_tokens": [1, 2, 3, 4],
+    "max_output_tokens": 4,
+    "sampling": {
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "top_k": 0,
+      "seed": 1234
+    }
+  }'
 ```
 
 ```python
@@ -422,15 +461,11 @@ model-kernel throughput evidence. Tool calls and visual/multimodal inputs are
 not compatibility contracts yet.
 
 ```bash
-# Primary benchmark: AX vs mlx_lm vs mlx-swift-lm
+# Primary benchmark: AX vs mlx_lm
 python3 scripts/bench_mlx_inference_stack.py \
   --model-dir /path/to/local/mlx-model \
-  --prompt-tokens 128,512 --generation-tokens 128 \
+  --prompt-tokens 128,512,2048 --generation-tokens 128 \
   --ax-compare-policies --repetitions 3 \
-  --mlx-swift-lm-command './scripts/mlx-swift-bench/.build/release/mlx-swift-bench \
-    --model {model} --prompt-token-ids {prompt_token_ids_path} \
-    --generation-tokens {generation_tokens} --trials {trials} \
-    --delay {delay} --prefill-step-size {prefill_step_size}' \
   --output benchmarks/results/mlx-inference/2026-05-04/gemma-4-e2b-it-4bit.json
 
 # Secondary workload-contract benchmark
@@ -439,7 +474,7 @@ python3 scripts/bench_mlx_inference_stack.py \
   --output-root benchmarks/results
 
 # Smoke checks
-./target/release/ax-engine-manager --check --model-dir "$MODEL_DIR"
+./target/release/ax-engine-bench doctor --mlx-model-artifacts-dir "$MODEL_DIR"
 bash scripts/check-server-preview.sh
 bash scripts/check-python-preview.sh
 ```
@@ -460,7 +495,7 @@ the required `model-manifest.json` in one step:
 # Script (works with Homebrew install or source build)
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit
 
-# For automation and manager integration, emit a parseable summary
+# For automation, emit a parseable summary
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json
 
 # Python SDK
@@ -686,7 +721,6 @@ only after the project has a stable baseline across macOS, MLX, and PyO3 paths.
 Public documentation is in `docs/`. Canonical benchmark manifests are in
 `benchmarks/manifests/`. Key design documents:
 [SDK / API](docs/SDK.md) ·
-[Manager](docs/MANAGER.md) ·
 [Python](docs/PYTHON.md) ·
 [JavaScript / TypeScript](docs/JAVASCRIPT.md) ·
 [Go](docs/GO.md) ·
@@ -699,8 +733,9 @@ Public documentation is in `docs/`. Canonical benchmark manifests are in
 
 ## Limitations
 
-- **GatedDelta prefill (Qwen3.5)**: Qwen3.5 prefill can trail mlx-swift-lm on
-  longer prompts; decode and Qwen3-Next are not affected in the same way.
+- **GatedDelta prefill (Qwen3.5)**: Qwen3.5 prefill can trail upstream MLX
+  references on longer prompts; decode and Qwen3-Next are not affected in the
+  same way.
 - **Raw HuggingFace weights**: use pre-sanitized MLX community weights or
   convert first with `mlx_lm.convert`.
 - **N-gram acceleration rows**: effective-throughput measurements, not raw

@@ -31,13 +31,7 @@ SLUG_ORDER = [
     "gemma-4-e4b-it-4bit",
     "gemma-4-26b-a4b-it-4bit",
     "gemma-4-31b-it-4bit",
-    "qwen3_5-9b-mlx-4bit",
-    "qwen3_6-35b-a3b-ud-mlx-4bit",
-    "qwen3_6-35b-a3b-5bit",
-    "qwen3_6-35b-a3b-6bit",
-    "qwen3_6-35b-a3b-8bit",
-    "qwen3-coder-next-4bit",
-    "glm-4.7-flash-4bit",
+    "qwen3_6-35b-a3b-4bit",
 ]
 
 SECTION_HEADER = "### External GGUF baseline — llama.cpp Metal (shape-compatible, not prompt-hash parity)"
@@ -68,12 +62,13 @@ def extract_row_metrics(row: dict[str, Any]) -> dict[int, dict[str, float]] | No
     return out or None
 
 
-def render_row_cells(metrics: dict[int, dict[str, float]] | None, key: str, fmt) -> tuple[str, str]:
+def render_row_cells(metrics: dict[int, dict[str, float]] | None, key: str, fmt) -> tuple[str, str, str]:
     if metrics is None:
-        return ("n/a", "n/a")
+        return ("n/a", "n/a", "n/a")
     cell_128 = fmt(metrics[128][key]) if 128 in metrics and metrics[128].get(key) is not None else "n/a"
     cell_512 = fmt(metrics[512][key]) if 512 in metrics and metrics[512].get(key) is not None else "n/a"
-    return (cell_128, cell_512)
+    cell_2048 = fmt(metrics[2048][key]) if 2048 in metrics and metrics[2048].get(key) is not None else "n/a"
+    return (cell_128, cell_512, cell_2048)
 
 
 def status_label(row: dict[str, Any]) -> str:
@@ -106,9 +101,9 @@ def render_section(sweep_doc: dict[str, Any]) -> str:
         "synthetic prompt tokens and does not consume the harness prompt JSON. The "
         "intent of this section is one of context (is the MLX engine in the same "
         "neighborhood as a well-known third-party Metal runtime?), not head-to-head "
-        "comparison. MLX bit-widths are mapped to the nearest standard GGUF K-quant "
-        "(4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0; UD-MLX → unsloth UD-Q4_K_XL when "
-        "available). Architectural bit-for-bit equivalence is not claimed."
+        "comparison. MLX bit-widths are mapped to the nearest standard bartowski "
+        "GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0). Architectural "
+        "bit-for-bit equivalence is not claimed."
     )
     lines.append("")
     manifest_path = sweep_doc.get("manifest_path", "benchmarks/manifests/llama_cpp_metal/inventory.json")
@@ -129,20 +124,20 @@ def render_section(sweep_doc: dict[str, Any]) -> str:
 
     def render_table(title: str, key: str, fmt) -> list[str]:
         out = [f"#### {title}", ""]
-        out.append("| Model | MLX quantization → GGUF quant | 128 tok | 512 tok | GGUF source |")
-        out.append("|---|---|---:|---:|---|")
+        out.append("| Model | MLX quantization → GGUF quant | 128 tok | 512 tok | 2048 tok | GGUF source |")
+        out.append("|---|---|---:|---:|---:|---|")
         for slug in SLUG_ORDER:
             row = rows_by_slug.get(slug)
             if row is None:
                 continue
             metrics = extract_row_metrics(row)
-            cell_128, cell_512 = render_row_cells(metrics, key, fmt)
+            cell_128, cell_512, cell_2048 = render_row_cells(metrics, key, fmt)
             label = status_label(row)
             repo = row.get("resolved_repo") or "—"
             quant = row.get("gguf_quant_target") or "—"
             mlx_q = row.get("readme_quant") or "—"
             out.append(
-                f"| {row['readme_model']}{label} | {mlx_q} → {quant} | {cell_128} | {cell_512} | `{repo}` |"
+                f"| {row['readme_model']}{label} | {mlx_q} → {quant} | {cell_128} | {cell_512} | {cell_2048} | `{repo}` |"
             )
         out.append("")
         return out

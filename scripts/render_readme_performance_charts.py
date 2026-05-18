@@ -29,12 +29,11 @@ README_MODELS = [
     "glm-4.7-flash-4bit",
 ]
 
-PROMPT_TOKENS = (128, 512)
+PROMPT_TOKENS = (128, 512, 2048)
 
 SERIES = [
     ("llama_cpp_metal", "llama.cpp", "#f97316", "#c2410c"),
     ("mlx_lm", "mlx_lm", "#f2b705", "#9a6a00"),
-    ("mlx_swift_lm", "mlx_swift_lm", "#4062bb", "#243b87"),
     ("ax_engine_mlx", "ax_engine", "#2eaf5f", "#176c37"),
     ("ax_engine_mlx_ngram_accel", "ax_engine + n-gram", "#137a3d", "#0b4f28"),
 ]
@@ -215,7 +214,7 @@ def collect_values(rows: list[dict[str, Any]], metric: str) -> list[SeriesStats]
             elif metric == "decode":
                 values.append(metric_median(row, "decode_tok_s"))
             elif metric == "ttft":
-                if engine in {"llama_cpp_metal", "mlx_lm", "mlx_swift_lm"}:
+                if engine in {"llama_cpp_metal", "mlx_lm"}:
                     prompt_tokens = row.get("prompt_tokens")
                     if not isinstance(prompt_tokens, int):
                         raise ChartError(f"missing prompt_tokens for {engine}")
@@ -266,7 +265,7 @@ def render_chart(spec: ChartSpec, stats: list[SeriesStats]) -> str:
         f"<title>{escape(spec.title)}</title>",
         (
             f"<desc>Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, "
-            f"mlx_swift_lm, ax_engine, and ax_engine plus n-gram across 28 README benchmark rows. "
+            f"ax_engine, and ax_engine plus n-gram across README benchmark rows. "
             f"A red dotted horizontal line marks the ax_engine plus n-gram median.</desc>"
         ),
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#ffffff"/>',

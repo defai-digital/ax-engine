@@ -123,6 +123,7 @@ name = "ax-engine-bench"
 version = "4.9.0"
 dependencies = [
  "ax-engine-core",
+ "ax-engine-mlx",
  "ax-engine-sdk",
  "serde",
  "serde_json",
@@ -210,16 +211,6 @@ dependencies = [
  "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "ax-engine-tui"
-version = "4.9.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
 ]
 
 [[package]]
