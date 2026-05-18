@@ -9,6 +9,11 @@ import argparse
 import json
 import sys
 
+
+class ReadmeBenchUpdateError(RuntimeError):
+    pass
+
+
 # Maps benchmark slug → (README model display name, README quant string)
 SLUG_TO_README = {
     "gemma-4-e2b-it-4bit":         ("Gemma 4 E2B",      "4-bit"),
@@ -90,9 +95,14 @@ def extract_bench_values(data: dict) -> dict:
     for r in data["results"]:
         engine = r["engine"]
         pt = r["prompt_tokens"]
+        key = (engine, pt)
+        if key in out:
+            raise ReadmeBenchUpdateError(
+                f"duplicate benchmark row for engine={engine!r} prompt_tokens={pt}"
+            )
         ttft_raw = r.get("ttft_ms")
         ttft = ttft_raw.get("median") if isinstance(ttft_raw, dict) else ttft_raw
-        out[(engine, pt)] = {
+        out[key] = {
             "prefill": r["prefill_tok_s"]["median"],
             "decode":  r["decode_tok_s"]["median"],
             "ttft":    ttft,
@@ -324,6 +334,12 @@ def main():
     total += update_ttft_rows(lines, model_name, quant, vals)
 
     print(f"  {args.slug}: {total} row cells updated")
+    if total == 0:
+        print(
+            f"ERROR: {args.json} did not update any README performance rows for {args.slug}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if args.dry_run:
         for i, (orig, new) in enumerate(zip(orig_lines, lines)):

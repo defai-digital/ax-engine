@@ -35,6 +35,29 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
             ("Qwen 3.6 35B A3B", "4-bit"),
         )
 
+    def test_extract_bench_values_rejects_duplicate_engine_prompt_rows(self) -> None:
+        payload = {
+            "results": [
+                {
+                    "engine": "mlx_lm",
+                    "prompt_tokens": 128,
+                    "prefill_tok_s": {"median": 100.0},
+                    "decode_tok_s": {"median": 10.0},
+                    "ttft_ms": 1.0,
+                },
+                {
+                    "engine": "mlx_lm",
+                    "prompt_tokens": 128,
+                    "prefill_tok_s": {"median": 101.0},
+                    "decode_tok_s": {"median": 11.0},
+                    "ttft_ms": 1.1,
+                },
+            ],
+        }
+
+        with self.assertRaisesRegex(updater.ReadmeBenchUpdateError, "duplicate benchmark row"):
+            updater.extract_bench_values(payload)
+
     def test_decode_direct_only_update_preserves_existing_ngram_column(self) -> None:
         lines = [
             "### Decode throughput (tok/s) — generation=128 tokens, temp=0",

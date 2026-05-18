@@ -41,6 +41,11 @@ def extract_rows(d):
     rows = {}
     for r in d.get("results", []):
         key = (r["engine"], r["prompt_tokens"])
+        if key in rows:
+            engine, prompt_tokens = key
+            raise RuntimeError(
+                f"duplicate benchmark row for engine={engine!r} prompt_tokens={prompt_tokens}"
+            )
         rows[key] = r
     return rows
 

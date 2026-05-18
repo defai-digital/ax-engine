@@ -136,6 +136,17 @@ class InjectorTests(unittest.TestCase):
         self.assertEqual(lookup[("Gemma 4 E2B", "4-bit", 128)]["decode"], 140.0)
         self.assertEqual(lookup[("Gemma 4 E2B", "4-bit", 512)]["decode"], 141.0)
 
+    def test_lookup_rejects_duplicate_model_quant_prompt_rows(self) -> None:
+        doc = {
+            "rows": [
+                _row("gemma-4-e2b-it-4bit", 3500.0, 7000.0, 160.0, 36.0, 73.0),
+                _row("gemma-4-e2b-it-4bit", 3600.0, 7100.0, 170.0, 35.0, 72.0),
+            ],
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "duplicate llama.cpp lookup row"):
+            inj.build_llama_lookup(doc)
+
     def test_apply_injects_column_in_all_three_tables(self) -> None:
         out, stats = inj.apply(SAMPLE_README, self.sweep_doc)
         self.assertTrue(stats["inserted_disclaimer"])

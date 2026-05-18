@@ -100,7 +100,13 @@ def build_llama_lookup(sweep_doc: dict[str, Any]) -> dict[tuple[str, str, int], 
             decode = decode_metric.get("median")
             ttft_raw = cell.get("ttft_ms")
             ttft = ttft_raw.get("median") if isinstance(ttft_raw, dict) else None
-            out[(model_name, quant, pt)] = {
+            key = (model_name, quant, pt)
+            if key in out:
+                raise RuntimeError(
+                    "duplicate llama.cpp lookup row for "
+                    f"model={model_name!r} quant={quant!r} prompt_tokens={pt}"
+                )
+            out[key] = {
                 "prefill": prefill,
                 "decode": decode,
                 "ttft": ttft,

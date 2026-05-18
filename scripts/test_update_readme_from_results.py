@@ -88,6 +88,17 @@ class UpdateReadmeFromResultsTests(unittest.TestCase):
         self.assertIn("|        |        | 512 | 100.0 | 80.0 (-20.0%) |", prefill_table)
         self.assertNotIn("**80.0 (-20.0%)**", prefill_table)
 
+    def test_extract_rows_rejects_duplicate_engine_prompt_rows(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "duplicate benchmark row"):
+            updater.extract_rows(
+                {
+                    "results": [
+                        {"engine": "mlx_lm", "prompt_tokens": 128},
+                        {"engine": "mlx_lm", "prompt_tokens": 128},
+                    ]
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
