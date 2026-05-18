@@ -2426,10 +2426,17 @@ impl MlxRunner {
         let rotating_sliding_decode = disable_ngram_acceleration
             && std::env::var("AX_MLX_ROTATING_SLIDING_DECODE").as_deref() == Ok("1");
         let ngram_policy_variant = ngram_policy_variant_from_env();
+        // Mirror mlx-lm's `mx.clear_cache()` cadence: `generate.py:467-468`
+        // calls `mx.clear_cache()` every 256 decoded tokens so the lazy graph
+        // / intermediate-array cache cannot grow without bound during long
+        // generations. Without this AX accumulates the same cache and pays
+        // extra per-step overhead on multi-hundred-token decodes. Operators
+        // can disable via `AX_MLX_DIRECT_CLEAR_CACHE_CADENCE=0` or override
+        // with any other cadence.
         let direct_clear_cache_cadence = std::env::var("AX_MLX_DIRECT_CLEAR_CACHE_CADENCE")
             .ok()
             .and_then(|raw| raw.parse::<u32>().ok())
-            .unwrap_or(0);
+            .unwrap_or(256);
         let kv_compression_layer_eligible = if kv_compression.is_enabled() {
             turboquant_support_report(&cfg, kv_compression.preset)
                 .map_err(|error| {
