@@ -29,6 +29,29 @@ fn parse_bool_env(var: &str) -> bool {
         || trimmed.eq_ignore_ascii_case("yes")
 }
 
+/// Parse an env var as a kill switch. Returns `true` when unset or set to a
+/// truthy value (`1`/`true`/`yes`); returns `false` only when explicitly set
+/// to a falsy value (`0`/`false`/`no`). Used by accessors that default ON in
+/// production but expose an off-switch for safety.
+fn parse_bool_env_default_on(var: &str) -> bool {
+    let Ok(raw) = std::env::var(var) else {
+        return true;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if trimmed.eq_ignore_ascii_case("0")
+        || trimmed.eq_ignore_ascii_case("false")
+        || trimmed.eq_ignore_ascii_case("no")
+    {
+        return false;
+    }
+    // Any non-empty / non-falsy value is treated as truthy. Matches the
+    // existing `parse_bool_env` semantics for the explicit-on case.
+    true
+}
+
 fn parse_positive_usize_env(var: &str) -> Option<usize> {
     let raw = std::env::var(var).ok()?;
     let n: usize = raw.trim().parse().ok()?;
@@ -41,6 +64,19 @@ macro_rules! env_flag {
         pub fn $fn_name() -> bool {
             static CACHED: OnceLock<bool> = OnceLock::new();
             *CACHED.get_or_init(|| parse_bool_env($env_var))
+        }
+    };
+}
+
+/// Default-on counterpart of `env_flag!`. Production code uses this for fast
+/// paths that should run by default but need a documented kill switch
+/// reachable via env var (e.g. `AX_MLX_PREFILL_FFN_COMPILE=0`).
+macro_rules! env_flag_default_on {
+    ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
+        $(#[$meta])*
+        pub fn $fn_name() -> bool {
+            static CACHED: OnceLock<bool> = OnceLock::new();
+            *CACHED.get_or_init(|| parse_bool_env_default_on($env_var))
         }
     };
 }
@@ -67,33 +103,40 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
-env_flag!(
-    /// Engaged by `AX_MLX_PREFILL_FFN_COMPILE` (W1 spike of
-    /// `MLX-PREFILL-FUSION-PRD-2026-05-15.md`). When truthy, the Gemma 4
-    /// GeGLU branch in `model.rs::gemma4_geglu` routes its
-    /// `gelu_approx + multiply` sub-chain through a per-thread
-    /// `MlxClosure::compile` cache, mirroring the
-    /// `@partial(mx.compile, shapeless=True) def geglu(gate, x)` mlx_lm
-    /// uses. `MlxClosure::try_apply` falls back to the imperative path on
-    /// a cross-thread or stream-contract mismatch, so the env switch fails
-    /// closed. Default off until the W1 acceptance gates in fusion PRD §0
-    /// are green on a captured Gemma 4 E2B 4-bit @4k bring-up smoke.
+env_flag_default_on!(
+    /// `AX_MLX_PREFILL_FFN_COMPILE` — Gemma 4 GeGLU compile fusion (W1 of
+    /// `MLX-PREFILL-FUSION-PRD-2026-05-15.md`).
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_PREFILL_FFN_COMPILE=0`).
+    ///
+    /// When ON, the Gemma 4 dense FFN routes its `gelu_approx + multiply`
+    /// sub-chain through a per-thread `MlxClosure::compile` cache,
+    /// mirroring `mlx_lm`'s `@partial(mx.compile, shapeless=True) def
+    /// geglu(gate, x)`. A 2026-05-18 source-read found `mlx_lm` enables
+    /// this unconditionally for Gemma 4 prefill and it is one of the
+    /// reasons `mlx_lm` outpaces the imperative AX path at p=2048.
+    ///
+    /// Safety guards in `model/shared/mlp.rs::geglu` (`ndim > 3` skip;
+    /// `last_dim > 16_384` skip) keep the known MLX 0.31 abort cases on
+    /// the imperative fallback. Cross-thread / stream-contract mismatches
+    /// surface via `MlxClosure::try_apply` and also fall back fail-closed.
+    /// Operators can disable the fusion via the env var if they encounter
+    /// a regression not covered by those guards.
     prefill_ffn_compile_enabled,
     "AX_MLX_PREFILL_FFN_COMPILE"
 );
 
-env_flag!(
-    /// Engaged by `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU` (W1 spike K of
-    /// `MLX-PREFILL-FUSION-PRD-2026-05-15.md`, extending the GeGLU wrap
-    /// to the SwiGLU branch used by Qwen 3 dense FFN, Qwen MoE routed
-    /// experts, and the shared-expert path). When truthy, the
-    /// `silu(gate) * up` chain in `model.rs::dense_ffn_activation`,
-    /// `shared_expert_forward`, and the MoE expert hidden compute go
-    /// through a per-thread `MlxClosure::compile` cache analogous to
-    /// `geglu()`. `MlxClosure::try_apply` falls back to the imperative
-    /// path on a cross-thread or stream-contract mismatch, so the env
-    /// switch fails closed. Default off until G2-equivalent acceptance
-    /// runs on Qwen3.5 9B / Qwen Coder Next are green.
+env_flag_default_on!(
+    /// `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU` — Qwen3 / GLM / shared-expert
+    /// SwiGLU compile fusion (W1 spike K of fusion PRD).
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU=0`).
+    ///
+    /// Counterpart of `prefill_ffn_compile_enabled` for `silu(gate) * up`
+    /// chains in Qwen 3 dense FFN, Qwen MoE routed experts, the shared
+    /// expert path, and any future SwiGLU consumer. Same fallback
+    /// contract via `MlxClosure::try_apply`. Same kill-switch semantics.
     prefill_ffn_compile_swiglu_enabled,
     "AX_MLX_PREFILL_FFN_COMPILE_SWIGLU"
 );

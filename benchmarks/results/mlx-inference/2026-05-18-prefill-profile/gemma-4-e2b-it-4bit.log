@@ -1,0 +1,18 @@
+
+=== AX Engine MLX inference stack ===
+  model: mlx-community/gemma-4-e2b-it-4bit
+  model_repo_id: mlx-community/gemma-4-e2b-it-4bit
+  model_dir: /Users/akiralam/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd
+  prompt_tokens: [2048]
+  generation_tokens: 32
+  repetitions: 2 + 1 warmup for AX
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-18-prefill-profile/gemma-4-e2b-it-4bit-prompts
+  [prompt] prompt_tokens=2048 sha256=a7760438e4a5 path=benchmarks/results/mlx-inference/2026-05-18-prefill-profile/gemma-4-e2b-it-4bit-prompts/prompt-2048-gen-32-a7760438e4a5.json
+  [mlx_lm] python3 -m mlx_lm.benchmark --model mlx-community/gemma-4-e2b-it-4bit --batch-size 1 --prompt-tokens 2048 --generation-tokens 32 --num-trials 2 --delay 5 --prefill-step-size 2048
+  [ax-engine] /Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd --port 8091 --disable-ngram-acceleration --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine/ax_engine_mlx] prompt=2048 generation=32 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=6303.1 tok/s decode=173.1 tok/s out=32
+    rep 2: prefill=6049.3 tok/s decode=171.7 tok/s out=32
+  [ax-engine] /Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd --port 8091 --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine/ax_engine_mlx_ngram_accel] prompt=2048 generation=32 policy=ngram_acceleration_kv_trim kv_compression=disabled
+    rep 1: prefill=5954.7 tok/s decode=172.6 tok/s out=32

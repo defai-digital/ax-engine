@@ -211,19 +211,22 @@ the MLX rows.
 <!-- llama-cpp-column-disclaimer -->
 **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are NOT prompt-hash parity with the other columns. The intent is rough side-by-side context against a well-known third-party Metal runtime, not head-to-head comparison. MLX bit-widths are mapped to the nearest standard bartowski GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0). No percentage delta is shown for this column because the prompt is not shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
 
-Note: Gemma 4 E2B 4-bit `llama.cpp Metal*` 2K prefill was rechecked with
-Metal offload, `-b/-ub 2048`, and flash attention enabled. No missing benchmark
-flag was found; current upstream `llama.cpp` issue history still shows active
-Gemma 4 / Metal / large-prefill performance risk, so treat that row as a
-current GGUF-runtime reference rather than an MLX parity claim.
+Note: The 2K `llama.cpp Metal*` prefill rows are long-context,
+GGUF-runtime-reference rows, not MLX parity claims. Across this dataset, the 2K
+`llama.cpp Metal*` prefill column commonly trails the MLX/AX rows, with the
+largest gap on Gemma 4 E2B. The Gemma 4 E2B 4-bit row was produced with
+`llama.cpp` b9110 (`ef22b3e4a`) and rechecked on b9200 (`3e12fbdea`) with Metal
+offload, `-b/-ub 2048`, and flash attention enabled. The b9200 recheck improved
+2K prefill only slightly, and no missing benchmark flag was found. This is our
+benchmark boundary, not an upstream `llama.cpp` official bug statement.
 
 ### Prefill throughput (tok/s) — percentages vs mlx_lm
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 3,659.1 | 2,769.6 | **3,955.5 (+42.8%)** |
-|         |         | 512 | 7,056.4 | 8,228.6 | **8,626.9 (+4.8%)** |
-|         |         | 2048 | 7,149.1 | 18,997.2 | 8,333.0 (-56.1%) |
+| Gemma 4 E2B | 4-bit | 128 | 3,500.0 | 2,722.0 | **4,126.9 (+51.6%)** |
+|         |         | 512 | 7,368.8 | 8,924.7 | **9,827.1 (+10.1%)** |
+|         |         | 2048 | 7,167.8 | 18,930.8 | 9,797.3 (-48.2%) |
 | Gemma 4 E2B | 5-bit | 128 | 3,382.0 | 2,399.6 | **3,783.3 (+57.7%)** |
 |         |         | 512 | 7,175.2 | 8,064.6 | **8,257.1 (+2.4%)** |
 |         |         | 2048 | 7,165.1 | 17,725.6 | 7,516.3 (-57.6%) |
@@ -260,9 +263,9 @@ effective throughput, not raw model-kernel speed.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 165.5 | 208.3 | 191.8 (-7.9%) | **588.1 (+182.3%)** |
-|  |  | 512 | 169.4 | 203.9 | 184.1 (-9.7%) | **576.5 (+182.7%)** |
-|  |  | 2048 | 170.3 | 193.9 | 177.5 (-8.4%) | **534.6 (+175.8%)** |
+| Gemma 4 E2B | 4-bit | 128 | 169.8 | 215.4 | 205.0 (-4.8%) | **617.8 (+186.9%)** |
+|  |  | 512 | 169.0 | 203.9 | 197.4 (-3.2%) | **608.9 (+198.7%)** |
+|  |  | 2048 | 170.4 | 198.9 | 189.5 (-4.7%) | **557.5 (+180.3%)** |
 | Gemma 4 E2B | 5-bit | 128 | 151.4 | 195.1 | 174.3 (-10.6%) | **448.4 (+129.9%)** |
 |         |         | 512 | 153.8 | 188.3 | 168.0 (-10.8%) | **444.2 (+136.0%)** |
 |         |         | 2048 | 154.2 | 181.3 | 157.0 (-13.4%) | **425.7 (+134.9%)** |
@@ -310,9 +313,9 @@ stream.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 35.0 | 46.2 | **32.4 (-30.0%)** |
-|         |         | 512 | 72.6 | 62.2 | **59.3 (-4.6%)** |
-|         |         | 2048 | 286.5 | 107.8 | 245.8 (+128.0%) |
+| Gemma 4 E2B | 4-bit | 128 | 36.6 | 47.0 | **31.0 (-34.0%)** |
+|         |         | 512 | 69.5 | 57.4 | **52.1 (-9.2%)** |
+|         |         | 2048 | 285.7 | 108.2 | 209.0 (+93.2%) |
 | Gemma 4 E2B | 5-bit | 128 | 37.8 | 53.3 | **33.8 (-36.6%)** |
 |         |         | 512 | 71.4 | 63.5 | **62.0 (-2.3%)** |
 |         |         | 2048 | 285.8 | 115.5 | 272.5 (+135.8%) |
