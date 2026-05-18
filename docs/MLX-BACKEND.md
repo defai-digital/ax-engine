@@ -239,6 +239,66 @@ Interpretation rule:
 - Multi-item batch execution with shared K/V primitives
 - Expand model coverage to additional dense and MoE architectures
 
+## MLX Stream / Thread Ownership Contract (I-3)
+
+`mlx_stream` is the FFI handle for an MLX GPU compute stream. Upstream MLX
+0.31 (`mlx-c` 0.6) treats GPU streams as **thread-local** in two distinct
+ways that AX Engine call sites must respect:
+
+1. **One default stream per device per OS thread.**
+   `mlx_default_gpu_stream_new` lazily creates the calling thread's
+   default; another thread calling the same function gets its own,
+   separate default. Two threads never share the same default by
+   construction.
+
+2. **Stream-index registration is thread-local at creation time.**
+   `mlx_stream_new_device` registers the Metal command encoder for the
+   stream index on the thread that called it. Passing the resulting
+   handle to another thread and calling `mlx_set_default_stream` there
+   does *not* register that index's encoder on the new thread.
+   Subsequent MLX ops on the new thread fall back to that thread's own
+   default — silently bypassing the dedicated stream's ordering
+   guarantees.
+
+`MlxStream` in `crates/mlx-sys/src/stream.rs` declares `Send + Sync`. The
+type-level claim is correct in the narrow sense that the Rust struct is a
+non-thread-affine pointer pair; **the thread affinity lives inside MLX,
+not inside this struct.** Call sites that send a stream across threads are
+responsible for ensuring the receiving thread has registered an encoder
+for that stream's index.
+
+### What `&MlxStream` does NOT promise across threads
+
+- `set_as_default()` on thread B does not make a stream created on
+  thread A use thread B's command encoder. Ops dispatched on thread B
+  go through thread B's default.
+- `mlx_eval`, `mlx_clear_cache`, and host buffer reads (`array.data()`
+  and similar) do not take an explicit stream argument; they inherit the
+  calling thread's current default. Mixing these calls across threads
+  without explicit per-thread stream pinning produces undefined ordering
+  relative to in-flight evaluation.
+
+### Audit and probe coverage
+
+- Module docs in `crates/mlx-sys/src/stream.rs` describe the contract
+  inline so readers reaching the FFI boundary see the constraint before
+  using `MlxStream`.
+- A regression probe in `crates/mlx-sys/src/stream.rs` (test
+  `cross_thread_default_streams_are_distinct`) verifies the
+  one-default-per-thread property holds against the live MLX runtime.
+  The probe is self-contained and runs without an MLX model.
+- The full call-site inventory and a blast-radius estimate for a future
+  `!Send` migration live at
+  `.internal/audit/PHASE3-MLX-STREAM-OWNERSHIP-AUDIT.md`.
+
+### Why no type-level migration yet
+
+ADR-007 defers a `!Send` wrapper or owner-token migration to a follow-up
+ADR. The current contract is documented and probed; a stricter type
+model would close the gap structurally but at the cost of a workspace-
+wide refactor. The audit captures the cost so a future ADR can argue
+the tradeoff on AX-specific evidence rather than upstream comments.
+
 ## File map
 
 ```

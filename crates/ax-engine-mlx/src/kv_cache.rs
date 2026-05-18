@@ -3859,6 +3859,99 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_rejects_unknown_dtype_tag() {
+        // Hand-craft a payload whose tensor header carries a dtype tag that
+        // is not in `dtype_from_tag`'s match table. The deserializer must
+        // fail-close (PRD §7.1 "per-layer cache type, tensor shape, dtype")
+        // rather than silently accept an unknown dtype and trip MLX later.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(MlxKVCache::SERIALIZE_MAGIC);
+        payload.extend_from_slice(&MlxKVCache::SERIALIZE_VERSION.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes()); // seq_len
+        payload.extend_from_slice(&0u64.to_le_bytes()); // growth_count
+        payload.extend_from_slice(&1u32.to_le_bytes()); // layer_count
+        payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+
+        // Single FA layer with one tensor carrying an invalid dtype.
+        payload.push(MlxKVCache::LAYER_KIND_FA);
+        payload.extend_from_slice(&[0u8; 7]);
+        // 0xEE is not a valid dtype tag in dtype_from_tag's table.
+        payload.push(0xEE);
+        payload.push(4); // ndim
+        payload.extend_from_slice(&[0u8; 6]); // reserved
+        payload.extend_from_slice(&1i32.to_le_bytes());
+        payload.extend_from_slice(&1i32.to_le_bytes());
+        payload.extend_from_slice(&1i32.to_le_bytes());
+        payload.extend_from_slice(&1i32.to_le_bytes());
+        payload.extend_from_slice(&4u64.to_le_bytes()); // byte_count
+
+        let err = MlxKVCache::try_deserialize_from_bytes(&payload)
+            .err()
+            .expect("unknown dtype tag must be rejected");
+        assert!(
+            matches!(err, MlxKVCacheSerializeError::UnknownDtype(0xEE)),
+            "expected UnknownDtype(0xEE), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_unknown_layer_kind() {
+        // PRD §7.1 requires per-layer cache type validation. An unknown
+        // discriminator byte at the layer header position must fail-close.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(MlxKVCache::SERIALIZE_MAGIC);
+        payload.extend_from_slice(&MlxKVCache::SERIALIZE_VERSION.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes()); // seq_len
+        payload.extend_from_slice(&0u64.to_le_bytes()); // growth_count
+        payload.extend_from_slice(&1u32.to_le_bytes()); // layer_count
+        payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+
+        // 0x7F is intentionally outside the four documented layer kinds
+        // (EMPTY/FA/MLA/LINEAR) but inside `u8`'s range.
+        payload.push(0x7F);
+        payload.extend_from_slice(&[0u8; 7]);
+
+        let err = MlxKVCache::try_deserialize_from_bytes(&payload)
+            .err()
+            .expect("unknown layer kind must be rejected");
+        assert!(
+            matches!(err, MlxKVCacheSerializeError::UnknownLayerKind(0x7F)),
+            "expected UnknownLayerKind(0x7F), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_zero_rank_tensor() {
+        // Tensor rank 0 is never valid for an FA layer; the deserializer's
+        // shape guard (`ndim == 0 || ndim > 4`) must reject before any
+        // MlxArray construction is attempted. This is the dtype-aware
+        // complement to `deserialize_rejects_undersized_byte_count`.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(MlxKVCache::SERIALIZE_MAGIC);
+        payload.extend_from_slice(&MlxKVCache::SERIALIZE_VERSION.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        payload.push(MlxKVCache::LAYER_KIND_FA);
+        payload.extend_from_slice(&[0u8; 7]);
+        payload.push(MlxKVCache::dtype_to_tag(MlxDtype::Float32));
+        payload.push(0); // ndim = 0 (invalid)
+        payload.extend_from_slice(&[0u8; 6]);
+        payload.extend_from_slice(&[0u8; 16]); // 4 i32 shape entries
+        payload.extend_from_slice(&0u64.to_le_bytes());
+
+        let err = MlxKVCache::try_deserialize_from_bytes(&payload)
+            .err()
+            .expect("rank 0 tensor must be rejected");
+        assert!(
+            matches!(err, MlxKVCacheSerializeError::BadShape(0)),
+            "expected BadShape(0), got {err:?}"
+        );
+    }
+
+    #[test]
     fn deserialized_cache_outlives_input_buffer() {
         // Regression test for the lifetime bug fixed alongside this
         // commit: `from_raw_data` borrows its data pointer (per the

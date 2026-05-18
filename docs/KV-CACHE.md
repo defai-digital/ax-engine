@@ -567,3 +567,95 @@ per-request block-table allocation details.
   `ax_mlx_prefix_cache_blocked_*`: misses are eligible physical-cache lookups
   without a snapshot, while blocked counters mean the runner could not safely
   use the snapshot cache path.
+
+---
+
+## Disk Prefix Cache Restore Contract (I-2)
+
+ADR-007 / invariant I-2 commits AX Engine to a fail-closed cross-restart
+cache: any persisted prefix material must round-trip through a canonical
+key and an integrity-checked file format, and **any mismatch must fall
+back to recomputation**. Partial trust is forbidden.
+
+### Canonical key encoding
+
+`ax_engine_mlx::disk_prefix_cache::canonical_key_bytes` produces the byte
+string used to derive each file's on-disk name (SHA256 of the bytes, hex,
+plus `.axkv` extension). Field order is stable and length-prefixed; a
+field addition is a **format-version bump**, not a backwards-compatible
+extension.
+
+| Offset | Width | Field |
+|---|---|---|
+| 0  | 4 | key schema version (`1u32` LE) |
+| 4  | 4 | `block_size_tokens` (LE) |
+| 8  | 4 | `token_count` (LE) |
+| 12 | 8 | `token_hash` (LE) |
+| 20 | 2 + N | `model_id` (u16 LE length + UTF-8 bytes) |
+| ...| 2 + N | `route_policy` (u16 LE length + UTF-8 bytes) |
+| ...| 2 + N | `layer_layout` (u16 LE length + UTF-8 bytes) |
+
+Mismatch on any field produces a different file path and therefore a
+clean miss. The disk cache reader also re-validates the embedded key
+bytes against the request key (defeats hash collisions).
+
+### Outer file framing
+
+Per `crates/ax-engine-mlx/src/disk_prefix_cache.rs`:
+
+| Bytes | Field |
+|---|---|
+| 0..4 | magic `AXKV` (distinct from the inner payload's `AXKB`) |
+| 4..8 | file-format version (currently `2`; `1` is rejected as a miss) |
+| 8..40 | SHA256 of the payload bytes |
+| 40..48 | payload length (`u64` LE) |
+| 48..52 | embedded key length (`u32` LE) |
+| 52..56 | greedy prefill output token (`u32` LE, `u32::MAX` = absent) |
+| 56..56+key_len | embedded canonical key bytes |
+| ...    | payload bytes (`MlxKVCache::serialize_to_bytes` output) |
+
+Writes are atomic-rename (write to a temp file, fsync, rename) so a torn
+write cannot leave a half-finished file visible to readers. Mutating
+operations take a directory-level advisory lock; readers stay lock-free.
+
+### Payload-level validation
+
+The inner payload is `MlxKVCache::serialize_to_bytes` output. Its
+deserializer (`MlxKVCache::try_deserialize_from_bytes`) refuses to
+construct a cache on any of the following — each produces a structured
+`MlxKVCacheSerializeError`, never a partial restore:
+
+| Condition | Error |
+|---|---|
+| Wrong inner magic (`AXKB`) | `BadMagic` |
+| Inner format version not equal to current `SERIALIZE_VERSION` | `UnsupportedVersion(v)` |
+| Payload ends before structure-required bytes | `UnexpectedEof` |
+| Layer discriminator outside `EMPTY` / `FA` / `MLA` / `LINEAR` | `UnknownLayerKind(b)` |
+| Tensor dtype tag not in `dtype_from_tag` | `UnknownDtype(b)` |
+| Tensor rank == 0, > 4, negative dim, or `byte_count` < required | `BadShape(ndim)` |
+
+### Required identity fields (PRD §7.1)
+
+The canonical key currently isolates `(model_id, route_policy,
+layer_layout, block_size_tokens, token_count, token_hash, format_version)`.
+The PRD lists `weight_revision` as a future field; until it lands the
+operator is responsible for clearing the disk cache on a weight-revision
+change. Adding it would bump the key schema version per PRD §9
+("mitigate cache key over-specification by versioning the key schema
+itself").
+
+### Reproducing the contract locally
+
+```bash
+# Session-free fixture: exercises every deviation class.
+cargo run -p ax-engine-bench -- serving-stress \
+  --workload post_restart_cache_safety --json
+
+# Unit tests for the payload-level validation contract.
+cargo test -p ax-engine-mlx --quiet deserialize_rejects
+```
+
+Each deviation in the fixture's report appears under
+`post_restart_cache.rejected_*` counters on the
+`ax.serving_workload.report.v1` artifact; `rejected_other` covers
+SHA256 payload-corruption rejections.
