@@ -127,6 +127,40 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             explicit,
         )
 
+    def test_explicit_model_repo_id_model_resolves_same_cache_repo(self) -> None:
+        self.assertEqual(
+            bench.normalize_model_repo_id_for_cache(
+                model="mlx-community/gemma-4-e2b-it-4bit",
+                model_repo_id=bench.DEFAULT_MODEL_REPO_ID,
+                model_arg_explicit=True,
+                model_repo_id_arg_explicit=False,
+                model_dir_explicit=False,
+            ),
+            "mlx-community/gemma-4-e2b-it-4bit",
+        )
+
+    def test_explicit_model_keeps_explicit_model_repo_id(self) -> None:
+        self.assertEqual(
+            bench.normalize_model_repo_id_for_cache(
+                model="mlx-community/gemma-4-e2b-it-4bit",
+                model_repo_id="mlx-community/Qwen3.5-9B-MLX-4bit",
+                model_arg_explicit=True,
+                model_repo_id_arg_explicit=True,
+                model_dir_explicit=False,
+            ),
+            "mlx-community/Qwen3.5-9B-MLX-4bit",
+        )
+
+    def test_explicit_non_repo_model_requires_repo_id_or_model_dir(self) -> None:
+        with self.assertRaisesRegex(ValueError, "--model was provided"):
+            bench.normalize_model_repo_id_for_cache(
+                model="./models/local",
+                model_repo_id=bench.DEFAULT_MODEL_REPO_ID,
+                model_arg_explicit=True,
+                model_repo_id_arg_explicit=False,
+                model_dir_explicit=False,
+            )
+
     def test_kv_compression_blocker_keys_match_quality_gate_contract(self) -> None:
         self.assertEqual(
             bench.KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS,

@@ -172,6 +172,43 @@ def resolve_model_dir(model_dir: Path | None, repo_id: str, hf_cache_root: Path 
     return snapshot
 
 
+def arg_was_provided(argv: list[str], flag: str) -> bool:
+    return any(value == flag or value.startswith(f"{flag}=") for value in argv)
+
+
+def looks_like_hf_repo_id(value: str) -> bool:
+    if "://" in value:
+        return False
+    if value.startswith(("/", "./", "../", "~")):
+        return False
+    parts = value.split("/")
+    return len(parts) == 2 and all(parts)
+
+
+def normalize_model_repo_id_for_cache(
+    *,
+    model: str,
+    model_repo_id: str,
+    model_arg_explicit: bool,
+    model_repo_id_arg_explicit: bool,
+    model_dir_explicit: bool,
+) -> str:
+    if (
+        model_arg_explicit
+        and not model_repo_id_arg_explicit
+        and not model_dir_explicit
+        and model != DEFAULT_MODEL_ID
+    ):
+        if looks_like_hf_repo_id(model):
+            return model
+        raise ValueError(
+            "--model was provided without --model-repo-id or --model-dir. "
+            "Pass --model-repo-id for Hugging Face cache resolution, or "
+            "--model-dir for an AX-ready local artifact directory."
+        )
+    return model_repo_id
+
+
 def ensure_ax_engine_server_binary(*, build: bool = True) -> None:
     if build:
         cmd = ["cargo", "build", "-p", "ax-engine-server", "--release"]
@@ -3174,11 +3211,20 @@ def main() -> None:
             "included in ax.long_context_decode_at_depth.v1 artifacts."
         ),
     )
-    model_arg_explicit = any(
-        value == "--model" or value.startswith("--model=") for value in sys.argv[1:]
-    )
+    model_arg_explicit = arg_was_provided(sys.argv[1:], "--model")
+    model_repo_id_arg_explicit = arg_was_provided(sys.argv[1:], "--model-repo-id")
     args = parser.parse_args()
     model_dir_explicit = args.model_dir is not None
+    try:
+        args.model_repo_id = normalize_model_repo_id_for_cache(
+            model=args.model,
+            model_repo_id=args.model_repo_id,
+            model_arg_explicit=model_arg_explicit,
+            model_repo_id_arg_explicit=model_repo_id_arg_explicit,
+            model_dir_explicit=model_dir_explicit,
+        )
+    except ValueError as error:
+        parser.error(str(error))
     try:
         resolved_model_dir = resolve_model_dir(
             args.model_dir,

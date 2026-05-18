@@ -24,7 +24,7 @@
     "platform": "darwin"
   },
   "build": {
-    "commit": "92c0af2a78ae8d72b5fa92c5141a6e4eb2e3d4cb",
+    "commit": "28b182226902bd4c44449c81be4fbbf866bf5693",
     "build_profile": "release",
     "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server"
   },
