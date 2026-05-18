@@ -211,13 +211,19 @@ the MLX rows.
 <!-- llama-cpp-column-disclaimer -->
 **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are NOT prompt-hash parity with the other columns. The intent is rough side-by-side context against a well-known third-party Metal runtime, not head-to-head comparison. MLX bit-widths are mapped to the nearest standard bartowski GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0). No percentage delta is shown for this column because the prompt is not shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
 
+Note: Gemma 4 E2B 4-bit `llama.cpp Metal*` 2K prefill was rechecked with
+Metal offload, `-b/-ub 2048`, and flash attention enabled. No missing benchmark
+flag was found; current upstream `llama.cpp` issue history still shows active
+Gemma 4 / Metal / large-prefill performance risk, so treat that row as a
+current GGUF-runtime reference rather than an MLX parity claim.
+
 ### Prefill throughput (tok/s) — percentages vs mlx_lm
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 3,662.6 | 2,536.3 | **3,884.1 (+53.1%)** |
-|         |         | 512 | 7,167.4 | 8,243.4 | **8,367.8 (+1.5%)** |
-|         |         | 2048 | 7,273.7 | 17,851.0 | 7,917.3 (-55.6%) |
+| Gemma 4 E2B | 4-bit | 128 | 3,659.1 | 2,769.6 | **3,955.5 (+42.8%)** |
+|         |         | 512 | 7,056.4 | 8,228.6 | **8,626.9 (+4.8%)** |
+|         |         | 2048 | 7,149.1 | 18,997.2 | 8,333.0 (-56.1%) |
 | Gemma 4 E2B | 5-bit | 128 | 3,382.0 | 2,399.6 | **3,783.3 (+57.7%)** |
 |         |         | 512 | 7,175.2 | 8,064.6 | **8,257.1 (+2.4%)** |
 |         |         | 2048 | 7,165.1 | 17,725.6 | 7,516.3 (-57.6%) |
@@ -254,9 +260,9 @@ effective throughput, not raw model-kernel speed.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 187.2 (-11.4%) | **580.1 (+174.6%)** |
-|  |  | 512 | 154.5 | 206.0 | 179.2 (-13.0%) | **576.1 (+179.7%)** |
-|  |  | 2048 | 162.2 | 192.2 | 173.1 (-10.0%) | **531.0 (+176.3%)** |
+| Gemma 4 E2B | 4-bit | 128 | 165.5 | 208.3 | 191.8 (-7.9%) | **588.1 (+182.3%)** |
+|  |  | 512 | 169.4 | 203.9 | 184.1 (-9.7%) | **576.5 (+182.7%)** |
+|  |  | 2048 | 170.3 | 193.9 | 177.5 (-8.4%) | **534.6 (+175.8%)** |
 | Gemma 4 E2B | 5-bit | 128 | 151.4 | 195.1 | 174.3 (-10.6%) | **448.4 (+129.9%)** |
 |         |         | 512 | 153.8 | 188.3 | 168.0 (-10.8%) | **444.2 (+136.0%)** |
 |         |         | 2048 | 154.2 | 181.3 | 157.0 (-13.4%) | **425.7 (+134.9%)** |
@@ -304,9 +310,9 @@ stream.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 34.9 | 50.5 | **33.0 (-34.7%)** |
-|         |         | 512 | 71.4 | 62.1 | **61.2 (-1.5%)** |
-|         |         | 2048 | 281.6 | 114.7 | 258.7 (+125.5%) |
+| Gemma 4 E2B | 4-bit | 128 | 35.0 | 46.2 | **32.4 (-30.0%)** |
+|         |         | 512 | 72.6 | 62.2 | **59.3 (-4.6%)** |
+|         |         | 2048 | 286.5 | 107.8 | 245.8 (+128.0%) |
 | Gemma 4 E2B | 5-bit | 128 | 37.8 | 53.3 | **33.8 (-36.6%)** |
 |         |         | 512 | 71.4 | 63.5 | **62.0 (-2.3%)** |
 |         |         | 2048 | 285.8 | 115.5 | 272.5 (+135.8%) |
