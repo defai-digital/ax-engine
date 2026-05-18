@@ -66,7 +66,7 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, RequestExecutionUpdate, RequestId, RunnerInput,
-    RunnerOutput, StopReason,
+    RunnerOutput, StopReason, upsert_route_decision,
 };
 
 use crate::generate::{
@@ -790,27 +790,6 @@ fn kib_ceil(bytes: u64) -> u32 {
         0
     } else {
         saturating_u32_from_u64(bytes.saturating_add(1023) / 1024)
-    }
-}
-
-fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, value: u32) {
-    let mut updated = false;
-    decisions.retain_mut(|(existing_key, existing_value)| {
-        if existing_key == key {
-            if updated {
-                false
-            } else {
-                *existing_value = value;
-                updated = true;
-                true
-            }
-        } else {
-            true
-        }
-    });
-
-    if !updated {
-        decisions.push((key.to_string(), value));
     }
 }
 

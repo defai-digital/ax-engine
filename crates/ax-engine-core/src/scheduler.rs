@@ -31,6 +31,27 @@ pub struct RouteMetadata {
     pub crossover_decisions: Vec<(String, u32)>,
 }
 
+pub fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, value: u32) {
+    let mut updated = false;
+    decisions.retain_mut(|(existing_key, existing_value)| {
+        if existing_key == key {
+            if updated {
+                false
+            } else {
+                *existing_value = value;
+                updated = true;
+                true
+            }
+        } else {
+            true
+        }
+    });
+
+    if !updated {
+        decisions.push((key.to_string(), value));
+    }
+}
+
 pub const ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS: &str = "ax_mlx_kv_request_snapshots";
 pub const ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS: &str = "ax_mlx_kv_logical_tokens";
 pub const ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS: &str = "ax_mlx_kv_capacity_tokens";

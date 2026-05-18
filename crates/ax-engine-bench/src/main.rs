@@ -32,6 +32,7 @@ use ax_engine_core::{
     CacheGroupId, EngineCore, MetalBuildStatus, MetalDispatchTrace, MetalKernelBuildRequest,
     NativeModelArtifacts, NativeModelBindingSummary, RequestId, RequestSnapshot, RequestSubmission,
     RouteMetadata, SamplingParams, SequenceNo, StepId, build_phase1_kernel_artifacts,
+    upsert_route_decision,
 };
 use ax_engine_sdk::{
     BackendPolicy, EngineSession, EngineSessionConfig, EngineStepReport, GenerateRequest,
@@ -8800,27 +8801,6 @@ fn delegated_cached_tokens_from_generate_route(route: &GenerateRouteReport) -> u
         .find(|(key, _)| key.as_str() == "delegated_cached_tokens")
         .map(|(_, value)| *value)
         .unwrap_or(0)
-}
-
-fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, value: u32) {
-    let mut updated = false;
-    decisions.retain_mut(|(decision, existing)| {
-        if decision == key {
-            if updated {
-                false
-            } else {
-                *existing = value;
-                updated = true;
-                true
-            }
-        } else {
-            true
-        }
-    });
-
-    if !updated {
-        decisions.push((key.to_string(), value));
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

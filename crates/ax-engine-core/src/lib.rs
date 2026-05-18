@@ -6,6 +6,7 @@ pub mod execution_plan;
 pub mod gguf;
 pub mod ids;
 pub mod kv;
+pub mod mempressure;
 pub mod metal;
 pub mod model;
 pub mod request;
@@ -22,6 +23,9 @@ pub use ids::{BlockId, CacheGroupId, ModelId, RequestId, SequenceNo, StepId};
 pub use kv::{
     AllocationPlan, AllocationStatus, AppendMode, BlockTable, BlockTableView, FreeResult,
     KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
+};
+pub use mempressure::{
+    DeviceResidentSnapshot, HostRssSnapshot, PressureLevel, PressureObservation, PressureThresholds,
 };
 pub use metal::{
     MetalAssetValidator, MetalBinaryArchiveInfo, MetalBinaryArchiveState, MetalBringupRunner,
@@ -114,5 +118,5 @@ pub use scheduler::{
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, ROUTE_DECISION_AX_MLX_MODEL_KEYS,
     ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM, ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS,
-    RouteMetadata, SchedulePlan, Scheduler, SchedulerInput,
+    RouteMetadata, SchedulePlan, Scheduler, SchedulerInput, upsert_route_decision,
 };
