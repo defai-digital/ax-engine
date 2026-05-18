@@ -17,6 +17,9 @@ SCRIPT_PATH = Path(__file__).with_name("bench_mlx_inference_stack.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("bench_mlx_inference_stack", SCRIPT_PATH)
 assert MODULE_SPEC and MODULE_SPEC.loader
 bench = importlib.util.module_from_spec(MODULE_SPEC)
+# Register in sys.modules before exec so @dataclass decorators can resolve
+# their owning module via `cls.__module__` (Python 3.14 requirement).
+sys.modules["bench_mlx_inference_stack"] = bench
 MODULE_SPEC.loader.exec_module(bench)
 
 CHECKER_PATH = Path(__file__).with_name("check_turboquant_quality_artifact.py")
@@ -648,6 +651,227 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             row["ax_decode_claim_status"],
             "ngram_acceleration_effective_throughput",
         )
+
+    def test_load_real_prompt_suite_parses_required_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = Path(tmp) / "coding.jsonl"
+            suite.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "id": "case_a",
+                                "category": "coding",
+                                "prompt": "Write a Python lru cache",
+                                "max_tokens": 64,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "id": "case_b",
+                                "category": "coding",
+                                "prompt": "Refactor this Rust function",
+                            }
+                        ),
+                    ]
+                )
+                + "\n"
+            )
+            cases = bench.load_real_prompt_suite(suite)
+        self.assertEqual([c.id for c in cases], ["case_a", "case_b"])
+        self.assertEqual(cases[0].max_tokens, 64)
+        # Default max_tokens when omitted should land on the harness default.
+        self.assertEqual(cases[1].max_tokens, 128)
+
+    def test_load_real_prompt_suite_rejects_duplicate_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = Path(tmp) / "dup.jsonl"
+            suite.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {"id": "same", "category": "x", "prompt": "a"}
+                        ),
+                        json.dumps(
+                            {"id": "same", "category": "x", "prompt": "b"}
+                        ),
+                    ]
+                )
+                + "\n"
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate prompt id"):
+                bench.load_real_prompt_suite(suite)
+
+    def test_load_real_prompt_suite_rejects_missing_required_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = Path(tmp) / "bad.jsonl"
+            suite.write_text(
+                json.dumps({"id": "no_prompt", "category": "coding"}) + "\n"
+            )
+            with self.assertRaisesRegex(ValueError, "missing required key 'prompt'"):
+                bench.load_real_prompt_suite(suite)
+
+    def test_load_real_prompt_suite_skips_blank_and_comment_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = Path(tmp) / "with_comments.jsonl"
+            suite.write_text(
+                "\n".join(
+                    [
+                        "# this is a comment",
+                        "",
+                        json.dumps(
+                            {"id": "only_one", "category": "x", "prompt": "p"}
+                        ),
+                        "   ",
+                    ]
+                )
+                + "\n"
+            )
+            cases = bench.load_real_prompt_suite(suite)
+        self.assertEqual([c.id for c in cases], ["only_one"])
+
+    def test_load_real_prompt_suite_rejects_empty_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = Path(tmp) / "empty.jsonl"
+            suite.write_text("# only comments\n\n")
+            with self.assertRaisesRegex(ValueError, "no prompt cases"):
+                bench.load_real_prompt_suite(suite)
+
+    def test_load_real_prompt_suite_rejects_invalid_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = Path(tmp) / "syntax_err.jsonl"
+            suite.write_text("{not json}\n")
+            with self.assertRaisesRegex(ValueError, "not valid JSON"):
+                bench.load_real_prompt_suite(suite)
+
+    def test_write_real_prompt_tokens_emits_artifact_with_source_real(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_root = Path(tmp) / "prompts"
+            case = bench.RealPromptCase(
+                id="case_a",
+                category="coding",
+                prompt="Hello world",
+                max_tokens=32,
+            )
+            doc = bench.write_real_prompt_tokens(
+                artifact_root,
+                suite_id="coding",
+                case=case,
+                tokens=[10, 20, 30, 40, 50],
+                generation_tokens=128,
+                vocab_size=32_000,
+            )
+            self.assertEqual(doc["prompt_source"], "real")
+            self.assertEqual(doc["prompt_suite_id"], "coding")
+            self.assertEqual(doc["prompt_case_id"], "case_a")
+            self.assertEqual(doc["prompt_category"], "coding")
+            self.assertEqual(doc["prompt_tokens"], 5)
+            self.assertEqual(doc["case_max_tokens"], 32)
+            self.assertEqual(doc["token_ids"], [10, 20, 30, 40, 50])
+            # The persisted artifact must round-trip the same fields,
+            # including the prompt_text_sha256 so downstream tools can
+            # match runs by the text of the prompt (not its tokens).
+            path = Path(doc["token_ids_path"])
+            self.assertTrue(path.is_file())
+            payload = json.loads(path.read_text())
+            self.assertEqual(payload["schema_version"], bench.REAL_PROMPT_SCHEMA_VERSION)
+            self.assertEqual(payload["prompt_source"], "real")
+            self.assertEqual(payload["prompt_text_sha256"], doc["prompt_text_sha256"])
+
+    def test_build_real_prompts_attaches_suite_metadata(self) -> None:
+        # Mock the tokenizer + vocab lookup so the test does not need an
+        # actual model directory. The bench wires these through
+        # `load_model_tokenizer` and `model_vocab_size`.
+        class StubTokenizer:
+            def encode(self, text: str) -> list[int]:
+                return [ord(ch) for ch in text]
+
+            def apply_chat_template(
+                self,
+                messages: list[dict[str, str]],
+                *,
+                tokenize: bool,
+                add_generation_prompt: bool,
+            ) -> list[int]:
+                # Pretend the chat template prepends one BOS-equivalent token.
+                content = messages[0]["content"]
+                return [1] + [ord(ch) for ch in content]
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(bench, "load_model_tokenizer", return_value=StubTokenizer()),
+            patch.object(bench, "model_vocab_size", return_value=128),
+        ):
+            suite = Path(tmp) / "coding.jsonl"
+            suite.write_text(
+                json.dumps({"id": "one", "category": "coding", "prompt": "AB"})
+                + "\n"
+                + json.dumps({"id": "two", "category": "coding", "prompt": "CDE"})
+                + "\n"
+            )
+            artifact_root = Path(tmp) / "artifacts"
+            # Default: chat template applied. Token counts include the
+            # synthetic BOS, so AB -> 3 and CDE -> 4.
+            prompts = bench.build_real_prompts(
+                suite,
+                generation_tokens=128,
+                model_dir=Path(tmp),
+                artifact_root=artifact_root,
+            )
+            self.assertEqual(len(prompts), 2)
+            self.assertEqual(
+                [(p["prompt_case_id"], p["prompt_tokens"]) for p in prompts],
+                [("one", 3), ("two", 4)],
+            )
+            for prompt in prompts:
+                self.assertEqual(prompt["prompt_source"], "real")
+                self.assertEqual(prompt["prompt_suite_id"], "coding")
+                self.assertTrue(prompt["chat_template_applied"])
+                self.assertTrue(Path(prompt["token_ids_path"]).is_file())
+
+    def test_build_real_prompts_raw_encoding_skips_chat_template(self) -> None:
+        # When the caller opts out of the chat template (base / non-IT
+        # models), the harness must encode raw text and stamp the
+        # artifact with chat_template_applied=false.
+        class StubTokenizer:
+            def encode(self, text: str) -> list[int]:
+                return [ord(ch) for ch in text]
+
+            def apply_chat_template(self, *args, **kwargs):
+                raise AssertionError("chat template must not be applied")
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(bench, "load_model_tokenizer", return_value=StubTokenizer()),
+            patch.object(bench, "model_vocab_size", return_value=128),
+        ):
+            suite = Path(tmp) / "coding.jsonl"
+            suite.write_text(
+                json.dumps({"id": "one", "category": "coding", "prompt": "AB"}) + "\n"
+            )
+            prompts = bench.build_real_prompts(
+                suite,
+                generation_tokens=128,
+                model_dir=Path(tmp),
+                artifact_root=Path(tmp) / "artifacts",
+                chat_template=False,
+            )
+            self.assertEqual(prompts[0]["prompt_tokens"], 2)
+            self.assertFalse(prompts[0]["chat_template_applied"])
+
+    def test_build_reference_prompts_tags_random_source(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(bench, "model_vocab_size", return_value=64),
+            patch.object(bench, "mlx_lm_reference_prompt_tokens", return_value=[1, 2, 3, 4]),
+        ):
+            prompts = bench.build_reference_prompts(
+                [4],
+                generation_tokens=8,
+                model_dir=Path(tmp),
+                artifact_root=Path(tmp) / "artifacts",
+            )
+        self.assertEqual(prompts[0]["prompt_source"], "random")
 
     def test_parse_llama_cpp_bench_json_combines_pp_and_tg_rows(self) -> None:
         parsed = bench.parse_llama_cpp_bench_json(

@@ -52,6 +52,7 @@ import tempfile
 import time
 import urllib.request
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -1277,7 +1278,223 @@ def build_reference_prompts(
             tokens=tokens,
         )
         prompt_doc["token_ids"] = tokens
+        prompt_doc["prompt_source"] = "random"
         prompts.append(prompt_doc)
+    return prompts
+
+
+REAL_PROMPT_SCHEMA_VERSION = "ax.real_prompt.v1"
+
+
+@dataclass(frozen=True)
+class RealPromptCase:
+    """A single real-text prompt case loaded from a JSONL suite.
+
+    Schema mirrors MTPLX's `PromptCase` so suite files written against
+    one project can be reused against the other without translation.
+    `max_tokens` caps generation per-case; the bench harness still
+    clamps to its own `--generation-tokens` budget at decode time.
+    """
+
+    id: str
+    category: str
+    prompt: str
+    max_tokens: int = 128
+
+
+def load_real_prompt_suite(path: Path) -> list[RealPromptCase]:
+    """Load a JSONL real-prompt suite.
+
+    Each non-empty, non-comment line must decode to a JSON object with
+    `id`, `category`, and `prompt` keys. `max_tokens` defaults to 128
+    when omitted. Duplicate ids and malformed JSON raise ValueError so
+    misconfigured suites fail at load time, not silently mid-bench.
+    """
+    cases: list[RealPromptCase] = []
+    seen_ids: set[str] = set()
+    raw_text = Path(path).read_text(encoding="utf-8")
+    for line_no, raw_line in enumerate(raw_text.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{path}:{line_no} is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"{path}:{line_no} must be a JSON object")
+        for required in ("id", "category", "prompt"):
+            if required not in payload:
+                raise ValueError(
+                    f"{path}:{line_no} is missing required key {required!r}"
+                )
+        case_id = str(payload["id"])
+        if case_id in seen_ids:
+            raise ValueError(
+                f"{path}:{line_no} duplicate prompt id {case_id!r}"
+            )
+        seen_ids.add(case_id)
+        cases.append(
+            RealPromptCase(
+                id=case_id,
+                category=str(payload["category"]),
+                prompt=str(payload["prompt"]),
+                max_tokens=int(payload.get("max_tokens", 128)),
+            )
+        )
+    if not cases:
+        raise ValueError(f"{path} contains no prompt cases")
+    return cases
+
+
+def load_model_tokenizer(model_dir: Path) -> Any:
+    """Load only the tokenizer from an MLX model directory.
+
+    Reuses `mlx_lm.load` so the tokenizer choice matches the reference
+    path used by mlx_lm.benchmark. The full model load is wasted work,
+    but mlx_lm does not expose a tokenizer-only entry point and the
+    one-shot load cost is small compared to the bench run itself.
+    """
+    from mlx_lm import load
+
+    _model, tokenizer, _config = load(str(model_dir), return_config=True)
+    return tokenizer
+
+
+def tokenize_real_prompt(
+    tokenizer: Any,
+    prompt: str,
+    *,
+    chat_template: bool,
+) -> list[int]:
+    """Encode a real prompt to token IDs.
+
+    `chat_template=True` applies the tokenizer's chat template with a
+    single user turn and `add_generation_prompt=True`. This is the
+    correct path for instruction-tuned models (Gemma 4 IT, Qwen
+    chat-tuned, etc.): raw-text encoding on an IT model triggers
+    immediate EOS at decode step 0 because the model never saw an
+    end-of-turn marker. `chat_template=False` encodes the literal text
+    and is the right choice for base (non-IT) models.
+    """
+    if chat_template:
+        if not hasattr(tokenizer, "apply_chat_template"):
+            raise RuntimeError(
+                "tokenizer does not expose apply_chat_template; "
+                "rerun with --no-real-prompt-chat-template for raw encoding"
+            )
+        encoded = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+        return [int(token) for token in encoded]
+    return [int(token) for token in tokenizer.encode(prompt)]
+
+
+def write_real_prompt_tokens(
+    artifact_root: Path,
+    *,
+    suite_id: str,
+    case: RealPromptCase,
+    tokens: list[int],
+    generation_tokens: int,
+    vocab_size: int,
+    chat_template_applied: bool = True,
+) -> dict[str, Any]:
+    """Persist a real-prompt token artifact and return its prompt_doc.
+
+    The on-disk filename includes the suite id, case id, generation
+    budget, and the first 12 hex chars of the token sha256 so artifacts
+    are stable and easy to grep across runs. The returned dict carries
+    the full token list so the AX harness can feed it without re-reading
+    the file.
+    """
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    token_hash = token_sha256(tokens)
+    prompt_text_hash = hashlib.sha256(case.prompt.encode("utf-8")).hexdigest()
+    path = (
+        artifact_root
+        / f"real-{suite_id}-{case.id}-gen-{generation_tokens}-{token_hash[:12]}.json"
+    )
+    payload = {
+        "schema_version": REAL_PROMPT_SCHEMA_VERSION,
+        "source": "ax_real_prompt_suite",
+        "prompt_source": "real",
+        "prompt_suite_id": suite_id,
+        "prompt_case_id": case.id,
+        "prompt_category": case.category,
+        "prompt_text_sha256": prompt_text_hash,
+        "prompt_tokens": len(tokens),
+        "generation_tokens": generation_tokens,
+        "vocab_size": vocab_size,
+        "case_max_tokens": case.max_tokens,
+        "chat_template_applied": bool(chat_template_applied),
+        "sha256": token_hash,
+        "token_ids": tokens,
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    print(
+        f"  [prompt] real suite={suite_id} case={case.id} "
+        f"tokens={len(tokens)} text_sha256={prompt_text_hash[:12]} path={path}",
+        file=sys.stderr,
+    )
+    return {
+        "prompt_source": "real",
+        "prompt_suite_id": suite_id,
+        "prompt_case_id": case.id,
+        "prompt_category": case.category,
+        "prompt_text_sha256": prompt_text_hash,
+        "prompt_tokens": len(tokens),
+        "generation_tokens": generation_tokens,
+        "vocab_size": vocab_size,
+        "case_max_tokens": case.max_tokens,
+        "chat_template_applied": bool(chat_template_applied),
+        "token_ids_path": str(path),
+        "token_ids_sha256": token_hash,
+        "token_count": len(tokens),
+        "token_ids": tokens,
+    }
+
+
+def build_real_prompts(
+    suite_path: Path,
+    generation_tokens: int,
+    model_dir: Path,
+    artifact_root: Path,
+    *,
+    chat_template: bool = True,
+) -> list[dict[str, Any]]:
+    """Build prompt_doc list from a real-text JSONL suite.
+
+    Parallel to `build_reference_prompts` but driven by a static suite
+    rather than `mx.random.randint`. The suite filename stem becomes the
+    `prompt_suite_id` carried on every row; the suite case ids become
+    the `prompt_case_id`. `chat_template=True` (the default) is required
+    for instruction-tuned models; pass `False` for base/raw models.
+    """
+    cases = load_real_prompt_suite(suite_path)
+    suite_id = Path(suite_path).stem
+    tokenizer = load_model_tokenizer(model_dir)
+    vocab_size = model_vocab_size(model_dir)
+    prompts: list[dict[str, Any]] = []
+    for case in cases:
+        tokens = tokenize_real_prompt(
+            tokenizer, case.prompt, chat_template=chat_template
+        )
+        prompts.append(
+            write_real_prompt_tokens(
+                artifact_root,
+                suite_id=suite_id,
+                case=case,
+                tokens=tokens,
+                generation_tokens=generation_tokens,
+                vocab_size=vocab_size,
+                chat_template_applied=chat_template,
+            )
+        )
     return prompts
 
 
@@ -1461,6 +1678,7 @@ def run_mlx_lm_benchmark(
             "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
             "prompt_token_ids_path": prompt_doc["token_ids_path"],
             "prompt_token_ids_sha256": prompt_doc["token_ids_sha256"],
+            "prompt_source": "random",
             "prompt_tokens": prompt_tokens,
             "generation_tokens": generation_tokens,
         }
@@ -2824,6 +3042,7 @@ def run_llama_cpp_metal_benchmark(
         "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
         "prompt_token_ids_path": prompt_doc["token_ids_path"],
         "prompt_token_ids_sha256": prompt_doc["token_ids_sha256"],
+        "prompt_source": "llama_bench_internal_random",
         "prompt_tokens": prompt_tokens,
         "generation_tokens": generation_tokens,
         "batch_size": 1,
@@ -3130,6 +3349,42 @@ def main() -> None:
         help="Optional Hugging Face Hub cache root used when resolving --model-repo-id.",
     )
     parser.add_argument("--prompt-tokens", default=DEFAULT_PROMPT_TOKENS)
+    parser.add_argument(
+        "--prompt-source",
+        choices=["random", "real"],
+        default="random",
+        help=(
+            "Source of prompts. 'random' (default) uses the mlx_lm.benchmark "
+            "random-token contract (seed=0, uniform over vocab) and preserves "
+            "prompt-hash parity with mlx_lm rows. 'real' loads a JSONL suite "
+            "via --real-prompt-suite, tokenizes it with the model's tokenizer, "
+            "and runs AX rows only (mlx_lm.benchmark and llama-bench cannot "
+            "consume external prompts). Use 'real' to measure n-gram and "
+            "decode behavior on workload-shaped inputs."
+        ),
+    )
+    parser.add_argument(
+        "--real-prompt-suite",
+        type=Path,
+        help=(
+            "JSONL file with real prompt cases (one JSON object per line "
+            "with id, category, prompt, and optional max_tokens). Required "
+            "when --prompt-source=real."
+        ),
+    )
+    parser.add_argument(
+        "--no-real-prompt-chat-template",
+        dest="real_prompt_chat_template",
+        action="store_false",
+        default=True,
+        help=(
+            "Encode --real-prompt-suite prompts as raw text instead of "
+            "applying the tokenizer's chat template. The default applies "
+            "the template, which is required for instruction-tuned models "
+            "(e.g. Gemma 4 IT) to avoid immediate EOS at decode step 0. "
+            "Use this flag only for base / non-IT models."
+        ),
+    )
     parser.add_argument("--generation-tokens", type=int, default=DEFAULT_GENERATION_TOKENS)
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN)
@@ -3440,6 +3695,39 @@ def main() -> None:
         parser.error("--llama-cpp-decode-at-depth requires --llama-cpp-bench and --llama-cpp-gguf")
     if args.skip_mlx_lm and args.reuse_reference_results_from:
         parser.error("--skip-mlx-lm conflicts with --reuse-reference-results-from")
+    if args.prompt_source == "real":
+        if args.real_prompt_suite is None:
+            parser.error("--prompt-source=real requires --real-prompt-suite")
+        if not args.skip_mlx_lm:
+            parser.error(
+                "--prompt-source=real implies --skip-mlx-lm "
+                "(mlx_lm.benchmark cannot consume external prompt text)"
+            )
+        if args.llama_cpp_bench:
+            parser.error(
+                "--prompt-source=real cannot be combined with --llama-cpp-bench "
+                "(llama-bench generates its own internal prompts)"
+            )
+        if args.reuse_reference_results_from:
+            parser.error(
+                "--prompt-source=real cannot reuse mlx_lm reference rows "
+                "(reference rows are not produced from real prompts)"
+            )
+        if args.gateddelta_prefill_profile:
+            parser.error(
+                "--prompt-source=real is incompatible with "
+                "--gateddelta-prefill-profile, which requires fixed-length "
+                "random prompts at the configured prefill ladder"
+            )
+        if args.prefill_scaling_output:
+            parser.error(
+                "--prompt-source=real cannot build the prefill-scaling "
+                "artifact, which requires the random-token prompt ladder"
+            )
+    elif args.real_prompt_suite is not None:
+        parser.error(
+            "--real-prompt-suite is only honored when --prompt-source=real"
+        )
     if args.prefill_scaling_output and not args.output:
         parser.error("--prefill-scaling-output requires --output")
     if args.gateddelta_prefill_profile_report_output and not args.output:
@@ -3528,12 +3816,21 @@ def main() -> None:
             print(f"ERROR: {error}", file=sys.stderr)
             sys.exit(1)
 
-    prompts = build_reference_prompts(
-        prompt_lengths,
-        args.generation_tokens,
-        args.model_dir,
-        prompt_artifact_root,
-    )
+    if args.prompt_source == "real":
+        prompts = build_real_prompts(
+            args.real_prompt_suite,
+            args.generation_tokens,
+            args.model_dir,
+            prompt_artifact_root,
+            chat_template=args.real_prompt_chat_template,
+        )
+    else:
+        prompts = build_reference_prompts(
+            prompt_lengths,
+            args.generation_tokens,
+            args.model_dir,
+            prompt_artifact_root,
+        )
 
     results: list[dict[str, Any]] = []
     reused_reference_doc: dict[str, Any] | None = None
@@ -3718,6 +4015,18 @@ def main() -> None:
                     results[-1]["prefill_step_size"] = args.prefill_step_size
                     results[-1]["prompt_token_ids_path"] = prompt_doc["token_ids_path"]
                     results[-1]["prompt_token_ids_sha256"] = prompt_doc["token_ids_sha256"]
+                    results[-1]["prompt_source"] = prompt_doc.get(
+                        "prompt_source", "random"
+                    )
+                    for real_key in (
+                        "prompt_suite_id",
+                        "prompt_case_id",
+                        "prompt_category",
+                        "prompt_text_sha256",
+                        "case_max_tokens",
+                    ):
+                        if real_key in prompt_doc:
+                            results[-1][real_key] = prompt_doc[real_key]
                     results[-1]["ax_linear_attention_projection_pack"] = bool(
                         pack_linear_attention_projections
                     )
