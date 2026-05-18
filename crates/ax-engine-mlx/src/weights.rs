@@ -627,6 +627,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                         if let Ok(qk) = concat_quantized_weight_rows(&q, &k)
                             && let Ok(qkv) = concat_quantized_weight_rows(&qk, &v)
                         {
+                            eval_packed_projection(&qkv);
                             (Some(qkv), None, None, None, None)
                         } else {
                             (None, Some(q), Some(k), Some(v), None)
@@ -1532,21 +1533,22 @@ fn dense_attention_qkv_packing_enabled() -> bool {
     // weight load time when the artifact ships them split, so the layer's
     // attention dispatch runs one quantized matmul instead of three.
     //
-    // **Default OFF pending investigation.** A 2026-05-18 bench on
-    // Gemma 4 E2B 4-bit with default-on crashed the inference server on
-    // the warmup request (`http.client.RemoteDisconnected: Remote end
-    // closed connection without response`). The rejected W5 per-layer-input
-    // gate compile path is independent; the production per-layer gate now
-    // stays imperative to match mlx-lm. Possible W6 root causes still under
-    // investigation:
-    // mismatched per-layer head_dim resolution (Gemma 4 mixes
-    // sliding-attention head_dim=256 with full-attention global_head_dim
-    // = 512), or a `quantized_matmul` shape constraint that only surfaces
-    // with the merged QKV last-dim. Enable via
-    // `AX_MLX_PACK_QKV_PROJECTIONS=1` once root-caused.
-    std::env::var("AX_MLX_PACK_QKV_PROJECTIONS")
-        .map(|value| !value.is_empty() && value != "0")
-        .unwrap_or(false)
+    // **Default ON** (kill-switch via `AX_MLX_PACK_QKV_PROJECTIONS=0`).
+    // The 2026-05-18 crash was traced to a missing `eval_packed_projection`
+    // call — the concatenated quantized weight was a lazy MLX graph node
+    // that `quantized_matmul` could not resolve. Adding `eval_packed_projection`
+    // (matching the FFN gate-up packing pattern) materializes the weight
+    // before the forward path consumes it.
+    let Ok(raw) = std::env::var("AX_MLX_PACK_QKV_PROJECTIONS") else {
+        return true;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    !(trimmed.eq_ignore_ascii_case("0")
+        || trimmed.eq_ignore_ascii_case("false")
+        || trimmed.eq_ignore_ascii_case("no"))
 }
 
 fn dense_ffn_gate_up_packing_enabled() -> bool {
