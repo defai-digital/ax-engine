@@ -71,6 +71,29 @@ test("generate posts JSON to preview endpoint", async () => {
   });
 });
 
+test("nullish headers are omitted instead of sent as strings", async () => {
+  await withServer((req, res) => {
+    assert.equal(req.headers["x-keep"], "yes");
+    assert.equal(req.headers["x-null"], undefined);
+    assert.equal(req.headers["x-undefined"], undefined);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ ok: true }));
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({
+      baseUrl,
+      headers: {
+        "x-keep": "yes",
+        "x-null": null,
+        "x-undefined": undefined,
+      },
+    });
+    const response = await client.generate({
+      input_tokens: [1],
+    });
+    assert.equal(response.ok, true);
+  });
+});
+
 test("streamGenerate parses named SSE events", async () => {
   await withServer((req, res) => {
     assert.equal(req.method, "POST");

@@ -3,6 +3,8 @@ use ax_engine_sdk::{
 };
 use axum::Json;
 use axum::http::StatusCode;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app_state::AppState;
 use crate::errors::{ErrorResponse, error_response};
@@ -13,6 +15,7 @@ use crate::openai::schema::{
 };
 
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
+static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) use crate::openai::chat_requests::{
     chat_template_kwargs_for_model_id, openai_chat_stop_sequences, render_openai_chat_prompt,
@@ -229,16 +232,30 @@ fn build_openai_sampling(
     repetition_context_size: Option<u32>,
     seed: Option<u64>,
 ) -> GenerateSampling {
+    let temperature = temperature.unwrap_or(0.0);
     GenerateSampling {
-        temperature: temperature.unwrap_or(0.0),
+        temperature,
         top_p: top_p.unwrap_or(1.0),
         top_k: top_k.unwrap_or(0),
         min_p,
         repetition_penalty: repetition_penalty.unwrap_or(1.0),
         repetition_context_size,
-        seed: seed.unwrap_or(0),
+        seed: seed.unwrap_or_else(|| default_openai_seed(temperature)),
         deterministic: None,
     }
+}
+
+fn default_openai_seed(temperature: f32) -> u64 {
+    if temperature <= 0.0 {
+        return 0;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    let counter = OPENAI_SEED_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let seed = now ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    if seed == 0 { counter } else { seed }
 }
 
 fn openai_max_tokens(max_tokens: Option<u32>) -> u32 {

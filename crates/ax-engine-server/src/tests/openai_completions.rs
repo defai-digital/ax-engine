@@ -169,6 +169,44 @@ async fn openai_completions_endpoint_defaults_max_tokens() {
 }
 
 #[tokio::test]
+async fn openai_completions_endpoint_randomizes_unseeded_sampling_requests() {
+    let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
+        serde_json::json!({
+            "content": "server::sampled",
+            "tokens": [4],
+            "stop": true
+        })
+        .to_string(),
+        |payload| {
+            assert_eq!(payload.get("temperature"), Some(&json!(0.8)));
+            assert_ne!(payload.get("seed"), Some(&json!(0)));
+        },
+    );
+    let app = build_router(llama_cpp_server_state(llama_server_url));
+    let mut request = sample_openai_request_base(Some(2), false, |request| {
+        request.insert("prompt".to_string(), json!("sample me"));
+        request.insert("temperature".to_string(), json!(0.8));
+    });
+    request.remove("model");
+
+    let (status, _json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&Value::Object(request))))
+            .unwrap(),
+    )
+    .await;
+    llama_cpp_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn openai_completions_endpoint_rejects_text_batch_prompt() {
     let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
     let mut request = sample_openai_request_base(Some(2), false, |request| {

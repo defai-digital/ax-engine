@@ -6,9 +6,30 @@ function trimTrailingSlash(value) {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
+function normalizeHeaders(input) {
+  const headers = new Headers();
+  if (input == null) {
+    return headers;
+  }
+  if (typeof input[Symbol.iterator] === "function") {
+    for (const [key, value] of input) {
+      if (value != null) {
+        headers.append(key, value);
+      }
+    }
+    return headers;
+  }
+  for (const [key, value] of Object.entries(input)) {
+    if (value != null) {
+      headers.append(key, value);
+    }
+  }
+  return headers;
+}
+
 function toHeaders(baseHeaders, extraHeaders) {
-  const headers = new Headers(baseHeaders ?? {});
-  for (const [key, value] of new Headers(extraHeaders ?? {}).entries()) {
+  const headers = normalizeHeaders(baseHeaders);
+  for (const [key, value] of normalizeHeaders(extraHeaders).entries()) {
     headers.set(key, value);
   }
   return headers;
@@ -94,7 +115,7 @@ export class AxEngineClient {
     } = options;
     this.baseUrl = trimTrailingSlash(baseUrl);
     this.fetch = ensureFetchImpl(fetchImpl);
-    this.defaultHeaders = new Headers(headers ?? {});
+    this.defaultHeaders = normalizeHeaders(headers);
   }
 
   async health() {
