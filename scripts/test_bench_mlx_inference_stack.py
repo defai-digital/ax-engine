@@ -487,6 +487,168 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(row["ax_mlx_decode_route"]["classification"], "ngram")
 
+    def test_decode_degeneracy_metrics_flags_repeated_ngram(self) -> None:
+        # 8-gram repeated 4 times across a 128-token stream (16 copies of an
+        # 8-token block) — the canonical greedy-decode collapse signature.
+        block = [10, 11, 12, 13, 14, 15, 16, 17]
+        token_ids = block * 16
+        result = bench.decode_degeneracy_metrics(token_ids)
+        self.assertEqual(result["token_count"], 128)
+        self.assertGreater(result["max_ngram_repeats"], 3)
+        self.assertTrue(result["detected"])
+        self.assertNotIn("skipped", result)
+
+    def test_decode_degeneracy_metrics_passes_healthy_decode(self) -> None:
+        # A monotonically increasing stream has zero 8-gram repetition.
+        token_ids = list(range(200))
+        result = bench.decode_degeneracy_metrics(token_ids)
+        self.assertEqual(result["max_ngram_repeats"], 1)
+        self.assertFalse(result["detected"])
+
+    def test_decode_degeneracy_metrics_skips_short_sequence(self) -> None:
+        # Threshold(3) * window(8) = 32 tokens minimum; a 16-token stream
+        # cannot exhibit the pattern by definition and must be reported as
+        # skipped rather than falsely passed.
+        result = bench.decode_degeneracy_metrics(list(range(16)))
+        self.assertEqual(result["skipped"], "output_shorter_than_min_required_window")
+        self.assertFalse(result["detected"])
+        self.assertEqual(result["min_required_tokens"], 32)
+
+    def test_summarize_decode_degeneracy_reports_missing_token_ids(self) -> None:
+        # When no trial captured token IDs the validator must mark the row
+        # as skipped, not silently report "no degeneracy observed".
+        summary = bench.summarize_decode_degeneracy(
+            [{"prefill_tok_s": 1.0}, {"prefill_tok_s": 1.0}]
+        )
+        self.assertEqual(summary["skipped"], "output_token_ids_not_captured")
+        self.assertNotIn("detected_in_any_trial", summary)
+
+    def test_summarize_decode_degeneracy_marks_partial_evidence(self) -> None:
+        # One trial captured IDs, one didn't — the row should still emit a
+        # verdict but flag that the evidence base is incomplete.
+        runs = [
+            {"output_token_ids": [1, 2, 3, 4, 5, 6, 7, 8] * 16},
+            {"prefill_tok_s": 1.0},
+        ]
+        summary = bench.summarize_decode_degeneracy(runs)
+        self.assertTrue(summary["partial_evidence"])
+        self.assertEqual(summary["trials_without_token_ids"], 1)
+        self.assertTrue(summary["detected_in_any_trial"])
+
+    def test_ax_decode_claim_status_promotes_degenerate_decode_label(self) -> None:
+        ngram_telemetry = {
+            "ax_ngram_draft_attempts": 10,
+            "ax_ngram_accepted_tokens": 8,
+        }
+        healthy = bench.ax_decode_claim_status(False, ngram_telemetry)
+        self.assertEqual(healthy, "ngram_acceleration_effective_throughput")
+
+        degenerate = bench.ax_decode_claim_status(
+            False,
+            ngram_telemetry,
+            decode_degeneracy={"detected_in_any_trial": True},
+        )
+        self.assertEqual(degenerate, "ngram_acceleration_degenerate_decode")
+
+        direct_degenerate = bench.ax_decode_claim_status(
+            True,
+            {},
+            decode_degeneracy={"detected_in_any_trial": True},
+        )
+        self.assertEqual(
+            direct_degenerate,
+            "direct_same_policy_baseline_degenerate_decode",
+        )
+
+    def test_axengine_row_attaches_decode_degeneracy(self) -> None:
+        # An n-gram row whose two trials each emit a 16x-repeated 8-gram
+        # block must surface a `decode_degeneracy` field with the
+        # promoted claim status.
+        block = [101, 102, 103, 104, 105, 106, 107, 108]
+        ngram_run = {
+            "prefill_s": 0.2,
+            "decode_s": 0.1,
+            "ttft_ms": 200.0,
+            "prefill_tok_s": 15.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 128.0,
+            "output_token_ids": block * 16,
+            "ngram_acceleration_telemetry": {
+                "ax_ngram_draft_attempts": 4,
+                "ax_ngram_draft_tokens": 8,
+                "ax_ngram_accepted_tokens": 6,
+            },
+            "ax_mlx_telemetry": {
+                "ax_mlx_decode_steps": 4,
+                "ax_mlx_ngram_decode_steps": 4,
+            },
+        }
+        with patch.object(
+            bench, "axengine_one_run", side_effect=[ngram_run, ngram_run, ngram_run]
+        ):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                2,
+                0.0,
+                model_metadata={},
+                direct_mode=False,
+            )
+        degeneracy = row["decode_degeneracy"]
+        self.assertEqual(
+            degeneracy["schema_version"], bench.DECODE_DEGENERACY_SCHEMA_VERSION
+        )
+        self.assertEqual(degeneracy["ngram_size"], 8)
+        self.assertTrue(degeneracy["detected_in_any_trial"])
+        self.assertEqual(len(degeneracy["per_trial"]), 2)
+        self.assertEqual(
+            row["ax_decode_claim_status"],
+            "ngram_acceleration_degenerate_decode",
+        )
+
+    def test_axengine_row_skips_degeneracy_when_token_ids_unavailable(self) -> None:
+        # The existing ngram-row test path returns trials without
+        # output_token_ids — the validator must mark the verdict as
+        # skipped and leave the throughput claim status intact.
+        ngram_run = {
+            "prefill_s": 0.2,
+            "decode_s": 0.1,
+            "ttft_ms": 200.0,
+            "prefill_tok_s": 15.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+            "ngram_acceleration_telemetry": {
+                "ax_ngram_draft_attempts": 1,
+                "ax_ngram_draft_tokens": 2,
+                "ax_ngram_accepted_tokens": 1,
+            },
+            "ax_mlx_telemetry": {
+                "ax_mlx_decode_steps": 2,
+                "ax_mlx_ngram_decode_steps": 2,
+            },
+        }
+        with patch.object(
+            bench, "axengine_one_run", side_effect=[ngram_run, ngram_run]
+        ):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=False,
+            )
+        self.assertEqual(
+            row["decode_degeneracy"]["skipped"],
+            "output_token_ids_not_captured",
+        )
+        self.assertEqual(
+            row["ax_decode_claim_status"],
+            "ngram_acceleration_effective_throughput",
+        )
+
     def test_parse_llama_cpp_bench_json_combines_pp_and_tg_rows(self) -> None:
         parsed = bench.parse_llama_cpp_bench_json(
             json.dumps(
