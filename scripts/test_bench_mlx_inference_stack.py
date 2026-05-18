@@ -1131,6 +1131,73 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "ngram_acceleration_effective_throughput",
         )
 
+    def test_summarize_ngram_accept_at_depth_yields_histogram_or_empty(self) -> None:
+        # No depth keys at all => empty (do not annotate older runtime rows).
+        self.assertEqual(bench.summarize_ngram_accept_at_depth({}), {})
+
+        # Single bucket present => full 8-bucket histogram emitted.
+        result = bench.summarize_ngram_accept_at_depth(
+            {"ax_ngram_accept_at_depth_2": 5}
+        )
+        self.assertEqual(result["schema"], "ax.ngram_accept_at_depth.v1")
+        self.assertEqual(result["bucket_count"], 8)
+        self.assertEqual(len(result["buckets"]), 8)
+        self.assertEqual(result["buckets"][2]["attempts"], 5)
+        self.assertEqual(result["total_attempts"], 5)
+        # 2 * 5 accepted tokens.
+        self.assertEqual(result["weighted_accepted_tokens_lower_bound"], 10)
+
+    def test_canonical_prompt_hash_is_stable_and_order_sensitive(self) -> None:
+        a = bench.canonical_prompt_hash([1, 2, 3])
+        b = bench.canonical_prompt_hash([1, 2, 3])
+        c = bench.canonical_prompt_hash([3, 2, 1])
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, c)
+        self.assertEqual(len(a), 16)
+        int(a, 16)  # raises if non-hex
+
+    def test_canonical_sampler_signature_collapses_greedy_equivalents(self) -> None:
+        # Greedy-equivalent dicts must all produce "greedy", otherwise
+        # a direct-vs-n-gram pair with the same effective sampling would
+        # be rejected by the promotion gate.
+        self.assertEqual(bench.canonical_sampler_signature(None), "greedy")
+        self.assertEqual(bench.canonical_sampler_signature({}), "greedy")
+        self.assertEqual(
+            bench.canonical_sampler_signature(
+                {"temperature": 0.0, "top_p": 1.0, "top_k": 0, "repetition_penalty": 1.0}
+            ),
+            "greedy",
+        )
+        sig = bench.canonical_sampler_signature({"temperature": 0.7, "top_p": 0.95})
+        self.assertTrue(sig.startswith("sampling["))
+        self.assertIn("temperature=0.7", sig)
+        self.assertIn("top_p=0.95", sig)
+
+    def test_build_row_identity_matches_rust_gate_schema(self) -> None:
+        ident = bench.build_row_identity(
+            model_id="qwen3",
+            tokens=[1, 2, 3, 4],
+            seed=0,
+            max_output_tokens=64,
+            sampler=None,
+        )
+        # Schema name and field set must match the Rust harness
+        # RowIdentity struct ordering so a Python aggregator can hand a
+        # JSON-deserialized row to the gate without renaming fields.
+        self.assertEqual(ident["schema"], "ax.row_identity.v1")
+        for key in (
+            "model_id",
+            "prompt_hash",
+            "seed",
+            "max_output_tokens",
+            "sampler_signature",
+        ):
+            self.assertIn(key, ident)
+        self.assertEqual(ident["model_id"], "qwen3")
+        self.assertEqual(ident["seed"], 0)
+        self.assertEqual(ident["max_output_tokens"], 64)
+        self.assertEqual(ident["sampler_signature"], "greedy")
+
     def test_absent_ax_mlx_telemetry_stays_silent(self) -> None:
         self.assertEqual(
             bench.extract_ax_mlx_telemetry(

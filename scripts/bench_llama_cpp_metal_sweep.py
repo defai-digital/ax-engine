@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sweep llama.cpp Metal benchmarks across the 8 README MLX-inference rows.
+"""Sweep llama.cpp Metal benchmarks across README MLX-inference rows.
 
 Reads benchmarks/manifests/llama_cpp_metal/inventory.json and, for each row:
   1) Resolves the first GGUF candidate that exists on Hugging Face.
@@ -10,11 +10,15 @@ Reads benchmarks/manifests/llama_cpp_metal/inventory.json and, for each row:
   4) Optionally deletes the GGUF after the row finishes (--no-keep-gguf) to
      keep peak disk low.
 
+Pass --full-stack to benchmark the same GGUF-resolved model set with
+llama.cpp Metal, mlx_lm.benchmark, AX direct mode, and AX default n-gram mode
+in one artifact per row. Pass --update-readme with --full-stack to update the
+README performance tables from those artifacts.
+
 Writes one result JSON per row plus a combined sweep_results.json and a
 sweep_summary.md. Unresolved rows are recorded as explicit n/a entries.
 
-This script does NOT modify the README. README integration is the job of a
-separate updater that consumes sweep_results.json.
+This script modifies README.md only when --update-readme is provided.
 
 Claim boundary: rows produced here are shape-compatible external GGUF
 baselines only. See inventory.json for the full disclaimer.
@@ -159,6 +163,65 @@ def gguf_disk_bytes(path: Path) -> int:
     return 0
 
 
+def _slug_repo_id(repo_id: str) -> str:
+    return repo_id.replace("/", "--")
+
+
+def latest_hf_cache_snapshot(repo_id: str, cache_dir: Path) -> Path | None:
+    repo_cache = cache_dir / f"models--{_slug_repo_id(repo_id)}"
+    refs_main = repo_cache / "refs" / "main"
+    if refs_main.is_file():
+        revision = refs_main.read_text().strip()
+        snapshot = repo_cache / "snapshots" / revision
+        if snapshot.is_dir():
+            return snapshot
+
+    snapshots = repo_cache / "snapshots"
+    if not snapshots.is_dir():
+        return None
+    candidates = [path for path in snapshots.iterdir() if path.is_dir()]
+    return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
+
+
+def missing_ax_model_artifacts(model_dir: Path) -> list[str]:
+    missing: list[str] = []
+    if not (model_dir / "config.json").is_file():
+        missing.append("config.json")
+    if not (model_dir / "model-manifest.json").is_file():
+        missing.append("model-manifest.json")
+    if not any(model_dir.glob("*.safetensors")):
+        missing.append("*.safetensors")
+    return missing
+
+
+def resolve_mlx_model_args(
+    row: dict[str, Any],
+    *,
+    cache_dir: Path,
+) -> tuple[list[str] | None, str | None]:
+    local_dir_value = row.get("mlx_local_dir")
+    if local_dir_value:
+        model_dir = REPO_ROOT / local_dir_value
+        if model_dir.exists():
+            return ["--model-dir", str(model_dir)], None
+
+    repo_id = row.get("mlx_repo_id")
+    if not repo_id:
+        local_desc = str(REPO_ROOT / local_dir_value) if local_dir_value else "<unset>"
+        return None, f"Local MLX dir {local_desc} not found and no mlx_repo_id is configured."
+
+    snapshot = latest_hf_cache_snapshot(repo_id, cache_dir)
+    if snapshot is None:
+        return None, f"No Hugging Face cache snapshot found for MLX repo {repo_id}."
+    missing = missing_ax_model_artifacts(snapshot)
+    if missing:
+        return None, (
+            f"MLX cache snapshot for {repo_id} is not AX-ready: {snapshot}; "
+            f"missing {', '.join(missing)}."
+        )
+    return ["--model-repo-id", repo_id, "--hf-cache-root", str(cache_dir)], None
+
+
 def _delete_cached_repo(repo: str, cache_dir: Path) -> int:
     """Remove the entire HF cache subtree for one repo, return bytes freed.
 
@@ -192,14 +255,17 @@ def run_bench_for_row(
     cooldown: float,
     n_gpu_layers: int,
     extra_args: str | None,
-    model_dir_for_prompts: Path,
+    model_args: list[str],
+    full_stack: bool,
+    build_ax_engine: bool,
 ) -> dict[str, Any]:
-    """Invoke bench_mlx_inference_stack.py with only the llama.cpp row enabled.
+    """Invoke bench_mlx_inference_stack.py for one GGUF-mapped README row.
 
-    We point --model-dir at the local MLX model so the harness can still
-    generate the shape-matching prompt artifact (random tokens at the right
-    vocab size), but pass --skip-mlx-lm and --skip-ax-engine so no MLX run
-    happens. The llama.cpp row is the only entry in results[].
+    We pass either --model-dir or --model-repo-id/--hf-cache-root so the
+    harness can generate the shape-matching prompt artifact (random tokens at
+    the right vocab size). By default the llama.cpp row is the only entry in results[].
+    With --full-stack, the same invocation also runs mlx_lm plus AX direct and
+    AX n-gram rows.
     """
     slug = row["slug"]
     out_json = output_dir / f"{slug}.json"
@@ -209,8 +275,7 @@ def run_bench_for_row(
     cmd = [
         sys.executable,
         str(bench_script),
-        "--model-dir",
-        str(model_dir_for_prompts),
+        *model_args,
         "--prompt-tokens",
         prompt_tokens,
         "--generation-tokens",
@@ -219,9 +284,6 @@ def run_bench_for_row(
         str(repetitions),
         "--cooldown",
         str(cooldown),
-        "--skip-mlx-lm",
-        "--skip-ax-engine",
-        "--no-build-ax-engine",
         "--llama-cpp-bench",
         str(llama_bench),
         "--llama-cpp-gguf",
@@ -231,6 +293,12 @@ def run_bench_for_row(
         "--output",
         str(out_json),
     ]
+    if full_stack:
+        cmd.append("--ax-compare-policies")
+        if not build_ax_engine:
+            cmd.append("--no-build-ax-engine")
+    else:
+        cmd.extend(["--skip-mlx-lm", "--skip-ax-engine", "--no-build-ax-engine"])
     if extra_args:
         cmd.extend(["--llama-cpp-extra-args", extra_args])
 
@@ -257,6 +325,91 @@ def run_bench_for_row(
         "log_path": str(log_path),
         "result_doc": doc,
     }
+
+
+def _repo_relative(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def update_readme_source_marker(readme: Path, output_root: Path) -> None:
+    import re
+
+    rel = _repo_relative(output_root)
+    text = readme.read_text()
+    marker_re = re.compile(
+        r"<!--\s*readme-performance-artifacts:\s*(?P<body>.*?)\s*-->",
+        re.DOTALL,
+    )
+    marker = f"<!-- readme-performance-artifacts: base={rel}/ -->"
+    text, count = marker_re.subn(marker, text, count=1)
+    if count == 0:
+        raise RuntimeError("README does not contain readme-performance-artifacts marker")
+
+    text = re.sub(
+        r"These rows are a provenance-tracked (?:composite|result set) from\n`[^`]+`\.",
+        f"These rows are a provenance-tracked result set from\n`{rel}/`.",
+        text,
+        count=1,
+    )
+    readme.write_text(text)
+
+
+def update_readme_from_sweep(
+    *,
+    readme: Path,
+    sweep_path: Path,
+    sweep_doc: dict[str, Any],
+    full_stack: bool,
+    output_root: Path,
+    allow_partial: bool,
+) -> None:
+    if full_stack and not allow_partial:
+        incomplete = [
+            f"{row.get('slug')}={row.get('status')}"
+            for row in sweep_doc["rows"]
+            if row.get("status") != "ok"
+        ]
+        if incomplete:
+            details = ", ".join(incomplete)
+            raise RuntimeError(
+                "Refusing to update README from an incomplete full-stack sweep. "
+                f"Pass --allow-partial-readme-update to override. Incomplete rows: {details}"
+            )
+
+    if full_stack:
+        for row in sweep_doc["rows"]:
+            if row.get("status") != "ok" or not row.get("output_path"):
+                continue
+            cmd = [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "update_readme_from_bench.py"),
+                "--slug",
+                row["slug"],
+                "--json",
+                row["output_path"],
+                "--readme",
+                str(readme),
+            ]
+            subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "update_readme_inject_llama_cpp.py"),
+            "--sweep",
+            str(sweep_path),
+            "--readme",
+            str(readme),
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+
+    if full_stack:
+        update_readme_source_marker(readme, output_root)
 
 
 def main() -> None:
@@ -295,6 +448,40 @@ def main() -> None:
         action="store_true",
         help="Keep downloaded GGUFs after each row (default: delete to save disk).",
     )
+    parser.add_argument(
+        "--full-stack",
+        action="store_true",
+        help=(
+            "For each GGUF-resolved row, run llama.cpp Metal, mlx_lm.benchmark, "
+            "AX direct, and AX default n-gram rows in one artifact."
+        ),
+    )
+    parser.add_argument(
+        "--no-build-ax-engine",
+        action="store_true",
+        help=(
+            "With --full-stack, skip the release server build and use the "
+            "existing target/release/ax-engine-server binary."
+        ),
+    )
+    parser.add_argument(
+        "--update-readme",
+        action="store_true",
+        help=(
+            "Update README.md from the sweep. With --full-stack this updates "
+            "mlx_lm/AX rows plus llama.cpp columns; otherwise only the "
+            "llama.cpp columns are refreshed."
+        ),
+    )
+    parser.add_argument(
+        "--allow-partial-readme-update",
+        action="store_true",
+        help=(
+            "Allow --update-readme even when some full-stack rows failed or "
+            "were skipped. By default, full-stack README updates fail closed."
+        ),
+    )
+    parser.add_argument("--readme", type=Path, default=REPO_ROOT / "README.md")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -377,6 +564,14 @@ def main() -> None:
             log(f"  -> dry-run resolved: {repo} :: {filename}")
             continue
 
+        model_args, missing_model_note = resolve_mlx_model_args(row, cache_dir=args.cache_dir)
+        if model_args is None:
+            record["status"] = "mlx_model_dir_missing"
+            record["note"] = f"{missing_model_note} Cannot generate prompt artifact."
+            summary_rows.append(record)
+            log(f"  -> skipped: {record['note']}")
+            continue
+
         try:
             gguf_path = download_gguf(
                 repo,
@@ -397,13 +592,6 @@ def main() -> None:
         total_bytes_downloaded += size_bytes
         log(f"  -> downloaded ({size_bytes / 1e9:.2f} GB)")
 
-        model_dir = REPO_ROOT / row["mlx_local_dir"]
-        if not model_dir.exists():
-            record["status"] = "mlx_model_dir_missing"
-            record["note"] = f"Local MLX dir {model_dir} not found; cannot generate prompt artifact."
-            summary_rows.append(record)
-            continue
-
         bench_result = run_bench_for_row(
             row,
             gguf_path,
@@ -416,7 +604,9 @@ def main() -> None:
             cooldown=args.cooldown,
             n_gpu_layers=args.n_gpu_layers,
             extra_args=args.extra_args,
-            model_dir_for_prompts=model_dir,
+            model_args=model_args,
+            full_stack=args.full_stack,
+            build_ax_engine=not args.no_build_ax_engine,
         )
         record.update(bench_result)
 
@@ -440,6 +630,7 @@ def main() -> None:
         "repetitions": args.repetitions,
         "n_gpu_layers": args.n_gpu_layers,
         "extra_args": args.extra_args,
+        "full_stack": args.full_stack,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)),
         "elapsed_seconds": round(elapsed, 1),
         "total_bytes_downloaded": total_bytes_downloaded,
@@ -454,6 +645,17 @@ def main() -> None:
     summary_md = args.output_root / "sweep_summary.md"
     summary_md.write_text(_render_summary_md(sweep_doc))
     log(f"wrote {summary_md}")
+
+    if args.update_readme:
+        update_readme_from_sweep(
+            readme=args.readme,
+            sweep_path=sweep_path,
+            sweep_doc=sweep_doc,
+            full_stack=args.full_stack,
+            output_root=args.output_root,
+            allow_partial=args.allow_partial_readme_update,
+        )
+        log(f"updated {args.readme}")
 
 
 def _render_summary_md(doc: dict[str, Any]) -> str:

@@ -279,3 +279,61 @@ sample.
   change their state. They will be candidates again next step.
 - `memory_blocked_requests` in the plan are populated by `engine.rs` after
   KV allocation fails, not by the scheduler itself.
+
+---
+
+## Memory pressure observation (I-4)
+
+The scheduler emits **observe-mode** memory-pressure telemetry alongside
+its existing KV-pressure decisions. This surface is introduced by
+ADR-007 / invariant I-4 and is intentionally non-enforcing: a future ADR
+may turn it into an admission gate, but the current pass writes only
+artifact rows.
+
+### Where the signal lives
+
+- `ax_engine_core::mempressure` defines `PressureLevel { Normal, Soft,
+  Hard }`, `PressureObservation`, and the `PressureThresholds` classifier.
+  Defaults are `Soft` at 75% and `Hard` at 90% of the configured budget;
+  both are tunable via `PressureThresholds::new`.
+- `crates/ax-engine-bench/src/harness/pressure_observer.rs` is the
+  harness-side adapter that turns a `(host_rss_snapshot,
+  device_resident_snapshot)` pair into a `PressureObservation` and
+  records it onto a `WorkloadReport`.
+
+### Route-decision keys
+
+Workload artifacts carry the following decisions per observation:
+
+| Key | Value | Semantics |
+|---|---|---|
+| `ax_mempressure_host_level` | 0 / 1 / 2 | Host RSS pressure level |
+| `ax_mempressure_device_level` | 0 / 1 / 2 | Device resident-set pressure level |
+| `ax_mempressure_combined_level` | 0 / 1 / 2 | max(host, device) — what downstream consumers should treat as the active level |
+| `ax_mempressure_host_used_bytes` | `u64` | Present iff the host probe returned a snapshot |
+| `ax_mempressure_host_budget_bytes` | `u64` | Same |
+| `ax_mempressure_device_used_bytes` | `u64` | Present iff the device probe returned a snapshot |
+| `ax_mempressure_device_budget_bytes` | `u64` | Same |
+
+Absence of a `*_used_bytes` / `*_budget_bytes` key means the
+corresponding probe was unavailable — distinct from a probe that
+sampled zero. Levels always appear, defaulting to `Normal` when no
+probe is wired.
+
+### Boundary with scheduler enforcement
+
+The existing scheduler still enforces KV capacity through `KvManager`,
+and `engine.rs` still cascades `BlockedOnMemory` after a failed KV
+allocation. The mempressure surface adds **observation** adjacent to
+those mechanisms; it does not replace them and does not gate admission.
+A follow-up ADR that introduces an enforce mode must:
+
+- record observe-mode artifacts that show the new admission policy
+  would not have regressed in-flight TTFT or ITL on the agent-workload
+  fixtures, and
+- specify a fallback behavior for the case where pressure flips to
+  `Hard` mid-step (today the scheduler has no per-step pressure callback).
+
+See `docs/SERVING-INVARIANTS.md` for the full invariant text and
+`.internal/prd/engine-serving-invariants.md` §8 Phase 4 for the work
+items.

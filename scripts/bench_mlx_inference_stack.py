@@ -217,7 +217,32 @@ AX_NGRAM_TELEMETRY_KEYS = [
     "ax_ngram_policy_variant",
     "ax_ngram_adaptive_draft_len_steps",
     "ax_ngram_adaptive_draft_len_total",
+    # Per-attempt acceptance-by-depth histogram (PRD §8 Phase 6).
+    # Bucket k counts draft attempts whose accept_count was exactly k;
+    # attempts with accept_count >= 8 saturate into bucket 7.
+    "ax_ngram_accept_at_depth_0",
+    "ax_ngram_accept_at_depth_1",
+    "ax_ngram_accept_at_depth_2",
+    "ax_ngram_accept_at_depth_3",
+    "ax_ngram_accept_at_depth_4",
+    "ax_ngram_accept_at_depth_5",
+    "ax_ngram_accept_at_depth_6",
+    "ax_ngram_accept_at_depth_7",
 ]
+
+# PRD §8 Phase 6 helper: stable ordered list of the accept-at-depth keys so
+# downstream aggregation can iterate without re-deriving the count.
+AX_NGRAM_ACCEPT_AT_DEPTH_KEYS = [
+    "ax_ngram_accept_at_depth_0",
+    "ax_ngram_accept_at_depth_1",
+    "ax_ngram_accept_at_depth_2",
+    "ax_ngram_accept_at_depth_3",
+    "ax_ngram_accept_at_depth_4",
+    "ax_ngram_accept_at_depth_5",
+    "ax_ngram_accept_at_depth_6",
+    "ax_ngram_accept_at_depth_7",
+]
+
 AX_NGRAM_ACCEPT_RATE_KEY = "ax_ngram_accept_rate_micros"
 
 AX_MLX_TELEMETRY_KEYS = [
@@ -696,6 +721,72 @@ def ax_decode_claim_status(direct_mode: bool, telemetry: dict[str, int]) -> str:
     if int(telemetry.get("ax_ngram_accepted_tokens", 0)) == 0:
         return "ngram_no_accept_fallback"
     return "ngram_acceleration_effective_throughput"
+
+
+def canonical_prompt_hash(tokens: list[int]) -> str:
+    """Stable SHA256-hex(prefix) hash of a token sequence.
+
+    Used by the same-policy promotion gate (Rust harness +
+    ``ax_decode_same_policy_baseline_identity``) so a direct-vs-n-gram
+    pairing can verify both rows ran on the exact same prompt without
+    embedding the full token vector in every artifact.
+
+    Encoding: little-endian u32 per token, fed into SHA256. The 16-byte
+    prefix of the hex digest is what gets recorded — sufficient to make
+    accidental collisions effectively impossible while keeping artifact
+    sizes manageable. Two callers MUST agree on the encoding; this is
+    the single source of truth.
+    """
+    h = hashlib.sha256()
+    for t in tokens:
+        h.update(int(t).to_bytes(4, byteorder="little", signed=False))
+    return h.hexdigest()[:16]
+
+
+def canonical_sampler_signature(sampler: dict[str, Any] | None) -> str:
+    """Stable string encoding of sampler settings (PRD §7.1).
+
+    Greedy-equivalent values collapse to ``"greedy"`` so a sampler dict
+    of ``{}`` and ``{"temperature": 0.0, "top_p": 1.0}`` produce the
+    same signature — the same-policy gate would otherwise reject a
+    pairing that is actually identical.
+    """
+    if not sampler or not _sampler_breaks_greedy_exactness(sampler):
+        return "greedy"
+    parts = []
+    if (t := sampler.get("temperature")) is not None:
+        parts.append(f"temperature={float(t)}")
+    if (p := sampler.get("top_p")) is not None:
+        parts.append(f"top_p={float(p)}")
+    if (k := sampler.get("top_k")) is not None:
+        parts.append(f"top_k={int(k)}")
+    if (rp := sampler.get("repetition_penalty")) is not None:
+        parts.append(f"repetition_penalty={float(rp)}")
+    return "sampling[" + ",".join(parts) + "]"
+
+
+def build_row_identity(
+    *,
+    model_id: str,
+    tokens: list[int],
+    seed: int,
+    max_output_tokens: int,
+    sampler: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Construct the identity block embedded in every emitted bench row.
+
+    Mirrors the Rust ``crates/ax-engine-bench/src/harness/ngram_claim_gate.rs::RowIdentity``
+    so a Python aggregator and the Rust promotion gate can decide on the
+    same five fields.
+    """
+    return {
+        "schema": "ax.row_identity.v1",
+        "model_id": model_id,
+        "prompt_hash": canonical_prompt_hash(tokens),
+        "seed": int(seed),
+        "max_output_tokens": int(max_output_tokens),
+        "sampler_signature": canonical_sampler_signature(sampler),
+    }
 
 
 def ax_decode_claim_mode(
@@ -1257,6 +1348,46 @@ def extract_ax_ngram_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
                 round(accepted_tokens * 1_000_000 / draft_tokens)
             )
     return telemetry
+
+
+def summarize_ngram_accept_at_depth(telemetry: dict[str, int]) -> dict[str, Any]:
+    """Project the flat ``ax_ngram_accept_at_depth_*`` counters into a
+    stable histogram artifact (PRD §8 Phase 6 / I-6).
+
+    Schema ``ax.ngram_accept_at_depth.v1`` is used by downstream
+    promotion aggregators and by ``profile_ngram_observability.py`` to
+    surface a single object per row instead of eight flat keys.
+
+    Returns ``{}`` when no depth telemetry is present so a row produced
+    by an older runtime (or without n-gram) is not annotated with a
+    spurious zero histogram.
+    """
+    buckets = []
+    total_attempts = 0
+    weighted_accepted = 0
+    any_present = False
+    for depth, key in enumerate(AX_NGRAM_ACCEPT_AT_DEPTH_KEYS):
+        if key in telemetry:
+            any_present = True
+        attempts = int(telemetry.get(key, 0))
+        buckets.append({"depth": depth, "attempts": attempts})
+        total_attempts += attempts
+        weighted_accepted += depth * attempts
+    if not any_present:
+        return {}
+    return {
+        "schema": "ax.ngram_accept_at_depth.v1",
+        "bucket_count": len(AX_NGRAM_ACCEPT_AT_DEPTH_KEYS),
+        "buckets": buckets,
+        "total_attempts": total_attempts,
+        # Lower bound on accepted tokens recoverable from the histogram.
+        # Equal to `ax_ngram_accepted_tokens` exactly when no attempt
+        # saturates into the last bucket (the saturating clamp can hide
+        # accepts beyond depth 7); a sustained gap to
+        # `ax_ngram_accepted_tokens` indicates draft lengths > 8 and
+        # would justify raising NGRAM_ACCEPT_DEPTH_BUCKETS.
+        "weighted_accepted_tokens_lower_bound": weighted_accepted,
+    }
 
 
 def extract_ax_mlx_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
@@ -2056,6 +2187,40 @@ def bench_axengine(
         "prefill_s": summarize_runs(runs, "prefill_s"),
         "decode_s": summarize_runs(runs, "decode_s"),
         "ngram_acceleration_telemetry": ngram_summary,
+        "ngram_accept_at_depth": summarize_ngram_accept_at_depth(ngram_summary),
+        # Sampler config (PRD §7.1 release-claim artifact requirement).
+        # The current bench harness runs greedy by default; the field is
+        # always present and the canonical signature equals "greedy" when
+        # no sampling knob is active.
+        "sampler_settings": None,
+        # Row identity block + same-policy baseline pointer (PRD §8 Phase 6).
+        # Direct rows record their own identity in
+        # ``ax_decode_same_policy_baseline_identity`` because they ARE the
+        # baseline; n-gram rows point at the matching direct row's identity
+        # (constructed from the same prompt + seed + budget, so the two
+        # identities round-trip equal under ``canonical_*`` helpers).
+        "ax_decode_row_identity": build_row_identity(
+            model_id=(
+                model_metadata.get("model_family")
+                or model_metadata.get("model_type")
+                or "unknown"
+            ),
+            tokens=tokens,
+            seed=MLX_LM_RANDOM_SEED,
+            max_output_tokens=generation_tokens,
+            sampler=None,
+        ),
+        "ax_decode_same_policy_baseline_identity": build_row_identity(
+            model_id=(
+                model_metadata.get("model_family")
+                or model_metadata.get("model_type")
+                or "unknown"
+            ),
+            tokens=tokens,
+            seed=MLX_LM_RANDOM_SEED,
+            max_output_tokens=generation_tokens,
+            sampler=None,
+        ),
         "ax_mlx_telemetry": ax_mlx_telemetry,
         "ax_mlx_decode_route": summarize_ax_mlx_decode_route(ax_mlx_telemetry),
         "scheduler_telemetry": summarize_scheduler_telemetry(runs),

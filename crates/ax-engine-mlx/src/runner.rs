@@ -543,6 +543,15 @@ impl MlxPrefixCacheTelemetry {
     }
 }
 
+/// Maximum n-gram accept depth bucket exposed as route telemetry. Each
+/// `record_draft` call bumps `accepts_by_depth[min(accept_count, MAX-1)]`.
+/// Bucket 0 = draft attempt with zero accepted tokens; bucket k (k > 0) =
+/// draft attempt with exactly k accepted tokens. The histogram is the
+/// raw input PRD §8 Phase 6 requires for the n-gram acceptance-by-depth
+/// claim. We cap at 8 because that comfortably exceeds the current
+/// maximum draft length and keeps the route-decision surface small.
+const NGRAM_ACCEPT_DEPTH_BUCKETS: usize = 8;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct NgramAccelerationTelemetry {
     draft_attempts: u32,
@@ -566,6 +575,10 @@ struct NgramAccelerationTelemetry {
     adaptive_draft_len_steps: u32,
     adaptive_draft_len_total: u32,
     prompt_class_code: u32,
+    /// Per-attempt acceptance histogram. Index k counts draft attempts
+    /// where exactly k tokens were accepted; attempts that accepted ≥ N
+    /// tokens land in bucket N-1.
+    accepts_by_depth: [u32; NGRAM_ACCEPT_DEPTH_BUCKETS],
 }
 
 impl NgramAccelerationTelemetry {
@@ -586,6 +599,12 @@ impl NgramAccelerationTelemetry {
         } else {
             self.partial_rejects = self.partial_rejects.saturating_add(1);
         }
+
+        // Per-attempt acceptance histogram. Saturate at the last bucket so
+        // a draft length > NGRAM_ACCEPT_DEPTH_BUCKETS does not silently
+        // skip the count.
+        let bucket = accept_count.min(NGRAM_ACCEPT_DEPTH_BUCKETS - 1);
+        self.accepts_by_depth[bucket] = self.accepts_by_depth[bucket].saturating_add(1);
     }
 
     fn record_no_draft(&mut self) {
@@ -689,6 +708,10 @@ impl NgramAccelerationTelemetry {
             .adaptive_draft_len_total
             .saturating_add(other.adaptive_draft_len_total);
         self.prompt_class_code = self.prompt_class_code.max(other.prompt_class_code);
+        for i in 0..NGRAM_ACCEPT_DEPTH_BUCKETS {
+            self.accepts_by_depth[i] =
+                self.accepts_by_depth[i].saturating_add(other.accepts_by_depth[i]);
+        }
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -746,6 +769,33 @@ impl NgramAccelerationTelemetry {
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);
         }
+
+        // Acceptance-by-depth histogram (PRD §8 Phase 6 / I-6). Bucket k
+        // counts draft attempts where exactly k tokens were accepted;
+        // attempts with ≥ NGRAM_ACCEPT_DEPTH_BUCKETS accepted tokens
+        // saturate into the last bucket.
+        for (depth, count) in self.accepts_by_depth.iter().enumerate() {
+            decisions.upsert_route_decision(ngram_accept_at_depth_key(depth), *count);
+        }
+    }
+}
+
+/// Returns the stable route-decision key for a given accept-depth bucket.
+/// Hoisted out of the per-call hot path so the (static) key strings are
+/// constructed once at compile time per bucket.
+fn ngram_accept_at_depth_key(depth: usize) -> &'static str {
+    // NGRAM_ACCEPT_DEPTH_BUCKETS = 8. If the constant changes, extend this
+    // table — there is no runtime allocation by design.
+    match depth {
+        0 => "ax_ngram_accept_at_depth_0",
+        1 => "ax_ngram_accept_at_depth_1",
+        2 => "ax_ngram_accept_at_depth_2",
+        3 => "ax_ngram_accept_at_depth_3",
+        4 => "ax_ngram_accept_at_depth_4",
+        5 => "ax_ngram_accept_at_depth_5",
+        6 => "ax_ngram_accept_at_depth_6",
+        7 => "ax_ngram_accept_at_depth_7",
+        _ => "ax_ngram_accept_at_depth_overflow",
     }
 }
 
@@ -6519,6 +6569,48 @@ mod tests {
             zero_decisions.get("ax_prompt_class_code"),
             Some(&crate::ngram_accel::PROMPT_CLASS_UNSET)
         );
+
+        // PRD §8 Phase 6: per-attempt acceptance-by-depth histogram. The
+        // three draft attempts above accepted {full, 0, 2} tokens, so the
+        // histogram must be: bucket DEFAULT_DRAFT_LEN += 1, bucket 0 += 1,
+        // bucket 2 += 1. Verify bucket 0 and bucket 2 directly (which are
+        // both well below NGRAM_ACCEPT_DEPTH_BUCKETS) and assert all other
+        // sub-bucket counters are zero.
+        assert_eq!(decisions.get("ax_ngram_accept_at_depth_0"), Some(&1));
+        assert_eq!(decisions.get("ax_ngram_accept_at_depth_2"), Some(&1));
+        assert_eq!(decisions.get("ax_ngram_accept_at_depth_1"), Some(&0));
+        assert_eq!(decisions.get("ax_ngram_accept_at_depth_3"), Some(&0));
+    }
+
+    #[test]
+    fn ngram_telemetry_accepts_by_depth_saturates_at_last_bucket() {
+        // Drafts that accept beyond NGRAM_ACCEPT_DEPTH_BUCKETS - 1 must
+        // land in the last bucket rather than panic-on-index-overflow or
+        // silently drop. Without this saturation, a future longer-draft
+        // policy could underreport its acceptance.
+        let mut telemetry = NgramAccelerationTelemetry::default();
+        // Accept more than the histogram length on a single draft.
+        telemetry.record_draft(16, 16);
+        // Accept exactly the last in-range bucket on another draft.
+        telemetry.record_draft(
+            NGRAM_ACCEPT_DEPTH_BUCKETS - 1,
+            NGRAM_ACCEPT_DEPTH_BUCKETS - 1,
+        );
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        // Both attempts saturate into bucket NGRAM_ACCEPT_DEPTH_BUCKETS - 1
+        // because the over-the-limit attempt is clamped, and the exactly-
+        // at-the-last-bucket attempt naturally lands there.
+        let last_key = format!(
+            "ax_ngram_accept_at_depth_{}",
+            NGRAM_ACCEPT_DEPTH_BUCKETS - 1
+        );
+        assert_eq!(decisions.get(last_key.as_str()), Some(&2));
     }
 
     #[test]

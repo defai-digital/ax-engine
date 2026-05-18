@@ -29,6 +29,12 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
             "80.0 (-20.0%)",
         )
 
+    def test_current_qwen36_slug_maps_to_readme_row(self) -> None:
+        self.assertEqual(
+            updater.SLUG_TO_README["qwen3_6-35b-a3b-4bit"],
+            ("Qwen 3.6 35B A3B", "4-bit"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Unit tests for scripts.bench_llama_cpp_metal_sweep."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+_HERE = Path(__file__).resolve().parent
+_spec = importlib.util.spec_from_file_location(
+    "bench_llama_cpp_metal_sweep",
+    _HERE / "bench_llama_cpp_metal_sweep.py",
+)
+sweep = importlib.util.module_from_spec(_spec)
+assert _spec.loader is not None
+_spec.loader.exec_module(sweep)  # type: ignore[union-attr]
+sys.modules["bench_llama_cpp_metal_sweep"] = sweep
+
+
+class BenchLlamaCppMetalSweepTests(unittest.TestCase):
+    def _run_one(self, *, full_stack: bool) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            model_dir = tmp_path / "model"
+            model_dir.mkdir()
+            gguf = tmp_path / "model.gguf"
+            gguf.write_text("fake")
+            bench_script = tmp_path / "bench_mlx_inference_stack.py"
+            bench_script.write_text("# fake")
+            llama_bench = tmp_path / "llama-bench"
+            llama_bench.write_text("# fake")
+
+            captured: list[str] = []
+
+            def fake_run(cmd, stdout=None, stderr=None):
+                captured.extend(str(part) for part in cmd)
+                output_path = Path(cmd[cmd.index("--output") + 1])
+                output_path.write_text(json.dumps({"results": []}) + "\n")
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with patch.object(sweep.subprocess, "run", side_effect=fake_run):
+                result = sweep.run_bench_for_row(
+                    {"slug": "gemma-4-e2b-it-4bit"},
+                    gguf,
+                    output_dir=tmp_path,
+                    bench_script=bench_script,
+                    llama_bench=llama_bench,
+                    prompt_tokens="128,512",
+                    generation_tokens=128,
+                    repetitions=3,
+                    cooldown=0.0,
+                    n_gpu_layers=99,
+                    extra_args=None,
+                    model_args=["--model-dir", str(model_dir)],
+                    full_stack=full_stack,
+                    build_ax_engine=False,
+                )
+
+            self.assertEqual(result["status"], "ok")
+            return captured
+
+    def test_default_mode_runs_llama_cpp_only(self) -> None:
+        cmd = self._run_one(full_stack=False)
+        self.assertIn("--skip-mlx-lm", cmd)
+        self.assertIn("--skip-ax-engine", cmd)
+        self.assertIn("--no-build-ax-engine", cmd)
+        self.assertNotIn("--ax-compare-policies", cmd)
+
+    def test_full_stack_runs_mlx_lm_and_both_ax_modes(self) -> None:
+        cmd = self._run_one(full_stack=True)
+        self.assertIn("--ax-compare-policies", cmd)
+        self.assertIn("--no-build-ax-engine", cmd)
+        self.assertNotIn("--skip-mlx-lm", cmd)
+        self.assertNotIn("--skip-ax-engine", cmd)
+
+    def test_resolve_mlx_model_args_falls_back_to_ready_hf_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            snapshot = (
+                cache
+                / "models--mlx-community--Qwen3.6-35B-A3B-4bit"
+                / "snapshots"
+                / "abc"
+            )
+            snapshot.mkdir(parents=True)
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model-manifest.json").write_text("{}")
+            (snapshot / "weights.safetensors").write_text("fake")
+
+            args, note = sweep.resolve_mlx_model_args(
+                {
+                    "mlx_local_dir": "missing",
+                    "mlx_repo_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+                },
+                cache_dir=cache,
+            )
+
+        self.assertIsNone(note)
+        self.assertEqual(
+            args,
+            [
+                "--model-repo-id",
+                "mlx-community/Qwen3.6-35B-A3B-4bit",
+                "--hf-cache-root",
+                str(cache),
+            ],
+        )
+
+    def test_full_stack_readme_update_refuses_partial_sweep(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            readme = tmp_path / "README.md"
+            readme.write_text("stub")
+            with self.assertRaisesRegex(RuntimeError, "incomplete full-stack sweep"):
+                sweep.update_readme_from_sweep(
+                    readme=readme,
+                    sweep_path=tmp_path / "sweep_results.json",
+                    sweep_doc={"rows": [{"slug": "a", "status": "bench_failed"}]},
+                    full_stack=True,
+                    output_root=tmp_path,
+                    allow_partial=False,
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()

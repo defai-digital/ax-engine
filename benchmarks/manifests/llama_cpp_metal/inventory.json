@@ -1,7 +1,7 @@
 {
   "schema_version": "ax.llama_cpp_metal_inventory.v1",
   "purpose": "Map each row in the README MLX-inference performance table to a candidate GGUF + llama.cpp Metal architecture for shape-compatible external baseline benchmarking.",
-  "claim_boundary": "Rows produced from this manifest are shape-compatible external GGUF baselines only. llama-bench does not consume the ax/MLX prompt-token JSON, so the resulting numbers are NOT prompt-hash parity evidence and must NEVER be merged into the repo-owned MLX prefill/decode/TTFT tables. They belong in a separate 'External GGUF baseline' section with explicit disclaimer.",
+  "claim_boundary": "Rows produced from this manifest are shape-compatible external GGUF baselines only. llama-bench does not consume the ax/MLX prompt-token JSON, so the resulting numbers are NOT prompt-hash parity evidence. They may be shown side-by-side in README only with an explicit shape-compatible disclaimer, no llama.cpp percentage deltas, and no claim that the llama.cpp column is repo-owned MLX throughput evidence.",
   "required_gguf_publisher": "bartowski",
   "quant_mapping_policy": "MLX bit-width is mapped to the closest standard bartowski GGUF K-quant: 4-bit -> Q4_K_M, 5-bit -> Q5_K_M, 6-bit -> Q6_K, 8-bit -> Q8_0. bartowski is the required GGUF publisher for this inventory so llama.cpp rows stay on standard imatrix K-quants instead of Unsloth Dynamic UD variants. Architectural bit-for-bit equivalence is NOT claimed.",
   "resolution_policy": "Each row lists candidate (repo, filename_pattern) pairs in priority order. The sweep driver resolves the first candidate whose pattern matches a file via huggingface_hub.list_repo_files. Status 'candidate' means unresolved; the driver flips it to 'resolved' or 'unresolved' at sweep time. Rows where llama.cpp architecture support is unknown stay 'candidate' until the driver attempts a load.",
@@ -11,6 +11,7 @@
       "readme_model": "Gemma 4 E2B",
       "readme_quant": "4-bit",
       "mlx_local_dir": ".internal/models/gemma-4-e2b-it-4bit",
+      "mlx_repo_id": "mlx-community/gemma-4-e2b-it-4bit",
       "hf_arch": "Gemma4ForConditionalGeneration",
       "llama_cpp_arch": "gemma4",
       "multimodal_note": "Source MLX is multimodal (Gemma4 + audio). GGUF candidates must be text-only conversions.",
@@ -25,6 +26,7 @@
       "readme_model": "Gemma 4 E2B",
       "readme_quant": "5-bit",
       "mlx_local_dir": ".internal/models/gemma-4-e2b-it-5bit",
+      "mlx_repo_id": "mlx-community/gemma-4-e2b-it-5bit",
       "hf_arch": "Gemma4ForConditionalGeneration",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q5_K_M",
@@ -38,6 +40,7 @@
       "readme_model": "Gemma 4 E2B",
       "readme_quant": "6-bit",
       "mlx_local_dir": ".internal/models/gemma-4-e2b-it-6bit",
+      "mlx_repo_id": "mlx-community/gemma-4-e2b-it-6bit",
       "hf_arch": "Gemma4ForConditionalGeneration",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q6_K",
@@ -51,6 +54,7 @@
       "readme_model": "Gemma 4 E2B",
       "readme_quant": "8-bit",
       "mlx_local_dir": ".internal/models/gemma-4-e2b-it-8bit",
+      "mlx_repo_id": "mlx-community/gemma-4-e2b-it-8bit",
       "hf_arch": "Gemma4ForConditionalGeneration",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q8_0",
@@ -64,6 +68,7 @@
       "readme_model": "Gemma 4 E4B",
       "readme_quant": "4-bit",
       "mlx_local_dir": ".internal/models/gemma-4-e4b-it-4bit",
+      "mlx_repo_id": "mlx-community/gemma-4-e4b-it-4bit",
       "hf_arch": "Gemma4ForConditionalGeneration",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q4_K_M",
@@ -77,6 +82,7 @@
       "readme_model": "Gemma 4 26B A4B",
       "readme_quant": "4-bit",
       "mlx_local_dir": ".internal/models/gemma-4-26b-a4b-it-4bit",
+      "mlx_repo_id": "mlx-community/gemma-4-26b-a4b-it-4bit",
       "hf_arch": "Gemma4ForConditionalGeneration",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q4_K_M",
@@ -90,6 +96,7 @@
       "readme_model": "Gemma 4 31B",
       "readme_quant": "4-bit",
       "mlx_local_dir": ".internal/models/gemma-4-31b-it-4bit",
+      "mlx_repo_id": "mlx-community/gemma-4-31b-it-4bit",
       "hf_arch": "Gemma4ForConditionalGeneration",
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q4_K_M",
@@ -103,12 +110,55 @@
       "readme_model": "Qwen 3.6 35B A3B",
       "readme_quant": "4-bit",
       "mlx_local_dir": ".internal/models/Qwen3.6-35B-A3B-4bit",
+      "mlx_repo_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
       "hf_arch": "Qwen3_5MoeForConditionalGeneration",
       "llama_cpp_arch": "qwen35moe",
       "prompt_source_note": "Prompt-token source is mlx-community/Qwen3.6-35B-A3B-4bit. GGUF side benches the bartowski standard Q4_K_M imatrix quant. Injected into the README '4-bit' row as a shape-compatible reference only.",
       "gguf_quant_target": "Q4_K_M",
       "gguf_candidates": [
         {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-5bit",
+      "readme_model": "Qwen 3.6 35B A3B",
+      "readme_quant": "MLX 5-bit",
+      "mlx_local_dir": ".internal/models/Qwen3.6-35B-A3B-5bit",
+      "mlx_repo_id": "mlx-community/Qwen3.6-35B-A3B-5bit",
+      "hf_arch": "Qwen3_5MoeForConditionalGeneration",
+      "llama_cpp_arch": "qwen35moe",
+      "gguf_quant_target": "Q5_K_M",
+      "gguf_candidates": [
+        {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q5_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-6bit",
+      "readme_model": "Qwen 3.6 35B A3B",
+      "readme_quant": "MLX 6-bit",
+      "mlx_local_dir": ".internal/models/Qwen3.6-35B-A3B-6bit",
+      "mlx_repo_id": "mlx-community/Qwen3.6-35B-A3B-6bit",
+      "hf_arch": "Qwen3_5MoeForConditionalGeneration",
+      "llama_cpp_arch": "qwen35moe",
+      "gguf_quant_target": "Q6_K",
+      "gguf_candidates": [
+        {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q6_K*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-8bit",
+      "readme_model": "Qwen 3.6 35B A3B",
+      "readme_quant": "MLX 8-bit",
+      "mlx_local_dir": ".internal/models/Qwen3.6-35B-A3B-8bit",
+      "mlx_repo_id": "mlx-community/Qwen3.6-35B-A3B-8bit",
+      "hf_arch": "Qwen3_5MoeForConditionalGeneration",
+      "llama_cpp_arch": "qwen35moe",
+      "gguf_quant_target": "Q8_0",
+      "gguf_candidates": [
+        {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q8_0*.gguf"}
       ],
       "status": "candidate"
     }

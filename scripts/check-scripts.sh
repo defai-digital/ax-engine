@@ -26,6 +26,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/bench_mlx_inference_stack.py \
   scripts/test_bench_mlx_inference_stack.py \
+  scripts/bench_llama_cpp_metal_sweep.py \
+  scripts/test_bench_llama_cpp_metal_sweep.py \
   scripts/build_mlx_prefill_scaling_artifact.py \
   scripts/test_build_mlx_prefill_scaling_artifact.py \
   scripts/check_mlx_prefill_scaling_artifact.py \
@@ -66,6 +68,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_update_readme_from_bench.py \
   scripts/update_readme_from_results.py \
   scripts/test_update_readme_from_results.py \
+  scripts/update_readme_inject_llama_cpp.py \
+  scripts/test_update_readme_inject_llama_cpp.py \
   scripts/check_gateddelta_prefill_model.py \
   scripts/test_gateddelta_prefill_model.py \
   scripts/test_run_gateddelta_prefill_profile.py \
@@ -101,6 +105,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/test_update_readme_from_bench.py \
   scripts/test_update_readme_from_results.py \
+  scripts/test_update_readme_inject_llama_cpp.py \
+  scripts/test_bench_llama_cpp_metal_sweep.py \
   scripts/test_offline_policy_search_artifact.py \
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/test_search_turboquant_kv_policy.py \

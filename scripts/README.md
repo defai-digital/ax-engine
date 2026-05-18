@@ -79,6 +79,15 @@ throughput baselines.
   Gemma per-layer-input, QKV projection, SDPA, post-attention/FFN, and lm-head
   diagnosis; those profile rows insert eval barriers and are not headline
   throughput evidence.
+- `bench_llama_cpp_metal_sweep.py`: resolves GGUF candidates from
+  `benchmarks/manifests/llama_cpp_metal/inventory.json` and runs
+  `bench_mlx_inference_stack.py` for the matching README rows. By default it
+  captures llama.cpp Metal shape-compatible rows only. With `--full-stack`, it
+  captures llama.cpp Metal, `mlx_lm.benchmark`, AX direct, and AX default
+  n-gram rows in one artifact per model; with `--update-readme`, it refreshes
+  the README performance tables from those artifacts. Full-stack README
+  updates fail closed unless every selected row completed; use
+  `--allow-partial-readme-update` only for intentionally partial reports.
 - `test_bench_mlx_inference_stack.py`: unit tests for the MLX benchmark
   contract, parser, prompt artifact hash checks, and secondary adapter shape.
 - `build_long_context_comparison_artifact.py`,
