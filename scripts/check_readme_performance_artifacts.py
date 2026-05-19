@@ -991,7 +991,6 @@ def validate_ngram_claim_telemetry(
             f"{artifact_path} n-gram row lacks telemetry counters: {', '.join(missing)}"
         )
     status = row.get("ax_decode_claim_status")
-    status_base = status
     decode_route = row.get("ax_mlx_decode_route")
     no_decode_steps = (
         isinstance(decode_route, dict)
@@ -1002,23 +1001,23 @@ def validate_ngram_claim_telemetry(
     fallback_steps = int(telemetry.get("ax_ngram_no_draft_steps", 0)) + int(
         telemetry.get("ax_ngram_request_disabled_steps", 0)
     )
-    if status_base == "ngram_acceleration_effective_throughput" and (
+    if status == "ngram_acceleration_effective_throughput" and (
         attempts <= 0 or accepted <= 0
     ):
         raise ArtifactCheckError(
             f"{artifact_path} claims n-gram throughput without draft acceptance"
         )
-    if status_base == "ngram_no_draft_direct_fallback" and (
+    if status == "ngram_no_draft_direct_fallback" and (
         attempts != 0 or fallback_steps <= 0
     ):
         raise ArtifactCheckError(
             f"{artifact_path} claims n-gram fallback without fallback telemetry"
         )
-    if status_base == "ngram_no_accept_fallback" and (attempts <= 0 or accepted != 0):
+    if status == "ngram_no_accept_fallback" and (attempts <= 0 or accepted != 0):
         raise ArtifactCheckError(
             f"{artifact_path} claims n-gram no-accept fallback with inconsistent telemetry"
         )
-    if status_base == "ngram_no_observed_draft_path" and (
+    if status == "ngram_no_observed_draft_path" and (
         not no_decode_steps or attempts != 0 or accepted != 0
     ):
         raise ArtifactCheckError(

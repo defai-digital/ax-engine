@@ -2351,10 +2351,11 @@ def axengine_one_run(
             else:
                 decode_us += runner_us
         elif current_event == "response":
-            response_tokens = obj.get("response", {}).get("output_tokens", [])
-            output_tokens = len(response_tokens) or output_tokens
-            if capture_output_token_ids and isinstance(response_tokens, list):
-                output_token_ids = [int(token) for token in response_tokens]
+            response_tokens = obj.get("response", {}).get("output_tokens")
+            if isinstance(response_tokens, list):
+                output_tokens = len(response_tokens) or output_tokens
+                if capture_output_token_ids:
+                    output_token_ids = [int(token) for token in response_tokens]
             final_route = route_with_more_decisions(
                 obj.get("response", {}).get("route"),
                 final_route,
