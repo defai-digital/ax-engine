@@ -29,6 +29,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/bench_mlx_inference_stack.py \
   scripts/test_bench_mlx_inference_stack.py \
+  scripts/bench_ax_only_sweep.py \
+  scripts/test_bench_ax_only_sweep.py \
   scripts/bench_llama_cpp_metal_sweep.py \
   scripts/test_bench_llama_cpp_metal_sweep.py \
   scripts/build_mlx_prefill_scaling_artifact.py \
@@ -114,6 +116,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_update_readme_from_bench.py \
   scripts/test_update_readme_from_results.py \
   scripts/test_update_readme_inject_llama_cpp.py \
+  scripts/test_bench_ax_only_sweep.py \
   scripts/test_bench_llama_cpp_metal_sweep.py \
   scripts/test_offline_policy_search_artifact.py \
   scripts/test_build_offline_policy_search_artifact.py \

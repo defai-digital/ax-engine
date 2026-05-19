@@ -28,6 +28,10 @@ DEFAULT_MANIFEST = REPO_ROOT / "benchmarks" / "manifests" / "llama_cpp_metal" / 
 DEFAULT_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
 
 
+class AxOnlySweepError(RuntimeError):
+    pass
+
+
 def log(msg: str) -> None:
     print(f"[ax-sweep] {msg}", flush=True)
 
@@ -74,6 +78,64 @@ def resolve_model_args(row: dict[str, Any], cache_dir: Path) -> tuple[list[str] 
     if missing:
         return None, f"MLX cache snapshot for {repo_id} missing {', '.join(missing)}"
     return ["--model-repo-id", repo_id, "--hf-cache-root", str(cache_dir)], None
+
+
+def _row_slug(row: dict[str, Any]) -> str:
+    if not isinstance(row, dict):
+        raise AxOnlySweepError("manifest row must be an object")
+    slug = row.get("slug")
+    if not isinstance(slug, str) or not slug:
+        raise AxOnlySweepError("manifest row lacks non-empty slug")
+    return slug
+
+
+def filter_manifest_rows(
+    rows: list[dict[str, Any]],
+    rows_filter: list[str] | None,
+) -> list[dict[str, Any]]:
+    if not rows:
+        raise AxOnlySweepError("manifest contains no rows")
+
+    seen: set[str] = set()
+    duplicate_slugs: set[str] = set()
+    for row in rows:
+        slug = _row_slug(row)
+        if slug in seen:
+            duplicate_slugs.add(slug)
+        seen.add(slug)
+    if duplicate_slugs:
+        raise AxOnlySweepError(
+            "manifest contains duplicate slug(s): "
+            + ", ".join(sorted(duplicate_slugs))
+        )
+
+    if rows_filter is None:
+        return rows
+    if not rows_filter:
+        raise AxOnlySweepError("--rows-filter requires at least one slug")
+
+    requested: set[str] = set()
+    duplicate_filters: set[str] = set()
+    for slug in rows_filter:
+        if slug in requested:
+            duplicate_filters.add(slug)
+        requested.add(slug)
+    if duplicate_filters:
+        raise AxOnlySweepError(
+            "--rows-filter contains duplicate slug(s): "
+            + ", ".join(sorted(duplicate_filters))
+        )
+
+    missing = sorted(requested - seen)
+    if missing:
+        raise AxOnlySweepError(
+            "--rows-filter references unknown slug(s): " + ", ".join(missing)
+        )
+
+    selected = [row for row in rows if _row_slug(row) in requested]
+    if not selected:
+        raise AxOnlySweepError("--rows-filter selected no rows")
+    return selected
 
 
 def run_row(
@@ -153,13 +215,18 @@ def main() -> None:
     parser.add_argument("--cooldown", type=float, default=15.0)
     args = parser.parse_args()
 
+    try:
+        manifest = json.loads(args.manifest.read_text())
+        raw_rows = manifest.get("rows")
+        if not isinstance(raw_rows, list):
+            raise AxOnlySweepError("manifest.rows must be an array")
+        rows = filter_manifest_rows(raw_rows, args.rows_filter)
+    except AxOnlySweepError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        sys.exit(1)
+
     args.output_root.mkdir(parents=True, exist_ok=True)
     (args.output_root / "logs").mkdir(parents=True, exist_ok=True)
-
-    manifest = json.loads(args.manifest.read_text())
-    rows = manifest["rows"]
-    if args.rows_filter:
-        rows = [r for r in rows if r["slug"] in set(args.rows_filter)]
 
     summary_rows: list[dict[str, Any]] = []
     started = time.time()
