@@ -1,0 +1,120 @@
+Diagnostic trace: L1 prefix cache never accumulates across requests
+====================================================================
+
+Workload: 5 identical p=512 prefill requests on Gemma 4 E2B 4-bit, gen=1,
+direct decode (--disable-ngram-acceleration), --prefill-chunk 2048, against
+a single ax-engine-server process started by scripts/cpu_trace_prefill.py.
+
+Diagnostic eprintln was temporarily added to:
+  crates/ax-engine-mlx/src/runner.rs::probe_runner_snapshot_for_prefix
+  crates/ax-engine-mlx/src/runner.rs::store_prompt_prefix_snapshots
+recording cache.entries.len() and key fields. Reverted after this trace
+was captured; this artifact is the entire record of the smoking gun.
+
+Captured 2026-05-18.
+
+----------------------------------------------------------------------------
+
+prompt tokens: 512
+SERVER_PID=49065
+ax-engine-server preview listening on http://127.0.0.1:8731 model_id=qwen3 support_tier=LlamaCpp
+
+AX_PROBE input.len=512 block_size=16 entries_in_cache=0 model_id=qwen3
+AX_PROBE candidate prefix.len=512 key.route_policy="direct;kv_mode=Disabled;kv_preset=K8V4;hot=256;min=512" key.layer_layout="layers=35;full_attention_only" hash=5045551469299914854 l1_hit=false
+AX_PROBE result.len=None
+AX_STORE prefix_len_range=512..=512 block=16 prompt_prefix_tokens.len=512 cache.seq_len=512 entries_before=0
+warmup 0: 370.9ms
+
+AX_PROBE input.len=512 block_size=16 entries_in_cache=0 model_id=qwen3
+AX_PROBE candidate prefix.len=512 ... hash=5045551469299914854 l1_hit=false
+AX_PROBE result.len=None
+AX_STORE prefix_len_range=512..=512 block=16 prompt_prefix_tokens.len=512 cache.seq_len=512 entries_before=0
+warmup 1: 300.8ms
+
+AX_PROBE input.len=512 block_size=16 entries_in_cache=0 model_id=qwen3
+AX_PROBE candidate prefix.len=512 ... hash=5045551469299914854 l1_hit=false
+AX_PROBE result.len=None
+AX_STORE prefix_len_range=512..=512 block=16 prompt_prefix_tokens.len=512 cache.seq_len=512 entries_before=0
+req 0: 291.8ms
+
+AX_PROBE input.len=512 block_size=16 entries_in_cache=0 model_id=qwen3
+AX_PROBE candidate prefix.len=512 ... hash=5045551469299914854 l1_hit=false
+AX_PROBE result.len=None
+AX_STORE prefix_len_range=512..=512 block=16 prompt_prefix_tokens.len=512 cache.seq_len=512 entries_before=0
+req 1: 308.1ms
+
+AX_PROBE input.len=512 block_size=16 entries_in_cache=0 model_id=qwen3
+AX_PROBE candidate prefix.len=512 ... hash=5045551469299914854 l1_hit=false
+AX_PROBE result.len=None
+AX_STORE prefix_len_range=512..=512 block=16 prompt_prefix_tokens.len=512 cache.seq_len=512 entries_before=0
+req 2: 295.6ms
+
+DONE: 3 reqs in 0.907s, mean 302.4ms/req
+
+----------------------------------------------------------------------------
+
+Findings
+--------
+
+1. Five identical p=512 prefill requests in sequence. Each call hits the
+   probe site with cache.entries.len() == 0, and each call enters the
+   store site with entries_before == 0. The cache is empty every time
+   even though a snapshot was just stored on the previous request.
+
+2. Per-request prefill latency is flat at ~300ms — there is zero TTFT
+   gain from repeating the same prompt. If the L1 cache were shared,
+   request 2 onward should restore the snapshot and skip prefill
+   entirely (~5ms restore vs ~300ms cold prefill, a ~60x gain).
+
+3. The token hash field (5045551469299914854) is identical across all
+   five probes and stores, confirming the key matches what was stored.
+   The cache instance itself is different — there is no entry to find.
+
+Root cause
+----------
+
+crates/ax-engine-server/src/generation/streaming.rs:87 constructs a
+fresh `EngineSession` for every /v1/generate/stream request:
+
+    let mut session = EngineSession::new(session_config)?;
+
+`EngineSession::new` builds a fresh `MlxRunner` (via
+`crates/ax-engine-sdk/src/session/native.rs:38`), and the runner owns
+the prefix cache as a private field:
+
+    crates/ax-engine-mlx/src/runner.rs:2330
+        prefix_cache: Mutex<MlxPrefixCache>,
+
+The runner is dropped together with the session at end-of-stream, so
+the L1 cache and all its snapshots evaporate. Disk L2 (F3 M2) would
+survive but is opt-in via `AX_MLX_PREFIX_CACHE_DIR` and not engaged
+in this run.
+
+This is explicitly acknowledged at
+`crates/ax-engine-sdk/src/session/mod.rs:58-60`:
+
+  /// For native MLX, blocking generation still constructs a full
+  /// `EngineSession` per call so the model and KV state are not
+  /// reused. Use `EngineSession` directly for repeated MLX requests.
+
+The acknowledgement was written for the blocking-generate path
+(StatelessGenerateContext) but applies equally to streaming/MLX. The
+shared `app_state.request_session: Arc<Mutex<EngineSession>>` IS used
+by embeddings, metadata, and lifecycle endpoints, but explicitly NOT
+by the streaming generate path — presumably to allow concurrent
+streams without serializing on a single mutex.
+
+Fix direction (NOT applied here)
+--------------------------------
+
+Hoist the `prefix_cache` field (and the disk_prefix_cache pointer)
+out of `MlxRunner` into an `Arc<Mutex<MlxPrefixCache>>` carried by
+`AppState`, then pass it into each per-request `MlxRunner` via a new
+constructor parameter. Concurrent streams keep their own KV state and
+runner-local mutables; only the snapshot store/probe path shares the
+underlying cache.
+
+This is the highest-impact prefill-side change available given the
+diagnostic findings in 1cefd44 / 3f82c20 / f13e691: the existing
+TurboQuant / W6 / geglu work is all moot for repeat-prompt traffic
+because nothing persists across requests in the first place.

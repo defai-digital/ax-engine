@@ -38,7 +38,8 @@ def start_server(binary: str, model_dir: str, port: int) -> subprocess.Popen:
         "--disable-ngram-acceleration",
     ]
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
-    return subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    # Inherit stderr to the parent so diagnostic eprintln from the server is visible.
+    return subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=None)
 
 
 def wait_for_health(port: int, proc: subprocess.Popen, timeout: float = 60.0) -> None:
