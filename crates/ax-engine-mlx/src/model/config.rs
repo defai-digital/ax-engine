@@ -302,6 +302,17 @@ impl ModelConfig {
             None
         };
 
+        let moe_norm_topk_prob = if m.model_family == "qwen3_5" && m.moe.is_enabled() {
+            // mlx_lm.models.qwen3_5.TextModelArgs defaults norm_topk_prob to
+            // true. Older AX manifests emitted false when config.json omitted
+            // the field, which makes Qwen3.6 35B A3B route MoE experts with
+            // the wrong weights. Keep the loader compatible with those cached
+            // manifests while the converter now emits the correct default.
+            true
+        } else {
+            m.moe_norm_topk_prob
+        };
+
         Self {
             model_family: m.model_family.clone(),
             layer_count: m.layer_count as usize,
@@ -324,7 +335,7 @@ impl ModelConfig {
             gemma4_moe_router: is_gemma4,
             uses_geglu,
             hidden_states_scale: m.hidden_states_scale,
-            moe_norm_topk_prob: m.moe_norm_topk_prob,
+            moe_norm_topk_prob,
             hidden_size_per_layer_input: m.hidden_size_per_layer_input as usize,
             linear_attention: LinearAttentionConfig::from_manifest(m),
             mla_attention: MlaAttentionConfig::from_manifest(m),

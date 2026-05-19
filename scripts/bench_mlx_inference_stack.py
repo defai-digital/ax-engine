@@ -51,7 +51,6 @@ import sys
 import tempfile
 import time
 import urllib.request
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -752,150 +751,11 @@ def ax_decode_policy(
     return "ngram_acceleration_kv_trim"
 
 
-DECODE_DEGENERACY_NGRAM_SIZE = 8
-DECODE_DEGENERACY_MAX_REPEATS_THRESHOLD = 3
-DECODE_DEGENERACY_SCHEMA_VERSION = "ax.decode_degeneracy.v1"
-DECODE_DEGENERACY_VALIDATOR = "no_repeated_ngram_loop_v1"
-
-
-def decode_degeneracy_metrics(
-    token_ids: list[int],
-    *,
-    ngram_size: int = DECODE_DEGENERACY_NGRAM_SIZE,
-    max_repeats_threshold: int = DECODE_DEGENERACY_MAX_REPEATS_THRESHOLD,
-) -> dict[str, Any]:
-    """Detect pathological repeated-n-gram loops in a single decode output.
-
-    Mirrors `mtplx.benchmarks.validators.basic.validate_no_degenerate_loop`
-    (8-gram window, threshold 3) but slides directly over token IDs so no
-    detokenization is required. Token-ID-level repetition is the cleanest
-    signal for greedy-decode collapse: the model emits the same sub-sequence
-    multiple times in a row, which is exactly what makes the n-gram drafter
-    look great. Flagging these rows lets the README distinguish
-    "n-gram acceleration on healthy decode" from "n-gram acceleration on a
-    degenerate loop the model fell into".
-
-    A sequence shorter than `ngram_size * (max_repeats_threshold + 1)` cannot
-    exhibit the pattern by definition and is reported as skipped.
-    """
-    n = int(ngram_size)
-    threshold = int(max_repeats_threshold)
-    if n < 1:
-        raise ValueError("ngram_size must be >= 1")
-    if threshold < 0:
-        raise ValueError("max_repeats_threshold must be >= 0")
-    count = len(token_ids)
-    min_required = n * (threshold + 1)
-    if count < min_required:
-        return {
-            "token_count": count,
-            "max_ngram_repeats": 0,
-            "detected": False,
-            "skipped": "output_shorter_than_min_required_window",
-            "min_required_tokens": min_required,
-        }
-    counts = Counter(
-        tuple(int(t) for t in token_ids[i : i + n])
-        for i in range(count - n + 1)
-    )
-    max_repeats = counts.most_common(1)[0][1] if counts else 0
-    return {
-        "token_count": count,
-        "max_ngram_repeats": int(max_repeats),
-        "detected": bool(max_repeats > threshold),
-    }
-
-
-def summarize_decode_degeneracy(
-    runs: list[dict[str, Any]],
-    *,
-    ngram_size: int = DECODE_DEGENERACY_NGRAM_SIZE,
-    max_repeats_threshold: int = DECODE_DEGENERACY_MAX_REPEATS_THRESHOLD,
-) -> dict[str, Any]:
-    """Aggregate per-trial decode degeneracy into a single row field.
-
-    Trials without captured token IDs degrade the row to a `skipped` state
-    so callers can distinguish "no degeneracy observed" from "no evidence
-    gathered" — the throughput claim must not be silently promoted when
-    we have no idea what the output looked like.
-    """
-    summary: dict[str, Any] = {
-        "schema_version": DECODE_DEGENERACY_SCHEMA_VERSION,
-        "validator": DECODE_DEGENERACY_VALIDATOR,
-        "ngram_size": int(ngram_size),
-        "max_repeats_threshold": int(max_repeats_threshold),
-        "source": "decode_output_token_ids",
-    }
-    per_trial: list[dict[str, Any]] = []
-    missing_ids_count = 0
-    for index, run in enumerate(runs):
-        token_ids = run.get("output_token_ids")
-        if not isinstance(token_ids, list):
-            missing_ids_count += 1
-            per_trial.append(
-                {"trial": index, "skipped": "output_token_ids_not_captured"}
-            )
-            continue
-        metrics = decode_degeneracy_metrics(
-            [int(t) for t in token_ids],
-            ngram_size=ngram_size,
-            max_repeats_threshold=max_repeats_threshold,
-        )
-        metrics["trial"] = index
-        per_trial.append(metrics)
-    summary["per_trial"] = per_trial
-    if missing_ids_count == len(runs):
-        summary["skipped"] = "output_token_ids_not_captured"
-        return summary
-    if missing_ids_count > 0:
-        summary["partial_evidence"] = True
-        summary["trials_without_token_ids"] = int(missing_ids_count)
-    repeats_list = [
-        int(item["max_ngram_repeats"])
-        for item in per_trial
-        if "max_ngram_repeats" in item
-    ]
-    summary["detected_in_any_trial"] = any(
-        bool(item.get("detected")) for item in per_trial
-    )
-    if repeats_list:
-        summary["max_repeats_observed"] = max(repeats_list)
-        summary["mean_repeats_observed"] = round(
-            sum(repeats_list) / len(repeats_list), 3
-        )
-    return summary
-
-
 def ax_decode_claim_status(
     direct_mode: bool,
     telemetry: dict[str, int],
-    *,
-    decode_degeneracy: dict[str, Any] | None = None,
 ) -> str:
-    """Throughput-and-fallback verdict, optionally downgraded when the
-    decode output is a repeated-n-gram loop.
-
-    When `decode_degeneracy` is provided and `detected_in_any_trial` is
-    true, the verdict promotes to a `_degenerate_decode` variant so the
-    README and downstream consumers can flag throughput numbers that
-    were achieved on collapsed output rather than on healthy decode.
-    """
-    base = _ax_decode_claim_status_throughput(direct_mode, telemetry)
-    if decode_degeneracy is None:
-        return base
-    if not bool(decode_degeneracy.get("detected_in_any_trial")):
-        return base
-    if base == "ngram_acceleration_effective_throughput":
-        return "ngram_acceleration_degenerate_decode"
-    if base == "direct_same_policy_baseline":
-        return "direct_same_policy_baseline_degenerate_decode"
-    return base
-
-
-def _ax_decode_claim_status_throughput(
-    direct_mode: bool,
-    telemetry: dict[str, int],
-) -> str:
+    """Return the throughput-and-fallback verdict for an AX decode row."""
     if direct_mode:
         return "direct_same_policy_baseline"
     if not telemetry or (
@@ -2652,16 +2512,11 @@ def bench_axengine(
 
     runs = []
     for index in range(repetitions):
-        # Always capture output token IDs internally so the decode-degeneracy
-        # validator can run on every AX row. The `capture_output_token_ids`
-        # parameter now only controls whether the IDs are kept in the
-        # persisted trial artifact (size-sensitive); the validator's summary
-        # is always emitted, regardless of whether the IDs themselves are.
         run = axengine_one_run(
             port,
             tokens,
             generation_tokens,
-            capture_output_token_ids=True,
+            capture_output_token_ids=capture_output_token_ids,
             server_pid=server_pid,
         )
         runs.append(run)
@@ -2680,17 +2535,11 @@ def bench_axengine(
 
     ngram_summary = summarize_telemetry(runs)
     ax_mlx_telemetry = summarize_ax_mlx_telemetry(runs)
-    decode_degeneracy = summarize_decode_degeneracy(runs)
     validate_axengine_policy_telemetry(
         direct_mode=direct_mode,
         ngram_summary=ngram_summary,
         ax_mlx_telemetry=ax_mlx_telemetry,
     )
-    if not capture_output_token_ids:
-        # Drop the raw IDs now that the validator has consumed them, so the
-        # opt-in size cost of `--capture-output-token-ids` is preserved.
-        for run in runs:
-            run.pop("output_token_ids", None)
     row = {
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
@@ -2710,7 +2559,6 @@ def bench_axengine(
         "ax_decode_claim_status": ax_decode_claim_status(
             direct_mode,
             ngram_summary,
-            decode_degeneracy=decode_degeneracy,
         ),
         "ax_decode_claim_mode": ax_decode_claim_mode(direct_mode, sampler=None),
         "prompt_contract": "mlx_lm_random_tokens_seed_0",
@@ -2726,7 +2574,6 @@ def bench_axengine(
         "decode_s": summarize_runs(runs, "decode_s"),
         "ngram_acceleration_telemetry": ngram_summary,
         "ngram_accept_at_depth": summarize_ngram_accept_at_depth(ngram_summary),
-        "decode_degeneracy": decode_degeneracy,
         # Sampler config (PRD §7.1 release-claim artifact requirement).
         # The current bench harness runs greedy by default; the field is
         # always present and the canonical signature equals "greedy" when

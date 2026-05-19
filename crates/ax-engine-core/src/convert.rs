@@ -191,7 +191,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         } else {
             None
         },
-        moe_norm_topk_prob: arch_bool(&config, &model_type, "norm_topk_prob").unwrap_or(false),
+        moe_norm_topk_prob: arch_bool(&config, &model_type, "norm_topk_prob")
+            .unwrap_or(default_moe_norm_topk_prob(&model_type)),
         hidden_size_per_layer_input: arch_u64(&config, &model_type, "hidden_size_per_layer_input")
             .and_then(u64_to_u32)
             .unwrap_or(0),
@@ -926,6 +927,10 @@ fn is_mla_family(model_type: &str) -> bool {
 
 fn defaults_attn_output_gate(model_type: &str) -> bool {
     is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+}
+
+fn default_moe_norm_topk_prob(model_type: &str) -> bool {
+    is_qwen3_5_family(model_type)
 }
 
 fn runtime_status_for_model_type(_model_type: &str) -> NativeRuntimeStatus {
@@ -3302,6 +3307,10 @@ mod tests {
         assert_eq!(manifest.moe.expert_count, Some(4));
         assert_eq!(manifest.moe.experts_per_token, Some(2));
         assert_eq!(manifest.moe.expert_intermediate_size, Some(8));
+        assert!(
+            manifest.moe_norm_topk_prob,
+            "Qwen3.5 MoE defaults norm_topk_prob=true in mlx_lm"
+        );
         assert!(
             manifest.attn_output_gate,
             "Qwen3.5 MoE full-attention layers must default to the reference output gate"

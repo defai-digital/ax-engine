@@ -338,7 +338,12 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
       float sp = a_plus_dt > 20.0f ? a_plus_dt : log1p(exp(a_plus_dt));
       g_t_cache[fill_t] = exp(-exp_a_log * sp);
       float b_val = static_cast<float>(b_base[fill_t * Hv + hv_idx]);
-      beta_t_cache[fill_t] = 1.0f / (1.0f + exp(-b_val));
+      // mlx_lm computes `beta = sigmoid(b)` as a separate MLX op. For bf16
+      // activations that op returns bf16, then the Metal recurrent kernel reads
+      // the rounded value. Preserve that contract here even though the fused
+      // kernel computes beta internally in float.
+      beta_t_cache[fill_t] =
+          static_cast<float>(static_cast<InT>(1.0f / (1.0f + exp(-b_val))));
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 

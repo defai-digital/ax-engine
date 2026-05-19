@@ -296,9 +296,9 @@ the
 [when-it-helps section](docs/NGRAM-ACCELERATION.md#when-n-gram-acceleration-helps)
 with literature citations and our own random-vs-real measurements,
 and the
-[decode-degeneracy](docs/NGRAM-ACCELERATION.md#decode-degeneracy-on-synthetic-benchmark-prompts)
-validator that flags rows whose throughput was measured on a collapsed
-output loop.
+[synthetic repeated-output loop](docs/NGRAM-ACCELERATION.md#synthetic-repeated-output-loops)
+caveat for random-token rows whose throughput may be measured on a
+collapsed output loop.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|

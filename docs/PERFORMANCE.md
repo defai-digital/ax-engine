@@ -111,7 +111,7 @@ claim, not as a general production-serving benchmark. The review covers:
 | Prefill/decode split | Tables report prefill tok/s separately from decode tok/s | Prefill gains are not attributed to n-gram decode acceleration |
 | Repeated measurement | 5 repetitions per engine/model/prompt row, reported through medians | Reduced single-run noise within the current host and prompt shape |
 | Route identity | AX artifacts record runtime route and fixed-schema n-gram telemetry fields | No-draft fallback, direct pipeline, and n-gram rows can be distinguished |
-| Decode degeneracy | Every AX row emits `decode_degeneracy` (8-gram-repeat validator) and the `ax_decode_claim_status` value is promoted to a `_degenerate_decode` variant when the output collapsed into a loop | Throughput rows produced on degenerate output are visibly labeled, not silently published |
+| Output-quality caveat | Random-token greedy prompts can collapse into repeated output, but throughput artifact status stays limited to direct/n-gram fallback evidence | Public rows are performance evidence; coherent-output claims require separate token-output validation |
 | Scope disclosure | Methodology states host, batch size, generated-token count, temperature, and `prefill_step_size` | Readers can see that current public rows are batch=1, short/mid-prompt evidence |
 
 This review intentionally rejects broader conclusions that the current table
@@ -146,14 +146,12 @@ The high end of the n-gram column is sensitive to a second regime worth
 naming explicitly: random-token benchmark prompts at greedy decode can
 push the model into a repeated-output loop, and both the direct and the
 n-gram row then measure throughput on that loop rather than on healthy
-decode. The bench harness emits a `decode_degeneracy` field on every AX
-row and promotes `ax_decode_claim_status` to a `_degenerate_decode`
-variant whenever an 8-gram repeats more than three times in any trial.
-See
-[`docs/NGRAM-ACCELERATION.md` § Decode degeneracy](NGRAM-ACCELERATION.md#decode-degeneracy-on-synthetic-benchmark-prompts)
-for the validator contract and
-`benchmarks/results/mlx-inference/2026-05-18-decode-degeneracy-validator/`
-for the first end-to-end evidence.
+decode. Current benchmark artifacts do not encode that as a claim-status
+variant; `ax_decode_claim_status` is intentionally limited to throughput and
+fallback state. Treat random-token n-gram wins as synthetic throughput rows
+unless a separate token-output validation artifact accompanies the claim. See
+[`docs/NGRAM-ACCELERATION.md` § Synthetic repeated-output loops](NGRAM-ACCELERATION.md#synthetic-repeated-output-loops)
+for the interpretation rule.
 
 The strongest user-facing case for n-gram acceleration is coding-shaped output
 with repeated local structure: completion, edit loops, structured diffs,

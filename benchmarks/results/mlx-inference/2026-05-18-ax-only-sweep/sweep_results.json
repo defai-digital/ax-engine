@@ -424,7 +424,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -531,36 +531,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -960,7 +930,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -1067,36 +1037,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -1496,7 +1436,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -1603,36 +1543,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -2032,7 +1942,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -2140,36 +2050,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -2572,7 +2452,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -2680,36 +2560,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -3112,7 +2962,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -3220,36 +3070,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -4065,7 +3885,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -4172,36 +3992,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -4601,7 +4391,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -4708,36 +4498,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -5137,7 +4897,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -5244,36 +5004,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -5673,7 +5403,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -5781,36 +5511,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -6213,7 +5913,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -6321,36 +6021,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -6753,7 +6423,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -6861,36 +6531,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -7706,7 +7346,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -7813,36 +7453,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -8242,7 +7852,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -8349,36 +7959,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -8778,7 +8358,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -8885,36 +8465,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -9314,7 +8864,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -9422,36 +8972,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -9854,7 +9374,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -9962,36 +9482,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -10394,7 +9884,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -10502,36 +9992,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -11347,7 +10807,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -11454,36 +10914,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -11883,7 +11313,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -11990,36 +11420,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -12419,7 +11819,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -12526,36 +11926,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -12955,7 +12325,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -13063,36 +12433,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -13495,7 +12835,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -13603,36 +12943,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -14035,7 +13345,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -14143,36 +13453,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -14988,7 +14268,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -15095,36 +14375,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -15524,7 +14774,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -15631,36 +14881,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -16060,7 +15280,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -16167,36 +15387,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 61,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 61,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 61,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 61,
-              "mean_repeats_observed": 61.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -16596,7 +15786,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -16704,36 +15894,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -17136,7 +16296,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -17244,36 +16404,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -17676,7 +16806,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -17784,36 +16914,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 306
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 61,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 61,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 61,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 61,
-              "mean_repeats_observed": 61.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -19109,7 +18209,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -19216,36 +18316,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 48,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 48,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 48,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 48,
-              "mean_repeats_observed": 48.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -19645,7 +18715,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -19752,36 +18822,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 110,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 110,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 110,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 110,
-              "mean_repeats_observed": 110.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -20181,7 +19221,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -20288,36 +19328,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 115,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 115,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 115,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 115,
-              "mean_repeats_observed": 115.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -20717,7 +19727,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -20825,36 +19835,6 @@
               ],
               "total_attempts": 57,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 110,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 110,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 110,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 110,
-              "mean_repeats_observed": 110.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -21257,7 +20237,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -21365,36 +20345,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 306
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 96,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 96,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 96,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 96,
-              "mean_repeats_observed": 96.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -21797,7 +20747,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -21905,36 +20855,6 @@
               ],
               "total_attempts": 51,
               "weighted_accepted_tokens_lower_bound": 306
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 115,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 115,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 115,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 115,
-              "mean_repeats_observed": 115.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -22750,7 +21670,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -22857,36 +21777,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -23286,7 +22176,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -23393,36 +22283,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -23822,7 +22682,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "direct_no_ngram_acceleration",
-            "ax_decode_claim_status": "direct_same_policy_baseline_degenerate_decode",
+            "ax_decode_claim_status": "direct_same_policy_baseline",
             "ax_decode_claim_mode": "direct_greedy_exact_baseline",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -23929,36 +22789,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 117,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 117,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 117,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 117,
-              "mean_repeats_observed": 117.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -24358,7 +23188,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -24466,36 +23296,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -24898,7 +23698,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -25006,36 +23806,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 324
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 121,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 121,
-              "mean_repeats_observed": 121.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -25438,7 +24208,7 @@
               "benchmark_surface": "mlx_inference_stack"
             },
             "ax_decode_policy": "ngram_acceleration_kv_trim",
-            "ax_decode_claim_status": "ngram_acceleration_degenerate_decode",
+            "ax_decode_claim_status": "ngram_acceleration_effective_throughput",
             "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
             "prompt_contract": "mlx_lm_random_tokens_seed_0",
             "random_seed": 0,
@@ -25546,36 +24316,6 @@
               ],
               "total_attempts": 54,
               "weighted_accepted_tokens_lower_bound": 306
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 117,
-                  "detected": true,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 117,
-                  "detected": true,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 117,
-                  "detected": true,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": true,
-              "max_repeats_observed": 117,
-              "mean_repeats_observed": 117.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -26520,36 +25260,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 116,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 116,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 116,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -27055,36 +25765,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -27592,42 +26272,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 0,
-                  "max_ngram_repeats": 0,
-                  "detected": false,
-                  "skipped": "output_shorter_than_min_required_window",
-                  "min_required_tokens": 32,
-                  "trial": 0
-                },
-                {
-                  "token_count": 0,
-                  "max_ngram_repeats": 0,
-                  "detected": false,
-                  "skipped": "output_shorter_than_min_required_window",
-                  "min_required_tokens": 32,
-                  "trial": 1
-                },
-                {
-                  "token_count": 0,
-                  "max_ngram_repeats": 0,
-                  "detected": false,
-                  "skipped": "output_shorter_than_min_required_window",
-                  "min_required_tokens": 32,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 0,
-              "mean_repeats_observed": 0.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -28133,36 +26777,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 116,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 116,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 116,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -28670,36 +27284,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -29205,42 +27789,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 0,
-                  "max_ngram_repeats": 0,
-                  "detected": false,
-                  "skipped": "output_shorter_than_min_required_window",
-                  "min_required_tokens": 32,
-                  "trial": 0
-                },
-                {
-                  "token_count": 0,
-                  "max_ngram_repeats": 0,
-                  "detected": false,
-                  "skipped": "output_shorter_than_min_required_window",
-                  "min_required_tokens": 32,
-                  "trial": 1
-                },
-                {
-                  "token_count": 0,
-                  "max_ngram_repeats": 0,
-                  "detected": false,
-                  "skipped": "output_shorter_than_min_required_window",
-                  "min_required_tokens": 32,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 0,
-              "mean_repeats_observed": 0.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -30182,36 +28730,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 75,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 75,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 75,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -30717,36 +29235,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -31254,36 +29742,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -31789,36 +30247,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 75,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 75,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 75,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -32326,36 +30754,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -32861,36 +31259,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -33832,36 +32200,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -34367,36 +32705,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -34904,36 +33212,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -35439,36 +33717,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -35976,36 +34224,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -36511,36 +34729,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -37482,36 +35670,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 110,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 110,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 110,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -38017,36 +36175,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -38554,36 +36682,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -39089,36 +37187,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 110,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 110,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 110,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {
@@ -39626,36 +37694,6 @@
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
             },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
-            },
             "sampler_settings": null,
             "ax_decode_row_identity": {
               "schema": "ax.row_identity.v1",
@@ -40161,36 +38199,6 @@
               ],
               "total_attempts": 0,
               "weighted_accepted_tokens_lower_bound": 0
-            },
-            "decode_degeneracy": {
-              "schema_version": "ax.decode_degeneracy.v1",
-              "validator": "no_repeated_ngram_loop_v1",
-              "ngram_size": 8,
-              "max_repeats_threshold": 3,
-              "source": "decode_output_token_ids",
-              "per_trial": [
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 0
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 1
-                },
-                {
-                  "token_count": 128,
-                  "max_ngram_repeats": 1,
-                  "detected": false,
-                  "trial": 2
-                }
-              ],
-              "detected_in_any_trial": false,
-              "max_repeats_observed": 1,
-              "mean_repeats_observed": 1.0
             },
             "sampler_settings": null,
             "ax_decode_row_identity": {

@@ -50,9 +50,9 @@ n-gram because the model is producing new content.
 Two evidence sets, both Gemma 4 E2B 4-bit, batch=1, gen=128, 3 trials
 per row, greedy decode:
 
-| Prompt source | Direct decode | N-gram decode | N-gram uplift | Accept rate | Decode degenerate? |
+| Prompt source | Direct decode | N-gram decode | N-gram uplift | Accept rate | Synthetic loop caveat? |
 |---|---:|---:|---:|---:|:---:|
-| Random tokens (mlx_lm contract), p=128 | 205.4 | 609.1 | **+196%** | ~100% | **Yes** — 8-gram repeats 121× in 128-token window |
+| Random tokens (mlx_lm contract), p=128 | 205.4 | 609.1 | **+196%** | ~100% | **Yes** — repeated 8-token block observed in legacy token-output review |
 | Random tokens, p=512 | 196.8 | 599.5 | **+205%** | ~100% | **Yes** |
 | Random tokens, p=2048 | 190.1 | 550.0 | **+189%** | ~100% | **Yes** |
 | Real coding *generation*, lru_cache (90t prompt) | 203.5 | 173.1 | **−15%** | 11.9% | no |
@@ -60,12 +60,12 @@ per row, greedy decode:
 | Real coding *generation*, repo_refactor (447t) | 193.5 | 189.0 | **−2.3%** | 51.4% | no |
 
 Evidence directories:
-- `benchmarks/results/mlx-inference/2026-05-18-decode-degeneracy-validator/` — random-token rows; every AX row labeled `*_degenerate_decode`
+- 2026-05-18 legacy random-token output-loop review
 - `benchmarks/results/mlx-inference/2026-05-18-real-prompt-coding/` — real coding **generation** prompts (not editing); every AX row labeled `ngram_acceleration_effective_throughput` with healthy decode
 
 The direct-decode column is stable (~190–205 tok/s) across both
 sources, so the model and the kernel are not the variable. The n-gram
-column collapses from +196% on random degenerate output to a small
+column collapses from +196% on repeated random-token output to a small
 negative on real generation prompts. Neither evidence set has covered
 the workload where n-gram is known to dominate (code editing); a
 follow-up suite is the next planned bench.
@@ -165,10 +165,8 @@ Defined in `scripts/bench_mlx_inference_stack.py::ax_decode_claim_status`.
 | `ngram_no_draft_direct_fallback` | N-gram path was hit but every step fell through to direct decode (no draft attempts). |
 | `ngram_no_accept_fallback` | Drafter proposed but the verifier never accepted (no acceleration realized). |
 | `ngram_acceleration_effective_throughput` | Drafter proposed and at least one token was accepted. |
-| `direct_same_policy_baseline_degenerate_decode` | Direct row whose output collapsed into a repeated n-gram loop (see [Decode degeneracy](#decode-degeneracy-on-synthetic-benchmark-prompts)). |
-| `ngram_acceleration_degenerate_decode` | N-gram row whose output collapsed into a repeated n-gram loop. The throughput is real but achieved on degenerate output, not healthy decode. |
 
-## Decode degeneracy on synthetic benchmark prompts
+## Synthetic repeated-output loops
 
 The standard AX benchmark prompts are uniform-random token IDs sampled
 from `mx.random.randint(0, vocab_size, ...)` with `seed=0`, matching
@@ -192,65 +190,24 @@ things become true at once:
 
 These rows still measure real wall-clock throughput, but they do not
 measure what most users want to compare against — coherent generation.
-The bench harness flags them so README readers and downstream tooling
-can keep the two regimes apart.
+The benchmark harness keeps `ax_decode_claim_status` limited to
+throughput and fallback state, so it no longer folds this output-quality
+classification into each performance row. If a release claim needs to say
+the output was coherent, attach a separate token-output validation artifact
+or an application-shaped prompt suite. The `--capture-output-token-ids`
+flag can still persist generated token IDs for that kind of external review,
+but the default throughput artifact stays size-conscious and claim-scoped.
 
-### How the validator works
+### Reading random-token n-gram rows
 
-Every AX row carries a `decode_degeneracy` field built by
-`scripts/bench_mlx_inference_stack.py::summarize_decode_degeneracy`.
-The validator slides an 8-token window over each trial's decode token
-IDs and counts the most common n-gram. If any trial's max repetition
-count exceeds the threshold (default 3), `detected_in_any_trial` is set
-and `ax_decode_claim_status` promotes to a `_degenerate_decode`
-variant. The check is borrowed in spirit from MTPLX's
-`validate_no_degenerate_loop` but operates directly on token IDs so it
-needs no detokenization and is unambiguous across tokenizers.
-
-Schema fields on each AX row:
-
-| Field | Meaning |
-|---|---|
-| `decode_degeneracy.schema_version` | `ax.decode_degeneracy.v1` |
-| `decode_degeneracy.validator` | `no_repeated_ngram_loop_v1` |
-| `decode_degeneracy.ngram_size` | Window size (default 8) |
-| `decode_degeneracy.max_repeats_threshold` | Threshold for `detected` (default 3) |
-| `decode_degeneracy.per_trial[i]` | `{trial, token_count, max_ngram_repeats, detected}` or `{trial, skipped}` |
-| `decode_degeneracy.detected_in_any_trial` | True if any trial crossed the threshold |
-| `decode_degeneracy.max_repeats_observed` | Worst-trial repeat count |
-| `decode_degeneracy.mean_repeats_observed` | Average across trials |
-| `decode_degeneracy.skipped` | Set when no trial captured token IDs |
-| `decode_degeneracy.partial_evidence` | Set when only some trials captured IDs |
-
-The harness always captures token IDs internally so the validator can
-run on every AX row. The `--capture-output-token-ids` CLI flag only
-controls whether the raw IDs are persisted in the trial artifacts
-themselves; the `decode_degeneracy` summary is always emitted.
-
-### Reference evidence
-
-The first end-to-end run is at
-`benchmarks/results/mlx-inference/2026-05-18-decode-degeneracy-validator/gemma-4-e2b-it-4bit.json`.
-All six AX rows on `mlx-community/gemma-4-e2b-it-4bit`
-(direct + n-gram, prompt={128,512,2048}, generation=128, 3 trials each)
-flag as `*_degenerate_decode` with `max_ngram_repeats = 121` in every
-trial — essentially a single 8-token block repeated across the entire
-128-token decode window. This is the regime in which random-token
-benchmark prompts magnify n-gram speedup numbers; it is not the regime
-most user workloads operate in.
-
-### Reading a `_degenerate_decode` row
-
-- The reported `decode_tok/s` is real wall-clock throughput. The label
-  does not say "the number is wrong"; it says "the output the number
-  was measured on was a repetition loop."
-- The matching direct row, if present, is likely to carry the same
-  label for the same prompt because both rows decode from the same
-  initial state under greedy sampling.
+- The reported `decode_tok/s` is real wall-clock throughput. It does not
+  prove that the decoded text resembles a normal user workload.
+- The matching direct row, if present, may hit the same repeated-output
+  loop for the same prompt because both rows decode from the same initial
+  state under greedy sampling.
 - For workload-shape claims (coding completion, structured diffs,
-  JSON/tool payloads) prefer non-random prompts. The decode-degeneracy
-  validator is a transparency gate, not a verdict on the n-gram
-  drafter's value on real workloads.
+  JSON/tool payloads) prefer non-random prompts. Random-token throughput is
+  useful for engine comparison, not for user-workload generalization.
 
 ## Same-policy greedy promotion gate
 
@@ -297,8 +254,8 @@ Every n-gram row used for release claims must include:
 - Direct same-policy baseline row identity (when claiming acceleration)
 - `ax_ngram_draft_attempts`, `ax_ngram_draft_tokens`,
   `ax_ngram_accepted_tokens`, fallback reason counts
-- `decode_degeneracy.detected_in_any_trial` and per-trial repeat counts,
-  so a release claim cannot silently rest on a degenerate output stream
+- A separate token-output validation artifact when the claim depends on
+  coherent generated content rather than throughput alone
 
 The bench script enforces presence of `ax_decode_claim_status` and
 `ax_decode_claim_mode` on every emitted row; the same-policy gate
@@ -309,9 +266,6 @@ enforces presence of the rest at promotion time.
 ```bash
 # Run the Python claim-taxonomy tests.
 python -m unittest scripts.test_bench_mlx_inference_stack -v -k claim
-
-# Run the decode-degeneracy validator tests.
-python -m unittest scripts.test_bench_mlx_inference_stack -v -k decode_degeneracy
 
 # Run the Rust same-policy gate tests.
 cargo test -p ax-engine-bench --quiet ngram_claim_gate

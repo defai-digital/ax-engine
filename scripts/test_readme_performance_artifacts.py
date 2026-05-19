@@ -268,6 +268,8 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
         *,
         stale_readme_value: bool = False,
         stale_readme_percent: bool = False,
+        claim_gate: bool = True,
+        claim_status: bool = True,
     ) -> None:
         artifact_dir = root / "benchmarks/results/mlx-inference/local"
         prompt_dir = artifact_dir / "gemma-4-e2b-it-4bit-prompts"
@@ -332,7 +334,8 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 payload["decode_s"] = metric(0.2)
                 payload["ax_mlx_telemetry"] = ax_mlx_telemetry()
                 payload["ax_decode_policy"] = "direct_no_ngram_acceleration"
-                payload["ax_decode_claim_status"] = "direct_same_policy_baseline"
+                if claim_status:
+                    payload["ax_decode_claim_status"] = "direct_same_policy_baseline"
                 payload["ngram_acceleration_telemetry"] = ngram_telemetry(
                     attempts=0,
                     accepted=0,
@@ -349,7 +352,10 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 payload["decode_s"] = metric(0.2)
                 payload["ax_mlx_telemetry"] = ax_mlx_telemetry()
                 payload["ax_decode_policy"] = "ngram_acceleration_kv_trim"
-                payload["ax_decode_claim_status"] = "ngram_acceleration_effective_throughput"
+                if claim_status:
+                    payload["ax_decode_claim_status"] = (
+                        "ngram_acceleration_effective_throughput"
+                    )
                 payload["ngram_acceleration_telemetry"] = ngram_telemetry(
                     attempts=1,
                     accepted=2,
@@ -358,10 +364,6 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         artifact = {
             "schema_version": "ax.mlx_inference_stack.v2",
-            "claim_gate": {
-                "schema_version": checker.PHASE0_CLAIM_GATE_SCHEMA_VERSION,
-                "scope": "mlx_inference_stack_public_readme",
-            },
             "concurrent_prefill_overlap_classification": {
                 "classification": "single_request_no_overlap",
                 "continuous_batching_claim": False,
@@ -407,6 +409,11 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 row("ax_engine_mlx_ngram_accel", 82.0, 12.0),
             ],
         }
+        if claim_gate:
+            artifact["claim_gate"] = {
+                "schema_version": checker.PHASE0_CLAIM_GATE_SCHEMA_VERSION,
+                "scope": "mlx_inference_stack_public_readme",
+            }
         (artifact_dir / "gemma-4-e2b-it-4bit.json").write_text(
             json.dumps(artifact, indent=2) + "\n"
         )
@@ -448,7 +455,20 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 7)
 
-    def test_degenerate_direct_claim_status_matches_producer_contract(self) -> None:
+    def test_legacy_non_gated_rows_allow_missing_claim_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root, claim_gate=False, claim_status=False)
+
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=root / "README.md",
+                expected_metric_count=7,
+            )
+
+        self.assertEqual(len(checked), 7)
+
+    def test_degenerate_direct_claim_status_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.write_fixture(root)
@@ -458,65 +478,35 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             artifact = json.loads(artifact_path.read_text())
             for row in artifact["results"]:
                 if row["engine"] == "ax_engine_mlx":
-                    row["ax_decode_claim_status"] = (
-                        "direct_same_policy_baseline_degenerate_decode"
-                    )
-            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
-
-            checked = checker.check_readme_performance(
-                repo_root=root,
-                readme_path=root / "README.md",
-                expected_metric_count=7,
-            )
-
-        self.assertEqual(len(checked), 7)
-
-    def test_degenerate_ngram_claim_status_keeps_telemetry_gate(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_fixture(root)
-            artifact_path = (
-                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
-            )
-            artifact = json.loads(artifact_path.read_text())
-            for row in artifact["results"]:
-                if row["engine"] == "ax_engine_mlx_ngram_accel":
-                    row["ax_decode_claim_status"] = (
-                        "ngram_acceleration_degenerate_decode"
-                    )
-            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
-
-            checked = checker.check_readme_performance(
-                repo_root=root,
-                readme_path=root / "README.md",
-                expected_metric_count=7,
-            )
-
-        self.assertEqual(len(checked), 7)
-
-    def test_degenerate_ngram_claim_status_requires_draft_acceptance(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.write_fixture(root)
-            artifact_path = (
-                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
-            )
-            artifact = json.loads(artifact_path.read_text())
-            for row in artifact["results"]:
-                if row["engine"] == "ax_engine_mlx_ngram_accel":
-                    row["ax_decode_claim_status"] = (
-                        "ngram_acceleration_degenerate_decode"
-                    )
-                    row["ngram_acceleration_telemetry"] = ngram_telemetry(
-                        attempts=0,
-                        accepted=0,
-                        fallback_steps=2,
-                    )
+                    row["ax_decode_claim_status"] = "legacy_removed_status"
             artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
 
             with self.assertRaisesRegex(
                 checker.ArtifactCheckError,
-                "without draft acceptance",
+                "direct AX row lacks claim status",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
+    def test_degenerate_ngram_claim_status_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx_ngram_accel":
+                    row["ax_decode_claim_status"] = "legacy_removed_status"
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "n-gram row lacks claim status",
             ):
                 checker.check_readme_performance(
                     repo_root=root,

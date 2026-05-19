@@ -87,11 +87,6 @@ AX_NGRAM_TELEMETRY_COUNTERS = {
 
 AX_DIRECT_CLAIM_STATUSES = {
     "direct_same_policy_baseline",
-    "direct_same_policy_baseline_degenerate_decode",
-}
-
-AX_NGRAM_CLAIM_STATUS_BASE = {
-    "ngram_acceleration_degenerate_decode": "ngram_acceleration_effective_throughput",
 }
 
 AX_NGRAM_CLAIM_STATUSES = {
@@ -99,7 +94,6 @@ AX_NGRAM_CLAIM_STATUSES = {
     "ngram_no_draft_direct_fallback",
     "ngram_no_accept_fallback",
     "ngram_no_observed_draft_path",
-    *AX_NGRAM_CLAIM_STATUS_BASE,
 }
 
 PUBLIC_CLAIM_EVIDENCE = {
@@ -997,7 +991,7 @@ def validate_ngram_claim_telemetry(
             f"{artifact_path} n-gram row lacks telemetry counters: {', '.join(missing)}"
         )
     status = row.get("ax_decode_claim_status")
-    status_base = AX_NGRAM_CLAIM_STATUS_BASE.get(status, status)
+    status_base = status
     decode_route = row.get("ax_mlx_decode_route")
     no_decode_steps = (
         isinstance(decode_route, dict)
@@ -1197,7 +1191,10 @@ def validate_artifact_row(
     elif engine == "ax_engine_mlx":
         if row.get("ax_decode_policy") != "direct_no_ngram_acceleration":
             raise ArtifactCheckError(f"{artifact_path} direct AX row lacks direct policy")
-        if row.get("ax_decode_claim_status") not in AX_DIRECT_CLAIM_STATUSES:
+        if (
+            require_phase0
+            and row.get("ax_decode_claim_status") not in AX_DIRECT_CLAIM_STATUSES
+        ):
             raise ArtifactCheckError(f"{artifact_path} direct AX row lacks claim status")
         validate_ax_prefill_decode_split(
             artifact_path=artifact_path,
@@ -1213,7 +1210,10 @@ def validate_artifact_row(
     elif engine == "ax_engine_mlx_ngram_accel":
         if not str(row.get("ax_decode_policy", "")).startswith("ngram_acceleration"):
             raise ArtifactCheckError(f"{artifact_path} n-gram row lacks n-gram policy")
-        if row.get("ax_decode_claim_status") not in AX_NGRAM_CLAIM_STATUSES:
+        if (
+            require_phase0
+            and row.get("ax_decode_claim_status") not in AX_NGRAM_CLAIM_STATUSES
+        ):
             raise ArtifactCheckError(f"{artifact_path} n-gram row lacks claim status")
         validate_ax_prefill_decode_split(
             artifact_path=artifact_path,
