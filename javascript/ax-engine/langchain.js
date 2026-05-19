@@ -162,8 +162,10 @@ export class AXEngineLLM extends LLM {
   async *_streamResponseChunks(prompt, options, runManager) {
     const request = { ...this._buildCompletionRequest(prompt, options), stream: true };
     for await (const event of this.client.streamCompletion(request)) {
-      const text = event.data?.choices?.[0]?.text ?? "";
-      yield { text, generationInfo: { finishReason: event.data?.choices?.[0]?.finish_reason } };
+      const choice = event.data?.choices?.[0];
+      if (!choice) continue;
+      const text = choice.text ?? "";
+      yield { text, generationInfo: { finishReason: choice.finish_reason } };
       await runManager?.handleLLMNewToken(text);
     }
   }
