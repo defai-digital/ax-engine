@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
+use mlx_sys::ops::{gelu_approx_mul_matmul, gelu_approx_quantized_ffn};
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, eval, gelu_approx, gelu_approx_mul,
-    gelu_approx_mul_matmul, gelu_approx_quantized_ffn, matmul, multiply, op_count_snapshot,
-    op_count_take, quantize, quantized_matmul, slice_last_dim,
+    MlxArray, MlxDtype, MlxQuantizationMode, eval, gelu_approx, gelu_approx_mul, matmul, multiply,
+    op_count_snapshot, op_count_take, quantize, quantized_matmul, slice_last_dim,
 };
 use serde_json::{Value, json};
 

@@ -68,6 +68,20 @@ class DirectMlxNoProductionRouteTests(unittest.TestCase):
             ):
                 checker.check_no_production_route(root)
 
+    def test_rejects_crate_root_reexport_of_no_go_wrappers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root / "crates/mlx-sys/src/lib.rs",
+                "pub use ops::{gelu_approx_mul_matmul, gelu_approx_quantized_ffn};\n",
+            )
+
+            with self.assertRaisesRegex(
+                checker.DirectMlxNoProductionRouteError,
+                "gelu_approx_mul_matmul",
+            ):
+                checker.check_no_production_route(root)
+
 
 if __name__ == "__main__":
     unittest.main()
