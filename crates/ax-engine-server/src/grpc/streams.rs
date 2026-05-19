@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ax_engine_sdk::{
-    EngineSession, EngineSessionError, GenerateRequest, GenerateStreamEvent, GenerateStreamState,
+    EngineSessionError, GenerateRequest, GenerateStreamEvent, GenerateStreamState,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -45,9 +45,11 @@ pub(super) async fn build_grpc_stream_state(
         return Ok((ss, StreamStateSource::Stateless(ctx)));
     }
 
-    let session_config = state.session_config.as_ref().clone();
+    let (session_config, mlx_prefix_cache) = state.request_session_parts();
     let (session, ss) = run_blocking(move || {
-        let mut session = EngineSession::new(session_config).map_err(|e| e.to_string())?;
+        let mut session =
+            AppState::build_request_session_from_parts(session_config, mlx_prefix_cache)
+                .map_err(|e| e.to_string())?;
         let ss = session
             .stream_generate_state_with_request_id(request_id, request)
             .map_err(|e| e.to_string())?;

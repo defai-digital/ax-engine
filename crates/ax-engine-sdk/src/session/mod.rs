@@ -37,6 +37,8 @@ use delegated::{
 pub use errors::EngineSessionError;
 use llama_lifecycle::{LlamaCppLifecycleRequest, LlamaCppLifecycleRequestSlot};
 use native::build_native_core;
+#[cfg(feature = "mlx-native")]
+use native::build_native_core_with_mlx_prefix_cache;
 use routes::{apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into};
 pub use stream::{GenerateStream, GenerateStreamState};
 use stream::{
@@ -352,6 +354,23 @@ impl EngineSession {
     pub fn new(config: EngineSessionConfig) -> Result<Self, EngineSessionError> {
         config.validate()?;
         let core = build_native_core(&config)?;
+        Self::from_validated_config_and_core(config, core)
+    }
+
+    #[cfg(feature = "mlx-native")]
+    pub fn new_with_shared_mlx_prefix_cache(
+        config: EngineSessionConfig,
+        prefix_cache_store: ax_engine_mlx::MlxPrefixCacheStore,
+    ) -> Result<Self, EngineSessionError> {
+        config.validate()?;
+        let core = build_native_core_with_mlx_prefix_cache(&config, Some(prefix_cache_store))?;
+        Self::from_validated_config_and_core(config, core)
+    }
+
+    fn from_validated_config_and_core(
+        config: EngineSessionConfig,
+        core: EngineCore,
+    ) -> Result<Self, EngineSessionError> {
         let runtime = config
             .runtime_report()
             .with_mlx_model(resolve_native_model_report(&config, &core));

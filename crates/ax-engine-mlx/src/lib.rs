@@ -13,4 +13,4 @@ pub mod turboquant_metal;
 pub mod weight_rotation;
 pub mod weights;
 
-pub use runner::{EmbedCompileCacheStats, MlxRunner};
+pub use runner::{EmbedCompileCacheStats, MlxPrefixCacheStore, MlxRunner};

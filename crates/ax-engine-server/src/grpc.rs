@@ -51,6 +51,25 @@ impl AxEngineGrpcService {
     }
 }
 
+async fn run_grpc_generate_request(
+    state: &AppState,
+    request_id: u64,
+    request: ax_engine_sdk::GenerateRequest,
+) -> Result<ax_engine_sdk::GenerateResponse, Status> {
+    if state.uses_native_mlx_backend() {
+        let (session_config, mlx_prefix_cache) = state.request_session_parts();
+        return run_blocking(move || {
+            let mut session =
+                AppState::build_request_session_from_parts(session_config, mlx_prefix_cache)?;
+            session.generate_with_request_id(request_id, request)
+        })
+        .await;
+    }
+
+    let ctx = Arc::clone(&state.stateless_generate_context);
+    run_blocking(move || ctx.generate_with_request_id(request_id, request)).await
+}
+
 // ─── Service implementation ───────────────────────────────────────────────────
 
 #[tonic::async_trait]
@@ -88,8 +107,7 @@ impl AxEngine for AxEngineGrpcService {
     ) -> Result<Response<proto::GenerateResponse>, Status> {
         let req = proto_to_generate_request(&self.state, request.into_inner());
         let request_id = self.state.allocate_request_id();
-        let ctx = Arc::clone(&self.state.stateless_generate_context);
-        let response = run_blocking(move || ctx.generate_with_request_id(request_id, req)).await?;
+        let response = run_grpc_generate_request(&self.state, request_id, req).await?;
         Ok(Response::new(sdk_response_to_proto(response)))
     }
 
@@ -117,9 +135,7 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let generate_req = build_chat_generate_request(&self.state, &req)?;
         let request_id = self.state.allocate_request_id();
-        let ctx = Arc::clone(&self.state.stateless_generate_context);
-        let r =
-            run_blocking(move || ctx.generate_with_request_id(request_id, generate_req)).await?;
+        let r = run_grpc_generate_request(&self.state, request_id, generate_req).await?;
         let content = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::ChatCompletionResponse {
@@ -169,9 +185,7 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let generate_req = build_completion_generate_request(&self.state, &req);
         let request_id = self.state.allocate_request_id();
-        let ctx = Arc::clone(&self.state.stateless_generate_context);
-        let r =
-            run_blocking(move || ctx.generate_with_request_id(request_id, generate_req)).await?;
+        let r = run_grpc_generate_request(&self.state, request_id, generate_req).await?;
         let text = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::CompletionResponse {

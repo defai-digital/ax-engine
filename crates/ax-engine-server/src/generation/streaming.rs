@@ -82,9 +82,10 @@ pub(crate) async fn build_stream_state(
         ));
     }
 
-    let session_config = state.session_config.as_ref().clone();
+    let (session_config, mlx_prefix_cache) = state.request_session_parts();
     let (session, stream_state) = run_blocking_session_task(move || {
-        let mut session = EngineSession::new(session_config)?;
+        let mut session =
+            AppState::build_request_session_from_parts(session_config, mlx_prefix_cache)?;
         let stream_state = session.stream_generate_state_with_request_id(request_id, request)?;
         Ok((session, stream_state))
     })

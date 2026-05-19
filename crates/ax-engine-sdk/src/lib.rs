@@ -24,6 +24,8 @@ pub use ax_engine_core::{
 };
 #[allow(deprecated)]
 pub use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode, MlxTurboQuantPreset};
+#[cfg(feature = "mlx-native")]
+pub use ax_engine_mlx::MlxPrefixCacheStore;
 
 pub mod backend;
 mod delegated_http;

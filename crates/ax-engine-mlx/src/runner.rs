@@ -387,6 +387,75 @@ impl Default for MlxPrefixCachePolicy {
     }
 }
 
+/// Cloneable owner for MLX prefix-cache state.
+///
+/// `MlxRunner` keeps request KV state private, but callers that create a fresh
+/// runner per request can pass the same store into each runner so block-aligned
+/// prompt snapshots survive across requests.
+#[derive(Clone)]
+pub struct MlxPrefixCacheStore {
+    prefix_cache: Arc<Mutex<MlxPrefixCache>>,
+    disk_prefix_cache: Option<Arc<crate::disk_prefix_cache::DiskPrefixCache>>,
+}
+
+impl MlxPrefixCacheStore {
+    /// Build a prefix-cache store from the documented environment policy.
+    pub fn from_env() -> Self {
+        Self {
+            prefix_cache: Arc::new(Mutex::new(MlxPrefixCache::new(
+                MlxPrefixCachePolicy::from_env(),
+            ))),
+            disk_prefix_cache: open_disk_prefix_cache_from_env().map(Arc::new),
+        }
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        Arc<Mutex<MlxPrefixCache>>,
+        Option<Arc<crate::disk_prefix_cache::DiskPrefixCache>>,
+    ) {
+        (self.prefix_cache, self.disk_prefix_cache)
+    }
+
+    #[cfg(test)]
+    fn memory_only_for_tests(policy: MlxPrefixCachePolicy) -> Self {
+        Self {
+            prefix_cache: Arc::new(Mutex::new(MlxPrefixCache::new(policy))),
+            disk_prefix_cache: None,
+        }
+    }
+}
+
+fn open_disk_prefix_cache_from_env() -> Option<crate::disk_prefix_cache::DiskPrefixCache> {
+    // F3 M2 — Open the L2 disk prefix cache when an operator has
+    // opted in via AX_MLX_PREFIX_CACHE_DIR (and not disabled the
+    // disk path via the kill switch). Open failures are non-fatal:
+    // we log and fall back to L1-only, since the disk layer is
+    // strictly additive on top of the existing in-memory cache.
+    match (
+        crate::fastpath::prefix_cache_dir(),
+        crate::fastpath::prefix_cache_disk_disabled(),
+    ) {
+        (Some(dir), false) => {
+            let policy = crate::disk_prefix_cache::DiskPrefixCachePolicy::from_env();
+            match crate::disk_prefix_cache::DiskPrefixCache::with_policy(&dir, policy) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "ax_engine_mlx::prefix_cache",
+                        error = %e,
+                        dir = %dir.display(),
+                        "failed to open disk prefix cache; falling back to in-memory only",
+                    );
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct MlxPrefixCacheInsertOutcome {
     stored: bool,
@@ -2328,12 +2397,12 @@ pub struct MlxRunner {
     /// Per-layer compression eligibility. Empty when compression is disabled.
     kv_compression_layer_eligible: Vec<bool>,
     /// Immutable MLX KV snapshots for block-aligned exact prompt prefixes.
-    prefix_cache: Mutex<MlxPrefixCache>,
+    prefix_cache: Arc<Mutex<MlxPrefixCache>>,
     /// Optional L2 file-backed prefix cache (F3). Populated when
     /// `AX_MLX_PREFIX_CACHE_DIR` is set and the disk-disabled kill
     /// switch is not engaged. `None` when off; the L2 paths short-
     /// circuit cheaply.
-    disk_prefix_cache: Option<crate::disk_prefix_cache::DiskPrefixCache>,
+    disk_prefix_cache: Option<Arc<crate::disk_prefix_cache::DiskPrefixCache>>,
     /// Experimental Gemma sliding-window rotating backing store for direct decode.
     rotating_sliding_decode: bool,
     /// Optional mlx_lm-style `clear_cache` cadence for the direct decode pipeline.
@@ -2391,6 +2460,38 @@ impl MlxRunner {
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
         kv_compression: KvCompressionConfig,
+    ) -> Result<Self, MlxRunnerError> {
+        Self::from_artifacts_inner(
+            artifacts,
+            prefill_chunk,
+            disable_ngram_acceleration,
+            kv_compression,
+            None,
+        )
+    }
+
+    pub fn from_artifacts_with_prefix_cache(
+        artifacts: &NativeModelArtifacts,
+        prefill_chunk: usize,
+        disable_ngram_acceleration: bool,
+        kv_compression: KvCompressionConfig,
+        prefix_cache_store: MlxPrefixCacheStore,
+    ) -> Result<Self, MlxRunnerError> {
+        Self::from_artifacts_inner(
+            artifacts,
+            prefill_chunk,
+            disable_ngram_acceleration,
+            kv_compression,
+            Some(prefix_cache_store),
+        )
+    }
+
+    fn from_artifacts_inner(
+        artifacts: &NativeModelArtifacts,
+        prefill_chunk: usize,
+        disable_ngram_acceleration: bool,
+        kv_compression: KvCompressionConfig,
+        prefix_cache_store: Option<MlxPrefixCacheStore>,
     ) -> Result<Self, MlxRunnerError> {
         // AX_NO_SPEC is the CLAUDE.md-documented kill switch. Honor it at
         // the runner boundary so server and SDK paths behave the same as
@@ -2533,32 +2634,9 @@ impl MlxRunner {
         // Qwen3.5 linear-attention uses `ngram_accel_decode_step_linear_safe` which
         // clones the cache for verification and recomputes the committed prefix on
         // partial accept, so n-gram acceleration is safe to enable for these models.
-        // F3 M2 — Open the L2 disk prefix cache when an operator has
-        // opted in via AX_MLX_PREFIX_CACHE_DIR (and not disabled the
-        // disk path via the kill switch). Open failures are non-fatal:
-        // we log and fall back to L1-only, since the disk layer is
-        // strictly additive on top of the existing in-memory cache.
-        let disk_prefix_cache = match (
-            crate::fastpath::prefix_cache_dir(),
-            crate::fastpath::prefix_cache_disk_disabled(),
-        ) {
-            (Some(dir), false) => {
-                let policy = crate::disk_prefix_cache::DiskPrefixCachePolicy::from_env();
-                match crate::disk_prefix_cache::DiskPrefixCache::with_policy(&dir, policy) {
-                    Ok(c) => Some(c),
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "ax_engine_mlx::prefix_cache",
-                            error = %e,
-                            dir = %dir.display(),
-                            "failed to open disk prefix cache; falling back to in-memory only",
-                        );
-                        None
-                    }
-                }
-            }
-            _ => None,
-        };
+        let (prefix_cache, disk_prefix_cache) = prefix_cache_store
+            .unwrap_or_else(MlxPrefixCacheStore::from_env)
+            .into_parts();
 
         let cfg_arc = Arc::new(cfg.clone());
         Ok(Self {
@@ -2576,7 +2654,7 @@ impl MlxRunner {
             ngram_policy_variant,
             kv_compression,
             kv_compression_layer_eligible,
-            prefix_cache: Mutex::new(MlxPrefixCache::new(MlxPrefixCachePolicy::from_env())),
+            prefix_cache,
             disk_prefix_cache,
             rotating_sliding_decode,
             direct_clear_cache_cadence,
@@ -5241,6 +5319,26 @@ mod tests {
             bytes,
             greedy_prefill_output_token: Some(7),
         }
+    }
+
+    #[test]
+    fn prefix_cache_store_clones_share_l1_entries() {
+        let store = MlxPrefixCacheStore::memory_only_for_tests(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 4,
+        });
+        let cloned = store.clone();
+        let key = test_prefix_key(1);
+
+        let outcome = store
+            .prefix_cache
+            .lock()
+            .unwrap()
+            .insert(key.clone(), test_prefix_snapshot(1, 4, 128));
+        assert!(outcome.stored);
+
+        let hit = cloned.prefix_cache.lock().unwrap().get(&key, &[1; 4]);
+        assert!(hit.is_some(), "cloned store must see original L1 insert");
     }
 
     #[test]
