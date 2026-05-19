@@ -1,0 +1,61 @@
+{
+  "command": "target/release/direct-mlx-hotpath-probe --rows 2048 --cols 6144 --warmup 5 --iterations 30 --json-out benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-geglu.json",
+  "config": {
+    "candidate": "gelu_approx_mul",
+    "cols": 6144,
+    "dtype": "float32",
+    "iterations": 30,
+    "rows": 2048,
+    "warmup": 5
+  },
+  "correctness": {
+    "max_abs_error": 0.0,
+    "passed": true,
+    "shape": [
+      2048,
+      6144
+    ],
+    "tolerance": 9.999999974752427e-7
+  },
+  "git": {
+    "commit": "c1beb4f753eb892a1150077d978df4f148d0d4df",
+    "dirty": true
+  },
+  "host": {
+    "arch": "aarch64",
+    "os": "macos"
+  },
+  "measurements": [
+    {
+      "max": 2739.709,
+      "mean": 2283.174966666667,
+      "median": 2256.7084999999997,
+      "min": 2185.0,
+      "name": "portable_gelu_approx_mul",
+      "op_count_median": 10,
+      "samples": 30,
+      "unit": "microseconds"
+    },
+    {
+      "max": 2446.291,
+      "mean": 2269.720733333333,
+      "median": 2255.9165000000003,
+      "min": 2187.1659999999997,
+      "name": "direct_cpp_gelu_approx_mul",
+      "op_count_median": 1,
+      "samples": 30,
+      "unit": "microseconds"
+    },
+    {
+      "max": 1.0003510768239867,
+      "mean": 1.0003510768239867,
+      "median": 1.0003510768239867,
+      "min": 1.0003510768239867,
+      "name": "direct_cpp_speedup_ratio",
+      "samples": 1,
+      "unit": "ratio"
+    }
+  ],
+  "schema": "ax.microbench.v1",
+  "surface": "direct-mlx-hotpath"
+}
