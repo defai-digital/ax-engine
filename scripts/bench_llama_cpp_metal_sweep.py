@@ -45,8 +45,70 @@ DEFAULT_LLAMA_BENCH = Path("/opt/homebrew/bin/llama-bench")
 REQUIRED_GGUF_PUBLISHER = "bartowski"
 
 
+class LlamaCppMetalSweepError(RuntimeError):
+    pass
+
+
 def log(msg: str) -> None:
     print(f"[sweep] {msg}", flush=True)
+
+
+def _row_slug(row: dict[str, Any]) -> str:
+    if not isinstance(row, dict):
+        raise LlamaCppMetalSweepError("manifest row must be an object")
+    slug = row.get("slug")
+    if not isinstance(slug, str) or not slug:
+        raise LlamaCppMetalSweepError("manifest row lacks non-empty slug")
+    return slug
+
+
+def filter_manifest_rows(
+    rows: list[dict[str, Any]],
+    rows_filter: list[str] | None,
+) -> list[dict[str, Any]]:
+    if not rows:
+        raise LlamaCppMetalSweepError("manifest contains no rows")
+
+    seen: set[str] = set()
+    duplicate_slugs: set[str] = set()
+    for row in rows:
+        slug = _row_slug(row)
+        if slug in seen:
+            duplicate_slugs.add(slug)
+        seen.add(slug)
+    if duplicate_slugs:
+        raise LlamaCppMetalSweepError(
+            "manifest contains duplicate slug(s): "
+            + ", ".join(sorted(duplicate_slugs))
+        )
+
+    if rows_filter is None:
+        return rows
+    if not rows_filter:
+        raise LlamaCppMetalSweepError("--rows-filter requires at least one slug")
+
+    requested: set[str] = set()
+    duplicate_filters: set[str] = set()
+    for slug in rows_filter:
+        if slug in requested:
+            duplicate_filters.add(slug)
+        requested.add(slug)
+    if duplicate_filters:
+        raise LlamaCppMetalSweepError(
+            "--rows-filter contains duplicate slug(s): "
+            + ", ".join(sorted(duplicate_filters))
+        )
+
+    missing = sorted(requested - seen)
+    if missing:
+        raise LlamaCppMetalSweepError(
+            "--rows-filter references unknown slug(s): " + ", ".join(missing)
+        )
+
+    selected = [row for row in rows if _row_slug(row) in requested]
+    if not selected:
+        raise LlamaCppMetalSweepError("--rows-filter selected no rows")
+    return selected
 
 
 def validate_bartowski_inventory(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> None:
@@ -651,28 +713,26 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    args.output_root.mkdir(parents=True, exist_ok=True)
-    (args.output_root / "logs").mkdir(parents=True, exist_ok=True)
-
-    with args.manifest.open() as fh:
-        manifest = json.load(fh)
-
-    rows = manifest["rows"]
-    if args.rows_filter:
-        rows = [r for r in rows if r["slug"] in set(args.rows_filter)]
-        if not rows:
-            log("ERROR: --rows-filter matched zero rows")
-            sys.exit(2)
-
     try:
+        with args.manifest.open() as fh:
+            manifest = json.load(fh)
+        if not isinstance(manifest, dict):
+            raise LlamaCppMetalSweepError("manifest root must be an object")
+        raw_rows = manifest.get("rows")
+        if not isinstance(raw_rows, list):
+            raise LlamaCppMetalSweepError("manifest.rows must be an array")
+        rows = filter_manifest_rows(raw_rows, args.rows_filter)
         validate_bartowski_inventory(manifest, rows)
-    except RuntimeError as exc:
+    except (json.JSONDecodeError, LlamaCppMetalSweepError, RuntimeError) as exc:
         log(f"ERROR: {exc}")
         sys.exit(2)
 
     if not args.dry_run and not args.llama_bench.exists():
         log(f"ERROR: llama-bench binary not found: {args.llama_bench}")
         sys.exit(2)
+
+    args.output_root.mkdir(parents=True, exist_ok=True)
+    (args.output_root / "logs").mkdir(parents=True, exist_ok=True)
 
     summary_rows: list[dict[str, Any]] = []
     total_bytes_downloaded = 0
