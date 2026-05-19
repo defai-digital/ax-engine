@@ -193,11 +193,33 @@ struct MlxPrefixCacheKey {
 
 #[derive(Clone)]
 struct MlxPrefixSnapshot {
-    cache: MlxKVCache,
+    kv_cache_payload: Arc<[u8]>,
     tokens: Vec<u32>,
     token_count: usize,
     bytes: u64,
     greedy_prefill_output_token: Option<u32>,
+}
+
+impl MlxPrefixSnapshot {
+    fn from_serialized_cache(
+        payload: Vec<u8>,
+        tokens: Vec<u32>,
+        token_count: usize,
+        greedy_prefill_output_token: Option<u32>,
+    ) -> Self {
+        let bytes = payload.len() as u64;
+        Self {
+            kv_cache_payload: Arc::from(payload.into_boxed_slice()),
+            tokens,
+            token_count,
+            bytes,
+            greedy_prefill_output_token,
+        }
+    }
+
+    fn rehydrate_cache(&self) -> Result<MlxKVCache, crate::kv_cache::MlxKVCacheSerializeError> {
+        MlxKVCache::try_deserialize_from_bytes(&self.kv_cache_payload)
+    }
 }
 
 struct MlxPrefixCacheEntry {
@@ -2407,7 +2429,7 @@ pub struct MlxRunner {
     kv_compression: KvCompressionConfig,
     /// Per-layer compression eligibility. Empty when compression is disabled.
     kv_compression_layer_eligible: Vec<bool>,
-    /// Immutable MLX KV snapshots for block-aligned exact prompt prefixes.
+    /// Serialized, thread-agnostic KV snapshots for block-aligned exact prompt prefixes.
     prefix_cache: Arc<Mutex<MlxPrefixCache>>,
     /// Optional L2 file-backed prefix cache (F3). Populated when
     /// `AX_MLX_PREFIX_CACHE_DIR` is set and the disk-disabled kill
@@ -3862,21 +3884,34 @@ impl MlxRunner {
             && crate::fastpath::mla_prefix_restore_disabled();
 
         if let Some(snapshot) = hit {
-            if !mla_extend_unsafe {
-                state.cache = snapshot.cache.clone();
-                state.prompt_prefix_tokens = reused_tokens.to_vec();
-                state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
-                telemetry.hits = telemetry.hits.saturating_add(1);
-                telemetry.reused_tokens = telemetry
-                    .reused_tokens
-                    .saturating_add(saturating_u32(snapshot.token_count));
+            if mla_extend_unsafe {
+                telemetry.record_blocked_unsupported_layout();
+                telemetry.warmup_tokens = telemetry
+                    .warmup_tokens
+                    .saturating_add(saturating_u32(reused_tokens.len()));
                 return telemetry;
             }
-            telemetry.record_blocked_unsupported_layout();
-            telemetry.warmup_tokens = telemetry
-                .warmup_tokens
-                .saturating_add(saturating_u32(reused_tokens.len()));
-            return telemetry;
+            match snapshot.rehydrate_cache() {
+                Ok(restored_cache) => {
+                    state.cache = restored_cache;
+                    state.prompt_prefix_tokens = reused_tokens.to_vec();
+                    state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
+                    telemetry.hits = telemetry.hits.saturating_add(1);
+                    telemetry.reused_tokens = telemetry
+                        .reused_tokens
+                        .saturating_add(saturating_u32(snapshot.token_count));
+                    return telemetry;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "ax_engine_mlx::prefix_cache",
+                        error = %e,
+                        "L1 prefix-cache payload failed to deserialize; treating as miss",
+                    );
+                }
+            }
+            // Fall through to the L2 disk cache if it is available; otherwise
+            // the regular miss path below warms or recomputes the prefix.
         }
 
         // F3 M2 — L1 miss. If the L2 disk cache is open and the
@@ -4055,7 +4090,6 @@ impl MlxRunner {
             block_size
         };
 
-        let mut cache = self.prefix_cache.lock().unwrap();
         for prefix_len in (snapshot_start_tokens..=full_block_tokens).step_by(block_size) {
             let tokens = &state.prompt_prefix_tokens[..prefix_len];
             let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
@@ -4064,7 +4098,6 @@ impl MlxRunner {
                 telemetry.record_blocked_trim_failure();
                 continue;
             }
-            let usage = snapshot_cache.usage_snapshot_with_layer_windows(&self.kv_layer_windows);
             // F3 M2 — for the disk layer we want the largest valid
             // snapshot persisted; smaller intermediate prefixes stay
             // in L1 only. Without an eviction policy yet (M3), writing
@@ -4074,8 +4107,9 @@ impl MlxRunner {
             // future hits because shorter prefixes always derive from
             // it.
             let is_largest = prefix_len == full_block_tokens;
-            let snapshot_payload = if is_largest && self.disk_prefix_cache.is_some() {
-                Some(snapshot_cache.serialize_to_bytes())
+            let payload = snapshot_cache.serialize_to_bytes();
+            let disk_payload = if is_largest && self.disk_prefix_cache.is_some() {
+                Some(payload.clone())
             } else {
                 None
             };
@@ -4083,20 +4117,24 @@ impl MlxRunner {
             // (i.e. when the disk path will fire). For the L1-only
             // configuration the original `key` moves cleanly into
             // `cache.insert`, no extra allocation.
-            let key_for_disk = snapshot_payload.as_ref().map(|_| key.clone());
+            let key_for_disk = disk_payload.as_ref().map(|_| key.clone());
             let snapshot_prefill_output_token = (prefix_len == available_tokens)
                 .then_some(greedy_prefill_output_token)
                 .flatten();
-            let outcome = cache.insert(
-                key,
-                MlxPrefixSnapshot {
-                    cache: snapshot_cache,
-                    tokens: tokens.to_vec(),
-                    token_count: prefix_len,
-                    bytes: usage.logical_bytes,
-                    greedy_prefill_output_token: snapshot_prefill_output_token,
-                },
-            );
+            let outcome = {
+                let mut cache = self.prefix_cache.lock().unwrap();
+                let outcome = cache.insert(
+                    key,
+                    MlxPrefixSnapshot::from_serialized_cache(
+                        payload,
+                        tokens.to_vec(),
+                        prefix_len,
+                        snapshot_prefill_output_token,
+                    ),
+                );
+                telemetry.record_stats(cache.stats());
+                outcome
+            };
             if outcome.stored {
                 telemetry.stores = telemetry.stores.saturating_add(1);
 
@@ -4105,11 +4143,9 @@ impl MlxRunner {
                 // (c) L1 actually stored it. A disk-write failure does
                 // not back out the L1 store — the in-memory layer
                 // alone is still useful and disk is strictly additive.
-                if let (Some(disk), Some(payload), Some(disk_key)) = (
-                    self.disk_prefix_cache.as_ref(),
-                    snapshot_payload,
-                    key_for_disk,
-                ) {
+                if let (Some(disk), Some(payload), Some(disk_key)) =
+                    (self.disk_prefix_cache.as_ref(), disk_payload, key_for_disk)
+                {
                     let key_bytes = crate::disk_prefix_cache::canonical_key_bytes(
                         &disk_key.model_id,
                         &disk_key.route_policy,
@@ -4139,7 +4175,6 @@ impl MlxRunner {
             }
             telemetry.evictions = telemetry.evictions.saturating_add(outcome.evictions);
         }
-        telemetry.record_stats(cache.stats());
         telemetry
     }
 
@@ -5339,8 +5374,9 @@ mod tests {
     }
 
     fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefixSnapshot {
+        let payload = MlxKVCache::new(2).serialize_to_bytes();
         MlxPrefixSnapshot {
-            cache: MlxKVCache::new(2),
+            kv_cache_payload: Arc::from(payload.into_boxed_slice()),
             tokens: vec![token; token_count],
             token_count,
             bytes,
@@ -5385,6 +5421,13 @@ mod tests {
             .expect("prefix snapshot should hit");
         assert_eq!(hit.token_count, 4);
         assert_eq!(hit.greedy_prefill_output_token, Some(7));
+        assert_eq!(
+            hit.rehydrate_cache()
+                .expect("serialized L1 snapshot should rehydrate")
+                .usage_snapshot()
+                .logical_tokens,
+            0
+        );
         assert_eq!(
             cache.stats(),
             MlxPrefixCacheStats {
