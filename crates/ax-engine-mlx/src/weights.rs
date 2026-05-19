@@ -1426,7 +1426,7 @@ fn load_glm_mla_attention_weights(
         "glm_kv_a_proj",
     )?;
     Ok(GlmMlaAttentionWeights {
-        qa_kva_fused: concat_quantized_weight_rows(&q_a_proj, &kv_a_proj)?,
+        qa_kva_fused: pack_glm_mla_qa_kva_projection(&q_a_proj, &kv_a_proj)?,
         q_a_norm: take_weight(
             specs,
             name_map,
@@ -1583,6 +1583,15 @@ fn pack_dense_ffn_gate_up_projection(
     up: &QuantizedWeight,
 ) -> Result<QuantizedWeight, WeightLoadError> {
     let packed = concat_quantized_weight_rows(gate, up)?;
+    eval_packed_projection(&packed);
+    Ok(packed)
+}
+
+fn pack_glm_mla_qa_kva_projection(
+    q_a: &QuantizedWeight,
+    kv_a: &QuantizedWeight,
+) -> Result<QuantizedWeight, WeightLoadError> {
+    let packed = concat_quantized_weight_rows(q_a, kv_a)?;
     eval_packed_projection(&packed);
     Ok(packed)
 }
@@ -2725,6 +2734,27 @@ mod tests {
 
         let packed =
             pack_dense_ffn_gate_up_projection(&gate, &up).expect("matching FFN projections pack");
+
+        assert_eq!(packed.weight.shape(), vec![4, 2]);
+        assert_eq!(
+            packed.scales.as_ref().expect("scales should pack").shape(),
+            vec![4, 1]
+        );
+        assert_eq!(
+            packed.biases.as_ref().expect("biases should pack").shape(),
+            vec![4, 1]
+        );
+        assert_eq!(packed.group_size, 64);
+        assert_eq!(packed.bits, 4);
+    }
+
+    #[test]
+    fn pack_glm_mla_qa_kva_projection_concatenates_and_materializes_rows() {
+        let q_a = glm_quantized_weight(64, 4, true);
+        let kv_a = glm_quantized_weight(64, 4, true);
+
+        let packed =
+            pack_glm_mla_qa_kva_projection(&q_a, &kv_a).expect("matching MLA projections pack");
 
         assert_eq!(packed.weight.shape(), vec![4, 2]);
         assert_eq!(
