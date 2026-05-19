@@ -28,6 +28,7 @@ class MlaPrefixRestoreEvidenceError(RuntimeError):
 class EvidenceSummary:
     path: Path
     model_id: str
+    mode: str
     prompts_total: int
     warm_hit_count: int
     warm_reused_tokens: int
@@ -94,6 +95,7 @@ def validate_artifact(
     min_prompts: int,
     require_default_path: bool,
     model_substring: str,
+    expected_mode: str | None = "warm_extend",
 ) -> EvidenceSummary:
     artifact = _load_json(path)
     if artifact.get("schema_version") != SCHEMA_VERSION:
@@ -110,8 +112,11 @@ def validate_artifact(
     config = artifact.get("config")
     if not isinstance(config, dict):
         raise MlaPrefixRestoreEvidenceError(f"{path} lacks config")
-    if config.get("mode") != "warm_extend":
-        raise MlaPrefixRestoreEvidenceError(f"{path} must be warm_extend mode")
+    mode = config.get("mode")
+    if not isinstance(mode, str):
+        raise MlaPrefixRestoreEvidenceError(f"{path} lacks config.mode")
+    if expected_mode is not None and mode != expected_mode:
+        raise MlaPrefixRestoreEvidenceError(f"{path} must be {expected_mode} mode")
     if config.get("pad_to_block_size") != 16:
         raise MlaPrefixRestoreEvidenceError(
             f"{path} must use pad_to_block_size=16 for MLA snapshot evidence"
@@ -183,6 +188,7 @@ def validate_artifact(
     return EvidenceSummary(
         path=path,
         model_id=model_id,
+        mode=mode,
         prompts_total=prompts_total,
         warm_hit_count=warm_hit_count,
         warm_reused_tokens=warm_reused_tokens,
@@ -218,6 +224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 min_prompts=args.min_prompts,
                 require_default_path=not args.allow_env_override,
                 model_substring=args.model_substring,
+                expected_mode="warm_extend",
             )
             for artifact in artifacts
         ]
@@ -228,7 +235,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             "ok: "
             f"{summary.path} model={summary.model_id} prompts={summary.prompts_total} "
-            f"warm_hits={summary.warm_hit_count} reused_tokens={summary.warm_reused_tokens}"
+            f"mode={summary.mode} warm_hits={summary.warm_hit_count} "
+            f"reused_tokens={summary.warm_reused_tokens}"
         )
     return 0
 

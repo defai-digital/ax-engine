@@ -85,6 +85,7 @@ class MlaPrefixRestoreEvidenceTests(unittest.TestCase):
             )
 
             self.assertEqual(summary.model_id, "glm47-flash")
+            self.assertEqual(summary.mode, "warm_extend")
             self.assertEqual(summary.warm_hit_count, 1)
             self.assertEqual(summary.warm_reused_tokens, 16)
 
@@ -169,6 +170,45 @@ class MlaPrefixRestoreEvidenceTests(unittest.TestCase):
         self.assertEqual(summary.model_id, "glm47-flash")
         self.assertGreater(summary.warm_hit_count, 0)
         self.assertGreater(summary.warm_reused_tokens, 0)
+
+    def test_accepts_warm_repeat_when_expected_mode_allows_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "evidence.json"
+
+            def mutate(artifact):
+                artifact["config"]["mode"] = "warm_repeat"
+
+            write_artifact(path, mutate=mutate)
+
+            summary = checker.validate_artifact(
+                path,
+                min_prompts=5,
+                require_default_path=True,
+                model_substring="glm",
+                expected_mode=None,
+            )
+
+            self.assertEqual(summary.mode, "warm_repeat")
+
+    def test_default_gate_still_requires_warm_extend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "evidence.json"
+
+            def mutate(artifact):
+                artifact["config"]["mode"] = "warm_repeat"
+
+            write_artifact(path, mutate=mutate)
+
+            with self.assertRaisesRegex(
+                checker.MlaPrefixRestoreEvidenceError,
+                "warm_extend",
+            ):
+                checker.validate_artifact(
+                    path,
+                    min_prompts=5,
+                    require_default_path=True,
+                    model_substring="glm",
+                )
 
 
 if __name__ == "__main__":

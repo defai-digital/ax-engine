@@ -92,6 +92,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/check_direct_mlx_no_production_route.py \
   scripts/check_mlx_fastpath_env_controls.py \
   scripts/check_mla_prefix_restore_evidence.py \
+  scripts/check_mla_prefix_restore_retirement.py \
   scripts/check_turboquant_public_docs.py \
   scripts/check_turboquant_promotion_readiness.py \
   scripts/test_turboquant_quality_artifact.py \
@@ -102,6 +103,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_check_mlx_fastpath_env_controls.py \
   scripts/test_check_linear_attention_pack_promotion.py \
   scripts/test_check_mla_prefix_restore_evidence.py \
+  scripts/test_check_mla_prefix_restore_retirement.py \
   scripts/check_offline_policy_search_artifact.py \
   scripts/build_offline_policy_search_artifact.py \
   scripts/search_turboquant_kv_policy.py \
@@ -147,4 +149,5 @@ bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_mlx_fastpath_env_controls.py
 "$PYTHON_BIN" scripts/check_linear_attention_pack_promotion.py
 "$PYTHON_BIN" scripts/check_mla_prefix_restore_evidence.py
+"$PYTHON_BIN" scripts/check_mla_prefix_restore_retirement.py
 "$PYTHON_BIN" scripts/render_readme_performance_charts.py --check
