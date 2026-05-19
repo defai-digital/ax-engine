@@ -2311,63 +2311,64 @@ def axengine_one_run(
         }
     ).encode()
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
-    conn.request(
-        "POST",
-        "/v1/generate/stream",
-        body=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        },
-    )
-    response = conn.getresponse()
-    if response.status != 200:
-        raise RuntimeError(
-            f"ax-engine HTTP {response.status}: {response.read(300).decode(errors='replace')}"
+    try:
+        conn.request(
+            "POST",
+            "/v1/generate/stream",
+            body=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
         )
-
-    prefill_us = 0
-    seen_prefill = False
-    decode_us = 0
-    output_tokens = 0
-    output_token_ids: list[int] = []
-    final_route: dict[str, Any] | None = None
-    prefill_route: dict[str, Any] | None = None
-    step_local_decisions: dict[str, int] = {}
-
-    decoded_lines = (raw.decode("utf-8", errors="replace") for raw in response)
-    for current_event, obj in iter_sse_json_events_from_lines(decoded_lines):
-        if current_event == "step":
-            step = obj.get("step", {})
-            runner_us = int(step.get("runner_time_us") or 0)
-            output_len_raw = obj.get("request", {}).get("output_len")
-            if output_len_raw is not None:
-                output_tokens = int(output_len_raw)
-            step_route = step.get("route") or obj.get("request", {}).get("route")
-            merge_step_local_route_decisions(step_local_decisions, step_route)
-            final_route = route_with_more_decisions(
-                step_route,
-                final_route,
-            )
-            prefill_step = is_ax_prefill_step(step, seen_prefill=seen_prefill)
-            if prefill_step:
-                prefill_route = route_with_more_decisions(step_route, prefill_route)
-                prefill_us += runner_us
-                seen_prefill = True
-            else:
-                decode_us += runner_us
-        elif current_event == "response":
-            response_tokens = obj.get("response", {}).get("output_tokens")
-            if isinstance(response_tokens, list):
-                output_tokens = len(response_tokens) or output_tokens
-                if capture_output_token_ids:
-                    output_token_ids = [int(token) for token in response_tokens]
-            final_route = route_with_more_decisions(
-                obj.get("response", {}).get("route"),
-                final_route,
+        response = conn.getresponse()
+        if response.status != 200:
+            raise RuntimeError(
+                f"ax-engine HTTP {response.status}: {response.read(300).decode(errors='replace')}"
             )
 
-    conn.close()
+        prefill_us = 0
+        seen_prefill = False
+        decode_us = 0
+        output_tokens = 0
+        output_token_ids: list[int] = []
+        final_route: dict[str, Any] | None = None
+        prefill_route: dict[str, Any] | None = None
+        step_local_decisions: dict[str, int] = {}
+
+        decoded_lines = (raw.decode("utf-8", errors="replace") for raw in response)
+        for current_event, obj in iter_sse_json_events_from_lines(decoded_lines):
+            if current_event == "step":
+                step = obj.get("step", {})
+                runner_us = int(step.get("runner_time_us") or 0)
+                output_len_raw = obj.get("request", {}).get("output_len")
+                if output_len_raw is not None:
+                    output_tokens = int(output_len_raw)
+                step_route = step.get("route") or obj.get("request", {}).get("route")
+                merge_step_local_route_decisions(step_local_decisions, step_route)
+                final_route = route_with_more_decisions(
+                    step_route,
+                    final_route,
+                )
+                prefill_step = is_ax_prefill_step(step, seen_prefill=seen_prefill)
+                if prefill_step:
+                    prefill_route = route_with_more_decisions(step_route, prefill_route)
+                    prefill_us += runner_us
+                    seen_prefill = True
+                else:
+                    decode_us += runner_us
+            elif current_event == "response":
+                response_tokens = obj.get("response", {}).get("output_tokens")
+                if isinstance(response_tokens, list):
+                    output_tokens = len(response_tokens) or output_tokens
+                    if capture_output_token_ids:
+                        output_token_ids = [int(token) for token in response_tokens]
+                final_route = route_with_more_decisions(
+                    obj.get("response", {}).get("route"),
+                    final_route,
+                )
+    finally:
+        conn.close()
     final_route = route_with_step_local_decisions(final_route, step_local_decisions)
     prompt_tokens = len(tokens)
     prefill_s = prefill_us / 1_000_000
