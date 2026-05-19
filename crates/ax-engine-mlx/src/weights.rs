@@ -12,6 +12,11 @@ use ax_engine_core::{
     NativeTensorQuantization, NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 
+use crate::fastpath::{
+    dense_attention_qkv_packing_enabled, dense_ffn_gate_up_packing_enabled,
+    linear_attention_projection_packing_enabled,
+};
+
 /// All weight arrays for one model.
 pub struct ModelWeights {
     pub token_embedding: QuantizedWeight,
@@ -1675,66 +1680,6 @@ fn concat_quantized_weight_rows(
         group_size: a.group_size,
         bits: a.bits,
     })
-}
-
-fn linear_attention_projection_packing_enabled() -> bool {
-    // Experimental TTFT probe: materialize packed Qwen linear-attention
-    // projections at load time while keeping the default artifact contract
-    // unchanged until the benchmark delta is proven.
-    std::env::var("AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS")
-        .map(|value| !value.is_empty() && value != "0")
-        .unwrap_or(false)
-}
-
-fn dense_attention_qkv_packing_enabled() -> bool {
-    // W6 (`mlx-lm-prefill-parity` PRD §7): counterpart to
-    // `dense_ffn_gate_up_packing_enabled`. Materializes packed Q/K/V at
-    // weight load time when the artifact ships them split, so the layer's
-    // attention dispatch runs one quantized matmul instead of three.
-    //
-    // **Default ON** (kill-switch via `AX_MLX_PACK_QKV_PROJECTIONS=0`).
-    // The 2026-05-18 crash was traced to a missing `eval_packed_projection`
-    // call — the concatenated quantized weight was a lazy MLX graph node
-    // that `quantized_matmul` could not resolve. Adding `eval_packed_projection`
-    // (matching the FFN gate-up packing pattern) materializes the weight
-    // before the forward path consumes it.
-    let Ok(raw) = std::env::var("AX_MLX_PACK_QKV_PROJECTIONS") else {
-        return true;
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return true;
-    }
-    !(trimmed.eq_ignore_ascii_case("0")
-        || trimmed.eq_ignore_ascii_case("false")
-        || trimmed.eq_ignore_ascii_case("no"))
-}
-
-fn dense_ffn_gate_up_packing_enabled() -> bool {
-    // Default-on prefill optimization: materialize packed dense FFN gate/up
-    // projections at load time so the forward path uses one quantized matmul
-    // and slices the result, matching artifact-native gate_up weights when
-    // present. Packing halves the kernel-launch + activation-read cost of
-    // the FFN by collapsing the two `[B, L, hidden] × [hidden, intermediate]`
-    // matmuls into one `[B, L, hidden] × [hidden, 2 * intermediate]` matmul
-    // plus a last-dim slice. The slice is a zero-copy strided view, so the
-    // memory-bandwidth saving (~28% off the weight-read budget at 4-bit
-    // quantization on Gemma 4 E2B intermediate=6144) lands directly on
-    // prefill wall time at long prompts.
-    //
-    // Kill switch: `AX_MLX_PACK_DENSE_FFN_GATE_UP=0`. Falls back to the
-    // two-matmul path when the weight loader cannot pack (asymmetric quant
-    // params, mismatched dtypes, or artifact-native gate_up already present).
-    let Ok(raw) = std::env::var("AX_MLX_PACK_DENSE_FFN_GATE_UP") else {
-        return true;
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return true;
-    }
-    !(trimmed.eq_ignore_ascii_case("0")
-        || trimmed.eq_ignore_ascii_case("false")
-        || trimmed.eq_ignore_ascii_case("no"))
 }
 
 fn pack_dense_ffn_gate_up_projection(

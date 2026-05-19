@@ -117,6 +117,47 @@ env_flag_default_on!(
     "AX_MLX_PREFILL_FFN_COMPILE_SWIGLU"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_PACK_QKV_PROJECTIONS` — materialize split dense-attention Q/K/V
+    /// projections into one packed projection at load time.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_PACK_QKV_PROJECTIONS=0`).
+    ///
+    /// Mirrors the dense FFN gate/up packing contract: when Q/K/V quantization
+    /// metadata is compatible, the loader materializes the concatenated weight
+    /// before the forward path consumes it. Unsupported shapes fall back to the
+    /// split-projection path in `weights.rs`.
+    dense_attention_qkv_packing_enabled,
+    "AX_MLX_PACK_QKV_PROJECTIONS"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_PACK_DENSE_FFN_GATE_UP` — materialize dense FFN gate/up
+    /// projections into one packed projection at load time.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_PACK_DENSE_FFN_GATE_UP=0`).
+    ///
+    /// Collapses the dense FFN gate and up matmuls into one quantized matmul
+    /// plus a last-dim slice when the artifact ships split projections and the
+    /// quantization metadata is compatible.
+    dense_ffn_gate_up_packing_enabled,
+    "AX_MLX_PACK_DENSE_FFN_GATE_UP"
+);
+
+env_flag!(
+    /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — experimental load-time
+    /// packing for Qwen linear-attention projections.
+    ///
+    /// **Default: OFF**. This remains opt-in until a model-backed A/B proves a
+    /// stable TTFT benefit and token-equivalence for the target linear-attention
+    /// families. Keeping it in `fastpath.rs` makes the disabled optimization
+    /// auditable without changing the current artifact contract.
+    linear_attention_projection_packing_enabled,
+    "AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"
+);
+
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
 /// cold and warm-extend prefill paths produce the same SDPA Q/K shape
 /// sequence over the same absolute positions, avoiding the reproduced

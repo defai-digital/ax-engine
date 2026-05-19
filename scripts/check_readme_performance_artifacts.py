@@ -96,6 +96,12 @@ AX_NGRAM_CLAIM_STATUSES = {
     "ngram_no_observed_draft_path",
 }
 
+AX_DIRECT_HOTPATH_FALLBACK_COUNTERS = {
+    "ax_mlx_single_decode_steps": "single-decode fallback steps",
+    "ax_mlx_ngram_decode_steps": "n-gram decode steps",
+    "ax_mlx_dense_ffn_split_gate_up_layers": "dense FFN split gate/up fallback layers",
+}
+
 PUBLIC_CLAIM_EVIDENCE = {
     "continuous_batching": "concurrent_prefill_overlap_classification",
     "prefix_reuse": "prefix_reuse_evidence",
@@ -977,6 +983,37 @@ def validate_ax_prefill_decode_split(
         validate_phase0_runtime_identity(artifact_path=artifact_path, row=row)
 
 
+def validate_direct_hotpath_no_hidden_fallbacks(
+    *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
+) -> None:
+    if not require_phase0:
+        return
+    telemetry = row.get("ax_mlx_telemetry")
+    if not isinstance(telemetry, dict):
+        raise ArtifactCheckError(f"{artifact_path} direct AX row lacks AX MLX telemetry")
+
+    fallback_counts = []
+    for key, label in AX_DIRECT_HOTPATH_FALLBACK_COUNTERS.items():
+        value = int(telemetry.get(key, 0))
+        if value > 0:
+            fallback_counts.append(f"{key}={value} ({label})")
+    if fallback_counts:
+        raise ArtifactCheckError(
+            f"{artifact_path} direct AX row has hidden hotpath fallback counters: "
+            + ", ".join(fallback_counts)
+        )
+
+    kv_compression = row.get("kv_compression_telemetry")
+    if (
+        row.get("kv_compression_claim_status") == "integrated_fused_compressed_decode"
+        and isinstance(kv_compression, dict)
+        and int(kv_compression.get("ax_mlx_kv_compression_fused_decode_fallbacks", 0)) > 0
+    ):
+        raise ArtifactCheckError(
+            f"{artifact_path} direct AX row claims fused KV decode with fallback telemetry"
+        )
+
+
 def validate_ngram_claim_telemetry(
     *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
 ) -> None:
@@ -1196,6 +1233,11 @@ def validate_artifact_row(
         ):
             raise ArtifactCheckError(f"{artifact_path} direct AX row lacks claim status")
         validate_ax_prefill_decode_split(
+            artifact_path=artifact_path,
+            row=row,
+            require_phase0=require_phase0,
+        )
+        validate_direct_hotpath_no_hidden_fallbacks(
             artifact_path=artifact_path,
             row=row,
             require_phase0=require_phase0,
