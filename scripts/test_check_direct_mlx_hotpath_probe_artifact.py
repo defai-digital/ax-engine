@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Unit tests for direct-MLX hotpath probe artifact validation."""
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SCRIPT_PATH = Path(__file__).with_name("check_direct_mlx_hotpath_probe_artifact.py")
+MODULE_SPEC = importlib.util.spec_from_file_location(
+    "check_direct_mlx_hotpath_probe_artifact",
+    SCRIPT_PATH,
+)
+assert MODULE_SPEC is not None and MODULE_SPEC.loader is not None
+checker = importlib.util.module_from_spec(MODULE_SPEC)
+MODULE_SPEC.loader.exec_module(checker)
+
+
+def direct_mlx_artifact() -> dict:
+    return {
+        "schema": "ax.microbench.v1",
+        "surface": "direct-mlx-hotpath",
+        "command": "target/debug/direct-mlx-hotpath-probe --rows 8 --cols 16",
+        "git": {"commit": "abc123", "dirty": True},
+        "host": {"os": "macos", "arch": "aarch64"},
+        "config": {
+            "candidate": "gelu_approx_mul",
+            "rows": 8,
+            "cols": 16,
+            "dtype": "float32",
+            "warmup": 1,
+            "iterations": 3,
+        },
+        "correctness": {
+            "passed": True,
+            "max_abs_error": 0.0,
+            "tolerance": 1e-6,
+            "shape": [8, 16],
+        },
+        "measurements": [
+            timing("portable_gelu_approx_mul", median=400.0, op_count_median=10),
+            timing("direct_cpp_gelu_approx_mul", median=200.0, op_count_median=1),
+            {
+                "name": "direct_cpp_speedup_ratio",
+                "unit": "ratio",
+                "samples": 1,
+                "mean": 2.0,
+                "median": 2.0,
+                "min": 2.0,
+                "max": 2.0,
+            },
+        ],
+    }
+
+
+def timing(name: str, *, median: float, op_count_median: int) -> dict:
+    return {
+        "name": name,
+        "unit": "microseconds",
+        "samples": 3,
+        "mean": median,
+        "median": median,
+        "min": median * 0.9,
+        "max": median * 1.1,
+        "op_count_median": op_count_median,
+    }
+
+
+class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
+    def test_valid_artifact_passes(self) -> None:
+        checker.validate_artifact(direct_mlx_artifact())
+
+    def test_wrong_schema_fails_closed(self) -> None:
+        artifact = direct_mlx_artifact()
+        artifact["schema"] = "other"
+
+        with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "schema"):
+            checker.validate_artifact(artifact)
+
+    def test_correctness_failure_fails_closed(self) -> None:
+        artifact = direct_mlx_artifact()
+        artifact["correctness"]["passed"] = False
+
+        with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "correctness"):
+            checker.validate_artifact(artifact)
+
+    def test_shape_mismatch_fails_closed(self) -> None:
+        artifact = direct_mlx_artifact()
+        artifact["correctness"]["shape"] = [8, 15]
+
+        with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "shape"):
+            checker.validate_artifact(artifact)
+
+    def test_missing_direct_measurement_fails_closed(self) -> None:
+        artifact = direct_mlx_artifact()
+        artifact["measurements"] = [artifact["measurements"][0], artifact["measurements"][2]]
+
+        with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "direct_cpp"):
+            checker.validate_artifact(artifact)
+
+    def test_direct_op_count_must_be_lower_than_portable(self) -> None:
+        artifact = direct_mlx_artifact()
+        artifact["measurements"][1]["op_count_median"] = 10
+
+        with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "op_count_median"):
+            checker.validate_artifact(artifact)
+
+    def test_optional_speedup_gate_fails_closed(self) -> None:
+        artifact = direct_mlx_artifact()
+        artifact["measurements"][2]["median"] = 1.01
+
+        with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "median"):
+            checker.validate_artifact(artifact, min_speedup=1.05)
+
+    def test_cli_validates_artifact_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "direct-mlx-hotpath.json"
+            artifact_path.write_text(json.dumps(direct_mlx_artifact()))
+
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), str(artifact_path), "--min-speedup", "1.05"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("ok:", completed.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -83,11 +83,13 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/build_turboquant_quality_artifact.py \
   scripts/check_turboquant_quality_artifact.py \
   scripts/check_turboquant_microbench_artifact.py \
+  scripts/check_direct_mlx_hotpath_probe_artifact.py \
   scripts/check_turboquant_public_docs.py \
   scripts/check_turboquant_promotion_readiness.py \
   scripts/test_turboquant_quality_artifact.py \
   scripts/test_run_turboquant_quality_artifact.py \
   scripts/test_turboquant_microbench_artifact.py \
+  scripts/test_check_direct_mlx_hotpath_probe_artifact.py \
   scripts/check_offline_policy_search_artifact.py \
   scripts/build_offline_policy_search_artifact.py \
   scripts/search_turboquant_kv_policy.py \
@@ -114,6 +116,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_offline_policy_search_artifact.py \
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/test_search_turboquant_kv_policy.py \
+  scripts/test_check_direct_mlx_hotpath_probe_artifact.py \
   scripts/test_run_turboquant_quality_artifact.py \
   scripts/test_long_context_comparison_artifact.py \
   scripts/test_long_context_decode_at_depth_artifact.py \
