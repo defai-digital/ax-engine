@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, argpartition_axis, argsort_axis, astype,
     divide, expand_dims, expand_dims_axes, gelu_approx, multiply, reshape, rms_norm,
-    slice_last_dim, softmax, sum_axis, take, take_along_axis,
+    slice_last_dim, softmax, sum_axis, take, take_along_axis, topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -563,7 +563,9 @@ pub(crate) fn glm_router_apply_group_selection(
         &[batch, seq, router.n_group as i32, experts_per_group as i32],
         None,
     );
-    let (_, group_top2) = top_k_by_argpartition(&grouped, experts_per_group, 2, false);
+    // mlx-lm uses `mx.topk(..., 2, axis=-1).sum(...)` here because only the
+    // top-2 values are needed for group scoring; indices are selected later.
+    let group_top2 = topk_axis(&grouped, 2, -1, None);
     let group_scores = sum_axis(&group_top2, -1, true, None);
     let group_axis = group_scores.ndim() as i32 - 2;
     let group_idx = argpartition_axis(
@@ -729,7 +731,9 @@ fn deepseek_group_expert_mask(
     );
 
     // Top-2 score sum per group → [batch, seq, n_group, 1].
-    let (_, group_top2) = top_k_by_argpartition(&grouped, experts_per_group, 2, false);
+    // mlx-lm uses `mx.topk(..., 2, axis=-1).sum(...)` here because only the
+    // top-2 values are needed for group scoring; indices are selected later.
+    let group_top2 = topk_axis(&grouped, 2, -1, None);
     let group_scores = sum_axis(&group_top2, -1, true, None);
 
     // argpartition to find the zero_group_count worst group indices.

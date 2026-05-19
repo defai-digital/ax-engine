@@ -2,6 +2,20 @@ use crate::array::{MlxArray, MlxDtype, null_ffi_array};
 use crate::ffi;
 use crate::stream::{MlxStream, default_gpu_raw};
 
+fn optional_int(value: Option<i32>, default: i32) -> ffi::mlx_optional_int_ {
+    ffi::mlx_optional_int_ {
+        has_value: value.is_some(),
+        value: value.unwrap_or(default),
+    }
+}
+
+fn optional_dtype(value: Option<MlxDtype>, default: MlxDtype) -> ffi::mlx_optional_dtype_ {
+    ffi::mlx_optional_dtype_ {
+        has_value: value.is_some(),
+        value: value.unwrap_or(default).to_ffi(),
+    }
+}
+
 macro_rules! unary_op {
     ($name:ident, $ffi_fn:ident) => {
         pub fn $name(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
@@ -655,6 +669,150 @@ pub fn dequantize(
     }
 }
 
+/// MLX quantization modes supported by `quantize` / `dequantize_with_mode`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MlxQuantizationMode {
+    Affine,
+    Mxfp4,
+    Mxfp8,
+    Nvfp4,
+}
+
+impl MlxQuantizationMode {
+    fn as_ptr(self) -> *const std::ffi::c_char {
+        match self {
+            Self::Affine => c"affine".as_ptr(),
+            Self::Mxfp4 => c"mxfp4".as_ptr(),
+            Self::Mxfp8 => c"mxfp8".as_ptr(),
+            Self::Nvfp4 => c"nvfp4".as_ptr(),
+        }
+    }
+
+    fn default_group_size(self) -> i32 {
+        match self {
+            Self::Affine => 64,
+            Self::Nvfp4 => 16,
+            Self::Mxfp4 | Self::Mxfp8 => 32,
+        }
+    }
+
+    fn default_bits(self) -> i32 {
+        match self {
+            Self::Mxfp8 => 8,
+            Self::Affine | Self::Mxfp4 | Self::Nvfp4 => 4,
+        }
+    }
+}
+
+/// Quantize a floating-point weight matrix along its last axis.
+///
+/// Affine mode returns `[packed_weight, scales, biases]`; FP modes return
+/// `[packed_weight, scales]`, matching MLX's `mx.quantize` contract.
+pub fn quantize(
+    w: &MlxArray,
+    group_size: Option<i32>,
+    bits: Option<i32>,
+    mode: MlxQuantizationMode,
+    global_scale: Option<&MlxArray>,
+    s: Option<&MlxStream>,
+) -> Vec<MlxArray> {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let global_scale = global_scale
+            .map(|scale| scale.inner)
+            .unwrap_or_else(null_ffi_array);
+        let gs = optional_int(group_size, mode.default_group_size());
+        let bs = optional_int(bits, mode.default_bits());
+        let mut raw = ffi::mlx_vector_array {
+            ctx: std::ptr::null_mut(),
+        };
+        ffi::mlx_quantize(
+            &mut raw,
+            w.inner,
+            gs,
+            bs,
+            mode.as_ptr(),
+            global_scale,
+            stream,
+        );
+        let len = ffi::mlx_vector_array_size(raw);
+        let mut result = Vec::with_capacity(len);
+        for idx in 0..len {
+            let mut arr = null_ffi_array();
+            ffi::mlx_vector_array_get(&mut arr, raw, idx);
+            result.push(MlxArray::from_raw(arr));
+        }
+        ffi::mlx_vector_array_free(raw);
+        result
+    }
+}
+
+/// Dequantize a matrix produced by `quantize`.
+///
+/// This is the mode-aware counterpart to `dequantize`, which preserves the
+/// legacy affine-only wrapper used by existing model-loading code.
+#[allow(clippy::too_many_arguments)]
+pub fn dequantize_with_mode(
+    w: &MlxArray,
+    scales: &MlxArray,
+    biases: Option<&MlxArray>,
+    group_size: Option<i32>,
+    bits: Option<i32>,
+    mode: MlxQuantizationMode,
+    global_scale: Option<&MlxArray>,
+    dtype: Option<MlxDtype>,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let biases_raw = biases.map(|b| b.inner).unwrap_or_else(null_ffi_array);
+        let global_scale = global_scale
+            .map(|scale| scale.inner)
+            .unwrap_or_else(null_ffi_array);
+        let gs = optional_int(group_size, mode.default_group_size());
+        let bs = optional_int(bits, mode.default_bits());
+        let dtype = optional_dtype(dtype, MlxDtype::Float32);
+        let mut res = MlxArray::empty();
+        ffi::mlx_dequantize(
+            &mut res.inner,
+            w.inner,
+            scales.inner,
+            biases_raw,
+            gs,
+            bs,
+            mode.as_ptr(),
+            global_scale,
+            dtype,
+            stream,
+        );
+        res
+    }
+}
+
+/// Convert a floating-point array to MLX's E4M3 float8 representation.
+pub fn to_fp8(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_to_fp8(&mut res.inner, x.inner, stream);
+        res
+    }
+}
+
+/// Convert an MLX E4M3 float8 array back to a floating-point dtype.
+pub fn from_fp8(x: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_from_fp8(&mut res.inner, x.inner, dtype.to_ffi(), stream);
+        res
+    }
+}
+
 /// Quantized matmul: x @ dequantize(w, scales, biases).
 ///
 /// `group_size` and `bits` use the MLX defaults (64 and 4) when `None`.
@@ -856,6 +1014,7 @@ pub fn random_categorical(logits: &MlxArray, s: Option<&MlxStream>) -> MlxArray 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transforms::eval;
 
     #[test]
     fn conv1d_depthwise_reports_reference_shape() {
@@ -899,5 +1058,72 @@ mod tests {
             vec![2, 3]
         );
         assert_eq!(clip(&a, &min, &max, None).shape(), vec![2, 3]);
+    }
+
+    #[test]
+    fn quantize_affine_round_trip_reports_expected_shapes() {
+        let values = (0..128)
+            .map(|i| (i as f32 - 64.0) / 64.0)
+            .collect::<Vec<_>>();
+        let w = MlxArray::from_raw_data(
+            values.as_ptr().cast(),
+            std::mem::size_of_val(values.as_slice()),
+            &[2, 64],
+            MlxDtype::Float32,
+        );
+
+        let quantized = quantize(
+            &w,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+
+        assert_eq!(quantized.len(), 3);
+        assert_eq!(quantized[0].shape(), vec![2, 8]);
+        assert_eq!(quantized[0].dtype(), MlxDtype::Uint32);
+        assert_eq!(quantized[1].shape(), vec![2, 2]);
+        assert_eq!(quantized[1].dtype(), MlxDtype::Float32);
+        assert_eq!(quantized[2].shape(), vec![2, 2]);
+        assert_eq!(quantized[2].dtype(), MlxDtype::Float32);
+
+        let restored = dequantize_with_mode(
+            &quantized[0],
+            &quantized[1],
+            Some(&quantized[2]),
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            Some(MlxDtype::Float32),
+            None,
+        );
+        eval(&[&restored]);
+
+        assert_eq!(restored.shape(), vec![2, 64]);
+        assert_eq!(restored.dtype(), MlxDtype::Float32);
+    }
+
+    #[test]
+    fn fp8_conversion_wrappers_preserve_shape_contract() {
+        let values = [0.0_f32, 1.0, -2.0, 4.0];
+        let x = MlxArray::from_raw_data(
+            values.as_ptr().cast(),
+            std::mem::size_of_val(&values),
+            &[2, 2],
+            MlxDtype::Float32,
+        );
+
+        let fp8 = to_fp8(&x, None);
+        eval(&[&fp8]);
+        assert_eq!(fp8.shape(), vec![2, 2]);
+        assert_eq!(fp8.dtype(), MlxDtype::Uint8);
+
+        let restored = from_fp8(&fp8, MlxDtype::Float32, None);
+        eval(&[&restored]);
+        assert_eq!(restored.shape(), vec![2, 2]);
+        assert_eq!(restored.dtype(), MlxDtype::Float32);
     }
 }
