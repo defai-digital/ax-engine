@@ -1,0 +1,13 @@
+# Real-prompt suite for validating the n-gram drafter prompt-seeding fix
+# (commit b61eccc). Each case is shaped so the expected output reuses
+# multi-token spans from the input — the regime where n-gram speculative
+# decoding is known to win in the literature (summarization, context-QA,
+# code edit/refactor; see docs/NGRAM-ACCELERATION.md).
+#
+# Schema (per scripts/bench_mlx_inference_stack.py::load_real_prompt_suite):
+#   {"id": "<unique>", "category": "<bucket>", "prompt": "<text>",
+#    "max_tokens": <int, optional, defaults to 128>}
+# Lines starting with '#' or blank are ignored.
+{"id": "rename_identifier", "category": "edit_refactor", "prompt": "Take the following Python function and rename only the parameter `data` to `payload`. Output the function exactly as given with that single change, no commentary.\n\ndef process(data, *, threshold):\n    if not data:\n        return []\n    cleaned = [item for item in data if item is not None]\n    bucketed = {}\n    for item in cleaned:\n        key = item.get('key')\n        bucketed.setdefault(key, []).append(item)\n    output = []\n    for key, items in bucketed.items():\n        scored = [(score(item, threshold), item) for item in items]\n        scored.sort(reverse=True)\n        output.extend(item for _, item in scored)\n    return output\n", "max_tokens": 192}
+{"id": "reformat_json", "category": "edit_refactor", "prompt": "Reformat the following JSON with two-space indentation. Keep every key and every value exactly as given. Output only the reformatted JSON.\n\n{\"name\":\"ax-engine\",\"version\":\"4.9.0\",\"models\":[{\"id\":\"gemma-4-e2b\",\"quant\":\"4bit\"},{\"id\":\"qwen-3.6-27b\",\"quant\":\"4bit\"}],\"endpoints\":{\"http\":{\"port\":8080,\"host\":\"127.0.0.1\"},\"grpc\":{\"port\":8081,\"host\":\"127.0.0.1\"}},\"runtime\":{\"backend\":\"mlx\",\"prefill_chunk\":2048,\"max_batch_tokens\":4096}}\n", "max_tokens": 192}
+{"id": "summarize_then_echo", "category": "summarization", "prompt": "Below is a paragraph. First output the paragraph again verbatim, then add a single one-sentence summary on a new line prefixed with 'Summary: '.\n\nThe AX engine ships a deterministic n-gram drafter that proposes continuation tokens from observed repetitions and verifies each draft against the target model's argmax output. The drafter table is seeded with the prompt tokens at prefill commit, so the post-prefill decode context has prompt-derived n-grams available when decode starts. Without this seeding the drafter could only learn from self-emitted output, which produces zero acceleration on coherent-decode models that do not naturally self-repeat.\n", "max_tokens": 192}

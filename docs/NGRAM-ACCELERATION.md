@@ -106,6 +106,18 @@ so the seeded table holds no matchable continuations), but real
 input-output-overlap workloads benefit because the post-prefill decode
 context now has prompt-derived precedent in the table.
 
+Validation artifact:
+`benchmarks/results/mlx-inference/2026-05-18-ngram-real-prompt-validation/qwen3_6-27b-4bit.json`
+runs the three-case input-output-overlap suite at
+`benchmarks/manifests/real_prompts/input_output_overlap.jsonl` on Qwen
+3.6 27B 4-bit (a model that produced zero draft attempts on every
+prior synthetic-prompt measurement). The `reformat_json` case fires
+36 draft attempts with 87 accepted tokens and a +7% decode-throughput
+gain over direct decode; the other two cases (`rename_identifier`,
+`summarize_then_echo`) stay at zero attempts because the model
+paraphrases rather than echoing the input tokens verbatim — the
+expected fall-through behavior when input-output overlap is low.
+
 ## Correctness contract
 
 The current verifier accepts a drafted token iff the target model's
