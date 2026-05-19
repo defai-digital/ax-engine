@@ -310,6 +310,7 @@ def run_bench_for_row(
     model_args: list[str],
     full_stack: bool,
     build_ax_engine: bool,
+    include_mlx_lm: bool = False,
 ) -> dict[str, Any]:
     """Invoke bench_mlx_inference_stack.py for one GGUF-mapped README row.
 
@@ -355,7 +356,9 @@ def run_bench_for_row(
         if not build_ax_engine:
             cmd.append("--no-build-ax-engine")
     else:
-        cmd.extend(["--skip-mlx-lm", "--skip-ax-engine", "--no-build-ax-engine"])
+        cmd.extend(["--skip-ax-engine", "--no-build-ax-engine"])
+        if not include_mlx_lm:
+            cmd.append("--skip-mlx-lm")
     if llama_cpp_extra_args:
         cmd.extend(["--llama-cpp-extra-args", llama_cpp_extra_args])
 
@@ -603,6 +606,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--include-mlx-lm",
+        action="store_true",
+        help=(
+            "In non-full-stack mode, also run mlx_lm.benchmark alongside "
+            "llama.cpp so the resulting JSON has both engines (AX still skipped)."
+        ),
+    )
+    parser.add_argument(
         "--no-build-ax-engine",
         action="store_true",
         help=(
@@ -758,6 +769,7 @@ def main() -> None:
             model_args=model_args,
             full_stack=args.full_stack,
             build_ax_engine=not args.no_build_ax_engine,
+            include_mlx_lm=args.include_mlx_lm,
         )
         record.update(bench_result)
 

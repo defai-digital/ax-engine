@@ -1,0 +1,758 @@
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "claim_gate": {
+    "schema_version": "ax.phase0_claim_gate.v1",
+    "scope": "mlx_inference_stack_public_readme",
+    "requires_prompt_hash_parity": true,
+    "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
+    "shape_only_external_rows": [
+      "llama_cpp_metal"
+    ],
+    "requires_runtime_identity": true,
+    "requires_decode_policy_identity": true,
+    "requires_prefill_decode_split": true,
+    "forbidden_public_claims_without_artifacts": [
+      "continuous_batching",
+      "prefix_reuse",
+      "long_context_prefill_improvement"
+    ]
+  },
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.5",
+    "platform": "darwin"
+  },
+  "build": {
+    "commit": "fe517e8a6d42106a0327b124da5846ff989db82e",
+    "build_profile": "release",
+    "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server"
+  },
+  "model": "mlx-community/Qwen3.6-27B-6bit",
+  "model_repo_id": "mlx-community/Qwen3.6-27B-6bit",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-27B-6bit/snapshots/9bf976157e09080fbc11ccd971d4e9c57554889d",
+  "model_dir_source": "huggingface_cache",
+  "hf_cache_root": "/Users/akiralam/.cache/huggingface/hub",
+  "model_config": {
+    "model_type": "qwen3_5",
+    "quantization": {
+      "group_size": 64,
+      "bits": 6,
+      "mode": "affine"
+    },
+    "model_family": "qwen3_5",
+    "linear_attention_enabled": true,
+    "linear_attention": {
+      "full_attention_interval": 4,
+      "num_value_heads": 48,
+      "num_key_heads": 16,
+      "key_head_dim": 128,
+      "value_head_dim": 128,
+      "conv_kernel_dim": 4
+    },
+    "linear_attention_projection_layout": {
+      "schema_version": "ax.linear_attention_projection_layout.v1",
+      "layout": "split_qkv_z_a_b",
+      "linear_layers": 48,
+      "packed_layers": 0,
+      "split_layers": 48,
+      "role_counts": {
+        "linear_attention_in_proj_a": 48,
+        "linear_attention_in_proj_b": 48,
+        "linear_attention_in_proj_qkv": 48,
+        "linear_attention_in_proj_z": 48
+      },
+      "offline_pack_candidate": true
+    }
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "external_gguf_reference": "llama.cpp Metal llama-bench",
+    "external_gguf_reference_present": true,
+    "external_gguf_reference_required": false,
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback. llama_cpp_metal rows are shape-compatible external GGUF rows, not prompt-hash parity or repo-owned MLX throughput evidence.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/qwen3_6-27b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+          "token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+          "token_count": 128,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 512,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/qwen3_6-27b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+          "token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+          "token_count": 512,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 2048,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/qwen3_6-27b-6bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+          "token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
+          "token_count": 2048,
+          "prompt_source": "random"
+        }
+      ]
+    },
+    "strictness": "mlx_lm_prompt_algorithm_reproduced; llama_cpp_metal_shape_compatible_only"
+  },
+  "prompt_tokens": [
+    128,
+    512,
+    2048
+  ],
+  "generation_tokens": 128,
+  "repetitions": 3,
+  "cooldown": 15.0,
+  "prefill_step_size": 2048,
+  "concurrency": 1,
+  "concurrent_prefill_overlap_classification": {
+    "classification": "single_request_no_overlap",
+    "continuous_batching_claim": false,
+    "concurrency": 1
+  },
+  "prefix_reuse_evidence": {
+    "hit_count": 0,
+    "miss_count": 0,
+    "blocked_count": 0,
+    "blocked_policy_disabled_count": 0,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "stored_prefix_count": 0,
+    "eviction_count": 0,
+    "reused_token_count": 0,
+    "warmup_token_count": 0,
+    "cache_entry_count": 0,
+    "cache_bytes_kib": 0,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": false,
+    "physical_snapshot_coverage": "none_observed",
+    "blocked_reason_count": 0,
+    "blocked_reason_accounting_gap_count": 0
+  },
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "ax_linear_attention_projection_pack": false,
+  "ax_linear_attention_projection_pack_compare": false,
+  "ax_dense_ffn_gate_up_pack": false,
+  "ax_dense_ffn_gate_up_pack_compare": false,
+  "ax_prefill_profile": false,
+  "ax_decode_profile": false,
+  "results": [
+    {
+      "prefill_tok_s": {
+        "mean": 282.5946666666667,
+        "median": 270.475,
+        "min": 254.525,
+        "max": 322.784
+      },
+      "decode_tok_s": {
+        "mean": 22.992666666666665,
+        "median": 23.993,
+        "min": 20.587,
+        "max": 24.398
+      },
+      "peak_memory_gb": {
+        "mean": 22.357333333333333,
+        "median": 22.357,
+        "min": 22.357,
+        "max": 22.358
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 322.784,
+          "decode_tok_s": 20.587,
+          "peak_memory_gb": 22.357,
+          "total_time_s": 6.734,
+          "ttft_ms": 396.5500148706256
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 254.525,
+          "decode_tok_s": 23.993,
+          "peak_memory_gb": 22.357,
+          "total_time_s": 5.957,
+          "ttft_ms": 502.8975542677536
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 270.475,
+          "decode_tok_s": 24.398,
+          "peak_memory_gb": 22.358,
+          "total_time_s": 5.843,
+          "ttft_ms": 473.2415195489416
+        }
+      ],
+      "total_time_s": {
+        "mean": 6.178,
+        "median": 5.957,
+        "min": 5.843,
+        "max": 6.734
+      },
+      "reported_averages": {
+        "prefill_tok_s": 282.595,
+        "decode_tok_s": 22.993,
+        "peak_memory_gb": 22.357
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/qwen3_6-27b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "prompt_source": "random",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 457.56302956244025,
+        "median": 473.2415195489416,
+        "min": 396.5500148706256,
+        "max": 502.8975542677536
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 592.256,
+        "median": 577.573,
+        "min": 562.477,
+        "max": 636.718
+      },
+      "decode_tok_s": {
+        "mean": 24.776,
+        "median": 24.776,
+        "min": 24.768,
+        "max": 24.784
+      },
+      "peak_memory_gb": {
+        "mean": 23.05333333333333,
+        "median": 23.053,
+        "min": 23.053,
+        "max": 23.054
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 636.718,
+          "decode_tok_s": 24.784,
+          "peak_memory_gb": 23.053,
+          "total_time_s": 6.086,
+          "ttft_ms": 804.123646575093
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 577.573,
+          "decode_tok_s": 24.768,
+          "peak_memory_gb": 23.053,
+          "total_time_s": 6.175,
+          "ttft_ms": 886.468030880945
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 562.477,
+          "decode_tok_s": 24.776,
+          "peak_memory_gb": 23.054,
+          "total_time_s": 6.192,
+          "ttft_ms": 910.2594417193948
+        }
+      ],
+      "total_time_s": {
+        "mean": 6.151,
+        "median": 6.175,
+        "min": 6.086,
+        "max": 6.192
+      },
+      "reported_averages": {
+        "prefill_tok_s": 592.256,
+        "decode_tok_s": 24.776,
+        "peak_memory_gb": 23.053
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/qwen3_6-27b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+      "prompt_token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+      "prompt_source": "random",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 866.9503730584776,
+        "median": 886.468030880945,
+        "min": 804.123646575093,
+        "max": 910.2594417193948
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 808.9693333333333,
+        "median": 798.241,
+        "min": 796.014,
+        "max": 832.653
+      },
+      "decode_tok_s": {
+        "mean": 24.623,
+        "median": 24.623,
+        "min": 24.616,
+        "max": 24.63
+      },
+      "peak_memory_gb": {
+        "mean": 24.929333333333332,
+        "median": 24.929,
+        "min": 24.929,
+        "max": 24.93
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 832.653,
+          "decode_tok_s": 24.616,
+          "peak_memory_gb": 24.929,
+          "total_time_s": 7.775,
+          "ttft_ms": 2459.608023990786
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 798.241,
+          "decode_tok_s": 24.623,
+          "peak_memory_gb": 24.929,
+          "total_time_s": 7.881,
+          "ttft_ms": 2565.6412035964076
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 796.014,
+          "decode_tok_s": 24.63,
+          "peak_memory_gb": 24.93,
+          "total_time_s": 7.89,
+          "ttft_ms": 2572.819071021364
+        }
+      ],
+      "total_time_s": {
+        "mean": 7.8486666666666665,
+        "median": 7.881,
+        "min": 7.775,
+        "max": 7.89
+      },
+      "reported_averages": {
+        "prefill_tok_s": 808.969,
+        "decode_tok_s": 24.623,
+        "peak_memory_gb": 24.929
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/qwen3_6-27b-6bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+      "prompt_token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
+      "prompt_source": "random",
+      "prompt_tokens": 2048,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 2532.6894328695194,
+        "median": 2565.6412035964076,
+        "min": 2459.608023990786,
+        "max": 2572.819071021364
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "engine": "llama_cpp_metal",
+      "method": "llama-bench",
+      "timing_scope": "external_llama_cpp_kernel_benchmark",
+      "runtime_identity": {
+        "selected_backend": "llama_cpp",
+        "route_identity": "external_llama_cpp_metal",
+        "resolution_policy": "external_gguf_baseline",
+        "benchmark_surface": "llama_cpp_bench"
+      },
+      "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
+      "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/qwen3_6-27b-6bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "prompt_source": "llama_bench_internal_random",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "batch_size": 1,
+      "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3.6-27B-GGUF/snapshots/f73b625d7ceedbd05d14a93874387cd3bcd673b7/Qwen_Qwen3.6-27B-Q6_K.gguf",
+      "n_gpu_layers": 99,
+      "prefill_tok_s": {
+        "mean": 537.8303333333333,
+        "median": 537.688,
+        "min": 537.557,
+        "max": 538.246,
+        "stddev": 0.365856,
+        "reported_mean": 537.83042
+      },
+      "decode_tok_s": {
+        "mean": 21.233733333333333,
+        "median": 21.2849,
+        "min": 21.1058,
+        "max": 21.3105,
+        "stddev": 0.111535,
+        "reported_mean": 21.233718
+      },
+      "prefill_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 537.557,
+          "sample_ns": 238114250,
+          "ttft_ms": 238.11428369456632
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 537.688,
+          "sample_ns": 238056208,
+          "ttft_ms": 238.0562705509515
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 538.246,
+          "sample_ns": 237809459,
+          "ttft_ms": 237.80947745083103
+        }
+      ],
+      "decode_trials": [
+        {
+          "trial": 1,
+          "decode_tok_s": 21.2849,
+          "sample_ns": 6013661250
+        },
+        {
+          "trial": 2,
+          "decode_tok_s": 21.3105,
+          "sample_ns": 6006428208
+        },
+        {
+          "trial": 3,
+          "decode_tok_s": 21.1058,
+          "sample_ns": 6064688791
+        }
+      ],
+      "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
+      "llama_cpp": {
+        "build_commit": "3e12fbdea",
+        "build_number": 9200,
+        "backends": "BLAS,MTL",
+        "gpu_info": "Apple M5 Max",
+        "cpu_info": "Accelerate, Apple M5 Max",
+        "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3.6-27B-GGUF/snapshots/f73b625d7ceedbd05d14a93874387cd3bcd673b7/Qwen_Qwen3.6-27B-Q6_K.gguf",
+        "model_type": "qwen35 27B Q6_K",
+        "model_size": 23213152256,
+        "model_n_params": 26895998464,
+        "n_gpu_layers": 99,
+        "n_batch": 2048,
+        "n_ubatch": 512,
+        "type_k": "f16",
+        "type_v": "f16",
+        "flash_attn": true,
+        "devices": "auto"
+      },
+      "external_baseline_role": "gguf_non_mlx_metal_reference",
+      "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
+      "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x1057b16c0 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x1057b1240 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.008 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-cpu-apple_m4.so",
+      "ttft_ms": {
+        "mean": 237.99334389878297,
+        "median": 238.0562705509515,
+        "min": 237.80947745083103,
+        "max": 238.11428369456632
+      },
+      "ttft_source": "derived_from_llama_cpp_pp_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "prefill_tok_s": 270.475,
+        "decode_tok_s": 23.993,
+        "prefill_ratio_to_mlx_lm": 1.9879397356502446,
+        "decode_ratio_to_mlx_lm": 0.887129579460676
+      }
+    },
+    {
+      "engine": "llama_cpp_metal",
+      "method": "llama-bench",
+      "timing_scope": "external_llama_cpp_kernel_benchmark",
+      "runtime_identity": {
+        "selected_backend": "llama_cpp",
+        "route_identity": "external_llama_cpp_metal",
+        "resolution_policy": "external_gguf_baseline",
+        "benchmark_surface": "llama_cpp_bench"
+      },
+      "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
+      "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/qwen3_6-27b-6bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+      "prompt_token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+      "prompt_source": "llama_bench_internal_random",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "batch_size": 1,
+      "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3.6-27B-GGUF/snapshots/f73b625d7ceedbd05d14a93874387cd3bcd673b7/Qwen_Qwen3.6-27B-Q6_K.gguf",
+      "n_gpu_layers": 99,
+      "prefill_tok_s": {
+        "mean": 756.0503333333332,
+        "median": 756.067,
+        "min": 755.331,
+        "max": 756.753,
+        "stddev": 0.711203,
+        "reported_mean": 756.050228
+      },
+      "decode_tok_s": {
+        "mean": 21.213066666666666,
+        "median": 21.2605,
+        "min": 21.073,
+        "max": 21.3057,
+        "stddev": 0.12336,
+        "reported_mean": 21.213078
+      },
+      "prefill_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 755.331,
+          "sample_ns": 677848667,
+          "ttft_ms": 677.8485193908366
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 756.753,
+          "sample_ns": 676574834,
+          "ttft_ms": 676.5747872819798
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 756.067,
+          "sample_ns": 677188750,
+          "ttft_ms": 677.1886618513968
+        }
+      ],
+      "decode_trials": [
+        {
+          "trial": 1,
+          "decode_tok_s": 21.2605,
+          "sample_ns": 6020561916
+        },
+        {
+          "trial": 2,
+          "decode_tok_s": 21.3057,
+          "sample_ns": 6007778708
+        },
+        {
+          "trial": 3,
+          "decode_tok_s": 21.073,
+          "sample_ns": 6074109167
+        }
+      ],
+      "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
+      "llama_cpp": {
+        "build_commit": "3e12fbdea",
+        "build_number": 9200,
+        "backends": "BLAS,MTL",
+        "gpu_info": "Apple M5 Max",
+        "cpu_info": "Accelerate, Apple M5 Max",
+        "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3.6-27B-GGUF/snapshots/f73b625d7ceedbd05d14a93874387cd3bcd673b7/Qwen_Qwen3.6-27B-Q6_K.gguf",
+        "model_type": "qwen35 27B Q6_K",
+        "model_size": 23213152256,
+        "model_n_params": 26895998464,
+        "n_gpu_layers": 99,
+        "n_batch": 2048,
+        "n_ubatch": 512,
+        "type_k": "f16",
+        "type_v": "f16",
+        "flash_attn": true,
+        "devices": "auto"
+      },
+      "external_baseline_role": "gguf_non_mlx_metal_reference",
+      "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
+      "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x102e99070 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x102e994f0 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.008 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-cpu-apple_m4.so",
+      "ttft_ms": {
+        "mean": 677.203989508071,
+        "median": 677.1886618513968,
+        "min": 676.5747872819798,
+        "max": 677.8485193908366
+      },
+      "ttft_source": "derived_from_llama_cpp_pp_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 512,
+        "generation_tokens": 128,
+        "prefill_tok_s": 577.573,
+        "decode_tok_s": 24.776,
+        "prefill_ratio_to_mlx_lm": 1.3090414545001239,
+        "decode_ratio_to_mlx_lm": 0.8581086535356797
+      }
+    },
+    {
+      "engine": "llama_cpp_metal",
+      "method": "llama-bench",
+      "timing_scope": "external_llama_cpp_kernel_benchmark",
+      "runtime_identity": {
+        "selected_backend": "llama_cpp",
+        "route_identity": "external_llama_cpp_metal",
+        "resolution_policy": "external_gguf_baseline",
+        "benchmark_surface": "llama_cpp_bench"
+      },
+      "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
+      "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/qwen3_6-27b-6bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+      "prompt_token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
+      "prompt_source": "llama_bench_internal_random",
+      "prompt_tokens": 2048,
+      "generation_tokens": 128,
+      "batch_size": 1,
+      "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3.6-27B-GGUF/snapshots/f73b625d7ceedbd05d14a93874387cd3bcd673b7/Qwen_Qwen3.6-27B-Q6_K.gguf",
+      "n_gpu_layers": 99,
+      "prefill_tok_s": {
+        "mean": 695.3633333333333,
+        "median": 689.287,
+        "min": 664.539,
+        "max": 732.264,
+        "stddev": 34.269033,
+        "reported_mean": 695.363616
+      },
+      "decode_tok_s": {
+        "mean": 15.447266666666666,
+        "median": 15.4103,
+        "min": 15.2724,
+        "max": 15.6591,
+        "stddev": 0.195995,
+        "reported_mean": 15.447269
+      },
+      "prefill_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 732.264,
+          "sample_ns": 2796803708,
+          "ttft_ms": 2796.8055236909095
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 689.287,
+          "sample_ns": 2971186125,
+          "ttft_ms": 2971.1861677356455
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 664.539,
+          "sample_ns": 3081834000,
+          "ttft_ms": 3081.8356785681503
+        }
+      ],
+      "decode_trials": [
+        {
+          "trial": 1,
+          "decode_tok_s": 15.6591,
+          "sample_ns": 8174161125
+        },
+        {
+          "trial": 2,
+          "decode_tok_s": 15.4103,
+          "sample_ns": 8306107166
+        },
+        {
+          "trial": 3,
+          "decode_tok_s": 15.2724,
+          "sample_ns": 8381154041
+        }
+      ],
+      "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
+      "llama_cpp": {
+        "build_commit": "3e12fbdea",
+        "build_number": 9200,
+        "backends": "BLAS,MTL",
+        "gpu_info": "Apple M5 Max",
+        "cpu_info": "Accelerate, Apple M5 Max",
+        "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--Qwen_Qwen3.6-27B-GGUF/snapshots/f73b625d7ceedbd05d14a93874387cd3bcd673b7/Qwen_Qwen3.6-27B-Q6_K.gguf",
+        "model_type": "qwen35 27B Q6_K",
+        "model_size": 23213152256,
+        "model_n_params": 26895998464,
+        "n_gpu_layers": 99,
+        "n_batch": 2048,
+        "n_ubatch": 2048,
+        "type_k": "f16",
+        "type_v": "f16",
+        "flash_attn": true,
+        "devices": "auto"
+      },
+      "external_baseline_role": "gguf_non_mlx_metal_reference",
+      "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
+      "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x103ce5760 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x103ce5be0 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.008 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-cpu-apple_m4.so",
+      "ttft_ms": {
+        "mean": 2949.942456664902,
+        "median": 2971.1861677356455,
+        "min": 2796.8055236909095,
+        "max": 3081.8356785681503
+      },
+      "ttft_source": "derived_from_llama_cpp_pp_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 2048,
+        "generation_tokens": 128,
+        "prefill_tok_s": 798.241,
+        "decode_tok_s": 24.623,
+        "prefill_ratio_to_mlx_lm": 0.8635073868668736,
+        "decode_ratio_to_mlx_lm": 0.6258498152134183
+      }
+    }
+  ]
+}
