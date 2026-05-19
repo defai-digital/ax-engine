@@ -1,0 +1,46 @@
+
+=== AX Engine MLX inference stack ===
+  model: mlx-community/gemma-4-26b-a4b-it-4bit
+  model_repo_id: mlx-community/gemma-4-26b-a4b-it-4bit
+  model_dir: /Users/akiralam/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit/snapshots/695690b33533b1f8b0395c1d6b4f00dc411353ef
+  prompt_tokens: [128, 512, 2048]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  ax_prefix_cache: disabled_for_cold_prefill_benchmark
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-except-qwen35-cold-prefill/gemma-4-26b-a4b-it-4bit-prompts
+  [prompt] prompt_tokens=128 sha256=4ebdfdf02961 path=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-except-qwen35-cold-prefill/gemma-4-26b-a4b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json
+  [prompt] prompt_tokens=512 sha256=846109be82df path=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-except-qwen35-cold-prefill/gemma-4-26b-a4b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json
+  [prompt] prompt_tokens=2048 sha256=a7760438e4a5 path=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-except-qwen35-cold-prefill/gemma-4-26b-a4b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json
+  [reference] reused 3 mlx_lm rows from benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/gemma-4-26b-a4b-it-4bit.json
+  [ax-engine] /Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit/snapshots/695690b33533b1f8b0395c1d6b4f00dc411353ef --port 53769 --disable-ngram-acceleration --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+  [ax-engine/ax_engine_mlx] prompt=128 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_mlx_inference_stack.py", line 4318, in <module>
+    main()
+    ~~~~^^
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_mlx_inference_stack.py", line 4102, in main
+    bench_axengine(
+    ~~~~~~~~~~~~~~^
+        args.axengine_port,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<10 lines>...
+        prefix_cache_enabled=args.ax_enable_prefix_cache,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_mlx_inference_stack.py", line 2649, in bench_axengine
+    axengine_one_run(port, tokens, generation_tokens, server_pid=server_pid)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_mlx_inference_stack.py", line 2459, in axengine_one_run
+    response = conn.getresponse()
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1459, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 336, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 305, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+                             " response")
+http.client.RemoteDisconnected: Remote end closed connection without response

@@ -58,6 +58,71 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
         with self.assertRaisesRegex(updater.ReadmeBenchUpdateError, "duplicate benchmark row"):
             updater.extract_bench_values(payload)
 
+    def test_extract_bench_values_preserves_null_medians(self) -> None:
+        payload = {
+            "results": [
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "prefill_tok_s": {"median": None},
+                    "decode_tok_s": {"median": 148.9},
+                    "ttft_ms": {"median": None},
+                }
+            ],
+        }
+
+        values = updater.extract_bench_values(payload)
+
+        self.assertIsNone(values[("ax_engine_mlx", 128)]["prefill"])
+        self.assertEqual(values[("ax_engine_mlx", 128)]["decode"], 148.9)
+        self.assertIsNone(values[("ax_engine_mlx", 128)]["ttft"])
+
+    def test_prefill_null_ax_value_clears_stale_ax_cell(self) -> None:
+        lines = [
+            "### Prefill throughput (tok/s) — percentages vs mlx_lm",
+            "",
+            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |",
+            "|---|---|---:| ---: |---:|---:|",
+            "| Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 539.4 | **5,000,000.0 (+927000.0%)** |",
+            "",
+            "### Decode throughput",
+        ]
+        vals = {
+            ("mlx_lm", 128): {"prefill": 539.4},
+            ("ax_engine_mlx", 128): {"prefill": None},
+        }
+
+        changed = updater.update_prefill_rows(lines, "Qwen 3.6 35B A3B", "4-bit", vals)
+
+        self.assertEqual(changed, 1)
+        self.assertIn(
+            "| Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 539.4 | — |",
+            lines,
+        )
+
+    def test_ttft_null_ax_value_clears_stale_ax_cell(self) -> None:
+        lines = [
+            "### Time to first token (ms) — generation=128 tokens, temp=0",
+            "",
+            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |",
+            "|---|---|---:| ---: |---:|---:|",
+            "| Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 237.3 | **0.3 (-99.9%)** |",
+            "",
+            "### Installation",
+        ]
+        vals = {
+            ("mlx_lm", 128): {"ttft": 237.3},
+            ("ax_engine_mlx", 128): {"ttft": None},
+        }
+
+        changed = updater.update_ttft_rows(lines, "Qwen 3.6 35B A3B", "4-bit", vals)
+
+        self.assertEqual(changed, 1)
+        self.assertIn(
+            "| Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 237.3 | — |",
+            lines,
+        )
+
     def test_decode_direct_only_update_preserves_existing_ngram_column(self) -> None:
         lines = [
             "### Decode throughput (tok/s) — generation=128 tokens, temp=0",

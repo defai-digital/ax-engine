@@ -69,7 +69,10 @@ throughput baselines.
   `model_artifacts` readiness for config, manifest, safetensors, model type, and
   quantization metadata.
 - `bench_mlx_inference_stack.py`: MLX model-inference comparison against
-  `mlx_lm.benchmark`. It can pass through
+  `mlx_lm.benchmark`. AX rows disable the shared MLX prefix cache by default so
+  prefill throughput and TTFT stay cold-prefill measurements across warmup and
+  repeated trials; use `--ax-enable-prefix-cache` only for explicit
+  prefix-cache experiments. It can pass through
   `--experimental-mlx-kv-compression turboquant-shadow` or
   `turboquant-fused-experimental` for AX rows and records TurboQuant KV
   compression route counters, including shadow-storage sync calls and wall time

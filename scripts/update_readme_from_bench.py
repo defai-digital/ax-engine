@@ -14,6 +14,9 @@ class ReadmeBenchUpdateError(RuntimeError):
     pass
 
 
+INVALID_METRIC_CELL = "—"
+
+
 # Maps benchmark slug → (README model display name, README quant string)
 SLUG_TO_README = {
     "gemma-4-e2b-it-4bit":         ("Gemma 4 E2B",      "4-bit"),
@@ -254,9 +257,10 @@ def update_prefill_rows(lines: list[str], model_name: str, quant: str, vals: dic
     for pt, idx in collect_prompt_rows(lines, anchor):
         ref = vals.get(("mlx_lm", pt), {}).get("prefill")
         ax  = vals.get(("ax_engine_mlx", pt), {}).get("prefill")
-        if ref is None or ax is None:
+        if ref is None:
             continue
-        lines[idx] = replace_trailing_cells(lines[idx], [fmt_num(ref), cell_prefill(ax, ref)])
+        ax_cell = INVALID_METRIC_CELL if ax is None else cell_prefill(ax, ref)
+        lines[idx] = replace_trailing_cells(lines[idx], [fmt_num(ref), ax_cell])
         changed += 1
 
     return changed
@@ -307,9 +311,10 @@ def update_ttft_rows(lines: list[str], model_name: str, quant: str, vals: dict) 
     for pt, idx in collect_prompt_rows(lines, anchor):
         ref_ttft = vals.get(("mlx_lm", pt), {}).get("ttft")
         ax_ttft  = vals.get(("ax_engine_mlx", pt), {}).get("ttft")
-        if ref_ttft is None or ax_ttft is None:
+        if ref_ttft is None:
             continue
-        lines[idx] = replace_trailing_cells(lines[idx], [fmt_num(ref_ttft), cell_ttft(ax_ttft, ref_ttft)])
+        ax_cell = INVALID_METRIC_CELL if ax_ttft is None else cell_ttft(ax_ttft, ref_ttft)
+        lines[idx] = replace_trailing_cells(lines[idx], [fmt_num(ref_ttft), ax_cell])
         changed += 1
 
     return changed

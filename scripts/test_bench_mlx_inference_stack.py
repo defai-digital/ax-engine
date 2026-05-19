@@ -2611,6 +2611,73 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"], "1")
 
+    def test_axengine_command_disables_prefix_cache_by_default(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AX_MLX_PREFIX_CACHE_MAX_BYTES": "268435456",
+                    "AX_MLX_PREFIX_CACHE_MAX_ENTRIES": "64",
+                    "AX_MLX_PREFIX_CACHE_DISK_DISABLED": "0",
+                },
+                clear=True,
+            ),
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                direct_mode=True,
+            )
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["AX_MLX_NATIVE_CONFIRM"], "1")
+        self.assertEqual(env["AX_MLX_PREFIX_CACHE_MAX_BYTES"], "0")
+        self.assertEqual(env["AX_MLX_PREFIX_CACHE_MAX_ENTRIES"], "0")
+        self.assertEqual(env["AX_MLX_PREFIX_CACHE_DISK_DISABLED"], "1")
+
+    def test_axengine_command_can_keep_prefix_cache_enabled(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                direct_mode=True,
+                prefix_cache_enabled=True,
+            )
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["AX_MLX_NATIVE_CONFIRM"], "1")
+        self.assertNotIn("AX_MLX_PREFIX_CACHE_MAX_BYTES", env)
+        self.assertNotIn("AX_MLX_PREFIX_CACHE_MAX_ENTRIES", env)
+        self.assertNotIn("AX_MLX_PREFIX_CACHE_DISK_DISABLED", env)
+
+    def test_summarize_runs_ignores_invalid_none_values(self) -> None:
+        partial = bench.summarize_runs(
+            [
+                {"prefill_tok_s": None},
+                {"prefill_tok_s": 100.0},
+                {"prefill_tok_s": 120.0},
+            ],
+            "prefill_tok_s",
+        )
+        self.assertEqual(partial["median"], 110.0)
+
+        empty = bench.summarize_runs(
+            [{"prefill_tok_s": None}, {"prefill_tok_s": None}],
+            "prefill_tok_s",
+        )
+        self.assertEqual(
+            empty,
+            {"mean": None, "median": None, "min": None, "max": None},
+        )
+
     def test_route_with_more_decisions_keeps_step_telemetry_over_response_route(self) -> None:
         step_route = {
             "attention_route": "qwen_paged_decode",

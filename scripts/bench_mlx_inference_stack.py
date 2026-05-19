@@ -81,6 +81,14 @@ AX_MLX_RUNTIME_IDENTITY = {
     "benchmark_surface": "mlx_inference_stack",
 }
 
+AX_PREFIX_CACHE_DISABLED_ENV = {
+    "AX_MLX_PREFIX_CACHE_MAX_BYTES": "0",
+    "AX_MLX_PREFIX_CACHE_MAX_ENTRIES": "0",
+    "AX_MLX_PREFIX_CACHE_DISK_DISABLED": "1",
+}
+AX_PREFIX_CACHE_DISABLED_MODE = "disabled_for_cold_prefill_benchmark"
+AX_PREFIX_CACHE_ENABLED_MODE = "enabled_by_cli_for_prefix_cache_experiment"
+
 LLAMA_CPP_METAL_RUNTIME_IDENTITY = {
     "selected_backend": "llama_cpp",
     "route_identity": "external_llama_cpp_metal",
@@ -1708,6 +1716,7 @@ def start_axengine(
     pack_dense_ffn_gate_up: bool = False,
     prefill_chunk: int | None = None,
     max_batch_tokens: int | None = None,
+    prefix_cache_enabled: bool = False,
 ) -> subprocess.Popen[Any]:
     ensure_port_available(port)
     cmd = [
@@ -1741,6 +1750,8 @@ def start_axengine(
                 ]
             )
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
+    if not prefix_cache_enabled:
+        env.update(AX_PREFIX_CACHE_DISABLED_ENV)
     if gemma4_moe_profile:
         env["AX_MLX_GEMMA4_MOE_PROFILE"] = "1"
     if linear_attention_profile:
@@ -1754,6 +1765,11 @@ def start_axengine(
     if pack_dense_ffn_gate_up:
         env["AX_MLX_PACK_DENSE_FFN_GATE_UP"] = "1"
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
+    if not prefix_cache_enabled:
+        print(
+            "  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement",
+            file=sys.stderr,
+        )
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
 
 
@@ -2616,6 +2632,7 @@ def bench_axengine(
     kv_compression: str = "disabled",
     capture_output_token_ids: bool = False,
     server_pid: int | None = None,
+    prefix_cache_enabled: bool = False,
 ) -> dict[str, Any]:
     engine_key = engine_key_override or (
         AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
@@ -2680,6 +2697,16 @@ def bench_axengine(
         "timing_scope": "ax_engine_runner_time_us",
         "runtime_identity": dict(AX_MLX_RUNTIME_IDENTITY),
         "ax_decode_policy": decode_policy,
+        "ax_prefix_cache_mode": (
+            AX_PREFIX_CACHE_ENABLED_MODE
+            if prefix_cache_enabled
+            else AX_PREFIX_CACHE_DISABLED_MODE
+        ),
+        "prefill_ttft_measurement_contract": (
+            "cold_prefill_no_cross_request_prefix_cache"
+            if not prefix_cache_enabled
+            else "prefix_cache_enabled_prefill_metrics_invalidated_on_hit"
+        ),
         "ax_decode_claim_status": ax_decode_claim_status(
             direct_mode,
             ngram_summary,
@@ -3511,6 +3538,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-enable-prefix-cache",
+        action="store_true",
+        help=(
+            "Keep AX MLX prefix cache enabled for explicit prefix-cache experiments. "
+            "By default the inference-stack benchmark disables it so prefill "
+            "throughput and TTFT remain cold-prefill measurements rather than "
+            "warm-cache hits seeded by AX warmup/repetition runs."
+        ),
+    )
+    parser.add_argument(
         "--ax-compare-policies",
         dest="ax_compare_policies",
         action="store_true",
@@ -3830,6 +3867,15 @@ def main() -> None:
     print(f"  prompt_tokens: {prompt_lengths}", file=sys.stderr)
     print(f"  generation_tokens: {args.generation_tokens}", file=sys.stderr)
     print(f"  repetitions: {args.repetitions} + 1 warmup for AX", file=sys.stderr)
+    print(
+        "  ax_prefix_cache: "
+        + (
+            AX_PREFIX_CACHE_ENABLED_MODE
+            if args.ax_enable_prefix_cache
+            else AX_PREFIX_CACHE_DISABLED_MODE
+        ),
+        file=sys.stderr,
+    )
     model_metadata = collect_model_metadata(args.model_dir)
     gateddelta_prefill_profile_contract: dict[str, Any] | None = None
     if args.gateddelta_prefill_profile:
@@ -4037,6 +4083,7 @@ def main() -> None:
                     # (matching mlx_lm.benchmark / mlx-swift-bench geometry),
                     # provision at least the longest configured prompt.
                     max_batch_tokens=max(max(prompt_lengths), args.prefill_step_size),
+                    prefix_cache_enabled=args.ax_enable_prefix_cache,
                 )
                 procs.append(proc)
                 if not wait_for_server(
@@ -4064,6 +4111,7 @@ def main() -> None:
                             kv_compression=args.experimental_mlx_kv_compression,
                             capture_output_token_ids=args.capture_output_token_ids,
                             server_pid=proc.pid,
+                            prefix_cache_enabled=args.ax_enable_prefix_cache,
                         )
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size
@@ -4159,6 +4207,16 @@ def main() -> None:
         "repetitions": args.repetitions,
         "cooldown": args.cooldown,
         "prefill_step_size": args.prefill_step_size,
+        "ax_prefix_cache_mode": (
+            AX_PREFIX_CACHE_ENABLED_MODE
+            if args.ax_enable_prefix_cache
+            else AX_PREFIX_CACHE_DISABLED_MODE
+        ),
+        "prefill_ttft_measurement_contract": (
+            "cold_prefill_no_cross_request_prefix_cache"
+            if not args.ax_enable_prefix_cache
+            else "prefix_cache_enabled_prefill_metrics_invalidated_on_hit"
+        ),
         "concurrency": 1,
         "concurrent_prefill_overlap_classification": {
             "classification": "single_request_no_overlap",

@@ -189,7 +189,7 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-18-gguf-full-stack/ -->
+<!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-18-gguf-full-stack/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-qwen35-a3b-4bit-cold-prefill-refresh/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
@@ -201,9 +201,13 @@ Gemma 4 E2B 4-bit overlays come from
 `benchmarks/results/mlx-inference/2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/`
 for the `llama.cpp Metal*` column and
 `benchmarks/results/mlx-inference/2026-05-18-ax-direct-gemma-e2b-4bit-sanity/`
-for AX direct rows. All rows use the same generation=128 shape, 5 repetitions,
-a 15-second cooldown between trials, and production-build binaries. MLX and AX
-rows also use matching prompt SHA checks.
+for AX direct rows. Refreshed Qwen 3.6 35B A3B 4-bit AX direct and n-gram rows
+come from
+`benchmarks/results/mlx-inference/2026-05-19-ax-qwen35-a3b-4bit-cold-prefill-refresh/`
+with AX prefix cache disabled for cold prefill and TTFT measurement. All rows
+use the same generation=128 shape, 5 repetitions, a 15-second cooldown between
+trials, and production-build binaries. MLX and AX rows also use matching prompt
+SHA checks.
 Percentages are versus `mlx_lm`. The `llama.cpp Metal*` column is a
 shape-compatible external reference; it does not share prompt-token hashes with
 the MLX rows.
@@ -257,9 +261,9 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 | Qwen 3.6 27B | 8-bit | 128 | 559.4 | 219.3 | **721.9 (+229.1%)** |
 |  |  | 512 | 798.2 | 520.2 | **881.5 (+69.4%)** |
 |  |  | 2048 | 741.9 | 787.4 | **886.0 (+12.5%)** |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 539.4 | **1,344.8 (+149.3%)** |
-|  |  | 512 | 3,146.6 | 1,599.5 | **2,990.9 (+87.0%)** |
-|  |  | 2048 | 3,542.3 | 3,513.1 | 3,077.1 (-12.4%) |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 539.4 | **1,358.0 (+151.8%)** |
+|  |  | 512 | 3,146.6 | 1,599.5 | **3,066.7 (+91.7%)** |
+|  |  | 2048 | 3,542.3 | 3,513.1 | 3,108.4 (-11.5%) |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
@@ -287,7 +291,7 @@ output loop.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 174.6 | 214.0 | 207.1 (-3.2%) | **602.0 (+181.4%)** |
+| Gemma 4 E2B | 4-bit | 128 | 174.6 | 215.4 | 207.1 (-3.8%) | **602.0 (+179.5%)** |
 |  |  | 512 | 165.2 | 210.3 | 192.9 (-8.2%) | **589.7 (+180.5%)** |
 |  |  | 2048 | 171.9 | 200.9 | 185.1 (-7.9%) | **539.8 (+168.7%)** |
 | Gemma 4 E2B | 5-bit | 128 | 154.8 | 195.2 | 180.7 (-7.4%) | **479.2 (+145.6%)** |
@@ -320,9 +324,9 @@ output loop.
 | Qwen 3.6 27B | 8-bit | 128 | 18.3 | 18.7 | 18.4 (-1.5%) | **18.2 (-2.5%)** |
 |  |  | 512 | 18.2 | 18.6 | 18.5 (-0.5%) | **18.3 (-1.5%)** |
 |  |  | 2048 | 12.7 | 18.4 | 18.4 (-0.2%) | **18.2 (-1.0%)** |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 140.1 | **153.7 (+9.7%)** | **336.4 (+140.1%)** |
-|  |  | 512 | 108.2 | 136.5 | **151.7 (+11.1%)** | **329.5 (+141.5%)** |
-|  |  | 2048 | 105.7 | 134.5 | **148.6 (+10.5%)** | **324.5 (+141.4%)** |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 140.1 | **148.8 (+6.2%)** | **340.0 (+142.7%)** |
+|  |  | 512 | 108.2 | 136.5 | **149.9 (+9.8%)** | **334.6 (+145.2%)** |
+|  |  | 2048 | 105.7 | 134.5 | **143.3 (+6.6%)** | **312.7 (+132.5%)** |
 
 † Qwen 3.6 27B 4-bit at prompt=2048 originally produced zero decode tokens
 because 4-bit quantization noise pushed an EOS token to argmax at decode
@@ -381,9 +385,9 @@ stream.
 | Qwen 3.6 27B | 8-bit | 128 | 228.8 | 583.6 | **177.3 (-69.6%)** |
 |  |  | 512 | 641.5 | 984.2 | **580.9 (-41.0%)** |
 |  |  | 2048 | 2,760.6 | 2,601.1 | **2,311.6 (-11.1%)** |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 237.3 | **95.2 (-59.9%)** |
-|  |  | 512 | 162.7 | 320.1 | **171.2 (-46.5%)** |
-|  |  | 2048 | 578.2 | 583.0 | 665.6 (+14.2%) |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 237.3 | **94.3 (-60.3%)** |
+|  |  | 512 | 162.7 | 320.1 | **167.0 (-47.8%)** |
+|  |  | 2048 | 578.2 | 583.0 | 658.9 (+13.0%) |
 
 Embedding benchmarks are kept out of this README summary; see
 [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md) for embedding throughput, serving,

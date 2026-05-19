@@ -1,0 +1,46 @@
+
+=== AX Engine MLX inference stack ===
+  model: mlx-community/Qwen3.6-27B-4bit
+  model_repo_id: mlx-community/Qwen3.6-27B-4bit
+  model_dir: /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282
+  prompt_tokens: [128, 512, 2048]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  ax_prefix_cache: disabled_for_cold_prefill_benchmark
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-except-qwen35-cold-prefill/qwen3_6-27b-4bit-prompts
+  [prompt] prompt_tokens=128 sha256=a03e5d1e2a75 path=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-except-qwen35-cold-prefill/qwen3_6-27b-4bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json
+  [prompt] prompt_tokens=512 sha256=b1c0bcb994aa path=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-except-qwen35-cold-prefill/qwen3_6-27b-4bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json
+  [prompt] prompt_tokens=2048 sha256=a7c9e08d17d2 path=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-except-qwen35-cold-prefill/qwen3_6-27b-4bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json
+  [reference] reused 3 mlx_lm rows from benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/qwen3_6-27b-4bit.json
+  [ax-engine] /Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282 --port 54230 --disable-ngram-acceleration --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+  [ax-engine/ax_engine_mlx] prompt=128 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=796.7 tok/s decode=32.4 tok/s out=116
+    rep 2: prefill=798.1 tok/s decode=32.4 tok/s out=116
+    rep 3: prefill=794.5 tok/s decode=32.5 tok/s out=116
+    rep 4: prefill=798.5 tok/s decode=32.5 tok/s out=116
+    rep 5: prefill=794.5 tok/s decode=32.5 tok/s out=116
+  [ax-engine/ax_engine_mlx] prompt=512 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=923.4 tok/s decode=32.6 tok/s out=128
+    rep 2: prefill=926.9 tok/s decode=32.6 tok/s out=128
+    rep 3: prefill=925.5 tok/s decode=32.6 tok/s out=128
+    rep 4: prefill=928.4 tok/s decode=32.6 tok/s out=128
+    rep 5: prefill=926.7 tok/s decode=32.6 tok/s out=128
+  [ax-engine/ax_engine_mlx] prompt=2048 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=928.7 tok/s decode=0.0 tok/s out=0
+    rep 2: prefill=927.3 tok/s decode=0.0 tok/s out=0
+    rep 3: prefill=929.1 tok/s decode=0.0 tok/s out=0
+    rep 4: prefill=928.8 tok/s decode=0.0 tok/s out=0
+    rep 5: prefill=928.4 tok/s decode=0.0 tok/s out=0
+  [ax-engine] /Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282 --port 54230 --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+  [ax-engine/ax_engine_mlx_ngram_accel] prompt=128 generation=128 policy=ngram_acceleration_linear_attention_branch_recompute kv_compression=disabled
+    rep 1: prefill=792.7 tok/s decode=31.7 tok/s out=116
+    rep 2: prefill=800.7 tok/s decode=32.6 tok/s out=116
+    rep 3: prefill=802.7 tok/s decode=32.6 tok/s out=116
+    rep 4: prefill=798.6 tok/s decode=32.7 tok/s out=116
+    rep 5: prefill=803.3 tok/s decode=32.7 tok/s out=116
+  [ax-engine/ax_engine_mlx_ngram_accel] prompt=512 generation=128 policy=ngram_acceleration_linear_attention_branch_recompute kv_compression=disabled
+    rep 1: prefill=925.0 tok/s decode=32.2 tok/s out=128
+    rep 2: prefill=924.4 tok/s decode=32.1 tok/s out=128
+    rep 3: prefill=926.6 tok/s decode=32.0 tok/s out=128
