@@ -2,6 +2,15 @@ use crate::array::{MlxArray, MlxDtype, null_ffi_array};
 use crate::ffi;
 use crate::stream::{MlxStream, default_gpu_raw};
 
+unsafe extern "C" {
+    fn ax_mlx_gelu_approx_mul(
+        res: *mut ffi::mlx_array,
+        gate: ffi::mlx_array,
+        x: ffi::mlx_array,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+}
+
 fn optional_int(value: Option<i32>, default: i32) -> ffi::mlx_optional_int_ {
     ffi::mlx_optional_int_ {
         has_value: value.is_some(),
@@ -98,6 +107,25 @@ pub fn gelu_approx(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     let t = tanh(&multiply(&mk_scalar(sqrt_2_over_pi), &inner, s), s);
     let one_plus_t = add(&mk_scalar(1.0), &t, s);
     multiply(&multiply(&mk_scalar(0.5), x, s), &one_plus_t, s)
+}
+
+/// Compute `gelu_approx(gate) * x` through AX's direct MLX C++ shim.
+///
+/// This keeps the exact mlx-lm Gemma-family math but collapses the Rust ->
+/// `mlx-c` call boundary for the scalar-heavy activation chain to one FFI call.
+/// If the direct shim reports an error, fall back to the portable wrapper
+/// composition rather than surfacing a hard runtime failure.
+pub fn gelu_approx_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_gelu_approx_mul(&mut res.inner, gate.inner, x.inner, stream);
+        if rc == 0 {
+            return res;
+        }
+    }
+    multiply(&gelu_approx(gate, s), x, s)
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
@@ -1058,6 +1086,43 @@ mod tests {
             vec![2, 3]
         );
         assert_eq!(clip(&a, &min, &max, None).shape(), vec![2, 3]);
+    }
+
+    #[test]
+    fn gelu_approx_mul_direct_matches_portable_composition() {
+        let gate_data: Vec<f32> = (0..24).map(|i| ((i as f32) - 12.0) * 0.125).collect();
+        let x_data: Vec<f32> = (0..24).map(|i| ((i as f32) + 1.0) * 0.03125).collect();
+        let gate = MlxArray::from_raw_data(
+            gate_data.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_data.as_slice()),
+            &[2, 3, 4],
+            MlxDtype::Float32,
+        );
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[2, 3, 4],
+            MlxDtype::Float32,
+        );
+
+        let prev = crate::op_count::op_count_snapshot();
+        let direct = gelu_approx_mul(&gate, &x, None);
+        assert_eq!(
+            crate::op_count::op_count_take(prev),
+            1,
+            "direct C++ activation shim should count as one Rust FFI dispatch"
+        );
+        let portable = multiply(&gelu_approx(&gate, None), &x, None);
+        let direct_f32 = astype(&direct, MlxDtype::Float32, None);
+        let portable_f32 = astype(&portable, MlxDtype::Float32, None);
+        eval(&[&direct_f32, &portable_f32]);
+
+        assert_eq!(direct_f32.shape(), vec![2, 3, 4]);
+        assert_eq!(
+            direct_f32.data_f32().to_vec(),
+            portable_f32.data_f32().to_vec(),
+            "direct C++ activation shim must preserve mlx-lm GEGLU math"
+        );
     }
 
     #[test]

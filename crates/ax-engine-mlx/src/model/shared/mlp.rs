@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, argpartition_axis, argsort_axis, astype,
-    divide, expand_dims, expand_dims_axes, gelu_approx, multiply, reshape, rms_norm,
-    slice_last_dim, softmax, sum_axis, take, take_along_axis, topk_axis,
+    divide, expand_dims, expand_dims_axes, gelu_approx, gelu_approx_mul, multiply, reshape,
+    rms_norm, slice_last_dim, softmax, sum_axis, take, take_along_axis, topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -184,7 +184,7 @@ pub(crate) fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
     const COMPILE_WRAP_LAST_DIM_CEILING: usize = 16_384;
     let last_dim = *gate.shape().last().unwrap_or(&0) as usize;
     if gate.ndim() > 3 || last_dim > COMPILE_WRAP_LAST_DIM_CEILING {
-        return multiply(&gelu_approx(gate, None), x, None);
+        return gelu_approx_mul(gate, x, None);
     }
 
     static GEGLU_COMPILE_CACHE: OnceLock<Mutex<HashMap<ThreadId, MlxClosure>>> = OnceLock::new();
@@ -214,7 +214,7 @@ pub(crate) fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
     {
         return out;
     }
-    multiply(&gelu_approx(gate, None), x, None)
+    gelu_approx_mul(gate, x, None)
 }
 
 pub(crate) fn per_layer_input_gate(gate: &MlxArray, per_layer_input: &MlxArray) -> MlxArray {
@@ -222,7 +222,7 @@ pub(crate) fn per_layer_input_gate(gate: &MlxArray, per_layer_input: &MlxArray) 
     // gate. Unlike the dense FFN `geglu()` helper, upstream does not wrap this
     // call site in `mx.compile`; repeated W5 attempts aborted inside MLX C
     // `mlx_closure_apply` on Gemma 4 E2B 4-bit.
-    multiply(&gelu_approx(gate, None), per_layer_input, None)
+    gelu_approx_mul(gate, per_layer_input, None)
 }
 
 /// SwiGLU compiled helper — mirrors `geglu()` but with SiLU activation.
@@ -278,7 +278,7 @@ pub(crate) fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxA
         if fastpath::prefill_ffn_compile_enabled() {
             geglu(gate, up)
         } else {
-            multiply(&gelu_approx(gate, None), up, None)
+            gelu_approx_mul(gate, up, None)
         }
     } else if fastpath::prefill_ffn_compile_swiglu_enabled() {
         swiglu(gate, up)

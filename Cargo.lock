@@ -1267,6 +1267,7 @@ name = "mlx-sys"
 version = "4.9.0"
 dependencies = [
  "bindgen",
+ "cc",
  "libc",
  "memmap2",
  "regex",

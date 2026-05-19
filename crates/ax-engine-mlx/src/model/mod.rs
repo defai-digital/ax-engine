@@ -3538,6 +3538,38 @@ mod tests {
     }
 
     #[test]
+    fn per_layer_input_gate_direct_path_matches_imperative() {
+        let gate_f32: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.05).collect();
+        let x_f32: Vec<f32> = (0..32).map(|i| ((i as f32) + 1.0) * 0.07).collect();
+        let gate_src = MlxArray::from_raw_data(
+            gate_f32.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_f32.as_slice()),
+            &[1, 4, 8],
+            MlxDtype::Float32,
+        );
+        let x_src = MlxArray::from_raw_data(
+            x_f32.as_ptr() as *const u8,
+            std::mem::size_of_val(x_f32.as_slice()),
+            &[1, 4, 8],
+            MlxDtype::Float32,
+        );
+        let gate = astype(&gate_src, MlxDtype::Bfloat16, None);
+        let x = astype(&x_src, MlxDtype::Bfloat16, None);
+
+        let imperative = multiply(&gelu_approx(&gate, None), &x, None);
+        let direct = per_layer_input_gate(&gate, &x);
+        let imperative_f32 = astype(&imperative, MlxDtype::Float32, None);
+        let direct_f32 = astype(&direct, MlxDtype::Float32, None);
+        eval(&[&imperative_f32, &direct_f32]);
+
+        assert_eq!(
+            imperative_f32.data_f32().to_vec(),
+            direct_f32.data_f32().to_vec(),
+            "direct per-layer-input gate must match mlx-lm's imperative gelu_approx multiply"
+        );
+    }
+
+    #[test]
     fn swiglu_compiled_matches_imperative() {
         // Same shape and dtype the Qwen 3 dense FFN call site produces:
         // gate_proj output and up_proj output, both bf16.

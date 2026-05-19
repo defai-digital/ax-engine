@@ -15,9 +15,19 @@ fn main() {
     let lib_dir = format!("{prefix}/lib");
     let include_dir = format!("{prefix}/include");
 
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .warnings(false)
+        .include(&include_dir)
+        .file("native/activation.cpp")
+        .compile("ax_mlx_direct");
+
+    println!("cargo:rustc-link-lib=mlx");
     println!("cargo:rustc-link-lib=mlxc");
     println!("cargo:rustc-link-search=native={lib_dir}");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=native/activation.cpp");
     println!("cargo:rerun-if-changed={include_dir}/mlx/c/mlx.h");
     println!("cargo:rerun-if-changed={include_dir}/mlx/c");
     println!("cargo:rerun-if-env-changed=HOMEBREW_PREFIX");
