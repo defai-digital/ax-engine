@@ -92,6 +92,20 @@ n-gram drafter is correctness-safe on rejection (the verifier owns
 the final token decision) but it costs draft work that the workload
 will not reward.
 
+### Prompt seeding
+
+The drafter table is fed the prompt tokens during prefill commit
+(`runner.rs::extend_prompt_prefix_tokens`). Without this, the table
+starts decode empty and can only learn from self-emitted tokens, which
+collapses to zero acceleration on models that produce coherent
+(non-repeating) decode from synthetic random prompts — e.g. Qwen 3.6
+27B reported `ngram_no_draft_direct_fallback` on every random-token
+benchmark row. The synthetic random-token benchmark suite still shows
+no uplift on coherent-decoding models (each random 4-gram is unique,
+so the seeded table holds no matchable continuations), but real
+input-output-overlap workloads benefit because the post-prefill decode
+context now has prompt-derived precedent in the table.
+
 ## Correctness contract
 
 The current verifier accepts a drafted token iff the target model's
