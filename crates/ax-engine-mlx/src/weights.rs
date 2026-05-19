@@ -3,13 +3,13 @@ use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, add, astype, concatenate, contiguous, dequantize, eval, load_safetensors,
-    multiply, slice, transpose,
+    MlxArray, MlxDtype, MlxQuantizationMode, add, astype, concatenate, contiguous, dequantize,
+    eval, load_safetensors, multiply, quantize, reshape, slice, transpose,
 };
 
 use ax_engine_core::{
-    NativeLinearAttentionConfig, NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole,
-    NativeTensorSpec, WeightSanitize,
+    NativeLinearAttentionConfig, NativeMlaAttentionConfig, NativeModelArtifacts,
+    NativeTensorQuantization, NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 
 /// All weight arrays for one model.
@@ -552,7 +552,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             match full_attention_projection_layout(specs, idx, uses_shared_kv, uses_value_from_key)?
             {
                 FullAttentionProjectionLayout::GlmMla => {
-                    let glm = load_glm_mla_attention_weights(specs, &mut name_map, idx)?;
+                    let glm = load_glm_mla_attention_weights(
+                        specs,
+                        &mut name_map,
+                        idx,
+                        &artifacts.manifest().mla_attention,
+                        artifacts.manifest().attention_head_count,
+                    )?;
                     (None, None, None, None, Some(glm))
                 }
                 FullAttentionProjectionLayout::QOnly => {
@@ -1214,6 +1220,7 @@ fn has_full_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u32>)
         NativeTensorRole::AttentionQaNorm,
         NativeTensorRole::AttentionQb,
         NativeTensorRole::AttentionKvA,
+        NativeTensorRole::AttentionKvB,
         NativeTensorRole::AttentionKvANorm,
         NativeTensorRole::AttentionEmbedQ,
         NativeTensorRole::AttentionUnembedOut,
@@ -1242,6 +1249,7 @@ fn has_glm_mla_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u3
         NativeTensorRole::AttentionQaNorm,
         NativeTensorRole::AttentionQb,
         NativeTensorRole::AttentionKvA,
+        NativeTensorRole::AttentionKvB,
         NativeTensorRole::AttentionKvANorm,
         NativeTensorRole::AttentionEmbedQ,
         NativeTensorRole::AttentionUnembedOut,
@@ -1410,6 +1418,8 @@ fn load_glm_mla_attention_weights(
     specs: &[NativeTensorSpec],
     name_map: &mut HashMap<String, MlxArray>,
     layer_index: Option<u32>,
+    mla_attention: &NativeMlaAttentionConfig,
+    attention_head_count: u32,
 ) -> Result<GlmMlaAttentionWeights, WeightLoadError> {
     let q_a_proj = take_weight(
         specs,
@@ -1424,6 +1434,13 @@ fn load_glm_mla_attention_weights(
         NativeTensorRole::AttentionKvA,
         layer_index,
         "glm_kv_a_proj",
+    )?;
+    let (embed_q, unembed_out) = load_mla_kv_b_weights(
+        specs,
+        name_map,
+        layer_index,
+        mla_attention,
+        attention_head_count,
     )?;
     Ok(GlmMlaAttentionWeights {
         qa_kva_fused: pack_glm_mla_qa_kva_projection(&q_a_proj, &kv_a_proj)?,
@@ -1450,20 +1467,162 @@ fn load_glm_mla_attention_weights(
             "glm_kv_a_norm",
         )?
         .weight,
-        embed_q: take_weight(
+        embed_q,
+        unembed_out,
+    })
+}
+
+fn load_mla_kv_b_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    layer_index: Option<u32>,
+    mla_attention: &NativeMlaAttentionConfig,
+    attention_head_count: u32,
+) -> Result<(QuantizedWeight, QuantizedWeight), WeightLoadError> {
+    if has_role(specs, NativeTensorRole::AttentionKvB, layer_index) {
+        let kv_b = take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionKvB,
+            layer_index,
+            "deepseek_kv_b_proj",
+        )?;
+        return split_deepseek_kv_b_projection(kv_b, mla_attention, attention_head_count);
+    }
+
+    Ok((
+        take_weight(
             specs,
             name_map,
             NativeTensorRole::AttentionEmbedQ,
             layer_index,
             "glm_embed_q",
         )?,
-        unembed_out: take_weight(
+        take_weight(
             specs,
             name_map,
             NativeTensorRole::AttentionUnembedOut,
             layer_index,
             "glm_unembed_out",
         )?,
+    ))
+}
+
+fn split_deepseek_kv_b_projection(
+    kv_b: QuantizedWeight,
+    mla_attention: &NativeMlaAttentionConfig,
+    attention_head_count: u32,
+) -> Result<(QuantizedWeight, QuantizedWeight), WeightLoadError> {
+    let qk_nope_head_dim = mla_attention.qk_nope_head_dim.ok_or_else(|| {
+        WeightLoadError::InvalidLayer("mla_attention.qk_nope_head_dim missing".to_string())
+    })? as i32;
+    let value_head_dim = mla_attention.value_head_dim.ok_or_else(|| {
+        WeightLoadError::InvalidLayer("mla_attention.value_head_dim missing".to_string())
+    })? as i32;
+    let kv_lora_rank = mla_attention.kv_lora_rank.ok_or_else(|| {
+        WeightLoadError::InvalidLayer("mla_attention.kv_lora_rank missing".to_string())
+    })? as i32;
+    let head_count = attention_head_count as i32;
+    let head_dim = qk_nope_head_dim + value_head_dim;
+    let expected_shape = vec![head_count * head_dim, kv_lora_rank];
+    let was_quantized = kv_b.scales.is_some();
+    let group_size = kv_b.group_size;
+    let bits = kv_b.bits;
+
+    let dense = if let Some(scales) = &kv_b.scales {
+        dequantize(
+            &kv_b.weight,
+            scales,
+            kv_b.biases.as_ref(),
+            Some(group_size),
+            Some(bits),
+            None,
+        )
+    } else {
+        kv_b.weight
+    };
+    if dense.shape() != expected_shape {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "deepseek_kv_b_proj must have shape {expected_shape:?}, got {:?}",
+            dense.shape()
+        )));
+    }
+
+    let kv_b_heads = reshape(&dense, &[head_count, head_dim, kv_lora_rank], None);
+    let k_nope = slice(
+        &kv_b_heads,
+        &[0, 0, 0],
+        &[head_count, qk_nope_head_dim, kv_lora_rank],
+        &[1, 1, 1],
+        None,
+    );
+    let embed_q = contiguous(&transpose(&k_nope, &[0, 2, 1], None), None);
+    let unembed_out = contiguous(
+        &slice(
+            &kv_b_heads,
+            &[0, qk_nope_head_dim, 0],
+            &[head_count, head_dim, kv_lora_rank],
+            &[1, 1, 1],
+            None,
+        ),
+        None,
+    );
+    eval(&[&embed_q, &unembed_out]);
+
+    if was_quantized {
+        Ok((
+            requantize_affine_weight(embed_q, group_size, bits, "deepseek_embed_q")?,
+            requantize_affine_weight(unembed_out, group_size, bits, "deepseek_unembed_out")?,
+        ))
+    } else {
+        Ok((
+            QuantizedWeight {
+                weight: embed_q,
+                scales: None,
+                biases: None,
+                group_size,
+                bits,
+            },
+            QuantizedWeight {
+                weight: unembed_out,
+                scales: None,
+                biases: None,
+                group_size,
+                bits,
+            },
+        ))
+    }
+}
+
+fn requantize_affine_weight(
+    weight: MlxArray,
+    group_size: i32,
+    bits: i32,
+    label: &str,
+) -> Result<QuantizedWeight, WeightLoadError> {
+    let mut parts = quantize(
+        &weight,
+        Some(group_size),
+        Some(bits),
+        MlxQuantizationMode::Affine,
+        None,
+        None,
+    );
+    if parts.len() != 3 {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "{label} quantization returned {} arrays, expected packed weight, scales, biases",
+            parts.len()
+        )));
+    }
+    let packed = parts.remove(0);
+    let scales = parts.remove(0);
+    let biases = parts.remove(0);
+    Ok(QuantizedWeight {
+        weight: packed,
+        scales: Some(scales),
+        biases: Some(biases),
+        group_size,
+        bits,
     })
 }
 
@@ -2684,13 +2843,73 @@ mod tests {
             .map(|role| (format!("{role:?}"), zeros(&[1, 1], MlxDtype::Float32, None)))
             .collect::<HashMap<_, _>>();
 
-        let weights = load_glm_mla_attention_weights(&specs, &mut name_map, Some(0))
-            .expect("GLM MLA weights should load");
+        let mla_attention = NativeMlaAttentionConfig {
+            q_lora_rank: Some(1),
+            kv_lora_rank: Some(1),
+            qk_nope_head_dim: Some(1),
+            qk_rope_head_dim: Some(1),
+            value_head_dim: Some(1),
+        };
+        let weights =
+            load_glm_mla_attention_weights(&specs, &mut name_map, Some(0), &mla_attention, 1)
+                .expect("GLM MLA weights should load");
 
         assert_eq!(weights.q_a_norm.shape(), vec![1, 1]);
         assert_eq!(weights.kv_a_norm.shape(), vec![1, 1]);
         assert!(weights.qa_kva_fused.scales.is_none());
         assert!(weights.q_b_proj.scales.is_none());
+        assert!(weights.embed_q.scales.is_none());
+        assert!(weights.unembed_out.scales.is_none());
+        assert!(name_map.is_empty());
+    }
+
+    #[test]
+    fn load_glm_mla_attention_weights_splits_deepseek_kv_b_projection() {
+        let roles = [
+            NativeTensorRole::AttentionQa,
+            NativeTensorRole::AttentionQaNorm,
+            NativeTensorRole::AttentionQb,
+            NativeTensorRole::AttentionKvA,
+            NativeTensorRole::AttentionKvANorm,
+            NativeTensorRole::AttentionKvB,
+        ];
+        let specs = roles.iter().copied().map(spec).collect::<Vec<_>>();
+        let kv_b_values = (0..18).map(|value| value as f32).collect::<Vec<_>>();
+        let mut name_map = roles
+            .iter()
+            .map(|role| {
+                let value = if *role == NativeTensorRole::AttentionKvB {
+                    reshape(&MlxArray::from_f32_slice(&kv_b_values), &[6, 3], None)
+                } else {
+                    zeros(&[1, 1], MlxDtype::Float32, None)
+                };
+                (format!("{role:?}"), value)
+            })
+            .collect::<HashMap<_, _>>();
+        let mla_attention = NativeMlaAttentionConfig {
+            q_lora_rank: Some(1),
+            kv_lora_rank: Some(3),
+            qk_nope_head_dim: Some(2),
+            qk_rope_head_dim: Some(1),
+            value_head_dim: Some(1),
+        };
+
+        let weights =
+            load_glm_mla_attention_weights(&specs, &mut name_map, Some(0), &mla_attention, 2)
+                .expect("DeepSeek KV-B weights should load");
+
+        assert_eq!(weights.embed_q.weight.shape(), vec![2, 3, 2]);
+        assert_eq!(
+            weights.embed_q.weight.data_f32(),
+            &[
+                0.0, 3.0, 1.0, 4.0, 2.0, 5.0, 9.0, 12.0, 10.0, 13.0, 11.0, 14.0
+            ]
+        );
+        assert_eq!(weights.unembed_out.weight.shape(), vec![2, 1, 3]);
+        assert_eq!(
+            weights.unembed_out.weight.data_f32(),
+            &[6.0, 7.0, 8.0, 15.0, 16.0, 17.0]
+        );
         assert!(weights.embed_q.scales.is_none());
         assert!(weights.unembed_out.scales.is_none());
         assert!(name_map.is_empty());

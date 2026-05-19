@@ -356,6 +356,78 @@ const GLM4_MOE_LITE_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// Extra per-layer tensor patterns for DeepSeek V3/V3.2.
+///
+/// Raw HuggingFace checkpoints store the MLA KV-B projection as
+/// `kv_b_proj.weight`; the MLX runtime splits it into the same `embed_q` and
+/// `unembed_out` layout used by mlx-lm at load time.
+const DEEPSEEK_V3_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "self_attn.q_a_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQa),
+    ),
+    (
+        "self_attn.q_a_layernorm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQaNorm),
+    ),
+    (
+        "self_attn.q_b_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQb),
+    ),
+    (
+        "self_attn.kv_a_proj_with_mqa.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionKvA),
+    ),
+    (
+        "self_attn.kv_a_layernorm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionKvANorm),
+    ),
+    (
+        "self_attn.kv_b_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionKvB),
+    ),
+    (
+        "self_attn.embed_q.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionEmbedQ),
+    ),
+    (
+        "self_attn.unembed_out.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionUnembedOut),
+    ),
+    (
+        "mlp.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "mlp.gate.e_score_correction_bias",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpCorrectionBias),
+    ),
+    (
+        "mlp.switch_mlp.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "mlp.switch_mlp.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "mlp.switch_mlp.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    (
+        "mlp.shared_experts.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "mlp.shared_experts.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "mlp.shared_experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
+    ),
+];
+
 /// Per-layer tensor patterns for Mixtral sparse MoE layers.
 const MIXTRAL_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
@@ -762,7 +834,7 @@ fn model_family_for_type(model_type: &str) -> Result<ModelFamily, ConvertError> 
         "deepseek_v3" | "deepseek_v32" => Ok(ModelFamily {
             family_name: "deepseek_v3",
             tensor_map: HF_STANDARD_TENSOR_MAP,
-            extra_tensor_map: Some(GLM4_MOE_LITE_EXTRA_TENSOR_MAP),
+            extra_tensor_map: Some(DEEPSEEK_V3_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,
         }),
         "llama4" => Ok(ModelFamily {
@@ -1285,7 +1357,7 @@ fn resolve_architecture(
     let kv_head_count = arch_u64(config, model_type, "num_key_value_heads")
         .map(|v| v as u32)
         .unwrap_or(attention_head_count);
-    let attention_head_dim = if is_glm4_moe_lite(model_type) {
+    let attention_head_dim = if is_mla_family(model_type) {
         let qk_nope = require_arch_u64(config, model_type, "qk_nope_head_dim")?;
         let qk_rope = require_arch_u64(config, model_type, "qk_rope_head_dim")?;
         (qk_nope + qk_rope) as u32
@@ -1714,6 +1786,9 @@ fn validate_converted_model_contract(
     if is_glm4_moe_lite(model_type) {
         return validate_glm4_moe_lite_contract(config, manifest);
     }
+    if matches!(model_type, "deepseek_v3" | "deepseek_v32") {
+        return validate_deepseek_v3_contract(config, model_type, manifest);
+    }
     if is_qwen_family_model_type(model_type) {
         validate_qwen_rope_scaling(config, model_type)?;
     }
@@ -1855,6 +1930,8 @@ fn validate_glm4_moe_lite_contract(
     config: &serde_json::Value,
     manifest: &NativeModelManifest,
 ) -> Result<(), ConvertError> {
+    let model_type = "glm4_moe_lite";
+
     validate_glm4_moe_lite_rope_scaling(config)?;
 
     let first_dense_layers = arch_u64(config, "glm4_moe_lite", "first_k_dense_replace")
@@ -1863,23 +1940,28 @@ fn validate_glm4_moe_lite_contract(
         .min(manifest.layer_count);
     let has_shared_experts = arch_u64(config, "glm4_moe_lite", "n_shared_experts").unwrap_or(0) > 0;
 
-    require_glm_config(
+    require_model_config(
+        model_type,
         manifest.mla_attention.q_lora_rank,
         "mla_attention.q_lora_rank",
     )?;
-    require_glm_config(
+    require_model_config(
+        model_type,
         manifest.mla_attention.kv_lora_rank,
         "mla_attention.kv_lora_rank",
     )?;
-    require_glm_config(
+    require_model_config(
+        model_type,
         manifest.mla_attention.qk_nope_head_dim,
         "mla_attention.qk_nope_head_dim",
     )?;
-    require_glm_config(
+    require_model_config(
+        model_type,
         manifest.mla_attention.qk_rope_head_dim,
         "mla_attention.qk_rope_head_dim",
     )?;
-    require_glm_config(
+    require_model_config(
+        model_type,
         manifest.mla_attention.value_head_dim,
         "mla_attention.value_head_dim",
     )?;
@@ -1954,6 +2036,157 @@ fn validate_glm4_moe_lite_contract(
     Ok(())
 }
 
+fn validate_deepseek_v3_contract(
+    config: &serde_json::Value,
+    model_type: &str,
+    manifest: &NativeModelManifest,
+) -> Result<(), ConvertError> {
+    require_model_config(
+        model_type,
+        manifest.mla_attention.q_lora_rank,
+        "mla_attention.q_lora_rank",
+    )?;
+    require_model_config(
+        model_type,
+        manifest.mla_attention.kv_lora_rank,
+        "mla_attention.kv_lora_rank",
+    )?;
+    require_model_config(
+        model_type,
+        manifest.mla_attention.qk_nope_head_dim,
+        "mla_attention.qk_nope_head_dim",
+    )?;
+    require_model_config(
+        model_type,
+        manifest.mla_attention.qk_rope_head_dim,
+        "mla_attention.qk_rope_head_dim",
+    )?;
+    require_model_config(
+        model_type,
+        manifest.mla_attention.value_head_dim,
+        "mla_attention.value_head_dim",
+    )?;
+
+    if let (Some(nope_dim), Some(rope_dim)) = (
+        manifest.mla_attention.qk_nope_head_dim,
+        manifest.mla_attention.qk_rope_head_dim,
+    ) {
+        if nope_dim + rope_dim != manifest.attention_head_dim {
+            return invalid_model_contract(
+                model_type,
+                format!(
+                    "mla_attention qk_nope_head_dim + qk_rope_head_dim must equal attention_head_dim {}, got {} + {}",
+                    manifest.attention_head_dim, nope_dim, rope_dim
+                ),
+            );
+        }
+    }
+
+    let first_dense_layers = arch_u64(config, model_type, "first_k_dense_replace")
+        .and_then(u64_to_u32)
+        .unwrap_or(0)
+        .min(manifest.layer_count);
+    let layer_freq = arch_u64(config, model_type, "moe_layer_freq")
+        .and_then(u64_to_u32)
+        .unwrap_or(1);
+    if layer_freq == 0 {
+        return invalid_model_contract(model_type, "moe_layer_freq must be greater than zero");
+    }
+    let has_shared_experts = arch_u64(config, model_type, "n_shared_experts").unwrap_or(0) > 0;
+
+    for layer_index in 0..manifest.layer_count {
+        for role in [
+            NativeTensorRole::AttentionNorm,
+            NativeTensorRole::AttentionQa,
+            NativeTensorRole::AttentionQaNorm,
+            NativeTensorRole::AttentionQb,
+            NativeTensorRole::AttentionKvA,
+            NativeTensorRole::AttentionKvANorm,
+            NativeTensorRole::AttentionO,
+            NativeTensorRole::AttentionPostNorm,
+        ] {
+            require_model_role(model_type, manifest, layer_index, role)?;
+        }
+
+        let has_kv_b = has_model_role(manifest, layer_index, NativeTensorRole::AttentionKvB);
+        let has_embed_q = has_model_role(manifest, layer_index, NativeTensorRole::AttentionEmbedQ);
+        let has_unembed_out =
+            has_model_role(manifest, layer_index, NativeTensorRole::AttentionUnembedOut);
+        if (has_kv_b && (has_embed_q || has_unembed_out))
+            || (!has_kv_b && (!has_embed_q || !has_unembed_out))
+        {
+            return invalid_model_contract(
+                model_type,
+                format!(
+                    "layer {layer_index} must provide exactly one MLA KV-B layout: AttentionKvB or AttentionEmbedQ plus AttentionUnembedOut"
+                ),
+            );
+        }
+
+        let is_moe_layer = layer_index >= first_dense_layers
+            && layer_freq > 0
+            && layer_index.is_multiple_of(layer_freq);
+        if !is_moe_layer {
+            require_model_role(model_type, manifest, layer_index, NativeTensorRole::FfnGate)?;
+            require_model_role(model_type, manifest, layer_index, NativeTensorRole::FfnUp)?;
+            require_model_role(model_type, manifest, layer_index, NativeTensorRole::FfnDown)?;
+        } else {
+            require_model_role(
+                model_type,
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnGateInp,
+            )?;
+            require_model_role(
+                model_type,
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnGateInpCorrectionBias,
+            )?;
+            require_model_role(
+                model_type,
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnGateExps,
+            )?;
+            require_model_role(
+                model_type,
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnUpExps,
+            )?;
+            require_model_role(
+                model_type,
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnDownExps,
+            )?;
+            if has_shared_experts {
+                require_model_role(
+                    model_type,
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::FfnSharedExpertGate,
+                )?;
+                require_model_role(
+                    model_type,
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::FfnSharedExpertUp,
+                )?;
+                require_model_role(
+                    model_type,
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::FfnSharedExpertDown,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_glm4_moe_lite_rope_scaling(config: &serde_json::Value) -> Result<(), ConvertError> {
     if config
         .get("rope_scaling")
@@ -1995,11 +2228,7 @@ fn require_glm_role(
     layer_index: u32,
     role: NativeTensorRole,
 ) -> Result<(), ConvertError> {
-    if manifest
-        .tensors
-        .iter()
-        .any(|tensor| tensor.layer_index == Some(layer_index) && tensor.role == role)
-    {
+    if has_model_role(manifest, layer_index, role) {
         return Ok(());
     }
 
@@ -2007,6 +2236,33 @@ fn require_glm_role(
         "glm4_moe_lite",
         format!("layer {layer_index} is missing required draft tensor role {role:?}"),
     )
+}
+
+fn require_model_role(
+    model_type: &str,
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+    role: NativeTensorRole,
+) -> Result<(), ConvertError> {
+    if has_model_role(manifest, layer_index, role) {
+        return Ok(());
+    }
+
+    invalid_model_contract(
+        model_type,
+        format!("layer {layer_index} is missing required draft tensor role {role:?}"),
+    )
+}
+
+fn has_model_role(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+    role: NativeTensorRole,
+) -> bool {
+    manifest
+        .tensors
+        .iter()
+        .any(|tensor| tensor.layer_index == Some(layer_index) && tensor.role == role)
 }
 
 fn require_glm_config(value: Option<u32>, field: &str) -> Result<(), ConvertError> {
@@ -2018,6 +2274,18 @@ fn require_glm_config(value: Option<u32>, field: &str) -> Result<(), ConvertErro
         "glm4_moe_lite",
         format!("{field} must be configured and > 0"),
     )
+}
+
+fn require_model_config(
+    model_type: &str,
+    value: Option<u32>,
+    field: &str,
+) -> Result<(), ConvertError> {
+    if value.is_some_and(|value| value > 0) {
+        return Ok(());
+    }
+
+    invalid_model_contract(model_type, format!("{field} must be configured and > 0"))
 }
 
 fn invalid_model_contract(
@@ -3769,6 +4037,170 @@ mod tests {
         write_manifest(&dir, &manifest).expect("write should succeed");
         crate::model::NativeModelArtifacts::from_dir(&dir)
             .expect("runtime-ready GLM manifest should validate");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn converts_deepseek_v3_raw_kv_b_projection_to_mla_manifest() {
+        let dir = unique_test_dir("deepseek_v3");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "deepseek_v3",
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 2,
+                "num_hidden_layers": 2,
+                "vocab_size": 64,
+                "qk_nope_head_dim": 4,
+                "qk_rope_head_dim": 2,
+                "v_head_dim": 3,
+                "q_lora_rank": 4,
+                "kv_lora_rank": 4,
+                "first_k_dense_replace": 1,
+                "moe_layer_freq": 1,
+                "n_routed_experts": 3,
+                "n_shared_experts": 1,
+                "num_experts_per_tok": 1,
+                "moe_intermediate_size": 5,
+                "routed_scaling_factor": 2.5,
+                "n_group": 1,
+                "topk_group": 1,
+                "norm_topk_prob": true,
+                "rope_theta": 1000000
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.embed_tokens.weight", "BF16", &[64, 16]),
+                ("model.norm.weight", "BF16", &[16]),
+                ("lm_head.weight", "BF16", &[64, 16]),
+                ("model.layers.0.input_layernorm.weight", "BF16", &[16]),
+                ("model.layers.0.self_attn.q_a_proj.weight", "BF16", &[4, 16]),
+                (
+                    "model.layers.0.self_attn.q_a_layernorm.weight",
+                    "BF16",
+                    &[4],
+                ),
+                ("model.layers.0.self_attn.q_b_proj.weight", "BF16", &[12, 4]),
+                (
+                    "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
+                    "BF16",
+                    &[6, 16],
+                ),
+                (
+                    "model.layers.0.self_attn.kv_a_layernorm.weight",
+                    "BF16",
+                    &[4],
+                ),
+                (
+                    "model.layers.0.self_attn.kv_b_proj.weight",
+                    "BF16",
+                    &[14, 4],
+                ),
+                ("model.layers.0.self_attn.o_proj.weight", "BF16", &[16, 6]),
+                (
+                    "model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[16],
+                ),
+                ("model.layers.0.mlp.gate_proj.weight", "BF16", &[32, 16]),
+                ("model.layers.0.mlp.up_proj.weight", "BF16", &[32, 16]),
+                ("model.layers.0.mlp.down_proj.weight", "BF16", &[16, 32]),
+                ("model.layers.1.input_layernorm.weight", "BF16", &[16]),
+                ("model.layers.1.self_attn.q_a_proj.weight", "BF16", &[4, 16]),
+                (
+                    "model.layers.1.self_attn.q_a_layernorm.weight",
+                    "BF16",
+                    &[4],
+                ),
+                ("model.layers.1.self_attn.q_b_proj.weight", "BF16", &[12, 4]),
+                (
+                    "model.layers.1.self_attn.kv_a_proj_with_mqa.weight",
+                    "BF16",
+                    &[6, 16],
+                ),
+                (
+                    "model.layers.1.self_attn.kv_a_layernorm.weight",
+                    "BF16",
+                    &[4],
+                ),
+                (
+                    "model.layers.1.self_attn.kv_b_proj.weight",
+                    "BF16",
+                    &[14, 4],
+                ),
+                ("model.layers.1.self_attn.o_proj.weight", "BF16", &[16, 6]),
+                (
+                    "model.layers.1.post_attention_layernorm.weight",
+                    "BF16",
+                    &[16],
+                ),
+                ("model.layers.1.mlp.gate.weight", "BF16", &[3, 16]),
+                (
+                    "model.layers.1.mlp.gate.e_score_correction_bias",
+                    "BF16",
+                    &[3],
+                ),
+                (
+                    "model.layers.1.mlp.switch_mlp.gate_proj.weight",
+                    "BF16",
+                    &[3, 5, 16],
+                ),
+                (
+                    "model.layers.1.mlp.switch_mlp.up_proj.weight",
+                    "BF16",
+                    &[3, 5, 16],
+                ),
+                (
+                    "model.layers.1.mlp.switch_mlp.down_proj.weight",
+                    "BF16",
+                    &[3, 16, 5],
+                ),
+                (
+                    "model.layers.1.mlp.shared_experts.gate_proj.weight",
+                    "BF16",
+                    &[5, 16],
+                ),
+                (
+                    "model.layers.1.mlp.shared_experts.up_proj.weight",
+                    "BF16",
+                    &[5, 16],
+                ),
+                (
+                    "model.layers.1.mlp.shared_experts.down_proj.weight",
+                    "BF16",
+                    &[16, 5],
+                ),
+            ],
+        );
+
+        let manifest = convert_hf_model_dir(&dir).expect("DeepSeek V3 conversion should succeed");
+
+        assert_eq!(manifest.model_family, "deepseek_v3");
+        assert_eq!(manifest.attention_head_dim, 6);
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .any(|tensor| tensor.role == NativeTensorRole::AttentionKvB),
+            "raw DeepSeek kv_b_proj should be preserved in the manifest"
+        );
+        assert!(
+            !manifest
+                .tensors
+                .iter()
+                .any(|tensor| tensor.role == NativeTensorRole::AttentionEmbedQ),
+            "raw DeepSeek kv_b_proj should not be misreported as embed_q"
+        );
+
+        write_manifest(&dir, &manifest).expect("write should succeed");
+        crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect("runtime-ready DeepSeek manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
     }

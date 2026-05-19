@@ -4822,7 +4822,7 @@ pub enum MlxRunnerError {
 fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(), MlxRunnerError> {
     let manifest = artifacts.manifest();
     if manifest.model_family == "glm4_moe_lite" || has_glm_mla_tensors(artifacts) {
-        validate_glm4_moe_lite_manifest(manifest)?;
+        validate_mla_moe_manifest(manifest)?;
     }
     if manifest.linear_attention.is_enabled() || has_linear_attention_tensors(artifacts) {
         validate_qwen_gated_delta_linear_attention(manifest)?;
@@ -4841,58 +4841,90 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
     Ok(())
 }
 
-fn validate_glm4_moe_lite_manifest(manifest: &NativeModelManifest) -> Result<(), MlxRunnerError> {
-    if manifest.model_family != "glm4_moe_lite" {
+fn validate_mla_moe_manifest(manifest: &NativeModelManifest) -> Result<(), MlxRunnerError> {
+    let is_glm4_moe_lite = manifest.model_family == "glm4_moe_lite";
+    let is_deepseek_v3 = manifest.model_family == "deepseek_v3";
+    if !is_glm4_moe_lite && !is_deepseek_v3 {
         return Err(MlxRunnerError::UnsupportedFeature(
-            "GLM MLA tensor roles are supported only for glm4_moe_lite manifests".to_string(),
+            "MLA tensor roles are supported only for glm4_moe_lite or deepseek_v3 manifests"
+                .to_string(),
         ));
     }
     if !manifest.mla_attention.is_enabled() {
-        return Err(MlxRunnerError::UnsupportedFeature(
-            "glm4_moe_lite requires mla_attention metadata".to_string(),
-        ));
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "{} requires mla_attention metadata",
+            manifest.model_family
+        )));
     }
-    if !manifest.glm_router.is_enabled() {
+    if is_glm4_moe_lite && !manifest.glm_router.is_enabled() {
         return Err(MlxRunnerError::UnsupportedFeature(
             "glm4_moe_lite requires glm_router metadata".to_string(),
         ));
     }
     if !manifest.moe.is_enabled() {
-        return Err(MlxRunnerError::UnsupportedFeature(
-            "glm4_moe_lite requires moe metadata".to_string(),
-        ));
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "{} requires moe metadata",
+            manifest.model_family
+        )));
     }
 
-    let first_dense_layers = manifest.glm_router.first_dense_layer_count.ok_or_else(|| {
-        MlxRunnerError::UnsupportedFeature(
-            "glm4_moe_lite requires glm_router.first_dense_layer_count".to_string(),
-        )
-    })?;
+    let first_dense_layers = if is_glm4_moe_lite {
+        manifest.glm_router.first_dense_layer_count.ok_or_else(|| {
+            MlxRunnerError::UnsupportedFeature(
+                "glm4_moe_lite requires glm_router.first_dense_layer_count".to_string(),
+            )
+        })?
+    } else {
+        manifest.moe.first_dense_layers.unwrap_or(0)
+    };
     // `GlmRouterConfig::from_manifest` `.expect()`s these three fields once the router
     // is considered enabled (`is_enabled()` returns true if *any* field is set), and
     // `glm_router_apply_group_selection` follows up with runtime `assert!`s on the
     // group invariants. Surface every panic-source as a typed manifest error here.
-    if manifest.glm_router.routed_scaling_factor.is_none() {
+    if is_glm4_moe_lite && manifest.glm_router.routed_scaling_factor.is_none() {
         return Err(MlxRunnerError::UnsupportedFeature(
             "glm4_moe_lite requires glm_router.routed_scaling_factor".to_string(),
         ));
     }
-    let n_group = manifest.glm_router.n_group.ok_or_else(|| {
-        MlxRunnerError::UnsupportedFeature("glm4_moe_lite requires glm_router.n_group".to_string())
-    })?;
-    let topk_group = manifest.glm_router.topk_group.ok_or_else(|| {
-        MlxRunnerError::UnsupportedFeature(
-            "glm4_moe_lite requires glm_router.topk_group".to_string(),
-        )
-    })?;
+    let routed_scaling_factor = if is_glm4_moe_lite {
+        manifest.glm_router.routed_scaling_factor.unwrap_or(1.0)
+    } else {
+        manifest.moe.routed_scaling_factor.unwrap_or(1.0)
+    };
+    if !routed_scaling_factor.is_finite() || routed_scaling_factor <= 0.0 {
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "{} requires finite positive routed_scaling_factor",
+            manifest.model_family
+        )));
+    }
+    let n_group = if is_glm4_moe_lite {
+        manifest.glm_router.n_group.ok_or_else(|| {
+            MlxRunnerError::UnsupportedFeature(
+                "glm4_moe_lite requires glm_router.n_group".to_string(),
+            )
+        })?
+    } else {
+        manifest.moe.n_group.unwrap_or(1)
+    };
+    let topk_group = if is_glm4_moe_lite {
+        manifest.glm_router.topk_group.ok_or_else(|| {
+            MlxRunnerError::UnsupportedFeature(
+                "glm4_moe_lite requires glm_router.topk_group".to_string(),
+            )
+        })?
+    } else {
+        manifest.moe.topk_group.unwrap_or(1)
+    };
     if n_group == 0 {
-        return Err(MlxRunnerError::UnsupportedFeature(
-            "glm4_moe_lite glm_router.n_group must be greater than zero".to_string(),
-        ));
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "{} n_group must be greater than zero",
+            manifest.model_family
+        )));
     }
     if topk_group == 0 || topk_group > n_group {
         return Err(MlxRunnerError::UnsupportedFeature(format!(
-            "glm4_moe_lite glm_router.topk_group {topk_group} must satisfy 0 < topk_group <= n_group ({n_group})"
+            "{} topk_group {topk_group} must satisfy 0 < topk_group <= n_group ({n_group})",
+            manifest.model_family
         )));
     }
     // `NativeMoeConfig::is_enabled` (checked above) only requires that *some*
@@ -4913,22 +4945,34 @@ fn validate_glm4_moe_lite_manifest(manifest: &NativeModelManifest) -> Result<(),
     if n_group > 1 {
         if expert_count % n_group != 0 {
             return Err(MlxRunnerError::UnsupportedFeature(format!(
-                "glm4_moe_lite moe.expert_count {expert_count} must be divisible by glm_router.n_group {n_group}"
+                "{} moe.expert_count {expert_count} must be divisible by n_group {n_group}",
+                manifest.model_family
             )));
         }
         if expert_count / n_group < 2 {
             return Err(MlxRunnerError::UnsupportedFeature(format!(
-                "glm4_moe_lite moe.expert_count {expert_count} divided by glm_router.n_group {n_group} must yield at least two experts per group"
+                "{} moe.expert_count {expert_count} divided by n_group {n_group} must yield at least two experts per group",
+                manifest.model_family
             )));
         }
     }
     if first_dense_layers > manifest.layer_count {
         return Err(MlxRunnerError::UnsupportedFeature(format!(
-            "glm4_moe_lite glm_router.first_dense_layer_count {first_dense_layers} cannot exceed layer_count {}",
-            manifest.layer_count
+            "{} first_dense_layer_count {first_dense_layers} cannot exceed layer_count {}",
+            manifest.model_family, manifest.layer_count
         )));
     }
-    let has_shared_experts = manifest.glm_router.has_shared_experts;
+    let has_shared_experts = if is_glm4_moe_lite {
+        manifest.glm_router.has_shared_experts
+    } else {
+        manifest.moe.shared_expert_count.unwrap_or(0) > 0
+    };
+    let moe_layer_freq = manifest.moe.layer_freq.unwrap_or(1);
+    if is_deepseek_v3 && moe_layer_freq == 0 {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "deepseek_v3 requires moe.layer_freq greater than zero".to_string(),
+        ));
+    }
 
     for layer_index in 0..manifest.layer_count {
         for role in [
@@ -4938,15 +4982,37 @@ fn validate_glm4_moe_lite_manifest(manifest: &NativeModelManifest) -> Result<(),
             NativeTensorRole::AttentionQb,
             NativeTensorRole::AttentionKvA,
             NativeTensorRole::AttentionKvANorm,
-            NativeTensorRole::AttentionEmbedQ,
-            NativeTensorRole::AttentionUnembedOut,
             NativeTensorRole::AttentionO,
             NativeTensorRole::AttentionPostNorm,
         ] {
             require_manifest_role(manifest, layer_index, role)?;
         }
+        let has_kv_b = manifest.tensors.iter().any(|tensor| {
+            tensor.layer_index == Some(layer_index) && tensor.role == NativeTensorRole::AttentionKvB
+        });
+        let has_embed_q = manifest.tensors.iter().any(|tensor| {
+            tensor.layer_index == Some(layer_index)
+                && tensor.role == NativeTensorRole::AttentionEmbedQ
+        });
+        let has_unembed_out = manifest.tensors.iter().any(|tensor| {
+            tensor.layer_index == Some(layer_index)
+                && tensor.role == NativeTensorRole::AttentionUnembedOut
+        });
+        if (has_kv_b && (has_embed_q || has_unembed_out))
+            || (!has_kv_b && (!has_embed_q || !has_unembed_out))
+        {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "{} layer {layer_index} must provide exactly one MLA KV-B layout",
+                manifest.model_family
+            )));
+        }
 
-        if layer_index < first_dense_layers {
+        let is_moe_layer = if is_deepseek_v3 {
+            layer_index >= first_dense_layers && layer_index.is_multiple_of(moe_layer_freq)
+        } else {
+            layer_index >= first_dense_layers
+        };
+        if !is_moe_layer {
             require_manifest_role(manifest, layer_index, NativeTensorRole::FfnGate)?;
             require_manifest_role(manifest, layer_index, NativeTensorRole::FfnUp)?;
             require_manifest_role(manifest, layer_index, NativeTensorRole::FfnDown)?;
@@ -4993,7 +5059,8 @@ fn require_manifest_role(
     }
 
     Err(MlxRunnerError::UnsupportedFeature(format!(
-        "glm4_moe_lite layer {layer_index} is missing required tensor role {role:?}"
+        "{} layer {layer_index} is missing required tensor role {role:?}",
+        manifest.model_family
     )))
 }
 
@@ -5005,6 +5072,7 @@ fn has_glm_mla_tensors(artifacts: &NativeModelArtifacts) -> bool {
                 | NativeTensorRole::AttentionQaNorm
                 | NativeTensorRole::AttentionQb
                 | NativeTensorRole::AttentionKvA
+                | NativeTensorRole::AttentionKvB
                 | NativeTensorRole::AttentionKvANorm
                 | NativeTensorRole::AttentionEmbedQ
                 | NativeTensorRole::AttentionUnembedOut
@@ -6454,7 +6522,7 @@ mod tests {
             vec![4, 4],
         ));
 
-        let error = validate_glm4_moe_lite_manifest(&manifest)
+        let error = validate_mla_moe_manifest(&manifest)
             .expect_err("incomplete GLM runtime contract should fail closed");
 
         assert!(
@@ -6470,6 +6538,38 @@ mod tests {
 
         validate_mlx_supported_manifest(&artifacts)
             .expect("GLM4MoELite runtime contract is wired for the MLX path");
+    }
+
+    #[test]
+    fn mlx_manifest_validation_allows_deepseek_v3_kv_b_contract() {
+        let mut manifest = glm4_moe_lite_manifest();
+        manifest.model_family = "deepseek_v3".to_string();
+        manifest.glm_router = NativeGlmRouterConfig::default();
+        manifest.moe.layer_freq = Some(1);
+        manifest.moe.first_dense_layers = Some(1);
+        manifest.moe.shared_expert_count = Some(1);
+        manifest.moe.sigmoid_routing = true;
+        manifest.moe.routed_scaling_factor = Some(2.5);
+        manifest.moe.n_group = Some(1);
+        manifest.moe.topk_group = Some(1);
+        manifest.tensors.retain(|tensor| {
+            !matches!(
+                tensor.role,
+                NativeTensorRole::AttentionEmbedQ | NativeTensorRole::AttentionUnembedOut
+            )
+        });
+        for layer in 0..2 {
+            manifest.tensors.push(tensor(
+                &format!("model.layers.{layer}.self_attn.kv_b_proj.weight"),
+                NativeTensorRole::AttentionKvB,
+                Some(layer),
+                vec![4, 2],
+            ));
+        }
+        let artifacts = write_artifacts(manifest);
+
+        validate_mlx_supported_manifest(&artifacts)
+            .expect("DeepSeek V3 KV-B runtime contract should be accepted");
     }
 
     #[test]
@@ -6551,7 +6651,7 @@ mod tests {
         ] {
             let mut manifest = glm4_moe_lite_manifest();
             mutate(&mut manifest);
-            let error = validate_glm4_moe_lite_manifest(&manifest)
+            let error = validate_mla_moe_manifest(&manifest)
                 .expect_err(&format!("{label} should fail closed"));
             let message = error.to_string();
             assert!(
