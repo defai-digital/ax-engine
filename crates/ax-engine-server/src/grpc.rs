@@ -56,16 +56,6 @@ async fn run_grpc_generate_request(
     request_id: u64,
     request: ax_engine_sdk::GenerateRequest,
 ) -> Result<ax_engine_sdk::GenerateResponse, Status> {
-    if state.uses_native_mlx_backend() {
-        let (session_config, mlx_prefix_cache) = state.request_session_parts();
-        return run_blocking(move || {
-            let mut session =
-                AppState::build_request_session_from_parts(session_config, mlx_prefix_cache)?;
-            session.generate_with_request_id(request_id, request)
-        })
-        .await;
-    }
-
     let ctx = Arc::clone(&state.stateless_generate_context);
     run_blocking(move || ctx.generate_with_request_id(request_id, request)).await
 }

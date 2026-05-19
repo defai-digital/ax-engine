@@ -57,13 +57,15 @@ const NATIVE_STREAM_STEP_GUARD_BUFFER: u64 = 256;
 
 /// Stateless generation helper for delegated backends.
 ///
-/// For native MLX, blocking generation still constructs a full `EngineSession`
-/// per call so the model and KV state are not reused. Use `EngineSession`
-/// directly for repeated MLX requests.
+/// For native MLX, blocking generation still constructs a full
+/// `EngineSession` per call so model and KV state stay request-local, while
+/// exact prefix snapshots are shared through this context.
 #[derive(Clone, Debug)]
 pub struct StatelessGenerateContext {
     config: EngineSessionConfig,
     delegated_runtime: Option<RuntimeReport>,
+    #[cfg(feature = "mlx-native")]
+    native_mlx_prefix_cache: Option<ax_engine_mlx::MlxPrefixCacheStore>,
 }
 
 impl StatelessGenerateContext {
@@ -75,9 +77,18 @@ impl StatelessGenerateContext {
             Some(config.runtime_report())
         };
 
+        #[cfg(feature = "mlx-native")]
+        let native_mlx_prefix_cache = config
+            .resolved_backend
+            .selected_backend
+            .is_mlx()
+            .then(ax_engine_mlx::MlxPrefixCacheStore::from_env);
+
         Ok(Self {
             config,
             delegated_runtime,
+            #[cfg(feature = "mlx-native")]
+            native_mlx_prefix_cache,
         })
     }
 
@@ -98,7 +109,7 @@ impl StatelessGenerateContext {
         request: GenerateRequest,
     ) -> Result<GenerateResponse, EngineSessionError> {
         if self.config.resolved_backend.selected_backend.is_mlx() {
-            let mut session = EngineSession::new(self.config.clone())?;
+            let mut session = self.build_stateful_session()?;
             return session.generate_with_request_id(request_id, request);
         }
 
@@ -110,6 +121,23 @@ impl StatelessGenerateContext {
                     selected_backend: self.config.resolved_backend.selected_backend,
                 })?;
         run_delegated_generate_prevalidated(&self.config, runtime, request_id, &request)
+    }
+
+    /// Build a full `EngineSession` for routes that cannot be served by a
+    /// delegated stateless context. Native MLX sessions reuse this context's
+    /// prefix-cache store; request KV state remains private to the new session.
+    pub fn build_stateful_session(&self) -> Result<EngineSession, EngineSessionError> {
+        if self.config.resolved_backend.selected_backend.is_mlx() {
+            #[cfg(feature = "mlx-native")]
+            if let Some(prefix_cache) = self.native_mlx_prefix_cache.clone() {
+                return EngineSession::new_with_shared_mlx_prefix_cache(
+                    self.config.clone(),
+                    prefix_cache,
+                );
+            }
+        }
+
+        EngineSession::new(self.config.clone())
     }
 
     pub fn stream_state_with_request_id(

@@ -82,10 +82,9 @@ pub(crate) async fn build_stream_state(
         ));
     }
 
-    let (session_config, mlx_prefix_cache) = state.request_session_parts();
+    let stateful_context = Arc::clone(&state.stateless_generate_context);
     let (session, stream_state) = run_blocking_session_task(move || {
-        let mut session =
-            AppState::build_request_session_from_parts(session_config, mlx_prefix_cache)?;
+        let mut session = stateful_context.build_stateful_session()?;
         let stream_state = session.stream_generate_state_with_request_id(request_id, request)?;
         Ok((session, stream_state))
     })

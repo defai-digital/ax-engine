@@ -398,6 +398,17 @@ pub struct MlxPrefixCacheStore {
     disk_prefix_cache: Option<Arc<crate::disk_prefix_cache::DiskPrefixCache>>,
 }
 
+impl fmt::Debug for MlxPrefixCacheStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MlxPrefixCacheStore")
+            .field(
+                "disk_prefix_cache_enabled",
+                &self.disk_prefix_cache.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl MlxPrefixCacheStore {
     /// Build a prefix-cache store from the documented environment policy.
     pub fn from_env() -> Self {

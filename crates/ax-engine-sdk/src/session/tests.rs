@@ -1422,6 +1422,25 @@ fn native_generate_response_surfaces_runner_route_metadata() {
     );
 }
 
+#[cfg(feature = "mlx-native")]
+#[test]
+fn stateless_native_context_owns_shared_mlx_prefix_cache_store() {
+    let config = EngineSessionConfig {
+        mlx_model_artifacts_dir: None,
+        mlx_model_artifacts_source: None,
+        ..EngineSessionConfig::default()
+    };
+    let context = StatelessGenerateContext::new(config).expect("context should build");
+
+    assert!(context.native_mlx_prefix_cache.is_some());
+    assert!(matches!(
+        context
+            .build_stateful_session()
+            .expect_err("missing model artifacts should still fail at session build"),
+        EngineSessionError::MlxRuntimeArtifactsRequired
+    ));
+}
+
 #[test]
 fn llama_cpp_terminal_requests_are_pruned_after_retention_limit() {
     let mut session = llama_cpp_server_session("http://127.0.0.1:1".to_string());

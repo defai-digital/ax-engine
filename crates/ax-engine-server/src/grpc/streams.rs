@@ -45,11 +45,11 @@ pub(super) async fn build_grpc_stream_state(
         return Ok((ss, StreamStateSource::Stateless(ctx)));
     }
 
-    let (session_config, mlx_prefix_cache) = state.request_session_parts();
+    let stateful_context = Arc::clone(&state.stateless_generate_context);
     let (session, ss) = run_blocking(move || {
-        let mut session =
-            AppState::build_request_session_from_parts(session_config, mlx_prefix_cache)
-                .map_err(|e| e.to_string())?;
+        let mut session = stateful_context
+            .build_stateful_session()
+            .map_err(|e| e.to_string())?;
         let ss = session
             .stream_generate_state_with_request_id(request_id, request)
             .map_err(|e| e.to_string())?;

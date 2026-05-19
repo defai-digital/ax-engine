@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ax_engine_sdk::{
-    EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, MlxPrefixCacheStore,
-    RuntimeReport, StatelessGenerateContext,
+    EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, RuntimeReport,
+    StatelessGenerateContext,
 };
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -14,7 +14,6 @@ pub(crate) struct AppState {
     pub(crate) stateless_generate_context: Arc<StatelessGenerateContext>,
     pub(crate) runtime_report: RuntimeReport,
     pub(crate) request_session: Arc<Mutex<EngineSession>>,
-    pub(crate) mlx_prefix_cache: Option<MlxPrefixCacheStore>,
     pub(crate) embedding_batcher: Arc<EmbeddingMicroBatcher>,
     next_request_id: Arc<AtomicU64>,
 }
@@ -26,7 +25,6 @@ impl AppState {
         stateless_generate_context: Arc<StatelessGenerateContext>,
         runtime_report: RuntimeReport,
         request_session: Arc<Mutex<EngineSession>>,
-        mlx_prefix_cache: Option<MlxPrefixCacheStore>,
         embedding_batcher: Arc<EmbeddingMicroBatcher>,
     ) -> Self {
         Self {
@@ -35,7 +33,6 @@ impl AppState {
             stateless_generate_context,
             runtime_report,
             request_session,
-            mlx_prefix_cache,
             embedding_batcher,
             next_request_id: Arc::new(AtomicU64::new(1)),
         }
@@ -43,34 +40,6 @@ impl AppState {
 
     pub(crate) fn allocate_request_id(&self) -> u64 {
         self.next_request_id.fetch_add(1, Ordering::AcqRel)
-    }
-
-    pub(crate) fn uses_native_mlx_backend(&self) -> bool {
-        self.session_config
-            .resolved_backend
-            .selected_backend
-            .is_mlx()
-    }
-
-    pub(crate) fn request_session_parts(
-        &self,
-    ) -> (EngineSessionConfig, Option<MlxPrefixCacheStore>) {
-        (
-            self.session_config.as_ref().clone(),
-            self.mlx_prefix_cache.clone(),
-        )
-    }
-
-    pub(crate) fn build_request_session_from_parts(
-        session_config: EngineSessionConfig,
-        mlx_prefix_cache: Option<MlxPrefixCacheStore>,
-    ) -> Result<EngineSession, EngineSessionError> {
-        match mlx_prefix_cache {
-            Some(prefix_cache) => {
-                EngineSession::new_with_shared_mlx_prefix_cache(session_config, prefix_cache)
-            }
-            None => EngineSession::new(session_config),
-        }
     }
 }
 
@@ -82,11 +51,6 @@ pub(crate) fn build_app_state(
     let stateless_generate_context =
         StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
     let runtime_report = session.runtime_report();
-    let mlx_prefix_cache = session_config
-        .resolved_backend
-        .selected_backend
-        .is_mlx()
-        .then(MlxPrefixCacheStore::from_env);
     let request_session = Arc::new(Mutex::new(session));
     let embedding_batcher = EmbeddingMicroBatcher::spawn(request_session.clone());
 
@@ -96,7 +60,6 @@ pub(crate) fn build_app_state(
         stateless_generate_context,
         runtime_report,
         request_session,
-        mlx_prefix_cache,
         embedding_batcher,
     ))
 }
