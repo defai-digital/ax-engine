@@ -310,7 +310,7 @@ output loop.
 |  |  | 2048 | 25.3 | 27.0 | 26.2 (-3.3%) | **51.1 (+89.0%)** |
 | Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.1 (-2.5%) | **32.6 (-3.9%)** |
 |  |  | 512 | 26.0 | 33.9 | 33.4 (-1.6%) | **32.8 (-3.2%)** |
-|  |  | 2048 | 18.8 | 33.4 | 0.0 (-100.0%) | **0.0 (-100.0%)** |
+|  |  | 2048 | 18.8 | 33.4 | 32.8 (-1.9%)† | **32.4 (-3.0%)**† |
 | Qwen 3.6 27B | 5-bit | 128 | 23.5 | 21.6 | **27.3 (+26.6%)** | **27.0 (+25.1%)** |
 |  |  | 512 | 23.3 | 28.1 | 27.7 (-1.4%) | **27.6 (-1.8%)** |
 |  |  | 2048 | 17.8 | 27.8 | 27.5 (-1.0%) | **27.3 (-1.8%)** |
@@ -324,11 +324,16 @@ output loop.
 |  |  | 512 | 108.2 | 136.5 | **146.9 (+7.7%)** | **333.6 (+144.4%)** |
 |  |  | 2048 | 105.7 | 134.5 | **144.2 (+7.2%)** | **321.0 (+138.7%)** |
 
-† Qwen 3.6 27B 4-bit at prompt=2048 completed prefill but produced zero
-decode tokens across all 5 trials (early EOS at decode step 0). Cell is
-left as "—" because reporting `0.0 tok/s` would conflate a stop-token
-exit with a throughput regression. See
-`benchmarks/results/mlx-inference/2026-05-18-gguf-full-stack/qwen3_6-27b-4bit.json`.
+† Qwen 3.6 27B 4-bit at prompt=2048 originally produced zero decode tokens
+because 4-bit quantization noise pushed an EOS token to argmax at decode
+step 0 on the `mlx_lm.benchmark` random-token contract. The cell is now
+measured with the AX server's `AX_MLX_IGNORE_EOS=1` env override
+(benchmark-only knob added at `crates/ax-engine-mlx/src/runner.rs`), which
+empties the terminal-token list so EOS no longer stops decode — matching
+how `mlx_lm.benchmark` measures fixed `gen=N` throughput regardless of
+stop-token argmax. Production deployments without that env var will still
+honor EOS at step 0 on this specific synthetic prompt. Source:
+`benchmarks/results/mlx-inference/2026-05-18-qwen27b-4bit-2k-fix/qwen3_6-27b-4bit.json`.
 
 ‡ Qwen 3.6 27B 5-bit at prompt=128 shows the n-gram drafter
 under-performing direct decode (`ngram_no_accept_fallback` cooldown).

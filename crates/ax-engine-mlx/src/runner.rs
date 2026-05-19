@@ -2533,7 +2533,23 @@ impl MlxRunner {
         validate_mlx_supported_manifest(artifacts)?;
 
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
-        let terminal_token_ids = resolve_terminal_token_ids(artifacts);
+        let terminal_token_ids = if std::env::var("AX_MLX_IGNORE_EOS").as_deref() == Ok("1") {
+            // Benchmark-only knob. Empties the terminal-token list so EOS
+            // never stops decode, matching `mlx_lm.benchmark` which fixes
+            // gen=N regardless of EOS argmax. Real workloads MUST NOT set
+            // this; the model emits incoherent tails past natural EOS.
+            // Used to measure fair throughput on prompts where 4-bit
+            // quantization noise pushes EOS to argmax at decode step 0
+            // (e.g. Qwen 3.6 27B 4-bit on synthetic random tokens at
+            // p=2048).
+            tracing::warn!(
+                "AX_MLX_IGNORE_EOS=1: EOS stop tokens disabled. \
+                Benchmark mode only — production traffic will receive incoherent tails."
+            );
+            Vec::new()
+        } else {
+            resolve_terminal_token_ids(artifacts)
+        };
         let kv_layer_windows = kv_layer_windows_from_config(&cfg);
         let rotating_sliding_decode = disable_ngram_acceleration
             && std::env::var("AX_MLX_ROTATING_SLIDING_DECODE").as_deref() == Ok("1");
