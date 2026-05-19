@@ -2490,14 +2490,39 @@ def axengine_one_run(
     prefill_s = prefill_us / 1_000_000
     decode_s = decode_us / 1_000_000
     measured_decode_tokens = max(output_tokens - 1, 0)
+
+    # The recent shared-prefix-cache change (commit 0887e8f) lets warmup
+    # trials populate KV cache that subsequent measurement trials hit. On a
+    # cache-hit trial the runner does ~0 forward work and reports a tiny
+    # `runner_time_us`; dividing prompt_tokens by that yields nonsense rates
+    # like 5M tok/s. Detect the hit via runner telemetry and emit None for
+    # prefill-derived metrics so the artifact doesn't carry misleading
+    # numbers. Decode metrics are unaffected (decode steps do not reuse a
+    # cache shortcut) and stay valid.
+    mlx_telemetry_probe = extract_ax_mlx_telemetry(final_route) or {}
+    prefill_cache_warm = (
+        int(mlx_telemetry_probe.get("ax_mlx_prefix_cache_hits", 0)) > 0
+        and int(mlx_telemetry_probe.get("ax_mlx_prefix_cache_reused_tokens", 0)) > 0
+    )
+    if prefill_cache_warm:
+        prefill_s_value: float | None = None
+        prefill_tok_s_value: float | None = None
+        ttft_ms_value: float | None = None
+    else:
+        prefill_s_value = prefill_s
+        prefill_tok_s_value = prompt_tokens / prefill_s if prefill_s > 0 else 0.0
+        ttft_ms_value = prefill_s * 1000.0
+
     run: dict[str, Any] = {
-        "prefill_s": prefill_s,
+        "prefill_s": prefill_s_value,
         "decode_s": decode_s,
-        "ttft_ms": prefill_s * 1000.0,
-        "prefill_tok_s": prompt_tokens / prefill_s if prefill_s > 0 else 0.0,
+        "ttft_ms": ttft_ms_value,
+        "prefill_tok_s": prefill_tok_s_value,
         "decode_tok_s": measured_decode_tokens / decode_s if decode_s > 0 else 0.0,
         "output_tokens": float(output_tokens),
     }
+    if prefill_cache_warm:
+        run["prefill_cache_warm"] = True
     rss_gb = process_rss_gb(server_pid)
     if rss_gb is not None:
         run["peak_memory_gb"] = rss_gb
@@ -2532,8 +2557,15 @@ def axengine_one_run(
     return run
 
 
-def summarize_runs(runs: list[dict[str, float]], key: str) -> dict[str, float]:
-    values = [run[key] for run in runs]
+def summarize_runs(runs: list[dict[str, Any]], key: str) -> dict[str, float | None]:
+    values = [run[key] for run in runs if run.get(key) is not None]
+    if not values:
+        # Aggregation requested for a metric that no trial carries a valid
+        # value for (e.g. prefill rows where every trial was a prefix-cache
+        # hit and prefill_s was nulled out). Preserve the schema shape but
+        # return None so downstream README updaters can detect and skip
+        # rather than crashing on dict access.
+        return {"mean": None, "median": None, "min": None, "max": None}
     return {
         "mean": sum(values) / len(values),
         "median": statistics.median(values),
@@ -2616,8 +2648,13 @@ def bench_axengine(
             server_pid=server_pid,
         )
         runs.append(run)
+        prefill_label = (
+            f"{run['prefill_tok_s']:.1f} tok/s"
+            if run.get("prefill_tok_s") is not None
+            else "cache_warm"
+        )
         print(
-            f"    rep {index + 1}: prefill={run['prefill_tok_s']:.1f} tok/s "
+            f"    rep {index + 1}: prefill={prefill_label} "
             f"decode={run['decode_tok_s']:.1f} tok/s out={run['output_tokens']:.0f}",
             file=sys.stderr,
         )
@@ -2705,6 +2742,17 @@ def bench_axengine(
         "ax_mlx_decode_profile": summarize_ax_mlx_decode_profile(runs),
         "trials": runs,
     }
+    cache_warm_trials = sum(1 for run in runs if run.get("prefill_cache_warm"))
+    if cache_warm_trials > 0:
+        # Document at row level so README updaters and aggregators can detect
+        # without re-walking individual trials. Counted, not boolean, so a
+        # mixed run (e.g. one cold + two warm trials) is still flagged.
+        row["prefill_measurement_invalid_reason"] = (
+            "prefix_cache_warm_on_all_trials"
+            if cache_warm_trials == len(runs)
+            else "prefix_cache_warm_on_some_trials"
+        )
+        row["prefill_cache_warm_trial_count"] = cache_warm_trials
     if all("peak_memory_gb" in run for run in runs):
         row["peak_memory_gb"] = summarize_runs(runs, "peak_memory_gb")
         row["memory_source"] = "server_process_rss_after_stream"
@@ -3152,9 +3200,15 @@ def attach_llama_cpp_decode_at_depth_benchmark(
 
 def metric_value(cell: dict[str, Any], metric: str) -> float:
     data = cell.get(metric, {})
-    if "median" in data:
+    if not isinstance(data, dict):
+        return 0.0
+    # `None` medians are emitted by `summarize_runs` when every trial for a
+    # metric was invalid (e.g. prefill on all-cache-warm rows). Treat as
+    # "no measurement" so downstream baseline attachment / aggregation does
+    # not crash on `float(None)`.
+    if data.get("median") is not None:
         return float(data["median"])
-    if "mean" in data:
+    if data.get("mean") is not None:
         return float(data["mean"])
     return 0.0
 

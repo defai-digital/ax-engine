@@ -89,6 +89,18 @@ def replace_trailing_cells(line: str, new_values: list[str]) -> str:
     return "|" + "|".join(content) + "|"
 
 
+def _median_or_none(raw):
+    """Return the median field from a summary dict, or None if the dict /
+    median itself is None. Bench harness emits `null` medians when every
+    trial for a metric was invalid (e.g. all-cache-warm prefill rows under
+    the recent shared-prefix-cache change). Callers must treat None as
+    "no fresh data, leave existing README cell alone."
+    """
+    if not isinstance(raw, dict):
+        return raw
+    return raw.get("median")
+
+
 def extract_bench_values(data: dict) -> dict:
     """Extract metric medians from benchmark JSON, keyed by (engine, prompt_tokens)."""
     out = {}
@@ -100,12 +112,10 @@ def extract_bench_values(data: dict) -> dict:
             raise ReadmeBenchUpdateError(
                 f"duplicate benchmark row for engine={engine!r} prompt_tokens={pt}"
             )
-        ttft_raw = r.get("ttft_ms")
-        ttft = ttft_raw.get("median") if isinstance(ttft_raw, dict) else ttft_raw
         out[key] = {
-            "prefill": r["prefill_tok_s"]["median"],
-            "decode":  r["decode_tok_s"]["median"],
-            "ttft":    ttft,
+            "prefill": _median_or_none(r.get("prefill_tok_s")),
+            "decode":  _median_or_none(r.get("decode_tok_s")),
+            "ttft":    _median_or_none(r.get("ttft_ms")),
         }
     return out
 
