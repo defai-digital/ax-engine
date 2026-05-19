@@ -198,10 +198,14 @@ and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 These rows are a provenance-tracked composite. The `mlx_lm` reference rows for
 the non-Qwen-35B rows come from
 `benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/`. The
-refreshed AX rows for Gemma 4 E2B/E4B/26B A4B come from
+refreshed AX rows for Gemma 4 E2B 4/5/6/8-bit, Gemma 4 E4B 4-bit,
+and Gemma 4 26B A4B 4-bit come from
 `benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-gemma-ffn-compile-off/`
-and use the benchmark kill-switch `AX_MLX_PREFILL_FFN_COMPILE=0` after the
-default Gemma GeGLU compile path hit an MLX stream-registry abort in this run.
+and were rerun with the benchmark kill-switch
+`AX_MLX_PREFILL_FFN_COMPILE=0` after the first default-compile benchmark
+disconnected the server; the harness surfaced that failed run as
+`RemoteDisconnected`. The fallback artifacts completed successfully and are
+the values shown below.
 The refreshed AX rows for Gemma 4 31B and Qwen 3.6 27B come from
 `benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-except-qwen35-r3/`.
 The `llama.cpp Metal*` column is injected from

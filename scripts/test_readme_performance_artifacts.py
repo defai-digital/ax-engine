@@ -194,6 +194,23 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
         self.assertTrue(checker.is_unavailable_cell("—"))
         self.assertFalse(checker.is_unavailable_cell("12.7 (-55.0%)"))
 
+    def test_metric_summary_median_raises_clean_error_on_null_median(self) -> None:
+        # When the bench runs with --ax-enable-prefix-cache and every trial
+        # turns out to be a cache-warm hit, summarize_runs emits
+        # {"median": None, ...}. The validator must surface a clean
+        # ArtifactCheckError rather than a TypeError from float(None).
+        with self.assertRaisesRegex(checker.ArtifactCheckError, r"lacks prefill_s\.median"):
+            checker.metric_summary_median(
+                {"engine": "ax_engine_mlx", "prefill_s": {"median": None}},
+                "prefill_s",
+            )
+        with self.assertRaisesRegex(checker.ArtifactCheckError, r"lacks prefill_s\.median"):
+            checker.validate_positive_metric_summary(
+                artifact_path=Path("artifact.json"),
+                row={"engine": "ax_engine_mlx", "prefill_s": {"median": None}},
+                key="prefill_s",
+            )
+
     def test_llama_cpp_rows_accept_current_metadata_key(self) -> None:
         checker.validate_delegated_metrics_if_present(
             artifact_path=Path("artifact.json"),

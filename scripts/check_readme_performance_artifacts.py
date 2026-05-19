@@ -893,7 +893,7 @@ def validate_metric_summary(
 
 def metric_summary_median(row: dict[str, Any], key: str) -> float:
     metric = row.get(key)
-    if not isinstance(metric, dict) or "median" not in metric:
+    if not isinstance(metric, dict) or metric.get("median") is None:
         raise ArtifactCheckError(f"{row.get('engine')} lacks {key}.median")
     return float(metric["median"])
 
