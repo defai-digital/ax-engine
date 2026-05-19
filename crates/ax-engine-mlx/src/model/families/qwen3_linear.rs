@@ -6,14 +6,19 @@ use super::super::profile::{
     DecodeProfileStage, decode_profile_enabled, forward_profile_eval_elapsed,
     prefill_profile_enabled,
 };
-use super::super::shared::{ffn_swiglu, linear_attention_forward, rms_norm_opt};
+use super::super::shared::{
+    ffn_swiglu, linear_attention_forward, moe_experts_forward, moe_router_qwen3, rms_norm_opt,
+    shared_expert_forward,
+};
 use crate::kv_cache::MlxKVCache;
 use crate::weights::LayerWeights;
 
 /// Full layer forward for Qwen3.5/Qwen3Next linear-attention layers.
 ///
-/// These layers use the gated-delta recurrent kernel instead of SDPA and never
-/// have MoE FFN, so the path is significantly simpler than the standard path.
+/// These layers use the gated-delta recurrent kernel instead of SDPA. Dense FFN
+/// covers the common case (e.g. Qwen3.5 9B). MoE-only variants such as
+/// Qwen3.6 35B A3B pair linear attention with sparse FFN (router + experts +
+/// optional shared expert), so the FFN dispatch mirrors `standard::layer_forward`.
 pub(crate) fn layer_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -44,7 +49,16 @@ pub(crate) fn layer_forward(
     }
 
     let ffn_started = profile_forward_layer.then(Instant::now);
-    let out = ffn_swiglu(cfg, w, &normed2);
+    let out = if w.router_proj.is_some() {
+        let (top_k_indices, top_k_weights) = moe_router_qwen3(cfg, w, &normed2);
+        let mut moe_out = moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights);
+        if w.shared_gate_proj.is_some() {
+            moe_out = add(&moe_out, &shared_expert_forward(cfg, w, &normed2), None);
+        }
+        moe_out
+    } else {
+        ffn_swiglu(cfg, w, &normed2)
+    };
     let ffn_out = rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
     if let Some(started) = ffn_started {
         forward_profile_eval_elapsed(
