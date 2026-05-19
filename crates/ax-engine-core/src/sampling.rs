@@ -13,6 +13,7 @@ pub struct SamplingParams {
     pub repetition_context_size: Option<u32>,
     pub seed: u64,
     pub deterministic: bool,
+    pub ignore_eos: bool,
 }
 
 impl Default for SamplingParams {
@@ -25,6 +26,7 @@ impl Default for SamplingParams {
             repetition_context_size: None,
             seed: 0,
             deterministic: true,
+            ignore_eos: false,
         }
     }
 }

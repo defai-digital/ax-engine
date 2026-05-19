@@ -848,6 +848,7 @@ fn prefix_attention_group_predicate_partitions_disabled_batch_shape_before_retry
             top_k: 0,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            ignore_eos: false,
         }],
     };
     let mut only_singletons_allowed = |candidate_range: std::ops::Range<usize>| {
@@ -5200,6 +5201,7 @@ fn copied_prefix_blocks_persist_into_layer_cache_for_future_native_decode() {
             top_k: 0,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            ignore_eos: false,
         }],
     };
     let decode_workload = MetalDispatchWorkload::from_runner_input(&decode_input)
@@ -8891,6 +8893,7 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
                 top_k: 0,
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
+                ignore_eos: false,
             }],
         };
 
@@ -8990,6 +8993,7 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
                 top_k: 0,
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
+                ignore_eos: false,
             }],
         };
         let decode_workload = MetalDispatchWorkload::from_runner_input(&decode_input)
@@ -9290,6 +9294,7 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                 top_k: 0,
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
+                ignore_eos: false,
             }],
         };
 
@@ -9388,6 +9393,7 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                     top_k: 0,
                     repetition_penalty: 1.0,
                     repetition_context_size: None,
+                    ignore_eos: false,
                 }],
             };
 

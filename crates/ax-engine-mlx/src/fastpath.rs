@@ -102,31 +102,6 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
-env_flag!(
-    /// `AX_MLX_PREFILL_FFN_COMPILE` — Gemma 4 GeGLU compile fusion (W1 of
-    /// `MLX-PREFILL-FUSION-PRD-2026-05-15.md`).
-    ///
-    /// **Default: OFF** (explicit opt-in via `AX_MLX_PREFILL_FFN_COMPILE=1`).
-    ///
-    /// When engaged, the Gemma 4 dense FFN routes its `gelu_approx + multiply`
-    /// sub-chain through a per-thread `MlxClosure::compile` cache,
-    /// mirroring `mlx_lm`'s `@partial(mx.compile, shapeless=True) def
-    /// geglu(gate, x)`. A 2026-05-18 source-read found `mlx_lm` enables this
-    /// unconditionally for Gemma 4 prefill, but 2026-05-19 production-build
-    /// benchmark reruns showed the compiled path still disconnects the server
-    /// on Gemma 4 E2B, E4B, and 26B A4B shapes. The compile helper therefore
-    /// remains an opt-in diagnostic/performance experiment while the default
-    /// production path stays imperative and stable.
-    ///
-    /// Safety guards in `model/shared/mlp.rs::geglu` (`ndim > 3` skip;
-    /// `last_dim > 16_384` skip) keep the known MLX 0.31 abort cases on
-    /// the imperative fallback. Cross-thread / stream-contract mismatches
-    /// surface via `MlxClosure::try_apply` and also fall back fail-closed, but
-    /// those guards are not sufficient for all Gemma 4 benchmark shapes.
-    prefill_ffn_compile_enabled,
-    "AX_MLX_PREFILL_FFN_COMPILE"
-);
-
 env_flag_default_on!(
     /// `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU` — Qwen3 / GLM / shared-expert
     /// SwiGLU compile fusion (W1 spike K of fusion PRD).
@@ -134,10 +109,10 @@ env_flag_default_on!(
     /// **Default: ON** (kill-switch via
     /// `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU=0`).
     ///
-    /// Counterpart of `prefill_ffn_compile_enabled` for `silu(gate) * up`
-    /// chains in Qwen 3 dense FFN, Qwen MoE routed experts, the shared
-    /// expert path, and any future SwiGLU consumer. Same fallback
-    /// contract via `MlxClosure::try_apply`. Same kill-switch semantics.
+    /// Routes `silu(gate) * up` chains in Qwen 3 dense FFN, Qwen MoE routed
+    /// experts, the shared expert path, and any future SwiGLU consumer through
+    /// a compiled closure with the same `MlxClosure::try_apply` fail-closed
+    /// contract used by the embedding compile cache.
     prefill_ffn_compile_swiglu_enabled,
     "AX_MLX_PREFILL_FFN_COMPILE_SWIGLU"
 );

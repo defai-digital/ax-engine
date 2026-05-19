@@ -242,6 +242,7 @@ fn build_openai_sampling(
         repetition_context_size,
         seed: seed.unwrap_or_else(|| default_openai_seed(temperature)),
         deterministic: None,
+        ignore_eos: false,
     }
 }
 

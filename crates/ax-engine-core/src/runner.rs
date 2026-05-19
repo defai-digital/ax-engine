@@ -43,6 +43,9 @@ pub struct RunnerRequestContext {
     pub repetition_penalty: f32,
     /// Number of most-recent prompt/generated tokens considered by repetition penalty.
     pub repetition_context_size: Option<u32>,
+    /// Request-scoped fixed-generation mode. When true, native runners ignore
+    /// model EOS / terminal token ids and stop only at the output budget.
+    pub ignore_eos: bool,
 }
 
 impl RunnerInput {
@@ -531,6 +534,7 @@ mod tests {
                     top_k: 0,
                     repetition_penalty: 1.0,
                     repetition_context_size: None,
+                    ignore_eos: false,
                 },
                 RunnerRequestContext {
                     request_id: RequestId(2),
@@ -544,6 +548,7 @@ mod tests {
                     top_k: 0,
                     repetition_penalty: 1.0,
                     repetition_context_size: None,
+                    ignore_eos: false,
                 },
             ],
         });
@@ -672,6 +677,7 @@ mod tests {
                 top_k: 0,
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
+                ignore_eos: false,
             }],
         });
 

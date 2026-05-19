@@ -3489,7 +3489,7 @@ mod tests {
     }
 
     #[test]
-    fn geglu_compiled_matches_imperative() {
+    fn geglu_direct_shim_matches_imperative() {
         // Same shape and dtype the Gemma 4 FFN call site produces:
         // gate_proj output and up_proj output, both bf16.
         let gate_f32: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.05).collect();
@@ -3513,27 +3513,26 @@ mod tests {
         let imperative = multiply(&gelu_approx(&gate, None), &x, None);
         let imperative_f32 = astype(&imperative, MlxDtype::Float32, None);
 
-        // Compiled fusion via the geglu helper.
-        let compiled = geglu(&gate, &x);
-        let compiled_f32 = astype(&compiled, MlxDtype::Float32, None);
+        // Direct MLX shim via the geglu helper.
+        let direct = geglu(&gate, &x);
+        let direct_f32 = astype(&direct, MlxDtype::Float32, None);
 
-        eval(&[&imperative_f32, &compiled_f32]);
+        eval(&[&imperative_f32, &direct_f32]);
 
         let imp = imperative_f32.data_f32().to_vec();
-        let cmp = compiled_f32.data_f32().to_vec();
+        let cmp = direct_f32.data_f32().to_vec();
         assert_eq!(
             imp, cmp,
-            "compiled geglu must produce bit-identical output to the imperative fallback"
+            "direct geglu shim must produce bit-identical output to the imperative reference"
         );
 
-        // Second invocation hits the cached compiled closure and must still match.
-        let compiled_again = geglu(&gate, &x);
-        let compiled_again_f32 = astype(&compiled_again, MlxDtype::Float32, None);
-        eval(&[&compiled_again_f32]);
+        let direct_again = geglu(&gate, &x);
+        let direct_again_f32 = astype(&direct_again, MlxDtype::Float32, None);
+        eval(&[&direct_again_f32]);
         assert_eq!(
             cmp,
-            compiled_again_f32.data_f32().to_vec(),
-            "cached compiled geglu must remain stable across invocations"
+            direct_again_f32.data_f32().to_vec(),
+            "direct geglu shim must remain stable across invocations"
         );
     }
 

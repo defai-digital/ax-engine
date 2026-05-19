@@ -134,7 +134,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, stop_sequences=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
     fn generate<'py>(
         &mut self,
         py: Python<'py>,
@@ -149,6 +149,7 @@ impl Session {
         repetition_context_size: Option<u32>,
         seed: u64,
         deterministic: Option<bool>,
+        ignore_eos: bool,
         stop_sequences: Option<Vec<String>>,
         metadata: Option<String>,
     ) -> PyResult<Py<PyDict>> {
@@ -167,6 +168,7 @@ impl Session {
                 repetition_context_size,
                 seed,
                 deterministic,
+                ignore_eos,
             },
             stop_sequences.unwrap_or_default(),
             metadata,
@@ -191,7 +193,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, stop_sequences=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
     fn submit(
         &mut self,
         input_tokens: Option<Vec<u32>>,
@@ -205,6 +207,7 @@ impl Session {
         repetition_context_size: Option<u32>,
         seed: u64,
         deterministic: Option<bool>,
+        ignore_eos: bool,
         stop_sequences: Option<Vec<String>>,
         metadata: Option<String>,
     ) -> PyResult<u64> {
@@ -223,6 +226,7 @@ impl Session {
                 repetition_context_size,
                 seed,
                 deterministic,
+                ignore_eos,
             },
             stop_sequences.unwrap_or_default(),
             metadata,
@@ -293,7 +297,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, stop_sequences=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
     fn stream_generate<'py>(
         &mut self,
         py: Python<'py>,
@@ -308,6 +312,7 @@ impl Session {
         repetition_context_size: Option<u32>,
         seed: u64,
         deterministic: Option<bool>,
+        ignore_eos: bool,
         stop_sequences: Option<Vec<String>>,
         metadata: Option<String>,
     ) -> PyResult<Py<GenerateStreamIterator>> {
@@ -343,6 +348,7 @@ impl Session {
                 repetition_context_size,
                 seed,
                 deterministic,
+                ignore_eos,
             },
             stop_sequences.unwrap_or_default(),
             metadata,
@@ -930,6 +936,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     None,
+                    false,
                     None,
                     None,
                 )
@@ -1000,6 +1007,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     None,
+                    false,
                     None,
                     None,
                 )
@@ -1065,6 +1073,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     None,
+                    false,
                     None,
                     None,
                 )
@@ -1148,6 +1157,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     None,
+                    false,
                     None,
                     None,
                 )
@@ -1252,6 +1262,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     None,
+                    false,
                     None,
                     None,
                 )
@@ -1269,6 +1280,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     None,
+                    false,
                     None,
                     None,
                 )
@@ -1355,6 +1367,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     None,
+                    false,
                     None,
                     None,
                 )

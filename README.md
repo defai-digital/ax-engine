@@ -201,11 +201,9 @@ from
 refreshed AX rows for Gemma 4 E2B 5/6/8-bit, Gemma 4 E4B 4-bit,
 and Gemma 4 26B A4B 4-bit come from
 `benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-gemma-ffn-compile-off-r1/`
-and were rerun with `AX_MLX_PREFILL_FFN_COMPILE=0`, which is now the
-default-safe Gemma GeGLU path. The earlier compile-enabled benchmark
-disconnected the server; the harness surfaced that failed run as
-`RemoteDisconnected`. The default-safe artifacts completed successfully and
-are the values shown below.
+and use the default Gemma GeGLU direct-MLX activation shim. The older
+compiled-closure experiment has been removed from the production runtime
+surface; the rows shown below are from the stable direct path.
 The refreshed AX row for Gemma 4 E2B 4-bit comes from the narrower
 `benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-gemma-e2b-4bit-r1/`
 rerun with the same AX-only direct and n-gram benchmark shape.
@@ -341,13 +339,11 @@ collapsed output loop.
 
 † Qwen 3.6 27B 4-bit at prompt=2048 originally produced zero decode tokens
 because 4-bit quantization noise pushed an EOS token to argmax at decode
-step 0 on the `mlx_lm.benchmark` random-token contract. The cell is now
-measured with the AX server's `AX_MLX_IGNORE_EOS=1` env override
-(benchmark-only knob added at `crates/ax-engine-mlx/src/runner.rs`), which
-empties the terminal-token list so EOS no longer stops decode — matching
-how `mlx_lm.benchmark` measures fixed `gen=N` throughput regardless of
-stop-token argmax. Production deployments without that env var will still
-honor EOS at step 0 on this specific synthetic prompt. Source:
+step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness
+now sends request-scoped `sampling.ignore_eos=true` for AX throughput runs,
+matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput regardless
+of stop-token argmax. Production requests default to `ignore_eos=false` and
+still honor EOS at step 0 on this specific synthetic prompt. Source:
 `benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-r1/qwen3_6-27b-4bit.json`.
 
 ‡ Qwen 3.6 27B 5-bit at prompt=128 shows the n-gram drafter

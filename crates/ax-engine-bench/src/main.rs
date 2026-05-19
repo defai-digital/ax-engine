@@ -7409,6 +7409,7 @@ fn sampling_from_manifest(manifest: &BenchmarkManifest) -> Result<SamplingParams
         repetition_context_size: None,
         seed: manifest.sampling.seed,
         deterministic: manifest.runtime.deterministic,
+        ignore_eos: false,
     })
 }
 
@@ -7430,6 +7431,7 @@ fn generate_request_from_spec(
             repetition_context_size: None,
             seed: manifest.sampling.seed,
             deterministic: Some(manifest.runtime.deterministic),
+            ignore_eos: false,
         },
         stop_sequences: Vec::new(),
         metadata: spec.metadata.clone(),

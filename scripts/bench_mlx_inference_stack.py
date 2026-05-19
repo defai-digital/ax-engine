@@ -2304,7 +2304,11 @@ def axengine_one_run(
     server_pid: int | None = None,
 ) -> dict[str, Any]:
     payload = json.dumps(
-        {"input_tokens": tokens, "max_output_tokens": generation_tokens}
+        {
+            "input_tokens": tokens,
+            "max_output_tokens": generation_tokens,
+            "sampling": {"ignore_eos": True},
+        }
     ).encode()
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
     conn.request(

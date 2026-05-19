@@ -721,6 +721,7 @@ impl EngineCore {
                     top_k: record.sampling_params.top_k,
                     repetition_penalty: record.sampling_params.repetition_penalty,
                     repetition_context_size: record.sampling_params.repetition_context_size,
+                    ignore_eos: record.sampling_params.ignore_eos,
                 });
             }
         }
@@ -1671,6 +1672,7 @@ mod tests {
         repetition_penalty: f32,
         repetition_context_size: Option<u32>,
         deterministic_argmax_sampling: bool,
+        ignore_eos: bool,
     }
 
     impl ExecutionRunner for AssertSamplingContextRunner {
@@ -1691,6 +1693,7 @@ mod tests {
                 context.deterministic_argmax_sampling,
                 self.deterministic_argmax_sampling
             );
+            assert_eq!(context.ignore_eos, self.ignore_eos);
             DeterministicRunner.run(input)
         }
     }
@@ -1792,6 +1795,7 @@ mod tests {
                 repetition_penalty: 1.2,
                 repetition_context_size: Some(16),
                 deterministic_argmax_sampling: false,
+                ignore_eos: true,
             },
             DeterministicSampler,
         );
@@ -1802,6 +1806,7 @@ mod tests {
             top_k: 32,
             repetition_penalty: 1.2,
             repetition_context_size: Some(16),
+            ignore_eos: true,
             ..SamplingParams::default()
         };
 

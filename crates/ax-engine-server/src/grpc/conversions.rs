@@ -19,6 +19,7 @@ pub(super) fn proto_sampling_to_sdk(s: proto::GenerateSampling) -> GenerateSampl
         repetition_context_size: None,
         seed: s.seed,
         deterministic: None,
+        ignore_eos: false,
     }
 }
 

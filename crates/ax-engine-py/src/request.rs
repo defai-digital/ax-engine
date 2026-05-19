@@ -71,6 +71,7 @@ mod tests {
                 deterministic: Some(true),
                 repetition_penalty: 1.1,
                 repetition_context_size: Some(64),
+                ignore_eos: true,
             },
             vec!["stop".to_string()],
             Some("metadata".to_string()),
@@ -88,6 +89,7 @@ mod tests {
         assert_eq!(request.sampling.deterministic, Some(true));
         assert_eq!(request.sampling.repetition_penalty, 1.1);
         assert_eq!(request.sampling.repetition_context_size, Some(64));
+        assert!(request.sampling.ignore_eos);
         assert_eq!(request.stop_sequences, vec!["stop"]);
         assert_eq!(request.metadata.as_deref(), Some("metadata"));
     }

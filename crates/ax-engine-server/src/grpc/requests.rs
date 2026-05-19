@@ -46,6 +46,7 @@ pub(super) fn build_chat_generate_request(
         repetition_context_size: None,
         seed: req.seed,
         deterministic: None,
+        ignore_eos: false,
     };
     let stop_sequences = grpc_chat_stop_sequences(state.model_id.as_ref(), req.stop.clone());
 
@@ -78,6 +79,7 @@ pub(super) fn build_completion_generate_request(
         repetition_context_size: None,
         seed: req.seed,
         deterministic: None,
+        ignore_eos: false,
     };
     GenerateRequest {
         model_id: state.model_id.to_string(),

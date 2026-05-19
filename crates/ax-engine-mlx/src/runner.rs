@@ -2555,23 +2555,7 @@ impl MlxRunner {
         validate_mlx_supported_manifest(artifacts)?;
 
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
-        let terminal_token_ids = if std::env::var("AX_MLX_IGNORE_EOS").as_deref() == Ok("1") {
-            // Benchmark-only knob. Empties the terminal-token list so EOS
-            // never stops decode, matching `mlx_lm.benchmark` which fixes
-            // gen=N regardless of EOS argmax. Real workloads MUST NOT set
-            // this; the model emits incoherent tails past natural EOS.
-            // Used to measure fair throughput on prompts where 4-bit
-            // quantization noise pushes EOS to argmax at decode step 0
-            // (e.g. Qwen 3.6 27B 4-bit on synthetic random tokens at
-            // p=2048).
-            tracing::warn!(
-                "AX_MLX_IGNORE_EOS=1: EOS stop tokens disabled. \
-                Benchmark mode only — production traffic will receive incoherent tails."
-            );
-            Vec::new()
-        } else {
-            resolve_terminal_token_ids(artifacts)
-        };
+        let terminal_token_ids = resolve_terminal_token_ids(artifacts);
         let kv_layer_windows = kv_layer_windows_from_config(&cfg);
         let rotating_sliding_decode = disable_ngram_acceleration
             && std::env::var("AX_MLX_ROTATING_SLIDING_DECODE").as_deref() == Ok("1");
@@ -3362,6 +3346,11 @@ impl MlxRunner {
 
         let max_output = ctx.map(|c| c.max_output_tokens).unwrap_or(1);
         let generated_len = ctx.map(|c| c.generated_len).unwrap_or(0);
+        let terminal_token_ids: &[u32] = if ctx.map(|c| c.ignore_eos).unwrap_or(false) {
+            &[]
+        } else {
+            &self.terminal_token_ids
+        };
         let prefill_completes_prompt = prefill_item_completes_prompt(item, ctx);
         let is_prefill = matches!(item.mode, ExecutionMode::Prefill);
         let sampling = ctx
@@ -3562,10 +3551,22 @@ impl MlxRunner {
                         );
                         tok
                     } else {
-                        self.decode_one(&mut state, token_ids, sampling, is_greedy)
+                        self.decode_one(
+                            &mut state,
+                            token_ids,
+                            sampling,
+                            is_greedy,
+                            terminal_token_ids,
+                        )
                     }
                 } else {
-                    self.decode_one(&mut state, token_ids, sampling, is_greedy)
+                    self.decode_one(
+                        &mut state,
+                        token_ids,
+                        sampling,
+                        is_greedy,
+                        terminal_token_ids,
+                    )
                 };
                 state
                     .decode_telemetry
@@ -3579,7 +3580,7 @@ impl MlxRunner {
                 sampled_token,
                 generated_len,
                 max_output,
-                &self.terminal_token_ids,
+                terminal_token_ids,
             )
         });
         if let Some(sampled_token) = sampled_token {
@@ -4190,6 +4191,7 @@ impl MlxRunner {
         input_tokens: &[u32],
         sampling: MlxSamplingParams,
         is_greedy: bool,
+        terminal_token_ids: &[u32],
     ) -> u32 {
         // Serve pre-verified bonus tokens without re-running the model.
         // (Bonus tokens only exist on the n-gram acceleration path; the direct pipeline
@@ -4225,7 +4227,7 @@ impl MlxRunner {
             .unwrap_or(0);
 
         let result = self.run_model_decode(state, last_token, sampling, is_greedy);
-        apply_decode_result(state, &result, &self.terminal_token_ids)
+        apply_decode_result(state, &result, terminal_token_ids)
     }
 
     /// Decode one deterministic token on the direct double-buffer pipeline.
@@ -5880,6 +5882,15 @@ mod tests {
     }
 
     #[test]
+    fn empty_terminal_token_slice_ignores_eos_until_limit() {
+        assert_eq!(stop_reason_for_sampled_token(151645, 1, 32, &[]), None);
+        assert_eq!(
+            stop_reason_for_sampled_token(151645, 31, 32, &[]),
+            Some(StopReason::MaxOutputTokens)
+        );
+    }
+
+    #[test]
     fn ngram_decode_result_truncates_bonus_queue_at_eos() {
         let mut state = RequestState::new(2, RequestId(9));
 
@@ -5922,6 +5933,7 @@ mod tests {
             top_k: 0,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            ignore_eos: false,
         };
         assert!(!prefill_item_completes_prompt(&item, Some(&first_context)));
 

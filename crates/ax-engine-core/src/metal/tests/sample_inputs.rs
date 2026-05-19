@@ -81,6 +81,7 @@ pub(super) fn sample_runner_input() -> RunnerInput {
                 top_k: 0,
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
+                ignore_eos: false,
             },
             RunnerRequestContext {
                 request_id: RequestId(9),
@@ -94,6 +95,7 @@ pub(super) fn sample_runner_input() -> RunnerInput {
                 top_k: 0,
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
+                ignore_eos: false,
             },
         ],
     }
@@ -175,6 +177,7 @@ pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
                 top_k: 0,
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
+                ignore_eos: false,
             },
             RunnerRequestContext {
                 request_id: RequestId(11),
@@ -188,6 +191,7 @@ pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
                 top_k: 0,
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
+                ignore_eos: false,
             },
         ],
     }
@@ -243,6 +247,7 @@ pub(super) fn sample_prefill_only_runner_input() -> RunnerInput {
             top_k: 0,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            ignore_eos: false,
         }],
     }
 }
@@ -297,6 +302,7 @@ pub(super) fn sample_decode_continuation_runner_input() -> RunnerInput {
             top_k: 0,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            ignore_eos: false,
         }],
     }
 }

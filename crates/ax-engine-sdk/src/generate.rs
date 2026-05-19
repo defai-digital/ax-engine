@@ -223,6 +223,12 @@ pub struct GenerateSampling {
     /// asks the native engine to use deterministic execution behavior.
     #[serde(default)]
     pub deterministic: Option<bool>,
+    /// When true, native generation ignores model EOS / terminal token ids and
+    /// stops only at `max_output_tokens` or explicit cancellation/error. This
+    /// is intended for fixed-token benchmark runs; production callers should
+    /// leave it at the default `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ignore_eos: bool,
 }
 
 impl Default for GenerateSampling {
@@ -236,6 +242,7 @@ impl Default for GenerateSampling {
             repetition_context_size: None,
             seed: 0,
             deterministic: None,
+            ignore_eos: false,
         }
     }
 }
@@ -255,6 +262,7 @@ impl GenerateSampling {
             repetition_context_size: self.repetition_context_size,
             seed: self.seed,
             deterministic,
+            ignore_eos: self.ignore_eos,
         }
     }
 }
@@ -449,6 +457,10 @@ const fn default_repetition_penalty() -> f32 {
     1.0
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,12 +534,14 @@ mod tests {
         let sampling = GenerateSampling {
             seed: 42,
             deterministic: Some(true),
+            ignore_eos: true,
             ..GenerateSampling::default()
         };
         let core = sampling.into_core(false);
 
         assert_eq!(core.seed, 42);
         assert!(core.deterministic);
+        assert!(core.ignore_eos);
     }
 
     #[test]

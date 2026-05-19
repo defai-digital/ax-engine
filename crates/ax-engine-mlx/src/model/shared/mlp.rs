@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, argpartition_axis, argsort_axis, astype,
-    divide, expand_dims, expand_dims_axes, gelu_approx, gelu_approx_mul, multiply, reshape,
-    rms_norm, slice_last_dim, softmax, sum_axis, take, take_along_axis, topk_axis,
+    divide, expand_dims, expand_dims_axes, gelu_approx_mul, multiply, reshape, rms_norm,
+    slice_last_dim, softmax, sum_axis, take, take_along_axis, topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -111,117 +111,20 @@ pub(crate) fn attention_output_projection(
     qw(&gated, o_proj)
 }
 
-/// SPIKE ARTIFACT (W2.a, 2026-05-14) — kept behind an explicit opt-in flag, not
-/// wired into the default production hot path.
+/// Gemma-family GeGLU activation.
 ///
-/// `geglu(gate, x) = gelu_approx(gate) * x` collapsed into one compiled-closure
-/// dispatch via `MlxClosure::compile(shapeless=true)`. Mirrors mlx_lm's
-/// `@partial(mx.compile, shapeless=True) def geglu(gate, x)` in
-/// `mlx_lm.models.gemma4_text`. Uncompiled this expands to 9 ops from
-/// `gelu_approx` plus 1 multiply; compiled, the fused graph dispatches as a
-/// single MLX op.
-///
-/// **Why not wired**: the W2.a spike confirmed bit-exact correctness
-/// (`geglu_compiled_matches_imperative`) but production wiring crashed the
-/// server with `"There is no Stream(gpu, N) in current thread"` from
-/// `mlx_closure_apply` running on tokio worker threads. The follow-up source
-/// read found the relevant MLX 0.31 / mlx-c 0.6 contract: default streams,
-/// compiled-function cache entries, and Metal command encoders are all
-/// thread-local; `mlx_set_default_stream` does not register an existing stream
-/// index's encoder on another thread. The helper is kept as a record of the
-/// math + the test as regression protection if the stream story is ever solved.
-/// See
-/// `benchmarks/results/mlx-inference/2026-05-14-w2-stream-contract-source-read/stream-contract.md`.
-/// GeGLU compiled helper kept (and unit-tested) as a record of the math;
-/// the experimental gate that wires this into `dense_ffn_activation` is
-/// `fastpath::prefill_ffn_compile_enabled()` reading
-/// `AX_MLX_PREFILL_FFN_COMPILE`. Pre-W1 this helper was dead code because
-/// the original `OnceLock<Option<MlxClosure>>` cache was process-wide:
-/// thread A compiled the closure, thread B (a different tokio worker)
-/// inherited it and aborted at `mlx_closure_apply` with
-/// `"There is no Stream(gpu, N) in current thread"` — MLX 0.31 / mlx-c
-/// 0.6 default streams + compiled-function caches + Metal command
-/// encoders are thread-local.
-///
-/// W1 fix: per-thread cache keyed by `ThreadId` in a process-static
-/// `Mutex<HashMap<ThreadId, MlxClosure>>`. Each thread compiles its own
-/// closure on first use and reuses it on subsequent calls from the same
-/// thread. The cache is intentionally NOT a `thread_local!` because
-/// thread_local destructors run after the thread's MLX state has
-/// torn down, leaving a stale `MlxClosure` that SIGSEGVs at drop. The
-/// process-static map holds entries until process exit, mirroring the
-/// embedding compile cache in `MlxRunner` (`runner.rs::EmbedCompileKey =
-/// (ThreadId, ...)`). Combined with `MlxClosure::try_apply` (which
-/// rejects a cross-thread apply before reaching `mlx_closure_apply`),
-/// the helper fails closed: on any contract violation we fall back to
-/// the imperative `gelu_approx + multiply` path without aborting.
+/// This preserves mlx-lm's `nn.gelu_approx(gate) * x` math while using AX's
+/// direct MLX shim to collapse the scalar-heavy activation chain behind one
+/// stable FFI call. The older compiled-closure experiment was removed from the
+/// production surface because MLX compiled closures are thread/stream-registry
+/// sensitive in the Rust server worker model.
 pub(crate) fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
-    use std::collections::HashMap;
-    use std::collections::hash_map::Entry;
-    use std::thread::ThreadId;
-
-    // The GeGLU compiled closure ABORTS the process inside `mlx_closure_apply`
-    // ("There is no Stream(gpu, 0) in current thread" at
-    // mlx-c-0.6.0/mlx/c/transforms.cpp:73) under two MLX 0.31 / mlx-c 0.6
-    // edge cases that `try_apply`'s cross-thread guard cannot catch:
-    //
-    //   1. Rank-4 inputs from MoE expert `qw_gather` outputs. Verified on
-    //      Gemma 4 26B A4B (mixed dense+MoE GeGLU). The SwiGLU compile wrap
-    //      survives the same 4D shape on Qwen 3.6 35B-A3B / Coder Next /
-    //      GLM 4.7 Flash, so the issue is specific to the
-    //      `gelu_approx + multiply` op tree.
-    //
-    //   2. Very wide intermediate dimensions. Empirically Gemma 4 31B 4-bit
-    //      (`intermediate_size = 21504`, hidden 5376) aborts at the first
-    //      apply, while E4B (`intermediate_size = 10240`) is stable. A
-    //      threshold of 16K on the last-axis size keeps E2B (6144) and E4B
-    //      (10240) inside the compile wrap and routes 31B's enormous FFN
-    //      hidden to the imperative path.
-    //
-    // Both fallback paths produce identical numerics (the unit test asserts
-    // bit-exact equality vs `gelu_approx + multiply`) and match the W1
-    // pre-K behaviour on these call sites.
-    const COMPILE_WRAP_LAST_DIM_CEILING: usize = 16_384;
-    let last_dim = *gate.shape().last().unwrap_or(&0) as usize;
-    if gate.ndim() > 3 || last_dim > COMPILE_WRAP_LAST_DIM_CEILING {
-        return gelu_approx_mul(gate, x, None);
-    }
-
-    static GEGLU_COMPILE_CACHE: OnceLock<Mutex<HashMap<ThreadId, MlxClosure>>> = OnceLock::new();
-
-    let cache = GEGLU_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let tid = std::thread::current().id();
-    let outputs = {
-        let mut guard = cache.lock().expect("geglu compile cache mutex poisoned");
-        if let Entry::Vacant(slot) = guard.entry(tid)
-            && let Ok(compiled) = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
-                let gate = inputs.get(0);
-                let x = inputs.get(1);
-                let activated = gelu_approx(&gate, None);
-                vec![multiply(&activated, &x, None)]
-            })
-            .compile(true)
-        {
-            slot.insert(compiled);
-        }
-        guard
-            .get(&tid)
-            .and_then(|cls| cls.try_apply(&[gate, x]).ok())
-    };
-
-    if let Some(mut outputs) = outputs
-        && let Some(out) = outputs.pop()
-    {
-        return out;
-    }
     gelu_approx_mul(gate, x, None)
 }
 
 pub(crate) fn per_layer_input_gate(gate: &MlxArray, per_layer_input: &MlxArray) -> MlxArray {
-    // Keep this path identical to mlx_lm's Gemma4DecoderLayer per-layer input
-    // gate. Unlike the dense FFN `geglu()` helper, upstream does not wrap this
-    // call site in `mx.compile`; repeated W5 attempts aborted inside MLX C
-    // `mlx_closure_apply` on Gemma 4 E2B 4-bit.
+    // mlx-lm keeps this Gemma4DecoderLayer per-layer input gate imperative;
+    // the direct shim preserves the same math with one stable FFI call.
     gelu_approx_mul(gate, per_layer_input, None)
 }
 
@@ -275,11 +178,7 @@ pub(crate) fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
 
 pub(crate) fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxArray) -> MlxArray {
     if cfg.uses_geglu {
-        if fastpath::prefill_ffn_compile_enabled() {
-            geglu(gate, up)
-        } else {
-            gelu_approx_mul(gate, up, None)
-        }
+        geglu(gate, up)
     } else if fastpath::prefill_ffn_compile_swiglu_enabled() {
         swiglu(gate, up)
     } else {
@@ -338,23 +237,9 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
     // Gemma4 uses GEGLU with fast-approx GELU gate (matches mlx_lm's `nn.gelu_approx`).
     // Qwen3 uses SwiGLU (SiLU gate).
     //
-    // mlx_lm wraps the gate-activation + multiply in `@partial(mx.compile,
-    // shapeless=True) def geglu(gate, x)`. Wiring our equivalent `geglu`
-    // helper into the default path was attempted under W2.a and W1, but the
-    // source-read follow-up found that MLX default streams, compile cache
-    // entries, and Metal command encoders are thread-local;
-    // `mlx_set_default_stream` does not register an existing stream index's
-    // encoder on another thread. Running the compiled helper from per-request
-    // tokio worker threads can therefore fail with
-    // `"There is no Stream(gpu, N) in current thread"` or benchmark-visible
-    // `RemoteDisconnected`.
-    // See the tracked source-read artifact under
-    // `benchmarks/results/mlx-inference/2026-05-14-w2-stream-contract-source-read/`.
-    // See `.internal/planning/MLX-DECODE-W2A-GEGLU-FINDINGS.md` for the
-    // dead-end record (workarounds attempted + revert rationale). The
-    // `geglu` helper is kept (and unit-tested) as a record of the math and can
-    // still be enabled explicitly with `AX_MLX_PREFILL_FFN_COMPILE=1`; the
-    // default production hot path stays imperative.
+    // Gemma4 uses the direct MLX GeGLU shim. It preserves mlx-lm's activation
+    // math without the server-thread stream hazards of the removed compiled
+    // closure experiment.
     let activation_started = Instant::now();
     let ffn_hidden = dense_ffn_activation(cfg, &gate_out, &up_out);
     forward_profile_eval_elapsed(
@@ -822,9 +707,9 @@ pub(crate) fn moe_experts_forward(
         )
     };
 
-    // Gemma4 experts use GEGLU with fast-approx GELU (matches mlx_lm's `nn.gelu_approx`).
-    // Qwen3 uses SwiGLU (SiLU gate). Both routes go through the compile cache when the
-    // corresponding `AX_MLX_PREFILL_FFN_COMPILE[_SWIGLU]` env flag is engaged.
+    // Gemma4 experts use direct GEGLU with fast-approx GELU (matches
+    // mlx_lm's `nn.gelu_approx`). Qwen3 uses the SwiGLU helper, which can
+    // still use the compiled-closure cache.
     let hidden = dense_ffn_activation(cfg, &gate_out, &up_out);
 
     // Down projection: [1, seq, top_k, hidden]

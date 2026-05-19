@@ -534,10 +534,9 @@ pub(crate) fn layer_forward(
 
     // 19. Per-layer input gating (Gemma4 2B/4B): gate(h) * per_layer_embed → proj → norm + h.
     //
-    // Match mlx_lm's Gemma4DecoderLayer per-layer input gate: this call site
-    // stays imperative (`gelu_approx` + multiply). Upstream only wraps the
-    // dense FFN GeGLU in `mx.compile`; repeated W5 attempts to compile this
-    // per-layer gate aborted inside MLX C `mlx_closure_apply`.
+    // Match mlx_lm's Gemma4DecoderLayer per-layer input gate. The shared
+    // helper preserves the same `gelu_approx * per_layer_input` math through
+    // AX's direct MLX activation shim.
     if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
         w.per_layer_gate.as_ref(),
         w.per_layer_proj_w.as_ref(),

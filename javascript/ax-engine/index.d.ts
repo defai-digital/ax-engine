@@ -10,6 +10,7 @@ export interface GenerateSampling {
   top_k?: number;
   repetition_penalty?: number;
   seed?: number;
+  ignore_eos?: boolean;
 }
 
 export interface PreviewGenerateRequest {
