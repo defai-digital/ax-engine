@@ -9,7 +9,7 @@ pub(super) mod utils;
 // Re-exports for model/mod.rs and families/ modules.
 pub(crate) use attention::{
     attention_mask_array, build_layer_masks, full_precision_attention, prepare_value_bhsd,
-    qk_norm_bshd, turboquant_decode_attention_experimental,
+    prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, turboquant_decode_attention_experimental,
 };
 pub(crate) use linear_attention::linear_attention_forward;
 pub(crate) use mla::glm_mla_attention_forward;
@@ -26,7 +26,7 @@ pub(crate) use utils::{apply_final_logit_softcap, qw, scale_hidden, shape_elemen
 // Additional re-exports used by test code (via `use super::*` in #[cfg(test)] mod).
 #[cfg(test)]
 pub(super) use attention::{
-    TurboQuantQueryReadbackArray, attention_mask_key_len, bhsd_view_from_proj,
+    TurboQuantQueryReadbackArray, attention_mask_key_len, bhsd_view_from_proj, qk_norm_bshd,
     turboquant_attention_output_array_from_flat, turboquant_query_readback_array,
 };
 #[cfg(test)]

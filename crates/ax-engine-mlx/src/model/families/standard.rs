@@ -11,8 +11,8 @@ use super::super::profile::{
 use super::super::shared::{
     attention_mask_array, attention_output_projection, ffn_swiglu, full_precision_attention,
     moe_experts_forward, moe_router_gemma4, moe_router_glm, moe_router_qwen3, per_layer_input_gate,
-    prepare_value_bhsd, qk_norm_bshd, qkv_project, qw, rms_norm_opt, shape_element_count,
-    shared_expert_forward, turboquant_decode_attention_experimental,
+    prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qkv_project, qw, rms_norm_opt,
+    shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
@@ -80,14 +80,9 @@ pub(crate) fn layer_forward(
                 &normed,
                 w.q_proj.as_ref().expect("KV-shared layer must have q_proj"),
             );
-            let q = reshape(
-                &q_raw,
-                &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
-                None,
-            );
             let qk_norm_started = profile_forward_layer.then(Instant::now);
-            let q = qk_norm_bshd(
-                q,
+            let q = qk_norm_bhsd_from_proj(
+                &q_raw,
                 w.q_norm.as_ref(),
                 cfg.n_heads,
                 head_dim,
@@ -104,7 +99,6 @@ pub(crate) fn layer_forward(
                 );
             }
             let rope_kv_started = profile_forward_layer.then(Instant::now);
-            let q = transpose(&q, &[0, 2, 1, 3], None);
             let (rope_base, rope_freqs_ref) = cfg
                 .rope_freqs
                 .as_ref()
@@ -136,26 +130,11 @@ pub(crate) fn layer_forward(
             let qkv_proj_started = profile_forward_layer.then(Instant::now);
             let (q_raw, k_raw, v_raw, attn_gate_raw) = qkv_project(cfg, w, &normed, head_dim);
 
-            let q = reshape(
-                &q_raw,
-                &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
-                None,
-            );
             let kv_heads = (k_raw.shape()[2] as usize)
                 .checked_div(head_dim)
                 .expect("k projection output must divide by head_dim");
-            let k = reshape(
-                &k_raw,
-                &[1, seq as i32, kv_heads as i32, head_dim as i32],
-                None,
-            );
-            let v = reshape(
-                &v_raw,
-                &[1, seq as i32, kv_heads as i32, head_dim as i32],
-                None,
-            );
             if let Some(started) = qkv_proj_started {
-                let mut refs: Vec<&MlxArray> = vec![&q, &k, &v];
+                let mut refs: Vec<&MlxArray> = vec![&q_raw, &k_raw, &v_raw];
                 if let Some(g) = attn_gate_raw.as_ref() {
                     refs.push(g);
                 }
@@ -169,16 +148,16 @@ pub(crate) fn layer_forward(
             }
 
             let qk_norm_started = profile_forward_layer.then(Instant::now);
-            let q = qk_norm_bshd(
-                q,
+            let q = qk_norm_bhsd_from_proj(
+                &q_raw,
                 w.q_norm.as_ref(),
                 cfg.n_heads,
                 head_dim,
                 seq,
                 cfg.rms_norm_eps,
             );
-            let k = qk_norm_bshd(
-                k,
+            let k = qk_norm_bhsd_from_proj(
+                &k_raw,
                 w.k_norm.as_ref(),
                 kv_heads,
                 head_dim,
@@ -196,10 +175,8 @@ pub(crate) fn layer_forward(
             }
 
             let rope_kv_started = profile_forward_layer.then(Instant::now);
-            let q = transpose(&q, &[0, 2, 1, 3], None);
-            let k = transpose(&k, &[0, 2, 1, 3], None);
-            let v = prepare_value_bhsd(
-                v,
+            let v = prepare_value_bhsd_from_proj(
+                &v_raw,
                 v_norm_no_scale,
                 kv_heads,
                 head_dim,

@@ -512,48 +512,24 @@ fn layer_forward_dense_embed(
         .checked_div(head_dim)
         .expect("k projection output must divide by head_dim");
 
-    let q = reshape(
+    let q = qk_norm_bhsd_from_proj(
         &q_raw,
-        &[
-            batch as i32,
-            seq as i32,
-            cfg.n_heads as i32,
-            head_dim as i32,
-        ],
-        None,
-    );
-    let k = reshape(
-        &k_raw,
-        &[batch as i32, seq as i32, kv_heads as i32, head_dim as i32],
-        None,
-    );
-    let v = reshape(
-        &v_raw,
-        &[batch as i32, seq as i32, kv_heads as i32, head_dim as i32],
-        None,
-    );
-
-    let q = qk_norm_bshd(
-        q,
         w.q_norm.as_ref(),
         cfg.n_heads,
         head_dim,
         seq,
         cfg.rms_norm_eps,
     );
-    let k = qk_norm_bshd(
-        k,
+    let k = qk_norm_bhsd_from_proj(
+        &k_raw,
         w.k_norm.as_ref(),
         kv_heads,
         head_dim,
         seq,
         cfg.rms_norm_eps,
     );
-
-    let q = transpose(&q, &[0, 2, 1, 3], None);
-    let k = transpose(&k, &[0, 2, 1, 3], None);
-    let v = prepare_value_bhsd(
-        v,
+    let v = prepare_value_bhsd_from_proj(
+        &v_raw,
         v_norm_no_scale,
         kv_heads,
         head_dim,
@@ -3441,23 +3417,24 @@ mod tests {
     fn bhsd_view_from_proj_matches_reshape_transpose() {
         // Synthetic Q/K/V projection output shape and values (Gemma 4 E2B
         // sliding layer: n_heads=8, head_dim=256, but use small dims here).
+        let batch = 2_usize;
         let n_heads = 4_usize;
         let head_dim = 3_usize;
         let seq = 2_usize;
-        let total = seq * n_heads * head_dim;
+        let total = batch * seq * n_heads * head_dim;
         let data: Vec<f32> = (0..total).map(|i| i as f32).collect();
         let proj = MlxArray::from_raw_data(
             data.as_ptr() as *const u8,
             std::mem::size_of_val(data.as_slice()),
-            &[1, seq as i32, (n_heads * head_dim) as i32],
+            &[batch as i32, seq as i32, (n_heads * head_dim) as i32],
             MlxDtype::Float32,
         );
 
-        // Reference: reshape [1, seq, n_heads*head_dim] -> [1, seq, n_heads, head_dim]
-        // then transpose [0, 2, 1, 3] -> [1, n_heads, seq, head_dim].
+        // Reference: reshape [batch, seq, n_heads*head_dim] to BSHD,
+        // then transpose [0, 2, 1, 3] to BHSD.
         let reference_bsh = reshape(
             &proj,
-            &[1, seq as i32, n_heads as i32, head_dim as i32],
+            &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
             None,
         );
         let reference = transpose(&reference_bsh, &[0, 2, 1, 3], None);
@@ -3470,11 +3447,11 @@ mod tests {
         // Both must report the same shape.
         assert_eq!(
             reference.shape(),
-            vec![1, n_heads as i32, seq as i32, head_dim as i32]
+            vec![batch as i32, n_heads as i32, seq as i32, head_dim as i32]
         );
         assert_eq!(
             candidate.shape(),
-            vec![1, n_heads as i32, seq as i32, head_dim as i32]
+            vec![batch as i32, n_heads as i32, seq as i32, head_dim as i32]
         );
 
         // Bit-exact element comparison via contiguous + read-back.
@@ -3485,6 +3462,78 @@ mod tests {
             reference_contig.data_f32().to_vec(),
             candidate_contig.data_f32().to_vec(),
             "as_strided BHSD view must produce the same elementwise data as reshape+transpose"
+        );
+    }
+
+    #[test]
+    fn qk_norm_bhsd_from_proj_matches_bshd_reference_path() {
+        let n_heads = 4_usize;
+        let head_dim = 3_usize;
+        let seq = 2_usize;
+        let proj_data: Vec<f32> = (0..(seq * n_heads * head_dim))
+            .map(|i| ((i as f32) - 12.0) * 0.05)
+            .collect();
+        let norm_data: Vec<f32> = vec![0.5, 1.0, 1.5];
+        let proj = array_f32(&proj_data, &[1, seq as i32, (n_heads * head_dim) as i32]);
+        let norm = array_f32(&norm_data, &[head_dim as i32]);
+
+        let reference_bshd = reshape(
+            &proj,
+            &[1, seq as i32, n_heads as i32, head_dim as i32],
+            None,
+        );
+        let reference_normed =
+            qk_norm_bshd(reference_bshd, Some(&norm), n_heads, head_dim, seq, 1.0e-6);
+        let reference = transpose(&reference_normed, &[0, 2, 1, 3], None);
+        let candidate = qk_norm_bhsd_from_proj(&proj, Some(&norm), n_heads, head_dim, seq, 1.0e-6);
+
+        let reference_contig = mlx_sys::ops::contiguous(&reference, None);
+        let candidate_contig = mlx_sys::ops::contiguous(&candidate, None);
+        eval(&[&reference_contig, &candidate_contig]);
+
+        assert_eq!(
+            reference_contig.shape(),
+            vec![1, n_heads as i32, seq as i32, head_dim as i32]
+        );
+        assert_eq!(candidate_contig.shape(), reference_contig.shape());
+        assert_close(
+            candidate_contig.data_f32(),
+            reference_contig.data_f32(),
+            1.0e-6,
+        );
+    }
+
+    #[test]
+    fn prepare_value_bhsd_from_proj_matches_bshd_reference_path() {
+        let n_heads = 2_usize;
+        let head_dim = 4_usize;
+        let seq = 3_usize;
+        let proj_data: Vec<f32> = (0..(seq * n_heads * head_dim))
+            .map(|i| ((i as f32) - 8.0) * 0.0625)
+            .collect();
+        let proj = array_f32(&proj_data, &[1, seq as i32, (n_heads * head_dim) as i32]);
+
+        let reference_bshd = reshape(
+            &proj,
+            &[1, seq as i32, n_heads as i32, head_dim as i32],
+            None,
+        );
+        let reference = prepare_value_bhsd(reference_bshd, true, n_heads, head_dim, seq, 1.0e-6);
+        let candidate = prepare_value_bhsd_from_proj(&proj, true, n_heads, head_dim, seq, 1.0e-6);
+
+        let reference_contig = mlx_sys::ops::contiguous(&reference, None);
+        let candidate_contig = mlx_sys::ops::contiguous(&candidate, None);
+        eval(&[&reference_contig, &candidate_contig]);
+
+        assert_eq!(
+            reference_contig.shape(),
+            vec![1, n_heads as i32, seq as i32, head_dim as i32]
+        );
+        assert_eq!(candidate_contig.shape(), reference_contig.shape());
+        assert_close(
+            candidate_contig.data_f32(),
+            reference_contig.data_f32(),
+            1.0e-6,
         );
     }
 

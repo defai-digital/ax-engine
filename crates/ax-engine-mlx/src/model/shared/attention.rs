@@ -20,13 +20,38 @@ pub(crate) fn bhsd_view_from_proj(
     head_dim: usize,
     seq: usize,
 ) -> MlxArray {
+    let batch = qw_out.shape()[0];
     let n_heads_i32 = n_heads as i32;
     let head_dim_i64 = head_dim as i64;
     let n_heads_head_dim = (n_heads * head_dim) as i64;
     let seq_n_heads_head_dim = (seq * n_heads * head_dim) as i64;
-    let shape = [1_i32, n_heads_i32, seq as i32, head_dim as i32];
+    let shape = [batch, n_heads_i32, seq as i32, head_dim as i32];
     let strides = [seq_n_heads_head_dim, head_dim_i64, n_heads_head_dim, 1_i64];
     as_strided(qw_out, &shape, &strides, 0, None)
+}
+
+pub(crate) fn qk_norm_bhsd_from_proj(
+    qw_out: &MlxArray,
+    norm: Option<&MlxArray>,
+    n_heads: usize,
+    head_dim: usize,
+    seq: usize,
+    eps: f32,
+) -> MlxArray {
+    if use_flat_qk_norm_path() {
+        let batch = qw_out.shape()[0] as usize;
+        let bshd = reshape(
+            qw_out,
+            &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
+            None,
+        );
+        let normed = qk_norm_bshd(bshd, norm, n_heads, head_dim, seq, eps);
+        return transpose(&normed, &[0, 2, 1, 3], None);
+    }
+
+    let bhsd = bhsd_view_from_proj(qw_out, n_heads, head_dim, seq);
+    let Some(n) = norm else { return bhsd };
+    rms_norm(&bhsd, Some(n), eps, None)
 }
 
 pub(crate) fn qk_norm_bshd(
@@ -49,6 +74,33 @@ pub(crate) fn qk_norm_bshd(
         );
     }
     rms_norm(&x, Some(n), eps, None)
+}
+
+/// Apply optional V RMSNorm in BSHD, then convert to BHSD for attention/KV cache.
+pub(crate) fn prepare_value_bhsd_from_proj(
+    v_raw: &MlxArray,
+    v_norm_no_scale: bool,
+    n_heads: usize,
+    head_dim: usize,
+    seq: usize,
+    eps: f32,
+) -> MlxArray {
+    if use_flat_qk_norm_path() {
+        let batch = v_raw.shape()[0] as usize;
+        let bshd = reshape(
+            v_raw,
+            &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
+            None,
+        );
+        return prepare_value_bhsd(bshd, v_norm_no_scale, n_heads, head_dim, seq, eps);
+    }
+
+    let bhsd = bhsd_view_from_proj(v_raw, n_heads, head_dim, seq);
+    if v_norm_no_scale {
+        rms_norm(&bhsd, None, eps, None)
+    } else {
+        bhsd
+    }
 }
 
 /// Apply optional V RMSNorm in BSHD, then convert to BHSD for attention/KV cache.
