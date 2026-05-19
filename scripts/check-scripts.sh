@@ -80,6 +80,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_run_gateddelta_prefill_profile.py \
   scripts/check_readme_performance_artifacts.py \
   scripts/test_readme_performance_artifacts.py \
+  scripts/render_readme_performance_charts.py \
   scripts/build_turboquant_decode_outputs.py \
   scripts/build_turboquant_quality_metrics.py \
   scripts/build_turboquant_quality_artifact.py \
@@ -134,3 +135,4 @@ bash scripts/check-turboquant-microbench-gate.sh
 bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_turboquant_public_docs.py
 "$PYTHON_BIN" scripts/check_direct_mlx_no_production_route.py
+"$PYTHON_BIN" scripts/render_readme_performance_charts.py --check

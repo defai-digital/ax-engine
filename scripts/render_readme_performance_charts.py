@@ -11,24 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import check_readme_performance_artifacts as readme_artifacts
 
-README_MODELS = [
-    "gemma-4-e2b-it-4bit",
-    "gemma-4-e2b-it-5bit",
-    "gemma-4-e2b-it-6bit",
-    "gemma-4-e2b-it-8bit",
-    "gemma-4-e4b-it-4bit",
-    "gemma-4-26b-a4b-it-4bit",
-    "gemma-4-31b-it-4bit",
-    "qwen3_5-9b-mlx-4bit",
-    "qwen3_6-27b-4bit",
-    "qwen3_6-27b-5bit",
-    "qwen3_6-27b-6bit",
-    "qwen3_6-27b-8bit",
-    "qwen3_6-35b-a3b-4bit",
-    "qwen3-coder-next-4bit",
-    "glm-4.7-flash-4bit",
-]
+LABEL_TO_SLUG = {
+    label: slug for slug, label in readme_artifacts.ARTIFACT_LABELS.items()
+}
 
 PROMPT_TOKENS = (128, 512, 2048)
 
@@ -161,21 +148,72 @@ def metric_median(row: dict[str, Any], key: str) -> float:
     raise ChartError(f"missing numeric median for {key} in {row.get('engine', '<unknown>')}")
 
 
-def load_rows(results_dir: Path) -> list[dict[str, Any]]:
+def readme_model_slugs(readme: Path) -> list[str]:
+    slugs: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for metric in readme_artifacts.parse_readme_metrics(readme.resolve()):
+        label = (metric.model, metric.quantization)
+        if label in seen:
+            continue
+        slug = LABEL_TO_SLUG.get(label)
+        if slug is None:
+            raise ChartError(f"README model has no artifact slug mapping: {label}")
+        slugs.append(slug)
+        seen.add(label)
+    if not slugs:
+        raise ChartError("README performance tables contain no chartable models")
+    return slugs
+
+
+def load_rows(results_dir: Path, slugs: list[str], *, required: bool) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     missing: list[str] = []
-    for slug in README_MODELS:
+    for slug in slugs:
         path = results_dir / f"{slug}.json"
         if not path.exists():
-            missing.append(str(path))
+            if required:
+                missing.append(str(path))
             continue
         payload = json.loads(path.read_text())
         for row in payload.get("results", []):
             if row.get("prompt_tokens") in PROMPT_TOKENS:
-                rows.append(row)
+                row_copy = dict(row)
+                row_copy["_slug"] = slug
+                rows.append(row_copy)
     if missing:
         raise ChartError("missing README benchmark artifacts:\n" + "\n".join(missing))
     return rows
+
+
+def load_composite_rows(readme: Path, metric: str, slugs: list[str]) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str, int, int], dict[str, Any]] = {}
+    sources = readme_artifacts.default_artifact_sources(readme.resolve())
+    series_engines = {engine for engine, _label, _color, _dot_color in SERIES}
+
+    for source in sources:
+        if source.include_tables is not None and metric not in source.include_tables:
+            continue
+        source_rows = load_rows(source.artifact_dir, slugs, required=False)
+        for row in source_rows:
+            engine = row.get("engine")
+            if engine not in series_engines:
+                continue
+            if source.include_engines is not None and engine not in source.include_engines:
+                continue
+            prompt_tokens = row.get("prompt_tokens")
+            if prompt_tokens not in PROMPT_TOKENS:
+                continue
+            if (
+                source.include_prompt_tokens is not None
+                and prompt_tokens not in source.include_prompt_tokens
+            ):
+                continue
+            generation_tokens = row.get("generation_tokens")
+            if not isinstance(generation_tokens, int):
+                raise ChartError(f"missing generation_tokens for {engine}")
+            merged[(str(row["_slug"]), str(engine), int(prompt_tokens), generation_tokens)] = row
+
+    return list(merged.values())
 
 
 def infer_llama_results_dir(repo_root: Path) -> Path:
@@ -196,14 +234,14 @@ def infer_llama_results_dir(repo_root: Path) -> Path:
     complete = [
         path
         for path in candidates
-        if all((path / f"{slug}.json").exists() for slug in README_MODELS)
+        if all((path / f"{slug}.json").exists() for slug in readme_model_slugs(repo_root / "README.md"))
     ]
     if complete:
         return max(complete, key=lambda path: path.name).resolve()
     return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
 
 
-def collect_values(rows: list[dict[str, Any]], metric: str) -> list[SeriesStats]:
+def collect_values(rows: list[dict[str, Any]], metric: str, expected_model_count: int) -> list[SeriesStats]:
     stats: list[SeriesStats] = []
     for engine, label, color, dot_color in SERIES:
         values: list[float] = []
@@ -224,9 +262,9 @@ def collect_values(rows: list[dict[str, Any]], metric: str) -> list[SeriesStats]
                     values.append(metric_median(row, "ttft_ms"))
             else:
                 raise ChartError(f"unknown metric: {metric}")
-        if len(values) != len(README_MODELS) * len(PROMPT_TOKENS):
+        if len(values) != expected_model_count * len(PROMPT_TOKENS):
             raise ChartError(
-                f"{metric} chart expected {len(README_MODELS) * len(PROMPT_TOKENS)} "
+                f"{metric} chart expected {expected_model_count * len(PROMPT_TOKENS)} "
                 f"values for {engine}, found {len(values)}"
             )
         stats.append(summarize(values, engine, label, color, dot_color))
@@ -373,14 +411,20 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    readme_slugs = readme_model_slugs(args.readme)
     results_dir = args.results_dir or infer_results_dir_from_readme(args.readme)
     llama_results_dir = args.llama_results_dir or infer_llama_results_dir(args.readme.parent)
-    rows = load_rows(results_dir) + load_rows(llama_results_dir)
+    llama_rows = load_rows(llama_results_dir, readme_slugs, required=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     mismatches: list[Path] = []
     for spec in CHARTS:
-        stats = collect_values(rows, spec.metric)
+        if args.results_dir:
+            benchmark_rows = load_rows(results_dir, readme_slugs, required=True)
+        else:
+            benchmark_rows = load_composite_rows(args.readme, spec.metric, readme_slugs)
+        rows = benchmark_rows + llama_rows
+        stats = collect_values(rows, spec.metric, expected_model_count=len(readme_slugs))
         output_path = args.output_dir / spec.output_name
         content = render_chart(spec, stats)
         if not write_chart(output_path, content, args.check):
@@ -395,7 +439,15 @@ def main() -> int:
     if args.check:
         print("README performance charts are up to date")
     else:
-        print(f"Rendered README performance charts from {results_dir} and {llama_results_dir}")
+        benchmark_source = (
+            str(results_dir)
+            if args.results_dir
+            else f"README composite sources in {args.readme}"
+        )
+        print(
+            f"Rendered README performance charts from {benchmark_source} "
+            f"and {llama_results_dir}"
+        )
     return 0
 
 
