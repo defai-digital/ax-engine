@@ -380,6 +380,39 @@ stream.
 |  |  | 512 | 162.7 | 320.1 | **171.2 (-46.5%)** |
 |  |  | 2048 | 578.2 | 583.0 | 665.6 (+14.2%) |
 
+### Real-workload n-gram validation (Qwen 3.6 27B 4-bit)
+
+The Decode table above measures the `mlx_lm.benchmark` random-token
+contract so prompt-hash parity holds across all rows. On that contract
+the n-gram drafter on Qwen 3.6 27B reports near-parity with direct
+decode — random prompts have unique 4-grams, so the drafter has no
+matchable continuations to copy, and Qwen 3.6 27B generates coherent
+(non-repeating) decode that does not echo random input tokens. The
+drafter correctly falls back to direct decode and is recorded as
+`ngram_no_draft_direct_fallback`.
+
+A separate three-case real-workload suite at
+`benchmarks/manifests/real_prompts/input_output_overlap.jsonl`
+exercises the drafter on input-output-overlap shapes (literature
+regime; see [`docs/NGRAM-ACCELERATION.md`](docs/NGRAM-ACCELERATION.md)
+"When n-gram acceleration helps"). Median over 3 trials,
+generation=128, cooldown=15s:
+
+| Case | ax direct tok/s | ax n-gram tok/s | Δ | Draft attempts | Accepted tokens | Status |
+|---|---:|---:|---:|---:|---:|---|
+| `reformat_json` (158 prompt tok) | 31.7 | **34.0** | **+7.3%** | 36 | 87 | `ngram_acceleration_effective_throughput` |
+| `rename_identifier` (163 prompt tok) | 31.0 | 31.2 | +0.5% | 0 | 0 | `ngram_no_draft_direct_fallback` |
+| `summarize_then_echo` (138 prompt tok) | 32.9 | 31.4 | -4.6% | 0 | 0 | `ngram_no_draft_direct_fallback` |
+
+The `reformat_json` row confirms the drafter is functional end-to-end
+on Qwen 3.6 27B (zero attempts on every prior synthetic-prompt
+measurement → 36 attempts / 87 accepted with the prompt-seeded drafter
+table). The two parity rows are the expected fall-through when the
+model paraphrases the input rather than echoing it verbatim.
+
+Source artifact:
+`benchmarks/results/mlx-inference/2026-05-18-ngram-real-prompt-validation/qwen3_6-27b-4bit.json`
+
 Embedding benchmarks are kept out of this README summary; see
 [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md) for embedding throughput, serving,
 and cold-start measurements.
