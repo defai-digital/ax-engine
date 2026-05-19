@@ -35,6 +35,7 @@ SPEEDUP_MEASUREMENT = "direct_cpp_speedup_ratio"
 DEFAULT_MAX_ABS_ERROR = 1e-6
 DEFAULT_MIN_SAMPLES = 1
 DEFAULT_MIN_SPEEDUP = 0.0
+SPEEDUP_RATIO_TOLERANCE = 1e-6
 
 
 class DirectMlxHotpathProbeArtifactError(RuntimeError):
@@ -103,12 +104,12 @@ def _validate_timing_measurement(
     *,
     name: str,
     min_samples: int,
-) -> int:
+) -> tuple[float, int]:
     _require(entry.get("unit") == "microseconds", f"{name}.unit must be microseconds")
     samples = _positive_integer(entry.get("samples"), f"{name}.samples")
     _require(samples >= min_samples, f"{name}.samples must be >= {min_samples}")
     _positive_number(entry.get("mean"), f"{name}.mean")
-    _positive_number(entry.get("median"), f"{name}.median")
+    median = _positive_number(entry.get("median"), f"{name}.median")
     _positive_number(entry.get("min"), f"{name}.min")
     _positive_number(entry.get("max"), f"{name}.max")
     _require(
@@ -120,7 +121,9 @@ def _validate_timing_measurement(
         <= _number(entry.get("max"), f"{name}.max"),
         f"{name}.median must be <= max",
     )
-    return _positive_integer(entry.get("op_count_median"), f"{name}.op_count_median")
+    return median, _positive_integer(
+        entry.get("op_count_median"), f"{name}.op_count_median"
+    )
 
 
 def validate_artifact(
@@ -167,12 +170,12 @@ def validate_artifact(
     for name in (portable_measurement, direct_measurement, SPEEDUP_MEASUREMENT):
         _require(name in measurements, f"missing measurement {name}")
 
-    portable_ops = _validate_timing_measurement(
+    portable_median, portable_ops = _validate_timing_measurement(
         measurements[portable_measurement],
         name=portable_measurement,
         min_samples=min_samples,
     )
-    direct_ops = _validate_timing_measurement(
+    direct_median, direct_ops = _validate_timing_measurement(
         measurements[direct_measurement],
         name=direct_measurement,
         min_samples=min_samples,
@@ -185,7 +188,23 @@ def validate_artifact(
     speedup = measurements[SPEEDUP_MEASUREMENT]
     _require(speedup.get("unit") == "ratio", f"{SPEEDUP_MEASUREMENT}.unit must be ratio")
     _positive_integer(speedup.get("samples"), f"{SPEEDUP_MEASUREMENT}.samples")
+    _positive_number(speedup.get("mean"), f"{SPEEDUP_MEASUREMENT}.mean")
     speedup_median = _positive_number(speedup.get("median"), f"{SPEEDUP_MEASUREMENT}.median")
+    _positive_number(speedup.get("min"), f"{SPEEDUP_MEASUREMENT}.min")
+    _positive_number(speedup.get("max"), f"{SPEEDUP_MEASUREMENT}.max")
+    _require(
+        _number(speedup.get("min"), f"{SPEEDUP_MEASUREMENT}.min") <= speedup_median,
+        f"{SPEEDUP_MEASUREMENT}.min must be <= median",
+    )
+    _require(
+        speedup_median <= _number(speedup.get("max"), f"{SPEEDUP_MEASUREMENT}.max"),
+        f"{SPEEDUP_MEASUREMENT}.median must be <= max",
+    )
+    expected_speedup = portable_median / direct_median
+    _require(
+        abs(speedup_median - expected_speedup) <= SPEEDUP_RATIO_TOLERANCE,
+        f"{SPEEDUP_MEASUREMENT}.median must equal portable/direct median ratio",
+    )
     _require(speedup_median >= min_speedup, f"{SPEEDUP_MEASUREMENT}.median must be >= {min_speedup}")
 
 

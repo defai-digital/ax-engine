@@ -142,10 +142,21 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
 
     def test_optional_speedup_gate_fails_closed(self) -> None:
         artifact = direct_mlx_artifact()
-        artifact["measurements"][2]["median"] = 1.01
 
         with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "median"):
-            checker.validate_artifact(artifact, min_speedup=1.05)
+            checker.validate_artifact(artifact, min_speedup=2.05)
+
+    def test_speedup_claim_must_match_timing_medians(self) -> None:
+        artifact = direct_mlx_artifact()
+        artifact["measurements"][2]["median"] = 9.0
+        artifact["measurements"][2]["mean"] = 9.0
+        artifact["measurements"][2]["min"] = 9.0
+        artifact["measurements"][2]["max"] = 9.0
+
+        with self.assertRaisesRegex(
+            checker.DirectMlxHotpathProbeArtifactError, "portable/direct"
+        ):
+            checker.validate_artifact(artifact)
 
     def test_cli_validates_artifact_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
