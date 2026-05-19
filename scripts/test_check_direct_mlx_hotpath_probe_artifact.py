@@ -30,6 +30,10 @@ def direct_mlx_artifact(candidate: str = "gelu_approx_mul") -> dict:
         portable_name = "portable_gelu_approx_mul_matmul"
         direct_name = "direct_cpp_gelu_approx_mul_matmul"
         shape = [8, 4]
+    elif candidate == "gelu_approx_quantized_ffn":
+        portable_name = "portable_gelu_approx_quantized_ffn"
+        direct_name = "direct_cpp_gelu_approx_quantized_ffn"
+        shape = [8, 4]
     else:
         raise AssertionError(f"unknown candidate {candidate}")
     return {
@@ -44,6 +48,8 @@ def direct_mlx_artifact(candidate: str = "gelu_approx_mul") -> dict:
             "cols": 16,
             "down_cols": 4,
             "dtype": "float32",
+            "group_size": 64,
+            "bits": 4,
             "warmup": 1,
             "iterations": 3,
         },
@@ -88,6 +94,16 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
 
     def test_valid_activation_down_artifact_passes(self) -> None:
         checker.validate_artifact(direct_mlx_artifact("gelu_approx_mul_matmul"))
+
+    def test_valid_quantized_ffn_artifact_passes(self) -> None:
+        checker.validate_artifact(direct_mlx_artifact("gelu_approx_quantized_ffn"))
+
+    def test_quantized_ffn_rejects_unsupported_group_size(self) -> None:
+        artifact = direct_mlx_artifact("gelu_approx_quantized_ffn")
+        artifact["config"]["group_size"] = 16
+
+        with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "group_size"):
+            checker.validate_artifact(artifact)
 
     def test_wrong_schema_fails_closed(self) -> None:
         artifact = direct_mlx_artifact()

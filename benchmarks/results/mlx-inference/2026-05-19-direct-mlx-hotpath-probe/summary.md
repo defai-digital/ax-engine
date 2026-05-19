@@ -6,6 +6,7 @@ Artifacts:
 
 - `direct-mlx-hotpath-gemma4-e2b-p2048-geglu.json`
 - `direct-mlx-hotpath-gemma4-e2b-p2048-geglu-down.json`
+- `direct-mlx-hotpath-gemma4-e2b-p2048-qffn.json`
 
 Command:
 
@@ -25,6 +26,17 @@ cargo run --release -p mlx-sys --bin direct-mlx-hotpath-probe -- \
   --warmup 5 \
   --iterations 30 \
   --json-out benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-geglu-down.json
+
+cargo run --release -p mlx-sys --bin direct-mlx-hotpath-probe -- \
+  --candidate gelu_approx_quantized_ffn \
+  --rows 2048 \
+  --cols 6144 \
+  --down-cols 1536 \
+  --group-size 64 \
+  --bits 4 \
+  --warmup 5 \
+  --iterations 30 \
+  --json-out benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-qffn.json
 ```
 
 Validation:
@@ -43,10 +55,17 @@ python3 scripts/check_direct_mlx_hotpath_probe_artifact.py \
 python3 scripts/check_direct_mlx_hotpath_probe_artifact.py \
   benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-geglu-down.json \
   --min-speedup 1.05
+
+python3 scripts/check_direct_mlx_hotpath_probe_artifact.py \
+  benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-qffn.json
+
+python3 scripts/check_direct_mlx_hotpath_probe_artifact.py \
+  benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-qffn.json \
+  --min-speedup 1.05
 ```
 
-The schema/correctness gate passes for both artifacts. The promotion speedup
-gate fails for both artifacts.
+The schema/correctness gate passes for all artifacts. The promotion speedup
+gate fails for all artifacts.
 
 Activation-only results:
 
@@ -64,20 +83,29 @@ Activation + down-projection results:
 | Direct C++ `gelu_approx_mul_matmul` | 3092.0630 | 1 |
 | Direct C++ speedup ratio | 1.00233x | n/a |
 
+Full quantized FFN results:
+
+| Measurement | Median us | Rust op-count median |
+|---|---:|---:|
+| Portable packed gate/up QMM + GEGLU + down QMM | 4816.8330 | 5 |
+| Direct C++ `gelu_approx_quantized_ffn` | 4806.4165 | 1 |
+| Direct C++ speedup ratio | 1.00217x | n/a |
+
 Correctness:
 
 - Activation-only: `max_abs_error = 0.0`, `shape = [2048, 6144]`
 - Activation + down projection: `max_abs_error = 0.0`, `shape = [2048, 1536]`
+- Full quantized FFN: `max_abs_error = 0.0`, `shape = [2048, 1536]`
 
 Decision:
 
-The activation-only and activation+down-projection direct C++ candidates both
-materially reduce Rust-side dispatch count, but neither produces a meaningful
-real-shape wall-time speedup. Neither should be promoted as the Phase 3
-production hotpath. Any future Phase 3 work must target a larger subgraph than
-these candidates, likely including quantized projection handling and enough
-layer work behind one direct-MLX boundary to clear the PRD's real-shape speedup
-gate before production wiring.
+The activation-only, activation+down-projection, and full quantized FFN direct
+C++ candidates materially reduce Rust-side dispatch count, but none produces a
+meaningful real-shape wall-time speedup. None should be promoted as the Phase 3
+production hotpath. The best direct-MLX bypass candidate in this PRD is now a
+no-go under the real-shape promotion gate; further performance work should move
+to higher-level scheduling, cache, and model-layout changes instead of adding
+more one-off direct C++ shims.
 
 Note:
 

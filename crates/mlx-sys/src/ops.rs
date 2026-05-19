@@ -17,6 +17,20 @@ unsafe extern "C" {
         weight: ffi::mlx_array,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
+
+    fn ax_mlx_gelu_approx_quantized_ffn(
+        res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        gate_up_weight: ffi::mlx_array,
+        gate_up_scales: ffi::mlx_array,
+        gate_up_biases: ffi::mlx_array,
+        down_weight: ffi::mlx_array,
+        down_scales: ffi::mlx_array,
+        down_biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
 }
 
 fn optional_int(value: Option<i32>, default: i32) -> ffi::mlx_optional_int_ {
@@ -164,6 +178,91 @@ pub fn gelu_approx_mul_matmul(
         }
     }
     matmul(&multiply(&gelu_approx(gate, s), x, s), weight, s)
+}
+
+/// Compute a packed dense GEGLU FFN block through AX's direct MLX C++ shim.
+///
+/// The expression is:
+///
+/// ```text
+/// gate_up = quantized_matmul(x, gate_up_weight, ...)
+/// gate, up = split(gate_up, 2, axis=-1)
+/// hidden = gelu_approx(gate) * up
+/// out = quantized_matmul(hidden, down_weight, ...)
+/// ```
+///
+/// This remains a probe surface until a real-shape artifact clears the PRD's
+/// promotion gate. Production model code should continue using the portable
+/// route unless a later commit adds explicit routing and kill switches.
+#[allow(clippy::too_many_arguments)]
+pub fn gelu_approx_quantized_ffn(
+    x: &MlxArray,
+    gate_up_weight: &MlxArray,
+    gate_up_scales: &MlxArray,
+    gate_up_biases: Option<&MlxArray>,
+    down_weight: &MlxArray,
+    down_scales: &MlxArray,
+    down_biases: Option<&MlxArray>,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let gate_up_biases = gate_up_biases
+            .map(|biases| biases.inner)
+            .unwrap_or_else(null_ffi_array);
+        let down_biases = down_biases
+            .map(|biases| biases.inner)
+            .unwrap_or_else(null_ffi_array);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_gelu_approx_quantized_ffn(
+            &mut res.inner,
+            x.inner,
+            gate_up_weight.inner,
+            gate_up_scales.inner,
+            gate_up_biases,
+            down_weight.inner,
+            down_scales.inner,
+            down_biases,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            return res;
+        }
+    }
+    let gate_up = quantized_matmul(
+        x,
+        gate_up_weight,
+        gate_up_scales,
+        gate_up_biases,
+        true,
+        Some(group_size),
+        Some(bits),
+        s,
+    );
+    let packed_dim = gate_up
+        .shape()
+        .last()
+        .copied()
+        .expect("gate/up projection must have a last dimension");
+    let half = packed_dim / 2;
+    let gate = slice_last_dim(&gate_up, 0, half, s);
+    let up = slice_last_dim(&gate_up, half, packed_dim, s);
+    let hidden = gelu_approx_mul(&gate, &up, s);
+    quantized_matmul(
+        &hidden,
+        down_weight,
+        down_scales,
+        down_biases,
+        true,
+        Some(group_size),
+        Some(bits),
+        s,
+    )
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
@@ -1206,6 +1305,101 @@ mod tests {
             direct.data_f32().to_vec(),
             portable.data_f32().to_vec(),
             "direct C++ activation+matmul shim must preserve portable math"
+        );
+    }
+
+    #[test]
+    fn gelu_approx_quantized_ffn_direct_matches_portable_composition() {
+        let x_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.03125).collect();
+        let gate_up_weight_data: Vec<f32> =
+            (0..2048).map(|i| ((i as f32) - 1024.0) * 0.0005).collect();
+        let down_weight_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 512.0) * 0.0005).collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[2, 32],
+            MlxDtype::Float32,
+        );
+        let gate_up_weight = MlxArray::from_raw_data(
+            gate_up_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_up_weight_data.as_slice()),
+            &[64, 32],
+            MlxDtype::Float32,
+        );
+        let down_weight = MlxArray::from_raw_data(
+            down_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(down_weight_data.as_slice()),
+            &[32, 32],
+            MlxDtype::Float32,
+        );
+        let gate_up_q = quantize(
+            &gate_up_weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down_q = quantize(
+            &down_weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(gate_up_q.len(), 3);
+        assert_eq!(down_q.len(), 3);
+
+        let prev = crate::op_count::op_count_snapshot();
+        let direct = gelu_approx_quantized_ffn(
+            &x,
+            &gate_up_q[0],
+            &gate_up_q[1],
+            Some(&gate_up_q[2]),
+            &down_q[0],
+            &down_q[1],
+            Some(&down_q[2]),
+            32,
+            4,
+            None,
+        );
+        assert_eq!(
+            crate::op_count::op_count_take(prev),
+            1,
+            "direct C++ quantized FFN shim should count as one Rust FFI dispatch"
+        );
+
+        let gate_up = quantized_matmul(
+            &x,
+            &gate_up_q[0],
+            &gate_up_q[1],
+            Some(&gate_up_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let gate = slice_last_dim(&gate_up, 0, 32, None);
+        let up = slice_last_dim(&gate_up, 32, 64, None);
+        let hidden = gelu_approx_mul(&gate, &up, None);
+        let portable = quantized_matmul(
+            &hidden,
+            &down_q[0],
+            &down_q[1],
+            Some(&down_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        eval(&[&direct, &portable]);
+
+        assert_eq!(direct.shape(), vec![2, 32]);
+        assert_eq!(
+            direct.data_f32().to_vec(),
+            portable.data_f32().to_vec(),
+            "direct C++ quantized FFN shim must preserve portable math"
         );
     }
 

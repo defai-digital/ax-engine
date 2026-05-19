@@ -26,6 +26,10 @@ CANDIDATE_MEASUREMENTS = {
         "portable_gelu_approx_mul_matmul",
         "direct_cpp_gelu_approx_mul_matmul",
     ),
+    "gelu_approx_quantized_ffn": (
+        "portable_gelu_approx_quantized_ffn",
+        "direct_cpp_gelu_approx_quantized_ffn",
+    ),
 }
 SPEEDUP_MEASUREMENT = "direct_cpp_speedup_ratio"
 DEFAULT_MAX_ABS_ERROR = 1e-6
@@ -140,8 +144,13 @@ def validate_artifact(
     rows = _positive_integer(config.get("rows"), "config.rows")
     cols = _positive_integer(config.get("cols"), "config.cols")
     output_cols = cols
-    if candidate == "gelu_approx_mul_matmul":
+    if candidate in {"gelu_approx_mul_matmul", "gelu_approx_quantized_ffn"}:
         output_cols = _positive_integer(config.get("down_cols"), "config.down_cols")
+    if candidate == "gelu_approx_quantized_ffn":
+        group_size = _positive_integer(config.get("group_size"), "config.group_size")
+        bits = _positive_integer(config.get("bits"), "config.bits")
+        _require(group_size in {32, 64, 128}, "config.group_size must be one of 32, 64, 128")
+        _require(bits == 4, "config.bits must be 4")
     _require(config.get("dtype") == "float32", "config.dtype must be float32")
     _positive_integer(config.get("iterations"), "config.iterations")
 

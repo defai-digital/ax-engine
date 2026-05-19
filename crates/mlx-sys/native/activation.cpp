@@ -1,5 +1,7 @@
 #include <exception>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "mlx/c/array.h"
@@ -26,6 +28,13 @@ mx::StreamOrDevice stream_or_default(mlx_stream stream) {
     return {};
   }
   return *static_cast<mx::Stream*>(stream.ctx);
+}
+
+std::optional<mx::array> optional_array(mlx_array arr) {
+  if (!arr.ctx) {
+    return std::nullopt;
+  }
+  return array_ref(arr);
 }
 
 void set_array(mlx_array* dst, mx::array&& value) {
@@ -58,6 +67,26 @@ mx::array gelu_approx_mul_impl(
       mx::multiply(half, gate, stream), mx::add(one, t, stream), stream);
   return mx::multiply(activated, x, stream);
 }
+
+mx::array quantized_matmul_affine_impl(
+    const mx::array& x,
+    const mx::array& weight,
+    const mx::array& scales,
+    std::optional<mx::array> biases,
+    int group_size,
+    int bits,
+    mx::StreamOrDevice stream) {
+  return mx::quantized_matmul(
+      x,
+      weight,
+      scales,
+      std::move(biases),
+      true,
+      std::make_optional<int>(group_size),
+      std::make_optional<int>(bits),
+      "affine",
+      stream);
+}
 } // namespace
 
 extern "C" int ax_mlx_gelu_approx_mul(
@@ -85,6 +114,49 @@ extern "C" int ax_mlx_gelu_approx_mul_matmul(
     auto s = stream_or_default(stream);
     auto hidden = gelu_approx_mul_impl(array_ref(gate), array_ref(x), s);
     set_array(res, mx::matmul(hidden, array_ref(weight), s));
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+extern "C" int ax_mlx_gelu_approx_quantized_ffn(
+    mlx_array* res,
+    const mlx_array x,
+    const mlx_array gate_up_weight,
+    const mlx_array gate_up_scales,
+    const mlx_array gate_up_biases,
+    const mlx_array down_weight,
+    const mlx_array down_scales,
+    const mlx_array down_biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  try {
+    auto s = stream_or_default(stream);
+    auto gate_up = quantized_matmul_affine_impl(
+        array_ref(x),
+        array_ref(gate_up_weight),
+        array_ref(gate_up_scales),
+        optional_array(gate_up_biases),
+        group_size,
+        bits,
+        s);
+    auto parts = mx::split(gate_up, 2, -1, s);
+    if (parts.size() != 2) {
+      throw std::runtime_error("expected gate_up split to produce two arrays");
+    }
+    auto hidden = gelu_approx_mul_impl(parts[0], parts[1], s);
+    set_array(
+        res,
+        quantized_matmul_affine_impl(
+            hidden,
+            array_ref(down_weight),
+            array_ref(down_scales),
+            optional_array(down_biases),
+            group_size,
+            bits,
+            s));
     return 0;
   } catch (...) {
     return 1;
