@@ -1,10 +1,11 @@
-# Direct MLX Hotpath Probe — Gemma 4 E2B p2048 GEGLU Shape
+# Direct MLX Hotpath Probe — Gemma 4 E2B p2048 FFN Shapes
 
 Date: 2026-05-19
 
-Artifact:
+Artifacts:
 
 - `direct-mlx-hotpath-gemma4-e2b-p2048-geglu.json`
+- `direct-mlx-hotpath-gemma4-e2b-p2048-geglu-down.json`
 
 Command:
 
@@ -15,6 +16,15 @@ cargo run --release -p mlx-sys --bin direct-mlx-hotpath-probe -- \
   --warmup 5 \
   --iterations 30 \
   --json-out benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-geglu.json
+
+cargo run --release -p mlx-sys --bin direct-mlx-hotpath-probe -- \
+  --candidate gelu_approx_mul_matmul \
+  --rows 2048 \
+  --cols 6144 \
+  --down-cols 1536 \
+  --warmup 5 \
+  --iterations 30 \
+  --json-out benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-geglu-down.json
 ```
 
 Validation:
@@ -26,11 +36,19 @@ python3 scripts/check_direct_mlx_hotpath_probe_artifact.py \
 python3 scripts/check_direct_mlx_hotpath_probe_artifact.py \
   benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-geglu.json \
   --min-speedup 1.05
+
+python3 scripts/check_direct_mlx_hotpath_probe_artifact.py \
+  benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-geglu-down.json
+
+python3 scripts/check_direct_mlx_hotpath_probe_artifact.py \
+  benchmarks/results/mlx-inference/2026-05-19-direct-mlx-hotpath-probe/direct-mlx-hotpath-gemma4-e2b-p2048-geglu-down.json \
+  --min-speedup 1.05
 ```
 
-The schema/correctness gate passes. The promotion speedup gate fails.
+The schema/correctness gate passes for both artifacts. The promotion speedup
+gate fails for both artifacts.
 
-Results:
+Activation-only results:
 
 | Measurement | Median us | Rust op-count median |
 |---|---:|---:|
@@ -38,21 +56,31 @@ Results:
 | Direct C++ `gelu_approx_mul` | 2255.9165 | 1 |
 | Direct C++ speedup ratio | 1.00035x | n/a |
 
+Activation + down-projection results:
+
+| Measurement | Median us | Rust op-count median |
+|---|---:|---:|
+| Portable `matmul(gelu_approx(gate) * up, down)` | 3099.2705 | 11 |
+| Direct C++ `gelu_approx_mul_matmul` | 3092.0630 | 1 |
+| Direct C++ speedup ratio | 1.00233x | n/a |
+
 Correctness:
 
-- `max_abs_error = 0.0`
-- `shape = [2048, 6144]`
+- Activation-only: `max_abs_error = 0.0`, `shape = [2048, 6144]`
+- Activation + down projection: `max_abs_error = 0.0`, `shape = [2048, 1536]`
 
 Decision:
 
-The existing activation-only direct C++ shim materially reduces Rust-side
-dispatch count, but it does not produce a meaningful real-shape wall-time
-speedup. It should not be promoted as the Phase 3 production hotpath. Any
-future Phase 3 work must target a larger FFN subgraph and clear the PRD's
-real-shape speedup gate before production wiring.
+The activation-only and activation+down-projection direct C++ candidates both
+materially reduce Rust-side dispatch count, but neither produces a meaningful
+real-shape wall-time speedup. Neither should be promoted as the Phase 3
+production hotpath. Any future Phase 3 work must target a larger subgraph than
+these candidates, likely including quantized projection handling and enough
+layer work behind one direct-MLX boundary to clear the PRD's real-shape speedup
+gate before production wiring.
 
 Note:
 
-The artifact records `git.dirty = true` because unrelated script changes were
+The artifacts record `git.dirty = true` because unrelated script changes were
 present in the working tree. Those changes do not affect the `mlx-sys` probe
-binary used for this measurement.
+binary used for these measurements.

@@ -17,9 +17,16 @@ from typing import Any
 
 SCHEMA = "ax.microbench.v1"
 SURFACE = "direct-mlx-hotpath"
-CANDIDATE = "gelu_approx_mul"
-PORTABLE_MEASUREMENT = "portable_gelu_approx_mul"
-DIRECT_MEASUREMENT = "direct_cpp_gelu_approx_mul"
+CANDIDATE_MEASUREMENTS = {
+    "gelu_approx_mul": (
+        "portable_gelu_approx_mul",
+        "direct_cpp_gelu_approx_mul",
+    ),
+    "gelu_approx_mul_matmul": (
+        "portable_gelu_approx_mul_matmul",
+        "direct_cpp_gelu_approx_mul_matmul",
+    ),
+}
 SPEEDUP_MEASUREMENT = "direct_cpp_speedup_ratio"
 DEFAULT_MAX_ABS_ERROR = 1e-6
 DEFAULT_MIN_SAMPLES = 1
@@ -124,9 +131,17 @@ def validate_artifact(
     _string(doc.get("command"), "command")
 
     config = _mapping(doc.get("config"), "config")
-    _require(config.get("candidate") == CANDIDATE, f"config.candidate must be {CANDIDATE}")
+    candidate = _string(config.get("candidate"), "config.candidate")
+    _require(
+        candidate in CANDIDATE_MEASUREMENTS,
+        f"config.candidate must be one of {sorted(CANDIDATE_MEASUREMENTS)}",
+    )
+    portable_measurement, direct_measurement = CANDIDATE_MEASUREMENTS[candidate]
     rows = _positive_integer(config.get("rows"), "config.rows")
     cols = _positive_integer(config.get("cols"), "config.cols")
+    output_cols = cols
+    if candidate == "gelu_approx_mul_matmul":
+        output_cols = _positive_integer(config.get("down_cols"), "config.down_cols")
     _require(config.get("dtype") == "float32", "config.dtype must be float32")
     _positive_integer(config.get("iterations"), "config.iterations")
 
@@ -137,25 +152,25 @@ def validate_artifact(
         f"correctness.max_abs_error must be <= {max_abs_error}",
     )
     shape = _array(correctness.get("shape"), "correctness.shape")
-    _require(shape == [rows, cols], "correctness.shape must match config rows/cols")
+    _require(shape == [rows, output_cols], "correctness.shape must match expected output shape")
 
     measurements = _measurement_map(doc)
-    for name in (PORTABLE_MEASUREMENT, DIRECT_MEASUREMENT, SPEEDUP_MEASUREMENT):
+    for name in (portable_measurement, direct_measurement, SPEEDUP_MEASUREMENT):
         _require(name in measurements, f"missing measurement {name}")
 
     portable_ops = _validate_timing_measurement(
-        measurements[PORTABLE_MEASUREMENT],
-        name=PORTABLE_MEASUREMENT,
+        measurements[portable_measurement],
+        name=portable_measurement,
         min_samples=min_samples,
     )
     direct_ops = _validate_timing_measurement(
-        measurements[DIRECT_MEASUREMENT],
-        name=DIRECT_MEASUREMENT,
+        measurements[direct_measurement],
+        name=direct_measurement,
         min_samples=min_samples,
     )
     _require(
         direct_ops < portable_ops,
-        f"{DIRECT_MEASUREMENT}.op_count_median must be lower than {PORTABLE_MEASUREMENT}",
+        f"{direct_measurement}.op_count_median must be lower than {portable_measurement}",
     )
 
     speedup = measurements[SPEEDUP_MEASUREMENT]

@@ -61,11 +61,12 @@ pub use ops::{
     MlxQuantizationMode, add, arange, argmax, argpartition_axis, argsort_axis, as_strided, astype,
     broadcast_to, clip, concatenate, contiguous, conv1d, cos, dequantize, dequantize_with_mode,
     divide, erf, exp, expand_dims, expand_dims_axes, flatten, floor, from_fp8, gather_mm,
-    gather_qmm, gelu, gelu_approx, gelu_approx_mul, greater_equal, less, log, log1p, logical_and,
-    matmul, maximum, minimum, multiply, negative, outer, pad, power, put_along_axis, quantize,
-    quantized_matmul, random_categorical, repeat, repeat_axis, reshape, sin, slice, slice_last_dim,
-    slice_update, softmax, softmax_precise, split, stack, stop_gradient, subtract, sum_axis, take,
-    take_along_axis, tanh, to_fp8, topk, topk_axis, transpose, unflatten, where_cond, zeros,
+    gather_qmm, gelu, gelu_approx, gelu_approx_mul, gelu_approx_mul_matmul, greater_equal, less,
+    log, log1p, logical_and, matmul, maximum, minimum, multiply, negative, outer, pad, power,
+    put_along_axis, quantize, quantized_matmul, random_categorical, repeat, repeat_axis, reshape,
+    sin, slice, slice_last_dim, slice_update, softmax, softmax_precise, split, stack,
+    stop_gradient, subtract, sum_axis, take, take_along_axis, tanh, to_fp8, topk, topk_axis,
+    transpose, unflatten, where_cond, zeros,
 };
 pub use stream::MlxStream;
 pub use transforms::{

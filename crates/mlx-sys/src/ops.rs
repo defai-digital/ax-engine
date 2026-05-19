@@ -9,6 +9,14 @@ unsafe extern "C" {
         x: ffi::mlx_array,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
+
+    fn ax_mlx_gelu_approx_mul_matmul(
+        res: *mut ffi::mlx_array,
+        gate: ffi::mlx_array,
+        x: ffi::mlx_array,
+        weight: ffi::mlx_array,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
 }
 
 fn optional_int(value: Option<i32>, default: i32) -> ffi::mlx_optional_int_ {
@@ -126,6 +134,36 @@ pub fn gelu_approx_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> 
         }
     }
     multiply(&gelu_approx(gate, s), x, s)
+}
+
+/// Compute `matmul(gelu_approx(gate) * x, weight)` through AX's direct MLX C++ shim.
+///
+/// This is a microbenchmark/probe surface for the direct-MLX PRD. It collapses
+/// the activation and the following dense projection behind one Rust FFI call.
+/// Runtime model code should keep using the portable path until a real-shape
+/// artifact proves this candidate clears the promotion gate.
+pub fn gelu_approx_mul_matmul(
+    gate: &MlxArray,
+    x: &MlxArray,
+    weight: &MlxArray,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_gelu_approx_mul_matmul(
+            &mut res.inner,
+            gate.inner,
+            x.inner,
+            weight.inner,
+            stream,
+        );
+        if rc == 0 {
+            return res;
+        }
+    }
+    matmul(&multiply(&gelu_approx(gate, s), x, s), weight, s)
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
@@ -1122,6 +1160,52 @@ mod tests {
             direct_f32.data_f32().to_vec(),
             portable_f32.data_f32().to_vec(),
             "direct C++ activation shim must preserve mlx-lm GEGLU math"
+        );
+    }
+
+    #[test]
+    fn gelu_approx_mul_matmul_direct_matches_portable_composition() {
+        let gate_data: Vec<f32> = (0..6).map(|i| ((i as f32) - 3.0) * 0.25).collect();
+        let x_data: Vec<f32> = (0..6).map(|i| ((i as f32) + 1.0) * 0.125).collect();
+        let weight_data: Vec<f32> = (0..12).map(|i| ((i as f32) - 6.0) * 0.0625).collect();
+        let gate = MlxArray::from_raw_data(
+            gate_data.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_data.as_slice()),
+            &[2, 3],
+            MlxDtype::Float32,
+        );
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[2, 3],
+            MlxDtype::Float32,
+        );
+        let weight = MlxArray::from_raw_data(
+            weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(weight_data.as_slice()),
+            &[3, 4],
+            MlxDtype::Float32,
+        );
+
+        let prev = crate::op_count::op_count_snapshot();
+        let direct = gelu_approx_mul_matmul(&gate, &x, &weight, None);
+        assert_eq!(
+            crate::op_count::op_count_take(prev),
+            1,
+            "direct C++ activation+matmul shim should count as one Rust FFI dispatch"
+        );
+        let portable = matmul(
+            &multiply(&gelu_approx(&gate, None), &x, None),
+            &weight,
+            None,
+        );
+        eval(&[&direct, &portable]);
+
+        assert_eq!(direct.shape(), vec![2, 4]);
+        assert_eq!(
+            direct.data_f32().to_vec(),
+            portable.data_f32().to_vec(),
+            "direct C++ activation+matmul shim must preserve portable math"
         );
     }
 

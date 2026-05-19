@@ -74,3 +74,19 @@ extern "C" int ax_mlx_gelu_approx_mul(
     return 1;
   }
 }
+
+extern "C" int ax_mlx_gelu_approx_mul_matmul(
+    mlx_array* res,
+    const mlx_array gate,
+    const mlx_array x,
+    const mlx_array weight,
+    const mlx_stream stream) {
+  try {
+    auto s = stream_or_default(stream);
+    auto hidden = gelu_approx_mul_impl(array_ref(gate), array_ref(x), s);
+    set_array(res, mx::matmul(hidden, array_ref(weight), s));
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}

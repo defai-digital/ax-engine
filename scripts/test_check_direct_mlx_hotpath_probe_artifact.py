@@ -21,17 +21,28 @@ checker = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(checker)
 
 
-def direct_mlx_artifact() -> dict:
+def direct_mlx_artifact(candidate: str = "gelu_approx_mul") -> dict:
+    if candidate == "gelu_approx_mul":
+        portable_name = "portable_gelu_approx_mul"
+        direct_name = "direct_cpp_gelu_approx_mul"
+        shape = [8, 16]
+    elif candidate == "gelu_approx_mul_matmul":
+        portable_name = "portable_gelu_approx_mul_matmul"
+        direct_name = "direct_cpp_gelu_approx_mul_matmul"
+        shape = [8, 4]
+    else:
+        raise AssertionError(f"unknown candidate {candidate}")
     return {
         "schema": "ax.microbench.v1",
         "surface": "direct-mlx-hotpath",
-        "command": "target/debug/direct-mlx-hotpath-probe --rows 8 --cols 16",
+        "command": f"target/debug/direct-mlx-hotpath-probe --candidate {candidate}",
         "git": {"commit": "abc123", "dirty": True},
         "host": {"os": "macos", "arch": "aarch64"},
         "config": {
-            "candidate": "gelu_approx_mul",
+            "candidate": candidate,
             "rows": 8,
             "cols": 16,
+            "down_cols": 4,
             "dtype": "float32",
             "warmup": 1,
             "iterations": 3,
@@ -40,11 +51,11 @@ def direct_mlx_artifact() -> dict:
             "passed": True,
             "max_abs_error": 0.0,
             "tolerance": 1e-6,
-            "shape": [8, 16],
+            "shape": shape,
         },
         "measurements": [
-            timing("portable_gelu_approx_mul", median=400.0, op_count_median=10),
-            timing("direct_cpp_gelu_approx_mul", median=200.0, op_count_median=1),
+            timing(portable_name, median=400.0, op_count_median=10),
+            timing(direct_name, median=200.0, op_count_median=1),
             {
                 "name": "direct_cpp_speedup_ratio",
                 "unit": "ratio",
@@ -75,6 +86,9 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
     def test_valid_artifact_passes(self) -> None:
         checker.validate_artifact(direct_mlx_artifact())
 
+    def test_valid_activation_down_artifact_passes(self) -> None:
+        checker.validate_artifact(direct_mlx_artifact("gelu_approx_mul_matmul"))
+
     def test_wrong_schema_fails_closed(self) -> None:
         artifact = direct_mlx_artifact()
         artifact["schema"] = "other"
@@ -90,7 +104,7 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
             checker.validate_artifact(artifact)
 
     def test_shape_mismatch_fails_closed(self) -> None:
-        artifact = direct_mlx_artifact()
+        artifact = direct_mlx_artifact("gelu_approx_mul_matmul")
         artifact["correctness"]["shape"] = [8, 15]
 
         with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "shape"):

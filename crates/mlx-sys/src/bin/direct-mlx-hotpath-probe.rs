@@ -5,21 +5,63 @@ use std::process::Command;
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, eval, gelu_approx, gelu_approx_mul, multiply, op_count_snapshot,
-    op_count_take,
+    MlxArray, MlxDtype, eval, gelu_approx, gelu_approx_mul, gelu_approx_mul_matmul, matmul,
+    multiply, op_count_snapshot, op_count_take,
 };
 use serde_json::{Value, json};
 
 const DEFAULT_ROWS: i32 = 2048;
 const DEFAULT_COLS: i32 = 6144;
+const DEFAULT_DOWN_COLS: i32 = 1536;
 const DEFAULT_WARMUP: usize = 5;
 const DEFAULT_ITERATIONS: usize = 30;
 const CORRECTNESS_TOLERANCE: f32 = 1.0e-6;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Candidate {
+    Activation,
+    ActivationDown,
+}
+
+impl Candidate {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "gelu_approx_mul" => Ok(Self::Activation),
+            "gelu_approx_mul_matmul" => Ok(Self::ActivationDown),
+            other => Err(format!(
+                "unknown --candidate {other:?}; expected gelu_approx_mul or gelu_approx_mul_matmul",
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Activation => "gelu_approx_mul",
+            Self::ActivationDown => "gelu_approx_mul_matmul",
+        }
+    }
+
+    fn portable_measurement(self) -> &'static str {
+        match self {
+            Self::Activation => "portable_gelu_approx_mul",
+            Self::ActivationDown => "portable_gelu_approx_mul_matmul",
+        }
+    }
+
+    fn direct_measurement(self) -> &'static str {
+        match self {
+            Self::Activation => "direct_cpp_gelu_approx_mul",
+            Self::ActivationDown => "direct_cpp_gelu_approx_mul_matmul",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Config {
+    candidate: Candidate,
     rows: i32,
     cols: i32,
+    down_cols: i32,
     warmup: usize,
     iterations: usize,
     json_out: Option<PathBuf>,
@@ -28,8 +70,10 @@ struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            candidate: Candidate::Activation,
             rows: DEFAULT_ROWS,
             cols: DEFAULT_COLS,
+            down_cols: DEFAULT_DOWN_COLS,
             warmup: DEFAULT_WARMUP,
             iterations: DEFAULT_ITERATIONS,
             json_out: None,
@@ -40,8 +84,10 @@ impl Default for Config {
 struct Fixture {
     _gate_data: Vec<f32>,
     _up_data: Vec<f32>,
+    _down_weight_data: Option<Vec<f32>>,
     gate: MlxArray,
     up: MlxArray,
+    down_weight: Option<MlxArray>,
 }
 
 #[derive(Clone, Debug)]
@@ -104,19 +150,19 @@ fn run() -> Result<(), String> {
     if config.iterations == 0 {
         return Err("--iterations must be > 0".into());
     }
-    if config.rows <= 0 || config.cols <= 0 {
-        return Err("--rows and --cols must be > 0".into());
+    if config.rows <= 0 || config.cols <= 0 || config.down_cols <= 0 {
+        return Err("--rows, --cols, and --down-cols must be > 0".into());
     }
 
-    let fixture = Fixture::new(config.rows, config.cols)?;
-    warmup(&fixture, config.warmup);
-    let correctness = correctness(&fixture);
+    let fixture = Fixture::new(config.candidate, config.rows, config.cols, config.down_cols)?;
+    warmup(&fixture, config.candidate, config.warmup);
+    let correctness = correctness(&fixture, config.candidate);
 
     let portable = measure("portable", config.iterations, || {
-        portable_activation(&fixture)
+        portable_candidate(&fixture, config.candidate)
     });
     let direct = measure("direct_cpp", config.iterations, || {
-        direct_activation(&fixture)
+        direct_candidate(&fixture, config.candidate)
     });
 
     let portable_stats = Stats::from_samples(&portable.samples_us);
@@ -137,9 +183,10 @@ fn run() -> Result<(), String> {
             "arch": env::consts::ARCH,
         },
         "config": {
-            "candidate": "gelu_approx_mul",
+            "candidate": config.candidate.as_str(),
             "rows": config.rows,
             "cols": config.cols,
+            "down_cols": config.down_cols,
             "dtype": "float32",
             "warmup": config.warmup,
             "iterations": config.iterations,
@@ -151,8 +198,8 @@ fn run() -> Result<(), String> {
             "shape": correctness.shape,
         },
         "measurements": [
-            portable.stats_json("portable_gelu_approx_mul"),
-            direct.stats_json("direct_cpp_gelu_approx_mul"),
+            portable.stats_json(config.candidate.portable_measurement()),
+            direct.stats_json(config.candidate.direct_measurement()),
             {
                 "name": "direct_cpp_speedup_ratio",
                 "unit": "ratio",
@@ -186,8 +233,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Config, String> {
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--candidate" => {
+                config.candidate = Candidate::parse(&parse_string(&arg, args.next())?)?;
+            }
             "--rows" => config.rows = parse_value(&arg, args.next())?,
             "--cols" => config.cols = parse_value(&arg, args.next())?,
+            "--down-cols" => config.down_cols = parse_value(&arg, args.next())?,
             "--warmup" => config.warmup = parse_value(&arg, args.next())?,
             "--iterations" => config.iterations = parse_value(&arg, args.next())?,
             "--json-out" => config.json_out = Some(PathBuf::from(parse_string(&arg, args.next())?)),
@@ -221,8 +272,10 @@ fn print_help() {
 direct-mlx-hotpath-probe
 
 Options:
+  --candidate <NAME> Select gelu_approx_mul or gelu_approx_mul_matmul
   --rows <N>         Tensor rows, default {DEFAULT_ROWS}
   --cols <N>         Tensor cols, default {DEFAULT_COLS}
+  --down-cols <N>    Down-projection cols for gelu_approx_mul_matmul, default {DEFAULT_DOWN_COLS}
   --warmup <N>       Warmup iterations, default {DEFAULT_WARMUP}
   --iterations <N>   Measured iterations, default {DEFAULT_ITERATIONS}
   --json-out <PATH>  Write ax.microbench.v1 JSON to PATH instead of stdout
@@ -231,7 +284,7 @@ Options:
 }
 
 impl Fixture {
-    fn new(rows: i32, cols: i32) -> Result<Self, String> {
+    fn new(candidate: Candidate, rows: i32, cols: i32, down_cols: i32) -> Result<Self, String> {
         let rows_usize = usize::try_from(rows).map_err(|_| "rows must fit usize")?;
         let cols_usize = usize::try_from(cols).map_err(|_| "cols must fit usize")?;
         let len = rows_usize
@@ -243,6 +296,25 @@ impl Fixture {
         let up_data = (0..len)
             .map(|idx| ((idx % 193) as f32 - 96.0) / 96.0)
             .collect::<Vec<_>>();
+        let (down_weight_data, down_weight) = if candidate == Candidate::ActivationDown {
+            let down_cols_usize =
+                usize::try_from(down_cols).map_err(|_| "down-cols must fit usize")?;
+            let down_len = cols_usize
+                .checked_mul(down_cols_usize)
+                .ok_or("cols * down-cols overflowed usize")?;
+            let data = (0..down_len)
+                .map(|idx| ((idx % 251) as f32 - 125.0) / (251.0 * cols_usize as f32).sqrt())
+                .collect::<Vec<_>>();
+            let weight = MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data.as_slice()),
+                &[cols, down_cols],
+                MlxDtype::Float32,
+            );
+            (Some(data), Some(weight))
+        } else {
+            (None, None)
+        };
         let gate = MlxArray::from_raw_data(
             gate_data.as_ptr().cast(),
             std::mem::size_of_val(gate_data.as_slice()),
@@ -255,28 +327,54 @@ impl Fixture {
             &[rows, cols],
             MlxDtype::Float32,
         );
-        eval(&[&gate, &up]);
+        if let Some(weight) = down_weight.as_ref() {
+            eval(&[&gate, &up, weight]);
+        } else {
+            eval(&[&gate, &up]);
+        }
         Ok(Self {
             _gate_data: gate_data,
             _up_data: up_data,
+            _down_weight_data: down_weight_data,
             gate,
             up,
+            down_weight,
         })
     }
 }
 
-fn warmup(fixture: &Fixture, warmup: usize) {
+fn warmup(fixture: &Fixture, candidate: Candidate, warmup: usize) {
     for _ in 0..warmup {
-        eval(&[&portable_activation(fixture), &direct_activation(fixture)]);
+        eval(&[
+            &portable_candidate(fixture, candidate),
+            &direct_candidate(fixture, candidate),
+        ]);
     }
 }
 
-fn portable_activation(fixture: &Fixture) -> MlxArray {
-    multiply(&gelu_approx(&fixture.gate, None), &fixture.up, None)
+fn portable_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
+    let hidden = multiply(&gelu_approx(&fixture.gate, None), &fixture.up, None);
+    match candidate {
+        Candidate::Activation => hidden,
+        Candidate::ActivationDown => matmul(&hidden, fixture.down_weight(), None),
+    }
 }
 
-fn direct_activation(fixture: &Fixture) -> MlxArray {
-    gelu_approx_mul(&fixture.gate, &fixture.up, None)
+fn direct_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
+    match candidate {
+        Candidate::Activation => gelu_approx_mul(&fixture.gate, &fixture.up, None),
+        Candidate::ActivationDown => {
+            gelu_approx_mul_matmul(&fixture.gate, &fixture.up, fixture.down_weight(), None)
+        }
+    }
+}
+
+impl Fixture {
+    fn down_weight(&self) -> &MlxArray {
+        self.down_weight
+            .as_ref()
+            .expect("down weight is required for activation-down candidate")
+    }
 }
 
 fn measure(_name: &str, iterations: usize, mut op: impl FnMut() -> MlxArray) -> Measurement {
@@ -301,9 +399,9 @@ struct Correctness {
     shape: Vec<i32>,
 }
 
-fn correctness(fixture: &Fixture) -> Correctness {
-    let portable = portable_activation(fixture);
-    let direct = direct_activation(fixture);
+fn correctness(fixture: &Fixture, candidate: Candidate) -> Correctness {
+    let portable = portable_candidate(fixture, candidate);
+    let direct = direct_candidate(fixture, candidate);
     eval(&[&portable, &direct]);
     let portable_data = portable.data_f32();
     let direct_data = direct.data_f32();
