@@ -2339,8 +2339,10 @@ def axengine_one_run(
     for current_event, obj in iter_sse_json_events_from_lines(decoded_lines):
         if current_event == "step":
             step = obj.get("step", {})
-            runner_us = int(step.get("runner_time_us", 0))
-            output_tokens = int(obj.get("request", {}).get("output_len", output_tokens))
+            runner_us = int(step.get("runner_time_us") or 0)
+            output_len_raw = obj.get("request", {}).get("output_len")
+            if output_len_raw is not None:
+                output_tokens = int(output_len_raw)
             step_route = step.get("route") or obj.get("request", {}).get("route")
             merge_step_local_route_decisions(step_local_decisions, step_route)
             final_route = route_with_more_decisions(
