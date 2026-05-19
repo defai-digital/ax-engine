@@ -1,16 +1,15 @@
 //! Process-wide environment flags for ax-engine-mlx optimization fast paths.
 //!
 //! Each accessor reads its environment variable once per process and caches
-//! the result in a `OnceLock`. The value is parsed case-insensitively after
-//! trimming ASCII whitespace; `1`, `true`, or `yes` (any casing) engages the
-//! flag. Any other value (including unset) leaves the flag disabled. Most flags
-//! are conservative kill switches that force a fallback path, but investigation
-//! flags may explicitly opt into unsafe diagnostics and must document that
-//! behavior at the accessor.
+//! the result in a `OnceLock`. For opt-in flags, the value is parsed
+//! case-insensitively after trimming ASCII whitespace; `1`, `true`, or `yes`
+//! (any casing) engages the flag. Any other value (including unset) leaves the
+//! flag disabled. Default-on flags use a separate parser and must document their
+//! kill-switch semantics at the accessor.
 //!
 //! The pattern intentionally mirrors DS4's `ds4_metal_get_*` shape-gated
-//! pipeline cache: every fast path declares an explicit predicate, an
-//! explicit kill switch, and an explicit fallback. Co-locating the env-var
+//! pipeline cache: every fast path declares an explicit predicate, a documented
+//! opt-in or kill switch, and an explicit fallback. Co-locating the env-var
 //! names here gives a single grep target for "which optimization flags does the
 //! runtime expose?" and matches the W1.3 / W2.a audit conventions.
 //!
@@ -70,7 +69,7 @@ macro_rules! env_flag {
 
 /// Default-on counterpart of `env_flag!`. Production code uses this for fast
 /// paths that should run by default but need a documented kill switch
-/// reachable via env var (e.g. `AX_MLX_PREFILL_FFN_COMPILE=0`).
+/// reachable via env var (e.g. `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU=0`).
 macro_rules! env_flag_default_on {
     ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
         $(#[$meta])*
@@ -103,25 +102,27 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
-env_flag_default_on!(
+env_flag!(
     /// `AX_MLX_PREFILL_FFN_COMPILE` — Gemma 4 GeGLU compile fusion (W1 of
     /// `MLX-PREFILL-FUSION-PRD-2026-05-15.md`).
     ///
-    /// **Default: ON** (kill-switch via `AX_MLX_PREFILL_FFN_COMPILE=0`).
+    /// **Default: OFF** (explicit opt-in via `AX_MLX_PREFILL_FFN_COMPILE=1`).
     ///
-    /// When ON, the Gemma 4 dense FFN routes its `gelu_approx + multiply`
+    /// When engaged, the Gemma 4 dense FFN routes its `gelu_approx + multiply`
     /// sub-chain through a per-thread `MlxClosure::compile` cache,
     /// mirroring `mlx_lm`'s `@partial(mx.compile, shapeless=True) def
-    /// geglu(gate, x)`. A 2026-05-18 source-read found `mlx_lm` enables
-    /// this unconditionally for Gemma 4 prefill and it is one of the
-    /// reasons `mlx_lm` outpaces the imperative AX path at p=2048.
+    /// geglu(gate, x)`. A 2026-05-18 source-read found `mlx_lm` enables this
+    /// unconditionally for Gemma 4 prefill, but 2026-05-19 production-build
+    /// benchmark reruns showed the compiled path still disconnects the server
+    /// on Gemma 4 E2B, E4B, and 26B A4B shapes. The compile helper therefore
+    /// remains an opt-in diagnostic/performance experiment while the default
+    /// production path stays imperative and stable.
     ///
     /// Safety guards in `model/shared/mlp.rs::geglu` (`ndim > 3` skip;
     /// `last_dim > 16_384` skip) keep the known MLX 0.31 abort cases on
     /// the imperative fallback. Cross-thread / stream-contract mismatches
-    /// surface via `MlxClosure::try_apply` and also fall back fail-closed.
-    /// Operators can disable the fusion via the env var if they encounter
-    /// a regression not covered by those guards.
+    /// surface via `MlxClosure::try_apply` and also fall back fail-closed, but
+    /// those guards are not sufficient for all Gemma 4 benchmark shapes.
     prefill_ffn_compile_enabled,
     "AX_MLX_PREFILL_FFN_COMPILE"
 );
@@ -287,6 +288,43 @@ mod tests {
     #[test]
     fn parse_bool_env_unset_is_false() {
         assert!(!parse_bool_env("AX_FASTPATH_TEST_DEFINITELY_UNSET"));
+    }
+
+    fn probe_default_on(name: &str, value: &str) -> bool {
+        // SAFETY: each test owns a disjoint set of env-var names. Remove
+        // before asserting so a failing assert does not leak the var.
+        unsafe {
+            std::env::set_var(name, value);
+        }
+        let observed = parse_bool_env_default_on(name);
+        unsafe {
+            std::env::remove_var(name);
+        }
+        observed
+    }
+
+    #[test]
+    fn parse_bool_env_default_on_only_rejects_explicit_falsy_values() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_DEFAULT_ON_UNSET"
+        ));
+        for value in ["0", "false", "FALSE", "False", "no", "NO", "No"] {
+            let name = format!("AX_FASTPATH_TEST_DEFAULT_ON_FALSY_{}", value.trim());
+            assert!(
+                !probe_default_on(&name, value),
+                "expected explicit falsy for {value:?}"
+            );
+        }
+        for value in ["", " ", "1", "true", "yes", "anything"] {
+            let name = format!(
+                "AX_FASTPATH_TEST_DEFAULT_ON_TRUTHY_{}",
+                value.trim().replace(' ', "space")
+            );
+            assert!(
+                probe_default_on(&name, value),
+                "expected default-on truthy for {value:?}"
+            );
+        }
     }
 
     fn probe_usize(name: &str, value: &str) -> Option<usize> {

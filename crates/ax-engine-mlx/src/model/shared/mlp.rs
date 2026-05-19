@@ -111,8 +111,8 @@ pub(crate) fn attention_output_projection(
     qw(&gated, o_proj)
 }
 
-/// SPIKE ARTIFACT (W2.a, 2026-05-14) — currently NOT WIRED into the production
-/// hot path.
+/// SPIKE ARTIFACT (W2.a, 2026-05-14) — kept behind an explicit opt-in flag, not
+/// wired into the default production hot path.
 ///
 /// `geglu(gate, x) = gelu_approx(gate) * x` collapsed into one compiled-closure
 /// dispatch via `MlxClosure::compile(shapeless=true)`. Mirrors mlx_lm's
@@ -133,7 +133,7 @@ pub(crate) fn attention_output_projection(
 /// See
 /// `benchmarks/results/mlx-inference/2026-05-14-w2-stream-contract-source-read/stream-contract.md`.
 /// GeGLU compiled helper kept (and unit-tested) as a record of the math;
-/// the production gate that wires this into `dense_ffn_activation` is
+/// the experimental gate that wires this into `dense_ffn_activation` is
 /// `fastpath::prefill_ffn_compile_enabled()` reading
 /// `AX_MLX_PREFILL_FFN_COMPILE`. Pre-W1 this helper was dead code because
 /// the original `OnceLock<Option<MlxClosure>>` cache was process-wide:
@@ -339,19 +339,22 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
     // Qwen3 uses SwiGLU (SiLU gate).
     //
     // mlx_lm wraps the gate-activation + multiply in `@partial(mx.compile,
-    // shapeless=True) def geglu(gate, x)`. Wiring our equivalent
-    // `geglu` helper here was attempted under W2.a but reverted. The source-read
-    // follow-up found that MLX default streams, compile cache entries, and Metal
-    // command encoders are thread-local; `mlx_set_default_stream` does not
-    // register an existing stream index's encoder on another thread. Running the
-    // compiled helper from per-request tokio worker threads therefore fails with
-    // `"There is no Stream(gpu, N) in current thread"`.
+    // shapeless=True) def geglu(gate, x)`. Wiring our equivalent `geglu`
+    // helper into the default path was attempted under W2.a and W1, but the
+    // source-read follow-up found that MLX default streams, compile cache
+    // entries, and Metal command encoders are thread-local;
+    // `mlx_set_default_stream` does not register an existing stream index's
+    // encoder on another thread. Running the compiled helper from per-request
+    // tokio worker threads can therefore fail with
+    // `"There is no Stream(gpu, N) in current thread"` or benchmark-visible
+    // `RemoteDisconnected`.
     // See the tracked source-read artifact under
     // `benchmarks/results/mlx-inference/2026-05-14-w2-stream-contract-source-read/`.
     // See `.internal/planning/MLX-DECODE-W2A-GEGLU-FINDINGS.md` for the
     // dead-end record (workarounds attempted + revert rationale). The
-    // `geglu` helper is kept (and unit-tested) as a record of the math;
-    // the production hot path stays imperative.
+    // `geglu` helper is kept (and unit-tested) as a record of the math and can
+    // still be enabled explicitly with `AX_MLX_PREFILL_FFN_COMPILE=1`; the
+    // default production hot path stays imperative.
     let activation_started = Instant::now();
     let ffn_hidden = dense_ffn_activation(cfg, &gate_out, &up_out);
     forward_profile_eval_elapsed(

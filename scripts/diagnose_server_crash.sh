@@ -33,6 +33,9 @@ cleanup() {
 
 trap cleanup EXIT
 
+# Explicitly opt into the unstable Gemma GeGLU compile path so this diagnostic
+# can still reproduce compile-enabled RemoteDisconnected failures after the
+# production default moves back to the imperative path.
 echo "[diag] launching ax-engine-server (stderr → $SERVER_STDERR)" | tee -a "$DIAG_LOG"
 AX_MLX_PREFILL_FFN_COMPILE=1 AX_MLX_PREFILL_FFN_COMPILE_SWIGLU=1 \
 RUST_LOG=info AX_BENCH_LOG=1 \
