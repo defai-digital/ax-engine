@@ -194,6 +194,17 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
         self.assertTrue(checker.is_unavailable_cell("—"))
         self.assertFalse(checker.is_unavailable_cell("12.7 (-55.0%)"))
 
+    def test_metric_median_raises_clean_error_on_null_median(self) -> None:
+        # README delta verification paths feed bench medians through
+        # metric_median(). Cache-warm AX rows emit {"median": None}; that must
+        # surface as ArtifactCheckError rather than float(None) TypeError.
+        for table, key in (("prefill", "prefill_tok_s"), ("decode", "decode_tok_s"), ("ttft", "ttft_ms")):
+            with self.assertRaisesRegex(checker.ArtifactCheckError, rf"lacks {key}\.median"):
+                checker.metric_median(
+                    {"engine": "ax_engine_mlx", "prompt_tokens": 128, key: {"median": None}},
+                    table,
+                )
+
     def test_metric_summary_median_raises_clean_error_on_null_median(self) -> None:
         # When the bench runs with --ax-enable-prefix-cache and every trial
         # turns out to be a cache-warm hit, summarize_runs emits

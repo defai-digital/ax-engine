@@ -449,7 +449,7 @@ def metric_median(row: dict[str, Any], table: str) -> float:
     else:
         metric_key = "decode_tok_s" if table == "decode" else "prefill_tok_s"
     metric = row.get(metric_key)
-    if not isinstance(metric, dict) or "median" not in metric:
+    if not isinstance(metric, dict) or metric.get("median") is None:
         raise ArtifactCheckError(f"artifact row lacks {metric_key}.median")
     return float(metric["median"])
 
