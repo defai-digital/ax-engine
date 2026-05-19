@@ -187,24 +187,28 @@ def validate_artifact(
 
     speedup = measurements[SPEEDUP_MEASUREMENT]
     _require(speedup.get("unit") == "ratio", f"{SPEEDUP_MEASUREMENT}.unit must be ratio")
-    _positive_integer(speedup.get("samples"), f"{SPEEDUP_MEASUREMENT}.samples")
-    _positive_number(speedup.get("mean"), f"{SPEEDUP_MEASUREMENT}.mean")
+    speedup_samples = _positive_integer(
+        speedup.get("samples"), f"{SPEEDUP_MEASUREMENT}.samples"
+    )
+    _require(
+        speedup_samples == 1,
+        f"{SPEEDUP_MEASUREMENT}.samples must be 1 because speedup is a derived scalar",
+    )
+    speedup_mean = _positive_number(speedup.get("mean"), f"{SPEEDUP_MEASUREMENT}.mean")
     speedup_median = _positive_number(speedup.get("median"), f"{SPEEDUP_MEASUREMENT}.median")
-    _positive_number(speedup.get("min"), f"{SPEEDUP_MEASUREMENT}.min")
-    _positive_number(speedup.get("max"), f"{SPEEDUP_MEASUREMENT}.max")
-    _require(
-        _number(speedup.get("min"), f"{SPEEDUP_MEASUREMENT}.min") <= speedup_median,
-        f"{SPEEDUP_MEASUREMENT}.min must be <= median",
-    )
-    _require(
-        speedup_median <= _number(speedup.get("max"), f"{SPEEDUP_MEASUREMENT}.max"),
-        f"{SPEEDUP_MEASUREMENT}.median must be <= max",
-    )
+    speedup_min = _positive_number(speedup.get("min"), f"{SPEEDUP_MEASUREMENT}.min")
+    speedup_max = _positive_number(speedup.get("max"), f"{SPEEDUP_MEASUREMENT}.max")
     expected_speedup = portable_median / direct_median
-    _require(
-        abs(speedup_median - expected_speedup) <= SPEEDUP_RATIO_TOLERANCE,
-        f"{SPEEDUP_MEASUREMENT}.median must equal portable/direct median ratio",
-    )
+    for field, value in {
+        "mean": speedup_mean,
+        "median": speedup_median,
+        "min": speedup_min,
+        "max": speedup_max,
+    }.items():
+        _require(
+            abs(value - expected_speedup) <= SPEEDUP_RATIO_TOLERANCE,
+            f"{SPEEDUP_MEASUREMENT}.{field} must equal portable/direct median ratio",
+        )
     _require(speedup_median >= min_speedup, f"{SPEEDUP_MEASUREMENT}.median must be >= {min_speedup}")
 
 

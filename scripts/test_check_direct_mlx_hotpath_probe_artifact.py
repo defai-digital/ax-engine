@@ -158,6 +158,24 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
         ):
             checker.validate_artifact(artifact)
 
+    def test_speedup_row_stats_must_match_derived_ratio(self) -> None:
+        artifact = direct_mlx_artifact()
+        artifact["measurements"][2]["mean"] = 9.0
+
+        with self.assertRaisesRegex(
+            checker.DirectMlxHotpathProbeArtifactError, "direct_cpp_speedup_ratio.mean"
+        ):
+            checker.validate_artifact(artifact)
+
+    def test_speedup_row_is_single_derived_sample(self) -> None:
+        artifact = direct_mlx_artifact()
+        artifact["measurements"][2]["samples"] = 3
+
+        with self.assertRaisesRegex(
+            checker.DirectMlxHotpathProbeArtifactError, "derived scalar"
+        ):
+            checker.validate_artifact(artifact)
+
     def test_cli_validates_artifact_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             artifact_path = Path(tmp_dir) / "direct-mlx-hotpath.json"
