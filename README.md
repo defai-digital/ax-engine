@@ -189,7 +189,7 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-18-ax-only-sweep/; reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-gemma-ffn-compile-off-r1/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-r1/ -->
+<!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-18-ax-only-sweep/; reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-gemma-ffn-compile-off-r1/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-r1/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-gemma-e2b-4bit-r1/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
@@ -198,7 +198,7 @@ and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 These rows are a provenance-tracked composite. The `mlx_lm` reference rows come
 from
 `benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/`. The
-refreshed AX rows for Gemma 4 E2B 4/5/6/8-bit, Gemma 4 E4B 4-bit,
+refreshed AX rows for Gemma 4 E2B 5/6/8-bit, Gemma 4 E4B 4-bit,
 and Gemma 4 26B A4B 4-bit come from
 `benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-gemma-ffn-compile-off-r1/`
 and were rerun with `AX_MLX_PREFILL_FFN_COMPILE=0`, which is now the
@@ -206,6 +206,9 @@ default-safe Gemma GeGLU path. The earlier compile-enabled benchmark
 disconnected the server; the harness surfaced that failed run as
 `RemoteDisconnected`. The default-safe artifacts completed successfully and
 are the values shown below.
+The refreshed AX row for Gemma 4 E2B 4-bit comes from the narrower
+`benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-gemma-e2b-4bit-r1/`
+rerun with the same AX-only direct and n-gram benchmark shape.
 The refreshed AX rows for Gemma 4 31B, Qwen 3.6 27B, and Qwen 3.6 35B A3B
 come from
 `benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-r1/`.
@@ -236,9 +239,9 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 3,481.7 | 2,338.1 | **4,003.3 (+71.2%)** |
-|         |         | 512 | 6,846.0 | 7,870.0 | **8,792.0 (+11.7%)** |
-|         |         | 2048 | 7,643.1 | 18,014.7 | 8,308.2 (-53.9%) |
+| Gemma 4 E2B | 4-bit | 128 | 3,481.7 | 2,338.1 | **4,027.7 (+72.3%)** |
+|         |         | 512 | 6,846.0 | 7,870.0 | **8,923.9 (+13.4%)** |
+|         |         | 2048 | 7,643.1 | 18,014.7 | 8,259.5 (-54.2%) |
 | Gemma 4 E2B | 5-bit | 128 | 3,398.4 | 2,238.5 | **3,938.5 (+75.9%)** |
 |         |         | 512 | 6,860.3 | 7,469.9 | **8,785.2 (+17.6%)** |
 |         |         | 2048 | 7,288.1 | 16,664.1 | 8,005.8 (-52.0%) |
@@ -299,9 +302,9 @@ output loop.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 174.6 | 214.0 | 190.0 (-11.2%) | **494.8 (+131.3%)** |
-|  |  | 512 | 165.2 | 210.3 | 183.2 (-12.9%) | **486.5 (+131.4%)** |
-|  |  | 2048 | 171.9 | 200.9 | 175.9 (-12.4%) | **450.2 (+124.1%)** |
+| Gemma 4 E2B | 4-bit | 128 | 174.6 | 214.0 | 187.8 (-12.2%) | **491.8 (+129.8%)** |
+|  |  | 512 | 165.2 | 210.3 | 181.2 (-13.8%) | **483.5 (+130.0%)** |
+|  |  | 2048 | 171.9 | 200.9 | 174.9 (-12.9%) | **448.0 (+123.0%)** |
 | Gemma 4 E2B | 5-bit | 128 | 154.8 | 195.2 | 172.9 (-11.4%) | **398.5 (+104.2%)** |
 |  |  | 512 | 154.3 | 182.0 | 167.3 (-8.1%) | **394.7 (+116.8%)** |
 |  |  | 2048 | 154.3 | 181.9 | 161.2 (-11.4%) | **369.9 (+103.3%)** |
@@ -360,9 +363,9 @@ stream.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 36.8 | 54.7 | **32.0 (-41.6%)** |
-|         |         | 512 | 74.8 | 65.1 | **58.2 (-10.5%)** |
-|         |         | 2048 | 268.0 | 113.7 | 246.5 (+116.8%) |
+| Gemma 4 E2B | 4-bit | 128 | 36.8 | 54.7 | **31.8 (-41.9%)** |
+|         |         | 512 | 74.8 | 65.1 | **57.4 (-11.8%)** |
+|         |         | 2048 | 268.0 | 113.7 | 248.0 (+118.1%) |
 | Gemma 4 E2B | 5-bit | 128 | 37.7 | 57.2 | **32.5 (-43.2%)** |
 |         |         | 512 | 74.6 | 68.5 | **58.3 (-15.0%)** |
 |         |         | 2048 | 281.0 | 122.9 | 255.8 (+108.2%) |
