@@ -692,6 +692,44 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 7)
 
+    def test_readme_can_scope_ax_decode_overlay_to_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            base_dir = root / "benchmarks/results/mlx-inference/local"
+            overlay_dir = root / "benchmarks/results/mlx-inference/decode-overlay"
+            overlay_dir.mkdir(parents=True)
+            overlay_path = overlay_dir / "gemma-4-e2b-it-4bit.json"
+            artifact = json.loads((base_dir / "gemma-4-e2b-it-4bit.json").read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx":
+                    row["prefill_tok_s"] = metric(999.0)
+                    row["decode_tok_s"] = metric(8.5)
+                    row["ttft_ms"] = metric(999.0)
+            overlay_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            readme_path = root / "README.md"
+            readme_path.write_text(
+                readme_path.read_text()
+                .replace(
+                    "`benchmarks/results/mlx-inference/local/`",
+                    "<!-- readme-performance-artifacts: "
+                    "base=benchmarks/results/mlx-inference/local/; "
+                    "ax-decode-overlay@p4="
+                    "benchmarks/results/mlx-inference/decode-overlay/ -->\n"
+                    "`benchmarks/results/mlx-inference/local/`",
+                )
+                .replace("8.0 (-20.0%)", "8.5 (-15.0%)")
+            )
+
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=readme_path,
+                expected_metric_count=7,
+            )
+
+        self.assertEqual(len(checked), 7)
+
     def test_non_reference_rows_must_match_artifact_repetition_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

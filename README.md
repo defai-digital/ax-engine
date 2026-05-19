@@ -189,19 +189,21 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-18-gguf-full-stack/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-qwen35-a3b-4bit-cold-prefill-refresh/ -->
+<!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-18-ax-only-sweep/; ax-decode-overlay@p2048=benchmarks/results/mlx-inference/2026-05-18-qwen27b-4bit-2k-fix/; reference=benchmarks/results/mlx-inference/2026-05-19-ax-qwen35-a3b-4bit-cold-prefill-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-qwen35-a3b-4bit-cold-prefill-refresh/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
 and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-These rows are a provenance-tracked composite. The base artifact set is
-`benchmarks/results/mlx-inference/2026-05-18-gguf-full-stack/`; refreshed
-Gemma 4 E2B 4-bit overlays come from
+These rows are a provenance-tracked composite. The MLX/AX base artifact set is
+`benchmarks/results/mlx-inference/2026-05-18-ax-only-sweep/`. The
+`llama.cpp Metal*` column is injected from
+`benchmarks/manifests/llama_cpp_metal/inventory.json` and the
 `benchmarks/results/mlx-inference/2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/`
-for the `llama.cpp Metal*` column and
-`benchmarks/results/mlx-inference/2026-05-18-ax-direct-gemma-e2b-4bit-sanity/`
-for AX direct rows. Refreshed Qwen 3.6 35B A3B 4-bit AX direct and n-gram rows
+Gemma 4 E2B 4-bit recheck. The Qwen 3.6 27B 4-bit prompt=2048 decode cells
+come from
+`benchmarks/results/mlx-inference/2026-05-18-qwen27b-4bit-2k-fix/`.
+Refreshed Qwen 3.6 35B A3B 4-bit `mlx_lm`, AX direct, and n-gram rows
 come from
 `benchmarks/results/mlx-inference/2026-05-19-ax-qwen35-a3b-4bit-cold-prefill-refresh/`
 with AX prefix cache disabled for cold prefill and TTFT measurement. All rows
@@ -291,7 +293,7 @@ output loop.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 174.6 | 215.4 | 207.1 (-3.8%) | **602.0 (+179.5%)** |
+| Gemma 4 E2B | 4-bit | 128 | 174.6 | 214.0 | 207.1 (-3.2%) | **602.0 (+181.4%)** |
 |  |  | 512 | 165.2 | 210.3 | 192.9 (-8.2%) | **589.7 (+180.5%)** |
 |  |  | 2048 | 171.9 | 200.9 | 185.1 (-7.9%) | **539.8 (+168.7%)** |
 | Gemma 4 E2B | 5-bit | 128 | 154.8 | 195.2 | 180.7 (-7.4%) | **479.2 (+145.6%)** |

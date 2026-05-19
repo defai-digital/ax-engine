@@ -177,12 +177,18 @@ class ArtifactRow:
 class ArtifactSource:
     artifact_dir: Path
     include_engines: frozenset[str] | None = None
+    include_tables: frozenset[str] | None = None
+    include_prompt_tokens: frozenset[int] | None = None
 
 
 @dataclass(frozen=True)
 class ReadmeCheckResult:
     metric_checks: list[str]
     narrative_claim_checks: list[str]
+
+
+README_METRIC_TABLES = frozenset({"decode", "prefill", "ttft"})
+AX_ENGINE_ROWS = frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"})
 
 
 def token_sha256(tokens: list[int]) -> str:
@@ -336,11 +342,12 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
     if sources_match:
         sources: list[ArtifactSource] = []
         source_kinds = {
-            "base": None,
-            "reference": frozenset({"mlx_lm"}),
-            "ax": frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"}),
-            "ax-base": frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"}),
-            "ax-overlay": frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"}),
+            "base": (None, None),
+            "reference": (frozenset({"mlx_lm"}), None),
+            "ax": (AX_ENGINE_ROWS, None),
+            "ax-base": (AX_ENGINE_ROWS, None),
+            "ax-overlay": (AX_ENGINE_ROWS, None),
+            "ax-decode-overlay": (AX_ENGINE_ROWS, frozenset({"decode"})),
         }
         for part in sources_match.group("sources").split(";"):
             if not part.strip():
@@ -349,16 +356,30 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
                 raise ArtifactCheckError(
                     f"invalid readme-performance-artifacts entry: {part.strip()!r}"
                 )
-            kind, path_value = [value.strip() for value in part.split("=", 1)]
-            include_engines = source_kinds.get(kind)
+            raw_kind, path_value = [value.strip() for value in part.split("=", 1)]
+            kind_match = re.fullmatch(
+                r"(?P<kind>[a-z0-9-]+)(?:@p(?P<prompt>\d+))?",
+                raw_kind,
+            )
+            if not kind_match:
+                raise ArtifactCheckError(
+                    f"invalid readme-performance-artifacts source kind: {raw_kind!r}"
+                )
+            kind = kind_match.group("kind")
             if kind not in source_kinds:
                 raise ArtifactCheckError(
                     f"unknown readme-performance-artifacts source kind: {kind!r}"
                 )
+            include_prompt_tokens = None
+            if kind_match.group("prompt") is not None:
+                include_prompt_tokens = frozenset({int(kind_match.group("prompt"))})
+            include_engines, include_tables = source_kinds[kind]
             sources.append(
                 ArtifactSource(
                     artifact_dir=(readme_path.parent / path_value).resolve(),
                     include_engines=include_engines,
+                    include_tables=include_tables,
+                    include_prompt_tokens=include_prompt_tokens,
                 )
             )
         if not sources:
@@ -1038,7 +1059,7 @@ def assert_display_matches(metric: ReadmeMetric, artifact_row: ArtifactRow) -> N
 def assert_display_delta_matches(
     metric: ReadmeMetric,
     artifact_row: ArtifactRow,
-    artifact_rows: dict[tuple[str, str, int, int, str], ArtifactRow],
+    artifact_rows: dict[tuple[str, str, int, int, str, str], ArtifactRow],
 ) -> None:
     if metric.displayed_delta_percent is None:
         return
@@ -1049,6 +1070,7 @@ def assert_display_delta_matches(
             metric.prompt_tokens,
             artifact_row.generation_tokens,
             "mlx_lm",
+            metric.table,
         )
     )
     if reference_row is None:
@@ -1234,11 +1256,14 @@ def collect_artifact_rows(
     repo_root: Path,
     artifact_dir: Path,
     include_engines: frozenset[str] | None = None,
+    include_tables: frozenset[str] | None = None,
+    include_prompt_tokens: frozenset[int] | None = None,
     needed_labels: frozenset[tuple[str, str]] | None = None,
-) -> dict[tuple[str, str, int, int, str], ArtifactRow]:
+) -> dict[tuple[str, str, int, int, str, str], ArtifactRow]:
     if not artifact_dir.exists():
         raise ArtifactCheckError(f"artifact directory does not exist: {artifact_dir}")
-    rows: dict[tuple[str, str, int, int, str], ArtifactRow] = {}
+    rows: dict[tuple[str, str, int, int, str, str], ArtifactRow] = {}
+    table_names = include_tables or README_METRIC_TABLES
     json_paths = sorted(artifact_dir.glob("*.json"))
     if not json_paths:
         raise ArtifactCheckError(f"artifact directory has no JSON artifacts: {artifact_dir}")
@@ -1282,28 +1307,41 @@ def collect_artifact_rows(
                 )
             if include_engines is not None and engine not in include_engines:
                 continue
+            prompt_tokens = int(row["prompt_tokens"])
+            if (
+                include_prompt_tokens is not None
+                and prompt_tokens not in include_prompt_tokens
+            ):
+                continue
             validate_artifact_row(
                 artifact_path=path,
                 artifact=artifact,
                 row=row,
                 prompt_hashes=prompt_hashes,
             )
-            prompt_tokens = int(row["prompt_tokens"])
             generation_tokens = int(row["generation_tokens"])
-            key = (model, quantization, prompt_tokens, generation_tokens, str(engine))
-            if key in rows:
-                raise ArtifactCheckError(
-                    f"{path} has duplicate artifact row for {key}"
+            for table_name in table_names:
+                key = (
+                    model,
+                    quantization,
+                    prompt_tokens,
+                    generation_tokens,
+                    str(engine),
+                    table_name,
                 )
-            rows[key] = ArtifactRow(
-                artifact_path=path,
-                model=model,
-                quantization=quantization,
-                prompt_tokens=prompt_tokens,
-                generation_tokens=generation_tokens,
-                engine=str(engine),
-                row=row,
-            )
+                if key in rows:
+                    raise ArtifactCheckError(
+                        f"{path} has duplicate artifact row for {key}"
+                    )
+                rows[key] = ArtifactRow(
+                    artifact_path=path,
+                    model=model,
+                    quantization=quantization,
+                    prompt_tokens=prompt_tokens,
+                    generation_tokens=generation_tokens,
+                    engine=str(engine),
+                    row=row,
+                )
         missing_references = set(prompt_hashes) - seen_reference_shapes
         if missing_references:
             raise ArtifactCheckError(f"{path} lacks mlx_lm rows for {sorted(missing_references)}")
@@ -1314,13 +1352,15 @@ def collect_artifact_rows_from_sources(
     repo_root: Path,
     sources: list[ArtifactSource],
     needed_labels: frozenset[tuple[str, str]] | None = None,
-) -> dict[tuple[str, str, int, int, str], ArtifactRow]:
-    rows: dict[tuple[str, str, int, int, str], ArtifactRow] = {}
+) -> dict[tuple[str, str, int, int, str, str], ArtifactRow]:
+    rows: dict[tuple[str, str, int, int, str, str], ArtifactRow] = {}
     for source in sources:
         source_rows = collect_artifact_rows(
             repo_root,
             source.artifact_dir,
             include_engines=source.include_engines,
+            include_tables=source.include_tables,
+            include_prompt_tokens=source.include_prompt_tokens,
             needed_labels=needed_labels,
         )
         rows.update(source_rows)
@@ -1328,7 +1368,7 @@ def collect_artifact_rows_from_sources(
 
 
 def find_artifact_row_for_metric(
-    artifact_rows: dict[tuple[str, str, int, int, str], ArtifactRow],
+    artifact_rows: dict[tuple[str, str, int, int, str, str], ArtifactRow],
     metric: ReadmeMetric,
 ) -> ArtifactRow | None:
     if metric.generation_tokens is not None:
@@ -1339,6 +1379,7 @@ def find_artifact_row_for_metric(
                 metric.prompt_tokens,
                 metric.generation_tokens,
                 metric.engine,
+                metric.table,
             )
         )
     candidates = [
@@ -1349,6 +1390,7 @@ def find_artifact_row_for_metric(
             prompt_tokens,
             _generation_tokens,
             engine,
+            table_name,
         ),
         row in artifact_rows.items()
         if (
@@ -1356,6 +1398,7 @@ def find_artifact_row_for_metric(
             and quantization == metric.quantization
             and prompt_tokens == metric.prompt_tokens
             and engine == metric.engine
+            and table_name == metric.table
         )
     ]
     if len(candidates) <= 1:
@@ -1373,7 +1416,7 @@ def check_readme_performance(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 187,
+    expected_metric_count: int | None = 252,
 ) -> list[str]:
     return check_readme_performance_summary(
         repo_root=repo_root,
@@ -1388,7 +1431,7 @@ def check_readme_performance_summary(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 187,
+    expected_metric_count: int | None = 252,
 ) -> ReadmeCheckResult:
     resolved_readme = readme_path.resolve()
     artifact_sources = (
