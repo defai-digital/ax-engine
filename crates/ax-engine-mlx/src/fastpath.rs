@@ -164,6 +164,21 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_DENSE_SWIGLU_PACKED_METAL` — route packed dense Qwen-family
+    /// SwiGLU activation through a custom MLX Metal elementwise kernel.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_DENSE_SWIGLU_PACKED_METAL=0`).
+    ///
+    /// Mirrors the packed GEGLU fast path for dense FFN layers that already
+    /// materialize gate/up as one projection. The Metal node fuses the last-dim
+    /// split plus `silu(gate) * up`; unsupported shapes fall back to the existing
+    /// compiled-closure / imperative SwiGLU path.
+    dense_swiglu_packed_metal_enabled,
+    "AX_MLX_DENSE_SWIGLU_PACKED_METAL"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_LAYER_SCALAR_FUSED_ADD` — fuse Gemma-family residual add plus
     /// scalar layer-scale multiply into one custom MLX Metal elementwise node.
     ///
@@ -208,16 +223,36 @@ env_flag!(
     "AX_MLX_DIRECT_CPP_QK_NORM_ROPE"
 );
 
-env_flag!(
-    /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — experimental load-time
-    /// packing for Qwen linear-attention projections.
+env_flag_default_on!(
+    /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — load-time packing for Qwen
+    /// linear-attention projections.
     ///
-    /// **Default: OFF**. This remains opt-in until a model-backed A/B proves a
-    /// stable TTFT benefit and token-equivalence for the target linear-attention
-    /// families. Keeping it in `fastpath.rs` makes the disabled optimization
-    /// auditable without changing the current artifact contract.
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS=0`).
+    ///
+    /// Materializes split QKV/Z/A/B projections into packed QKVZ/BA projections
+    /// when the artifact layout and quantization metadata are compatible. This
+    /// reduces per-layer projection dispatch count on Qwen 3.6 dense and MoE
+    /// linear-attention layers while preserving a fail-closed split fallback for
+    /// incompatible shapes.
     linear_attention_projection_packing_enabled,
     "AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_LINEAR_ATTENTION_RMS_NORM_GATE_METAL` — route Qwen
+    /// linear-attention post-RMSNorm gating through a custom MLX Metal
+    /// elementwise kernel.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_LINEAR_ATTENTION_RMS_NORM_GATE_METAL=0`).
+    ///
+    /// Keeps RMSNorm itself on the normal MLX path, then fuses the following
+    /// `silu(gate.float32) * normed.float32 -> hidden dtype` chain into one
+    /// lazy MLX graph node. Unsupported shapes/dtypes fall back to the existing
+    /// MLX operation chain.
+    linear_attention_rms_norm_gate_metal_enabled,
+    "AX_MLX_LINEAR_ATTENTION_RMS_NORM_GATE_METAL"
 );
 
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
@@ -403,6 +438,51 @@ mod tests {
                 "expected default-on truthy for {value:?}"
             );
         }
+    }
+
+    #[test]
+    fn linear_attention_projection_packing_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_LINEAR_ATTENTION_PACK_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_LINEAR_ATTENTION_PACK_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_LINEAR_ATTENTION_PACK_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn dense_swiglu_packed_metal_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_DENSE_SWIGLU_PACKED_METAL_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_DENSE_SWIGLU_PACKED_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_DENSE_SWIGLU_PACKED_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn linear_attention_rms_norm_gate_metal_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_LINEAR_ATTENTION_RMS_NORM_GATE_METAL_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_LINEAR_ATTENTION_RMS_NORM_GATE_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_LINEAR_ATTENTION_RMS_NORM_GATE_METAL_ENABLED",
+            "1"
+        ));
     }
 
     fn probe_usize(name: &str, value: &str) -> Option<usize> {

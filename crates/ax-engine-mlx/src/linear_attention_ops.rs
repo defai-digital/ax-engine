@@ -8,6 +8,7 @@ use mlx_sys::{
 use mlx_sys::{add, exp, less, log1p, negative, where_cond};
 
 use crate::attention_mask::scalar_i32;
+use crate::fastpath;
 use crate::model::LinearAttentionConfig;
 
 /// Split Qwen3.5 gated-delta conv output into shaped q/k/v tensors.
@@ -18,6 +19,7 @@ pub struct LinearAttentionQkv {
 }
 
 static GATED_DELTA_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static RMS_NORM_GATE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 pub(crate) const GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY: usize = 512;
 pub(crate) const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: usize = 2048;
 
@@ -291,10 +293,83 @@ pub fn rms_norm_gated(
     eps: f32,
 ) -> MlxArray {
     let normed = rms_norm(hidden_states, Some(weight), eps, None);
+    if let Some(gated) = rms_norm_gate_metal(&normed, gate, hidden_states.dtype()) {
+        return gated;
+    }
     let gate_f32 = astype(gate, MlxDtype::Float32, None);
     let normed_f32 = astype(&normed, MlxDtype::Float32, None);
     let gated = multiply(&mlx_sys::ops::silu(&gate_f32, None), &normed_f32, None);
     astype(&gated, hidden_states.dtype(), None)
+}
+
+fn rms_norm_gate_metal(
+    normed: &MlxArray,
+    gate: &MlxArray,
+    output_dtype: MlxDtype,
+) -> Option<MlxArray> {
+    if !fastpath::linear_attention_rms_norm_gate_metal_enabled() {
+        return None;
+    }
+    rms_norm_gate_metal_impl(normed, gate, output_dtype)
+}
+
+fn rms_norm_gate_metal_impl(
+    normed: &MlxArray,
+    gate: &MlxArray,
+    output_dtype: MlxDtype,
+) -> Option<MlxArray> {
+    if !matches!(
+        normed.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        gate.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        output_dtype,
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let shape = normed.shape();
+    if shape != gate.shape() {
+        return None;
+    }
+    let element_count = shape
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    let element_count = i32::try_from(element_count).ok()?;
+
+    let kernel = RMS_NORM_GATE_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen_linear_attention_rms_norm_gate_v1",
+            &["normed", "gate"],
+            &["out"],
+            RMS_NORM_GATE_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[normed, gate],
+        &[KernelOutputSpec {
+            shape,
+            dtype: output_dtype,
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "T",
+                dtype: output_dtype,
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
 }
 
 fn scalar_f32_as(value: f32, dtype: MlxDtype) -> MlxArray {
@@ -306,6 +381,18 @@ fn scalar_f32_as(value: f32, dtype: MlxDtype) -> MlxArray {
     );
     astype(&scalar, dtype, None)
 }
+
+const RMS_NORM_GATE_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    float gate_v = static_cast<float>(gate[idx]);
+    float normed_v = static_cast<float>(normed[idx]);
+    float activated = gate_v / (1.0f + exp(-gate_v));
+    out[idx] = static_cast<T>(activated * normed_v);
+"#;
 
 const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     const int t_len = seq_len[0];
@@ -711,6 +798,48 @@ mod tests {
 
         assert!((q_scale - 0.25).abs() < f32::EPSILON, "q_scale={q_scale}");
         assert!((k_scale - 0.5).abs() < f32::EPSILON, "k_scale={k_scale}");
+    }
+
+    #[test]
+    fn rms_norm_gate_metal_matches_direct_chain_for_bf16() {
+        let normed_data: Vec<f32> = (0..16)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.125)
+            .collect();
+        let gate_data: Vec<f32> = (0..16).map(|idx| ((idx % 5) as f32 - 2.0) * 0.25).collect();
+        let normed = astype(
+            &f32_array(&normed_data, &[1, 2, 2, 4]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let gate = astype(
+            &f32_array(&gate_data, &[1, 2, 2, 4]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let direct = astype(
+            &multiply(
+                &mlx_sys::ops::silu(&astype(&gate, MlxDtype::Float32, None), None),
+                &astype(&normed, MlxDtype::Float32, None),
+                None,
+            ),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let metal = rms_norm_gate_metal_impl(&normed, &gate, MlxDtype::Bfloat16)
+            .expect("bf16 linear-attention RMSNorm gate Metal fast path");
+        let direct = astype(&direct, MlxDtype::Float32, None);
+        let metal = astype(&metal, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&direct, &metal]);
+
+        assert_close("rms_norm_gate", metal.data_f32(), direct.data_f32(), 2.0e-2);
+    }
+
+    #[test]
+    fn rms_norm_gate_metal_rejects_shape_mismatch() {
+        let normed = zeros(&[1, 2, 2, 4], MlxDtype::Bfloat16, None);
+        let gate = zeros(&[1, 2, 1, 4], MlxDtype::Bfloat16, None);
+
+        assert!(rms_norm_gate_metal_impl(&normed, &gate, MlxDtype::Bfloat16).is_none());
     }
 
     #[test]
