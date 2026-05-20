@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, argpartition_axis, argsort_axis, astype,
-    divide, expand_dims, expand_dims_axes, gelu_approx_mul, multiply, reshape, rms_norm,
-    slice_last_dim, softmax, sum_axis, take, take_along_axis, topk_axis,
+    divide, expand_dims, expand_dims_axes, gelu_approx_mul, gelu_approx_quantized_ffn, multiply,
+    reshape, rms_norm, slice_last_dim, softmax, sum_axis, take, take_along_axis, topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -205,6 +205,30 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
         rotated
     };
     let x = &smoothed;
+    if fastpath::dense_geglu_quantized_ffn_direct_enabled()
+        && cfg.uses_geglu
+        && !profile_decode
+        && !profile_prefill
+        && let (Some(packed), Some(down)) = (w.gate_up_packed.as_ref(), w.down_proj.as_ref())
+        && packed.group_size == down.group_size
+        && packed.bits == down.bits
+        && let (Some(gate_up_scales), Some(down_scales)) =
+            (packed.scales.as_ref(), down.scales.as_ref())
+    {
+        return gelu_approx_quantized_ffn(
+            x,
+            &packed.weight,
+            gate_up_scales,
+            packed.biases.as_ref(),
+            &down.weight,
+            down_scales,
+            down.biases.as_ref(),
+            packed.group_size,
+            packed.bits,
+            None,
+        );
+    }
+
     let gate_up_started = Instant::now();
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_packed {
         let out = qw(x, packed);

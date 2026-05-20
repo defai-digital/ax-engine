@@ -38,6 +38,12 @@ use shared::*;
 
 mod families;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FinalLogitsMode {
+    Full,
+    ArgmaxOnly,
+}
+
 #[cfg(test)]
 use crate::attention_mask::create_causal_mask;
 #[cfg(test)]
@@ -312,6 +318,45 @@ pub fn forward_with_turboquant_context(
     token_offset: usize,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
+    forward_with_turboquant_context_and_logits_mode(
+        cfg,
+        weights,
+        token_ids,
+        cache,
+        token_offset,
+        turboquant_context,
+        FinalLogitsMode::Full,
+    )
+}
+
+pub fn forward_argmax_with_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> MlxArray {
+    forward_with_turboquant_context_and_logits_mode(
+        cfg,
+        weights,
+        token_ids,
+        cache,
+        token_offset,
+        turboquant_context,
+        FinalLogitsMode::ArgmaxOnly,
+    )
+}
+
+fn forward_with_turboquant_context_and_logits_mode(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+    logits_mode: FinalLogitsMode,
+) -> MlxArray {
     let profile_prefill = token_ids.len() > 1 && prefill_profile_enabled();
 
     // Build ids_1d once; reused for both embedding and per-layer-input projection
@@ -402,8 +447,7 @@ pub fn forward_with_turboquant_context(
         None,
     );
     let logits = qw(&normed, &weights.lm_head);
-    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
-    let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+    let logits_f32 = finalize_lm_head_logits(cfg, &logits, logits_mode);
     let logits = reshape(&logits_f32, &[cfg.vocab_size as i32], None);
     if let Some(started) = lm_head_started {
         forward_profile_eval_elapsed(
@@ -881,6 +925,45 @@ pub fn forward_lazy_single_with_turboquant_context(
     token_offset: usize,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
+    forward_lazy_single_with_turboquant_context_and_logits_mode(
+        cfg,
+        weights,
+        token_arr,
+        cache,
+        token_offset,
+        turboquant_context,
+        FinalLogitsMode::Full,
+    )
+}
+
+pub fn forward_lazy_single_argmax_with_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_arr: &MlxArray, // scalar or [1] u32; may be unevaluated (lazy)
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> MlxArray {
+    forward_lazy_single_with_turboquant_context_and_logits_mode(
+        cfg,
+        weights,
+        token_arr,
+        cache,
+        token_offset,
+        turboquant_context,
+        FinalLogitsMode::ArgmaxOnly,
+    )
+}
+
+fn forward_lazy_single_with_turboquant_context_and_logits_mode(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_arr: &MlxArray, // scalar or [1] u32; may be unevaluated (lazy)
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+    logits_mode: FinalLogitsMode,
+) -> MlxArray {
     let profile_decode = decode_profile_enabled();
 
     // Normalise to [1] for embedding take (reshape is a no-op if already [1]).
@@ -932,8 +1015,7 @@ pub fn forward_lazy_single_with_turboquant_context(
     let lm_head_started = profile_decode.then(Instant::now);
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
-    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
-    let logits = apply_final_logit_softcap(cfg, &logits_f32);
+    let logits = finalize_lm_head_logits(cfg, &logits, logits_mode);
     if let Some(started) = lm_head_started {
         decode_profile_eval_elapsed(
             profile_decode,
@@ -949,6 +1031,18 @@ pub fn forward_lazy_single_with_turboquant_context(
 }
 
 // ── private helpers ──────────────────────────────────────────────────────────
+
+fn finalize_lm_head_logits(
+    cfg: &ModelConfig,
+    logits: &MlxArray,
+    mode: FinalLogitsMode,
+) -> MlxArray {
+    let logits_f32 = astype(logits, MlxDtype::Float32, None);
+    match mode {
+        FinalLogitsMode::Full => apply_final_logit_softcap(cfg, &logits_f32),
+        FinalLogitsMode::ArgmaxOnly => logits_f32,
+    }
+}
 
 /// Compute per-layer input vectors for Gemma4 2B/4B models from a pre-built
 /// 1-D `[seq]` token-ID array.  Accepts lazy (unevaluated) arrays.
@@ -3533,6 +3627,35 @@ mod tests {
         assert_close(
             candidate_contig.data_f32(),
             reference_contig.data_f32(),
+            1.0e-6,
+        );
+    }
+
+    #[test]
+    fn argmax_only_final_logits_skip_softcap_preserves_argmax() {
+        let mut cfg = cfg(false);
+        cfg.final_logit_softcapping = Some(30.0);
+        let logits = array_f32(&[-12.0, -0.5, 1.0, 29.0, 31.0, 120.0], &[1, 1, 6]);
+
+        let full = finalize_lm_head_logits(&cfg, &logits, FinalLogitsMode::Full);
+        let argmax_only = finalize_lm_head_logits(&cfg, &logits, FinalLogitsMode::ArgmaxOnly);
+        eval(&[&full, &argmax_only]);
+
+        let max_index = |values: &[f32]| {
+            values
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .map(|(idx, _)| idx)
+                .expect("fixture must not be empty")
+        };
+        assert_eq!(
+            max_index(full.data_f32()),
+            max_index(argmax_only.data_f32())
+        );
+        assert_close(
+            argmax_only.data_f32(),
+            &[-12.0, -0.5, 1.0, 29.0, 31.0, 120.0],
             1.0e-6,
         );
     }

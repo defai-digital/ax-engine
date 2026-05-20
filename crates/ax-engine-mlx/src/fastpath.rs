@@ -147,6 +147,22 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_DENSE_GEGLU_QFFN_DIRECT` — route packed quantized Gemma-family
+    /// GEGLU dense FFN through the direct MLX C++ shim.
+    ///
+    /// **Default: OFF**. The 2026-05-19 Gemma 4 E2B 4-bit A/B reduced
+    /// Rust-side op count but regressed decode throughput, so this remains a
+    /// diagnostic probe until a later artifact clears the promotion gate.
+    ///
+    /// This keeps the same quantized matmul -> GEGLU -> quantized matmul math,
+    /// but crosses the Rust/MLX-C boundary once for the whole dense FFN block.
+    /// The model path only uses it for packed quantized GEGLU layers and keeps
+    /// the split path for profiling so stage-level diagnostics remain stable.
+    dense_geglu_quantized_ffn_direct_enabled,
+    "AX_MLX_DENSE_GEGLU_QFFN_DIRECT"
+);
+
+env_flag!(
     /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — experimental load-time
     /// packing for Qwen linear-attention projections.
     ///

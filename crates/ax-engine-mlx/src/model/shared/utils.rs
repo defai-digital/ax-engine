@@ -84,18 +84,8 @@ pub(crate) fn apply_final_logit_softcap(cfg: &ModelConfig, logits: &MlxArray) ->
         return logits.clone();
     };
     let inv_cap = 1.0_f32 / cap;
-    let inv_cap_arr = MlxArray::from_raw_data(
-        &inv_cap as *const f32 as *const u8,
-        std::mem::size_of::<f32>(),
-        &[1_i32],
-        MlxDtype::Float32,
-    );
-    let cap_arr = MlxArray::from_raw_data(
-        &cap as *const f32 as *const u8,
-        std::mem::size_of::<f32>(),
-        &[1_i32],
-        MlxDtype::Float32,
-    );
+    let inv_cap_arr = mlx_sys::ops::cached_scalar(inv_cap, logits.dtype());
+    let cap_arr = mlx_sys::ops::cached_scalar(cap, logits.dtype());
     let scaled = multiply(logits, &inv_cap_arr, None);
     multiply(&tanh(&scaled, None), &cap_arr, None)
 }
