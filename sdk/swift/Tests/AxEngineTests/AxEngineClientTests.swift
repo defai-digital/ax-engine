@@ -1,6 +1,15 @@
 // Tests require XCTest (Xcode) or Swift Testing (Xcode 16+).
 // `swift build` in the sdk/swift directory works without Xcode.
 // `swift test` requires opening the package in Xcode or using a full toolchain.
+//
+// Without XCTest the file below compiles to nothing and `swift test` exits
+// with "Build complete!" and no test count — silently passing. The warning
+// below ensures the no-XCTest case is visible in the build log so CI and
+// developers do not mistake a zero-test run for a green run.
+
+#if !canImport(XCTest)
+#warning("AxEngineTests skipped: XCTest is unavailable on this toolchain. Use Xcode 16+ or a full Swift toolchain to exercise the SDK test suite.")
+#endif
 
 #if canImport(XCTest)
 import XCTest
