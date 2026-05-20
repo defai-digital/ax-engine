@@ -2303,6 +2303,8 @@ def axengine_one_run(
     capture_output_token_ids: bool = False,
     server_pid: int | None = None,
 ) -> dict[str, Any]:
+    request_started = time.perf_counter()
+    first_output_wall_s: float | None = None
     payload = json.dumps(
         {
             "input_tokens": tokens,
@@ -2344,6 +2346,8 @@ def axengine_one_run(
                 output_len_raw = obj.get("request", {}).get("output_len")
                 if output_len_raw is not None:
                     output_tokens = int(output_len_raw)
+                    if output_tokens > 0 and first_output_wall_s is None:
+                        first_output_wall_s = time.perf_counter() - request_started
                 step_route = step.get("route") or obj.get("request", {}).get("route")
                 merge_step_local_route_decisions(step_local_decisions, step_route)
                 final_route = route_with_more_decisions(
@@ -2361,12 +2365,15 @@ def axengine_one_run(
                 response_tokens = obj.get("response", {}).get("output_tokens")
                 if isinstance(response_tokens, list):
                     output_tokens = len(response_tokens) or output_tokens
+                    if response_tokens and first_output_wall_s is None:
+                        first_output_wall_s = time.perf_counter() - request_started
                     if capture_output_token_ids:
                         output_token_ids = [int(token) for token in response_tokens]
                 final_route = route_with_more_decisions(
                     obj.get("response", {}).get("route"),
                     final_route,
                 )
+        client_wall_total_ms = (time.perf_counter() - request_started) * 1000.0
     finally:
         conn.close()
     final_route = route_with_step_local_decisions(final_route, step_local_decisions)
@@ -2404,7 +2411,10 @@ def axengine_one_run(
         "prefill_tok_s": prefill_tok_s_value,
         "decode_tok_s": measured_decode_tokens / decode_s if decode_s > 0 else 0.0,
         "output_tokens": float(output_tokens),
+        "client_wall_total_ms": client_wall_total_ms,
     }
+    if first_output_wall_s is not None:
+        run["client_wall_ttft_ms"] = first_output_wall_s * 1000.0
     if prefill_cache_warm:
         run["prefill_cache_warm"] = True
     rss_gb = process_rss_gb(server_pid)
@@ -2456,6 +2466,12 @@ def summarize_runs(runs: list[dict[str, Any]], key: str) -> dict[str, float | No
         "min": min(values),
         "max": max(values),
     }
+
+
+def ax_prefill_work_contract(prompt_tokens: int, *, sampler: dict[str, Any] | None) -> str:
+    if sampler is None and prompt_tokens > 512:
+        return "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+    return "historical_full_logits_prefill_or_sampler_required"
 
 
 def validate_axengine_policy_telemetry(
@@ -2564,6 +2580,7 @@ def bench_axengine(
             if not prefix_cache_enabled
             else "prefix_cache_enabled_prefill_metrics_invalidated_on_hit"
         ),
+        "prefill_work_contract": ax_prefill_work_contract(len(tokens), sampler=None),
         "ax_decode_claim_status": ax_decode_claim_status(
             direct_mode,
             ngram_summary,
@@ -2578,6 +2595,9 @@ def bench_axengine(
         "decode_tok_s": summarize_runs(runs, "decode_tok_s"),
         "ttft_ms": summarize_runs(runs, "ttft_ms"),
         "ttft_source": "ax_engine_runner_prefill_time",
+        "client_wall_ttft_ms": summarize_runs(runs, "client_wall_ttft_ms"),
+        "client_wall_ttft_source": "http_sse_first_output_token_observed_by_client",
+        "client_wall_total_ms": summarize_runs(runs, "client_wall_total_ms"),
         "prefill_s": summarize_runs(runs, "prefill_s"),
         "decode_s": summarize_runs(runs, "decode_s"),
         "ngram_acceleration_telemetry": ngram_summary,
@@ -4072,6 +4092,14 @@ def main() -> None:
             if not args.ax_enable_prefix_cache
             else "prefix_cache_enabled_prefill_metrics_invalidated_on_hit"
         ),
+        "prefill_timing_scope_contract": {
+            "mlx_lm": "upstream_mlx_lm_response_stats",
+            "ax_engine_primary_prefill": "server_sse_runner_time_us",
+            "ax_engine_client_wall_ttft": "http_sse_first_output_token_observed_by_client",
+            "long_greedy_ax_prefill_work": (
+                "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+            ),
+        },
         "concurrency": 1,
         "concurrent_prefill_overlap_classification": {
             "classification": "single_request_no_overlap",

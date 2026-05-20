@@ -209,6 +209,9 @@ The refreshed AX direct and n-gram rows for Gemma 4 E2B 4-bit come from
 after the greedy argmax-only final-softcap skip, the packed dense GEGLU Metal
 activation fast path, and the MLX-style cache-only prefill boundary for greedy
 prompts longer than 512 tokens.
+Those long-greedy AX prefill rows are runner-time measurements of the
+cache-state prefix plus final prompt-token boundary; they are not full-logits
+prompt scoring throughput.
 The refreshed AX rows for Gemma 4 31B, Qwen 3.6 27B, and Qwen 3.6 35B A3B
 come from
 `benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-r1/`.
@@ -357,7 +360,8 @@ recorded as-is for transparency.
 
 Lower is better. `mlx_lm` values are derived from reported prefill throughput.
 AX values are measured directly from per-step runner timing in the SSE event
-stream.
+stream. New AX benchmark artifacts also record `client_wall_ttft_ms` separately
+so server/client timing does not get mixed with runner-time throughput.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|

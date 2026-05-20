@@ -336,9 +336,39 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
     def test_axengine_summary_includes_ttft_and_memory(self) -> None:
         runs = [
-            {"prefill_s": 0.3, "decode_s": 0.1, "ttft_ms": 300.0, "prefill_tok_s": 10.0, "decode_tok_s": 20.0, "output_tokens": 3.0, "peak_memory_gb": 11.0},
-            {"prefill_s": 0.2, "decode_s": 0.1, "ttft_ms": 200.0, "prefill_tok_s": 15.0, "decode_tok_s": 20.0, "output_tokens": 3.0, "peak_memory_gb": 12.0},
-            {"prefill_s": 0.4, "decode_s": 0.1, "ttft_ms": 400.0, "prefill_tok_s": 8.0, "decode_tok_s": 20.0, "output_tokens": 3.0, "peak_memory_gb": 13.0},
+            {
+                "prefill_s": 0.3,
+                "decode_s": 0.1,
+                "ttft_ms": 300.0,
+                "client_wall_ttft_ms": 330.0,
+                "client_wall_total_ms": 520.0,
+                "prefill_tok_s": 10.0,
+                "decode_tok_s": 20.0,
+                "output_tokens": 3.0,
+                "peak_memory_gb": 11.0,
+            },
+            {
+                "prefill_s": 0.2,
+                "decode_s": 0.1,
+                "ttft_ms": 200.0,
+                "client_wall_ttft_ms": 230.0,
+                "client_wall_total_ms": 420.0,
+                "prefill_tok_s": 15.0,
+                "decode_tok_s": 20.0,
+                "output_tokens": 3.0,
+                "peak_memory_gb": 12.0,
+            },
+            {
+                "prefill_s": 0.4,
+                "decode_s": 0.1,
+                "ttft_ms": 400.0,
+                "client_wall_ttft_ms": 430.0,
+                "client_wall_total_ms": 620.0,
+                "prefill_tok_s": 8.0,
+                "decode_tok_s": 20.0,
+                "output_tokens": 3.0,
+                "peak_memory_gb": 13.0,
+            },
         ]
         with patch.object(bench, "axengine_one_run", side_effect=[runs[0], *runs]):
             row = bench.bench_axengine(
@@ -354,10 +384,76 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(row["ttft_ms"]["median"], 300.0)
         self.assertEqual(row["ttft_source"], "ax_engine_runner_prefill_time")
+        self.assertEqual(row["client_wall_ttft_ms"]["median"], 330.0)
+        self.assertEqual(row["client_wall_total_ms"]["median"], 520.0)
+        self.assertEqual(
+            row["client_wall_ttft_source"],
+            "http_sse_first_output_token_observed_by_client",
+        )
+        self.assertEqual(
+            row["prefill_work_contract"],
+            "historical_full_logits_prefill_or_sampler_required",
+        )
         self.assertEqual(row["runtime_identity"]["selected_backend"], "mlx")
         self.assertEqual(row["runtime_identity"]["route_identity"], "repo_owned_mlx")
         self.assertEqual(row["peak_memory_gb"]["max"], 13.0)
         self.assertEqual(row["memory_source"], "server_process_rss_after_stream")
+
+    def test_ax_prefill_work_contract_labels_long_greedy_cache_only_boundary(self) -> None:
+        self.assertEqual(
+            bench.ax_prefill_work_contract(2048, sampler=None),
+            "mlx_lm_style_cache_only_prefix_plus_final_prompt_token",
+        )
+        self.assertEqual(
+            bench.ax_prefill_work_contract(512, sampler=None),
+            "historical_full_logits_prefill_or_sampler_required",
+        )
+        self.assertEqual(
+            bench.ax_prefill_work_contract(2048, sampler={"temperature": 0.7}),
+            "historical_full_logits_prefill_or_sampler_required",
+        )
+
+    def test_axengine_one_run_records_client_wall_ttft_from_first_output(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __iter__(self):
+                frames = [
+                    {
+                        "step": {"runner_time_us": 100_000, "scheduled_tokens": 4},
+                        "request": {"output_len": 1},
+                    },
+                    {
+                        "response": {
+                            "output_tokens": [42],
+                        },
+                    },
+                ]
+                for event_name, payload in (("step", frames[0]), ("response", frames[1])):
+                    yield f"event: {event_name}\n".encode()
+                    yield b"data: " + json.dumps(payload).encode() + b"\n"
+                    yield b"\n"
+
+        class FakeConnection:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def request(self, *_args, **_kwargs) -> None:
+                pass
+
+            def getresponse(self) -> FakeResponse:
+                return FakeResponse()
+
+            def close(self) -> None:
+                pass
+
+        with patch.object(bench.http.client, "HTTPConnection", FakeConnection):
+            with patch.object(bench.time, "perf_counter", side_effect=[10.0, 10.123, 10.456]):
+                run = bench.axengine_one_run(19091, [1, 2, 3, 4], 1)
+
+        self.assertAlmostEqual(run["client_wall_ttft_ms"], 123.0, places=6)
+        self.assertAlmostEqual(run["client_wall_total_ms"], 456.0, places=6)
+        self.assertEqual(run["ttft_ms"], 100.0)
 
     def test_axengine_summary_exposes_kv_compression_blocker_row_fields(self) -> None:
         run = {
