@@ -84,6 +84,9 @@ class MlxDecodeProfileReportTests(unittest.TestCase):
         self.assertIn("| RoPE + KV append | 400 | 40.0% | 10.0% |", report)
         self.assertIn("| Unsplit pre-SDPA tail | 100 | n/a | 2.5% |", report)
         self.assertIn("Dominant parent stage: post-attention", report)
+        self.assertIn("Dominant leaf or unsplit region: FFN, 22.5%", report)
+        self.assertIn("Recommended next probe: probe a post-attention/FFN block", report)
+        self.assertIn("decode throughput and ops/step evidence", report)
 
     def test_old_artifact_missing_new_fields_renders_na(self) -> None:
         path = self.write_artifact(artifact(include_new_fields=False))
@@ -92,6 +95,7 @@ class MlxDecodeProfileReportTests(unittest.TestCase):
 
         self.assertIn("| QK norm | n/a | n/a | n/a |", report)
         self.assertIn("| Unsplit pre-SDPA tail | 700 | n/a | 17.5% |", report)
+        self.assertIn("Dominant leaf or unsplit region: unsplit post-attention tail", report)
         self.assertIn("artifact predates that finer-grained counter", report)
 
     def test_directory_filter_selects_decode_profile_artifacts(self) -> None:

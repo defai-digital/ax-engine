@@ -61,6 +61,51 @@ SUBSTAGES = [
     ),
 ]
 
+LEAF_STAGES = [
+    ("per-layer input", "ax_mlx_decode_profile_per_layer_input_wall_us"),
+    ("SDPA", "ax_mlx_decode_profile_sdpa_wall_us"),
+    ("LM head", "ax_mlx_decode_profile_lm_head_wall_us"),
+] + [(label, key) for label, key, _ in SUBSTAGES]
+
+PROBE_GUIDANCE = {
+    "ax_mlx_decode_profile_per_layer_input_wall_us": (
+        "probe a Gemma4 per-layer-input fused shim before broader layer changes"
+    ),
+    "ax_mlx_decode_profile_pre_sdpa_qkv_proj_wall_us": (
+        "probe a pre-SDPA block shim that includes QKV projection, QK norm, RoPE, and KV update"
+    ),
+    "ax_mlx_decode_profile_pre_sdpa_qk_norm_wall_us": (
+        "do not retry single QK-norm wrappers; only probe a larger pre-SDPA block"
+    ),
+    "ax_mlx_decode_profile_pre_sdpa_rope_kv_wall_us": (
+        "probe a larger pre-SDPA block rather than another RoPE-only wrapper"
+    ),
+    "ax_mlx_decode_profile_sdpa_wall_us": (
+        "profile cache and attention state first; SDPA-heavy rows are not a wrapper-only target"
+    ),
+    "ax_mlx_decode_profile_post_attn_output_proj_wall_us": (
+        "probe post-attention output projection together with adjacent residual work"
+    ),
+    "ax_mlx_decode_profile_post_attn_residual_norm_wall_us": (
+        "probe a post-attention block, not residual norm as a standalone wrapper"
+    ),
+    "ax_mlx_decode_profile_post_attn_ffn_wall_us": (
+        "probe a post-attention/FFN block or one-layer closure; do not revive the old standalone FFN route"
+    ),
+    "ax_mlx_decode_profile_post_attn_residual_gate_wall_us": (
+        "probe a post-attention block that keeps residual gate and FFN adjacency intact"
+    ),
+    "ax_mlx_decode_profile_lm_head_wall_us": (
+        "profile logits/argmax materialisation before changing model-layer shims"
+    ),
+    "__pre_sdpa_tail": (
+        "add finer pre-SDPA counters or probe the whole pre-SDPA block; the current tail is not localized"
+    ),
+    "__post_attn_tail": (
+        "add finer post-attention counters or probe the whole post-attention block; the current tail is not localized"
+    ),
+}
+
 
 @dataclass(frozen=True)
 class DecodeProfileRow:
@@ -71,6 +116,13 @@ class DecodeProfileRow:
     decode_steps: int
     layers: int
     profile: dict[str, int]
+
+
+@dataclass(frozen=True)
+class StageCandidate:
+    label: str
+    key: str
+    wall_us: int
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -172,12 +224,93 @@ def value_or_none(profile: dict[str, int], key: str) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def dominant_stage(
+    profile: dict[str, int],
+    stages: list[tuple[str, str]],
+) -> StageCandidate | None:
+    candidates = [
+        StageCandidate(label, key, value)
+        for label, key in stages
+        if (value := value_or_none(profile, key)) is not None
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item.wall_us)
+
+
 def parent_remainder(profile: dict[str, int], parent_key: str, child_keys: list[str]) -> int | None:
     parent = value_or_none(profile, parent_key)
     if parent is None:
         return None
     child_total = sum(value_or_none(profile, key) or 0 for key in child_keys)
     return max(0, parent - child_total)
+
+
+def leaf_candidates(profile: dict[str, int]) -> list[StageCandidate]:
+    candidates = [
+        StageCandidate(label, key, value)
+        for label, key in LEAF_STAGES
+        if (value := value_or_none(profile, key)) is not None
+    ]
+    pre_tail = parent_remainder(
+        profile,
+        "ax_mlx_decode_profile_pre_sdpa_wall_us",
+        [
+            "ax_mlx_decode_profile_pre_sdpa_qkv_proj_wall_us",
+            "ax_mlx_decode_profile_pre_sdpa_qk_norm_wall_us",
+            "ax_mlx_decode_profile_pre_sdpa_rope_kv_wall_us",
+        ],
+    )
+    if pre_tail is not None:
+        candidates.append(StageCandidate("unsplit pre-SDPA tail", "__pre_sdpa_tail", pre_tail))
+    post_tail = parent_remainder(
+        profile,
+        "ax_mlx_decode_profile_post_attn_wall_us",
+        [
+            "ax_mlx_decode_profile_post_attn_output_proj_wall_us",
+            "ax_mlx_decode_profile_post_attn_residual_norm_wall_us",
+            "ax_mlx_decode_profile_post_attn_ffn_wall_us",
+            "ax_mlx_decode_profile_post_attn_residual_gate_wall_us",
+        ],
+    )
+    if post_tail is not None:
+        candidates.append(
+            StageCandidate("unsplit post-attention tail", "__post_attn_tail", post_tail)
+        )
+    return candidates
+
+
+def render_candidate_gate(profile: dict[str, int], main_total: int) -> list[str]:
+    parent = dominant_stage(profile, MAIN_STAGES)
+    leaves = leaf_candidates(profile)
+    leaf = max(leaves, key=lambda item: item.wall_us) if leaves else None
+    if parent is None or leaf is None:
+        return [
+            "### Candidate Gate",
+            "",
+            "- No candidate gate: the artifact lacks enough stage counters.",
+            "",
+        ]
+
+    guidance = PROBE_GUIDANCE.get(
+        leaf.key,
+        "add finer counters before implementing another direct-MLX shim",
+    )
+    return [
+        "### Candidate Gate",
+        "",
+        (
+            f"- Dominant parent stage: {parent.label}, "
+            f"{fmt_share(parent.wall_us, main_total)} of profiled stage time."
+        ),
+        (
+            f"- Dominant leaf or unsplit region: {leaf.label}, "
+            f"{fmt_share(leaf.wall_us, main_total)} of profiled stage time."
+        ),
+        f"- Recommended next probe: {guidance}.",
+        "- Promotion gate: require a real-artifact A/B with both decode throughput and ops/step evidence.",
+        "",
+    ]
 
 
 def render_row(row: DecodeProfileRow) -> list[str]:
@@ -238,20 +371,12 @@ def render_row(row: DecodeProfileRow) -> list[str]:
         f"| Unsplit post-attention tail | {fmt_us(post_tail)} | n/a | {fmt_share(post_tail, main_total)} |"
     )
 
-    dominant_label, dominant_key = max(
-        MAIN_STAGES,
-        key=lambda item: value_or_none(profile, item[1]) or 0,
-    )
-    dominant_value = value_or_none(profile, dominant_key) or 0
+    lines.extend(render_candidate_gate(profile, main_total))
+
     lines.extend(
         [
-            "",
             "### Reading Notes",
             "",
-            (
-                f"- Dominant parent stage: {dominant_label}, "
-                f"{fmt_share(dominant_value, main_total)} of profiled stage time."
-            ),
             "- `n/a` means the artifact predates that finer-grained counter.",
             "- This profile uses timing barriers and disables production decode pipelining; do not use it as headline throughput evidence.",
             "",
