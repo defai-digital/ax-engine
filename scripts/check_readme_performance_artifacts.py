@@ -100,6 +100,26 @@ AX_NGRAM_CLAIM_STATUSES = {
     "ngram_no_observed_draft_path",
 }
 
+AX_DECODE_EFFECTIVE_ROUTES = {
+    "direct_pipeline_baseline",
+    "direct_single_decode_baseline",
+    "linear_no_draft_direct_pipeline_fallback",
+    "linear_no_draft_mixed_fallback",
+    "linear_no_draft_single_decode_fallback",
+    "no_draft_fallback",
+    "ngram_route_not_observed",
+    "ngram_attempted_no_accept_fallback",
+    "ngram_verified_bonus_tokens",
+    "ngram_accepted_without_decode_route",
+}
+
+AX_NGRAM_NO_DRAFT_EFFECTIVE_ROUTES = {
+    "linear_no_draft_direct_pipeline_fallback",
+    "linear_no_draft_mixed_fallback",
+    "linear_no_draft_single_decode_fallback",
+    "no_draft_fallback",
+}
+
 AX_DIRECT_HOTPATH_FALLBACK_COUNTERS = {
     "ax_mlx_single_decode_steps": "single-decode fallback steps",
     "ax_mlx_ngram_decode_steps": "n-gram decode steps",
@@ -1101,6 +1121,14 @@ def validate_ngram_claim_telemetry(
             f"{artifact_path} n-gram row lacks telemetry counters: {', '.join(missing)}"
         )
     status = row.get("ax_decode_claim_status")
+    effective_route = row.get("ax_decode_effective_route")
+    if (
+        effective_route is not None
+        and effective_route not in AX_DECODE_EFFECTIVE_ROUTES
+    ):
+        raise ArtifactCheckError(
+            f"{artifact_path} has unknown AX effective decode route: {effective_route}"
+        )
     decode_route = row.get("ax_mlx_decode_route")
     no_decode_steps = (
         isinstance(decode_route, dict)
@@ -1117,15 +1145,39 @@ def validate_ngram_claim_telemetry(
         raise ArtifactCheckError(
             f"{artifact_path} claims n-gram throughput without draft acceptance"
         )
+    if (
+        status == "ngram_acceleration_effective_throughput"
+        and effective_route is not None
+        and effective_route != "ngram_verified_bonus_tokens"
+    ):
+        raise ArtifactCheckError(
+            f"{artifact_path} claims n-gram throughput with inconsistent effective route"
+        )
     if status == "ngram_no_draft_direct_fallback" and (
         attempts != 0 or fallback_steps <= 0
     ):
         raise ArtifactCheckError(
             f"{artifact_path} claims n-gram fallback without fallback telemetry"
         )
+    if (
+        status == "ngram_no_draft_direct_fallback"
+        and effective_route is not None
+        and effective_route not in AX_NGRAM_NO_DRAFT_EFFECTIVE_ROUTES
+    ):
+        raise ArtifactCheckError(
+            f"{artifact_path} claims n-gram fallback with inconsistent effective route"
+        )
     if status == "ngram_no_accept_fallback" and (attempts <= 0 or accepted != 0):
         raise ArtifactCheckError(
             f"{artifact_path} claims n-gram no-accept fallback with inconsistent telemetry"
+        )
+    if (
+        status == "ngram_no_accept_fallback"
+        and effective_route is not None
+        and effective_route != "ngram_attempted_no_accept_fallback"
+    ):
+        raise ArtifactCheckError(
+            f"{artifact_path} claims n-gram no-accept fallback with inconsistent effective route"
         )
     if status == "ngram_no_observed_draft_path" and (
         not no_decode_steps or attempts != 0 or accepted != 0

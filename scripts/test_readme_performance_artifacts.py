@@ -1003,6 +1003,60 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
             self.assertEqual(len(checked), 7)
 
+    def test_ngram_no_draft_fallback_allows_matching_effective_route(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx_ngram_accel":
+                    row["ax_decode_claim_status"] = "ngram_no_draft_direct_fallback"
+                    row["ax_decode_effective_route"] = (
+                        "linear_no_draft_direct_pipeline_fallback"
+                    )
+                    row["ngram_acceleration_telemetry"] = ngram_telemetry(
+                        attempts=0,
+                        accepted=0,
+                        fallback_steps=2,
+                    )
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=root / "README.md",
+                expected_metric_count=7,
+            )
+
+            self.assertEqual(len(checked), 7)
+
+    def test_ngram_no_draft_fallback_rejects_inconsistent_effective_route(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            artifact = json.loads(artifact_path.read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx_ngram_accel":
+                    row["ax_decode_claim_status"] = "ngram_no_draft_direct_fallback"
+                    row["ax_decode_effective_route"] = "ngram_verified_bonus_tokens"
+                    row["ngram_acceleration_telemetry"] = ngram_telemetry(
+                        attempts=0,
+                        accepted=0,
+                        fallback_steps=2,
+                    )
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "inconsistent effective route",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
+
     def test_public_prefix_reuse_claim_requires_physical_snapshot_hit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

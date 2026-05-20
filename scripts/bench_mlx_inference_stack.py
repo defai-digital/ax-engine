@@ -793,6 +793,59 @@ def ax_decode_claim_status(
     return "ngram_acceleration_effective_throughput"
 
 
+def ax_decode_effective_route(
+    *,
+    direct_mode: bool,
+    model_metadata: dict[str, Any],
+    telemetry: dict[str, int],
+    ax_mlx_telemetry: dict[str, int],
+) -> str:
+    """Classify the route actually observed after fallback decisions.
+
+    ``ax_decode_policy`` records the requested policy. This field records the
+    effective route shown by runtime counters so linear-attention no-draft rows
+    cannot be mistaken for a working n-gram acceleration path.
+    """
+    direct_steps = int(ax_mlx_telemetry.get("ax_mlx_direct_pipeline_steps", 0))
+    single_steps = int(ax_mlx_telemetry.get("ax_mlx_single_decode_steps", 0))
+    ngram_decode_steps = int(ax_mlx_telemetry.get("ax_mlx_ngram_decode_steps", 0))
+
+    if direct_mode:
+        return (
+            "direct_pipeline_baseline"
+            if direct_steps > 0
+            else "direct_single_decode_baseline"
+        )
+
+    draft_attempts = int(telemetry.get("ax_ngram_draft_attempts", 0))
+    accepted_tokens = int(telemetry.get("ax_ngram_accepted_tokens", 0))
+    no_draft_steps = int(telemetry.get("ax_ngram_no_draft_steps", 0))
+    request_disabled_steps = int(
+        telemetry.get("ax_ngram_request_disabled_steps", 0)
+    )
+    linear_no_draft_steps = int(
+        telemetry.get("ax_ngram_fallback_linear_no_draft_steps", 0)
+    )
+    has_linear_attention = bool(model_metadata.get("linear_attention_enabled"))
+
+    if draft_attempts == 0:
+        if no_draft_steps > 0 or request_disabled_steps > 0:
+            if has_linear_attention and linear_no_draft_steps > 0:
+                if direct_steps > 0 and single_steps == 0:
+                    return "linear_no_draft_direct_pipeline_fallback"
+                if direct_steps > 0 and single_steps > 0:
+                    return "linear_no_draft_mixed_fallback"
+                return "linear_no_draft_single_decode_fallback"
+            return "no_draft_fallback"
+        return "ngram_route_not_observed"
+
+    if accepted_tokens == 0:
+        return "ngram_attempted_no_accept_fallback"
+    if ngram_decode_steps > 0:
+        return "ngram_verified_bonus_tokens"
+    return "ngram_accepted_without_decode_route"
+
+
 def canonical_prompt_hash(tokens: list[int]) -> str:
     """Stable SHA256-hex(prefix) hash of a token sequence.
 
@@ -2611,6 +2664,12 @@ def bench_axengine(
         "ax_decode_claim_status": ax_decode_claim_status(
             direct_mode,
             ngram_summary,
+        ),
+        "ax_decode_effective_route": ax_decode_effective_route(
+            direct_mode=direct_mode,
+            model_metadata=model_metadata,
+            telemetry=ngram_summary,
+            ax_mlx_telemetry=ax_mlx_telemetry,
         ),
         "ax_decode_claim_mode": ax_decode_claim_mode(direct_mode, sampler=None),
         "prompt_contract": "mlx_lm_random_tokens_seed_0",

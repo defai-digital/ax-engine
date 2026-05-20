@@ -1719,6 +1719,37 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "ngram_acceleration_effective_throughput",
         )
 
+    def test_ax_decode_effective_route_identifies_linear_no_draft_fallback(self) -> None:
+        telemetry = {
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_request_disabled_steps": 381,
+            "ax_ngram_fallback_linear_no_draft_steps": 381,
+        }
+        ax_mlx_telemetry = {
+            "ax_mlx_direct_pipeline_steps": 381,
+            "ax_mlx_single_decode_steps": 0,
+        }
+
+        self.assertEqual(
+            bench.ax_decode_effective_route(
+                direct_mode=False,
+                model_metadata={"linear_attention_enabled": True},
+                telemetry=telemetry,
+                ax_mlx_telemetry=ax_mlx_telemetry,
+            ),
+            "linear_no_draft_direct_pipeline_fallback",
+        )
+        self.assertEqual(
+            bench.ax_decode_effective_route(
+                direct_mode=True,
+                model_metadata={"linear_attention_enabled": True},
+                telemetry={},
+                ax_mlx_telemetry=ax_mlx_telemetry,
+            ),
+            "direct_pipeline_baseline",
+        )
+
     def test_summarize_ngram_accept_at_depth_yields_histogram_or_empty(self) -> None:
         # No depth keys at all => empty (do not annotate older runtime rows).
         self.assertEqual(bench.summarize_ngram_accept_at_depth({}), {})
