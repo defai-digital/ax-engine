@@ -527,12 +527,34 @@ def validate_build_provenance(
         return
     if build.get("git_tracked_dirty") is True:
         status = build.get("git_tracked_status")
+        if tracked_dirty_is_benchmark_doc_only(status):
+            return
         suffix = ""
         if isinstance(status, list) and status:
             suffix = f"; tracked changes include: {', '.join(map(str, status[:5]))}"
         raise ArtifactCheckError(
             f"{artifact_path} was produced from a tracked-dirty source tree{suffix}"
         )
+
+
+def tracked_dirty_is_benchmark_doc_only(status: Any) -> bool:
+    if not isinstance(status, list) or not status:
+        return False
+    return all(is_benchmark_doc_only_status_line(line) for line in status)
+
+
+def is_benchmark_doc_only_status_line(line: Any) -> bool:
+    if not isinstance(line, str) or len(line) < 4:
+        return False
+    status_code = line[:2]
+    if "M" not in status_code or any(code not in {" ", "M"} for code in status_code):
+        return False
+    path = line[3:]
+    if " -> " in path:
+        return False
+    return path == "README.md" or (
+        path.startswith("docs/assets/perf-") and path.endswith(".svg")
+    )
 
 
 @dataclass(frozen=True)

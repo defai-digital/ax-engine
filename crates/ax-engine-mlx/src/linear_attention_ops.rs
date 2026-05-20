@@ -18,7 +18,8 @@ pub struct LinearAttentionQkv {
 }
 
 static GATED_DELTA_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
-pub(crate) const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: usize = 512;
+pub(crate) const GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY: usize = 512;
+pub(crate) const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: usize = 2048;
 
 /// compute_g from mlx-lm/mlx-swift-lm:
 /// `exp(-exp(A_log.float32) * softplus(a + dt_bias))`.
@@ -189,12 +190,16 @@ pub fn gated_delta_kernel(
     let key_head_dim = q_shape[3];
     let num_value_heads = v_shape[2];
     let value_head_dim = v_shape[3];
-    let cache_capacity = GATED_DELTA_THREADGROUP_CACHE_CAPACITY as i32;
     let seq_i32 = scalar_i32(seq);
     assert!(
-        seq <= cache_capacity,
+        seq <= GATED_DELTA_THREADGROUP_CACHE_CAPACITY as i32,
         "gated_delta_kernel t_len ({seq}) exceeds threadgroup cache capacity ({GATED_DELTA_THREADGROUP_CACHE_CAPACITY})"
     );
+    let cache_capacity = if seq <= GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32 {
+        GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32
+    } else {
+        GATED_DELTA_THREADGROUP_CACHE_CAPACITY as i32
+    };
     // The Metal kernel uses `constexpr int n_per_t = Dk / 32` (integer division over
     // 32 SIMD lanes).  If key_head_dim is not divisible by 32, the remainder is silently
     // dropped and the state update is mathematically wrong.
@@ -261,6 +266,10 @@ pub fn gated_delta_kernel(
                 name: "Hv",
                 value: num_value_heads,
             },
+            KernelTemplateArg::Int {
+                name: "CacheCapacity",
+                value: cache_capacity,
+            },
         ],
         (32, value_head_dim, batch * num_value_heads),
         (32, 4, 1),
@@ -326,9 +335,12 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     // threadgroup (32x4x1 = 128 threads). All threads share the same hv_idx
     // so they would otherwise recompute identical transcendental values in
     // every iteration of the hot loop — 127/128 redundant calls eliminated.
-    // 512 * 2 * 4 = 4 KB, well within the 32 KB threadgroup memory limit.
-    threadgroup float g_t_cache[512];
-    threadgroup float beta_t_cache[512];
+    //
+    // CacheCapacity is specialized from Rust: 512 for decode/small prompts and
+    // 2048 for long prefill, matching mlx_lm's default prefill_step_size while
+    // avoiding the larger threadgroup allocation on the per-token decode path.
+    threadgroup float g_t_cache[CacheCapacity];
+    threadgroup float beta_t_cache[CacheCapacity];
 
     auto a_base = a_raw + b_idx * t_len * Hv;
     auto b_base = b_raw + b_idx * t_len * Hv;
@@ -592,6 +604,26 @@ mod tests {
         let state = zeros(&[1, 1, 4, 32], MlxDtype::Float32, None);
 
         let _ = gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+    }
+
+    #[test]
+    fn gated_delta_kernel_accepts_long_prefill_specialization() {
+        let seq = (GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY + 1) as i32;
+        let q = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
+        let k = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
+        let v = zeros(&[1, seq, 1, 4], MlxDtype::Float32, None);
+        let a_log = zeros(&[1], MlxDtype::Float32, None);
+        let a_raw = zeros(&[1, seq, 1], MlxDtype::Float32, None);
+        let dt_bias = zeros(&[1], MlxDtype::Float32, None);
+        let b_raw = zeros(&[1, seq, 1], MlxDtype::Float32, None);
+        let state = zeros(&[1, 1, 4, 32], MlxDtype::Float32, None);
+
+        let (y, new_state) =
+            gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+        mlx_sys::eval(&[&y, &new_state]);
+
+        assert_eq!(y.shape(), vec![1, seq, 1, 4]);
+        assert_eq!(new_state.shape(), vec![1, 1, 4, 32]);
     }
 
     #[test]

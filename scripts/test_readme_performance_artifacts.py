@@ -482,6 +482,21 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             artifact={"build": {"commit": "abc123"}},
         )
 
+    def test_build_provenance_allows_benchmark_doc_only_dirty_artifact(self) -> None:
+        checker.validate_build_provenance(
+            artifact_path=Path("artifact.json"),
+            artifact={
+                "build": {
+                    "git_tracked_dirty": True,
+                    "git_tracked_status": [
+                        " M README.md",
+                        " M docs/assets/perf-decode-2048-box-whisker.svg",
+                        " M docs/assets/perf-prefill-512-box-whisker.svg",
+                    ],
+                }
+            },
+        )
+
     def test_legacy_non_gated_rows_allow_missing_claim_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

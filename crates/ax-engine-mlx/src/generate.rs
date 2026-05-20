@@ -14,8 +14,8 @@ use crate::sampling::{
 };
 use crate::weights::ModelWeights;
 
-/// Default chunk size for chunked prefill, matching SwiftLM's default and the
-/// GatedDelta Metal kernel's threadgroup cache capacity.
+/// Default chunk size for chunked prefill, matching mlx-lm's default
+/// `prefill_step_size` and the long GatedDelta Metal kernel specialization.
 pub const DEFAULT_PREFILL_CHUNK: usize = GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

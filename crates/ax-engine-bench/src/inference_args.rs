@@ -16,18 +16,17 @@ use crate::error::CliError;
 /// auto-clamps this value per model family:
 ///
 /// - Dense / full-attention models (Qwen3, Llama-style): use 2048 as-is.
-/// - Models with GatedDelta linear-attention layers (Qwen3.5, Gemma 4,
-///   GLM 4.7 linear branch): clamped to 512 by
+/// - Models with GatedDelta linear-attention layers (Qwen3.5 / Qwen 3.6):
+///   use the long GatedDelta kernel specialization capped by
 ///   `crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY`.
 /// - MLA models (GLM 4 Flash MLA): forced to
 ///   `MLA_DEFAULT_PREFILL_CHUNK = 16` by
 ///   `crate::fastpath::resolve_prefill_chunk`.
 ///
 /// Using `None` here (the previous default) caused the runner to fall back
-/// to `DEFAULT_PREFILL_CHUNK = 512`, which made dense-model bench numbers
-/// roughly 4× slower than `mlx_lm.benchmark` on long prompts — not because
-/// the engine was slower, but because the comparison was unfair. Override
-/// with `--prefill-chunk N` when needed.
+/// to the runtime default, which may differ by model family. Keep this
+/// explicit so long-prompt comparisons remain aligned with `mlx_lm.benchmark`.
+/// Override with `--prefill-chunk N` when needed.
 pub(crate) const BENCH_DEFAULT_MLX_PREFILL_CHUNK: usize = 2048;
 
 #[derive(Clone, Debug)]

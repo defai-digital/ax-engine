@@ -2602,17 +2602,13 @@ impl MlxRunner {
         // ignore the MLA-specific resolution.
         //
         // Linear-attention tiers (Qwen3.5 9B, Qwen3-Next family — Qwen 3.6
-        // and Qwen Coder Next) have a hard kernel cap of
-        // `GATED_DELTA_THREADGROUP_CACHE_CAPACITY` (=512) tokens per
-        // chunked_prefill call: the GatedDelta recurrent state update is
-        // dispatched into a threadgroup-local cache that cannot hold more
-        // than that. Larger chunks panic at
-        // `linear_attention.rs:gated_delta_kernel`. Clamp both the cold
-        // and warm prefill chunks to that cap when the model has ANY
-        // linear-attention layer, regardless of what the caller asked
-        // for via `--prefill-chunk`. This preserves the user-facing
-        // `--prefill-chunk` knob on dense models and on the (currently
-        // empty) set of architectures that have no kernel-side cap.
+        // and Qwen Coder Next) have a kernel-side chunk cap because the
+        // GatedDelta recurrent update precomputes per-token gate values in
+        // threadgroup-local storage. The kernel now has a short specialization
+        // for decode/small prompts and a 2048-token long-prefill specialization
+        // to match mlx-lm's default `prefill_step_size`. Clamp both cold and
+        // warm prefill chunks to the maximum supported specialization when the
+        // model has ANY linear-attention layer.
         let linear_attention_chunk_cap =
             if (0..cfg.layer_count).any(|i| cfg.is_linear_attention_layer(i)) {
                 Some(crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY)
