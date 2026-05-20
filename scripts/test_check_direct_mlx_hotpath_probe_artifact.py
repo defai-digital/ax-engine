@@ -43,9 +43,13 @@ def direct_mlx_artifact(candidate: str = "gelu_approx_mul") -> dict:
         portable_name = "portable_gemma4_post_attn_ffn_block"
         direct_name = "direct_cpp_gemma4_post_attn_ffn_block"
         shape = [8, 4]
+    elif candidate == "qwen_linear_attention_inputs_packed":
+        portable_name = "portable_qwen_linear_attention_inputs_packed"
+        direct_name = "direct_cpp_qwen_linear_attention_inputs_packed"
+        shape = [1, 8, 20]
     else:
         raise AssertionError(f"unknown candidate {candidate}")
-    return {
+    artifact = {
         "schema": "ax.microbench.v1",
         "surface": "direct-mlx-hotpath",
         "command": f"target/debug/direct-mlx-hotpath-probe --candidate {candidate}",
@@ -61,6 +65,10 @@ def direct_mlx_artifact(candidate: str = "gelu_approx_mul") -> dict:
             "dtype": "float32",
             "group_size": 64,
             "bits": 4,
+            "linear_num_key_heads": 2,
+            "linear_num_value_heads": 4,
+            "linear_key_head_dim": 3,
+            "linear_value_head_dim": 2,
             "warmup": 1,
             "iterations": 3,
         },
@@ -84,6 +92,14 @@ def direct_mlx_artifact(candidate: str = "gelu_approx_mul") -> dict:
             },
         ],
     }
+    if candidate == "qwen_linear_attention_inputs_packed":
+        artifact["correctness"]["component_shapes"] = {
+            "qkv": [1, 8, 20],
+            "z": [1, 8, 4, 2],
+            "a": [1, 8, 4],
+            "b": [1, 8, 4],
+        }
+    return artifact
 
 
 def timing(name: str, *, median: float, op_count_median: int) -> dict:
@@ -114,6 +130,9 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
 
     def test_valid_gemma4_post_attn_ffn_block_artifact_passes(self) -> None:
         checker.validate_artifact(direct_mlx_artifact("gemma4_post_attn_ffn_block"))
+
+    def test_valid_qwen_linear_attention_inputs_artifact_passes(self) -> None:
+        checker.validate_artifact(direct_mlx_artifact("qwen_linear_attention_inputs_packed"))
 
     def test_qk_norm_rope_rejects_head_dim_n_heads_cols_mismatch(self) -> None:
         artifact = direct_mlx_artifact("qk_norm_rope")
@@ -148,6 +167,24 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
         artifact["config"]["bits"] = 5
 
         with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "bits"):
+            checker.validate_artifact(artifact)
+
+    def test_qwen_linear_attention_inputs_rejects_missing_component_shape(self) -> None:
+        artifact = direct_mlx_artifact("qwen_linear_attention_inputs_packed")
+        del artifact["correctness"]["component_shapes"]["z"]
+
+        with self.assertRaisesRegex(
+            checker.DirectMlxHotpathProbeArtifactError, "component_shapes.z"
+        ):
+            checker.validate_artifact(artifact)
+
+    def test_qwen_linear_attention_inputs_rejects_invalid_head_ratio(self) -> None:
+        artifact = direct_mlx_artifact("qwen_linear_attention_inputs_packed")
+        artifact["config"]["linear_num_value_heads"] = 5
+
+        with self.assertRaisesRegex(
+            checker.DirectMlxHotpathProbeArtifactError, "linear_num_value_heads"
+        ):
             checker.validate_artifact(artifact)
 
     def test_wrong_schema_fails_closed(self) -> None:

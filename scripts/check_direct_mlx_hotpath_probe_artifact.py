@@ -38,6 +38,10 @@ CANDIDATE_MEASUREMENTS = {
         "portable_gemma4_post_attn_ffn_block",
         "direct_cpp_gemma4_post_attn_ffn_block",
     ),
+    "qwen_linear_attention_inputs_packed": (
+        "portable_qwen_linear_attention_inputs_packed",
+        "direct_cpp_qwen_linear_attention_inputs_packed",
+    ),
 }
 SPEEDUP_MEASUREMENT = "direct_cpp_speedup_ratio"
 DEFAULT_MAX_ABS_ERROR = 1e-6
@@ -93,6 +97,13 @@ def _positive_number(value: Any, field: str) -> float:
     number = _number(value, field)
     _require(number > 0.0, f"{field} must be positive")
     return number
+
+
+def _shape(value: Any, field: str) -> list[int]:
+    shape = _array(value, field)
+    for index, dim in enumerate(shape):
+        _positive_integer(dim, f"{field}[{index}]")
+    return shape
 
 
 def _measurement_map(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -161,12 +172,20 @@ def validate_artifact(
         "gemma4_post_attn_ffn_block",
     }:
         output_cols = _positive_integer(config.get("down_cols"), "config.down_cols")
-    if candidate in {"gelu_approx_quantized_ffn", "gemma4_post_attn_ffn_block"}:
+    if candidate in {
+        "gelu_approx_quantized_ffn",
+        "gemma4_post_attn_ffn_block",
+        "qwen_linear_attention_inputs_packed",
+    }:
         group_size = _positive_integer(config.get("group_size"), "config.group_size")
         bits = _positive_integer(config.get("bits"), "config.bits")
         _require(group_size in {32, 64, 128}, "config.group_size must be one of 32, 64, 128")
-        _require(bits == 4, "config.bits must be 4")
+        if candidate == "qwen_linear_attention_inputs_packed":
+            _require(2 <= bits <= 8, "config.bits must be between 2 and 8")
+        else:
+            _require(bits == 4, "config.bits must be 4")
     expected_shape: list[int]
+    expected_component_shapes: dict[str, list[int]] | None = None
     if candidate == "qk_norm_rope":
         head_dim = _positive_integer(config.get("head_dim"), "config.head_dim")
         n_heads = _positive_integer(config.get("n_heads"), "config.n_heads")
@@ -175,6 +194,32 @@ def validate_artifact(
             "config.n_heads * config.head_dim must equal config.cols for qk_norm_rope",
         )
         expected_shape = [1, n_heads, rows, head_dim]
+    elif candidate == "qwen_linear_attention_inputs_packed":
+        num_key_heads = _positive_integer(
+            config.get("linear_num_key_heads"), "config.linear_num_key_heads"
+        )
+        num_value_heads = _positive_integer(
+            config.get("linear_num_value_heads"), "config.linear_num_value_heads"
+        )
+        key_head_dim = _positive_integer(
+            config.get("linear_key_head_dim"), "config.linear_key_head_dim"
+        )
+        value_head_dim = _positive_integer(
+            config.get("linear_value_head_dim"), "config.linear_value_head_dim"
+        )
+        _require(
+            num_value_heads % num_key_heads == 0,
+            "config.linear_num_value_heads must be divisible by config.linear_num_key_heads",
+        )
+        key_dim = num_key_heads * key_head_dim
+        value_dim = num_value_heads * value_head_dim
+        expected_shape = [1, rows, key_dim * 2 + value_dim]
+        expected_component_shapes = {
+            "qkv": expected_shape,
+            "z": [1, rows, num_value_heads, value_head_dim],
+            "a": [1, rows, num_value_heads],
+            "b": [1, rows, num_value_heads],
+        }
     else:
         expected_shape = [rows, output_cols]
     _require(config.get("dtype") == "float32", "config.dtype must be float32")
@@ -186,8 +231,20 @@ def validate_artifact(
         _number(correctness.get("max_abs_error"), "correctness.max_abs_error") <= max_abs_error,
         f"correctness.max_abs_error must be <= {max_abs_error}",
     )
-    shape = _array(correctness.get("shape"), "correctness.shape")
+    shape = _shape(correctness.get("shape"), "correctness.shape")
     _require(shape == expected_shape, "correctness.shape must match expected output shape")
+    if expected_component_shapes is not None:
+        component_shapes = _mapping(
+            correctness.get("component_shapes"), "correctness.component_shapes"
+        )
+        for name, expected in expected_component_shapes.items():
+            observed = _shape(
+                component_shapes.get(name), f"correctness.component_shapes.{name}"
+            )
+            _require(
+                observed == expected,
+                f"correctness.component_shapes.{name} must match expected output shape",
+            )
 
     measurements = _measurement_map(doc)
     for name in (portable_measurement, direct_measurement, SPEEDUP_MEASUREMENT):

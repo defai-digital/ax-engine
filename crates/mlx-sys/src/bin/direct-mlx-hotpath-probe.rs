@@ -6,9 +6,10 @@ use std::time::Instant;
 
 use mlx_sys::ops::{gelu_approx_mul_matmul, gelu_approx_quantized_ffn, gemma4_post_attn_ffn_block};
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, add, as_strided, eval, gelu_approx, gelu_approx_mul,
-    matmul, multiply, op_count_snapshot, op_count_take, qk_norm_rope_bhsd_from_proj, quantize,
-    quantized_matmul, rms_norm, rope, slice_last_dim,
+    MlxArray, MlxDtype, MlxQuantizationMode, add, as_strided, concatenate, eval, gelu_approx,
+    gelu_approx_mul, matmul, multiply, op_count_snapshot, op_count_take,
+    qk_norm_rope_bhsd_from_proj, quantize, quantized_matmul, qwen_linear_attention_inputs_packed,
+    reshape, rms_norm, rope, slice_last_dim,
 };
 use serde_json::{Value, json};
 
@@ -18,6 +19,10 @@ const DEFAULT_DOWN_COLS: i32 = 1536;
 const DEFAULT_HEAD_DIM: i32 = 256;
 const DEFAULT_GROUP_SIZE: i32 = 64;
 const DEFAULT_BITS: i32 = 4;
+const DEFAULT_LINEAR_NUM_KEY_HEADS: i32 = 16;
+const DEFAULT_LINEAR_NUM_VALUE_HEADS: i32 = 64;
+const DEFAULT_LINEAR_KEY_HEAD_DIM: i32 = 192;
+const DEFAULT_LINEAR_VALUE_HEAD_DIM: i32 = 128;
 const DEFAULT_WARMUP: usize = 5;
 const DEFAULT_ITERATIONS: usize = 30;
 const CORRECTNESS_TOLERANCE: f32 = 1.0e-6;
@@ -29,6 +34,7 @@ enum Candidate {
     QuantizedFfn,
     QkNormRope,
     Gemma4PostAttnFfnBlock,
+    QwenLinearAttentionInputsPacked,
 }
 
 impl Candidate {
@@ -39,8 +45,9 @@ impl Candidate {
             "gelu_approx_quantized_ffn" => Ok(Self::QuantizedFfn),
             "qk_norm_rope" => Ok(Self::QkNormRope),
             "gemma4_post_attn_ffn_block" => Ok(Self::Gemma4PostAttnFfnBlock),
+            "qwen_linear_attention_inputs_packed" => Ok(Self::QwenLinearAttentionInputsPacked),
             other => Err(format!(
-                "unknown --candidate {other:?}; expected gelu_approx_mul, gelu_approx_mul_matmul, gelu_approx_quantized_ffn, qk_norm_rope, or gemma4_post_attn_ffn_block",
+                "unknown --candidate {other:?}; expected gelu_approx_mul, gelu_approx_mul_matmul, gelu_approx_quantized_ffn, qk_norm_rope, gemma4_post_attn_ffn_block, or qwen_linear_attention_inputs_packed",
             )),
         }
     }
@@ -52,6 +59,7 @@ impl Candidate {
             Self::QuantizedFfn => "gelu_approx_quantized_ffn",
             Self::QkNormRope => "qk_norm_rope",
             Self::Gemma4PostAttnFfnBlock => "gemma4_post_attn_ffn_block",
+            Self::QwenLinearAttentionInputsPacked => "qwen_linear_attention_inputs_packed",
         }
     }
 
@@ -62,6 +70,7 @@ impl Candidate {
             Self::QuantizedFfn => "portable_gelu_approx_quantized_ffn",
             Self::QkNormRope => "portable_qk_norm_rope",
             Self::Gemma4PostAttnFfnBlock => "portable_gemma4_post_attn_ffn_block",
+            Self::QwenLinearAttentionInputsPacked => "portable_qwen_linear_attention_inputs_packed",
         }
     }
 
@@ -72,6 +81,9 @@ impl Candidate {
             Self::QuantizedFfn => "direct_cpp_gelu_approx_quantized_ffn",
             Self::QkNormRope => "direct_cpp_qk_norm_rope",
             Self::Gemma4PostAttnFfnBlock => "direct_cpp_gemma4_post_attn_ffn_block",
+            Self::QwenLinearAttentionInputsPacked => {
+                "direct_cpp_qwen_linear_attention_inputs_packed"
+            }
         }
     }
 }
@@ -85,6 +97,10 @@ struct Config {
     head_dim: i32,
     group_size: i32,
     bits: i32,
+    linear_num_key_heads: i32,
+    linear_num_value_heads: i32,
+    linear_key_head_dim: i32,
+    linear_value_head_dim: i32,
     warmup: usize,
     iterations: usize,
     json_out: Option<PathBuf>,
@@ -100,6 +116,10 @@ impl Default for Config {
             head_dim: DEFAULT_HEAD_DIM,
             group_size: DEFAULT_GROUP_SIZE,
             bits: DEFAULT_BITS,
+            linear_num_key_heads: DEFAULT_LINEAR_NUM_KEY_HEADS,
+            linear_num_value_heads: DEFAULT_LINEAR_NUM_VALUE_HEADS,
+            linear_key_head_dim: DEFAULT_LINEAR_KEY_HEAD_DIM,
+            linear_value_head_dim: DEFAULT_LINEAR_VALUE_HEAD_DIM,
             warmup: DEFAULT_WARMUP,
             iterations: DEFAULT_ITERATIONS,
             json_out: None,
@@ -117,6 +137,8 @@ struct Fixture {
     _norm_data: Option<Vec<f32>>,
     _post_norm_data: Option<Vec<f32>>,
     _layer_scalar_data: Option<Vec<f32>>,
+    _linear_qkvz_weight_data: Option<Vec<f32>>,
+    _linear_ba_weight_data: Option<Vec<f32>>,
     gate: Option<MlxArray>,
     up: Option<MlxArray>,
     down_weight: Option<MlxArray>,
@@ -128,10 +150,20 @@ struct Fixture {
     layer_scalar: Option<MlxArray>,
     gate_up_quantized: Option<QuantizedFixtureWeight>,
     down_quantized: Option<QuantizedFixtureWeight>,
+    linear_attention: Option<LinearAttentionFixture>,
     group_size: i32,
     bits: i32,
     n_heads: i32,
     head_dim: i32,
+}
+
+struct LinearAttentionFixture {
+    qkvz: QuantizedFixtureWeight,
+    ba: QuantizedFixtureWeight,
+    num_key_heads: i32,
+    num_value_heads: i32,
+    key_head_dim: i32,
+    value_head_dim: i32,
 }
 
 struct QuantizedFixtureWeight {
@@ -211,10 +243,12 @@ fn run() -> Result<(), String> {
     }
     if matches!(
         config.candidate,
-        Candidate::QuantizedFfn | Candidate::Gemma4PostAttnFfnBlock
+        Candidate::QuantizedFfn
+            | Candidate::Gemma4PostAttnFfnBlock
+            | Candidate::QwenLinearAttentionInputsPacked
     ) && !matches!(config.group_size, 32 | 64 | 128)
     {
-        return Err("--group-size must be 32, 64, or 128 for quantized FFN candidates".into());
+        return Err("--group-size must be 32, 64, or 128 for quantized candidates".into());
     }
     if matches!(
         config.candidate,
@@ -226,6 +260,25 @@ fn run() -> Result<(), String> {
     if config.candidate == Candidate::QkNormRope && config.cols % config.head_dim != 0 {
         return Err("--cols must be divisible by --head-dim for qk_norm_rope".into());
     }
+    if config.candidate == Candidate::QwenLinearAttentionInputsPacked {
+        if !(2..=8).contains(&config.bits) {
+            return Err(
+                "--bits must be between 2 and 8 for qwen_linear_attention_inputs_packed".into(),
+            );
+        }
+        if config.linear_num_key_heads <= 0
+            || config.linear_num_value_heads <= 0
+            || config.linear_key_head_dim <= 0
+            || config.linear_value_head_dim <= 0
+        {
+            return Err("--linear-* dimensions must be positive".into());
+        }
+        if config.linear_num_value_heads % config.linear_num_key_heads != 0 {
+            return Err(
+                "--linear-num-value-heads must be divisible by --linear-num-key-heads".into(),
+            );
+        }
+    }
 
     let fixture = Fixture::new(
         config.candidate,
@@ -235,6 +288,10 @@ fn run() -> Result<(), String> {
         config.head_dim,
         config.group_size,
         config.bits,
+        config.linear_num_key_heads,
+        config.linear_num_value_heads,
+        config.linear_key_head_dim,
+        config.linear_value_head_dim,
     )?;
     warmup(&fixture, config.candidate, config.warmup);
     let correctness = correctness(&fixture, config.candidate);
@@ -273,6 +330,10 @@ fn run() -> Result<(), String> {
             "dtype": "float32",
             "group_size": config.group_size,
             "bits": config.bits,
+            "linear_num_key_heads": config.linear_num_key_heads,
+            "linear_num_value_heads": config.linear_num_value_heads,
+            "linear_key_head_dim": config.linear_key_head_dim,
+            "linear_value_head_dim": config.linear_value_head_dim,
             "warmup": config.warmup,
             "iterations": config.iterations,
         },
@@ -281,6 +342,7 @@ fn run() -> Result<(), String> {
             "max_abs_error": correctness.max_abs_error,
             "tolerance": CORRECTNESS_TOLERANCE,
             "shape": correctness.shape,
+            "component_shapes": correctness.component_shapes,
         },
         "measurements": [
             portable.stats_json(config.candidate.portable_measurement()),
@@ -327,6 +389,16 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Config, String> {
             "--head-dim" => config.head_dim = parse_value(&arg, args.next())?,
             "--group-size" => config.group_size = parse_value(&arg, args.next())?,
             "--bits" => config.bits = parse_value(&arg, args.next())?,
+            "--linear-num-key-heads" => {
+                config.linear_num_key_heads = parse_value(&arg, args.next())?
+            }
+            "--linear-num-value-heads" => {
+                config.linear_num_value_heads = parse_value(&arg, args.next())?
+            }
+            "--linear-key-head-dim" => config.linear_key_head_dim = parse_value(&arg, args.next())?,
+            "--linear-value-head-dim" => {
+                config.linear_value_head_dim = parse_value(&arg, args.next())?
+            }
             "--warmup" => config.warmup = parse_value(&arg, args.next())?,
             "--iterations" => config.iterations = parse_value(&arg, args.next())?,
             "--json-out" => config.json_out = Some(PathBuf::from(parse_string(&arg, args.next())?)),
@@ -360,13 +432,17 @@ fn print_help() {
 direct-mlx-hotpath-probe
 
 Options:
-  --candidate <NAME> Select gelu_approx_mul, gelu_approx_mul_matmul, gelu_approx_quantized_ffn, qk_norm_rope, or gemma4_post_attn_ffn_block
+  --candidate <NAME> Select gelu_approx_mul, gelu_approx_mul_matmul, gelu_approx_quantized_ffn, qk_norm_rope, gemma4_post_attn_ffn_block, or qwen_linear_attention_inputs_packed
   --rows <N>         Tensor rows, default {DEFAULT_ROWS}
   --cols <N>         FFN/intermediate cols, default {DEFAULT_COLS}
   --down-cols <N>    Output/input cols for down-projection and quantized FFN, default {DEFAULT_DOWN_COLS}
   --head-dim <N>     Per-head dimension for qk_norm_rope, default {DEFAULT_HEAD_DIM}
   --group-size <N>   Affine quantization group size for quantized FFN, default {DEFAULT_GROUP_SIZE}
   --bits <N>         Affine quantization bits for quantized FFN, default {DEFAULT_BITS}
+  --linear-num-key-heads <N>   Qwen linear-attention key heads, default {DEFAULT_LINEAR_NUM_KEY_HEADS}
+  --linear-num-value-heads <N> Qwen linear-attention value heads, default {DEFAULT_LINEAR_NUM_VALUE_HEADS}
+  --linear-key-head-dim <N>    Qwen linear-attention key head dim, default {DEFAULT_LINEAR_KEY_HEAD_DIM}
+  --linear-value-head-dim <N>  Qwen linear-attention value head dim, default {DEFAULT_LINEAR_VALUE_HEAD_DIM}
   --warmup <N>       Warmup iterations, default {DEFAULT_WARMUP}
   --iterations <N>   Measured iterations, default {DEFAULT_ITERATIONS}
   --json-out <PATH>  Write ax.microbench.v1 JSON to PATH instead of stdout
@@ -375,6 +451,7 @@ Options:
 }
 
 impl Fixture {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         candidate: Candidate,
         rows: i32,
@@ -383,10 +460,28 @@ impl Fixture {
         head_dim: i32,
         group_size: i32,
         bits: i32,
+        linear_num_key_heads: i32,
+        linear_num_value_heads: i32,
+        linear_key_head_dim: i32,
+        linear_value_head_dim: i32,
     ) -> Result<Self, String> {
         let rows_usize = usize::try_from(rows).map_err(|_| "rows must fit usize")?;
         let cols_usize = usize::try_from(cols).map_err(|_| "cols must fit usize")?;
         let down_cols_usize = usize::try_from(down_cols).map_err(|_| "down-cols must fit usize")?;
+        if candidate == Candidate::QwenLinearAttentionInputsPacked {
+            return Self::new_qwen_linear_attention_inputs_packed(
+                rows,
+                cols,
+                rows_usize,
+                cols_usize,
+                group_size,
+                bits,
+                linear_num_key_heads,
+                linear_num_value_heads,
+                linear_key_head_dim,
+                linear_value_head_dim,
+            );
+        }
         if candidate == Candidate::QuantizedFfn {
             return Self::new_quantized_ffn(
                 rows,
@@ -474,6 +569,8 @@ impl Fixture {
             _norm_data: None,
             _post_norm_data: None,
             _layer_scalar_data: None,
+            _linear_qkvz_weight_data: None,
+            _linear_ba_weight_data: None,
             gate: Some(gate),
             up: Some(up),
             down_weight,
@@ -485,6 +582,7 @@ impl Fixture {
             layer_scalar: None,
             gate_up_quantized: None,
             down_quantized: None,
+            linear_attention: None,
             group_size,
             bits,
             n_heads: 0,
@@ -534,6 +632,8 @@ impl Fixture {
             _norm_data: Some(norm_data),
             _post_norm_data: None,
             _layer_scalar_data: None,
+            _linear_qkvz_weight_data: None,
+            _linear_ba_weight_data: None,
             gate: None,
             up: None,
             down_weight: None,
@@ -545,6 +645,7 @@ impl Fixture {
             layer_scalar: None,
             gate_up_quantized: None,
             down_quantized: None,
+            linear_attention: None,
             group_size: DEFAULT_GROUP_SIZE,
             bits: DEFAULT_BITS,
             n_heads: cols / head_dim,
@@ -624,6 +725,8 @@ impl Fixture {
             _norm_data: None,
             _post_norm_data: None,
             _layer_scalar_data: None,
+            _linear_qkvz_weight_data: None,
+            _linear_ba_weight_data: None,
             gate: None,
             up: None,
             down_weight: None,
@@ -635,6 +738,7 @@ impl Fixture {
             layer_scalar: None,
             gate_up_quantized: Some(gate_up_quantized),
             down_quantized: Some(down_quantized),
+            linear_attention: None,
             group_size,
             bits,
             n_heads: 0,
@@ -752,6 +856,8 @@ impl Fixture {
             _norm_data: Some(norm_data),
             _post_norm_data: Some(post_norm_data),
             _layer_scalar_data: Some(layer_scalar_data),
+            _linear_qkvz_weight_data: None,
+            _linear_ba_weight_data: None,
             gate: None,
             up: None,
             down_weight: None,
@@ -763,6 +869,126 @@ impl Fixture {
             layer_scalar: Some(layer_scalar),
             gate_up_quantized: Some(gate_up_quantized),
             down_quantized: Some(down_quantized),
+            linear_attention: None,
+            group_size,
+            bits,
+            n_heads: 0,
+            head_dim: 0,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_qwen_linear_attention_inputs_packed(
+        rows: i32,
+        cols: i32,
+        rows_usize: usize,
+        cols_usize: usize,
+        group_size: i32,
+        bits: i32,
+        num_key_heads: i32,
+        num_value_heads: i32,
+        key_head_dim: i32,
+        value_head_dim: i32,
+    ) -> Result<Self, String> {
+        let value_heads_per_key = num_value_heads / num_key_heads;
+        let value_dim_per_key = value_heads_per_key
+            .checked_mul(value_head_dim)
+            .ok_or("value_heads_per_key * value_head_dim overflowed i32")?;
+        let qkvz_per_key = key_head_dim
+            .checked_mul(2)
+            .and_then(|v| v.checked_add(value_dim_per_key.checked_mul(2)?))
+            .ok_or("qkvz_per_key overflowed i32")?;
+        let qkvz_out = num_key_heads
+            .checked_mul(qkvz_per_key)
+            .ok_or("num_key_heads * qkvz_per_key overflowed i32")?;
+        let ba_out = num_key_heads
+            .checked_mul(value_heads_per_key)
+            .and_then(|v| v.checked_mul(2))
+            .ok_or("packed ba output width overflowed i32")?;
+
+        let qkvz_out_usize = usize::try_from(qkvz_out).map_err(|_| "qkvz_out must fit usize")?;
+        let ba_out_usize = usize::try_from(ba_out).map_err(|_| "ba_out must fit usize")?;
+        let input_len = rows_usize
+            .checked_mul(cols_usize)
+            .ok_or("rows * cols overflowed usize")?;
+        let qkvz_weight_len = qkvz_out_usize
+            .checked_mul(cols_usize)
+            .ok_or("qkvz_out * cols overflowed usize")?;
+        let ba_weight_len = ba_out_usize
+            .checked_mul(cols_usize)
+            .ok_or("ba_out * cols overflowed usize")?;
+
+        let input_data = (0..input_len)
+            .map(|idx| ((idx % 257) as f32 - 128.0) / 128.0)
+            .collect::<Vec<_>>();
+        let qkvz_weight_data = (0..qkvz_weight_len)
+            .map(|idx| ((idx % 251) as f32 - 125.0) / (251.0 * cols_usize as f32).sqrt())
+            .collect::<Vec<_>>();
+        let ba_weight_data = (0..ba_weight_len)
+            .map(|idx| ((idx % 241) as f32 - 120.0) / (241.0 * cols_usize as f32).sqrt())
+            .collect::<Vec<_>>();
+
+        let input = MlxArray::from_raw_data(
+            input_data.as_ptr().cast(),
+            std::mem::size_of_val(input_data.as_slice()),
+            &[1, rows, cols],
+            MlxDtype::Float32,
+        );
+        let qkvz_weight = MlxArray::from_raw_data(
+            qkvz_weight_data.as_ptr().cast(),
+            std::mem::size_of_val(qkvz_weight_data.as_slice()),
+            &[qkvz_out, cols],
+            MlxDtype::Float32,
+        );
+        let ba_weight = MlxArray::from_raw_data(
+            ba_weight_data.as_ptr().cast(),
+            std::mem::size_of_val(ba_weight_data.as_slice()),
+            &[ba_out, cols],
+            MlxDtype::Float32,
+        );
+        let qkvz = quantized_fixture_weight(&qkvz_weight, group_size, bits)?;
+        let ba = quantized_fixture_weight(&ba_weight, group_size, bits)?;
+        eval(&[
+            &input,
+            &qkvz.weight,
+            &qkvz.scales,
+            &qkvz.biases,
+            &ba.weight,
+            &ba.scales,
+            &ba.biases,
+        ]);
+
+        Ok(Self {
+            _gate_data: None,
+            _up_data: None,
+            _input_data: Some(input_data),
+            _down_weight_data: None,
+            _gate_up_weight_data: None,
+            _proj_data: None,
+            _norm_data: None,
+            _post_norm_data: None,
+            _layer_scalar_data: None,
+            _linear_qkvz_weight_data: Some(qkvz_weight_data),
+            _linear_ba_weight_data: Some(ba_weight_data),
+            gate: None,
+            up: None,
+            down_weight: None,
+            input: Some(input),
+            attn: None,
+            proj: None,
+            norm: None,
+            post_norm: None,
+            layer_scalar: None,
+            gate_up_quantized: None,
+            down_quantized: None,
+            linear_attention: Some(LinearAttentionFixture {
+                qkvz,
+                ba,
+                num_key_heads,
+                num_value_heads,
+                key_head_dim,
+                value_head_dim,
+            }),
             group_size,
             bits,
             n_heads: 0,
@@ -802,36 +1028,117 @@ fn quantized_fixture_weight(
 
 fn warmup(fixture: &Fixture, candidate: Candidate, warmup: usize) {
     for _ in 0..warmup {
-        eval(&[
-            &portable_candidate(fixture, candidate),
-            &direct_candidate(fixture, candidate),
-        ]);
+        let portable = portable_candidate(fixture, candidate);
+        let direct = direct_candidate(fixture, candidate);
+        let mut arrays = portable.arrays();
+        arrays.extend(direct.arrays());
+        eval(&arrays);
     }
 }
 
-fn portable_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
+enum CandidateOutput {
+    Single(MlxArray),
+    LinearAttentionInputs {
+        qkv: MlxArray,
+        z: MlxArray,
+        a: MlxArray,
+        b: MlxArray,
+    },
+}
+
+impl CandidateOutput {
+    fn arrays(&self) -> Vec<&MlxArray> {
+        match self {
+            Self::Single(output) => vec![output],
+            Self::LinearAttentionInputs { qkv, z, a, b } => vec![qkv, z, a, b],
+        }
+    }
+
+    fn primary_shape(&self) -> Vec<i32> {
+        match self {
+            Self::Single(output) => output.shape(),
+            Self::LinearAttentionInputs { qkv, .. } => qkv.shape(),
+        }
+    }
+
+    fn component_shapes(&self) -> Option<Value> {
+        match self {
+            Self::Single(_) => None,
+            Self::LinearAttentionInputs { qkv, z, a, b } => Some(json!({
+                "qkv": qkv.shape(),
+                "z": z.shape(),
+                "a": a.shape(),
+                "b": b.shape(),
+            })),
+        }
+    }
+
+    fn max_abs_error_against(&self, other: &Self) -> f32 {
+        match (self, other) {
+            (Self::Single(left), Self::Single(right)) => max_abs_error(left, right),
+            (
+                Self::LinearAttentionInputs {
+                    qkv: l_qkv,
+                    z: l_z,
+                    a: l_a,
+                    b: l_b,
+                },
+                Self::LinearAttentionInputs {
+                    qkv: r_qkv,
+                    z: r_z,
+                    a: r_a,
+                    b: r_b,
+                },
+            ) => [
+                max_abs_error(l_qkv, r_qkv),
+                max_abs_error(l_z, r_z),
+                max_abs_error(l_a, r_a),
+                max_abs_error(l_b, r_b),
+            ]
+            .into_iter()
+            .fold(0.0_f32, f32::max),
+            _ => panic!("candidate output variants must match"),
+        }
+    }
+}
+
+fn portable_candidate(fixture: &Fixture, candidate: Candidate) -> CandidateOutput {
     match candidate {
-        Candidate::Activation => multiply(&gelu_approx(fixture.gate(), None), fixture.up(), None),
+        Candidate::Activation => CandidateOutput::Single(multiply(
+            &gelu_approx(fixture.gate(), None),
+            fixture.up(),
+            None,
+        )),
         Candidate::ActivationDown => {
             let hidden = multiply(&gelu_approx(fixture.gate(), None), fixture.up(), None);
-            matmul(&hidden, fixture.down_weight(), None)
+            CandidateOutput::Single(matmul(&hidden, fixture.down_weight(), None))
         }
-        Candidate::QuantizedFfn => portable_quantized_ffn(fixture),
-        Candidate::QkNormRope => portable_qk_norm_rope(fixture),
-        Candidate::Gemma4PostAttnFfnBlock => portable_gemma4_post_attn_ffn_block(fixture),
+        Candidate::QuantizedFfn => CandidateOutput::Single(portable_quantized_ffn(fixture)),
+        Candidate::QkNormRope => CandidateOutput::Single(portable_qk_norm_rope(fixture)),
+        Candidate::Gemma4PostAttnFfnBlock => {
+            CandidateOutput::Single(portable_gemma4_post_attn_ffn_block(fixture))
+        }
+        Candidate::QwenLinearAttentionInputsPacked => {
+            portable_qwen_linear_attention_inputs(fixture)
+        }
     }
 }
 
-fn direct_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
+fn direct_candidate(fixture: &Fixture, candidate: Candidate) -> CandidateOutput {
     match candidate {
-        Candidate::Activation => gelu_approx_mul(fixture.gate(), fixture.up(), None),
-        Candidate::ActivationDown => {
-            gelu_approx_mul_matmul(fixture.gate(), fixture.up(), fixture.down_weight(), None)
+        Candidate::Activation => {
+            CandidateOutput::Single(gelu_approx_mul(fixture.gate(), fixture.up(), None))
         }
+        Candidate::ActivationDown => CandidateOutput::Single(gelu_approx_mul_matmul(
+            fixture.gate(),
+            fixture.up(),
+            fixture.down_weight(),
+            None,
+        )),
         Candidate::QuantizedFfn => {
             let gate_up = fixture.gate_up_quantized();
             let down = fixture.down_quantized();
-            gelu_approx_quantized_ffn(
+            CandidateOutput::Single(gelu_approx_quantized_ffn(
                 fixture.input(),
                 &gate_up.weight,
                 &gate_up.scales,
@@ -842,9 +1149,9 @@ fn direct_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
                 fixture.group_size,
                 fixture.bits,
                 None,
-            )
+            ))
         }
-        Candidate::QkNormRope => qk_norm_rope_bhsd_from_proj(
+        Candidate::QkNormRope => CandidateOutput::Single(qk_norm_rope_bhsd_from_proj(
             fixture.proj(),
             Some(fixture.norm()),
             fixture.n_heads,
@@ -856,11 +1163,11 @@ fn direct_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
             0,
             None,
             None,
-        ),
+        )),
         Candidate::Gemma4PostAttnFfnBlock => {
             let gate_up = fixture.gate_up_quantized();
             let down = fixture.down_quantized();
-            gemma4_post_attn_ffn_block(
+            CandidateOutput::Single(gemma4_post_attn_ffn_block(
                 fixture.input(),
                 fixture.attn(),
                 fixture.norm(),
@@ -876,8 +1183,9 @@ fn direct_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
                 fixture.bits,
                 1.0e-6,
                 None,
-            )
+            ))
         }
+        Candidate::QwenLinearAttentionInputsPacked => direct_qwen_linear_attention_inputs(fixture),
     }
 }
 
@@ -946,6 +1254,12 @@ impl Fixture {
         self.layer_scalar
             .as_ref()
             .expect("layer scalar is required for Gemma4 post-attention FFN block candidate")
+    }
+
+    fn linear_attention(&self) -> &LinearAttentionFixture {
+        self.linear_attention
+            .as_ref()
+            .expect("linear attention fixture is required for Qwen linear-attention candidate")
     }
 }
 
@@ -1023,14 +1337,160 @@ fn portable_qk_norm_rope(fixture: &Fixture) -> MlxArray {
     )
 }
 
-fn measure(_name: &str, iterations: usize, mut op: impl FnMut() -> MlxArray) -> Measurement {
+fn portable_qwen_linear_attention_inputs(fixture: &Fixture) -> CandidateOutput {
+    let linear = fixture.linear_attention();
+    let value_heads_per_key = linear.num_value_heads / linear.num_key_heads;
+    let value_dim_per_key = value_heads_per_key * linear.value_head_dim;
+    let qkvz_per_key = linear.key_head_dim * 2 + value_dim_per_key * 2;
+
+    let mixed_qkvz = quantized_matmul(
+        fixture.input(),
+        &linear.qkvz.weight,
+        &linear.qkvz.scales,
+        Some(&linear.qkvz.biases),
+        true,
+        Some(fixture.group_size),
+        Some(fixture.bits),
+        None,
+    );
+    let mixed_qkvz = reshape(
+        &mixed_qkvz,
+        &[
+            1,
+            fixture.input().shape()[1],
+            linear.num_key_heads,
+            qkvz_per_key,
+        ],
+        None,
+    );
+    let q = slice_last_dim(&mixed_qkvz, 0, linear.key_head_dim, None);
+    let k = slice_last_dim(
+        &mixed_qkvz,
+        linear.key_head_dim,
+        linear.key_head_dim * 2,
+        None,
+    );
+    let v = slice_last_dim(
+        &mixed_qkvz,
+        linear.key_head_dim * 2,
+        linear.key_head_dim * 2 + value_dim_per_key,
+        None,
+    );
+    let z = slice_last_dim(
+        &mixed_qkvz,
+        linear.key_head_dim * 2 + value_dim_per_key,
+        qkvz_per_key,
+        None,
+    );
+    let qkv = concatenate(
+        &[
+            &reshape(
+                &q,
+                &[
+                    1,
+                    fixture.input().shape()[1],
+                    linear.num_key_heads * linear.key_head_dim,
+                ],
+                None,
+            ),
+            &reshape(
+                &k,
+                &[
+                    1,
+                    fixture.input().shape()[1],
+                    linear.num_key_heads * linear.key_head_dim,
+                ],
+                None,
+            ),
+            &reshape(
+                &v,
+                &[
+                    1,
+                    fixture.input().shape()[1],
+                    linear.num_value_heads * linear.value_head_dim,
+                ],
+                None,
+            ),
+        ],
+        2,
+        None,
+    );
+    let z = reshape(
+        &z,
+        &[
+            1,
+            fixture.input().shape()[1],
+            linear.num_value_heads,
+            linear.value_head_dim,
+        ],
+        None,
+    );
+
+    let mixed_ba = quantized_matmul(
+        fixture.input(),
+        &linear.ba.weight,
+        &linear.ba.scales,
+        Some(&linear.ba.biases),
+        true,
+        Some(fixture.group_size),
+        Some(fixture.bits),
+        None,
+    );
+    let ba = reshape(
+        &mixed_ba,
+        &[
+            1,
+            fixture.input().shape()[1],
+            linear.num_key_heads,
+            value_heads_per_key * 2,
+        ],
+        None,
+    );
+    let b = reshape(
+        &slice_last_dim(&ba, 0, value_heads_per_key, None),
+        &[1, fixture.input().shape()[1], linear.num_value_heads],
+        None,
+    );
+    let a = reshape(
+        &slice_last_dim(&ba, value_heads_per_key, value_heads_per_key * 2, None),
+        &[1, fixture.input().shape()[1], linear.num_value_heads],
+        None,
+    );
+
+    CandidateOutput::LinearAttentionInputs { qkv, z, a, b }
+}
+
+fn direct_qwen_linear_attention_inputs(fixture: &Fixture) -> CandidateOutput {
+    let linear = fixture.linear_attention();
+    let (qkv, z, a, b) = qwen_linear_attention_inputs_packed(
+        fixture.input(),
+        &linear.qkvz.weight,
+        Some(&linear.qkvz.scales),
+        Some(&linear.qkvz.biases),
+        &linear.ba.weight,
+        Some(&linear.ba.scales),
+        Some(&linear.ba.biases),
+        linear.num_key_heads,
+        linear.num_value_heads,
+        linear.key_head_dim,
+        linear.value_head_dim,
+        fixture.group_size,
+        fixture.bits,
+        None,
+    )
+    .expect("direct Qwen linear-attention packed input shim should accept fixture shapes");
+    CandidateOutput::LinearAttentionInputs { qkv, z, a, b }
+}
+
+fn measure(_name: &str, iterations: usize, mut op: impl FnMut() -> CandidateOutput) -> Measurement {
     let mut samples_us = Vec::with_capacity(iterations);
     let mut op_counts = Vec::with_capacity(iterations);
     for _ in 0..iterations {
         let op_snapshot = op_count_snapshot();
         let started = Instant::now();
         let output = op();
-        eval(&[&output]);
+        let arrays = output.arrays();
+        eval(&arrays);
         samples_us.push(started.elapsed().as_secs_f64() * 1_000_000.0);
         op_counts.push(op_count_take(op_snapshot));
     }
@@ -1043,23 +1503,30 @@ fn measure(_name: &str, iterations: usize, mut op: impl FnMut() -> MlxArray) -> 
 struct Correctness {
     max_abs_error: f32,
     shape: Vec<i32>,
+    component_shapes: Option<Value>,
 }
 
 fn correctness(fixture: &Fixture, candidate: Candidate) -> Correctness {
     let portable = portable_candidate(fixture, candidate);
     let direct = direct_candidate(fixture, candidate);
-    eval(&[&portable, &direct]);
-    let portable_data = portable.data_f32();
-    let direct_data = direct.data_f32();
-    let max_abs_error = portable_data
-        .iter()
-        .zip(direct_data)
-        .map(|(a, b)| (a - b).abs())
-        .fold(0.0_f32, f32::max);
+    let mut arrays = portable.arrays();
+    arrays.extend(direct.arrays());
+    eval(&arrays);
     Correctness {
-        max_abs_error,
-        shape: direct.shape(),
+        max_abs_error: portable.max_abs_error_against(&direct),
+        shape: direct.primary_shape(),
+        component_shapes: direct.component_shapes(),
     }
+}
+
+fn max_abs_error(left: &MlxArray, right: &MlxArray) -> f32 {
+    let left_data = left.data_f32();
+    let right_data = right.data_f32();
+    left_data
+        .iter()
+        .zip(right_data)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max)
 }
 
 fn median_f64_sorted(sorted: &[f64]) -> f64 {
