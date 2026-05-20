@@ -58,6 +58,10 @@ PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
 PREFILL_SCALING_SCHEMA_VERSION = "ax.mlx_prefill_scaling.v1"
 CONCURRENT_PREFILL_SCHEMA_VERSION = "ax.mlx_concurrent_prefill.v1"
 REUSED_REFERENCE_MIN_REPETITIONS = 3
+MLX_LM_STYLE_PREFILL_WORK_CONTRACT = (
+    "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+)
+HISTORICAL_PREFILL_WORK_CONTRACT = "historical_full_logits_prefill_or_sampler_required"
 LONG_CONTEXT_CAMPAIGN_BOUNDARY_SNIPPET = (
     "single-model long-context boundary, not a Gemma/Qwen/GLM-wide campaign"
 )
@@ -1021,6 +1025,26 @@ def validate_ax_prefill_decode_split(
         validate_phase0_runtime_identity(artifact_path=artifact_path, row=row)
 
 
+def expected_ax_prefill_work_contract(row: dict[str, Any]) -> str:
+    sampler = row.get("sampler_settings")
+    prompt_tokens = int(row.get("prompt_tokens", -1))
+    if sampler is None and prompt_tokens > 512:
+        return MLX_LM_STYLE_PREFILL_WORK_CONTRACT
+    return HISTORICAL_PREFILL_WORK_CONTRACT
+
+
+def validate_ax_prefill_work_contract(
+    *, artifact_path: Path, row: dict[str, Any]
+) -> None:
+    expected = expected_ax_prefill_work_contract(row)
+    actual = row.get("prefill_work_contract")
+    if actual != expected:
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} prompt={row.get('prompt_tokens')} "
+            f"has prefill_work_contract={actual!r}; expected {expected!r}"
+        )
+
+
 def validate_direct_hotpath_no_hidden_fallbacks(
     *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
 ) -> None:
@@ -1555,6 +1579,11 @@ def check_readme_performance_summary(
                 f"README {metric.table} row has no artifact: "
                 f"{metric.model} {metric.quantization} prompt={metric.prompt_tokens} "
                 f"generation_tokens={metric.generation_tokens} engine={metric.engine}"
+            )
+        if metric.engine in AX_ENGINE_ROWS:
+            validate_ax_prefill_work_contract(
+                artifact_path=artifact_row.artifact_path,
+                row=artifact_row.row,
             )
         assert_display_matches(metric, artifact_row)
         assert_display_delta_matches(metric, artifact_row, artifact_rows)

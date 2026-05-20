@@ -334,6 +334,9 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 payload["decode_s"] = metric(0.2)
                 payload["ax_mlx_telemetry"] = ax_mlx_telemetry()
                 payload["ax_decode_policy"] = "direct_no_ngram_acceleration"
+                payload["prefill_work_contract"] = (
+                    checker.HISTORICAL_PREFILL_WORK_CONTRACT
+                )
                 if claim_status:
                     payload["ax_decode_claim_status"] = "direct_same_policy_baseline"
                 payload["ngram_acceleration_telemetry"] = ngram_telemetry(
@@ -352,6 +355,9 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 payload["decode_s"] = metric(0.2)
                 payload["ax_mlx_telemetry"] = ax_mlx_telemetry()
                 payload["ax_decode_policy"] = "ngram_acceleration_kv_trim"
+                payload["prefill_work_contract"] = (
+                    checker.HISTORICAL_PREFILL_WORK_CONTRACT
+                )
                 if claim_status:
                     payload["ax_decode_claim_status"] = (
                         "ngram_acceleration_effective_throughput"
@@ -454,6 +460,36 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             )
 
         self.assertEqual(len(checked), 7)
+
+    def test_phase0_ax_row_rejects_stale_long_prefill_work_contract(self) -> None:
+        row = {
+            "engine": "ax_engine_mlx",
+            "prompt_tokens": 2048,
+            "sampler_settings": None,
+            "prefill_work_contract": checker.HISTORICAL_PREFILL_WORK_CONTRACT,
+        }
+
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            "expected 'mlx_lm_style_cache_only_prefix_plus_final_prompt_token'",
+        ):
+            checker.validate_ax_prefill_work_contract(
+                artifact_path=Path("artifact.json"),
+                row=row,
+            )
+
+    def test_phase0_ax_row_accepts_long_greedy_prefill_work_contract(self) -> None:
+        row = {
+            "engine": "ax_engine_mlx_ngram_accel",
+            "prompt_tokens": 2048,
+            "sampler_settings": None,
+            "prefill_work_contract": checker.MLX_LM_STYLE_PREFILL_WORK_CONTRACT,
+        }
+
+        checker.validate_ax_prefill_work_contract(
+            artifact_path=Path("artifact.json"),
+            row=row,
+        )
 
     def test_build_provenance_rejects_tracked_dirty_artifact(self) -> None:
         with self.assertRaisesRegex(

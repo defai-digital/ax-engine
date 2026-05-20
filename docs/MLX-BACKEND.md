@@ -28,7 +28,7 @@ subprocess wrapper.
 ax-engine-sdk (Rust)
   └── MlxRunner (ExecutionRunner)
         ├── ax-engine-mlx (Rust)
-        │     ├── generate.rs    — chunked prefill (512 tok) + decode loop
+        │     ├── generate.rs    — chunked prefill (2048 tok) + decode loop
         │     ├── model.rs       — Qwen3 transformer (attn + FFN + norm)
         │     ├── kv_cache.rs    — chunked KV cache with slice_update growth
         │     ├── ngram_accel.rs — n-gram acceleration + EMA gating
@@ -70,10 +70,11 @@ requests.
 
 ### Chunked prefill
 
-Process prompt in 512-token windows (configurable).  Between each chunk,
-`mlx_async_eval` drains the GPU command queue without blocking the CPU.
-Prevents Metal's 5-second watchdog from firing on long prompts.  Matches
-SwiftLM's default `--prefill-size 512`.
+Process prompt in 2048-token windows by default (configurable). Between each
+chunk, `mlx_async_eval` drains the GPU command queue without blocking the CPU.
+The default matches `mlx_lm.generate`'s `prefill_step_size`; MLA warm-extend
+requests use a smaller restore-safe chunk, and Qwen GatedDelta prefill clamps
+to the long Metal specialization capacity.
 
 ### Chunked KV cache
 

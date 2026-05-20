@@ -40,11 +40,11 @@ pub struct EngineSessionConfig {
     /// Optional MLX KV compression policy. Disabled by default.
     pub mlx_kv_compression: KvCompressionConfig,
     /// Override the MLX runner's prefill chunk size. `None` keeps the
-    /// runner's `DEFAULT_PREFILL_CHUNK` (sized to the GatedDelta linear-
-    /// attention threadgroup cache). Setting this lets callers (benchmark
-    /// harness, server CLI) align AX's prefill chunk geometry with the
-    /// upstream `--prefill-step-size` mlx_lm and mlx-swift-lm use so the
-    /// three engines compare apples-to-apples at long prompts.
+    /// runner's `DEFAULT_PREFILL_CHUNK` (2048), matching mlx_lm's default
+    /// `prefill_step_size`. Setting this lets callers (benchmark harness,
+    /// server CLI) align AX's prefill chunk geometry with upstream MLX for
+    /// long-prompt comparisons. MLA models clamp through their own
+    /// prefix-restore chunk policy.
     pub mlx_prefill_chunk: Option<usize>,
 }
 

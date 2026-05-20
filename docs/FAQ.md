@@ -148,13 +148,11 @@ direct path and the N-gram path on the same prompt/decode shape.
 
 ## What are the current limitations?
 
-- **GatedDelta prefill (Qwen3.5)**: The recurrent state update in GatedDelta
-  linear-attention layers serializes over time steps and cannot be parallelized.
-  On **Qwen3.5 9B** this puts AX prefill about 9% behind mlx-swift-lm at 512
-  tokens; decode throughput is unaffected. **Qwen3-Next (Coder Next) is not
-  affected** in the same way: AX prefill exceeds mlx-swift-lm by 2x on that
-  architecture because the sparse MoE forward path dominates the runtime, not
-  the GatedDelta layers.
+- **GatedDelta prefill (Qwen3.5 / Qwen 3.6)**: The recurrent state update in
+  GatedDelta linear-attention layers serializes over time steps and cannot be
+  parallelized. AX now uses a 2048-token long-prefill specialization to match
+  `mlx_lm` chunk geometry; remaining gaps should be investigated with
+  `AX_MLX_LINEAR_ATTENTION_PROFILE=1` before changing runtime defaults.
 - **Raw HuggingFace weights**: ax-engine loads MLX community pre-sanitized
   weights. For hybrid architectures such as Qwen3.5 and Qwen3-Next, loading an
   unsanitized checkpoint raises a hard error at load time. Convert first with

@@ -111,14 +111,11 @@ pub struct ServerArgs {
     pub disable_ngram_acceleration: bool,
 
     /// Override the MLX prefill chunk size. When unset, the runner uses
-    /// `DEFAULT_PREFILL_CHUNK` (512, sized to the GatedDelta linear-attention
-    /// threadgroup cache). For dense / full-attention models on long prompts
-    /// (≥4k), a larger chunk such as 2048 dramatically improves prefill
-    /// throughput by reducing the number of SDPA dispatches. The bench
-    /// harness sets this to match `--prefill-step-size` used by mlx_lm and
-    /// mlx-swift-lm so the three runtimes compare on identical chunk
-    /// geometry. MLA models layer their own `AX_MLX_MLA_PREFILL_CHUNK`
-    /// env override on top of this for warm-extend equivalence.
+    /// `DEFAULT_PREFILL_CHUNK` (2048), matching mlx_lm's default
+    /// `prefill_step_size`. Models with MLA layers clamp warm-extend prefill
+    /// through `AX_MLX_MLA_PREFILL_CHUNK` / `MLA_DEFAULT_PREFILL_CHUNK` for
+    /// prefix-restore equivalence; Qwen GatedDelta layers clamp to the
+    /// long-prefill Metal specialization capacity.
     #[arg(long = "prefill-chunk")]
     pub prefill_chunk: Option<usize>,
 

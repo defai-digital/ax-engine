@@ -124,7 +124,7 @@ like-for-like. The MLX runner auto-clamps this per model family:
 | Model family | Effective chunk | Reason |
 |---|---|---|
 | Dense / full-attention (Qwen3, Llama-style) | 2048 | Bench default; matches `mlx_lm.generate` |
-| GatedDelta linear attention (Qwen3.5, Gemma 4, GLM 4.7 linear branch) | 512 | `GATED_DELTA_THREADGROUP_CACHE_CAPACITY` Metal kernel cap |
+| Qwen GatedDelta linear attention (Qwen3.5 / Qwen 3.6) | 2048 | Long-prefill Metal specialization; matches `mlx_lm.generate` while keeping a smaller decode/small-prompt specialization |
 | MLA (GLM 4 Flash MLA) | 16 | `MLA_DEFAULT_PREFILL_CHUNK` warm-extend alignment |
 
 Override on the CLI with `--prefill-chunk N` when a specific comparison
