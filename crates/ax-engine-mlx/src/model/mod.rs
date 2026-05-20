@@ -269,7 +269,8 @@ pub fn layer_forward_with_turboquant_context_last_only(
 }
 
 /// Embed token IDs and return hidden states of shape [1, seq_len, hidden].
-/// Embed tokens from a pre-built 1-D `[seq]` token-ID array.
+/// Embed tokens from a pre-built scalar, 1-D `[seq]`, or singleton matrix
+/// token-ID array.
 ///
 /// Accepts lazy (unevaluated) arrays — all ops are lazy MLX graph nodes — so
 /// this can be called with a GPU argmax result before it has been materialised.
@@ -280,11 +281,18 @@ fn embed_tokens_arr(
     embedding: &QuantizedWeight,
     hidden_size: usize,
 ) -> MlxArray {
-    let seq = ids_1d.shape()[0]; // shape metadata is available without eval
+    let scalar_ids_storage;
+    let ids = if ids_1d.ndim() == 0 {
+        scalar_ids_storage = reshape(ids_1d, &[1_i32], None);
+        &scalar_ids_storage
+    } else {
+        ids_1d
+    };
+    let seq = ids.shape()[0]; // shape metadata is available without eval
     if let Some(scales) = &embedding.scales {
-        let row_w = take(&embedding.weight, ids_1d, 0, None);
-        let row_s = take(scales, ids_1d, 0, None);
-        let row_b = embedding.biases.as_ref().map(|b| take(b, ids_1d, 0, None));
+        let row_w = take(&embedding.weight, ids, 0, None);
+        let row_s = take(scales, ids, 0, None);
+        let row_b = embedding.biases.as_ref().map(|b| take(b, ids, 0, None));
         let flat = dequantize(
             &row_w,
             &row_s,
@@ -295,7 +303,7 @@ fn embed_tokens_arr(
         );
         reshape(&flat, &[1, seq, hidden_size as i32], None)
     } else {
-        let flat = take(&embedding.weight, ids_1d, 0, None);
+        let flat = take(&embedding.weight, ids, 0, None);
         reshape(&flat, &[1, seq, hidden_size as i32], None)
     }
 }
@@ -1762,6 +1770,12 @@ mod tests {
     fn embed_tokens_arr_accepts_singleton_matrix_token_ids() {
         let embedding = dense_weight_from_data(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], &[3, 2]);
         let token_id = [2_u32];
+        let ids_scalar = MlxArray::from_raw_data(
+            token_id.as_ptr().cast(),
+            std::mem::size_of_val(&token_id),
+            &[],
+            MlxDtype::Uint32,
+        );
         let ids_1d = MlxArray::from_raw_data(
             token_id.as_ptr().cast(),
             std::mem::size_of_val(&token_id),
@@ -1775,12 +1789,15 @@ mod tests {
             MlxDtype::Uint32,
         );
 
+        let from_scalar = embed_tokens_arr(&ids_scalar, &embedding, 2);
         let from_1d = embed_tokens_arr(&ids_1d, &embedding, 2);
         let from_2d = embed_tokens_arr(&ids_2d, &embedding, 2);
-        eval(&[&from_1d, &from_2d]);
+        eval(&[&from_scalar, &from_1d, &from_2d]);
 
+        assert_eq!(from_scalar.shape(), vec![1, 1, 2]);
         assert_eq!(from_1d.shape(), vec![1, 1, 2]);
         assert_eq!(from_2d.shape(), vec![1, 1, 2]);
+        assert_close(from_scalar.data_f32(), from_1d.data_f32(), 0.0);
         assert_close(from_1d.data_f32(), from_2d.data_f32(), 0.0);
         assert_close(from_2d.data_f32(), &[4.0, 5.0], 0.0);
     }
