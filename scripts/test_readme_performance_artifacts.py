@@ -867,7 +867,8 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 .replace(
                     "`benchmarks/results/mlx-inference/local/`",
                     "<!-- readme-performance-artifacts: "
-                    "base=benchmarks/results/mlx-inference/local/; "
+                    "reference=benchmarks/results/mlx-inference/local/; "
+                    "ax-base=benchmarks/results/mlx-inference/local/; "
                     "ax-decode-overlay@p4="
                     "benchmarks/results/mlx-inference/decode-overlay/ -->\n"
                     "`benchmarks/results/mlx-inference/local/`",
@@ -882,6 +883,31 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             )
 
         self.assertEqual(len(checked), 7)
+
+    def test_readme_rejects_unscoped_base_in_composite_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            readme_path = root / "README.md"
+            readme_path.write_text(
+                readme_path.read_text().replace(
+                    "`benchmarks/results/mlx-inference/local/`",
+                    "<!-- readme-performance-artifacts: "
+                    "base=benchmarks/results/mlx-inference/local/; "
+                    "ax-overlay=benchmarks/results/mlx-inference/local/ -->\n"
+                    "`benchmarks/results/mlx-inference/local/`",
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "base= is only allowed as a single legacy source",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=readme_path,
+                    expected_metric_count=7,
+                )
 
     def test_non_reference_rows_must_match_artifact_repetition_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

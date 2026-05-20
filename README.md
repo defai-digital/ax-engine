@@ -203,7 +203,7 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-18-ax-only-sweep/; reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-r1/; ax-overlay@p2048=benchmarks/results/mlx-inference/2026-05-20-qwen27-4bit-long-gateddelta-prefill-r2/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-r1/; ax-overlay@p2048=benchmarks/results/mlx-inference/2026-05-20-qwen27-4bit-long-gateddelta-prefill-r3/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
@@ -214,8 +214,8 @@ from `benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/`. The
 refreshed AX direct and n-gram rows for all Gemma 4 and Qwen 3.6 rows shown
 below come from
 `benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-r1/`.
-The Qwen 3.6 27B 4-bit prompt=2048 AX direct prefill/TTFT row is refreshed from
-`benchmarks/results/mlx-inference/2026-05-20-qwen27-4bit-long-gateddelta-prefill-r2/`.
+The Qwen 3.6 27B 4-bit prompt=2048 AX direct and n-gram rows are refreshed from
+`benchmarks/results/mlx-inference/2026-05-20-qwen27-4bit-long-gateddelta-prefill-r3/`.
 The `llama.cpp Metal*` column is also injected from
 `benchmarks/manifests/llama_cpp_metal/inventory.json` and the
 `benchmarks/results/mlx-inference/2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/`
@@ -268,7 +268,7 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 |         |         | 2048 | 560.3 | 733.9 | **776.7 (+5.8%)** |
 | Qwen 3.6 27B | 4-bit | 128 | 539.6 | 378.8 | **791.6 (+109.0%)** |
 |  |  | 512 | 759.7 | 705.7 | **893.8 (+26.7%)** |
-|  |  | 2048 | 664.3 | 895.2 | 890.5 (-0.5%) |
+|  |  | 2048 | 664.3 | 895.2 | 882.6 (-1.4%) |
 | Qwen 3.6 27B | 5-bit | 128 | 520.8 | 278.8 | **749.1 (+168.7%)** |
 |  |  | 512 | 733.4 | 599.5 | **823.7 (+37.4%)** |
 |  |  | 2048 | 667.0 | 827.5 | 674.2 (-18.5%) |
@@ -331,7 +331,7 @@ collapsed output loop.
 |  |  | 2048 | 25.3 | 27.0 | 26.8 (-1.0%) | **45.9 (+69.7%)** |
 | Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.0 (-2.9%) | **32.7 (-3.9%)** |
 |  |  | 512 | 26.0 | 33.9 | 33.0 (-2.6%) | **32.6 (-3.9%)** |
-|  |  | 2048 | 18.8 | 33.4 | 31.7 (-5.4%) | **32.3 (-3.5%)** |
+|  |  | 2048 | 18.8 | 33.4 | 31.6 (-5.6%) | 31.1 (-7.0%) |
 | Qwen 3.6 27B | 5-bit | 128 | 23.5 | 21.6 | **27.1 (+25.5%)** | **26.8 (+24.0%)** |
 |  |  | 512 | 23.3 | 28.1 | 27.3 (-3.1%) | **27.3 (-3.1%)** |
 |  |  | 2048 | 17.8 | 27.8 | 27.4 (-1.4%) | **27.2 (-2.4%)** |
@@ -391,7 +391,7 @@ so server/client timing does not get mixed with runner-time throughput.
 |         |         | 2048 | 3,655.2 | 2,790.6 | **2,636.9 (-5.5%)** |
 | Qwen 3.6 27B | 4-bit | 128 | 237.2 | 337.9 | **161.7 (-52.1%)** |
 |  |  | 512 | 673.9 | 725.6 | **572.9 (-21.0%)** |
-|  |  | 2048 | 3,083.1 | 2,287.7 | 2,299.9 (+0.5%) |
+|  |  | 2048 | 3,083.1 | 2,287.7 | 2,320.3 (+1.4%) |
 | Qwen 3.6 27B | 5-bit | 128 | 245.8 | 459.0 | **170.9 (-62.8%)** |
 |  |  | 512 | 698.1 | 854.1 | **621.6 (-27.2%)** |
 |  |  | 2048 | 3,070.5 | 2,474.9 | 3,037.6 (+22.7%) |

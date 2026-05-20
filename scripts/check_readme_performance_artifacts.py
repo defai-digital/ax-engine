@@ -353,7 +353,12 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
             "ax-overlay": (AX_ENGINE_ROWS, None),
             "ax-decode-overlay": (AX_ENGINE_ROWS, frozenset({"decode"})),
         }
-        for part in sources_match.group("sources").split(";"):
+        source_parts = [
+            part.strip()
+            for part in sources_match.group("sources").split(";")
+            if part.strip()
+        ]
+        for part in source_parts:
             if not part.strip():
                 continue
             if "=" not in part:
@@ -373,6 +378,12 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
             if kind not in source_kinds:
                 raise ArtifactCheckError(
                     f"unknown readme-performance-artifacts source kind: {kind!r}"
+                )
+            if kind == "base" and len(source_parts) > 1:
+                raise ArtifactCheckError(
+                    "readme-performance-artifacts base= is only allowed as a "
+                    "single legacy source; composite markers must use scoped "
+                    "reference=, ax-base=, ax-overlay=, or ax-decode-overlay= sources"
                 )
             include_prompt_tokens = None
             if kind_match.group("prompt") is not None:
