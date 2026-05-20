@@ -229,14 +229,17 @@ env_flag!(
     ///
     /// **Default: OFF**. The shim skips per-op `mlx-c` dispatches for the
     /// packed projection, reshape, slice, and concat boundary. Decode A/B
-    /// on Qwen 3.6 27B 4-bit (M5 Max, 3 reps, 100% fastpath hit rate over
-    /// 144 invocations) measured decode neutral within ±1% across 128/512/
-    /// 2048 prompts, while prefill regressed 2–13% — the fused kernel does
-    /// not amortize as well as MLX's batched ops at `seq > 1`. The flag
-    /// stays opt-in so callers running pure decode workloads (e.g. shared
-    /// prefix-cache hot loops) can still engage it explicitly without
-    /// taxing the prefill path. See
-    /// `benchmarks/results/mlx-inference/ab-direct-cpp-linear-inputs/`.
+    /// on Qwen 3.6 27B 4-bit (M5 Max, 3 reps with 20s inter-row cooldown
+    /// and a 30s pre-run thermal settle, 100% fastpath hit rate over 144
+    /// invocations) measured both prefill and decode neutral within the
+    /// run-to-run noise floor (±0.3% prefill, ±0.1% decode) across
+    /// 128/512/2048 prompts. The fused projection saves per-op FFI
+    /// dispatch but does not move the wall-clock needle in production
+    /// decode shape — the per-step gap to `mlx_lm.benchmark` lives in a
+    /// different stage. The flag stays opt-in because neutral evidence is
+    /// not enough to justify flipping the default surface area. See
+    /// `benchmarks/results/mlx-inference/ab-direct-cpp-linear-inputs/`
+    /// (raw artifacts).
     direct_cpp_linear_attention_inputs_enabled,
     "AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"
 );
