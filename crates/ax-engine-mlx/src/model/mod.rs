@@ -1,6 +1,6 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, dequantize, reshape,
-    rms_norm, rope, slice, split, take, take_along_axis, transpose,
+    rms_norm, slice, split, take, take_along_axis, transpose,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -587,22 +587,6 @@ fn layer_forward_dense_embed(
         .checked_div(head_dim)
         .expect("k projection output must divide by head_dim");
 
-    let q = qk_norm_bhsd_from_proj(
-        &q_raw,
-        w.q_norm.as_ref(),
-        cfg.n_heads,
-        head_dim,
-        seq,
-        cfg.rms_norm_eps,
-    );
-    let k = qk_norm_bhsd_from_proj(
-        &k_raw,
-        w.k_norm.as_ref(),
-        kv_heads,
-        head_dim,
-        seq,
-        cfg.rms_norm_eps,
-    );
     let v = prepare_value_bhsd_from_proj(
         &v_raw,
         v_norm_no_scale,
@@ -612,24 +596,28 @@ fn layer_forward_dense_embed(
         cfg.rms_norm_eps,
     );
 
-    let q_rope = rope(
-        &q,
-        rope_dims as i32,
-        false,
+    let q_rope = qk_norm_rope_bhsd_from_proj(
+        &q_raw,
+        w.q_norm.as_ref(),
+        cfg.n_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+        rope_dims,
         Some(rope_theta),
-        1.0,
         0,
-        None,
         None,
     );
-    let k_rope = rope(
-        &k,
-        rope_dims as i32,
-        false,
+    let k_rope = qk_norm_rope_bhsd_from_proj(
+        &k_raw,
+        w.k_norm.as_ref(),
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+        rope_dims,
         Some(rope_theta),
-        1.0,
         0,
-        None,
         None,
     );
 
@@ -3780,6 +3768,58 @@ mod tests {
             qk_norm_bshd(reference_bshd, Some(&norm), n_heads, head_dim, seq, 1.0e-6);
         let reference = transpose(&reference_normed, &[0, 2, 1, 3], None);
         let candidate = qk_norm_bhsd_from_proj(&proj, Some(&norm), n_heads, head_dim, seq, 1.0e-6);
+
+        let reference_contig = mlx_sys::ops::contiguous(&reference, None);
+        let candidate_contig = mlx_sys::ops::contiguous(&candidate, None);
+        eval(&[&reference_contig, &candidate_contig]);
+
+        assert_eq!(
+            reference_contig.shape(),
+            vec![1, n_heads as i32, seq as i32, head_dim as i32]
+        );
+        assert_eq!(candidate_contig.shape(), reference_contig.shape());
+        assert_close(
+            candidate_contig.data_f32(),
+            reference_contig.data_f32(),
+            1.0e-6,
+        );
+    }
+
+    #[test]
+    fn qk_norm_rope_bhsd_from_proj_matches_composed_reference_path() {
+        let n_heads = 2_usize;
+        let head_dim = 4_usize;
+        let seq = 3_usize;
+        let proj_data: Vec<f32> = (0..(seq * n_heads * head_dim))
+            .map(|i| ((i as f32) - 11.0) * 0.03125)
+            .collect();
+        let norm_data: Vec<f32> = (0..head_dim).map(|i| 0.75 + (i as f32) * 0.125).collect();
+        let proj = array_f32(&proj_data, &[1, seq as i32, (n_heads * head_dim) as i32]);
+        let norm = array_f32(&norm_data, &[head_dim as i32]);
+
+        let q = qk_norm_bhsd_from_proj(&proj, Some(&norm), n_heads, head_dim, seq, 1.0e-6);
+        let reference = mlx_sys::rope(
+            &q,
+            head_dim as i32,
+            false,
+            Some(10_000.0),
+            1.0,
+            2,
+            None,
+            None,
+        );
+        let candidate = qk_norm_rope_bhsd_from_proj(
+            &proj,
+            Some(&norm),
+            n_heads,
+            head_dim,
+            seq,
+            1.0e-6,
+            head_dim,
+            Some(10_000.0),
+            2,
+            None,
+        );
 
         let reference_contig = mlx_sys::ops::contiguous(&reference, None);
         let candidate_contig = mlx_sys::ops::contiguous(&candidate, None);

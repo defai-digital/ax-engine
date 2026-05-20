@@ -9,11 +9,12 @@ use super::super::profile::{
     profile_eval_elapsed, record_gemma4_moe_decode_layer,
 };
 use super::super::shared::{
-    add_then_multiply_scalar, attention_mask_array, attention_output_projection, ffn_swiglu,
-    flatten_attention_output_bhsd, full_precision_attention, moe_experts_forward,
-    moe_router_gemma4, moe_router_glm, moe_router_qwen3, per_layer_input_gate,
-    prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qkv_project, qw, rms_norm_opt,
-    shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
+    add_then_multiply_scalar, attention_mask_array, attention_output_projection,
+    direct_qk_norm_rope_route_enabled, ffn_swiglu, flatten_attention_output_bhsd,
+    full_precision_attention, moe_experts_forward, moe_router_gemma4, moe_router_glm,
+    moe_router_qwen3, per_layer_input_gate, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
+    qk_norm_rope_bhsd_from_proj, qkv_project, qw, rms_norm_opt, shape_element_count,
+    shared_expert_forward, turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
@@ -81,50 +82,77 @@ pub(crate) fn layer_forward(
                 &normed,
                 w.q_proj.as_ref().expect("KV-shared layer must have q_proj"),
             );
-            let qk_norm_started = profile_forward_layer.then(Instant::now);
-            let q = qk_norm_bhsd_from_proj(
-                &q_raw,
-                w.q_norm.as_ref(),
-                cfg.n_heads,
-                head_dim,
-                seq,
-                cfg.rms_norm_eps,
-            );
-            if let Some(started) = qk_norm_started {
-                forward_profile_eval_elapsed(
-                    profile_decode_layer,
-                    profile_prefill_layer,
-                    DecodeProfileStage::PreSdpaQkNorm,
-                    started,
-                    &[&q],
-                );
-            }
-            let rope_kv_started = profile_forward_layer.then(Instant::now);
             let (rope_base, rope_freqs_ref) = cfg
                 .rope_freqs
                 .as_ref()
                 .map(|f| (None, Some(f)))
                 .unwrap_or((Some(rope_theta), None));
-            let q_rope = rope(
-                &q,
-                rope_dims as i32,
-                false,
-                rope_base,
-                1.0,
-                token_offset as i32,
-                rope_freqs_ref,
-                None,
-            );
-            let (ck, cv) = cache.peek_source_kv(src_layer, seq);
-            if let Some(started) = rope_kv_started {
-                forward_profile_eval_elapsed(
-                    profile_decode_layer,
-                    profile_prefill_layer,
-                    DecodeProfileStage::PreSdpaRopeKv,
-                    started,
-                    &[&q_rope, &ck, &cv],
+            let q_rope = if direct_qk_norm_rope_route_enabled(w.q_norm.as_ref()) {
+                let qk_norm_started = profile_forward_layer.then(Instant::now);
+                let q_rope = qk_norm_rope_bhsd_from_proj(
+                    &q_raw,
+                    w.q_norm.as_ref(),
+                    cfg.n_heads,
+                    head_dim,
+                    seq,
+                    cfg.rms_norm_eps,
+                    rope_dims,
+                    rope_base,
+                    token_offset,
+                    rope_freqs_ref,
                 );
-            }
+                if let Some(started) = qk_norm_started {
+                    forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::PreSdpaQkNorm,
+                        started,
+                        &[&q_rope],
+                    );
+                }
+                q_rope
+            } else {
+                let qk_norm_started = profile_forward_layer.then(Instant::now);
+                let q = qk_norm_bhsd_from_proj(
+                    &q_raw,
+                    w.q_norm.as_ref(),
+                    cfg.n_heads,
+                    head_dim,
+                    seq,
+                    cfg.rms_norm_eps,
+                );
+                if let Some(started) = qk_norm_started {
+                    forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::PreSdpaQkNorm,
+                        started,
+                        &[&q],
+                    );
+                }
+                let rope_kv_started = profile_forward_layer.then(Instant::now);
+                let q_rope = rope(
+                    &q,
+                    rope_dims as i32,
+                    false,
+                    rope_base,
+                    1.0,
+                    token_offset as i32,
+                    rope_freqs_ref,
+                    None,
+                );
+                if let Some(started) = rope_kv_started {
+                    forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::PreSdpaRopeKv,
+                        started,
+                        &[&q_rope],
+                    );
+                }
+                q_rope
+            };
+            let (ck, cv) = cache.peek_source_kv(src_layer, seq);
             (q_rope, ck, cv, None)
         } else {
             // Normal layer: compute Q, K, V from own projections.
@@ -148,34 +176,6 @@ pub(crate) fn layer_forward(
                 );
             }
 
-            let qk_norm_started = profile_forward_layer.then(Instant::now);
-            let q = qk_norm_bhsd_from_proj(
-                &q_raw,
-                w.q_norm.as_ref(),
-                cfg.n_heads,
-                head_dim,
-                seq,
-                cfg.rms_norm_eps,
-            );
-            let k = qk_norm_bhsd_from_proj(
-                &k_raw,
-                w.k_norm.as_ref(),
-                kv_heads,
-                head_dim,
-                seq,
-                cfg.rms_norm_eps,
-            );
-            if let Some(started) = qk_norm_started {
-                forward_profile_eval_elapsed(
-                    profile_decode_layer,
-                    profile_prefill_layer,
-                    DecodeProfileStage::PreSdpaQkNorm,
-                    started,
-                    &[&q, &k],
-                );
-            }
-
-            let rope_kv_started = profile_forward_layer.then(Instant::now);
             let v = prepare_value_bhsd_from_proj(
                 &v_raw,
                 v_norm_no_scale,
@@ -190,27 +190,105 @@ pub(crate) fn layer_forward(
                 .as_ref()
                 .map(|f| (None, Some(f)))
                 .unwrap_or((Some(rope_theta), None));
-            let q_rope = rope(
-                &q,
-                rope_dims as i32,
-                false,
-                rope_base,
-                1.0,
-                token_offset as i32,
-                rope_freqs_ref,
-                None,
-            );
-            let k_rope = rope(
-                &k,
-                rope_dims as i32,
-                false,
-                rope_base,
-                1.0,
-                token_offset as i32,
-                rope_freqs_ref,
-                None,
-            );
+            let use_direct_qk_rope = direct_qk_norm_rope_route_enabled(w.q_norm.as_ref())
+                || direct_qk_norm_rope_route_enabled(w.k_norm.as_ref());
+            let (q_rope, k_rope) = if use_direct_qk_rope {
+                let qk_norm_started = profile_forward_layer.then(Instant::now);
+                let q_rope = qk_norm_rope_bhsd_from_proj(
+                    &q_raw,
+                    w.q_norm.as_ref(),
+                    cfg.n_heads,
+                    head_dim,
+                    seq,
+                    cfg.rms_norm_eps,
+                    rope_dims,
+                    rope_base,
+                    token_offset,
+                    rope_freqs_ref,
+                );
+                let k_rope = qk_norm_rope_bhsd_from_proj(
+                    &k_raw,
+                    w.k_norm.as_ref(),
+                    kv_heads,
+                    head_dim,
+                    seq,
+                    cfg.rms_norm_eps,
+                    rope_dims,
+                    rope_base,
+                    token_offset,
+                    rope_freqs_ref,
+                );
+                if let Some(started) = qk_norm_started {
+                    forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::PreSdpaQkNorm,
+                        started,
+                        &[&q_rope, &k_rope],
+                    );
+                }
+                (q_rope, k_rope)
+            } else {
+                let qk_norm_started = profile_forward_layer.then(Instant::now);
+                let q = qk_norm_bhsd_from_proj(
+                    &q_raw,
+                    w.q_norm.as_ref(),
+                    cfg.n_heads,
+                    head_dim,
+                    seq,
+                    cfg.rms_norm_eps,
+                );
+                let k = qk_norm_bhsd_from_proj(
+                    &k_raw,
+                    w.k_norm.as_ref(),
+                    kv_heads,
+                    head_dim,
+                    seq,
+                    cfg.rms_norm_eps,
+                );
+                if let Some(started) = qk_norm_started {
+                    forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::PreSdpaQkNorm,
+                        started,
+                        &[&q, &k],
+                    );
+                }
+                let rope_kv_started = profile_forward_layer.then(Instant::now);
+                let q_rope = rope(
+                    &q,
+                    rope_dims as i32,
+                    false,
+                    rope_base,
+                    1.0,
+                    token_offset as i32,
+                    rope_freqs_ref,
+                    None,
+                );
+                let k_rope = rope(
+                    &k,
+                    rope_dims as i32,
+                    false,
+                    rope_base,
+                    1.0,
+                    token_offset as i32,
+                    rope_freqs_ref,
+                    None,
+                );
+                if let Some(started) = rope_kv_started {
+                    forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::PreSdpaRopeKv,
+                        started,
+                        &[&q_rope, &k_rope],
+                    );
+                }
+                (q_rope, k_rope)
+            };
 
+            let rope_kv_started = profile_forward_layer.then(Instant::now);
             let (ck, cv) = if seq == 1 {
                 cache.append_with_retained_window(layer_idx, k_rope, v, sliding_window)
             } else {

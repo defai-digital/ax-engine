@@ -196,6 +196,19 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_DIRECT_CPP_QK_NORM_ROPE` — opt-in direct C++ probe route for
+    /// standard attention Q/K `as_strided -> rms_norm -> rope`.
+    ///
+    /// **Default: OFF**. This is intentionally not default-on: the microbench
+    /// candidate reduced Rust op count, but production decode still needs a
+    /// same-commit Gemma 4 E2B A/B before promotion. The route only engages
+    /// when Q/K norm exists and the flat QK-norm diagnostic fallback is not
+    /// active.
+    direct_cpp_qk_norm_rope_enabled,
+    "AX_MLX_DIRECT_CPP_QK_NORM_ROPE"
+);
+
+env_flag!(
     /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — experimental load-time
     /// packing for Qwen linear-attention projections.
     ///

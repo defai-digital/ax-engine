@@ -1,10 +1,12 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, eval, reshape, rms_norm,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, eval,
+    qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
     scaled_dot_product_attention_with_mask, transpose,
 };
 use std::time::Instant;
 
 use crate::attention_mask::create_causal_mask;
+use crate::fastpath;
 use crate::kv_cache::{
     MlxKVCache, MlxKvCompressionDecodeOutcome, MlxKvCompressionFusedDecodeTiming,
 };
@@ -52,6 +54,52 @@ pub(crate) fn qk_norm_bhsd_from_proj(
     let bhsd = bhsd_view_from_proj(qw_out, n_heads, head_dim, seq);
     let Some(n) = norm else { return bhsd };
     rms_norm(&bhsd, Some(n), eps, None)
+}
+
+pub(crate) fn direct_qk_norm_rope_route_enabled(norm: Option<&MlxArray>) -> bool {
+    fastpath::direct_cpp_qk_norm_rope_enabled() && !use_flat_qk_norm_path() && norm.is_some()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn qk_norm_rope_bhsd_from_proj(
+    qw_out: &MlxArray,
+    norm: Option<&MlxArray>,
+    n_heads: usize,
+    head_dim: usize,
+    seq: usize,
+    eps: f32,
+    rope_dims: usize,
+    rope_base: Option<f32>,
+    token_offset: usize,
+    rope_freqs: Option<&MlxArray>,
+) -> MlxArray {
+    if direct_qk_norm_rope_route_enabled(norm) {
+        return direct_qk_norm_rope_bhsd_from_proj(
+            qw_out,
+            norm,
+            n_heads as i32,
+            head_dim as i32,
+            eps,
+            rope_dims as i32,
+            false,
+            rope_base,
+            token_offset as i32,
+            rope_freqs,
+            None,
+        );
+    }
+
+    let q = qk_norm_bhsd_from_proj(qw_out, norm, n_heads, head_dim, seq, eps);
+    rope(
+        &q,
+        rope_dims as i32,
+        false,
+        rope_base,
+        1.0,
+        token_offset as i32,
+        rope_freqs,
+        None,
+    )
 }
 
 pub(crate) fn qk_norm_bshd(
