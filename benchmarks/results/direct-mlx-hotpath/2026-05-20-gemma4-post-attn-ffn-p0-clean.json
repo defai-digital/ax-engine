@@ -1,0 +1,71 @@
+{
+  "command": "target/release/direct-mlx-hotpath-probe --candidate gemma4_post_attn_ffn_block --rows 1 --cols 6144 --down-cols 1536 --group-size 64 --warmup 5 --iterations 30 --json-out benchmarks/results/direct-mlx-hotpath/2026-05-20-gemma4-post-attn-ffn-p0-clean.json",
+  "config": {
+    "bits": 4,
+    "candidate": "gemma4_post_attn_ffn_block",
+    "cols": 6144,
+    "down_cols": 1536,
+    "dtype": "float32",
+    "group_size": 64,
+    "head_dim": 256,
+    "iterations": 30,
+    "linear_key_head_dim": 192,
+    "linear_num_key_heads": 16,
+    "linear_num_value_heads": 64,
+    "linear_value_head_dim": 128,
+    "n_heads": 24,
+    "rows": 1,
+    "warmup": 5
+  },
+  "correctness": {
+    "component_shapes": null,
+    "max_abs_error": 0.0,
+    "passed": true,
+    "shape": [
+      1,
+      1536
+    ],
+    "tolerance": 9.999999974752427e-7
+  },
+  "git": {
+    "commit": "8b7b34a5faba2e61d0c32db4098dddba2c326aab",
+    "dirty": false
+  },
+  "host": {
+    "arch": "aarch64",
+    "os": "macos"
+  },
+  "measurements": [
+    {
+      "max": 1432.5410000000002,
+      "mean": 599.0598333333334,
+      "median": 505.79150000000004,
+      "min": 395.125,
+      "name": "portable_gemma4_post_attn_ffn_block",
+      "op_count_median": 10,
+      "samples": 30,
+      "unit": "microseconds"
+    },
+    {
+      "max": 539.7909999999999,
+      "mean": 316.65126666666663,
+      "median": 302.125,
+      "min": 271.08299999999997,
+      "name": "direct_cpp_gemma4_post_attn_ffn_block",
+      "op_count_median": 1,
+      "samples": 30,
+      "unit": "microseconds"
+    },
+    {
+      "max": 1.6741133636739762,
+      "mean": 1.6741133636739762,
+      "median": 1.6741133636739762,
+      "min": 1.6741133636739762,
+      "name": "direct_cpp_speedup_ratio",
+      "samples": 1,
+      "unit": "ratio"
+    }
+  ],
+  "schema": "ax.microbench.v1",
+  "surface": "direct-mlx-hotpath"
+}
