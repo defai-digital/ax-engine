@@ -295,6 +295,7 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
     let x = &smoothed;
     let gate_up_started = Instant::now();
     let packed_gate_up: Option<MlxArray>;
+    let mut gate_up_profile_recorded = false;
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_packed {
         let out = qw(x, packed);
         let packed_dim = out
@@ -307,11 +308,11 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
             "packed FFN output last dimension must be positive and even, got {packed_dim}"
         );
         let half = packed_dim / 2;
-        if cfg.uses_geglu
-            && !profile_decode
-            && !profile_prefill
-            && let Some(ffn_hidden) = packed_geglu_metal(&out, half)
-        {
+        if cfg.uses_geglu {
+            // Profiling should add barriers around the production graph, not
+            // silently fall back to the split GEGLU route. Otherwise the
+            // decode-profile Candidate Gate ranks a path that production does
+            // not use when packed GeGLU Metal is enabled.
             forward_profile_eval_elapsed(
                 profile_decode,
                 profile_prefill,
@@ -319,21 +320,32 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
                 gate_up_started,
                 &[&out],
             );
-            let down_started = Instant::now();
-            let out = qw(
-                &ffn_hidden,
-                w.down_proj
-                    .as_ref()
-                    .expect("dense FFN layer must have down_proj"),
-            );
-            forward_profile_eval_elapsed(
-                profile_decode,
-                profile_prefill,
-                DecodeProfileStage::PostAttnFfnDown,
-                down_started,
-                &[&out],
-            );
-            return out;
+            gate_up_profile_recorded = profile_decode || profile_prefill;
+            let activation_started = Instant::now();
+            if let Some(ffn_hidden) = packed_geglu_metal(&out, half) {
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnActivation,
+                    activation_started,
+                    &[&ffn_hidden],
+                );
+                let down_started = Instant::now();
+                let out = qw(
+                    &ffn_hidden,
+                    w.down_proj
+                        .as_ref()
+                        .expect("dense FFN layer must have down_proj"),
+                );
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnDown,
+                    down_started,
+                    &[&out],
+                );
+                return out;
+            }
         }
         packed_gate_up = Some(out.clone());
         let gate = mlx_slice_last_dim(&out, 0, half);
@@ -345,7 +357,7 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
         let up = qw(x, w.up_proj.as_ref().unwrap());
         (gate, up)
     };
-    if profile_decode || profile_prefill {
+    if (profile_decode || profile_prefill) && !gate_up_profile_recorded {
         let gate_up_profile_storage;
         let gate_up_profile_refs = if let Some(packed) = packed_gate_up.as_ref() {
             gate_up_profile_storage = vec![packed];

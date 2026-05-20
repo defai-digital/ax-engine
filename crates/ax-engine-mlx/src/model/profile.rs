@@ -63,6 +63,10 @@ pub struct PrefillProfileSnapshot {
 /// `eval()` to materialise the lazy graph at that point, so enabling the
 /// profile **disables decode pipelining** and inflates step time relative to
 /// production.  The ratios between stages are what matters for diagnosis.
+/// Profiling must still preserve production route selection inside a stage
+/// where possible; for example Gemma packed GeGLU Metal remains active and is
+/// timed as the FFN activation substage instead of being replaced by the split
+/// GEGLU fallback.
 ///
 /// Stages mirror the decode path:
 /// - `per_layer_input_wall_us` — `compute_per_layer_inputs_arr` (Gemma4 2B/4B
