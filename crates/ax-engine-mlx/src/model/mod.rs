@@ -1117,9 +1117,9 @@ fn compute_per_layer_inputs_arr(
 
     // 3. Combine: (proj + embed) * 2^(-0.5)
     const GEMMA4_PER_LAYER_COMBINED_SCALE: f32 = std::f32::consts::FRAC_1_SQRT_2;
-    let combined_scale = GEMMA4_PER_LAYER_COMBINED_SCALE;
-    let combined = add(&proj_out, &embed_out, None);
-    let combined = scale_hidden(&combined, combined_scale);
+    let combined_scale =
+        mlx_sys::ops::cached_scalar(GEMMA4_PER_LAYER_COMBINED_SCALE, proj_out.dtype());
+    let combined = add_then_multiply_scalar(&proj_out, &embed_out, &combined_scale);
     // combined shape: [1, seq, num_layers, per_layer_dim]
 
     // 4. Split per layer along axis 2.
