@@ -52,7 +52,7 @@ def ax_row(
     classification: str = "all_hits",
 ) -> dict[str, object]:
     row: dict[str, object] = {
-        "engine": checker.BASELINE_ENGINE,
+        "engine": checker.CANDIDATE_ENGINE if enabled else checker.BASELINE_ENGINE,
         "prompt_tokens": prompt_tokens,
         "generation_tokens": 128,
         "ax_decode_policy": checker.BASELINE_POLICY,

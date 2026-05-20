@@ -71,6 +71,7 @@ AX_ENGINE_DIRECT_KEY = "ax_engine_mlx"
 AX_ENGINE_NGRAM_ACCEL_KEY = "ax_engine_mlx_ngram_accel"
 AX_ENGINE_LINEAR_ATTENTION_PACK_KEY = "ax_engine_mlx_linear_pack"
 AX_ENGINE_DENSE_FFN_PACK_KEY = "ax_engine_mlx_dense_ffn_pack"
+AX_ENGINE_DIRECT_GEMMA4_FFN_ROUTE_KEY = "ax_engine_mlx_direct_gemma4_ffn"
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
 
 AX_MLX_RUNTIME_IDENTITY = {
@@ -1662,6 +1663,7 @@ def start_axengine(
     decode_profile: bool = False,
     pack_linear_attention_projections: bool = False,
     pack_dense_ffn_gate_up: bool = False,
+    direct_gemma4_post_attn_ffn_route: bool = False,
     prefill_chunk: int | None = None,
     max_batch_tokens: int | None = None,
     prefix_cache_enabled: bool = False,
@@ -1712,6 +1714,8 @@ def start_axengine(
         env["AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"] = "1"
     if pack_dense_ffn_gate_up:
         env["AX_MLX_PACK_DENSE_FFN_GATE_UP"] = "1"
+    if direct_gemma4_post_attn_ffn_route:
+        env["AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"] = "1"
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
     if not prefix_cache_enabled:
         print(
@@ -3667,6 +3671,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-compare-direct-gemma4-ffn-route",
+        action="store_true",
+        help=(
+            "Run direct AX rows twice for the same prompts: first the default route, "
+            "then AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN=1 emitted as "
+            f"{AX_ENGINE_DIRECT_GEMMA4_FFN_ROUTE_KEY}. Use with Gemma4 E2B 4-bit "
+            "p128/p512/p2048 artifacts before running the promotion checker."
+        ),
+    )
+    parser.add_argument(
         "--ax-decode-profile",
         action="store_true",
         help=(
@@ -3835,6 +3849,30 @@ def main() -> None:
             "--ax-compare-dense-ffn-gate-up-pack and "
             "--ax-compare-linear-attention-projection-pack both run paired AX rows; "
             "run one comparison at a time"
+        )
+    if args.ax_compare_direct_gemma4_ffn_route and args.skip_ax_engine:
+        parser.error("--ax-compare-direct-gemma4-ffn-route requires AX rows")
+    if args.ax_compare_direct_gemma4_ffn_route and (
+        args.ax_ngram_accel or args.ax_compare_policies
+    ):
+        parser.error(
+            "--ax-compare-direct-gemma4-ffn-route requires direct AX rows; "
+            "do not combine it with --ax-ngram-accel or --ax-compare-policies"
+        )
+    if args.ax_compare_direct_gemma4_ffn_route and (
+        args.ax_compare_linear_attention_projection_pack
+        or args.ax_compare_dense_ffn_gate_up_pack
+    ):
+        parser.error(
+            "--ax-compare-direct-gemma4-ffn-route runs paired AX rows; "
+            "run one comparison at a time"
+        )
+    if args.ax_compare_direct_gemma4_ffn_route and (
+        args.ax_prefill_profile or args.ax_decode_profile
+    ):
+        parser.error(
+            "--ax-compare-direct-gemma4-ffn-route cannot be combined with "
+            "--ax-prefill-profile or --ax-decode-profile because profiling blocks the route"
         )
     if bool(args.llama_cpp_bench) != bool(args.llama_cpp_gguf):
         parser.error("--llama-cpp-bench and --llama-cpp-gguf must be provided together")
@@ -4055,22 +4093,47 @@ def main() -> None:
             ax_run_configs = []
             if args.ax_compare_linear_attention_projection_pack:
                 ax_run_configs = [
-                    (True, False, args.ax_pack_dense_ffn_gate_up, AX_ENGINE_DIRECT_KEY),
+                    (True, False, args.ax_pack_dense_ffn_gate_up, False, AX_ENGINE_DIRECT_KEY),
                     (
                         True,
                         True,
                         args.ax_pack_dense_ffn_gate_up,
+                        False,
                         AX_ENGINE_LINEAR_ATTENTION_PACK_KEY,
                     ),
                 ]
             elif args.ax_compare_dense_ffn_gate_up_pack:
                 ax_run_configs = [
-                    (True, args.ax_pack_linear_attention_projections, False, AX_ENGINE_DIRECT_KEY),
+                    (
+                        True,
+                        args.ax_pack_linear_attention_projections,
+                        False,
+                        False,
+                        AX_ENGINE_DIRECT_KEY,
+                    ),
                     (
                         True,
                         args.ax_pack_linear_attention_projections,
                         True,
+                        False,
                         AX_ENGINE_DENSE_FFN_PACK_KEY,
+                    ),
+                ]
+            elif args.ax_compare_direct_gemma4_ffn_route:
+                ax_run_configs = [
+                    (
+                        True,
+                        args.ax_pack_linear_attention_projections,
+                        args.ax_pack_dense_ffn_gate_up,
+                        False,
+                        AX_ENGINE_DIRECT_KEY,
+                    ),
+                    (
+                        True,
+                        args.ax_pack_linear_attention_projections,
+                        args.ax_pack_dense_ffn_gate_up,
+                        True,
+                        AX_ENGINE_DIRECT_GEMMA4_FFN_ROUTE_KEY,
                     ),
                 ]
             elif args.ax_compare_policies:
@@ -4079,12 +4142,14 @@ def main() -> None:
                         True,
                         args.ax_pack_linear_attention_projections,
                         args.ax_pack_dense_ffn_gate_up,
+                        False,
                         AX_ENGINE_DIRECT_KEY,
                     ),
                     (
                         False,
                         args.ax_pack_linear_attention_projections,
                         args.ax_pack_dense_ffn_gate_up,
+                        False,
                         AX_ENGINE_NGRAM_ACCEL_KEY,
                     ),
                 ]
@@ -4094,6 +4159,7 @@ def main() -> None:
                         False,
                         args.ax_pack_linear_attention_projections,
                         args.ax_pack_dense_ffn_gate_up,
+                        False,
                         AX_ENGINE_NGRAM_ACCEL_KEY,
                     )
                 ]
@@ -4103,6 +4169,7 @@ def main() -> None:
                         True,
                         args.ax_pack_linear_attention_projections,
                         args.ax_pack_dense_ffn_gate_up,
+                        False,
                         AX_ENGINE_DIRECT_KEY,
                     )
                 ]
@@ -4111,6 +4178,7 @@ def main() -> None:
                 direct_mode,
                 pack_linear_attention_projections,
                 pack_dense_ffn_gate_up,
+                direct_gemma4_post_attn_ffn_route,
                 engine_key,
             ) in ax_run_configs:
                 proc = start_axengine(
@@ -4131,6 +4199,7 @@ def main() -> None:
                     decode_profile=args.ax_decode_profile,
                     pack_linear_attention_projections=pack_linear_attention_projections,
                     pack_dense_ffn_gate_up=pack_dense_ffn_gate_up,
+                    direct_gemma4_post_attn_ffn_route=direct_gemma4_post_attn_ffn_route,
                     prefill_chunk=args.prefill_step_size,
                     # Scheduler caps per-step prefill at max_batch_tokens. To
                     # let the runner emit one chunked_prefill call per request
@@ -4187,6 +4256,9 @@ def main() -> None:
                         pack_linear_attention_projections
                     )
                     results[-1]["ax_dense_ffn_gate_up_pack"] = bool(pack_dense_ffn_gate_up)
+                    results[-1]["ax_direct_gemma4_post_attn_ffn_route"] = bool(
+                        direct_gemma4_post_attn_ffn_route
+                    )
                 kill_proc(proc)
                 procs.remove(proc)
                 if (direct_mode and args.ax_compare_policies) or (
@@ -4194,6 +4266,9 @@ def main() -> None:
                     and args.ax_compare_linear_attention_projection_pack
                 ) or (
                     not pack_dense_ffn_gate_up and args.ax_compare_dense_ffn_gate_up_pack
+                ) or (
+                    not direct_gemma4_post_attn_ffn_route
+                    and args.ax_compare_direct_gemma4_ffn_route
                 ):
                     time.sleep(3)  # brief cooldown between modes
     finally:
@@ -4299,6 +4374,9 @@ def main() -> None:
             args.ax_pack_dense_ffn_gate_up or args.ax_compare_dense_ffn_gate_up_pack
         ),
         "ax_dense_ffn_gate_up_pack_compare": bool(args.ax_compare_dense_ffn_gate_up_pack),
+        "ax_direct_gemma4_post_attn_ffn_route_compare": bool(
+            args.ax_compare_direct_gemma4_ffn_route
+        ),
         "ax_prefill_profile": bool(args.ax_prefill_profile),
         "ax_decode_profile": bool(args.ax_decode_profile),
         "results": results,

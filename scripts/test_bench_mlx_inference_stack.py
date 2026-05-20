@@ -2745,6 +2745,22 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"], "1")
 
+    def test_axengine_command_can_enable_direct_gemma4_ffn_route(self) -> None:
+        with (
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                direct_mode=True,
+                direct_gemma4_post_attn_ffn_route=True,
+            )
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"], "1")
+
     def test_linear_attention_pack_compare_enables_profile_gate(self) -> None:
         args = argparse.Namespace(
             gateddelta_prefill_profile=False,

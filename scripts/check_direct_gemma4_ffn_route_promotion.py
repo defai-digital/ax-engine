@@ -14,6 +14,7 @@ from typing import Any
 SCHEMA_VERSION = "ax.mlx_inference_stack.v2"
 ROUTE_SCHEMA_VERSION = "ax.mlx_direct_cpp_gemma4_post_attn_ffn.v1"
 BASELINE_ENGINE = "ax_engine_mlx"
+CANDIDATE_ENGINE = "ax_engine_mlx_direct_gemma4_ffn"
 BASELINE_POLICY = "direct_no_ngram_acceleration"
 NOT_PROMOTED = "not_promoted"
 PROMOTION_CANDIDATE = "promotion_candidate"
@@ -112,7 +113,9 @@ def _row_key(row: dict[str, Any], owner: str) -> tuple[int, int]:
 
 
 def _is_ax_direct_row(row: dict[str, Any]) -> bool:
-    return row.get("engine") == BASELINE_ENGINE and row.get("ax_decode_policy") == BASELINE_POLICY
+    return row.get("engine") in {BASELINE_ENGINE, CANDIDATE_ENGINE} and row.get(
+        "ax_decode_policy"
+    ) == BASELINE_POLICY
 
 
 def _load_artifact(path: Path, model_fragments: tuple[str, ...]) -> list[dict[str, Any]]:
