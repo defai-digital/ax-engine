@@ -227,10 +227,16 @@ env_flag!(
     /// `AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS` — opt-in direct C++ route
     /// for Qwen linear-attention packed QKVZ/BA projection staging.
     ///
-    /// **Default: OFF**. This is intentionally an evidence-gated route: the
-    /// shim skips per-op `mlx-c` dispatches for the packed projection,
-    /// reshape, slice, and concat boundary, but real Qwen 27B decode A/B
-    /// evidence is still required before any default-on promotion.
+    /// **Default: OFF**. The shim skips per-op `mlx-c` dispatches for the
+    /// packed projection, reshape, slice, and concat boundary. Decode A/B
+    /// on Qwen 3.6 27B 4-bit (M5 Max, 3 reps, 100% fastpath hit rate over
+    /// 144 invocations) measured decode neutral within ±1% across 128/512/
+    /// 2048 prompts, while prefill regressed 2–13% — the fused kernel does
+    /// not amortize as well as MLX's batched ops at `seq > 1`. The flag
+    /// stays opt-in so callers running pure decode workloads (e.g. shared
+    /// prefix-cache hot loops) can still engage it explicitly without
+    /// taxing the prefill path. See
+    /// `benchmarks/results/mlx-inference/ab-direct-cpp-linear-inputs/`.
     direct_cpp_linear_attention_inputs_enabled,
     "AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"
 );
