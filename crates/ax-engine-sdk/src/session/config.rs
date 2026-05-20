@@ -1,7 +1,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use ax_engine_core::{CacheGroupId, KvCompressionConfig, KvManagerConfig};
+use ax_engine_core::{CacheGroupId, KvCompressionConfig, KvManagerConfig, KvManagerError};
 use thiserror::Error;
 
 use crate::backend::{
@@ -135,6 +135,8 @@ impl Default for ResolvedSessionConfigRequest {
 pub enum PreviewSessionConfigError {
     #[error(transparent)]
     BackendResolution(#[from] PreviewBackendResolutionError),
+    #[error(transparent)]
+    KvConfig(#[from] KvManagerError),
 }
 
 impl Default for EngineSessionConfig {
@@ -142,7 +144,7 @@ impl Default for EngineSessionConfig {
         let mlx_runtime_artifacts = Self::default_mlx_runtime_artifacts_selection();
         let mlx_model_artifacts = Self::default_mlx_model_artifacts_selection();
         Self {
-            kv_config: KvManagerConfig::new(CacheGroupId(0), 16, 1024),
+            kv_config: KvManagerConfig::validated(CacheGroupId(0), 16, 1024),
             deterministic: true,
             max_batch_tokens: 2048,
             backend_policy: BackendPolicy::mlx_only(),
@@ -224,12 +226,14 @@ impl EngineSessionConfig {
                     dir,
                 });
 
+        let kv_config = KvManagerConfig::new(
+            request.cache_group_id,
+            request.block_size_tokens,
+            request.total_blocks,
+        )?;
+
         Ok(Self {
-            kv_config: KvManagerConfig::new(
-                request.cache_group_id,
-                request.block_size_tokens,
-                request.total_blocks,
-            ),
+            kv_config,
             deterministic: request.deterministic,
             max_batch_tokens: request.max_batch_tokens,
             backend_policy: resolution.backend_policy,
@@ -274,7 +278,7 @@ impl EngineSessionConfig {
 
     pub fn from_resolved_request(request: ResolvedSessionConfigRequest) -> Self {
         Self {
-            kv_config: KvManagerConfig::new(
+            kv_config: KvManagerConfig::validated(
                 request.cache_group_id,
                 request.block_size_tokens,
                 request.total_blocks,

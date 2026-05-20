@@ -68,6 +68,14 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         _request: Request<proto::HealthRequest>,
     ) -> Result<Response<proto::HealthResponse>, Status> {
+        let session_lock = self.state.request_session.try_lock();
+        if session_lock.is_err() {
+            return Err(Status::unavailable(
+                "ax-engine-server has not finished initialising its inference session",
+            ));
+        }
+        drop(session_lock);
+
         Ok(Response::new(proto::HealthResponse {
             status: "ok".to_string(),
             service: "ax-engine-server".to_string(),

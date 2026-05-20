@@ -122,17 +122,30 @@ pub struct KvManagerConfig {
 }
 
 impl KvManagerConfig {
-    pub fn new(cache_group_id: CacheGroupId, block_size_tokens: u32, total_blocks: u32) -> Self {
-        assert!(
-            block_size_tokens > 0 && block_size_tokens <= u16::MAX as u32 && total_blocks > 0,
-            "block_size_tokens must be in 1..={} and total_blocks must be > 0",
-            u16::MAX
-        );
-        Self {
+    pub fn new(
+        cache_group_id: CacheGroupId,
+        block_size_tokens: u32,
+        total_blocks: u32,
+    ) -> Result<Self, KvManagerError> {
+        if block_size_tokens == 0 || block_size_tokens > u16::MAX as u32 || total_blocks == 0 {
+            return Err(KvManagerError::InvalidConfig(
+                "block_size_tokens must be in 1..=65535 and total_blocks must be > 0",
+            ));
+        }
+        Ok(Self {
             cache_group_id,
             block_size_tokens,
             total_blocks,
-        }
+        })
+    }
+
+    pub fn validated(
+        cache_group_id: CacheGroupId,
+        block_size_tokens: u32,
+        total_blocks: u32,
+    ) -> Self {
+        Self::new(cache_group_id, block_size_tokens, total_blocks)
+            .expect("KV manager config constants should be valid")
     }
 }
 
@@ -1048,6 +1061,8 @@ fn hash_prefix_block(parent_block_hash: Option<u64>, block_tokens: &[u32]) -> u6
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum KvManagerError {
+    #[error("invalid KV manager config: {0}")]
+    InvalidConfig(&'static str),
     #[error("duplicate KV registration: {0:?}")]
     DuplicateRequest(RequestId),
     #[error("unknown KV request: {0:?}")]
@@ -1061,11 +1076,33 @@ mod tests {
     use super::*;
 
     fn make_manager(total_blocks: u32, block_size_tokens: u32) -> KvManager {
-        KvManager::new(KvManagerConfig::new(
+        KvManager::new(KvManagerConfig::validated(
             CacheGroupId(3),
             block_size_tokens,
             total_blocks,
         ))
+    }
+
+    #[test]
+    fn config_rejects_invalid_dimensions_without_panicking() {
+        assert_eq!(
+            KvManagerConfig::new(CacheGroupId(3), 0, 8),
+            Err(KvManagerError::InvalidConfig(
+                "block_size_tokens must be in 1..=65535 and total_blocks must be > 0",
+            ))
+        );
+        assert_eq!(
+            KvManagerConfig::new(CacheGroupId(3), u16::MAX as u32 + 1, 8),
+            Err(KvManagerError::InvalidConfig(
+                "block_size_tokens must be in 1..=65535 and total_blocks must be > 0",
+            ))
+        );
+        assert_eq!(
+            KvManagerConfig::new(CacheGroupId(3), 16, 0),
+            Err(KvManagerError::InvalidConfig(
+                "block_size_tokens must be in 1..=65535 and total_blocks must be > 0",
+            ))
+        );
     }
 
     #[test]

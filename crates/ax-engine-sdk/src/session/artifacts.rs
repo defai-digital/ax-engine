@@ -537,7 +537,7 @@ mod tests {
             .expect("native model fixture should validate")
             .summary();
         let core = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(0), 16, 64),
+            KvManagerConfig::validated(CacheGroupId(0), 16, 64),
             NativeModelReportingRunner {
                 summary,
                 binding: Some(ax_engine_core::NativeModelBindingSummary {

@@ -855,6 +855,19 @@ class WrapperContractTests(unittest.TestCase):
             "user: Line 1\\nLine 2\nassistant:",
         )
 
+    def test_openai_mlx_shim_rejects_boolean_max_tokens(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        self.assertIsNone(openai_server.require_max_tokens({"max_tokens": 1}))
+        self.assertEqual(
+            openai_server.require_max_tokens({"max_tokens": True}),
+            (400, "OpenAI-compatible MLX shim requires max_tokens > 0"),
+        )
+        self.assertEqual(
+            openai_server.require_max_tokens({"max_tokens": False}),
+            (400, "OpenAI-compatible MLX shim requires max_tokens > 0"),
+        )
+
     def test_qwen_chat_prompt_matches_real_tokenizer_enable_thinking_false(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
         try:

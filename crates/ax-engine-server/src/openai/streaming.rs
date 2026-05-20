@@ -14,7 +14,7 @@ use crate::backends::{llama_cpp, mlx_lm};
 use crate::errors::{ErrorResponse, map_session_error};
 use crate::generation::streaming::{
     StreamEventSender, StreamStateSource, build_keep_alive_stream, build_stream_state,
-    drive_stream_events, send_stream_error, spawn_stream_task,
+    drive_stream_events, send_stream_error, spawn_sse_blocking_stream_task, spawn_stream_task,
 };
 use crate::openai::chunks::{
     chat_delta_chunk, chat_final_chunk, completion_delta_chunk, completion_final_chunk,
@@ -69,7 +69,7 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     .await?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    tokio::task::spawn_blocking(move || {
+    spawn_sse_blocking_stream_task(tx, "openai mlx_lm chat stream", move |tx| {
         drive_openai_mlx_lm_chat_stream(tx, request_id, model_id, stream);
     });
 
@@ -90,7 +90,7 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     .await?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    tokio::task::spawn_blocking(move || {
+    spawn_sse_blocking_stream_task(tx, "openai llama.cpp chat stream", move |tx| {
         drive_openai_llama_cpp_chat_stream(tx, request_id, model_id, stream);
     });
 

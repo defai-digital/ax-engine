@@ -396,13 +396,27 @@ fn preview_session_config_factory_builds_mlx_preview_defaults() {
 
     assert_eq!(
         config.kv_config,
-        KvManagerConfig::new(CacheGroupId(0), 16, 1024)
+        KvManagerConfig::validated(CacheGroupId(0), 16, 1024)
     );
     assert!(config.deterministic);
     assert_eq!(config.max_batch_tokens, 2048);
     assert_eq!(config.backend_policy, BackendPolicy::mlx_only());
     assert_eq!(config.resolved_backend, ResolvedBackend::mlx_preview());
     assert!(config.llama_backend.is_none());
+}
+
+#[test]
+fn preview_session_config_factory_rejects_invalid_kv_dimensions() {
+    let error = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
+        block_size_tokens: 0,
+        ..PreviewSessionConfigRequest::default()
+    })
+    .expect_err("invalid KV dimensions should be returned as a config error");
+
+    assert_eq!(
+        error.to_string(),
+        "invalid KV manager config: block_size_tokens must be in 1..=65535 and total_blocks must be > 0"
+    );
 }
 
 #[test]
@@ -539,7 +553,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
 
     assert_eq!(
         config.kv_config,
-        KvManagerConfig::new(CacheGroupId(7), 32, 2048)
+        KvManagerConfig::validated(CacheGroupId(7), 32, 2048)
     );
     assert!(!config.deterministic);
     assert_eq!(config.max_batch_tokens, 4096);
@@ -1197,7 +1211,7 @@ fn llama_cpp_cancelled_request_does_not_block_other_active_requests() {
 #[test]
 fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
     let core = EngineCore::with_runtime_components(
-        KvManagerConfig::new(CacheGroupId(0), 16, 64),
+        KvManagerConfig::validated(CacheGroupId(0), 16, 64),
         TraceReportingRunner {
             trace: sample_metal_dispatch_trace(),
         },
@@ -1374,7 +1388,7 @@ fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
 #[test]
 fn native_generate_response_surfaces_runner_route_metadata() {
     let core = EngineCore::with_runtime_components(
-        KvManagerConfig::new(CacheGroupId(0), 16, 64),
+        KvManagerConfig::validated(CacheGroupId(0), 16, 64),
         TerminalRouteReportingRunner {
             trace: sample_metal_dispatch_trace(),
         },

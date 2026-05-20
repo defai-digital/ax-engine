@@ -78,7 +78,7 @@ pub struct EngineCore {
 
 impl EngineCore {
     pub fn new(cache_group_id: CacheGroupId) -> Self {
-        Self::with_kv_config(KvManagerConfig::new(cache_group_id, 16, 1024))
+        Self::with_kv_config(KvManagerConfig::validated(cache_group_id, 16, 1024))
     }
 
     pub fn with_kv_config(kv_config: KvManagerConfig) -> Self {
@@ -1700,7 +1700,8 @@ mod tests {
 
     #[test]
     fn submit_rejects_empty_input_tokens() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         let error = engine
             .submit(make_submission_with_prompt(5, 1, Vec::new(), 2))
@@ -1718,7 +1719,8 @@ mod tests {
 
     #[test]
     fn submit_rejects_zero_max_output_tokens() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         let error = engine.submit(make_submission(5, 1, 0)).unwrap_err();
 
@@ -1734,7 +1736,8 @@ mod tests {
 
     #[test]
     fn step_executes_prefill_and_returns_request_to_runnable() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         engine.submit(make_submission(5, 1, 2)).unwrap();
 
@@ -1771,7 +1774,7 @@ mod tests {
     #[test]
     fn step_reports_measured_runner_and_cpu_time() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             DelayedRunner { delay_ms: 2 },
             DeterministicSampler,
         );
@@ -1787,7 +1790,7 @@ mod tests {
     #[test]
     fn step_forwards_sampling_filters_to_runner_context() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             AssertSamplingContextRunner {
                 temperature: 0.8,
                 top_p: 0.7,
@@ -1818,7 +1821,7 @@ mod tests {
     #[test]
     fn step_rejects_runner_output_that_omits_scheduled_updates() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             MissingUpdateRunner,
             DeterministicSampler,
         );
@@ -1841,7 +1844,7 @@ mod tests {
     #[test]
     fn step_rejects_runner_output_with_wrong_tokens_executed() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             WrongTokenCountRunner,
             DeterministicSampler,
         );
@@ -1863,7 +1866,8 @@ mod tests {
 
     #[test]
     fn step_keeps_requests_runnable_when_budget_is_zero() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         engine.submit(make_submission(6, 1, 2)).unwrap();
 
@@ -1884,7 +1888,8 @@ mod tests {
 
     #[test]
     fn request_finishes_after_prefill_and_decode_steps() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         engine.submit(make_submission(7, 1, 1)).unwrap();
 
@@ -1918,7 +1923,7 @@ mod tests {
     #[test]
     fn engine_accepts_custom_sampler_for_decode_progress() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             DeterministicRunner,
             FixedTokenSampler {
                 token_id: 42,
@@ -1940,7 +1945,7 @@ mod tests {
     #[test]
     fn engine_routes_runner_logits_payload_into_sampler() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             LogitsPayloadRunner {
                 logits: vec![0.2, -1.0, 3.5, 0.7],
             },
@@ -1973,7 +1978,7 @@ mod tests {
     #[test]
     fn engine_accepts_runner_provided_decode_tokens_without_sampler() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             DirectDecodeTokenRunner {
                 token_id: 77,
                 stop_reason: Some(StopReason::MaxOutputTokens),
@@ -2002,7 +2007,7 @@ mod tests {
     #[test]
     fn step_rejects_runner_output_with_duplicate_decode_result_sources() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             DuplicateDecodeSourceRunner,
             DeterministicSampler,
         );
@@ -2022,7 +2027,8 @@ mod tests {
 
     #[test]
     fn step_allows_prefill_candidate_to_join_live_decode_after_prefix_reuse() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         engine.submit(make_submission(21, 1, 4)).unwrap();
         engine.step(4, true).unwrap();
@@ -2064,7 +2070,8 @@ mod tests {
 
     #[test]
     fn step_marks_unallocatable_requests_blocked_on_memory() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 1));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 1));
 
         engine.submit(make_submission(1, 1, 1)).unwrap();
         engine.submit(make_submission(2, 2, 1)).unwrap();
@@ -2088,7 +2095,8 @@ mod tests {
 
     #[test]
     fn step_reports_step_id_overflow_without_panicking() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 1));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 1));
         engine.next_step_id = u64::MAX;
 
         let error = engine.step(1, true).unwrap_err();
@@ -2105,7 +2113,8 @@ mod tests {
         // two older requests decode (each needing a new block), KV exhausts,
         // and req 3's in-flight prefill is preempted so the older decode can
         // proceed. This is the REQ-P6 scenario from PRD-GROWTH §5.3.
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 4));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 4));
 
         engine
             .submit(make_submission_with_prompt(1, 1, vec![1, 2, 3, 4], 4))
@@ -2199,7 +2208,8 @@ mod tests {
         // Two requests; older one's prefill stalls because KV is full.
         // No newer prefill is available to preempt, so the existing
         // "mark memory_blocked" fallback must remain in effect.
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 1));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 1));
 
         engine.submit(make_submission(1, 1, 2)).unwrap();
         engine.submit(make_submission(2, 2, 2)).unwrap();
@@ -2215,7 +2225,8 @@ mod tests {
 
     #[test]
     fn blocked_request_retries_after_capacity_is_freed() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 8, 1));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 8, 1));
 
         engine.submit(make_submission(1, 1, 1)).unwrap();
         engine.submit(make_submission(2, 2, 1)).unwrap();
@@ -2238,7 +2249,8 @@ mod tests {
 
     #[test]
     fn blocked_full_prefix_reuse_remains_visible_in_route_metadata() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 3));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 3));
         let shared_prompt = vec![10, 11, 12, 13, 14, 15, 16, 17];
 
         engine
@@ -2327,7 +2339,8 @@ mod tests {
 
     #[test]
     fn engine_eviction_preserves_shorter_retained_prefix_for_future_request() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 2));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 2));
 
         engine
             .submit(make_submission_with_prompt(
@@ -2363,7 +2376,8 @@ mod tests {
 
     #[test]
     fn blocked_prefix_reuse_rolls_back_refs_so_capacity_can_recover() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 3));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 3));
         let shared_prefix = vec![10, 11, 12, 13, 14, 15, 16, 17];
 
         engine
@@ -2402,7 +2416,8 @@ mod tests {
 
     #[test]
     fn step_reuses_full_block_prefix_for_later_request() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
         let shared_prefix = vec![10, 11, 12, 13, 14, 15, 16, 17];
 
         engine
@@ -2472,7 +2487,8 @@ mod tests {
 
     #[test]
     fn step_moves_fully_reused_prompt_directly_to_decode() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
         let shared_prompt = vec![10, 11, 12, 13, 14, 15, 16, 17];
 
         engine
@@ -2556,7 +2572,8 @@ mod tests {
 
     #[test]
     fn cancel_during_running_resolves_on_next_step() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         engine.submit(make_submission(1, 1, 4)).unwrap();
         engine.step(4, true).unwrap();
@@ -2577,7 +2594,8 @@ mod tests {
 
     #[test]
     fn multiple_requests_progress_across_successive_steps() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 16));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
 
         engine.submit(make_submission(1, 1, 2)).unwrap();
         engine.submit(make_submission(2, 2, 2)).unwrap();
@@ -2601,7 +2619,8 @@ mod tests {
 
     #[test]
     fn submit_duplicate_request_returns_error() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         engine.submit(make_submission(1, 1, 2)).unwrap();
         let error = engine.submit(make_submission(1, 2, 2));
@@ -2611,7 +2630,8 @@ mod tests {
 
     #[test]
     fn cancel_unknown_request_returns_error() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         let error = engine.cancel(RequestId(99));
 
@@ -2621,7 +2641,7 @@ mod tests {
     #[test]
     fn step_rejects_runner_output_with_wrong_step_id() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             WrongStepIdRunner,
             DeterministicSampler,
         );
@@ -2644,7 +2664,7 @@ mod tests {
     #[test]
     fn step_rejects_non_completing_prefill_update_with_output_token() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             PrefillWithOutputTokenRunner,
             DeterministicSampler,
         );
@@ -2667,7 +2687,7 @@ mod tests {
     #[test]
     fn step_accepts_prefill_completion_update_with_output_token() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             PrefillWithOutputTokenRunner,
             DeterministicSampler,
         );
@@ -2692,7 +2712,7 @@ mod tests {
     #[test]
     fn failed_batch_runner_transitions_all_requests_to_failed() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             FailedBatchRunner,
             DeterministicSampler,
         );
@@ -2721,7 +2741,8 @@ mod tests {
 
     #[test]
     fn fallback_replan_schedules_decode_when_prefill_is_blocked() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 2));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 2));
 
         engine
             .submit(make_submission_with_prompt(1, 1, vec![1, 2, 3, 4], 2))
@@ -2751,7 +2772,8 @@ mod tests {
 
     #[test]
     fn execution_plan_resolver_produces_model_specific_route_for_gemma() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         engine
             .submit(RequestSubmission {
@@ -2784,7 +2806,8 @@ mod tests {
 
     #[test]
     fn route_metadata_propagates_through_full_prefill_decode_cycle() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
 
         engine.submit(make_submission(1, 1, 1)).unwrap();
 
@@ -2835,7 +2858,7 @@ mod tests {
     #[test]
     fn decode_batches_carry_processed_context_for_native_prefix_warmup() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             DeterministicRunner,
             FixedTokenSampler {
                 token_id: 42,
@@ -2880,7 +2903,8 @@ mod tests {
 
     #[test]
     fn different_model_requests_are_batched_separately() {
-        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 16));
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
 
         engine
             .submit(RequestSubmission {
@@ -2944,7 +2968,7 @@ mod tests {
     #[test]
     fn eos_token_finishes_request_before_max_output() {
         let mut engine = EngineCore::with_runtime_components(
-            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
             DeterministicRunner,
             FixedTokenSampler {
                 token_id: 0,

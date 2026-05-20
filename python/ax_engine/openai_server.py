@@ -288,7 +288,7 @@ def validate_model(payload: dict[str, Any], model_id: str) -> tuple[int, str] | 
 
 def require_max_tokens(payload: dict[str, Any]) -> tuple[int, str] | None:
     max_tokens = payload.get("max_tokens")
-    if not isinstance(max_tokens, int) or max_tokens <= 0:
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         return 400, "OpenAI-compatible MLX shim requires max_tokens > 0"
     return None
 

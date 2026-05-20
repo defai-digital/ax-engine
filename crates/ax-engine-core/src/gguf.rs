@@ -583,7 +583,9 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
 
     // --- Tensor mapping ---
     // Use a relative path: just the file name so resolve_tensor_path() works.
-    let file_name = PathBuf::from(path.file_name().expect("GGUF path must be a file"));
+    let file_name = PathBuf::from(path.file_name().ok_or_else(|| {
+        GgufError::InvalidManifest("GGUF path must include a file name".to_string())
+    })?);
 
     let mut tensors: Vec<NativeTensorSpec> = Vec::new();
     let mut has_lm_head = false;

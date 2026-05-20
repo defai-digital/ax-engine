@@ -100,9 +100,41 @@ pub(crate) fn spawn_stream_task<F>(
 ) where
     F: FnOnce(&mut GenerateStreamState, StreamEventSender) + Send + 'static,
 {
-    tokio::task::spawn_blocking(move || {
+    let monitor_tx = tx.clone();
+    let handle = tokio::task::spawn_blocking(move || {
         let mut stream_state = stream_state;
         driver(&mut stream_state, tx);
+    });
+    tokio::spawn(async move {
+        if let Err(error) = handle.await {
+            tracing::error!(%error, "generate stream task failed");
+            send_stream_error_async(
+                &monitor_tx,
+                ErrorResponse::server_error(format!("generate stream task failed: {error}")),
+            )
+            .await;
+        }
+    });
+}
+
+pub(crate) fn spawn_sse_blocking_stream_task<F>(
+    tx: StreamEventSender,
+    task_name: &'static str,
+    driver: F,
+) where
+    F: FnOnce(StreamEventSender) + Send + 'static,
+{
+    let monitor_tx = tx.clone();
+    let handle = tokio::task::spawn_blocking(move || driver(tx));
+    tokio::spawn(async move {
+        if let Err(error) = handle.await {
+            tracing::error!(%error, task = task_name, "SSE stream task failed");
+            send_stream_error_async(
+                &monitor_tx,
+                ErrorResponse::server_error(format!("{task_name} task failed: {error}")),
+            )
+            .await;
+        }
     });
 }
 
@@ -194,4 +226,14 @@ pub(crate) fn send_stream_error(tx: &StreamEventSender, error: ErrorResponse) {
     });
     let _ = tx.blocking_send(Ok(Event::default().event("error").data(payload)));
     let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
+}
+
+async fn send_stream_error_async(tx: &StreamEventSender, error: ErrorResponse) {
+    let payload = serde_json::to_string(&error).unwrap_or_else(|_| {
+        "{\"error\":{\"type\":\"server_error\",\"code\":\"engine_error\",\"param\":null,\"message\":\"failed to serialize stream error\"}}".to_string()
+    });
+    let _ = tx
+        .send(Ok(Event::default().event("error").data(payload)))
+        .await;
+    let _ = tx.send(Ok(Event::default().data("[DONE]"))).await;
 }

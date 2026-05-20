@@ -28,6 +28,28 @@ where
         .map_err(|e| Status::internal(e.to_string()))
 }
 
+fn spawn_grpc_blocking_stream_task<T, F>(
+    tx: mpsc::Sender<Result<T, Status>>,
+    task_name: &'static str,
+    driver: F,
+) where
+    T: Send + 'static,
+    F: FnOnce(mpsc::Sender<Result<T, Status>>) + Send + 'static,
+{
+    let monitor_tx = tx.clone();
+    let handle = tokio::task::spawn_blocking(move || driver(tx));
+    tokio::spawn(async move {
+        if let Err(error) = handle.await {
+            tracing::error!(%error, task = task_name, "gRPC stream task failed");
+            let _ = monitor_tx
+                .send(Err(Status::internal(format!(
+                    "{task_name} task failed: {error}"
+                ))))
+                .await;
+        }
+    });
+}
+
 pub(super) async fn build_grpc_stream_state(
     state: &AppState,
     request: GenerateRequest,
@@ -65,7 +87,7 @@ pub(super) fn spawn_grpc_generate_stream(
     tx: mpsc::Sender<Result<proto::GenerateStreamEvent, Status>>,
     stream_context: StreamStateSource,
 ) {
-    tokio::task::spawn_blocking(move || {
+    spawn_grpc_blocking_stream_task(tx, "grpc generate stream", move |tx| {
         let mut ss = stream_state;
         let result = match stream_context {
             StreamStateSource::Stateless(ctx) => {
@@ -111,7 +133,7 @@ pub(super) fn spawn_grpc_chat_stream(
     tx: mpsc::Sender<Result<proto::ChatCompletionChunk, Status>>,
     stream_context: StreamStateSource,
 ) {
-    tokio::task::spawn_blocking(move || {
+    spawn_grpc_blocking_stream_task(tx, "grpc chat stream", move |tx| {
         let mut ss = stream_state;
         let mut chat_role_emitted = false;
         let result = match stream_context {
@@ -188,7 +210,7 @@ pub(super) fn spawn_grpc_completion_stream(
     tx: mpsc::Sender<Result<proto::CompletionChunk, Status>>,
     stream_context: StreamStateSource,
 ) {
-    tokio::task::spawn_blocking(move || {
+    spawn_grpc_blocking_stream_task(tx, "grpc completion stream", move |tx| {
         let mut ss = stream_state;
         let result = match stream_context {
             StreamStateSource::Stateless(ctx) => {
