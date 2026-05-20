@@ -2485,6 +2485,12 @@ pub struct MlxRunner {
     rotating_sliding_decode: bool,
     /// Optional mlx_lm-style `clear_cache` cadence for the direct decode pipeline.
     direct_clear_cache_cadence: u32,
+    /// Weight-layout snapshot computed once at construction. `runner.run`
+    /// emits this as `ax_mlx_dense_ffn_gate_up_packed_layers` /
+    /// `ax_mlx_dense_ffn_split_gate_up_layers` route decisions every step.
+    /// The counts are invariant under decode (weights don't change post-init)
+    /// so caching avoids the 64-layer iteration per scheduler step.
+    weight_layout_telemetry: WeightLayoutTelemetry,
     /// Per-thread/per-shape compiled embedding-forward closures. Each entry is
     /// built on the first `embed()` call at a new `(thread_id, seq_len,
     /// target_position)` shape and reused on the same worker thread. Set
@@ -2716,6 +2722,7 @@ impl MlxRunner {
             .into_parts();
 
         let cfg_arc = Arc::new(cfg.clone());
+        let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
         Ok(Self {
             cfg,
             cfg_arc,
@@ -2735,6 +2742,7 @@ impl MlxRunner {
             disk_prefix_cache,
             rotating_sliding_decode,
             direct_clear_cache_cadence,
+            weight_layout_telemetry,
             embed_compile_cache: Mutex::new(HashMap::new()),
             embed_batch_compile_cache: Mutex::new(HashMap::new()),
             embed_compile_stats: Mutex::new(EmbedCompileStats::default()),
@@ -2833,7 +2841,7 @@ impl ExecutionRunner for MlxRunner {
             linear_attention_profile.append_route_decisions(&mut route_decisions);
             prefill_profile.append_route_decisions(&mut route_decisions);
             decode_profile.append_route_decisions(&mut route_decisions);
-            WeightLayoutTelemetry::from_weights(&self.weights)
+            self.weight_layout_telemetry
                 .append_route_decisions(&mut route_decisions);
             kv_cache.append_route_decisions(&mut route_decisions);
             prefix_cache.append_route_decisions(&mut route_decisions);
