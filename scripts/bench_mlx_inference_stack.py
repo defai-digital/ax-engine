@@ -527,6 +527,7 @@ def collect_host_metadata() -> dict[str, Any]:
 def collect_build_metadata() -> dict[str, Any]:
     """Collect git commit and build profile for artifact provenance."""
     commit = "unknown"
+    tracked_status: list[str] = []
     try:
         commit = subprocess.check_output(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
@@ -535,11 +536,29 @@ def collect_build_metadata() -> dict[str, Any]:
         ).strip()
     except Exception:
         pass
+    try:
+        status = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(REPO_ROOT),
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        tracked_status = [line for line in status.splitlines() if line.strip()]
+    except Exception:
+        pass
 
     return {
         "commit": commit,
         "build_profile": "release",
         "server_binary": str(AX_ENGINE_SERVER),
+        "git_tracked_dirty": bool(tracked_status),
+        "git_tracked_status": tracked_status[:50],
     }
 
 def collect_model_metadata(model_dir: Path) -> dict[str, Any]:

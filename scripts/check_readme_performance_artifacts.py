@@ -519,6 +519,22 @@ def validate_public_claim_evidence(
                 )
 
 
+def validate_build_provenance(
+    *, artifact_path: Path, artifact: dict[str, Any]
+) -> None:
+    build = artifact.get("build")
+    if not isinstance(build, dict):
+        return
+    if build.get("git_tracked_dirty") is True:
+        status = build.get("git_tracked_status")
+        suffix = ""
+        if isinstance(status, list) and status:
+            suffix = f"; tracked changes include: {', '.join(map(str, status[:5]))}"
+        raise ArtifactCheckError(
+            f"{artifact_path} was produced from a tracked-dirty source tree{suffix}"
+        )
+
+
 @dataclass(frozen=True)
 class HotPrefixClaimSummary:
     artifact_path: Path
@@ -1318,6 +1334,7 @@ def collect_artifact_rows(
         artifact = json.loads(path.read_text())
         if artifact.get("schema_version") != "ax.mlx_inference_stack.v2":
             raise ArtifactCheckError(f"{path} has unexpected schema_version")
+        validate_build_provenance(artifact_path=path, artifact=artifact)
         validate_public_claim_evidence(artifact_path=path, artifact=artifact)
         validate_phase0_artifact_gate(artifact_path=path, artifact=artifact)
         model, quantization = label

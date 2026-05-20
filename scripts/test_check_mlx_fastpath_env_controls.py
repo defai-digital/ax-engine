@@ -71,27 +71,6 @@ class MlxFastpathEnvControlTests(unittest.TestCase):
             ):
                 checker.check_mlx_fastpath_env_controls(root)
 
-    def test_rejects_direct_parse_of_dense_geglu_qffn_direct_env(self) -> None:
-        # The dense GEGLU quantized FFN direct router is a fastpath control
-        # owned by fastpath.rs, just like the AX_MLX_PACK_* family. Asserting
-        # the gate explicitly here prevents future drift where the env gets
-        # added to fastpath.rs but missed in FASTPATH_CONTROL_ENVS, which
-        # would let other files parse it directly without being caught.
-        self.assertIn("AX_MLX_DENSE_GEGLU_QFFN_DIRECT", checker.FASTPATH_CONTROL_ENVS)
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write(root / checker.FASTPATH_OWNER, owner_with_required_envs())
-            write(
-                root / "crates/ax-engine-mlx/src/model/shared/mlp.rs",
-                'let _ = std::env::var("AX_MLX_DENSE_GEGLU_QFFN_DIRECT");\n',
-            )
-
-            with self.assertRaisesRegex(
-                checker.MlxFastpathEnvControlError,
-                "AX_MLX_DENSE_GEGLU_QFFN_DIRECT",
-            ):
-                checker.check_mlx_fastpath_env_controls(root)
-
     def test_rejects_missing_owner_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -455,6 +455,33 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 7)
 
+    def test_build_provenance_rejects_tracked_dirty_artifact(self) -> None:
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            r"tracked-dirty source tree.*scripts/bench_mlx_inference_stack.py",
+        ):
+            checker.validate_build_provenance(
+                artifact_path=Path("artifact.json"),
+                artifact={
+                    "build": {
+                        "git_tracked_dirty": True,
+                        "git_tracked_status": [
+                            " M scripts/bench_mlx_inference_stack.py"
+                        ],
+                    }
+                },
+            )
+
+    def test_build_provenance_allows_clean_or_legacy_artifact(self) -> None:
+        checker.validate_build_provenance(
+            artifact_path=Path("artifact.json"),
+            artifact={"build": {"git_tracked_dirty": False}},
+        )
+        checker.validate_build_provenance(
+            artifact_path=Path("legacy.json"),
+            artifact={"build": {"commit": "abc123"}},
+        )
+
     def test_legacy_non_gated_rows_allow_missing_claim_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
