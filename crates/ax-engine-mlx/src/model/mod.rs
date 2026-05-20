@@ -44,6 +44,21 @@ enum FinalLogitsMode {
     ArgmaxOnly,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LazySingleTokenMode {
+    NormalizedFullLogits,
+    SingletonArgmaxOnly,
+}
+
+impl LazySingleTokenMode {
+    fn logits_mode(self) -> FinalLogitsMode {
+        match self {
+            Self::NormalizedFullLogits => FinalLogitsMode::Full,
+            Self::SingletonArgmaxOnly => FinalLogitsMode::ArgmaxOnly,
+        }
+    }
+}
+
 #[cfg(test)]
 use crate::attention_mask::create_causal_mask;
 #[cfg(test)]
@@ -940,14 +955,14 @@ pub fn forward_lazy_single_with_turboquant_context(
         cache,
         token_offset,
         turboquant_context,
-        FinalLogitsMode::Full,
+        LazySingleTokenMode::NormalizedFullLogits,
     )
 }
 
 pub fn forward_lazy_single_argmax_with_turboquant_context(
     cfg: &ModelConfig,
     weights: &ModelWeights,
-    token_arr: &MlxArray, // scalar or [1] u32; may be unevaluated (lazy)
+    token_arr: &MlxArray, // singleton u32 array from argmax; may be unevaluated (lazy)
     cache: &mut MlxKVCache,
     token_offset: usize,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
@@ -959,25 +974,35 @@ pub fn forward_lazy_single_argmax_with_turboquant_context(
         cache,
         token_offset,
         turboquant_context,
-        FinalLogitsMode::ArgmaxOnly,
+        LazySingleTokenMode::SingletonArgmaxOnly,
     )
 }
 
 fn forward_lazy_single_with_turboquant_context_and_logits_mode(
     cfg: &ModelConfig,
     weights: &ModelWeights,
-    token_arr: &MlxArray, // scalar or [1] u32; may be unevaluated (lazy)
+    token_arr: &MlxArray, // scalar, [1], or singleton argmax array; may be lazy
     cache: &mut MlxKVCache,
     token_offset: usize,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
-    logits_mode: FinalLogitsMode,
+    lazy_mode: LazySingleTokenMode,
 ) -> MlxArray {
     let profile_decode = decode_profile_enabled();
 
-    // Normalise to [1] for embedding take (reshape is a no-op if already [1]).
-    let tok_1d = reshape(token_arr, &[1_i32], None);
+    // The generic lazy path accepts scalar or vector token arrays and keeps the
+    // historical normalization. The direct-pipeline argmax path already passes
+    // a singleton `[1, 1]` array, so it can avoid one reshape graph node per
+    // generated token.
+    let tok_1d_storage;
+    let token_ids = match lazy_mode {
+        LazySingleTokenMode::NormalizedFullLogits => {
+            tok_1d_storage = reshape(token_arr, &[1_i32], None);
+            &tok_1d_storage
+        }
+        LazySingleTokenMode::SingletonArgmaxOnly => token_arr,
+    };
 
-    let mut hidden = embed_tokens_arr(&tok_1d, &weights.token_embedding, cfg.hidden_size);
+    let mut hidden = embed_tokens_arr(token_ids, &weights.token_embedding, cfg.hidden_size);
     if hidden.dtype() != MlxDtype::Bfloat16 {
         hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     }
@@ -989,7 +1014,7 @@ fn forward_lazy_single_with_turboquant_context_and_logits_mode(
     let decode_mask: Option<MlxArray> = None;
 
     let per_layer_started = profile_decode.then(Instant::now);
-    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &tok_1d, &hidden);
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, token_ids, &hidden);
     if let (Some(started), Some(inputs)) = (per_layer_started, per_layer_inputs.as_ref()) {
         // Force materialization of the per-layer-input tensors to attribute their
         // graph-build + dispatch cost to this stage. Models without per-layer input
@@ -1025,7 +1050,7 @@ fn forward_lazy_single_with_turboquant_context_and_logits_mode(
     let lm_head_started = profile_decode.then(Instant::now);
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
-    let logits = finalize_lm_head_logits(cfg, &logits, logits_mode);
+    let logits = finalize_lm_head_logits(cfg, &logits, lazy_mode.logits_mode());
     if let Some(started) = lm_head_started {
         decode_profile_eval_elapsed(
             profile_decode,
@@ -1731,6 +1756,33 @@ mod tests {
 
     fn dense_weight_from_data(data: &[f32], shape: &[i32]) -> QuantizedWeight {
         QuantizedWeight::new(array_f32(data, shape), None, None)
+    }
+
+    #[test]
+    fn embed_tokens_arr_accepts_singleton_matrix_token_ids() {
+        let embedding = dense_weight_from_data(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], &[3, 2]);
+        let token_id = [2_u32];
+        let ids_1d = MlxArray::from_raw_data(
+            token_id.as_ptr().cast(),
+            std::mem::size_of_val(&token_id),
+            &[1],
+            MlxDtype::Uint32,
+        );
+        let ids_2d = MlxArray::from_raw_data(
+            token_id.as_ptr().cast(),
+            std::mem::size_of_val(&token_id),
+            &[1, 1],
+            MlxDtype::Uint32,
+        );
+
+        let from_1d = embed_tokens_arr(&ids_1d, &embedding, 2);
+        let from_2d = embed_tokens_arr(&ids_2d, &embedding, 2);
+        eval(&[&from_1d, &from_2d]);
+
+        assert_eq!(from_1d.shape(), vec![1, 1, 2]);
+        assert_eq!(from_2d.shape(), vec![1, 1, 2]);
+        assert_close(from_1d.data_f32(), from_2d.data_f32(), 0.0);
+        assert_close(from_2d.data_f32(), &[4.0, 5.0], 0.0);
     }
 
     fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
