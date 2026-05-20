@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, add, reshape, rms_norm, rope, slice, transpose};
+use mlx_sys::{MlxArray, add, rms_norm, rope, slice};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -10,10 +10,10 @@ use super::super::profile::{
 };
 use super::super::shared::{
     add_then_multiply_scalar, attention_mask_array, attention_output_projection, ffn_swiglu,
-    full_precision_attention, moe_experts_forward, moe_router_gemma4, moe_router_glm,
-    moe_router_qwen3, per_layer_input_gate, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
-    qkv_project, qw, rms_norm_opt, shape_element_count, shared_expert_forward,
-    turboquant_decode_attention_experimental,
+    flatten_attention_output_bhsd, full_precision_attention, moe_experts_forward,
+    moe_router_gemma4, moe_router_glm, moe_router_qwen3, per_layer_input_gate,
+    prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qkv_project, qw, rms_norm_opt,
+    shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
@@ -322,15 +322,10 @@ pub(crate) fn layer_forward(
         post_attn_started = profile_forward_layer.then(Instant::now);
         let output_proj_started = profile_forward_layer.then(Instant::now);
 
-        // 10. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
-        let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
-
-        // 11. Reshape to [1, seq, hidden].
-        let attn_flat = reshape(
-            &attn_out,
-            &[1, seq as i32, (cfg.n_heads * head_dim) as i32],
-            None,
-        );
+        // 10-11. Convert [B, n_heads, seq, head_dim] to [B, seq, hidden].
+        // Single-token decode skips the transpose because seq=1 is already
+        // head-major in the flattened projection order.
+        let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
 
         // 12-13. Optional Qwen3.5 output gate, then output projection.
         let attn_proj = attention_output_projection(

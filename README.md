@@ -4,14 +4,28 @@
 
 <table>
 <tr>
+<td align="center"><strong>Prompt</strong></td>
 <td align="center"><strong>Prefill rate</strong></td>
 <td align="center"><strong>Decode rate</strong></td>
 <td align="center"><strong>TTFT</strong></td>
 </tr>
 <tr>
-<td><img src="docs/assets/perf-prefill-box-whisker.svg" alt="Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax_engine plus n-gram prefill rates"></td>
-<td><img src="docs/assets/perf-decode-box-whisker.svg" alt="Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax_engine plus n-gram decode rates"></td>
-<td><img src="docs/assets/perf-ttft-box-whisker.svg" alt="Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax_engine plus n-gram TTFT"></td>
+<td align="center"><strong>128 tok</strong></td>
+<td><img src="docs/assets/perf-prefill-128-box-whisker.svg" alt="Linear-scale Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates at 128 prompt tokens with a red highest-median reference line"></td>
+<td><img src="docs/assets/perf-decode-128-box-whisker.svg" alt="Linear-scale Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax_engine plus n-gram decode rates at 128 prompt tokens with a red highest-median reference line"></td>
+<td><img src="docs/assets/perf-ttft-128-box-whisker.svg" alt="Linear-scale Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT at 128 prompt tokens with a red lowest-median reference line"></td>
+</tr>
+<tr>
+<td align="center"><strong>512 tok</strong></td>
+<td><img src="docs/assets/perf-prefill-512-box-whisker.svg" alt="Linear-scale Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates at 512 prompt tokens with a red highest-median reference line"></td>
+<td><img src="docs/assets/perf-decode-512-box-whisker.svg" alt="Linear-scale Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax_engine plus n-gram decode rates at 512 prompt tokens with a red highest-median reference line"></td>
+<td><img src="docs/assets/perf-ttft-512-box-whisker.svg" alt="Linear-scale Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT at 512 prompt tokens with a red lowest-median reference line"></td>
+</tr>
+<tr>
+<td align="center"><strong>2048 tok</strong></td>
+<td><img src="docs/assets/perf-prefill-2048-box-whisker.svg" alt="Linear-scale Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates at 2048 prompt tokens with a red highest-median reference line"></td>
+<td><img src="docs/assets/perf-decode-2048-box-whisker.svg" alt="Linear-scale Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax_engine plus n-gram decode rates at 2048 prompt tokens with a red highest-median reference line"></td>
+<td><img src="docs/assets/perf-ttft-2048-box-whisker.svg" alt="Linear-scale Box-and-Whisker Plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT at 2048 prompt tokens with a red lowest-median reference line"></td>
 </tr>
 </table>
 
@@ -189,7 +203,7 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-18-ax-only-sweep/; reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-gemma-ffn-compile-off-r1/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-r1/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-gemma-e2b-4bit-r3/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-gemma-e2b-4bit-argmax-softcap-skip-direct/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-gemma-e2b-4bit-packed-geglu-metal-direct/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-gemma-e2b-4bit-ax-only-prefill-cache-boundary/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-gemma-e2b-4to8bit-ax-only-prefill-contract/ -->
+<!-- readme-performance-artifacts: base=benchmarks/results/mlx-inference/2026-05-18-ax-only-sweep/; reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-gemma-ffn-compile-off-r1/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-all-r1/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-ax-only-readme-refresh-gemma-e2b-4bit-r3/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-gemma-e2b-4bit-argmax-softcap-skip-direct/; ax-overlay=benchmarks/results/mlx-inference/2026-05-19-gemma-e2b-4bit-packed-geglu-metal-direct/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-gemma-e2b-4bit-ax-only-prefill-cache-boundary/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-gemma-e2b-4to8bit-ax-only-prefill-contract/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-gemma-e2b-4bit-direct-argmax-dtype-skip/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-gemma-e2b-4bit-direct-attn-flatten/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
@@ -203,11 +217,16 @@ refreshed AX rows for Gemma 4 E4B 4-bit and Gemma 4 26B A4B 4-bit come from
 and use the default Gemma GeGLU direct-MLX activation shim. The older
 compiled-closure experiment has been removed from the production runtime
 surface; the rows shown below are from the stable direct path.
-The refreshed AX direct and n-gram rows for Gemma 4 E2B 4/5/6/8-bit come from
+The refreshed AX direct rows for Gemma 4 E2B 4-bit come from
+`benchmarks/results/mlx-inference/2026-05-20-gemma-e2b-4bit-direct-attn-flatten/`
+after the greedy argmax-only final-softcap skip, packed dense GEGLU Metal
+activation fast path, MLX-style cache-only prefill boundary for greedy prompts
+longer than 512 tokens, argmax-only logits dtype preservation, and
+single-token attention-output transpose elision.
+The refreshed AX direct and n-gram rows for Gemma 4 E2B 5/6/8-bit, plus the
+Gemma 4 E2B 4-bit n-gram row, come from
 `benchmarks/results/mlx-inference/2026-05-20-gemma-e2b-4to8bit-ax-only-prefill-contract/`
-after the greedy argmax-only final-softcap skip, the packed dense GEGLU Metal
-activation fast path, and the MLX-style cache-only prefill boundary for greedy
-prompts longer than 512 tokens.
+under the same prefill contract.
 Those long-greedy AX prefill rows are runner-time measurements of the
 cache-state prefix plus final prompt-token boundary; they are not full-logits
 prompt scoring throughput.
@@ -241,9 +260,9 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 3,481.7 | 2,338.1 | **4,042.7 (+72.9%)** |
-|         |         | 512 | 6,846.0 | 7,870.0 | **9,740.0 (+23.8%)** |
-|         |         | 2048 | 7,643.1 | 18,014.7 | **25,344.7 (+40.7%)** |
+| Gemma 4 E2B | 4-bit | 128 | 3,481.7 | 2,338.1 | **4,176.6 (+78.6%)** |
+|         |         | 512 | 6,846.0 | 7,870.0 | **10,267.7 (+30.5%)** |
+|         |         | 2048 | 7,643.1 | 18,014.7 | **25,375.4 (+40.9%)** |
 | Gemma 4 E2B | 5-bit | 128 | 3,398.4 | 2,238.5 | **4,071.9 (+81.9%)** |
 |         |         | 512 | 6,860.3 | 7,469.9 | **9,502.2 (+27.2%)** |
 |         |         | 2048 | 7,288.1 | 16,664.1 | **24,258.5 (+45.6%)** |
@@ -304,9 +323,9 @@ collapsed output loop.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 174.6 | 214.0 | 206.5 (-3.5%) | **507.1 (+137.0%)** |
-|  |  | 512 | 165.2 | 210.3 | 197.3 (-6.2%) | **499.0 (+137.3%)** |
-|  |  | 2048 | 171.9 | 200.9 | 190.5 (-5.2%) | **465.6 (+131.8%)** |
+| Gemma 4 E2B | 4-bit | 128 | 174.6 | 214.0 | 206.4 (-3.5%) | **507.1 (+137.0%)** |
+|  |  | 512 | 165.2 | 210.3 | 198.9 (-5.4%) | **499.0 (+137.3%)** |
+|  |  | 2048 | 171.9 | 200.9 | 190.9 (-5.0%) | **465.6 (+131.8%)** |
 | Gemma 4 E2B | 5-bit | 128 | 154.8 | 195.2 | 185.6 (-4.9%) | **406.9 (+108.5%)** |
 |  |  | 512 | 154.3 | 182.0 | 178.0 (-2.2%) | **399.0 (+119.2%)** |
 |  |  | 2048 | 154.3 | 181.9 | 171.8 (-5.5%) | **377.3 (+107.4%)** |
@@ -364,9 +383,9 @@ so server/client timing does not get mixed with runner-time throughput.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 36.8 | 54.7 | **31.7 (-42.2%)** |
-|         |         | 512 | 74.8 | 65.1 | **52.6 (-19.2%)** |
-|         |         | 2048 | 268.0 | 113.7 | **80.8 (-28.9%)** |
+| Gemma 4 E2B | 4-bit | 128 | 36.8 | 54.7 | **30.6 (-44.0%)** |
+|         |         | 512 | 74.8 | 65.1 | **49.9 (-23.4%)** |
+|         |         | 2048 | 268.0 | 113.7 | **80.7 (-29.0%)** |
 | Gemma 4 E2B | 5-bit | 128 | 37.7 | 57.2 | **31.4 (-45.0%)** |
 |         |         | 512 | 74.6 | 68.5 | **53.9 (-21.4%)** |
 |         |         | 2048 | 281.0 | 122.9 | **84.4 (-31.3%)** |

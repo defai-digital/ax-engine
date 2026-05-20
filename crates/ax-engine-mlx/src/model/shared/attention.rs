@@ -120,6 +120,28 @@ pub(crate) fn prepare_value_bhsd(
     transpose(&v, &[0, 2, 1, 3], None)
 }
 
+/// Convert SDPA output `[B, H, S, D]` to `[B, S, H * D]` for the output projection.
+///
+/// Single-token decode has `S == 1`, so `[B, H, 1, D]` is already laid out in
+/// the same head-major order the flattened projection expects. In that case a
+/// direct reshape is equivalent to `transpose([0, 2, 1, 3]) + reshape` while
+/// saving one layout graph node per transformer layer.
+pub(crate) fn flatten_attention_output_bhsd(
+    attn_sdpa: &MlxArray,
+    seq: usize,
+    n_heads: usize,
+    head_dim: usize,
+) -> MlxArray {
+    let batch = attn_sdpa.shape()[0];
+    let hidden = (n_heads * head_dim) as i32;
+    if seq == 1 {
+        return reshape(attn_sdpa, &[batch, 1, hidden], None);
+    }
+
+    let attn_out = transpose(attn_sdpa, &[0, 2, 1, 3], None);
+    reshape(&attn_out, &[batch, seq as i32, hidden], None)
+}
+
 /// Build the array mask only when the fast causal/none modes cannot express it.
 pub(crate) fn attention_mask_array(
     seq_len: usize,

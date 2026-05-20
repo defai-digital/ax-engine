@@ -3575,6 +3575,80 @@ mod tests {
     }
 
     #[test]
+    fn flatten_attention_output_bhsd_skips_decode_transpose() {
+        let batch = 1_usize;
+        let n_heads = 3_usize;
+        let head_dim = 4_usize;
+        let seq = 1_usize;
+        let data: Vec<f32> = (0..(batch * n_heads * seq * head_dim))
+            .map(|i| i as f32)
+            .collect();
+        let attn = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[batch as i32, n_heads as i32, seq as i32, head_dim as i32],
+            MlxDtype::Float32,
+        );
+
+        let reference = {
+            let transposed = transpose(&attn, &[0, 2, 1, 3], None);
+            reshape(
+                &transposed,
+                &[batch as i32, seq as i32, (n_heads * head_dim) as i32],
+                None,
+            )
+        };
+        let op_count_before = mlx_sys::op_count_snapshot();
+        let candidate = flatten_attention_output_bhsd(&attn, seq, n_heads, head_dim);
+        assert_eq!(
+            mlx_sys::op_count_take(op_count_before),
+            1,
+            "single-token attention flatten should be one reshape op"
+        );
+
+        eval(&[&reference, &candidate]);
+        assert_eq!(
+            candidate.shape(),
+            vec![batch as i32, seq as i32, (n_heads * head_dim) as i32]
+        );
+        assert_eq!(candidate.data_f32(), reference.data_f32());
+    }
+
+    #[test]
+    fn flatten_attention_output_bhsd_keeps_prefill_transpose_order() {
+        let batch = 1_usize;
+        let n_heads = 3_usize;
+        let head_dim = 4_usize;
+        let seq = 2_usize;
+        let data: Vec<f32> = (0..(batch * n_heads * seq * head_dim))
+            .map(|i| i as f32)
+            .collect();
+        let attn = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data.as_slice()),
+            &[batch as i32, n_heads as i32, seq as i32, head_dim as i32],
+            MlxDtype::Float32,
+        );
+
+        let reference = {
+            let transposed = transpose(&attn, &[0, 2, 1, 3], None);
+            reshape(
+                &transposed,
+                &[batch as i32, seq as i32, (n_heads * head_dim) as i32],
+                None,
+            )
+        };
+        let candidate = flatten_attention_output_bhsd(&attn, seq, n_heads, head_dim);
+
+        eval(&[&reference, &candidate]);
+        assert_eq!(
+            candidate.shape(),
+            vec![batch as i32, seq as i32, (n_heads * head_dim) as i32]
+        );
+        assert_eq!(candidate.data_f32(), reference.data_f32());
+    }
+
+    #[test]
     fn qk_norm_bhsd_from_proj_matches_bshd_reference_path() {
         let n_heads = 4_usize;
         let head_dim = 3_usize;
