@@ -43,6 +43,17 @@ evidence:
   **slower than MLX's stand-alone `rms_norm`**: decode regressed 1.5–3%,
   prefill@2048 regressed 1.2%. Reverted; raw artifacts at
   `benchmarks/results/mlx-inference/ab-rmsnorm-add/` (commit `ec5dda1`).
+- **Single-FFI scalar token readback** (`MlxArray::item_u32`
+  wrapping `mlx_array_item_uint32`, mirroring mlx_lm's `y.item()`).
+  Collapses the `mlx_eval([&pending]) + mlx_array_data_uint32` pair
+  into one C call. Theoretically saves ~1-5 µs FFI per step × 128
+  steps. Empirically **regressed** decode 0.65–2.11% and prefill
+  0.7–1.0% on Qwen 3.6 27B 4-bit, dropping from 98% to 96–97% of
+  mlx_lm. Likely cause: `array::item<T>()` calls a single-array
+  `eval()` path that has different (slower) scheduler semantics than
+  the `mlx_eval(vector<array>)` used by `mlx-sys::transforms::eval`.
+  Reverted; raw artifacts at
+  `benchmarks/results/mlx-inference/ab-item-u32/`.
 - **`WeightLayoutTelemetry::from_weights` per step** — moved to runner
   init in the same investigation. Tiny win (< 0.01%) but the loop was
   pure dead weight; kept for cleanliness.
