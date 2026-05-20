@@ -1,0 +1,68 @@
+{
+  "command": "target/release/direct-mlx-hotpath-probe --candidate qk_norm_rope --rows 1 --cols 2048 --head-dim 256 --warmup 3 --iterations 20 --json-out benchmarks/results/direct-mlx-hotpath/2026-05-20-qk-norm-rope-probe.json",
+  "config": {
+    "bits": 4,
+    "candidate": "qk_norm_rope",
+    "cols": 2048,
+    "down_cols": 1536,
+    "dtype": "float32",
+    "group_size": 64,
+    "head_dim": 256,
+    "iterations": 20,
+    "n_heads": 8,
+    "rows": 1,
+    "warmup": 3
+  },
+  "correctness": {
+    "max_abs_error": 0.0,
+    "passed": true,
+    "shape": [
+      1,
+      8,
+      1,
+      256
+    ],
+    "tolerance": 9.999999974752427e-7
+  },
+  "git": {
+    "commit": "55f831ff930059c9743289f8770c442bd7287bdd",
+    "dirty": false
+  },
+  "host": {
+    "arch": "aarch64",
+    "os": "macos"
+  },
+  "measurements": [
+    {
+      "max": 260.459,
+      "mean": 202.4687,
+      "median": 196.937,
+      "min": 169.541,
+      "name": "portable_qk_norm_rope",
+      "op_count_median": 3,
+      "samples": 20,
+      "unit": "microseconds"
+    },
+    {
+      "max": 578.375,
+      "mean": 208.33339999999998,
+      "median": 177.79149999999998,
+      "min": 144.458,
+      "name": "direct_cpp_qk_norm_rope",
+      "op_count_median": 1,
+      "samples": 20,
+      "unit": "microseconds"
+    },
+    {
+      "max": 1.1076851255543714,
+      "mean": 1.1076851255543714,
+      "median": 1.1076851255543714,
+      "min": 1.1076851255543714,
+      "name": "direct_cpp_speedup_ratio",
+      "samples": 1,
+      "unit": "ratio"
+    }
+  ],
+  "schema": "ax.microbench.v1",
+  "surface": "direct-mlx-hotpath"
+}
