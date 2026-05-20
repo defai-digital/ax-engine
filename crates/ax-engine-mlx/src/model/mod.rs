@@ -54,7 +54,7 @@ use ax_engine_core::{KvCompressionConfig, NativeModelManifest, TurboQuantPreset}
 use mlx_sys::expand_dims_axes;
 #[cfg(test)]
 use mlx_sys::{
-    ScaledDotProductAttentionMask, gelu_approx, matmul, multiply,
+    ScaledDotProductAttentionMask, argmax, gelu_approx, matmul, multiply,
     scaled_dot_product_attention_with_mask,
 };
 #[cfg(test)]
@@ -455,8 +455,8 @@ fn forward_with_turboquant_context_and_logits_mode(
         None,
     );
     let logits = qw(&normed, &weights.lm_head);
-    let logits_f32 = finalize_lm_head_logits(cfg, &logits, logits_mode);
-    let logits = reshape(&logits_f32, &[cfg.vocab_size as i32], None);
+    let logits = finalize_lm_head_logits(cfg, &logits, logits_mode);
+    let logits = reshape(&logits, &[cfg.vocab_size as i32], None);
     if let Some(started) = lm_head_started {
         forward_profile_eval_elapsed(
             false,
@@ -1047,10 +1047,15 @@ fn finalize_lm_head_logits(
     logits: &MlxArray,
     mode: FinalLogitsMode,
 ) -> MlxArray {
-    let logits_f32 = astype(logits, MlxDtype::Float32, None);
     match mode {
-        FinalLogitsMode::Full => apply_final_logit_softcap(cfg, &logits_f32),
-        FinalLogitsMode::ArgmaxOnly => logits_f32,
+        FinalLogitsMode::Full => {
+            let logits_f32 = astype(logits, MlxDtype::Float32, None);
+            apply_final_logit_softcap(cfg, &logits_f32)
+        }
+        // Greedy decode only needs argmax. The final softcap is monotonic, and
+        // casting bf16/f16 logits to f32 cannot recover precision, so preserving
+        // the lm_head dtype avoids one vocab-wide cast per decode token.
+        FinalLogitsMode::ArgmaxOnly => logits.clone(),
     }
 }
 
@@ -3668,6 +3673,24 @@ mod tests {
             &[-12.0, -0.5, 1.0, 29.0, 31.0, 120.0],
             1.0e-6,
         );
+    }
+
+    #[test]
+    fn argmax_only_final_logits_preserves_bfloat16_dtype() {
+        let mut cfg = cfg(false);
+        cfg.final_logit_softcapping = Some(30.0);
+        let logits_f32 = array_f32(&[-12.0, -0.5, 1.0, 29.0, 31.0, 120.0], &[1, 1, 6]);
+        let logits_bf16 = astype(&logits_f32, MlxDtype::Bfloat16, None);
+
+        let full = finalize_lm_head_logits(&cfg, &logits_bf16, FinalLogitsMode::Full);
+        let argmax_only = finalize_lm_head_logits(&cfg, &logits_bf16, FinalLogitsMode::ArgmaxOnly);
+        assert_eq!(argmax_only.dtype(), MlxDtype::Bfloat16);
+
+        let full_token = argmax(&full, None);
+        let argmax_token = argmax(&argmax_only, None);
+        eval(&[&full_token, &argmax_token]);
+
+        assert_eq!(full_token.data_u32(), argmax_token.data_u32());
     }
 
     #[test]
