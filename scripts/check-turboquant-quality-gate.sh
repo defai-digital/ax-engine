@@ -179,6 +179,12 @@ cat > "$TMP_DIR/shadow-candidate-benchmark.json" <<'JSON'
 }
 JSON
 
+# The full_precision_shadow candidate is expected to fail the gate
+# (`check_turboquant_quality_artifact.py` writes "error:
+# candidate.kv_compression_mode must be turboquant-fused-experimental" to
+# stderr). Redirect the expected stderr to a log so the parent
+# check-scripts.sh run does not surface that line as a false-positive CI
+# failure signal; only the unexpected-pass branch should print "error:".
 if "$PYTHON_BIN" scripts/build_turboquant_quality_artifact.py \
   --baseline-benchmark "$TMP_DIR/baseline-benchmark.json" \
   --candidate-benchmark "$TMP_DIR/shadow-candidate-benchmark.json" \
@@ -188,8 +194,9 @@ if "$PYTHON_BIN" scripts/build_turboquant_quality_artifact.py \
   --model-id qwen3_5_9b_q4 \
   --model-family qwen3 \
   --model-revision synthetic \
-  --root "$TMP_DIR"; then
+  --root "$TMP_DIR" 2>"$TMP_DIR/shadow-gate.stderr.log"; then
   echo "error: full_precision_shadow candidate unexpectedly passed quality gate" >&2
+  cat "$TMP_DIR/shadow-gate.stderr.log" >&2 || true
   exit 1
 fi
 

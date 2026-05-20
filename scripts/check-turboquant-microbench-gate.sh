@@ -137,9 +137,14 @@ cat > "$TMP_DIR/regressed-microbench.json" <<'JSON'
 }
 JSON
 
+# The regressed artifact is expected to fail the gate. Redirect stderr to a
+# log so the script's own "error: hot-tail merge max_abs_diff exceeds ..."
+# does not leak into the parent check-scripts.sh output as a false-positive
+# CI failure signal; only the unexpected-pass branch should print "error:".
 if "$PYTHON_BIN" scripts/check_turboquant_microbench_artifact.py \
-  "$TMP_DIR/regressed-microbench.json"; then
+  "$TMP_DIR/regressed-microbench.json" 2>"$TMP_DIR/regressed-microbench.stderr.log"; then
   echo "error: regressed TurboQuant microbench artifact unexpectedly passed gate" >&2
+  cat "$TMP_DIR/regressed-microbench.stderr.log" >&2 || true
   exit 1
 fi
 
