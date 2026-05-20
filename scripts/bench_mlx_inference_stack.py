@@ -1733,6 +1733,31 @@ def ax_linear_attention_profile_enabled(args: argparse.Namespace) -> bool:
     )
 
 
+def validate_direct_gemma4_ffn_route_compare_args(args: argparse.Namespace) -> None:
+    if not args.ax_compare_direct_gemma4_ffn_route:
+        return
+    if args.skip_ax_engine:
+        raise ValueError("--ax-compare-direct-gemma4-ffn-route requires AX rows")
+    if args.ax_ngram_accel or args.ax_compare_policies:
+        raise ValueError(
+            "--ax-compare-direct-gemma4-ffn-route requires direct AX rows; "
+            "do not combine it with --ax-ngram-accel or --ax-compare-policies"
+        )
+    if (
+        args.ax_compare_linear_attention_projection_pack
+        or args.ax_compare_dense_ffn_gate_up_pack
+    ):
+        raise ValueError(
+            "--ax-compare-direct-gemma4-ffn-route runs paired AX rows; "
+            "run one comparison at a time"
+        )
+    if args.ax_prefill_profile or args.ax_decode_profile:
+        raise ValueError(
+            "--ax-compare-direct-gemma4-ffn-route cannot be combined with "
+            "--ax-prefill-profile or --ax-decode-profile because profiling blocks the route"
+        )
+
+
 def extract_ax_ngram_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
     if not route:
         return {}
@@ -3850,30 +3875,10 @@ def main() -> None:
             "--ax-compare-linear-attention-projection-pack both run paired AX rows; "
             "run one comparison at a time"
         )
-    if args.ax_compare_direct_gemma4_ffn_route and args.skip_ax_engine:
-        parser.error("--ax-compare-direct-gemma4-ffn-route requires AX rows")
-    if args.ax_compare_direct_gemma4_ffn_route and (
-        args.ax_ngram_accel or args.ax_compare_policies
-    ):
-        parser.error(
-            "--ax-compare-direct-gemma4-ffn-route requires direct AX rows; "
-            "do not combine it with --ax-ngram-accel or --ax-compare-policies"
-        )
-    if args.ax_compare_direct_gemma4_ffn_route and (
-        args.ax_compare_linear_attention_projection_pack
-        or args.ax_compare_dense_ffn_gate_up_pack
-    ):
-        parser.error(
-            "--ax-compare-direct-gemma4-ffn-route runs paired AX rows; "
-            "run one comparison at a time"
-        )
-    if args.ax_compare_direct_gemma4_ffn_route and (
-        args.ax_prefill_profile or args.ax_decode_profile
-    ):
-        parser.error(
-            "--ax-compare-direct-gemma4-ffn-route cannot be combined with "
-            "--ax-prefill-profile or --ax-decode-profile because profiling blocks the route"
-        )
+    try:
+        validate_direct_gemma4_ffn_route_compare_args(args)
+    except ValueError as error:
+        parser.error(str(error))
     if bool(args.llama_cpp_bench) != bool(args.llama_cpp_gguf):
         parser.error("--llama-cpp-bench and --llama-cpp-gguf must be provided together")
     if args.llama_cpp_decode_at_depth and not args.llama_cpp_bench:
