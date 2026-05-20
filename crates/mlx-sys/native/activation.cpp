@@ -134,6 +134,55 @@ mx::array qk_norm_rope_bhsd_from_proj_impl(
       freqs,
       stream);
 }
+
+mx::array gemma4_post_attn_ffn_block_impl(
+    const mx::array& hidden,
+    const mx::array& attn_out,
+    const mx::array& ffn_norm,
+    std::optional<mx::array> ffn_post_norm,
+    std::optional<mx::array> layer_scalar,
+    const mx::array& gate_up_weight,
+    const mx::array& gate_up_scales,
+    std::optional<mx::array> gate_up_biases,
+    const mx::array& down_weight,
+    const mx::array& down_scales,
+    std::optional<mx::array> down_biases,
+    int group_size,
+    int bits,
+    float eps,
+    mx::StreamOrDevice stream) {
+  auto residual = mx::add(hidden, attn_out, stream);
+  auto normed = mx::fast::rms_norm(residual, ffn_norm, eps, stream);
+  auto gate_up = quantized_matmul_affine_impl(
+      normed,
+      gate_up_weight,
+      gate_up_scales,
+      std::move(gate_up_biases),
+      group_size,
+      bits,
+      stream);
+  auto parts = mx::split(gate_up, 2, -1, stream);
+  if (parts.size() != 2) {
+    throw std::runtime_error("expected gate_up split to produce two arrays");
+  }
+  auto ffn_hidden = gelu_approx_mul_impl(parts[0], parts[1], stream);
+  auto ffn_out = quantized_matmul_affine_impl(
+      ffn_hidden,
+      down_weight,
+      down_scales,
+      std::move(down_biases),
+      group_size,
+      bits,
+      stream);
+  if (ffn_post_norm.has_value()) {
+    ffn_out = mx::fast::rms_norm(ffn_out, std::move(ffn_post_norm), eps, stream);
+  }
+  auto out = mx::add(residual, ffn_out, stream);
+  if (layer_scalar.has_value()) {
+    out = mx::multiply(out, *layer_scalar, stream);
+  }
+  return out;
+}
 } // namespace
 
 extern "C" int ax_mlx_gelu_approx_mul(
@@ -239,6 +288,48 @@ extern "C" int ax_mlx_qk_norm_rope_bhsd_from_proj(
             base,
             offset,
             optional_array(freqs),
+            stream_or_default(stream)));
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+extern "C" int ax_mlx_gemma4_post_attn_ffn_block(
+    mlx_array* res,
+    const mlx_array hidden,
+    const mlx_array attn_out,
+    const mlx_array ffn_norm,
+    const mlx_array ffn_post_norm,
+    const mlx_array layer_scalar,
+    const mlx_array gate_up_weight,
+    const mlx_array gate_up_scales,
+    const mlx_array gate_up_biases,
+    const mlx_array down_weight,
+    const mlx_array down_scales,
+    const mlx_array down_biases,
+    int group_size,
+    int bits,
+    float eps,
+    const mlx_stream stream) {
+  try {
+    set_array(
+        res,
+        gemma4_post_attn_ffn_block_impl(
+            array_ref(hidden),
+            array_ref(attn_out),
+            array_ref(ffn_norm),
+            optional_array(ffn_post_norm),
+            optional_array(layer_scalar),
+            array_ref(gate_up_weight),
+            array_ref(gate_up_scales),
+            optional_array(gate_up_biases),
+            array_ref(down_weight),
+            array_ref(down_scales),
+            optional_array(down_biases),
+            group_size,
+            bits,
+            eps,
             stream_or_default(stream)));
     return 0;
   } catch (...) {

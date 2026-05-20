@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
-use mlx_sys::ops::{gelu_approx_mul_matmul, gelu_approx_quantized_ffn};
+use mlx_sys::ops::{gelu_approx_mul_matmul, gelu_approx_quantized_ffn, gemma4_post_attn_ffn_block};
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, as_strided, eval, gelu_approx, gelu_approx_mul,
+    MlxArray, MlxDtype, MlxQuantizationMode, add, as_strided, eval, gelu_approx, gelu_approx_mul,
     matmul, multiply, op_count_snapshot, op_count_take, qk_norm_rope_bhsd_from_proj, quantize,
     quantized_matmul, rms_norm, rope, slice_last_dim,
 };
@@ -28,6 +28,7 @@ enum Candidate {
     ActivationDown,
     QuantizedFfn,
     QkNormRope,
+    Gemma4PostAttnFfnBlock,
 }
 
 impl Candidate {
@@ -37,8 +38,9 @@ impl Candidate {
             "gelu_approx_mul_matmul" => Ok(Self::ActivationDown),
             "gelu_approx_quantized_ffn" => Ok(Self::QuantizedFfn),
             "qk_norm_rope" => Ok(Self::QkNormRope),
+            "gemma4_post_attn_ffn_block" => Ok(Self::Gemma4PostAttnFfnBlock),
             other => Err(format!(
-                "unknown --candidate {other:?}; expected gelu_approx_mul, gelu_approx_mul_matmul, gelu_approx_quantized_ffn, or qk_norm_rope",
+                "unknown --candidate {other:?}; expected gelu_approx_mul, gelu_approx_mul_matmul, gelu_approx_quantized_ffn, qk_norm_rope, or gemma4_post_attn_ffn_block",
             )),
         }
     }
@@ -49,6 +51,7 @@ impl Candidate {
             Self::ActivationDown => "gelu_approx_mul_matmul",
             Self::QuantizedFfn => "gelu_approx_quantized_ffn",
             Self::QkNormRope => "qk_norm_rope",
+            Self::Gemma4PostAttnFfnBlock => "gemma4_post_attn_ffn_block",
         }
     }
 
@@ -58,6 +61,7 @@ impl Candidate {
             Self::ActivationDown => "portable_gelu_approx_mul_matmul",
             Self::QuantizedFfn => "portable_gelu_approx_quantized_ffn",
             Self::QkNormRope => "portable_qk_norm_rope",
+            Self::Gemma4PostAttnFfnBlock => "portable_gemma4_post_attn_ffn_block",
         }
     }
 
@@ -67,6 +71,7 @@ impl Candidate {
             Self::ActivationDown => "direct_cpp_gelu_approx_mul_matmul",
             Self::QuantizedFfn => "direct_cpp_gelu_approx_quantized_ffn",
             Self::QkNormRope => "direct_cpp_qk_norm_rope",
+            Self::Gemma4PostAttnFfnBlock => "direct_cpp_gemma4_post_attn_ffn_block",
         }
     }
 }
@@ -110,12 +115,17 @@ struct Fixture {
     _gate_up_weight_data: Option<Vec<f32>>,
     _proj_data: Option<Vec<f32>>,
     _norm_data: Option<Vec<f32>>,
+    _post_norm_data: Option<Vec<f32>>,
+    _layer_scalar_data: Option<Vec<f32>>,
     gate: Option<MlxArray>,
     up: Option<MlxArray>,
     down_weight: Option<MlxArray>,
     input: Option<MlxArray>,
+    attn: Option<MlxArray>,
     proj: Option<MlxArray>,
     norm: Option<MlxArray>,
+    post_norm: Option<MlxArray>,
+    layer_scalar: Option<MlxArray>,
     gate_up_quantized: Option<QuantizedFixtureWeight>,
     down_quantized: Option<QuantizedFixtureWeight>,
     group_size: i32,
@@ -199,11 +209,19 @@ fn run() -> Result<(), String> {
     if config.head_dim <= 0 {
         return Err("--head-dim must be > 0".into());
     }
-    if config.candidate == Candidate::QuantizedFfn && !matches!(config.group_size, 32 | 64 | 128) {
-        return Err("--group-size must be 32, 64, or 128 for gelu_approx_quantized_ffn".into());
+    if matches!(
+        config.candidate,
+        Candidate::QuantizedFfn | Candidate::Gemma4PostAttnFfnBlock
+    ) && !matches!(config.group_size, 32 | 64 | 128)
+    {
+        return Err("--group-size must be 32, 64, or 128 for quantized FFN candidates".into());
     }
-    if config.candidate == Candidate::QuantizedFfn && config.bits != 4 {
-        return Err("--bits must be 4 for gelu_approx_quantized_ffn".into());
+    if matches!(
+        config.candidate,
+        Candidate::QuantizedFfn | Candidate::Gemma4PostAttnFfnBlock
+    ) && config.bits != 4
+    {
+        return Err("--bits must be 4 for quantized FFN candidates".into());
     }
     if config.candidate == Candidate::QkNormRope && config.cols % config.head_dim != 0 {
         return Err("--cols must be divisible by --head-dim for qk_norm_rope".into());
@@ -342,7 +360,7 @@ fn print_help() {
 direct-mlx-hotpath-probe
 
 Options:
-  --candidate <NAME> Select gelu_approx_mul, gelu_approx_mul_matmul, gelu_approx_quantized_ffn, or qk_norm_rope
+  --candidate <NAME> Select gelu_approx_mul, gelu_approx_mul_matmul, gelu_approx_quantized_ffn, qk_norm_rope, or gemma4_post_attn_ffn_block
   --rows <N>         Tensor rows, default {DEFAULT_ROWS}
   --cols <N>         FFN/intermediate cols, default {DEFAULT_COLS}
   --down-cols <N>    Output/input cols for down-projection and quantized FFN, default {DEFAULT_DOWN_COLS}
@@ -371,6 +389,18 @@ impl Fixture {
         let down_cols_usize = usize::try_from(down_cols).map_err(|_| "down-cols must fit usize")?;
         if candidate == Candidate::QuantizedFfn {
             return Self::new_quantized_ffn(
+                rows,
+                cols,
+                down_cols,
+                rows_usize,
+                cols_usize,
+                down_cols_usize,
+                group_size,
+                bits,
+            );
+        }
+        if candidate == Candidate::Gemma4PostAttnFfnBlock {
+            return Self::new_gemma4_post_attn_ffn_block(
                 rows,
                 cols,
                 down_cols,
@@ -442,12 +472,17 @@ impl Fixture {
             _gate_up_weight_data: None,
             _proj_data: None,
             _norm_data: None,
+            _post_norm_data: None,
+            _layer_scalar_data: None,
             gate: Some(gate),
             up: Some(up),
             down_weight,
             input: None,
+            attn: None,
             proj: None,
             norm: None,
+            post_norm: None,
+            layer_scalar: None,
             gate_up_quantized: None,
             down_quantized: None,
             group_size,
@@ -497,12 +532,17 @@ impl Fixture {
             _gate_up_weight_data: None,
             _proj_data: Some(proj_data),
             _norm_data: Some(norm_data),
+            _post_norm_data: None,
+            _layer_scalar_data: None,
             gate: None,
             up: None,
             down_weight: None,
             input: None,
+            attn: None,
             proj: Some(proj),
             norm: Some(norm),
+            post_norm: None,
+            layer_scalar: None,
             gate_up_quantized: None,
             down_quantized: None,
             group_size: DEFAULT_GROUP_SIZE,
@@ -582,12 +622,145 @@ impl Fixture {
             _gate_up_weight_data: Some(gate_up_weight_data),
             _proj_data: None,
             _norm_data: None,
+            _post_norm_data: None,
+            _layer_scalar_data: None,
             gate: None,
             up: None,
             down_weight: None,
             input: Some(input),
+            attn: None,
             proj: None,
             norm: None,
+            post_norm: None,
+            layer_scalar: None,
+            gate_up_quantized: Some(gate_up_quantized),
+            down_quantized: Some(down_quantized),
+            group_size,
+            bits,
+            n_heads: 0,
+            head_dim: 0,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_gemma4_post_attn_ffn_block(
+        rows: i32,
+        cols: i32,
+        down_cols: i32,
+        rows_usize: usize,
+        cols_usize: usize,
+        down_cols_usize: usize,
+        group_size: i32,
+        bits: i32,
+    ) -> Result<Self, String> {
+        let hidden_len = rows_usize
+            .checked_mul(down_cols_usize)
+            .ok_or("rows * down-cols overflowed usize")?;
+        let gate_up_weight_len = cols_usize
+            .checked_mul(2)
+            .and_then(|v| v.checked_mul(down_cols_usize))
+            .ok_or("2 * cols * down-cols overflowed usize")?;
+        let down_weight_len = down_cols_usize
+            .checked_mul(cols_usize)
+            .ok_or("down-cols * cols overflowed usize")?;
+
+        let hidden_data = (0..hidden_len)
+            .map(|idx| ((idx % 257) as f32 - 128.0) / 128.0)
+            .collect::<Vec<_>>();
+        let attn_data = (0..hidden_len)
+            .map(|idx| ((idx % 193) as f32 - 96.0) / 192.0)
+            .collect::<Vec<_>>();
+        let norm_data = (0..down_cols_usize)
+            .map(|idx| 0.75 + (idx as f32 % 31.0) * 0.00390625)
+            .collect::<Vec<_>>();
+        let post_norm_data = (0..down_cols_usize)
+            .map(|idx| 0.875 + (idx as f32 % 29.0) * 0.001953125)
+            .collect::<Vec<_>>();
+        let layer_scalar_data = vec![0.9375_f32];
+        let gate_up_weight_data = (0..gate_up_weight_len)
+            .map(|idx| ((idx % 251) as f32 - 125.0) / (251.0 * down_cols_usize as f32).sqrt())
+            .collect::<Vec<_>>();
+        let down_weight_data = (0..down_weight_len)
+            .map(|idx| ((idx % 241) as f32 - 120.0) / (241.0 * cols_usize as f32).sqrt())
+            .collect::<Vec<_>>();
+
+        let hidden = MlxArray::from_raw_data(
+            hidden_data.as_ptr().cast(),
+            std::mem::size_of_val(hidden_data.as_slice()),
+            &[rows, down_cols],
+            MlxDtype::Float32,
+        );
+        let attn = MlxArray::from_raw_data(
+            attn_data.as_ptr().cast(),
+            std::mem::size_of_val(attn_data.as_slice()),
+            &[rows, down_cols],
+            MlxDtype::Float32,
+        );
+        let norm = MlxArray::from_raw_data(
+            norm_data.as_ptr().cast(),
+            std::mem::size_of_val(norm_data.as_slice()),
+            &[down_cols],
+            MlxDtype::Float32,
+        );
+        let post_norm = MlxArray::from_raw_data(
+            post_norm_data.as_ptr().cast(),
+            std::mem::size_of_val(post_norm_data.as_slice()),
+            &[down_cols],
+            MlxDtype::Float32,
+        );
+        let layer_scalar = MlxArray::from_raw_data(
+            layer_scalar_data.as_ptr().cast(),
+            std::mem::size_of_val(layer_scalar_data.as_slice()),
+            &[1],
+            MlxDtype::Float32,
+        );
+        let gate_up_weight = MlxArray::from_raw_data(
+            gate_up_weight_data.as_ptr().cast(),
+            std::mem::size_of_val(gate_up_weight_data.as_slice()),
+            &[cols * 2, down_cols],
+            MlxDtype::Float32,
+        );
+        let down_weight = MlxArray::from_raw_data(
+            down_weight_data.as_ptr().cast(),
+            std::mem::size_of_val(down_weight_data.as_slice()),
+            &[down_cols, cols],
+            MlxDtype::Float32,
+        );
+        let gate_up_quantized = quantized_fixture_weight(&gate_up_weight, group_size, bits)?;
+        let down_quantized = quantized_fixture_weight(&down_weight, group_size, bits)?;
+        eval(&[
+            &hidden,
+            &attn,
+            &norm,
+            &post_norm,
+            &layer_scalar,
+            &gate_up_quantized.weight,
+            &gate_up_quantized.scales,
+            &gate_up_quantized.biases,
+            &down_quantized.weight,
+            &down_quantized.scales,
+            &down_quantized.biases,
+        ]);
+
+        Ok(Self {
+            _gate_data: None,
+            _up_data: None,
+            _input_data: Some(hidden_data),
+            _down_weight_data: Some(down_weight_data),
+            _gate_up_weight_data: Some(gate_up_weight_data),
+            _proj_data: Some(attn_data),
+            _norm_data: Some(norm_data),
+            _post_norm_data: Some(post_norm_data),
+            _layer_scalar_data: Some(layer_scalar_data),
+            gate: None,
+            up: None,
+            down_weight: None,
+            input: Some(hidden),
+            attn: Some(attn),
+            proj: None,
+            norm: Some(norm),
+            post_norm: Some(post_norm),
+            layer_scalar: Some(layer_scalar),
             gate_up_quantized: Some(gate_up_quantized),
             down_quantized: Some(down_quantized),
             group_size,
@@ -645,6 +818,7 @@ fn portable_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
         }
         Candidate::QuantizedFfn => portable_quantized_ffn(fixture),
         Candidate::QkNormRope => portable_qk_norm_rope(fixture),
+        Candidate::Gemma4PostAttnFfnBlock => portable_gemma4_post_attn_ffn_block(fixture),
     }
 }
 
@@ -683,6 +857,27 @@ fn direct_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
             None,
             None,
         ),
+        Candidate::Gemma4PostAttnFfnBlock => {
+            let gate_up = fixture.gate_up_quantized();
+            let down = fixture.down_quantized();
+            gemma4_post_attn_ffn_block(
+                fixture.input(),
+                fixture.attn(),
+                fixture.norm(),
+                Some(fixture.post_norm()),
+                Some(fixture.layer_scalar()),
+                &gate_up.weight,
+                &gate_up.scales,
+                Some(&gate_up.biases),
+                &down.weight,
+                &down.scales,
+                Some(&down.biases),
+                fixture.group_size,
+                fixture.bits,
+                1.0e-6,
+                None,
+            )
+        }
     }
 }
 
@@ -711,6 +906,12 @@ impl Fixture {
             .expect("input is required for quantized FFN candidate")
     }
 
+    fn attn(&self) -> &MlxArray {
+        self.attn
+            .as_ref()
+            .expect("attention output is required for Gemma4 post-attention FFN block candidate")
+    }
+
     fn gate_up_quantized(&self) -> &QuantizedFixtureWeight {
         self.gate_up_quantized
             .as_ref()
@@ -734,13 +935,29 @@ impl Fixture {
             .as_ref()
             .expect("norm is required for qk_norm_rope candidate")
     }
+
+    fn post_norm(&self) -> &MlxArray {
+        self.post_norm
+            .as_ref()
+            .expect("post-FFN norm is required for Gemma4 post-attention FFN block candidate")
+    }
+
+    fn layer_scalar(&self) -> &MlxArray {
+        self.layer_scalar
+            .as_ref()
+            .expect("layer scalar is required for Gemma4 post-attention FFN block candidate")
+    }
 }
 
 fn portable_quantized_ffn(fixture: &Fixture) -> MlxArray {
+    portable_quantized_ffn_for_input(fixture, fixture.input())
+}
+
+fn portable_quantized_ffn_for_input(fixture: &Fixture, input: &MlxArray) -> MlxArray {
     let gate_up_weight = fixture.gate_up_quantized();
     let down_weight = fixture.down_quantized();
     let gate_up = quantized_matmul(
-        fixture.input(),
+        input,
         &gate_up_weight.weight,
         &gate_up_weight.scales,
         Some(&gate_up_weight.biases),
@@ -768,6 +985,14 @@ fn portable_quantized_ffn(fixture: &Fixture) -> MlxArray {
         Some(fixture.bits),
         None,
     )
+}
+
+fn portable_gemma4_post_attn_ffn_block(fixture: &Fixture) -> MlxArray {
+    let residual = add(fixture.input(), fixture.attn(), None);
+    let normed = rms_norm(&residual, Some(fixture.norm()), 1.0e-6, None);
+    let ffn = portable_quantized_ffn_for_input(fixture, &normed);
+    let ffn = rms_norm(&ffn, Some(fixture.post_norm()), 1.0e-6, None);
+    multiply(&add(&residual, &ffn, None), fixture.layer_scalar(), None)
 }
 
 fn portable_qk_norm_rope(fixture: &Fixture) -> MlxArray {

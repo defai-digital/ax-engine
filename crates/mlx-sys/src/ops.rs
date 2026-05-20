@@ -47,6 +47,25 @@ unsafe extern "C" {
         freqs: ffi::mlx_array,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
+
+    fn ax_mlx_gemma4_post_attn_ffn_block(
+        res: *mut ffi::mlx_array,
+        hidden: ffi::mlx_array,
+        attn_out: ffi::mlx_array,
+        ffn_norm: ffi::mlx_array,
+        ffn_post_norm: ffi::mlx_array,
+        layer_scalar: ffi::mlx_array,
+        gate_up_weight: ffi::mlx_array,
+        gate_up_scales: ffi::mlx_array,
+        gate_up_biases: ffi::mlx_array,
+        down_weight: ffi::mlx_array,
+        down_scales: ffi::mlx_array,
+        down_biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        eps: libc::c_float,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
 }
 
 fn optional_int(value: Option<i32>, default: i32) -> ffi::mlx_optional_int_ {
@@ -343,6 +362,117 @@ pub fn qk_norm_rope_bhsd_from_proj(
     );
     let normed = crate::fast::rms_norm(&bhsd, norm, eps, s);
     crate::fast::rope(&normed, rope_dims, traditional, base, 1.0, offset, freqs, s)
+}
+
+/// Probe-only direct C++ shim for Gemma4's dense post-attention FFN block.
+///
+/// The expression mirrors the non-MoE Gemma4 post-attention region after the
+/// attention output projection has already been post-normalized:
+///
+/// ```text
+/// residual = hidden + attn_out
+/// normed = rms_norm(residual, ffn_norm)
+/// ffn = quantized_down(geglu(quantized_gate_up(normed)))
+/// ffn = rms_norm(ffn, ffn_post_norm)      # optional
+/// out = residual + ffn
+/// out = out * layer_scalar                # optional
+/// ```
+///
+/// This is intentionally a probe surface. It validates a larger graph boundary
+/// than the no-go standalone FFN shim before production routing is considered.
+#[allow(clippy::too_many_arguments)]
+pub fn gemma4_post_attn_ffn_block(
+    hidden: &MlxArray,
+    attn_out: &MlxArray,
+    ffn_norm: &MlxArray,
+    ffn_post_norm: Option<&MlxArray>,
+    layer_scalar: Option<&MlxArray>,
+    gate_up_weight: &MlxArray,
+    gate_up_scales: &MlxArray,
+    gate_up_biases: Option<&MlxArray>,
+    down_weight: &MlxArray,
+    down_scales: &MlxArray,
+    down_biases: Option<&MlxArray>,
+    group_size: i32,
+    bits: i32,
+    eps: f32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_gemma4_post_attn_ffn_block(
+            &mut res.inner,
+            hidden.inner,
+            attn_out.inner,
+            ffn_norm.inner,
+            ffn_post_norm
+                .map(|norm| norm.inner)
+                .unwrap_or_else(null_ffi_array),
+            layer_scalar
+                .map(|scalar| scalar.inner)
+                .unwrap_or_else(null_ffi_array),
+            gate_up_weight.inner,
+            gate_up_scales.inner,
+            gate_up_biases
+                .map(|biases| biases.inner)
+                .unwrap_or_else(null_ffi_array),
+            down_weight.inner,
+            down_scales.inner,
+            down_biases
+                .map(|biases| biases.inner)
+                .unwrap_or_else(null_ffi_array),
+            group_size,
+            bits,
+            eps,
+            stream,
+        );
+        if rc == 0 {
+            return res;
+        }
+    }
+
+    let residual = add(hidden, attn_out, s);
+    let normed = crate::fast::rms_norm(&residual, Some(ffn_norm), eps, s);
+    let gate_up = quantized_matmul(
+        &normed,
+        gate_up_weight,
+        gate_up_scales,
+        gate_up_biases,
+        true,
+        Some(group_size),
+        Some(bits),
+        s,
+    );
+    let packed_dim = gate_up
+        .shape()
+        .last()
+        .copied()
+        .expect("gate/up projection must have a last dimension");
+    let half = packed_dim / 2;
+    let gate = slice_last_dim(&gate_up, 0, half, s);
+    let up = slice_last_dim(&gate_up, half, packed_dim, s);
+    let ffn_hidden = gelu_approx_mul(&gate, &up, s);
+    let mut ffn_out = quantized_matmul(
+        &ffn_hidden,
+        down_weight,
+        down_scales,
+        down_biases,
+        true,
+        Some(group_size),
+        Some(bits),
+        s,
+    );
+    if let Some(norm) = ffn_post_norm {
+        ffn_out = crate::fast::rms_norm(&ffn_out, Some(norm), eps, s);
+    }
+    let out = add(&residual, &ffn_out, s);
+    if let Some(scalar) = layer_scalar {
+        multiply(&out, scalar, s)
+    } else {
+        out
+    }
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
@@ -1548,6 +1678,132 @@ mod tests {
             portable.data_f32().to_vec(),
             "direct C++ quantized FFN shim must preserve portable math"
         );
+    }
+
+    #[test]
+    fn gemma4_post_attn_ffn_block_direct_matches_portable_composition() {
+        let hidden_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.03125).collect();
+        let attn_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 18.0) * 0.015625).collect();
+        let norm_data: Vec<f32> = (0..32).map(|i| 0.75 + (i as f32) * 0.0078125).collect();
+        let post_norm_data: Vec<f32> = (0..32).map(|i| 0.875 + (i as f32) * 0.00390625).collect();
+        let layer_scalar_data = vec![0.9375_f32];
+        let gate_up_weight_data: Vec<f32> =
+            (0..2048).map(|i| ((i as f32) - 1024.0) * 0.0005).collect();
+        let down_weight_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 512.0) * 0.0005).collect();
+        let hidden = MlxArray::from_raw_data(
+            hidden_data.as_ptr() as *const u8,
+            std::mem::size_of_val(hidden_data.as_slice()),
+            &[2, 32],
+            MlxDtype::Float32,
+        );
+        let attn = MlxArray::from_raw_data(
+            attn_data.as_ptr() as *const u8,
+            std::mem::size_of_val(attn_data.as_slice()),
+            &[2, 32],
+            MlxDtype::Float32,
+        );
+        let norm = MlxArray::from_raw_data(
+            norm_data.as_ptr() as *const u8,
+            std::mem::size_of_val(norm_data.as_slice()),
+            &[32],
+            MlxDtype::Float32,
+        );
+        let post_norm = MlxArray::from_raw_data(
+            post_norm_data.as_ptr() as *const u8,
+            std::mem::size_of_val(post_norm_data.as_slice()),
+            &[32],
+            MlxDtype::Float32,
+        );
+        let layer_scalar = MlxArray::from_raw_data(
+            layer_scalar_data.as_ptr() as *const u8,
+            std::mem::size_of_val(layer_scalar_data.as_slice()),
+            &[1],
+            MlxDtype::Float32,
+        );
+        let gate_up_weight = MlxArray::from_raw_data(
+            gate_up_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_up_weight_data.as_slice()),
+            &[64, 32],
+            MlxDtype::Float32,
+        );
+        let down_weight = MlxArray::from_raw_data(
+            down_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(down_weight_data.as_slice()),
+            &[32, 32],
+            MlxDtype::Float32,
+        );
+        let gate_up_q = quantize(
+            &gate_up_weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let down_q = quantize(
+            &down_weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+
+        let prev = crate::op_count::op_count_snapshot();
+        let direct = gemma4_post_attn_ffn_block(
+            &hidden,
+            &attn,
+            &norm,
+            Some(&post_norm),
+            Some(&layer_scalar),
+            &gate_up_q[0],
+            &gate_up_q[1],
+            Some(&gate_up_q[2]),
+            &down_q[0],
+            &down_q[1],
+            Some(&down_q[2]),
+            32,
+            4,
+            1.0e-6,
+            None,
+        );
+        assert_eq!(
+            crate::op_count::op_count_take(prev),
+            1,
+            "direct C++ Gemma4 post-attention FFN block should count as one Rust FFI dispatch"
+        );
+
+        let residual = add(&hidden, &attn, None);
+        let normed = crate::fast::rms_norm(&residual, Some(&norm), 1.0e-6, None);
+        let gate_up = quantized_matmul(
+            &normed,
+            &gate_up_q[0],
+            &gate_up_q[1],
+            Some(&gate_up_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let gate = slice_last_dim(&gate_up, 0, 32, None);
+        let up = slice_last_dim(&gate_up, 32, 64, None);
+        let ffn_hidden = gelu_approx_mul(&gate, &up, None);
+        let ffn = quantized_matmul(
+            &ffn_hidden,
+            &down_q[0],
+            &down_q[1],
+            Some(&down_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let ffn = crate::fast::rms_norm(&ffn, Some(&post_norm), 1.0e-6, None);
+        let portable = multiply(&add(&residual, &ffn, None), &layer_scalar, None);
+        eval(&[&direct, &portable]);
+
+        assert_eq!(direct.shape(), vec![2, 32]);
+        assert_close_f32(direct.data_f32(), portable.data_f32(), 1.0e-6);
     }
 
     #[test]

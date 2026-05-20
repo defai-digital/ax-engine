@@ -34,6 +34,10 @@ CANDIDATE_MEASUREMENTS = {
         "portable_qk_norm_rope",
         "direct_cpp_qk_norm_rope",
     ),
+    "gemma4_post_attn_ffn_block": (
+        "portable_gemma4_post_attn_ffn_block",
+        "direct_cpp_gemma4_post_attn_ffn_block",
+    ),
 }
 SPEEDUP_MEASUREMENT = "direct_cpp_speedup_ratio"
 DEFAULT_MAX_ABS_ERROR = 1e-6
@@ -151,9 +155,13 @@ def validate_artifact(
     rows = _positive_integer(config.get("rows"), "config.rows")
     cols = _positive_integer(config.get("cols"), "config.cols")
     output_cols = cols
-    if candidate in {"gelu_approx_mul_matmul", "gelu_approx_quantized_ffn"}:
+    if candidate in {
+        "gelu_approx_mul_matmul",
+        "gelu_approx_quantized_ffn",
+        "gemma4_post_attn_ffn_block",
+    }:
         output_cols = _positive_integer(config.get("down_cols"), "config.down_cols")
-    if candidate == "gelu_approx_quantized_ffn":
+    if candidate in {"gelu_approx_quantized_ffn", "gemma4_post_attn_ffn_block"}:
         group_size = _positive_integer(config.get("group_size"), "config.group_size")
         bits = _positive_integer(config.get("bits"), "config.bits")
         _require(group_size in {32, 64, 128}, "config.group_size must be one of 32, 64, 128")

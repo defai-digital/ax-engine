@@ -39,6 +39,10 @@ def direct_mlx_artifact(candidate: str = "gelu_approx_mul") -> dict:
         direct_name = "direct_cpp_qk_norm_rope"
         # cols=16 splits into n_heads=4 * head_dim=4; output is BHSD.
         shape = [1, 4, 8, 4]
+    elif candidate == "gemma4_post_attn_ffn_block":
+        portable_name = "portable_gemma4_post_attn_ffn_block"
+        direct_name = "direct_cpp_gemma4_post_attn_ffn_block"
+        shape = [8, 4]
     else:
         raise AssertionError(f"unknown candidate {candidate}")
     return {
@@ -108,6 +112,9 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
     def test_valid_qk_norm_rope_artifact_passes(self) -> None:
         checker.validate_artifact(direct_mlx_artifact("qk_norm_rope"))
 
+    def test_valid_gemma4_post_attn_ffn_block_artifact_passes(self) -> None:
+        checker.validate_artifact(direct_mlx_artifact("gemma4_post_attn_ffn_block"))
+
     def test_qk_norm_rope_rejects_head_dim_n_heads_cols_mismatch(self) -> None:
         artifact = direct_mlx_artifact("qk_norm_rope")
         # cols=16 no longer matches n_heads * head_dim once n_heads is bumped.
@@ -134,6 +141,13 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
         artifact["config"]["group_size"] = 16
 
         with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "group_size"):
+            checker.validate_artifact(artifact)
+
+    def test_gemma4_post_attn_ffn_block_rejects_unsupported_bits(self) -> None:
+        artifact = direct_mlx_artifact("gemma4_post_attn_ffn_block")
+        artifact["config"]["bits"] = 5
+
+        with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "bits"):
             checker.validate_artifact(artifact)
 
     def test_wrong_schema_fails_closed(self) -> None:
