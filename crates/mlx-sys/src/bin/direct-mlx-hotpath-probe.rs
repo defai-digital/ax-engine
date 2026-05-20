@@ -6,14 +6,16 @@ use std::time::Instant;
 
 use mlx_sys::ops::{gelu_approx_mul_matmul, gelu_approx_quantized_ffn};
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, eval, gelu_approx, gelu_approx_mul, matmul, multiply,
-    op_count_snapshot, op_count_take, quantize, quantized_matmul, slice_last_dim,
+    MlxArray, MlxDtype, MlxQuantizationMode, as_strided, eval, gelu_approx, gelu_approx_mul,
+    matmul, multiply, op_count_snapshot, op_count_take, qk_norm_rope_bhsd_from_proj, quantize,
+    quantized_matmul, rms_norm, rope, slice_last_dim,
 };
 use serde_json::{Value, json};
 
 const DEFAULT_ROWS: i32 = 2048;
 const DEFAULT_COLS: i32 = 6144;
 const DEFAULT_DOWN_COLS: i32 = 1536;
+const DEFAULT_HEAD_DIM: i32 = 256;
 const DEFAULT_GROUP_SIZE: i32 = 64;
 const DEFAULT_BITS: i32 = 4;
 const DEFAULT_WARMUP: usize = 5;
@@ -25,6 +27,7 @@ enum Candidate {
     Activation,
     ActivationDown,
     QuantizedFfn,
+    QkNormRope,
 }
 
 impl Candidate {
@@ -33,8 +36,9 @@ impl Candidate {
             "gelu_approx_mul" => Ok(Self::Activation),
             "gelu_approx_mul_matmul" => Ok(Self::ActivationDown),
             "gelu_approx_quantized_ffn" => Ok(Self::QuantizedFfn),
+            "qk_norm_rope" => Ok(Self::QkNormRope),
             other => Err(format!(
-                "unknown --candidate {other:?}; expected gelu_approx_mul, gelu_approx_mul_matmul, or gelu_approx_quantized_ffn",
+                "unknown --candidate {other:?}; expected gelu_approx_mul, gelu_approx_mul_matmul, gelu_approx_quantized_ffn, or qk_norm_rope",
             )),
         }
     }
@@ -44,6 +48,7 @@ impl Candidate {
             Self::Activation => "gelu_approx_mul",
             Self::ActivationDown => "gelu_approx_mul_matmul",
             Self::QuantizedFfn => "gelu_approx_quantized_ffn",
+            Self::QkNormRope => "qk_norm_rope",
         }
     }
 
@@ -52,6 +57,7 @@ impl Candidate {
             Self::Activation => "portable_gelu_approx_mul",
             Self::ActivationDown => "portable_gelu_approx_mul_matmul",
             Self::QuantizedFfn => "portable_gelu_approx_quantized_ffn",
+            Self::QkNormRope => "portable_qk_norm_rope",
         }
     }
 
@@ -60,6 +66,7 @@ impl Candidate {
             Self::Activation => "direct_cpp_gelu_approx_mul",
             Self::ActivationDown => "direct_cpp_gelu_approx_mul_matmul",
             Self::QuantizedFfn => "direct_cpp_gelu_approx_quantized_ffn",
+            Self::QkNormRope => "direct_cpp_qk_norm_rope",
         }
     }
 }
@@ -70,6 +77,7 @@ struct Config {
     rows: i32,
     cols: i32,
     down_cols: i32,
+    head_dim: i32,
     group_size: i32,
     bits: i32,
     warmup: usize,
@@ -84,6 +92,7 @@ impl Default for Config {
             rows: DEFAULT_ROWS,
             cols: DEFAULT_COLS,
             down_cols: DEFAULT_DOWN_COLS,
+            head_dim: DEFAULT_HEAD_DIM,
             group_size: DEFAULT_GROUP_SIZE,
             bits: DEFAULT_BITS,
             warmup: DEFAULT_WARMUP,
@@ -99,14 +108,20 @@ struct Fixture {
     _input_data: Option<Vec<f32>>,
     _down_weight_data: Option<Vec<f32>>,
     _gate_up_weight_data: Option<Vec<f32>>,
+    _proj_data: Option<Vec<f32>>,
+    _norm_data: Option<Vec<f32>>,
     gate: Option<MlxArray>,
     up: Option<MlxArray>,
     down_weight: Option<MlxArray>,
     input: Option<MlxArray>,
+    proj: Option<MlxArray>,
+    norm: Option<MlxArray>,
     gate_up_quantized: Option<QuantizedFixtureWeight>,
     down_quantized: Option<QuantizedFixtureWeight>,
     group_size: i32,
     bits: i32,
+    n_heads: i32,
+    head_dim: i32,
 }
 
 struct QuantizedFixtureWeight {
@@ -181,11 +196,17 @@ fn run() -> Result<(), String> {
     if config.group_size <= 0 || config.bits <= 0 {
         return Err("--group-size and --bits must be > 0".into());
     }
+    if config.head_dim <= 0 {
+        return Err("--head-dim must be > 0".into());
+    }
     if config.candidate == Candidate::QuantizedFfn && !matches!(config.group_size, 32 | 64 | 128) {
         return Err("--group-size must be 32, 64, or 128 for gelu_approx_quantized_ffn".into());
     }
     if config.candidate == Candidate::QuantizedFfn && config.bits != 4 {
         return Err("--bits must be 4 for gelu_approx_quantized_ffn".into());
+    }
+    if config.candidate == Candidate::QkNormRope && config.cols % config.head_dim != 0 {
+        return Err("--cols must be divisible by --head-dim for qk_norm_rope".into());
     }
 
     let fixture = Fixture::new(
@@ -193,6 +214,7 @@ fn run() -> Result<(), String> {
         config.rows,
         config.cols,
         config.down_cols,
+        config.head_dim,
         config.group_size,
         config.bits,
     )?;
@@ -228,6 +250,8 @@ fn run() -> Result<(), String> {
             "rows": config.rows,
             "cols": config.cols,
             "down_cols": config.down_cols,
+            "head_dim": config.head_dim,
+            "n_heads": if config.head_dim > 0 { config.cols / config.head_dim } else { 0 },
             "dtype": "float32",
             "group_size": config.group_size,
             "bits": config.bits,
@@ -282,6 +306,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Config, String> {
             "--rows" => config.rows = parse_value(&arg, args.next())?,
             "--cols" => config.cols = parse_value(&arg, args.next())?,
             "--down-cols" => config.down_cols = parse_value(&arg, args.next())?,
+            "--head-dim" => config.head_dim = parse_value(&arg, args.next())?,
             "--group-size" => config.group_size = parse_value(&arg, args.next())?,
             "--bits" => config.bits = parse_value(&arg, args.next())?,
             "--warmup" => config.warmup = parse_value(&arg, args.next())?,
@@ -317,10 +342,11 @@ fn print_help() {
 direct-mlx-hotpath-probe
 
 Options:
-  --candidate <NAME> Select gelu_approx_mul, gelu_approx_mul_matmul, or gelu_approx_quantized_ffn
+  --candidate <NAME> Select gelu_approx_mul, gelu_approx_mul_matmul, gelu_approx_quantized_ffn, or qk_norm_rope
   --rows <N>         Tensor rows, default {DEFAULT_ROWS}
   --cols <N>         FFN/intermediate cols, default {DEFAULT_COLS}
   --down-cols <N>    Output/input cols for down-projection and quantized FFN, default {DEFAULT_DOWN_COLS}
+  --head-dim <N>     Per-head dimension for qk_norm_rope, default {DEFAULT_HEAD_DIM}
   --group-size <N>   Affine quantization group size for quantized FFN, default {DEFAULT_GROUP_SIZE}
   --bits <N>         Affine quantization bits for quantized FFN, default {DEFAULT_BITS}
   --warmup <N>       Warmup iterations, default {DEFAULT_WARMUP}
@@ -336,6 +362,7 @@ impl Fixture {
         rows: i32,
         cols: i32,
         down_cols: i32,
+        head_dim: i32,
         group_size: i32,
         bits: i32,
     ) -> Result<Self, String> {
@@ -352,6 +379,15 @@ impl Fixture {
                 down_cols_usize,
                 group_size,
                 bits,
+            );
+        }
+        if candidate == Candidate::QkNormRope {
+            return Self::new_qk_norm_rope(
+                rows,
+                cols,
+                usize::try_from(rows).map_err(|_| "rows must fit usize")?,
+                usize::try_from(cols).map_err(|_| "cols must fit usize")?,
+                head_dim,
             );
         }
 
@@ -404,14 +440,75 @@ impl Fixture {
             _input_data: None,
             _down_weight_data: down_weight_data,
             _gate_up_weight_data: None,
+            _proj_data: None,
+            _norm_data: None,
             gate: Some(gate),
             up: Some(up),
             down_weight,
             input: None,
+            proj: None,
+            norm: None,
             gate_up_quantized: None,
             down_quantized: None,
             group_size,
             bits,
+            n_heads: 0,
+            head_dim: 0,
+        })
+    }
+
+    fn new_qk_norm_rope(
+        rows: i32,
+        cols: i32,
+        rows_usize: usize,
+        cols_usize: usize,
+        head_dim: i32,
+    ) -> Result<Self, String> {
+        if cols % head_dim != 0 {
+            return Err("cols must divide by head-dim".into());
+        }
+        let len = rows_usize
+            .checked_mul(cols_usize)
+            .ok_or("rows * cols overflowed usize")?;
+        let proj_data = (0..len)
+            .map(|idx| ((idx % 257) as f32 - 128.0) / 128.0)
+            .collect::<Vec<_>>();
+        let norm_data = (0..head_dim)
+            .map(|idx| 0.75 + (idx as f32 % 17.0) * 0.03125)
+            .collect::<Vec<_>>();
+        let proj = MlxArray::from_raw_data(
+            proj_data.as_ptr().cast(),
+            std::mem::size_of_val(proj_data.as_slice()),
+            &[1, rows, cols],
+            MlxDtype::Float32,
+        );
+        let norm = MlxArray::from_raw_data(
+            norm_data.as_ptr().cast(),
+            std::mem::size_of_val(norm_data.as_slice()),
+            &[head_dim],
+            MlxDtype::Float32,
+        );
+        eval(&[&proj, &norm]);
+        Ok(Self {
+            _gate_data: None,
+            _up_data: None,
+            _input_data: None,
+            _down_weight_data: None,
+            _gate_up_weight_data: None,
+            _proj_data: Some(proj_data),
+            _norm_data: Some(norm_data),
+            gate: None,
+            up: None,
+            down_weight: None,
+            input: None,
+            proj: Some(proj),
+            norm: Some(norm),
+            gate_up_quantized: None,
+            down_quantized: None,
+            group_size: DEFAULT_GROUP_SIZE,
+            bits: DEFAULT_BITS,
+            n_heads: cols / head_dim,
+            head_dim,
         })
     }
 
@@ -483,14 +580,20 @@ impl Fixture {
             _input_data: Some(input_data),
             _down_weight_data: Some(down_weight_data),
             _gate_up_weight_data: Some(gate_up_weight_data),
+            _proj_data: None,
+            _norm_data: None,
             gate: None,
             up: None,
             down_weight: None,
             input: Some(input),
+            proj: None,
+            norm: None,
             gate_up_quantized: Some(gate_up_quantized),
             down_quantized: Some(down_quantized),
             group_size,
             bits,
+            n_heads: 0,
+            head_dim: 0,
         })
     }
 }
@@ -541,6 +644,7 @@ fn portable_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
             matmul(&hidden, fixture.down_weight(), None)
         }
         Candidate::QuantizedFfn => portable_quantized_ffn(fixture),
+        Candidate::QkNormRope => portable_qk_norm_rope(fixture),
     }
 }
 
@@ -566,6 +670,19 @@ fn direct_candidate(fixture: &Fixture, candidate: Candidate) -> MlxArray {
                 None,
             )
         }
+        Candidate::QkNormRope => qk_norm_rope_bhsd_from_proj(
+            fixture.proj(),
+            Some(fixture.norm()),
+            fixture.n_heads,
+            fixture.head_dim,
+            1.0e-6,
+            fixture.head_dim,
+            false,
+            Some(10_000.0),
+            0,
+            None,
+            None,
+        ),
     }
 }
 
@@ -605,6 +722,18 @@ impl Fixture {
             .as_ref()
             .expect("down weight is required for quantized FFN candidate")
     }
+
+    fn proj(&self) -> &MlxArray {
+        self.proj
+            .as_ref()
+            .expect("projection is required for qk_norm_rope candidate")
+    }
+
+    fn norm(&self) -> &MlxArray {
+        self.norm
+            .as_ref()
+            .expect("norm is required for qk_norm_rope candidate")
+    }
 }
 
 fn portable_quantized_ffn(fixture: &Fixture) -> MlxArray {
@@ -637,6 +766,34 @@ fn portable_quantized_ffn(fixture: &Fixture) -> MlxArray {
         true,
         Some(fixture.group_size),
         Some(fixture.bits),
+        None,
+    )
+}
+
+fn portable_qk_norm_rope(fixture: &Fixture) -> MlxArray {
+    let rows = fixture.proj().shape()[1];
+    let cols = fixture.proj().shape()[2];
+    let bhsd = as_strided(
+        fixture.proj(),
+        &[1, fixture.n_heads, rows, fixture.head_dim],
+        &[
+            i64::from(rows) * i64::from(cols),
+            i64::from(fixture.head_dim),
+            i64::from(cols),
+            1,
+        ],
+        0,
+        None,
+    );
+    let normed = rms_norm(&bhsd, Some(fixture.norm()), 1.0e-6, None);
+    rope(
+        &normed,
+        fixture.head_dim,
+        false,
+        Some(10_000.0),
+        1.0,
+        0,
+        None,
         None,
     )
 }

@@ -6,6 +6,7 @@
 
 #include "mlx/c/array.h"
 #include "mlx/c/stream.h"
+#include "mlx/fast.h"
 #include "mlx/ops.h"
 #include "mlx/stream.h"
 #include "mlx/utils.h"
@@ -87,6 +88,52 @@ mx::array quantized_matmul_affine_impl(
       "affine",
       stream);
 }
+
+mx::array qk_norm_rope_bhsd_from_proj_impl(
+    const mx::array& proj,
+    std::optional<mx::array> norm,
+    int n_heads,
+    int head_dim,
+    float eps,
+    int rope_dims,
+    bool traditional,
+    bool has_base,
+    float base,
+    int offset,
+    std::optional<mx::array> freqs,
+    mx::StreamOrDevice stream) {
+  if (proj.ndim() != 3) {
+    throw std::runtime_error("qk_norm_rope expects [B, S, H * D] projection");
+  }
+  if (n_heads <= 0 || head_dim <= 0) {
+    throw std::runtime_error("qk_norm_rope expects positive head dimensions");
+  }
+  auto batch = proj.shape(0);
+  auto seq = proj.shape(1);
+  auto width = proj.shape(2);
+  if (width != n_heads * head_dim) {
+    throw std::runtime_error("qk_norm_rope projection width does not match heads * head_dim");
+  }
+
+  mx::Shape bhsd_shape{batch, n_heads, seq, head_dim};
+  mx::Strides bhsd_strides{
+      static_cast<int64_t>(seq) * n_heads * head_dim,
+      head_dim,
+      static_cast<int64_t>(n_heads) * head_dim,
+      1};
+  auto bhsd = mx::as_strided(proj, bhsd_shape, bhsd_strides, 0, stream);
+  auto normed = mx::fast::rms_norm(bhsd, norm, eps, stream);
+  std::optional<float> base_opt = has_base ? std::make_optional(base) : std::nullopt;
+  return mx::fast::rope(
+      normed,
+      rope_dims,
+      traditional,
+      base_opt,
+      1.0f,
+      offset,
+      freqs,
+      stream);
+}
 } // namespace
 
 extern "C" int ax_mlx_gelu_approx_mul(
@@ -157,6 +204,42 @@ extern "C" int ax_mlx_gelu_approx_quantized_ffn(
             group_size,
             bits,
             s));
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+extern "C" int ax_mlx_qk_norm_rope_bhsd_from_proj(
+    mlx_array* res,
+    const mlx_array proj,
+    const mlx_array norm,
+    int n_heads,
+    int head_dim,
+    float eps,
+    int rope_dims,
+    int traditional,
+    int has_base,
+    float base,
+    int offset,
+    const mlx_array freqs,
+    const mlx_stream stream) {
+  try {
+    set_array(
+        res,
+        qk_norm_rope_bhsd_from_proj_impl(
+            array_ref(proj),
+            optional_array(norm),
+            n_heads,
+            head_dim,
+            eps,
+            rope_dims,
+            traditional != 0,
+            has_base != 0,
+            base,
+            offset,
+            optional_array(freqs),
+            stream_or_default(stream)));
     return 0;
   } catch (...) {
     return 1;

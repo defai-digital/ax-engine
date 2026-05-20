@@ -31,6 +31,22 @@ unsafe extern "C" {
         bits: libc::c_int,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
+
+    fn ax_mlx_qk_norm_rope_bhsd_from_proj(
+        res: *mut ffi::mlx_array,
+        proj: ffi::mlx_array,
+        norm: ffi::mlx_array,
+        n_heads: libc::c_int,
+        head_dim: libc::c_int,
+        eps: libc::c_float,
+        rope_dims: libc::c_int,
+        traditional: libc::c_int,
+        has_base: libc::c_int,
+        base: libc::c_float,
+        offset: libc::c_int,
+        freqs: ffi::mlx_array,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
 }
 
 fn optional_int(value: Option<i32>, default: i32) -> ffi::mlx_optional_int_ {
@@ -263,6 +279,70 @@ pub fn gelu_approx_quantized_ffn(
         Some(bits),
         s,
     )
+}
+
+/// Probe-only direct C++ shim for:
+///
+/// ```text
+/// as_strided([B, S, H * D] -> [B, H, S, D])
+/// rms_norm(..., norm)
+/// rope(...)
+/// ```
+///
+/// This is intentionally not used by production model code yet. It gives the
+/// direct-MLX PRD a narrow measurement surface for the QK-norm + RoPE region
+/// before any routing or kill-switch work is considered.
+#[allow(clippy::too_many_arguments)]
+pub fn qk_norm_rope_bhsd_from_proj(
+    proj: &MlxArray,
+    norm: Option<&MlxArray>,
+    n_heads: i32,
+    head_dim: i32,
+    eps: f32,
+    rope_dims: i32,
+    traditional: bool,
+    base: Option<f32>,
+    offset: i32,
+    freqs: Option<&MlxArray>,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_qk_norm_rope_bhsd_from_proj(
+            &mut res.inner,
+            proj.inner,
+            norm.map(|n| n.inner).unwrap_or_else(null_ffi_array),
+            n_heads,
+            head_dim,
+            eps,
+            rope_dims,
+            i32::from(traditional),
+            i32::from(base.is_some()),
+            base.unwrap_or(1.0),
+            offset,
+            freqs.map(|f| f.inner).unwrap_or_else(null_ffi_array),
+            stream,
+        );
+        if rc == 0 {
+            return res;
+        }
+    }
+
+    let shape = proj.shape();
+    let batch = shape.first().copied().unwrap_or(1);
+    let seq = shape.get(1).copied().unwrap_or(1);
+    let width = i64::from(n_heads) * i64::from(head_dim);
+    let bhsd = as_strided(
+        proj,
+        &[batch, n_heads, seq, head_dim],
+        &[i64::from(seq) * width, i64::from(head_dim), width, 1],
+        0,
+        s,
+    );
+    let normed = crate::fast::rms_norm(&bhsd, norm, eps, s);
+    crate::fast::rope(&normed, rope_dims, traditional, base, 1.0, offset, freqs, s)
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
@@ -1309,6 +1389,73 @@ mod tests {
     }
 
     #[test]
+    fn qk_norm_rope_direct_matches_portable_composition() {
+        let seq = 3_i32;
+        let n_heads = 2_i32;
+        let head_dim = 4_i32;
+        let width = n_heads * head_dim;
+        let proj_data: Vec<f32> = (0..(seq * width))
+            .map(|i| ((i as f32) - 11.0) * 0.03125)
+            .collect();
+        let norm_data: Vec<f32> = (0..head_dim).map(|i| 0.75 + (i as f32) * 0.125).collect();
+        let proj = MlxArray::from_raw_data(
+            proj_data.as_ptr() as *const u8,
+            std::mem::size_of_val(proj_data.as_slice()),
+            &[1, seq, width],
+            MlxDtype::Float32,
+        );
+        let norm = MlxArray::from_raw_data(
+            norm_data.as_ptr() as *const u8,
+            std::mem::size_of_val(norm_data.as_slice()),
+            &[head_dim],
+            MlxDtype::Float32,
+        );
+
+        let prev = crate::op_count::op_count_snapshot();
+        let direct = qk_norm_rope_bhsd_from_proj(
+            &proj,
+            Some(&norm),
+            n_heads,
+            head_dim,
+            1.0e-6,
+            head_dim,
+            false,
+            Some(10_000.0),
+            2,
+            None,
+            None,
+        );
+        assert_eq!(
+            crate::op_count::op_count_take(prev),
+            1,
+            "direct C++ QK-norm+RoPE probe should count as one Rust FFI dispatch"
+        );
+
+        let bhsd = as_strided(
+            &proj,
+            &[1, n_heads, seq, head_dim],
+            &[
+                i64::from(seq * width),
+                i64::from(head_dim),
+                i64::from(width),
+                1,
+            ],
+            0,
+            None,
+        );
+        let normed = crate::fast::rms_norm(&bhsd, Some(&norm), 1.0e-6, None);
+        let reference =
+            crate::fast::rope(&normed, head_dim, false, Some(10_000.0), 1.0, 2, None, None);
+        let direct = contiguous(&direct, None);
+        let reference = contiguous(&reference, None);
+        eval(&[&direct, &reference]);
+
+        assert_eq!(direct.shape(), vec![1, n_heads, seq, head_dim]);
+        assert_eq!(reference.shape(), direct.shape());
+        assert_close_f32(direct.data_f32(), reference.data_f32(), 1.0e-6);
+    }
+
+    #[test]
     fn gelu_approx_quantized_ffn_direct_matches_portable_composition() {
         let x_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.03125).collect();
         let gate_up_weight_data: Vec<f32> =
@@ -1468,5 +1615,16 @@ mod tests {
         eval(&[&restored]);
         assert_eq!(restored.shape(), vec![2, 2]);
         assert_eq!(restored.dtype(), MlxDtype::Float32);
+    }
+
+    fn assert_close_f32(actual: &[f32], expected: &[f32], tolerance: f32) {
+        assert_eq!(actual.len(), expected.len());
+        for (idx, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            let delta = (a - e).abs();
+            assert!(
+                delta <= tolerance,
+                "mismatch at {idx}: actual={a}, expected={e}, delta={delta}, tolerance={tolerance}"
+            );
+        }
     }
 }
