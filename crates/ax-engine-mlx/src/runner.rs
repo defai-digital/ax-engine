@@ -2436,7 +2436,8 @@ pub struct MlxRunner {
     /// switch is not engaged. `None` when off; the L2 paths short-
     /// circuit cheaply.
     disk_prefix_cache: Option<Arc<crate::disk_prefix_cache::DiskPrefixCache>>,
-    /// Experimental Gemma sliding-window rotating backing store for direct decode.
+    /// Gemma-family sliding-window rotating backing store for rollback-free
+    /// direct greedy decode.
     rotating_sliding_decode: bool,
     /// Optional mlx_lm-style `clear_cache` cadence for the direct decode pipeline.
     direct_clear_cache_cadence: u32,
@@ -2557,8 +2558,8 @@ impl MlxRunner {
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
         let terminal_token_ids = resolve_terminal_token_ids(artifacts);
         let kv_layer_windows = kv_layer_windows_from_config(&cfg);
-        let rotating_sliding_decode = disable_ngram_acceleration
-            && std::env::var("AX_MLX_ROTATING_SLIDING_DECODE").as_deref() == Ok("1");
+        let rotating_sliding_decode =
+            disable_ngram_acceleration && crate::fastpath::rotating_sliding_decode_enabled();
         let ngram_policy_variant = ngram_policy_variant_from_env();
         // Mirror mlx-lm's `mx.clear_cache()` cadence: `generate.py:467-468`
         // calls `mx.clear_cache()` every 256 decoded tokens so the lazy graph

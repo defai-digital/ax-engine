@@ -454,6 +454,8 @@ slice kernel dispatch on the same decode step.
 `append_rotating_retained_window` writes circularly into a window-sized buffer.
 On the first decode call that exceeds the window size, the buffer is shrunk to
 `[1, n_kv_heads, window_size, head_dim]` and subsequent writes wrap around.
+This path is enabled by default for rollback-free direct greedy decode and can
+be disabled with `AX_MLX_ROTATING_SLIDING_DECODE=0`.
 
 `trim_to` refuses rollback when `rotating_window` is active — circular state
 cannot be trivially restored to an earlier position.

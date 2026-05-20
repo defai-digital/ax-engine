@@ -179,6 +179,22 @@ env_flag_default_on!(
     "AX_MLX_LAYER_SCALAR_FUSED_ADD"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_ROTATING_SLIDING_DECODE` — use a rotating backing store for
+    /// sliding-window KV layers on rollback-free direct greedy decode.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_ROTATING_SLIDING_DECODE=0`).
+    ///
+    /// This mirrors `mlx_lm`'s `RotatingKVCache` behavior for Gemma-family
+    /// sliding-window layers once decode depth exceeds the window: SDPA sees a
+    /// bounded window-sized backing store instead of a full-context buffer plus
+    /// retained-window slice views. The runner only enables this for direct
+    /// greedy decode, where no n-gram rollback or sampling replay is required.
+    rotating_sliding_decode_enabled,
+    "AX_MLX_ROTATING_SLIDING_DECODE"
+);
+
 env_flag!(
     /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — experimental load-time
     /// packing for Qwen linear-attention projections.
