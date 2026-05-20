@@ -203,7 +203,7 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-r1/; ax-overlay@p2048=benchmarks/results/mlx-inference/2026-05-20-qwen27-4bit-long-gateddelta-prefill-r3/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-final/; ax-overlay@p2048=benchmarks/results/mlx-inference/2026-05-20-qwen27-4bit-readme-p2048-final/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
@@ -213,9 +213,9 @@ These rows are a provenance-tracked composite. The `mlx_lm` reference rows come
 from `benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/`. The
 refreshed AX direct and n-gram rows for all Gemma 4 and Qwen 3.6 rows shown
 below come from
-`benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-r1/`.
+`benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-final/`.
 The Qwen 3.6 27B 4-bit prompt=2048 AX direct and n-gram rows are refreshed from
-`benchmarks/results/mlx-inference/2026-05-20-qwen27-4bit-long-gateddelta-prefill-r3/`.
+`benchmarks/results/mlx-inference/2026-05-20-qwen27-4bit-readme-p2048-final/`.
 The `llama.cpp Metal*` column is also injected from
 `benchmarks/manifests/llama_cpp_metal/inventory.json` and the
 `benchmarks/results/mlx-inference/2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/`

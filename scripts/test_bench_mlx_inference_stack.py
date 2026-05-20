@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
@@ -2629,6 +2630,15 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"], "1")
+
+    def test_linear_attention_pack_compare_enables_profile_gate(self) -> None:
+        args = argparse.Namespace(
+            gateddelta_prefill_profile=False,
+            ax_linear_attention_profile=False,
+            ax_compare_linear_attention_projection_pack=True,
+        )
+
+        self.assertTrue(bench.ax_linear_attention_profile_enabled(args))
 
     def test_axengine_command_disables_prefix_cache_by_default(self) -> None:
         with (

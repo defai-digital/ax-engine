@@ -1652,6 +1652,14 @@ def start_axengine(
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
 
 
+def ax_linear_attention_profile_enabled(args: argparse.Namespace) -> bool:
+    return bool(
+        args.gateddelta_prefill_profile
+        or args.ax_linear_attention_profile
+        or args.ax_compare_linear_attention_projection_pack
+    )
+
+
 def extract_ax_ngram_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
     if not route:
         return {}
@@ -3492,7 +3500,9 @@ def main() -> None:
         help=(
             "Run direct AX rows twice for the same prompts: first the default "
             "split linear-attention projections, then the experimental loader-time "
-            f"packed row emitted as {AX_ENGINE_LINEAR_ATTENTION_PACK_KEY}."
+            f"packed row emitted as {AX_ENGINE_LINEAR_ATTENTION_PACK_KEY}. "
+            "Also enables AX_MLX_LINEAR_ATTENTION_PROFILE=1 so the output can be "
+            "checked by the pack-promotion gate."
         ),
     )
     parser.add_argument(
@@ -3964,9 +3974,7 @@ def main() -> None:
                         args.experimental_mlx_kv_compression_min_context_tokens
                     ),
                     gemma4_moe_profile=args.ax_gemma4_moe_profile,
-                    linear_attention_profile=(
-                        args.gateddelta_prefill_profile or args.ax_linear_attention_profile
-                    ),
+                    linear_attention_profile=ax_linear_attention_profile_enabled(args),
                     prefill_profile=args.ax_prefill_profile,
                     decode_profile=args.ax_decode_profile,
                     pack_linear_attention_projections=pack_linear_attention_projections,
@@ -4127,9 +4135,7 @@ def main() -> None:
         },
         "prefix_reuse_evidence": summarize_prefix_reuse_evidence(results),
         "ax_gemma4_moe_profile": bool(args.ax_gemma4_moe_profile),
-        "ax_linear_attention_profile": bool(
-            args.gateddelta_prefill_profile or args.ax_linear_attention_profile
-        ),
+        "ax_linear_attention_profile": ax_linear_attention_profile_enabled(args),
         "ax_linear_attention_projection_pack": bool(
             args.ax_pack_linear_attention_projections
             or args.ax_compare_linear_attention_projection_pack
