@@ -74,6 +74,11 @@ def _integer(value: Any, field: str) -> int:
     return value
 
 
+def _string(value: Any, field: str) -> str:
+    _require(isinstance(value, str) and value, f"{field} must be a non-empty string")
+    return value
+
+
 def _positive_integer(value: Any, field: str) -> int:
     number = _integer(value, field)
     _require(number > 0, f"{field} must be positive")
@@ -118,7 +123,21 @@ def _is_ax_direct_row(row: dict[str, Any]) -> bool:
     ) == BASELINE_POLICY
 
 
-def _load_artifact(path: Path, model_fragments: tuple[str, ...]) -> list[dict[str, Any]]:
+def _validate_clean_git_artifact(doc: dict[str, Any], path: Path) -> None:
+    build = _mapping(doc.get("build"), f"{path}.build")
+    _string(build.get("commit"), f"{path}.build.commit")
+    _require(
+        build.get("git_tracked_dirty") is False,
+        f"{path}: build.git_tracked_dirty must be false for promotion evidence",
+    )
+
+
+def _load_artifact(
+    path: Path,
+    model_fragments: tuple[str, ...],
+    *,
+    require_clean_git: bool,
+) -> list[dict[str, Any]]:
     try:
         doc = json.loads(path.read_text())
     except OSError as error:
@@ -126,6 +145,8 @@ def _load_artifact(path: Path, model_fragments: tuple[str, ...]) -> list[dict[st
     except json.JSONDecodeError as error:
         raise DirectGemma4FfnRoutePromotionError(f"{path}: invalid JSON: {error}") from error
     _require(doc.get("schema_version") == SCHEMA_VERSION, f"{path}: schema_version must be {SCHEMA_VERSION}")
+    if require_clean_git:
+        _validate_clean_git_artifact(doc, path)
     model_text = " ".join(
         str(doc.get(key, ""))
         for key in ("model", "model_repo_id", "model_dir", "model_dir_source")
@@ -145,12 +166,17 @@ def collect_route_comparisons(
     required_prompts: tuple[int, ...],
     allowed_route_classifications: tuple[str, ...],
     model_fragments: tuple[str, ...],
+    require_clean_git: bool,
 ) -> list[RouteComparison]:
     baselines: dict[tuple[int, int], dict[str, Any]] = {}
     candidates: dict[tuple[int, int], dict[str, Any]] = {}
 
     for path in artifacts:
-        for row in _load_artifact(path, model_fragments):
+        for row in _load_artifact(
+            path,
+            model_fragments,
+            require_clean_git=require_clean_git,
+        ):
             if not _is_ax_direct_row(row):
                 continue
             owner = f"{path}.row"
@@ -229,6 +255,7 @@ def decide_direct_gemma4_ffn_route_promotion(
     min_no_regression_ratio: float = DEFAULT_MIN_NO_REGRESSION_RATIO,
     allowed_route_classifications: tuple[str, ...] = ("all_hits",),
     model_fragments: tuple[str, ...] = DEFAULT_MODEL_FRAGMENTS,
+    require_clean_git: bool = True,
 ) -> DirectGemma4FfnRoutePromotionDecision:
     if min_long_prefill_ratio <= 1.0:
         raise DirectGemma4FfnRoutePromotionError("--min-long-prefill-ratio must be > 1.0")
@@ -240,6 +267,7 @@ def decide_direct_gemma4_ffn_route_promotion(
         required_prompts=required_prompts,
         allowed_route_classifications=allowed_route_classifications,
         model_fragments=model_fragments,
+        require_clean_git=require_clean_git,
     )
     by_prompt = {comparison.prompt_tokens: comparison for comparison in comparisons}
     long_prefill_ratio = by_prompt[long_prompt].prefill_ratio
@@ -284,6 +312,7 @@ def check_direct_gemma4_ffn_route_promotion(
     min_no_regression_ratio: float = DEFAULT_MIN_NO_REGRESSION_RATIO,
     allowed_route_classifications: tuple[str, ...] = ("all_hits",),
     model_fragments: tuple[str, ...] = DEFAULT_MODEL_FRAGMENTS,
+    require_clean_git: bool = True,
 ) -> DirectGemma4FfnRoutePromotionDecision:
     decision = decide_direct_gemma4_ffn_route_promotion(
         artifacts,
@@ -294,6 +323,7 @@ def check_direct_gemma4_ffn_route_promotion(
         min_no_regression_ratio=min_no_regression_ratio,
         allowed_route_classifications=allowed_route_classifications,
         model_fragments=model_fragments,
+        require_clean_git=require_clean_git,
     )
     if decision.decision != expect_decision:
         if expect_decision == NOT_PROMOTED:
@@ -333,6 +363,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Required case-insensitive model metadata substring.",
     )
+    parser.add_argument(
+        "--allow-dirty-git-artifact",
+        action="store_true",
+        help=(
+            "Allow artifacts from a dirty tracked worktree. Use only for local "
+            "exploration; promotion evidence is clean-git by default."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -353,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
             min_no_regression_ratio=args.min_no_regression_ratio,
             allowed_route_classifications=allowed_route_classifications,
             model_fragments=model_fragments,
+            require_clean_git=not args.allow_dirty_git_artifact,
         )
     except DirectGemma4FfnRoutePromotionError as error:
         print(f"Direct Gemma4 FFN route promotion check failed: {error}", file=sys.stderr)

@@ -73,6 +73,7 @@ def artifact(
     short_prefill_ratio: float = 1.0,
     decode_ratio: float = 1.0,
     classification: str = "all_hits",
+    git_tracked_dirty: bool = False,
 ) -> dict[str, object]:
     results: list[dict[str, object]] = []
     for prompt in (128, 512, 2048):
@@ -101,6 +102,10 @@ def artifact(
         )
     return {
         "schema_version": checker.SCHEMA_VERSION,
+        "build": {
+            "commit": "0123456789abcdef0123456789abcdef01234567",
+            "git_tracked_dirty": git_tracked_dirty,
+        },
         "model": "/tmp/models/gemma-4-e2b-it-4bit",
         "results": results,
     }
@@ -173,6 +178,29 @@ class DirectGemma4FfnRoutePromotionTests(unittest.TestCase):
                 expect_decision=checker.PROMOTION_CANDIDATE,
             )
 
+    def test_promotion_candidate_rejects_dirty_git_artifact_by_default(self) -> None:
+        path = self.write_fixture(artifact(git_tracked_dirty=True))
+
+        with self.assertRaisesRegex(
+            checker.DirectGemma4FfnRoutePromotionError,
+            "git_tracked_dirty",
+        ):
+            checker.check_direct_gemma4_ffn_route_promotion(
+                [path],
+                expect_decision=checker.PROMOTION_CANDIDATE,
+            )
+
+    def test_dirty_git_artifact_can_be_allowed_for_exploration(self) -> None:
+        path = self.write_fixture(artifact(git_tracked_dirty=True))
+
+        decision = checker.check_direct_gemma4_ffn_route_promotion(
+            [path],
+            expect_decision=checker.PROMOTION_CANDIDATE,
+            require_clean_git=False,
+        )
+
+        self.assertEqual(decision.decision, checker.PROMOTION_CANDIDATE)
+
     def test_cli_reports_promotion_candidate(self) -> None:
         path = self.write_fixture(artifact())
 
@@ -213,6 +241,25 @@ class DirectGemma4FfnRoutePromotionTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 1)
         self.assertIn("promotion candidate", completed.stderr)
         self.assertNotIn("Traceback", completed.stderr)
+
+    def test_cli_can_allow_dirty_git_artifact_for_exploration(self) -> None:
+        path = self.write_fixture(artifact(git_tracked_dirty=True))
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--artifact",
+                str(path),
+                "--allow-dirty-git-artifact",
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertIn("decision=promotion_candidate", completed.stdout)
 
 
 if __name__ == "__main__":
