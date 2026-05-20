@@ -28,6 +28,14 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
             updater.cell_prefill(80.0, 100.0),
             "80.0 (-20.0%)",
         )
+        self.assertEqual(
+            updater.cell_decode_ngram(120.0, 100.0),
+            "**120.0 (+20.0%)**",
+        )
+        self.assertEqual(
+            updater.cell_decode_ngram(80.0, 100.0),
+            "80.0 (-20.0%)",
+        )
 
     def test_current_qwen36_slug_maps_to_readme_row(self) -> None:
         self.assertEqual(
@@ -123,7 +131,7 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
             lines,
         )
 
-    def test_decode_direct_only_update_preserves_existing_ngram_column(self) -> None:
+    def test_decode_direct_only_update_preserves_missing_ngram_column(self) -> None:
         lines = [
             "### Decode throughput (tok/s) — generation=128 tokens, temp=0",
             "",
@@ -144,8 +152,80 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
         changed = updater.update_decode_rows(lines, "Gemma 4 E2B", "4-bit", vals)
 
         self.assertEqual(changed, 2)
-        self.assertIn("| Gemma 4 E2B | 4-bit | 128 | 157.5 | 200.0 | 180.0 (-10.0%) | **580.1 (+174.6%)** |", lines)
-        self.assertIn("|  |  | 512 | 154.5 | 190.0 | **195.0 (+2.6%)** | **576.1 (+179.7%)** |", lines)
+        self.assertIn(
+            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 200.0 | 180.0 (-10.0%) | **580.1 (+174.6%)** |",
+            lines,
+        )
+        self.assertIn(
+            "|  |  | 512 | 154.5 | 190.0 | **195.0 (+2.6%)** | **576.1 (+179.7%)** |",
+            lines,
+        )
+
+    def test_decode_missing_reference_row_leaves_existing_cells_unchanged(self) -> None:
+        lines = [
+            "### Decode throughput (tok/s) — generation=128 tokens, temp=0",
+            "",
+            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |",
+            "|---|---|---:| ---: |---:|---:|---:|",
+            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) | **580.1 (+174.6%)** |",
+            "",
+            "### Time to first token",
+        ]
+        vals = {
+            ("ax_engine_mlx", 128): {"decode": 180.0},
+            ("ax_engine_mlx_ngram_accel", 128): {"decode": 580.0},
+        }
+
+        changed = updater.update_decode_rows(lines, "Gemma 4 E2B", "4-bit", vals)
+
+        self.assertEqual(changed, 0)
+        self.assertIn("| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) | **580.1 (+174.6%)** |", lines)
+
+    def test_decode_null_reference_metric_clears_all_comparison_cells(self) -> None:
+        lines = [
+            "### Decode throughput (tok/s) — generation=128 tokens, temp=0",
+            "",
+            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |",
+            "|---|---|---:| ---: |---:|---:|---:|",
+            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) | **580.1 (+174.6%)** |",
+            "",
+            "### Time to first token",
+        ]
+        vals = {
+            ("mlx_lm", 128): {"decode": None},
+            ("ax_engine_mlx", 128): {"decode": 180.0},
+            ("ax_engine_mlx_ngram_accel", 128): {"decode": 580.0},
+        }
+
+        changed = updater.update_decode_rows(lines, "Gemma 4 E2B", "4-bit", vals)
+
+        self.assertEqual(changed, 1)
+        self.assertIn("| Gemma 4 E2B | 4-bit | 128 | 157.5 | — | — | — |", lines)
+
+    def test_prompt_specific_overlay_leaves_unmentioned_prompt_rows_unchanged(self) -> None:
+        lines = [
+            "### Decode throughput (tok/s) — generation=128 tokens, temp=0",
+            "",
+            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |",
+            "|---|---|---:| ---: |---:|---:|---:|",
+            "| Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.0 (-2.9%) | 32.7 (-3.9%) |",
+            "|  |  | 512 | 26.0 | 33.9 | 33.0 (-2.6%) | 32.6 (-3.9%) |",
+            "|  |  | 2048 | 18.8 | 50.0 | 20.0 (-60.0%) | 20.0 (-60.0%) |",
+            "",
+            "### Time to first token",
+        ]
+        vals = {
+            ("mlx_lm", 2048): {"decode": 33.4},
+            ("ax_engine_mlx", 2048): {"decode": 31.6},
+            ("ax_engine_mlx_ngram_accel", 2048): {"decode": 31.1},
+        }
+
+        changed = updater.update_decode_rows(lines, "Qwen 3.6 27B", "4-bit", vals)
+
+        self.assertEqual(changed, 1)
+        self.assertIn("| Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.0 (-2.9%) | 32.7 (-3.9%) |", lines)
+        self.assertIn("|  |  | 512 | 26.0 | 33.9 | 33.0 (-2.6%) | 32.6 (-3.9%) |", lines)
+        self.assertIn("|  |  | 2048 | 18.8 | 33.4 | 31.6 (-5.4%) | 31.1 (-6.9%) |", lines)
 
 
 if __name__ == "__main__":

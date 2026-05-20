@@ -68,8 +68,10 @@ def cell_decode_direct(ax: float, ref: float) -> str:
 
 
 def cell_decode_ngram(ax: float, ref: float) -> str:
-    """Always bold."""
-    return f"**{fmt_num(ax)} {fmt_pct(ax, ref)}**"
+    """Bold when n-gram decode is faster than mlx_lm."""
+    pct = pct_delta(ax, ref)
+    s = f"{fmt_num(ax)} {fmt_pct(ax, ref)}"
+    return f"**{s}**" if pct > 0 else s
 
 
 def cell_ttft(ax: float, ref: float) -> str:
@@ -255,9 +257,17 @@ def update_prefill_rows(lines: list[str], model_name: str, quant: str, vals: dic
         return 0
 
     for pt, idx in collect_prompt_rows(lines, anchor):
-        ref = vals.get(("mlx_lm", pt), {}).get("prefill")
+        ref_row = vals.get(("mlx_lm", pt))
+        if ref_row is None:
+            continue
+        ref = ref_row.get("prefill")
         ax  = vals.get(("ax_engine_mlx", pt), {}).get("prefill")
         if ref is None:
+            lines[idx] = replace_trailing_cells(
+                lines[idx],
+                [INVALID_METRIC_CELL, INVALID_METRIC_CELL],
+            )
+            changed += 1
             continue
         ax_cell = INVALID_METRIC_CELL if ax is None else cell_prefill(ax, ref)
         lines[idx] = replace_trailing_cells(lines[idx], [fmt_num(ref), ax_cell])
@@ -283,16 +293,29 @@ def update_decode_rows(lines: list[str], model_name: str, quant: str, vals: dict
     ngram_col = headers.index("ax default n-gram") if "ax default n-gram" in headers else None
 
     for pt, idx in collect_prompt_rows(lines, anchor):
-        ref       = vals.get(("mlx_lm", pt), {}).get("decode")
+        ref_row = vals.get(("mlx_lm", pt))
+        if ref_row is None:
+            continue
+        ref       = ref_row.get("decode")
         ax_direct = vals.get(("ax_engine_mlx", pt), {}).get("decode")
         ax_ngram  = vals.get(("ax_engine_mlx_ngram_accel", pt), {}).get("decode")
-        if ref is None or ax_direct is None:
-            continue
         cells = _split_cells(lines[idx])
         if len(cells) <= max(mlx_col, direct_col):
             continue
+        if ref is None:
+            cells[mlx_col] = INVALID_METRIC_CELL
+            cells[direct_col] = INVALID_METRIC_CELL
+            if ngram_col is not None and len(cells) > ngram_col:
+                cells[ngram_col] = INVALID_METRIC_CELL
+            lines[idx] = _join_cells(cells)
+            changed += 1
+            continue
         cells[mlx_col] = fmt_num(ref)
-        cells[direct_col] = cell_decode_direct(ax_direct, ref)
+        cells[direct_col] = (
+            INVALID_METRIC_CELL
+            if ax_direct is None
+            else cell_decode_direct(ax_direct, ref)
+        )
         if ax_ngram is not None and ngram_col is not None and len(cells) > ngram_col:
             cells[ngram_col] = cell_decode_ngram(ax_ngram, ref)
         lines[idx] = _join_cells(cells)
@@ -309,9 +332,17 @@ def update_ttft_rows(lines: list[str], model_name: str, quant: str, vals: dict) 
         return 0
 
     for pt, idx in collect_prompt_rows(lines, anchor):
-        ref_ttft = vals.get(("mlx_lm", pt), {}).get("ttft")
+        ref_row = vals.get(("mlx_lm", pt))
+        if ref_row is None:
+            continue
+        ref_ttft = ref_row.get("ttft")
         ax_ttft  = vals.get(("ax_engine_mlx", pt), {}).get("ttft")
         if ref_ttft is None:
+            lines[idx] = replace_trailing_cells(
+                lines[idx],
+                [INVALID_METRIC_CELL, INVALID_METRIC_CELL],
+            )
+            changed += 1
             continue
         ax_cell = INVALID_METRIC_CELL if ax_ttft is None else cell_ttft(ax_ttft, ref_ttft)
         lines[idx] = replace_trailing_cells(lines[idx], [fmt_num(ref_ttft), ax_cell])

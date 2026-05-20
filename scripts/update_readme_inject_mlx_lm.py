@@ -3,9 +3,10 @@
 from a sweep produced by `bench_llama_cpp_metal_sweep.py --include-mlx-lm`.
 
 Only the raw `mlx_lm` median number is replaced. AX cells (raw values and the
-parenthesized percentages) are left as-is — refreshing the baseline without
-re-running AX leaves those percentages slightly stale but avoids fabricating
-data. Idempotent: rerunning replaces the existing mlx_lm cell value in place.
+parenthesized percentages) are left as-is, so this updater is intentionally
+fail-closed by default: use the full row updater when refreshing public README
+performance data. Pass --allow-stale-deltas only for an explicit diagnostic
+edit where stale AX percentages are acceptable.
 
 Companion to `update_readme_inject_llama_cpp.py`; same sweep doc shape.
 """
@@ -193,7 +194,25 @@ def main() -> None:
     parser.add_argument("--sweep", type=Path, required=True)
     parser.add_argument("--readme", type=Path, default=Path("README.md"))
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--allow-stale-deltas",
+        action="store_true",
+        help=(
+            "Allow updating only mlx_lm cells while leaving AX percentage "
+            "deltas untouched. This is unsafe for public README refreshes."
+        ),
+    )
     args = parser.parse_args()
+
+    if not args.allow_stale_deltas:
+        print(
+            "ERROR: refusing to update only mlx_lm cells because AX percentage "
+            "deltas would become stale; use update_readme_from_bench.py with "
+            "complete per-row artifacts, or rerun with --allow-stale-deltas "
+            "for a deliberate diagnostic edit.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     sweep_doc = json.loads(args.sweep.read_text())
     text = args.readme.read_text()

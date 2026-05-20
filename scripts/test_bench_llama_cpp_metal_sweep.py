@@ -270,6 +270,28 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
                     allow_partial=False,
                 )
 
+    def test_readme_source_marker_uses_scoped_sources_not_legacy_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            readme = tmp_path / "README.md"
+            readme.write_text(
+                "<!-- readme-performance-artifacts: "
+                "reference=old-ref/; ax-overlay=old-ax/ -->\n"
+            )
+
+            sweep.update_readme_source_marker(
+                readme,
+                sweep.REPO_ROOT / "benchmarks/results/new-run",
+            )
+
+            text = readme.read_text()
+            self.assertIn(
+                "reference=benchmarks/results/new-run/; "
+                "ax-base=benchmarks/results/new-run/",
+                text,
+            )
+            self.assertNotRegex(text, r"readme-performance-artifacts:[^\n]*(?:^|[; ])base=")
+
 
 if __name__ == "__main__":
     unittest.main()

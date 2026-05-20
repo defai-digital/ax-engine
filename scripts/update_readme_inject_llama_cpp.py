@@ -254,7 +254,7 @@ def inject_column(
             if pt_match:
                 pt = int(pt_match.group(1))
                 cells = _split_cells(row)
-                existing_llama_cell = _pop_existing_llama_cell(cells, strip_position)
+                _pop_existing_llama_cell(cells, strip_position)
                 if cells[0].strip():
                     current_model = cells[0].strip()
                 if cells[1].strip():
@@ -262,8 +262,6 @@ def inject_column(
                 value = lookup.get((current_model, current_quant, pt))
                 if value:
                     cell_text = fmt_num(value[metric_key])
-                elif existing_llama_cell:
-                    cell_text = existing_llama_cell
                 else:
                     cell_text = fmt_num(None)
                 cells.insert(_LLAMA_COL_INDEX, f" {cell_text} ")

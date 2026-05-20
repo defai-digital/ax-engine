@@ -465,7 +465,10 @@ def update_readme_source_marker(readme: Path, output_root: Path) -> None:
         r"<!--\s*readme-performance-artifacts:\s*(?P<body>.*?)\s*-->",
         re.DOTALL,
     )
-    marker = f"<!-- readme-performance-artifacts: base={rel}/ -->"
+    marker = (
+        "<!-- readme-performance-artifacts: "
+        f"reference={rel}/; ax-base={rel}/ -->"
+    )
     text, count = marker_re.subn(marker, text, count=1)
     if count == 0:
         raise RuntimeError("README does not contain readme-performance-artifacts marker")
@@ -477,6 +480,16 @@ def update_readme_source_marker(readme: Path, output_root: Path) -> None:
         count=1,
     )
     readme.write_text(text)
+
+
+def check_readme_performance_tables(readme: Path) -> None:
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "check_readme_performance_artifacts.py"),
+        "--readme",
+        str(readme),
+    ]
+    subprocess.run(cmd, cwd=REPO_ROOT, check=True)
 
 
 PERFORMANCE_TABLE_PREFIXES = (
@@ -599,6 +612,7 @@ def update_readme_from_sweep(
 
     if full_stack:
         update_readme_source_marker(readme, output_root)
+        check_readme_performance_tables(readme)
 
 
 def main() -> None:

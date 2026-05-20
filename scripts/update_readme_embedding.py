@@ -127,13 +127,8 @@ def main():
     orig_lines = lines[:]
 
     total = 0
-
-    # Update source reference
-    rel_dir = str(results_dir).replace(str(Path(args.readme).parent) + "/", "")
-    if not rel_dir.endswith("/"):
-        rel_dir += "/"
-    if update_source_line(lines, rel_dir):
-        total += 1
+    pending_rows: list[tuple[int, float, float, bool, str]] = []
+    missing: list[str] = []
 
     def update_row(idx: int, ref_tok: float, ax_tok: float, approx: bool) -> None:
         """Replace the last 3 cells (mlx-lm, ax-engine-py, AX vs mlx-lm)."""
@@ -152,7 +147,7 @@ def main():
     for model_label, display_name, use_approx in EMBEDDING_MODELS:
         data = load_model_results(results_dir, model_label)
         if data is None:
-            print(f"  WARN: no result found for {model_label!r} in {results_dir}")
+            missing.append(f"{model_label}: missing result under {results_dir}")
             continue
 
         single = data.get("results", {})
@@ -164,25 +159,46 @@ def main():
 
         anchor_idx = find_embedding_row(lines, display_name, SECTION_HEADER)
         if anchor_idx < 0:
-            print(f"  WARN: row not found for {display_name!r}")
+            missing.append(f"{model_label}: README row not found for {display_name!r}")
             continue
         if SINGLE_ROW_TAG not in lines[anchor_idx]:
-            print(f"  WARN: {display_name!r} anchor row missing {SINGLE_ROW_TAG!r}")
+            missing.append(
+                f"{model_label}: anchor row missing {SINGLE_ROW_TAG!r}"
+            )
             continue
-        if single_mlx is not None and single_ax is not None:
-            update_row(anchor_idx, single_mlx, single_ax, use_approx)
-            print(f"  {model_label} single:  mlx_lm={single_mlx:.1f}  ax={single_ax:.1f}")
+        if single_mlx is None or single_ax is None:
+            missing.append(f"{model_label}: missing single-sentence metrics")
+        else:
+            pending_rows.append((anchor_idx, single_mlx, single_ax, use_approx, "single"))
 
         # Batched row (immediately follows single row)
         batched_idx = find_batched_row_after(lines, anchor_idx)
         if batched_idx < 0:
-            print(f"  WARN: batched row not found below {display_name!r}")
+            missing.append(f"{model_label}: batched row not found below {display_name!r}")
             continue
         batched_mlx = batched.get("mlx_lm", {}).get("median_tokens_per_sec")
         batched_ax  = batched.get("ax_engine_py", {}).get("median_tokens_per_sec")
-        if batched_mlx is not None and batched_ax is not None:
-            update_row(batched_idx, batched_mlx, batched_ax, use_approx)
-            print(f"  {model_label} batched: mlx_lm={batched_mlx:.1f}  ax={batched_ax:.1f}")
+        if batched_mlx is None or batched_ax is None:
+            missing.append(f"{model_label}: missing batched metrics")
+        else:
+            pending_rows.append((batched_idx, batched_mlx, batched_ax, use_approx, "batched"))
+
+    if missing:
+        print("ERROR: refusing to update README embedding table from incomplete results", file=sys.stderr)
+        for item in missing:
+            print(f"  - {item}", file=sys.stderr)
+        sys.exit(1)
+
+    # Update source reference only after the new table data is known complete.
+    rel_dir = str(results_dir).replace(str(Path(args.readme).parent) + "/", "")
+    if not rel_dir.endswith("/"):
+        rel_dir += "/"
+    if update_source_line(lines, rel_dir):
+        total += 1
+
+    for idx, ref_tok, ax_tok, use_approx, label in pending_rows:
+        update_row(idx, ref_tok, ax_tok, use_approx)
+        print(f"  embedding {label}: mlx_lm={ref_tok:.1f}  ax={ax_tok:.1f}")
 
     print(f"  embedding: {total} cells updated")
 
