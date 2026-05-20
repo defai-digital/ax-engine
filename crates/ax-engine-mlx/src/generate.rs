@@ -9,7 +9,9 @@ use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward, forward_argmax_with_turboquant_context,
     forward_lazy_single_argmax_with_turboquant_context, forward_with_turboquant_context,
 };
-use crate::sampling::{MlxSamplingRequest, Xorshift64, sample_categorical, sample_categorical_gpu};
+use crate::sampling::{
+    MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical, sample_categorical_gpu,
+};
 use crate::weights::ModelWeights;
 
 /// Default chunk size for chunked prefill, matching SwiftLM's default and the
@@ -56,24 +58,15 @@ fn direct_pipeline_barrier_enabled() -> bool {
 ///
 /// Returns the sampled next-token ID from the last-token logits.
 ///
-/// # Known prefill-throughput gap vs `mlx-lm`
+/// # Prefill boundary
 ///
-/// Empirically (`benchmarks/results/mlx-inference/2026-05-18-gguf-full-stack/`),
-/// AX prefill on Gemma 4 E2B 4-bit @ p=2048 measures ~8k tok/s while
-/// `mlx-lm` measures ~17.8k tok/s. The gap is **not** in this function's
-/// flow control — AX already runs the full prompt in a single forward when
-/// `chunk_size >= prompt_len`, and `forward()` already slices to the last
-/// position before final-norm + `lm_head` (see
-/// `crates/ax-engine-mlx/src/model/mod.rs::forward` line 287-295).
-///
-/// AX now also slices the final layer to the last position before its MLP, so
-/// the remaining p=2048 gap is not a missing last-layer-prune bug. The durable
-/// difference is that `mlx-lm` can force only cache state for prompt prefill and
-/// relies on MLX's Python-side compiled/lazy graph boundaries, while AX still
-/// builds/evaluates the repo-owned Rust/FFI graph and first-token logits.
-/// Greedy argmax callers therefore use the argmax-only logits mode below, which
-/// skips Gemma's final softcap because `tanh(x / cap) * cap` is strictly
-/// monotonic and cannot change the selected token.
+/// For deterministic argmax on prompts longer than 512 tokens, mirror
+/// `mlx_lm.generate_step`: prefill every prompt token except the final one as
+/// cache-state-only work, then run the final prompt token through the normal
+/// single-token step to produce the first generated token. Evaluating only KV
+/// refs lets MLX's lazy graph prune the final logits path for long prompt
+/// chunks. Non-greedy sampling and short prompts keep the historical full-logits
+/// path until the sampling and small-prompt performance contracts are audited.
 pub fn chunked_prefill(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -86,6 +79,38 @@ pub fn chunked_prefill(
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
+
+    let cache_only_prefix_len = mlx_lm_style_cache_only_prefix_len(total, sampling);
+    if cache_only_prefix_len > 0 {
+        let mut offset = 0;
+        while offset < cache_only_prefix_len {
+            let end = (offset + chunk_size).min(cache_only_prefix_len);
+            let chunk = &prompt_tokens[offset..end];
+            let _logits = forward_argmax_with_turboquant_context(
+                cfg,
+                weights,
+                chunk,
+                cache,
+                cache.seq_len,
+                None,
+            );
+            cache.seq_len += chunk.len();
+            eval_kv_refs(cache);
+            clear_cache();
+            offset = end;
+        }
+
+        let tok = decode_step(
+            cfg,
+            weights,
+            prompt_tokens[cache_only_prefix_len],
+            cache,
+            sampling_request,
+            rng,
+        );
+        clear_cache();
+        return tok;
+    }
 
     let mut offset = 0;
     loop {
@@ -129,6 +154,21 @@ pub fn chunked_prefill(
             // appended KV slice_update nodes and prevents O(N²) graph growth.
             async_eval(&[&logits]);
         }
+    }
+}
+
+fn mlx_lm_style_cache_only_prefix_len(total_tokens: usize, sampling: MlxSamplingParams) -> usize {
+    if total_tokens > 512 && sampling.temperature <= 0.0 && !sampling.uses_repetition_penalty() {
+        total_tokens - 1
+    } else {
+        0
+    }
+}
+
+fn eval_kv_refs(cache: &MlxKVCache) {
+    let kv_refs = cache.collect_eval_refs();
+    if !kv_refs.is_empty() {
+        eval(&kv_refs);
     }
 }
 
@@ -365,5 +405,53 @@ pub fn decode_step_with_turboquant_context(
         let token_arr = argmax(&logits, None);
         eval_with_kv_refs(&token_arr, cache);
         token_arr.data_u32().first().copied().unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mlx_lm_style_prefill_leaves_final_prompt_token_for_step() {
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(2048, MlxSamplingParams::greedy()),
+            2047
+        );
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(513, MlxSamplingParams::greedy()),
+            512
+        );
+    }
+
+    #[test]
+    fn mlx_lm_style_prefill_keeps_short_prompt_on_historical_path() {
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(512, MlxSamplingParams::greedy()),
+            0
+        );
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(1, MlxSamplingParams::greedy()),
+            0
+        );
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(0, MlxSamplingParams::greedy()),
+            0
+        );
+    }
+
+    #[test]
+    fn mlx_lm_style_prefill_split_is_greedy_only_for_now() {
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(2048, MlxSamplingParams::new(0.7, 1.0, 0)),
+            0
+        );
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(
+                2048,
+                MlxSamplingParams::greedy().with_repetition_penalty(1.1, None)
+            ),
+            0
+        );
     }
 }
