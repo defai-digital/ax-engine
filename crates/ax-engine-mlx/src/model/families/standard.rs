@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, add, multiply, reshape, rms_norm, rope, slice, transpose};
+use mlx_sys::{MlxArray, add, reshape, rms_norm, rope, slice, transpose};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -9,10 +9,11 @@ use super::super::profile::{
     profile_eval_elapsed, record_gemma4_moe_decode_layer,
 };
 use super::super::shared::{
-    attention_mask_array, attention_output_projection, ffn_swiglu, full_precision_attention,
-    moe_experts_forward, moe_router_gemma4, moe_router_glm, moe_router_qwen3, per_layer_input_gate,
-    prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qkv_project, qw, rms_norm_opt,
-    shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
+    add_then_multiply_scalar, attention_mask_array, attention_output_projection, ffn_swiglu,
+    full_precision_attention, moe_experts_forward, moe_router_gemma4, moe_router_glm,
+    moe_router_qwen3, per_layer_input_gate, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
+    qkv_project, qw, rms_norm_opt, shape_element_count, shared_expert_forward,
+    turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
@@ -507,30 +508,31 @@ pub(crate) fn layer_forward(
 
     // 18. Residual.
     let residual_gate_started = profile_forward_layer.then(Instant::now);
-    let mut out = add(&hidden, &ffn_out, None);
 
     // 19. Per-layer input gating (Gemma4 2B/4B): gate(h) * per_layer_embed → proj → norm + h.
     //
     // Match mlx_lm's Gemma4DecoderLayer per-layer input gate. The shared
     // helper preserves the same `gelu_approx * per_layer_input` math through
     // AX's direct MLX activation shim.
-    if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
+    let out = if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
         w.per_layer_gate.as_ref(),
         w.per_layer_proj_w.as_ref(),
         w.per_layer_post_norm.as_ref(),
         per_layer_input,
     ) {
-        let gated = per_layer_input_gate(&qw(&out, gate_w), pli);
+        let residual = add(&hidden, &ffn_out, None);
+        let gated = per_layer_input_gate(&qw(&residual, gate_w), pli);
         let projected = qw(&gated, proj_w);
         let normed = rms_norm(&projected, Some(post_norm), cfg.rms_norm_eps, None);
-        out = add(&out, &normed, None);
-    }
-
-    // 20. Optional layer scalar (Gemma4): h = h * layer_scalar.
-    let out = if let Some(scalar) = &w.layer_scalar {
-        multiply(&out, scalar, None)
+        if let Some(scalar) = &w.layer_scalar {
+            add_then_multiply_scalar(&residual, &normed, scalar)
+        } else {
+            add(&residual, &normed, None)
+        }
+    } else if let Some(scalar) = &w.layer_scalar {
+        add_then_multiply_scalar(&hidden, &ffn_out, scalar)
     } else {
-        out
+        add(&hidden, &ffn_out, None)
     };
     if let Some(started) = residual_gate_started {
         forward_profile_eval_elapsed(

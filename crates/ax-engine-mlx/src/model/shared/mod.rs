@@ -21,7 +21,9 @@ pub(crate) use mlp::{
 pub(crate) use norm::rms_norm_opt;
 pub(super) use rope::build_llama3_rope_freqs;
 pub(crate) use utils::scale_hidden_pub;
-pub(crate) use utils::{apply_final_logit_softcap, qw, scale_hidden, shape_element_count};
+pub(crate) use utils::{
+    add_then_multiply_scalar, apply_final_logit_softcap, qw, scale_hidden, shape_element_count,
+};
 
 // Additional re-exports used by test code (via `use super::*` in #[cfg(test)] mod).
 #[cfg(test)]

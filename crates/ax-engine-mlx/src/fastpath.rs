@@ -179,6 +179,22 @@ env_flag_default_on!(
     "AX_MLX_DENSE_GEGLU_PACKED_METAL"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_LAYER_SCALAR_FUSED_ADD` — fuse Gemma-family residual add plus
+    /// scalar layer-scale multiply into one custom MLX Metal elementwise node.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_LAYER_SCALAR_FUSED_ADD=0`).
+    ///
+    /// Gemma 4 E2B ships one scalar per layer (`shape=[1]`). The unfused path
+    /// emits `add` then `multiply` in every decoder layer for every direct
+    /// decode token. This path only engages when both inputs have identical
+    /// shape/dtype and the scalar has exactly one element; all other shapes use
+    /// the normal broadcast-safe MLX ops.
+    layer_scalar_fused_add_enabled,
+    "AX_MLX_LAYER_SCALAR_FUSED_ADD"
+);
+
 env_flag!(
     /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — experimental load-time
     /// packing for Qwen linear-attention projections.

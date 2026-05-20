@@ -1,9 +1,12 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, astype, gather_mm, gather_qmm, matmul, multiply, quantized_matmul, reshape,
-    slice_last_dim, tanh, transpose,
+    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype,
+    gather_mm, gather_qmm, matmul, multiply, quantized_matmul, reshape, slice_last_dim, tanh,
+    transpose,
 };
+use std::sync::OnceLock;
 
 use super::super::config::ModelConfig;
+use crate::fastpath;
 use crate::weights::QuantizedWeight;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -66,6 +69,97 @@ pub(crate) fn scale_hidden(hidden: &MlxArray, scale: f32) -> MlxArray {
     multiply(hidden, &s_arr, None)
 }
 
+static ADD_MUL_SCALAR_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+const ADD_MUL_SCALAR_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    float av = static_cast<float>(a[idx]);
+    float bv = static_cast<float>(b[idx]);
+    float scale_v = static_cast<float>(scale[0]);
+    T rounded_sum = static_cast<T>(av + bv);
+    out[idx] = static_cast<T>(static_cast<float>(rounded_sum) * scale_v);
+"#;
+
+pub(crate) fn add_then_multiply_scalar(a: &MlxArray, b: &MlxArray, scalar: &MlxArray) -> MlxArray {
+    add_then_multiply_scalar_metal(a, b, scalar)
+        .unwrap_or_else(|| multiply(&add(a, b, None), scalar, None))
+}
+
+fn add_then_multiply_scalar_metal(
+    a: &MlxArray,
+    b: &MlxArray,
+    scalar: &MlxArray,
+) -> Option<MlxArray> {
+    if !fastpath::layer_scalar_fused_add_enabled() {
+        return None;
+    }
+    add_then_multiply_scalar_metal_impl(a, b, scalar)
+}
+
+fn add_then_multiply_scalar_metal_impl(
+    a: &MlxArray,
+    b: &MlxArray,
+    scalar: &MlxArray,
+) -> Option<MlxArray> {
+    if a.shape() != b.shape() || a.dtype() != b.dtype() || scalar.dtype() != a.dtype() {
+        return None;
+    }
+    if !matches!(
+        a.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let scalar_elements = scalar
+        .shape()
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    if scalar_elements != 1 {
+        return None;
+    }
+    let shape = a.shape();
+    let element_count = shape
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    let element_count = i32::try_from(element_count).ok()?;
+
+    let kernel = ADD_MUL_SCALAR_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_add_mul_scalar_v1",
+            &["a", "b", "scale"],
+            &["out"],
+            ADD_MUL_SCALAR_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[a, b, scalar],
+        &[KernelOutputSpec {
+            shape,
+            dtype: a.dtype(),
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "T",
+                dtype: a.dtype(),
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
+}
+
 pub(crate) fn scalar_like(value: f32, dtype: MlxDtype) -> MlxArray {
     // Retained for callers outside the steady-state decode hot path
     // (e.g. MoE router masking, test fixtures) where the per-call astype is
@@ -105,6 +199,73 @@ pub(crate) fn squeeze_switch_singleton(x: &MlxArray) -> MlxArray {
         reshape(x, &shape, None)
     } else {
         x.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlx_sys::eval;
+
+    fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data),
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    #[test]
+    fn add_then_multiply_scalar_metal_matches_unfused_float32() {
+        let a = array_f32(&[0.5, -1.0, 2.0, 3.5, -4.0, 8.0], &[2, 3]);
+        let b = array_f32(&[1.0, 4.0, -2.0, 0.5, 3.0, -8.0], &[2, 3]);
+        let scalar = array_f32(&[0.25], &[1]);
+
+        let direct = add_then_multiply_scalar_metal_impl(&a, &b, &scalar)
+            .expect("scalar fused add should support float32 inputs");
+        let reference = multiply(&add(&a, &b, None), &scalar, None);
+        eval(&[&direct, &reference]);
+
+        assert_eq!(direct.shape(), vec![2, 3]);
+        assert_eq!(direct.data_f32(), reference.data_f32());
+    }
+
+    #[test]
+    fn add_then_multiply_scalar_metal_matches_unfused_bf16_rounding() {
+        let a = astype(
+            &array_f32(&[0.333, -1.125, 2.75, 3.125], &[1, 4]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let b = astype(
+            &array_f32(&[1.875, 4.25, -2.375, 0.625], &[1, 4]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let scalar = astype(&array_f32(&[0.3125], &[1]), MlxDtype::Bfloat16, None);
+
+        let direct = add_then_multiply_scalar_metal_impl(&a, &b, &scalar)
+            .expect("scalar fused add should support bf16 inputs");
+        let reference = multiply(&add(&a, &b, None), &scalar, None);
+        let direct = astype(&direct, MlxDtype::Float32, None);
+        let reference = astype(&reference, MlxDtype::Float32, None);
+        eval(&[&direct, &reference]);
+
+        assert_eq!(direct.shape(), vec![1, 4]);
+        assert_eq!(direct.data_f32(), reference.data_f32());
+    }
+
+    #[test]
+    fn add_then_multiply_scalar_metal_rejects_broadcast_vector_scale() {
+        let a = array_f32(&[1.0, 2.0], &[1, 2]);
+        let b = array_f32(&[3.0, 4.0], &[1, 2]);
+        let vector_scale = array_f32(&[0.5, 0.25], &[2]);
+
+        assert!(
+            add_then_multiply_scalar_metal_impl(&a, &b, &vector_scale).is_none(),
+            "only exact scalar layer-scale tensors are fused"
+        );
     }
 }
 
