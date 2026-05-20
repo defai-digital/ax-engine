@@ -374,7 +374,11 @@ fn forward_with_turboquant_context_and_logits_mode(
     }
 
     let seq = token_ids.len();
-    let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
+    // Single-token decode never needs explicit SDPA masks. Keep the decode
+    // path on one borrowed `None` instead of allocating a per-layer mask vec.
+    let decode_mask: Option<MlxArray> = None;
+    let masks =
+        (seq > 1).then(|| build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq));
     let per_layer_started = profile_prefill.then(Instant::now);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     if let (Some(started), Some(inputs)) = (per_layer_started, per_layer_inputs.as_ref()) {
@@ -399,6 +403,10 @@ fn forward_with_turboquant_context_and_logits_mode(
     let use_last_layer_optimization = seq > 1;
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
+        let shared_mask = masks
+            .as_ref()
+            .map(|masks| &masks[li])
+            .unwrap_or(&decode_mask);
         hidden = if use_last_layer_optimization && li == last_layer_idx {
             layer_forward_with_turboquant_context_last_only(
                 cfg,
@@ -408,7 +416,7 @@ fn forward_with_turboquant_context_and_logits_mode(
                 li,
                 token_offset,
                 pli,
-                Some(&masks[li]),
+                Some(shared_mask),
                 turboquant_context,
             )
         } else {
@@ -420,7 +428,7 @@ fn forward_with_turboquant_context_and_logits_mode(
                 li,
                 token_offset,
                 pli,
-                Some(&masks[li]),
+                Some(shared_mask),
                 turboquant_context,
             )
         };
@@ -976,7 +984,9 @@ fn forward_lazy_single_with_turboquant_context_and_logits_mode(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
-    let masks = build_layer_masks(cfg, weights.layers.len(), 1, token_offset + 1);
+    // Single-token decode never needs an explicit SDPA mask. Use one borrowed
+    // `None` for every layer instead of allocating a per-step mask vector.
+    let decode_mask: Option<MlxArray> = None;
 
     let per_layer_started = profile_decode.then(Instant::now);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &tok_1d, &hidden);
@@ -1003,7 +1013,7 @@ fn forward_lazy_single_with_turboquant_context_and_logits_mode(
             li,
             token_offset,
             pli,
-            Some(&masks[li]),
+            Some(&decode_mask),
             turboquant_context,
         );
     }
