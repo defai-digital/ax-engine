@@ -203,7 +203,7 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-final/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-qwen-1024-tier-sweep/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-final/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-qwen-1024-tier-sweep/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
@@ -214,10 +214,15 @@ from `benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/`. The
 refreshed AX direct and n-gram rows for all Gemma 4 and Qwen 3.6 rows shown
 below come from
 `benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-final/`.
-All Qwen 3.6 27B (4/5/6/8-bit) and 35B-A3B (4-bit) AX rows — direct and
-n-gram, 128/512/2048 prompts — are sourced from
+Qwen 3.6 27B 6/8-bit and 35B-A3B (4-bit) AX rows — direct and n-gram,
+128/512/2048 prompts — are sourced from
 `benchmarks/results/mlx-inference/2026-05-20-qwen-1024-tier-sweep/` after
 the 1024-token GatedDelta prefill-chunk fix.
+Qwen 3.6 27B 4-bit and 5-bit AX rows were refreshed again from
+`benchmarks/results/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/`
+with the opt-in `AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS=1` hot path; those
+artifact rows report `ax.mlx_direct_cpp_linear_attention_inputs.v1`
+`classification=all_hits`, `fallbacks=0`, and `profile_blocked=0`.
 The `llama.cpp Metal*` column is also injected from
 `benchmarks/manifests/llama_cpp_metal/inventory.json` and the
 `benchmarks/results/mlx-inference/2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/`
@@ -268,12 +273,12 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 | Gemma 4 31B | 4-bit | 128 | 522.6 | 283.1 | **717.3 (+153.4%)** |
 |         |         | 512 | 665.3 | 619.9 | **844.4 (+36.2%)** |
 |         |         | 2048 | 560.3 | 733.9 | **776.7 (+5.8%)** |
-| Qwen 3.6 27B | 4-bit | 128 | 539.6 | 378.8 | **808.3 (+113.4%)** |
-|  |  | 512 | 759.7 | 705.7 | **951.4 (+34.8%)** |
-|  |  | 2048 | 664.3 | 895.2 | **950.8 (+6.2%)** |
-| Qwen 3.6 27B | 5-bit | 128 | 520.8 | 278.8 | **763.0 (+173.6%)** |
-|  |  | 512 | 733.4 | 599.5 | **901.7 (+50.4%)** |
-|  |  | 2048 | 667.0 | 827.5 | **895.2 (+8.2%)** |
+| Qwen 3.6 27B | 4-bit | 128 | 539.6 | 378.8 | **798.3 (+110.8%)** |
+|  |  | 512 | 759.7 | 705.7 | **927.8 (+31.5%)** |
+|  |  | 2048 | 664.3 | 895.2 | **925.6 (+3.4%)** |
+| Qwen 3.6 27B | 5-bit | 128 | 520.8 | 278.8 | **751.2 (+169.4%)** |
+|  |  | 512 | 733.4 | 599.5 | **784.7 (+30.9%)** |
+|  |  | 2048 | 667.0 | 827.5 | 827.0 (-0.1%) |
 | Qwen 3.6 27B | 6-bit | 128 | 537.7 | 270.5 | **740.4 (+173.8%)** |
 |  |  | 512 | 756.1 | 577.6 | **885.1 (+53.2%)** |
 |  |  | 2048 | 689.3 | 798.2 | **881.5 (+10.4%)** |
@@ -331,12 +336,12 @@ collapsed output loop.
 | Gemma 4 31B | 4-bit | 128 | 25.0 | 28.9 | 28.5 (-1.2%) | **33.9 (+17.3%)** |
 |  |  | 512 | 25.5 | 28.3 | 28.0 (-1.2%) | **46.7 (+65.1%)** |
 |  |  | 2048 | 25.3 | 27.0 | 26.8 (-1.0%) | **45.9 (+69.7%)** |
-| Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.2 (-2.3%) | 33.2 (-2.2%) |
-|  |  | 512 | 26.0 | 33.9 | 33.2 (-2.0%) | 33.1 (-2.4%) |
-|  |  | 2048 | 18.8 | 33.4 | 32.9 (-1.8%) | 32.7 (-2.3%) |
-| Qwen 3.6 27B | 5-bit | 128 | 23.5 | 21.6 | **27.4 (+26.8%)** | **27.7 (+28.3%)** |
-|  |  | 512 | 23.3 | 28.1 | 27.6 (-1.9%) | 27.6 (-1.9%) |
-|  |  | 2048 | 17.8 | 27.8 | 27.4 (-1.5%) | 27.4 (-1.5%) |
+| Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 31.8 (-6.4%) | 31.8 (-6.3%) |
+|  |  | 512 | 26.0 | 33.9 | 31.6 (-6.7%) | 31.4 (-7.3%) |
+|  |  | 2048 | 18.8 | 33.4 | 31.3 (-6.3%) | 18.7 (-44.2%) |
+| Qwen 3.6 27B | 5-bit | 128 | 23.5 | 21.6 | **23.8 (+10.3%)** | **25.6 (+18.6%)** |
+|  |  | 512 | 23.3 | 28.1 | 24.2 (-14.0%) | 26.6 (-5.5%) |
+|  |  | 2048 | 17.8 | 27.8 | 24.7 (-11.1%) | 26.0 (-6.5%) |
 | Qwen 3.6 27B | 6-bit | 128 | 21.3 | 24.0 | **24.5 (+2.1%)** | **24.5 (+2.2%)** |
 |  |  | 512 | 21.3 | 24.8 | 24.4 (-1.3%) | 24.5 (-1.3%) |
 |  |  | 2048 | 15.4 | 24.6 | 24.3 (-1.4%) | 24.3 (-1.3%) |
@@ -347,19 +352,19 @@ collapsed output loop.
 |  |  | 512 | 108.2 | 136.5 | **141.0 (+3.3%)** | **141.4 (+3.6%)** |
 |  |  | 2048 | 105.7 | 134.5 | **138.9 (+3.3%)** | **139.0 (+3.4%)** |
 
-† Qwen 3.6 27B 4-bit at prompt=2048 originally produced zero decode tokens
+Qwen 3.6 27B 4-bit at prompt=2048 originally produced zero decode tokens
 because 4-bit quantization noise pushed an EOS token to argmax at decode
 step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness
 now sends request-scoped `sampling.ignore_eos=true` for AX throughput runs,
 matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput regardless
 of stop-token argmax. Production requests default to `ignore_eos=false` and
 still honor EOS at step 0 on this specific synthetic prompt. Source:
-`benchmarks/results/mlx-inference/2026-05-20-qwen27-4to8-direct-readme-r3/qwen3_6-27b-4bit.json`.
+`benchmarks/results/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/qwen3_6-27b-4bit.json`.
 
-‡ Qwen 3.6 27B 5-bit at prompt=128 shows the n-gram drafter
-under-performing direct decode on this refreshed run.
-The 512 and 2048 prompts on the same model recover; the 128 dip is
-recorded as-is for transparency.
+Qwen 3.6 27B 4-bit at prompt=2048 still shows a low n-gram decode row on this
+random-token contract. The artifact records the linear-attention direct C++
+input path as all-hit with no fallback/profile-blocked counters, so the dip is
+preserved as a workload/result characteristic rather than hidden.
 
 ### Time to first token (ms) — generation=128 tokens, temp=0
 
@@ -391,12 +396,12 @@ so server/client timing does not get mixed with runner-time throughput.
 | Gemma 4 31B | 4-bit | 128 | 244.9 | 452.2 | **178.5 (-60.5%)** |
 |         |         | 512 | 769.5 | 826.0 | **606.4 (-26.6%)** |
 |         |         | 2048 | 3,655.2 | 2,790.6 | **2,636.9 (-5.5%)** |
-| Qwen 3.6 27B | 4-bit | 128 | 237.2 | 337.9 | **158.4 (-53.1%)** |
-|  |  | 512 | 673.9 | 725.6 | **538.2 (-25.8%)** |
-|  |  | 2048 | 3,083.1 | 2,287.7 | **2,153.9 (-5.8%)** |
-| Qwen 3.6 27B | 5-bit | 128 | 245.8 | 459.0 | **167.8 (-63.5%)** |
-|  |  | 512 | 698.1 | 854.1 | **567.8 (-33.5%)** |
-|  |  | 2048 | 3,070.5 | 2,474.9 | **2,287.7 (-7.6%)** |
+| Qwen 3.6 27B | 4-bit | 128 | 237.2 | 337.9 | **160.3 (-52.6%)** |
+|  |  | 512 | 673.9 | 725.6 | **551.8 (-23.9%)** |
+|  |  | 2048 | 3,083.1 | 2,287.7 | **2,212.6 (-3.3%)** |
+| Qwen 3.6 27B | 5-bit | 128 | 245.8 | 459.0 | **170.4 (-62.9%)** |
+|  |  | 512 | 698.1 | 854.1 | **652.5 (-23.6%)** |
+|  |  | 2048 | 3,070.5 | 2,474.9 | 2,476.3 (+0.1%) |
 | Qwen 3.6 27B | 6-bit | 128 | 238.1 | 473.2 | **172.9 (-63.5%)** |
 |  |  | 512 | 677.2 | 886.5 | **578.5 (-34.7%)** |
 |  |  | 2048 | 2,971.2 | 2,565.6 | **2,323.3 (-9.4%)** |
