@@ -232,7 +232,26 @@ fi
 check_cmd python3 "python3 is required for formula install stanza validation"
 
 TAP_DIR="$(mktemp -d /tmp/ax-engine-tap.XXXXXX)"
-trap 'rm -rf "$TAP_DIR"' EXIT
+
+# If the local-test step taps TAP_DIR (see below), Homebrew records TAP_DIR as
+# the tap's git origin. Once we remove TAP_DIR on exit, `brew update` against
+# that tap fails with "does not appear to be a git repository". Before deleting
+# TAP_DIR, repoint any installed tap whose origin matches TAP_DIR to the
+# canonical GitHub URL so the developer's `brew update` keeps working.
+cleanup_tap_dir() {
+    local installed_tap_dir
+    installed_tap_dir="$(brew --repository defai-digital/ax-engine 2>/dev/null || true)"
+    if [[ -n "$installed_tap_dir" && -d "$installed_tap_dir/.git" ]]; then
+        local current_origin
+        current_origin="$(git -C "$installed_tap_dir" remote get-url origin 2>/dev/null || true)"
+        if [[ "$current_origin" == "$TAP_DIR" ]]; then
+            git -C "$installed_tap_dir" remote set-url origin \
+                "https://github.com/${TAP_REPO}.git" 2>/dev/null || true
+        fi
+    fi
+    rm -rf "$TAP_DIR"
+}
+trap cleanup_tap_dir EXIT
 
 echo "▶ cloning tap ${TAP_REPO}…"
 gh repo clone "$TAP_REPO" "$TAP_DIR" -- --depth=1 --quiet

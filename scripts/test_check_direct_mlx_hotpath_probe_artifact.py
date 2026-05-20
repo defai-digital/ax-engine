@@ -131,6 +131,40 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
     def test_valid_gemma4_post_attn_ffn_block_artifact_passes(self) -> None:
         checker.validate_artifact(direct_mlx_artifact("gemma4_post_attn_ffn_block"))
 
+    def test_large_block_gate_accepts_gemma4_post_attn_ffn_block(self) -> None:
+        checker.validate_artifact(
+            direct_mlx_artifact("gemma4_post_attn_ffn_block"),
+            large_block_only=True,
+            min_speedup=1.05,
+        )
+
+    def test_large_block_gate_rejects_narrow_candidate(self) -> None:
+        with self.assertRaisesRegex(
+            checker.DirectMlxHotpathProbeArtifactError,
+            "large-block gate",
+        ):
+            checker.validate_artifact(direct_mlx_artifact(), large_block_only=True)
+
+    def test_require_clean_git_accepts_clean_artifact(self) -> None:
+        artifact = direct_mlx_artifact("gemma4_post_attn_ffn_block")
+        artifact["git"]["dirty"] = False
+
+        checker.validate_artifact(
+            artifact,
+            large_block_only=True,
+            require_clean_git=True,
+        )
+
+    def test_require_clean_git_rejects_dirty_artifact(self) -> None:
+        with self.assertRaisesRegex(
+            checker.DirectMlxHotpathProbeArtifactError,
+            "git.dirty",
+        ):
+            checker.validate_artifact(
+                direct_mlx_artifact("gemma4_post_attn_ffn_block"),
+                require_clean_git=True,
+            )
+
     def test_valid_qwen_linear_attention_inputs_artifact_passes(self) -> None:
         checker.validate_artifact(direct_mlx_artifact("qwen_linear_attention_inputs_packed"))
 
@@ -272,6 +306,21 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("ok:", completed.stdout)
+
+    def test_cli_large_block_gate_rejects_narrow_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "direct-mlx-hotpath.json"
+            artifact_path.write_text(json.dumps(direct_mlx_artifact()))
+
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), str(artifact_path), "--large-block-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("large-block gate", completed.stderr)
 
 
 if __name__ == "__main__":

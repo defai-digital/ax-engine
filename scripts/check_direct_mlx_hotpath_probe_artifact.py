@@ -43,6 +43,9 @@ CANDIDATE_MEASUREMENTS = {
         "direct_cpp_qwen_linear_attention_inputs_packed",
     ),
 }
+LARGE_BLOCK_CANDIDATES = {
+    "gemma4_post_attn_ffn_block",
+}
 SPEEDUP_MEASUREMENT = "direct_cpp_speedup_ratio"
 DEFAULT_MAX_ABS_ERROR = 1e-6
 DEFAULT_MIN_SAMPLES = 1
@@ -151,6 +154,8 @@ def validate_artifact(
     max_abs_error: float = DEFAULT_MAX_ABS_ERROR,
     min_samples: int = DEFAULT_MIN_SAMPLES,
     min_speedup: float = DEFAULT_MIN_SPEEDUP,
+    large_block_only: bool = False,
+    require_clean_git: bool = False,
 ) -> None:
     _require(doc.get("schema") == SCHEMA, f"schema must be {SCHEMA}")
     _require(doc.get("surface") == SURFACE, f"surface must be {SURFACE}")
@@ -162,7 +167,16 @@ def validate_artifact(
         candidate in CANDIDATE_MEASUREMENTS,
         f"config.candidate must be one of {sorted(CANDIDATE_MEASUREMENTS)}",
     )
+    if large_block_only:
+        _require(
+            candidate in LARGE_BLOCK_CANDIDATES,
+            f"config.candidate must be one of {sorted(LARGE_BLOCK_CANDIDATES)} for large-block gate",
+        )
     portable_measurement, direct_measurement = CANDIDATE_MEASUREMENTS[candidate]
+    if require_clean_git:
+        git = _mapping(doc.get("git"), "git")
+        _string(git.get("commit"), "git.commit")
+        _require(git.get("dirty") is False, "git.dirty must be false")
     rows = _positive_integer(config.get("rows"), "config.rows")
     cols = _positive_integer(config.get("cols"), "config.cols")
     output_cols = cols
@@ -308,6 +322,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--max-abs-error", type=float, default=DEFAULT_MAX_ABS_ERROR)
     parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
     parser.add_argument("--min-speedup", type=float, default=DEFAULT_MIN_SPEEDUP)
+    parser.add_argument(
+        "--large-block-only",
+        action="store_true",
+        help="Accept only direct-MLX large-block candidates for P0 evidence",
+    )
+    parser.add_argument(
+        "--require-clean-git",
+        action="store_true",
+        help="Require git.dirty=false for promotion-grade evidence",
+    )
     return parser.parse_args(argv)
 
 
@@ -319,6 +343,8 @@ def main(argv: list[str]) -> int:
             max_abs_error=args.max_abs_error,
             min_samples=args.min_samples,
             min_speedup=args.min_speedup,
+            large_block_only=args.large_block_only,
+            require_clean_git=args.require_clean_git,
         )
     except DirectMlxHotpathProbeArtifactError as error:
         print(f"error: {error}", file=sys.stderr)
