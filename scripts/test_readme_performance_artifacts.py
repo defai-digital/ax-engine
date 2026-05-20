@@ -188,6 +188,75 @@ def add_boundary_readme_claims(
     )
 
 
+class TrackedDirtyAllowlistTests(unittest.TestCase):
+    def test_readme_and_box_whisker_svgs_are_doc_only(self) -> None:
+        self.assertTrue(checker.is_benchmark_doc_only_path("README.md"))
+        self.assertTrue(
+            checker.is_benchmark_doc_only_path(
+                "docs/assets/perf-decode-128-box-whisker.svg"
+            )
+        )
+
+    def test_update_readme_post_processing_scripts_are_doc_only(self) -> None:
+        for path in (
+            "scripts/update_readme_from_bench.py",
+            "scripts/update_readme_inject_llama_cpp.py",
+            "scripts/update_readme_inject_mlx_lm.py",
+            "scripts/update_readme_embedding.py",
+        ):
+            self.assertTrue(
+                checker.is_benchmark_doc_only_path(path),
+                f"{path} should be allowlisted as README post-processing",
+            )
+
+    def test_test_scripts_are_doc_only(self) -> None:
+        self.assertTrue(
+            checker.is_benchmark_doc_only_path("scripts/test_update_readme_from_bench.py")
+        )
+        self.assertTrue(
+            checker.is_benchmark_doc_only_path(
+                "scripts/test_bench_llama_cpp_metal_sweep.py"
+            )
+        )
+
+    def test_llama_cpp_sweep_orchestrator_is_doc_only(self) -> None:
+        # bench_llama_cpp_metal_sweep.py orchestrates llama.cpp Metal full-stack
+        # runs only; AX-only and mlx_lm-only artifacts (the ones this checker
+        # validates against README markers) do not invoke it.
+        self.assertTrue(
+            checker.is_benchmark_doc_only_path("scripts/bench_llama_cpp_metal_sweep.py")
+        )
+
+    def test_bench_mlx_inference_stack_is_not_doc_only(self) -> None:
+        # bench_mlx_inference_stack.py is the single source of bench-output JSON
+        # for every artifact this checker validates. A dirty diff on it MUST
+        # fail the tracked-dirty gate.
+        self.assertFalse(
+            checker.is_benchmark_doc_only_path("scripts/bench_mlx_inference_stack.py")
+        )
+
+    def test_engine_code_is_not_doc_only(self) -> None:
+        self.assertFalse(checker.is_benchmark_doc_only_path("crates/ax-engine-mlx/src/runner.rs"))
+        self.assertFalse(checker.is_benchmark_doc_only_path("scripts/bench_ax_only_sweep.py"))
+
+    def test_tracked_dirty_aggregate_accepts_post_processing_only(self) -> None:
+        status = [
+            " M README.md",
+            " M docs/assets/perf-decode-512-box-whisker.svg",
+            " M scripts/update_readme_from_bench.py",
+            " M scripts/test_update_readme_from_bench.py",
+            " M scripts/bench_llama_cpp_metal_sweep.py",
+        ]
+        self.assertTrue(checker.tracked_dirty_is_benchmark_doc_only(status))
+
+    def test_tracked_dirty_aggregate_rejects_bench_producer(self) -> None:
+        status = [
+            " M README.md",
+            " M scripts/bench_mlx_inference_stack.py",
+        ]
+        self.assertFalse(checker.tracked_dirty_is_benchmark_doc_only(status))
+
+
 class ReadmePerformanceArtifactTests(unittest.TestCase):
     def test_unavailable_cells_allow_annotated_no_decode_text(self) -> None:
         self.assertTrue(checker.is_unavailable_cell("— (no decode)†"))

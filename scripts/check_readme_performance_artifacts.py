@@ -587,8 +587,34 @@ def is_benchmark_doc_only_status_line(line: Any) -> bool:
     path = line[3:]
     if " -> " in path:
         return False
-    return path == "README.md" or (
-        path.startswith("docs/assets/perf-") and path.endswith(".svg")
+    return is_benchmark_doc_only_path(path)
+
+
+# Paths that cannot affect bench-output JSON for the artifact classes this
+# checker validates. README + box-whisker SVGs are pure docs. The
+# `update_readme_*.py` family only consumes bench JSON to rewrite README cells;
+# none of them produce or orchestrate a bench run. `test_*.py` files exercise
+# other scripts and never run a bench themselves. `bench_llama_cpp_metal_sweep.py`
+# only orchestrates llama.cpp Metal full-stack runs and is not invoked by the
+# AX-only / mlx_lm-only paths whose artifacts feed README rows directly.
+BENCHMARK_DOC_ONLY_SCRIPT_PREFIXES = (
+    "scripts/update_readme_",
+    "scripts/test_",
+)
+BENCHMARK_DOC_ONLY_SCRIPT_PATHS = frozenset(
+    {"scripts/bench_llama_cpp_metal_sweep.py"}
+)
+
+
+def is_benchmark_doc_only_path(path: str) -> bool:
+    if path == "README.md":
+        return True
+    if path.startswith("docs/assets/perf-") and path.endswith(".svg"):
+        return True
+    if path in BENCHMARK_DOC_ONLY_SCRIPT_PATHS:
+        return True
+    return path.endswith(".py") and any(
+        path.startswith(prefix) for prefix in BENCHMARK_DOC_ONLY_SCRIPT_PREFIXES
     )
 
 
