@@ -162,6 +162,23 @@ env_flag!(
     "AX_MLX_DENSE_GEGLU_QFFN_DIRECT"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_DENSE_GEGLU_PACKED_METAL` — route packed dense Gemma-family
+    /// GEGLU activation through a custom MLX Metal elementwise kernel.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_DENSE_GEGLU_PACKED_METAL=0`).
+    ///
+    /// This is narrower than the unstable `MlxClosure::compile` GeGLU path
+    /// and narrower than the whole-FFN C++ shim: it only fuses the packed
+    /// gate/up split plus `gelu_approx(gate) * up` activation into one lazy MLX
+    /// graph node. Quantized gate/up and down matmuls remain the normal MLX
+    /// operations, preserving profiling and avoiding the decode regression
+    /// observed with the whole-FFN direct shim.
+    dense_geglu_packed_metal_enabled,
+    "AX_MLX_DENSE_GEGLU_PACKED_METAL"
+);
+
 env_flag!(
     /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — experimental load-time
     /// packing for Qwen linear-attention projections.

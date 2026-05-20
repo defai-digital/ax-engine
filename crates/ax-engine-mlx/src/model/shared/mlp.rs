@@ -1,7 +1,8 @@
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, argpartition_axis, argsort_axis, astype,
-    divide, expand_dims, expand_dims_axes, gelu_approx_mul, gelu_approx_quantized_ffn, multiply,
-    reshape, rms_norm, slice_last_dim, softmax, sum_axis, take, take_along_axis, topk_axis,
+    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
+    MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
+    expand_dims_axes, gelu_approx_mul, gelu_approx_quantized_ffn, multiply, reshape, rms_norm,
+    slice_last_dim, softmax, sum_axis, take, take_along_axis, topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -186,6 +187,93 @@ pub(crate) fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxA
     }
 }
 
+static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+const PACKED_GEGLU_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    uint col = idx % HiddenDim;
+    uint row = idx / HiddenDim;
+    uint gate_idx = row * (HiddenDim * 2) + col;
+    uint up_idx = gate_idx + HiddenDim;
+
+    float gate_v = static_cast<float>(gate_up[gate_idx]);
+    float up_v = static_cast<float>(gate_up[up_idx]);
+    float gate_sq = gate_v * gate_v;
+    float inner = 0.7978845608028654f * (gate_v + 0.044715f * gate_v * gate_sq);
+    float activated = 0.5f * gate_v * (1.0f + tanh(inner));
+    out[idx] = static_cast<T>(activated * up_v);
+"#;
+
+fn packed_geglu_metal(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArray> {
+    if !fastpath::dense_geglu_packed_metal_enabled() {
+        return None;
+    }
+    packed_geglu_metal_impl(gate_up, hidden_dim)
+}
+
+fn packed_geglu_metal_impl(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArray> {
+    if !matches!(
+        gate_up.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    if hidden_dim <= 0 {
+        return None;
+    }
+    let shape = gate_up.shape();
+    let last_dim = *shape.last()?;
+    if last_dim != hidden_dim.saturating_mul(2) {
+        return None;
+    }
+    let mut out_shape = shape;
+    *out_shape.last_mut()? = hidden_dim;
+    let element_count = out_shape
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    let element_count = i32::try_from(element_count).ok()?;
+
+    let kernel = PACKED_GEGLU_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_gemma_packed_geglu_v1",
+            &["gate_up"],
+            &["out"],
+            PACKED_GEGLU_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[gate_up],
+        &[KernelOutputSpec {
+            shape: out_shape,
+            dtype: gate_up.dtype(),
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "T",
+                dtype: gate_up.dtype(),
+            },
+            KernelTemplateArg::Int {
+                name: "HiddenDim",
+                value: hidden_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
+}
+
 pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     let seq = x.shape().get(1).copied().unwrap_or(1);
     let profile_decode = seq == 1 && decode_profile_enabled();
@@ -230,6 +318,7 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
     }
 
     let gate_up_started = Instant::now();
+    let packed_gate_up: Option<MlxArray>;
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_packed {
         let out = qw(x, packed);
         let packed_dim = out
@@ -242,21 +331,61 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
             "packed FFN output last dimension must be positive and even, got {packed_dim}"
         );
         let half = packed_dim / 2;
+        if cfg.uses_geglu
+            && !profile_decode
+            && !profile_prefill
+            && let Some(ffn_hidden) = packed_geglu_metal(&out, half)
+        {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                gate_up_started,
+                &[&out],
+            );
+            let down_started = Instant::now();
+            let out = qw(
+                &ffn_hidden,
+                w.down_proj
+                    .as_ref()
+                    .expect("dense FFN layer must have down_proj"),
+            );
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                down_started,
+                &[&out],
+            );
+            return out;
+        }
+        packed_gate_up = Some(out.clone());
         let gate = mlx_slice_last_dim(&out, 0, half);
         let up = mlx_slice_last_dim(&out, half, half * 2);
         (gate, up)
     } else {
+        packed_gate_up = None;
         let gate = qw(x, w.gate_proj.as_ref().unwrap());
         let up = qw(x, w.up_proj.as_ref().unwrap());
         (gate, up)
     };
-    forward_profile_eval_elapsed(
-        profile_decode,
-        profile_prefill,
-        DecodeProfileStage::PostAttnFfnGateUp,
-        gate_up_started,
-        &[&gate_out, &up_out],
-    );
+    if profile_decode || profile_prefill {
+        let gate_up_profile_storage;
+        let gate_up_profile_refs = if let Some(packed) = packed_gate_up.as_ref() {
+            gate_up_profile_storage = vec![packed];
+            gate_up_profile_storage.as_slice()
+        } else {
+            gate_up_profile_storage = vec![&gate_out, &up_out];
+            gate_up_profile_storage.as_slice()
+        };
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::PostAttnFfnGateUp,
+            gate_up_started,
+            gate_up_profile_refs,
+        );
+    }
 
     // Gemma4 uses GEGLU with fast-approx GELU gate (matches mlx_lm's `nn.gelu_approx`).
     // Qwen3 uses SwiGLU (SiLU gate).
@@ -826,5 +955,67 @@ pub(crate) fn switch_gather_inputs(
         sorted_indices: true,
         inv_order: Some(inv_order),
         original_indices_shape: indices_shape,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlx_sys::{concatenate, eval, slice_last_dim};
+
+    fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data),
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
+        assert_eq!(actual.len(), expected.len());
+        let max_abs_diff = actual
+            .iter()
+            .zip(expected)
+            .map(|(a, e)| (a - e).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_abs_diff <= tolerance,
+            "max_abs_diff {max_abs_diff} exceeds tolerance {tolerance}"
+        );
+    }
+
+    #[test]
+    fn packed_geglu_metal_matches_direct_geglu_for_bf16_packed_gate_up() {
+        let gate_data: Vec<f32> = (0..24).map(|i| ((i as f32) - 12.0) * 0.083).collect();
+        let up_data: Vec<f32> = (0..24).map(|i| ((i as f32) + 1.0) * 0.037).collect();
+        let gate = astype(&array_f32(&gate_data, &[1, 3, 8]), MlxDtype::Bfloat16, None);
+        let up = astype(&array_f32(&up_data, &[1, 3, 8]), MlxDtype::Bfloat16, None);
+        let packed = concatenate(&[&gate, &up], -1, None);
+
+        let direct = astype(&geglu(&gate, &up), MlxDtype::Float32, None);
+        let metal = packed_geglu_metal_impl(&packed, 8)
+            .expect("packed GEGLU Metal kernel should support bf16 packed gate/up");
+        let metal = astype(&metal, MlxDtype::Float32, None);
+        eval(&[&direct, &metal]);
+
+        assert_eq!(metal.shape(), vec![1, 3, 8]);
+        assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
+    }
+
+    #[test]
+    fn packed_geglu_metal_rejects_unexpected_packed_width() {
+        let data = vec![0.0_f32; 12];
+        let packed = array_f32(&data, &[1, 1, 12]);
+        assert!(
+            packed_geglu_metal_impl(&packed, 5).is_none(),
+            "packed width must be exactly 2 * hidden_dim"
+        );
+
+        let gate = slice_last_dim(&packed, 0, 6, None);
+        assert!(
+            packed_geglu_metal_impl(&gate, 6).is_none(),
+            "already-split gate tensors must stay on the normal GEGLU path"
+        );
     }
 }
