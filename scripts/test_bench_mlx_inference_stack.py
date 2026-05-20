@@ -558,6 +558,38 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(route["attempts"], 4)
         self.assertEqual(route["hits"], 4)
 
+    def test_axengine_summary_exposes_direct_cpp_gemma4_post_attn_ffn_route(self) -> None:
+        run = {
+            "prefill_s": 0.2,
+            "decode_s": 0.1,
+            "ttft_ms": 200.0,
+            "prefill_tok_s": 15.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+            "ax_mlx_telemetry": {
+                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 4,
+                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 3,
+                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 1,
+                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0,
+            },
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[run, run]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+            )
+
+        route = row["ax_mlx_direct_cpp_gemma4_post_attn_ffn"]
+        self.assertEqual(route["schema_version"], "ax.mlx_direct_cpp_gemma4_post_attn_ffn.v1")
+        self.assertEqual(route["classification"], "mixed_hit_fallback")
+        self.assertEqual(route["attempts"], 4)
+        self.assertEqual(route["hits"], 3)
+
     def test_axengine_direct_summary_rejects_ngram_telemetry(self) -> None:
         contaminated = {
             "prefill_s": 0.2,

@@ -1964,13 +1964,13 @@ mod tests {
         let hidden = MlxArray::from_raw_data(
             hidden_data.as_ptr() as *const u8,
             std::mem::size_of_val(hidden_data.as_slice()),
-            &[2, 32],
+            &[1, 2, 32],
             MlxDtype::Float32,
         );
         let attn = MlxArray::from_raw_data(
             attn_data.as_ptr() as *const u8,
             std::mem::size_of_val(attn_data.as_slice()),
-            &[2, 32],
+            &[1, 2, 32],
             MlxDtype::Float32,
         );
         let norm = MlxArray::from_raw_data(
@@ -2073,7 +2073,7 @@ mod tests {
         let portable = multiply(&add(&residual, &ffn, None), &layer_scalar, None);
         eval(&[&direct, &portable]);
 
-        assert_eq!(direct.shape(), vec![2, 32]);
+        assert_eq!(direct.shape(), vec![1, 2, 32]);
         assert_close_f32(direct.data_f32(), portable.data_f32(), 1.0e-6);
     }
 

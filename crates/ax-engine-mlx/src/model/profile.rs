@@ -39,6 +39,14 @@ pub struct LinearAttentionProfileSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DirectMlxHotpathProfileSnapshot {
+    pub gemma4_post_attn_ffn_attempts: u32,
+    pub gemma4_post_attn_ffn_hits: u32,
+    pub gemma4_post_attn_ffn_fallbacks: u32,
+    pub gemma4_post_attn_ffn_profile_blocked: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PrefillProfileSnapshot {
     pub enabled: u32,
     pub prefill_steps: u32,
@@ -172,6 +180,8 @@ pub(crate) enum DecodeProfileStage {
 
 static GEMMA4_MOE_PROFILE: OnceLock<Mutex<Gemma4MoeProfileSnapshot>> = OnceLock::new();
 static LINEAR_ATTENTION_PROFILE: OnceLock<Mutex<LinearAttentionProfileSnapshot>> = OnceLock::new();
+static DIRECT_MLX_HOTPATH_PROFILE: OnceLock<Mutex<DirectMlxHotpathProfileSnapshot>> =
+    OnceLock::new();
 static PREFILL_PROFILE: OnceLock<Mutex<PrefillProfileSnapshot>> = OnceLock::new();
 static DECODE_PROFILE: OnceLock<Mutex<DecodeProfileSnapshot>> = OnceLock::new();
 static GEMMA4_MOE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -213,6 +223,11 @@ fn gemma4_moe_profile() -> &'static Mutex<Gemma4MoeProfileSnapshot> {
 
 fn linear_attention_profile() -> &'static Mutex<LinearAttentionProfileSnapshot> {
     LINEAR_ATTENTION_PROFILE.get_or_init(|| Mutex::new(LinearAttentionProfileSnapshot::default()))
+}
+
+fn direct_mlx_hotpath_profile() -> &'static Mutex<DirectMlxHotpathProfileSnapshot> {
+    DIRECT_MLX_HOTPATH_PROFILE
+        .get_or_init(|| Mutex::new(DirectMlxHotpathProfileSnapshot::default()))
 }
 
 fn prefill_profile() -> &'static Mutex<PrefillProfileSnapshot> {
@@ -280,6 +295,29 @@ pub(super) fn record_linear_attention_direct_cpp_inputs_profile_blocked() {
     let mut profile = linear_attention_profile().lock().unwrap();
     profile.direct_cpp_inputs_profile_blocked =
         profile.direct_cpp_inputs_profile_blocked.saturating_add(1);
+}
+
+pub(super) fn record_direct_mlx_gemma4_post_attn_ffn_attempt() {
+    let mut profile = direct_mlx_hotpath_profile().lock().unwrap();
+    profile.gemma4_post_attn_ffn_attempts = profile.gemma4_post_attn_ffn_attempts.saturating_add(1);
+}
+
+pub(super) fn record_direct_mlx_gemma4_post_attn_ffn_hit() {
+    let mut profile = direct_mlx_hotpath_profile().lock().unwrap();
+    profile.gemma4_post_attn_ffn_hits = profile.gemma4_post_attn_ffn_hits.saturating_add(1);
+}
+
+pub(super) fn record_direct_mlx_gemma4_post_attn_ffn_fallback() {
+    let mut profile = direct_mlx_hotpath_profile().lock().unwrap();
+    profile.gemma4_post_attn_ffn_fallbacks =
+        profile.gemma4_post_attn_ffn_fallbacks.saturating_add(1);
+}
+
+pub(super) fn record_direct_mlx_gemma4_post_attn_ffn_profile_blocked() {
+    let mut profile = direct_mlx_hotpath_profile().lock().unwrap();
+    profile.gemma4_post_attn_ffn_profile_blocked = profile
+        .gemma4_post_attn_ffn_profile_blocked
+        .saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_profile_stage(
@@ -428,6 +466,13 @@ pub fn take_linear_attention_profile_snapshot() -> LinearAttentionProfileSnapsho
     let mut profile = linear_attention_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = LinearAttentionProfileSnapshot::default();
+    snapshot
+}
+
+pub fn take_direct_mlx_hotpath_profile_snapshot() -> DirectMlxHotpathProfileSnapshot {
+    let mut profile = direct_mlx_hotpath_profile().lock().unwrap();
+    let snapshot = *profile;
+    *profile = DirectMlxHotpathProfileSnapshot::default();
     snapshot
 }
 

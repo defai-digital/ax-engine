@@ -211,6 +211,20 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` — opt-in direct C++ route for
+    /// Gemma4 dense post-attention residual + FFN + layer-scalar orchestration.
+    ///
+    /// **Default: OFF**. The P0 clean microbench artifact proves this large-block
+    /// boundary can beat the portable Rust/`mlx-c` composition on the candidate
+    /// shape, but promotion still requires real-model A/B artifacts. The
+    /// production route is guarded to dense packed-quantized Gemma4 layers without
+    /// per-layer input gating, profiling, last-position slicing, or active weight
+    /// rotation.
+    direct_cpp_gemma4_post_attn_ffn_enabled,
+    "AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"
+);
+
+env_flag!(
     /// `AX_MLX_DIRECT_CPP_QK_NORM_ROPE` — opt-in direct C++ probe route for
     /// standard attention Q/K `as_strided -> rms_norm -> rope`.
     ///
@@ -487,6 +501,21 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_INPUTS_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn direct_cpp_gemma4_post_attn_ffn_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_ENABLED",
             "1"
         ));
     }

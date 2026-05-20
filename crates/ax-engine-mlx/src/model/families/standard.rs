@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, add, rms_norm, rope, slice};
+use mlx_sys::{MlxArray, add, gemma4_post_attn_ffn_block, rms_norm, rope, slice};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -6,7 +6,9 @@ use super::super::config::layer_params;
 use super::super::profile::{
     DecodeProfileStage, Gemma4MoeProfileStage, decode_profile_enabled,
     forward_profile_eval_elapsed, gemma4_moe_profile_enabled, prefill_profile_enabled,
-    profile_eval_elapsed, record_gemma4_moe_decode_layer,
+    profile_eval_elapsed, record_direct_mlx_gemma4_post_attn_ffn_attempt,
+    record_direct_mlx_gemma4_post_attn_ffn_fallback, record_direct_mlx_gemma4_post_attn_ffn_hit,
+    record_direct_mlx_gemma4_post_attn_ffn_profile_blocked, record_gemma4_moe_decode_layer,
 };
 use super::super::shared::{
     add_then_multiply_scalar, attention_mask_array, attention_output_projection,
@@ -20,11 +22,94 @@ use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
     TurboQuantModelDecodeContext,
 };
+use crate::fastpath;
 use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeOutcome};
+use crate::weight_rotation::{WeightRotationMode, weight_rotation_mode};
 use crate::weights::LayerWeights;
 
 /// Minimum top-k selection count above which the sort path is taken in Gemma4 MoE.
 const SWITCH_GLU_SORT_THRESHOLD: usize = 64;
+
+fn direct_gemma4_post_attn_ffn_fallback(profile_blocked: bool) -> Option<MlxArray> {
+    if profile_blocked {
+        record_direct_mlx_gemma4_post_attn_ffn_profile_blocked();
+    }
+    record_direct_mlx_gemma4_post_attn_ffn_fallback();
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_direct_gemma4_post_attn_ffn(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    attn_proj: &MlxArray,
+    per_layer_input: Option<&MlxArray>,
+    profile_forward_layer: bool,
+    last_position_only_after_attention: bool,
+    seq: usize,
+) -> Option<MlxArray> {
+    if !fastpath::direct_cpp_gemma4_post_attn_ffn_enabled() {
+        return None;
+    }
+    record_direct_mlx_gemma4_post_attn_ffn_attempt();
+
+    if profile_forward_layer {
+        return direct_gemma4_post_attn_ffn_fallback(true);
+    }
+    if last_position_only_after_attention && seq > 1 {
+        return direct_gemma4_post_attn_ffn_fallback(false);
+    }
+    if cfg.model_family != "gemma4"
+        || !cfg.uses_geglu
+        || w.router_proj.is_some()
+        || per_layer_input.is_some()
+        || w.per_layer_gate.is_some()
+        || w.per_layer_proj_w.is_some()
+        || w.per_layer_post_norm.is_some()
+        || w.rotation_smoothing_inverse.is_some()
+        || matches!(
+            weight_rotation_mode(),
+            WeightRotationMode::Enable | WeightRotationMode::Apply
+        )
+    {
+        return direct_gemma4_post_attn_ffn_fallback(false);
+    }
+
+    let Some(gate_up) = w.gate_up_packed.as_ref() else {
+        return direct_gemma4_post_attn_ffn_fallback(false);
+    };
+    let Some(down) = w.down_proj.as_ref() else {
+        return direct_gemma4_post_attn_ffn_fallback(false);
+    };
+    let (Some(gate_up_scales), Some(down_scales)) = (gate_up.scales.as_ref(), down.scales.as_ref())
+    else {
+        return direct_gemma4_post_attn_ffn_fallback(false);
+    };
+    if gate_up.group_size != down.group_size || gate_up.bits != down.bits {
+        return direct_gemma4_post_attn_ffn_fallback(false);
+    }
+
+    let out = gemma4_post_attn_ffn_block(
+        hidden,
+        attn_proj,
+        &w.ffn_norm,
+        w.ffn_post_norm.as_ref(),
+        w.layer_scalar.as_ref(),
+        &gate_up.weight,
+        gate_up_scales,
+        gate_up.biases.as_ref(),
+        &down.weight,
+        down_scales,
+        down.biases.as_ref(),
+        gate_up.group_size,
+        gate_up.bits,
+        cfg.rms_norm_eps,
+        None,
+    );
+    record_direct_mlx_gemma4_post_attn_ffn_hit();
+    Some(out)
+}
 
 /// Full layer forward for standard GQA attention families (Gemma4, Gemma3, Qwen3).
 ///
@@ -438,6 +523,19 @@ pub(crate) fn layer_forward(
             started,
             &[&attn_proj],
         );
+    }
+
+    if let Some(out) = try_direct_gemma4_post_attn_ffn(
+        cfg,
+        w,
+        hidden,
+        &attn_proj,
+        per_layer_input,
+        profile_forward_layer,
+        last_position_only_after_attention,
+        seq,
+    ) {
+        return out;
     }
 
     // 15. Residual.
