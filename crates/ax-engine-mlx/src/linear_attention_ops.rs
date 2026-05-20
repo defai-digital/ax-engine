@@ -21,6 +21,7 @@ pub struct LinearAttentionQkv {
 static GATED_DELTA_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static RMS_NORM_GATE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 pub(crate) const GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY: usize = 512;
+pub(crate) const GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY: usize = 1024;
 pub(crate) const GATED_DELTA_THREADGROUP_CACHE_CAPACITY: usize = 2048;
 
 /// compute_g from mlx-lm/mlx-swift-lm:
@@ -197,8 +198,18 @@ pub fn gated_delta_kernel(
         seq <= GATED_DELTA_THREADGROUP_CACHE_CAPACITY as i32,
         "gated_delta_kernel t_len ({seq}) exceeds threadgroup cache capacity ({GATED_DELTA_THREADGROUP_CACHE_CAPACITY})"
     );
+    // Three-tier specialization. The 2048 specialization was measured to lose
+    // ~15% per-token throughput in the gated-delta recurrent loop on Qwen 3.6
+    // 27B (Hv=48) vs the 512 specialization, because doubling `CacheCapacity`
+    // doubles the per-threadgroup `g_t_cache`/`beta_t_cache` allocation and
+    // halves SM occupancy. The 1024 tier recovers most of that occupancy while
+    // still amortizing dispatch over a 1024-token chunk; `runner.rs` caps the
+    // linear-attention prefill chunk to 1024 so the long tier is reserved for
+    // exceptional callers that explicitly opt in to a larger chunk.
     let cache_capacity = if seq <= GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32 {
         GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY as i32
+    } else if seq <= GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32 {
+        GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32
     } else {
         GATED_DELTA_THREADGROUP_CACHE_CAPACITY as i32
     };
@@ -423,9 +434,14 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     // so they would otherwise recompute identical transcendental values in
     // every iteration of the hot loop — 127/128 redundant calls eliminated.
     //
-    // CacheCapacity is specialized from Rust: 512 for decode/small prompts and
-    // 2048 for long prefill, matching mlx_lm's default prefill_step_size while
-    // avoiding the larger threadgroup allocation on the per-token decode path.
+    // CacheCapacity is specialized from Rust into three tiers:
+    //   512  — decode/short prompts (smallest threadgroup allocation),
+    //   1024 — default long-prefill tier (matches the runner's prefill-chunk
+    //          cap for linear-attention models; recovers SM occupancy vs the
+    //          2048 tier on M5 Max),
+    //   2048 — opt-in for callers that override `--prefill-chunk` to 2048+.
+    // Each tier doubles the per-threadgroup `g_t_cache`/`beta_t_cache`
+    // footprint, so smaller is faster when the prompt fits.
     threadgroup float g_t_cache[CacheCapacity];
     threadgroup float beta_t_cache[CacheCapacity];
 
@@ -694,8 +710,28 @@ mod tests {
     }
 
     #[test]
+    fn gated_delta_kernel_accepts_medium_prefill_specialization() {
+        let seq = (GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY) as i32;
+        let q = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
+        let k = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
+        let v = zeros(&[1, seq, 1, 4], MlxDtype::Float32, None);
+        let a_log = zeros(&[1], MlxDtype::Float32, None);
+        let a_raw = zeros(&[1, seq, 1], MlxDtype::Float32, None);
+        let dt_bias = zeros(&[1], MlxDtype::Float32, None);
+        let b_raw = zeros(&[1, seq, 1], MlxDtype::Float32, None);
+        let state = zeros(&[1, 1, 4, 32], MlxDtype::Float32, None);
+
+        let (y, new_state) =
+            gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+        mlx_sys::eval(&[&y, &new_state]);
+
+        assert_eq!(y.shape(), vec![1, seq, 1, 4]);
+        assert_eq!(new_state.shape(), vec![1, 1, 4, 32]);
+    }
+
+    #[test]
     fn gated_delta_kernel_accepts_long_prefill_specialization() {
-        let seq = (GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY + 1) as i32;
+        let seq = (GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY + 1) as i32;
         let q = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
         let k = zeros(&[1, seq, 1, 32], MlxDtype::Float32, None);
         let v = zeros(&[1, seq, 1, 4], MlxDtype::Float32, None);

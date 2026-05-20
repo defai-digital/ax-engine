@@ -17,8 +17,9 @@ use crate::error::CliError;
 ///
 /// - Dense / full-attention models (Qwen3, Llama-style): use 2048 as-is.
 /// - Models with GatedDelta linear-attention layers (Qwen3.5 / Qwen 3.6):
-///   use the long GatedDelta kernel specialization capped by
-///   `crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY`.
+///   clamped to `GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY` (1024) — a
+///   2048-token prompt processes as two 1024-token sub-chunks, recovering
+///   SM occupancy lost by the larger threadgroup-cache allocation.
 /// - MLA models (GLM 4 Flash MLA): forced to
 ///   `MLA_DEFAULT_PREFILL_CHUNK = 16` by
 ///   `crate::fastpath::resolve_prefill_chunk`.
