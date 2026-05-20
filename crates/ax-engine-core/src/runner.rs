@@ -267,7 +267,7 @@ pub enum EmbeddingPooling {
 /// )?;
 /// ```
 ///
-/// On the Python side, [`Session.embed_batch_array`] returns a NumPy
+/// On the Python side, `Session.embed_batch_array` returns a NumPy
 /// `(B, H)` `float32` ndarray backed by the same row-major bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddingMatrix {

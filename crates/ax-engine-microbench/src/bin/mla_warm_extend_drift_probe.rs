@@ -21,7 +21,7 @@
 //!   cargo run -p ax-engine-microbench --release --bin mla-warm-extend-drift-probe -- \
 //!       --mlx-artifacts-dir .internal/models/GLM-4.7-Flash-4bit \
 //!       --base-tokens 16 --suffix-tokens 16 --chunk-size 16 \
-//!       --output benchmarks/results/mla-warm-extend-drift/<file>.json
+//!       --output benchmarks/results/mla-warm-extend-drift/`<file>`.json
 //!
 //! Two canonical invocations satisfy the PRD §6.2 acceptance:
 //!   1. `--chunk-size 16`  → verdict must be `no_divergence`.
@@ -207,7 +207,7 @@ fn run_warm(
 }
 
 /// Materialise a `[1, 1, seq_len, inner_dim]` slice of `arr` as a
-/// host-side Vec<f32>. Both cold and warm paths produce the same
+/// host-side `Vec<f32>`. Both cold and warm paths produce the same
 /// `seq_len` so the slices are comparable element-wise.
 fn host_slice_f32(arr: &MlxArray, seq_len: usize, inner_dim: i32) -> Vec<f32> {
     let start = [0i32, 0, 0, 0];

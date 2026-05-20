@@ -1,4 +1,4 @@
-//! F3 — disk-backed prefix cache over [`MlxKVCache::serialize_to_bytes`].
+//! F3 — disk-backed prefix cache over `MlxKVCache::serialize_to_bytes`.
 //!
 //! This module owns the on-disk framing for the future durable
 //! prefix-cache layer scoped by
