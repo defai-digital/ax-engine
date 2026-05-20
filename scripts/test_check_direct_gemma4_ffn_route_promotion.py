@@ -49,12 +49,13 @@ def ax_row(
     prefill_tok_s: float,
     decode_tok_s: float,
     enabled: bool,
+    generation_tokens: int = checker.DEFAULT_REQUIRED_GENERATION_TOKENS,
     classification: str = "all_hits",
 ) -> dict[str, object]:
     row: dict[str, object] = {
         "engine": checker.CANDIDATE_ENGINE if enabled else checker.BASELINE_ENGINE,
         "prompt_tokens": prompt_tokens,
-        "generation_tokens": 128,
+        "generation_tokens": generation_tokens,
         "ax_decode_policy": checker.BASELINE_POLICY,
         "prefill_tok_s": metric(prefill_tok_s),
         "decode_tok_s": metric(decode_tok_s),
@@ -74,6 +75,7 @@ def artifact(
     decode_ratio: float = 1.0,
     classification: str = "all_hits",
     git_tracked_dirty: bool = False,
+    generation_tokens: int = checker.DEFAULT_REQUIRED_GENERATION_TOKENS,
 ) -> dict[str, object]:
     results: list[dict[str, object]] = []
     for prompt in (128, 512, 2048):
@@ -86,6 +88,7 @@ def artifact(
         results.append(
             ax_row(
                 prompt_tokens=prompt,
+                generation_tokens=generation_tokens,
                 prefill_tok_s=baseline_prefill,
                 decode_tok_s=baseline_decode,
                 enabled=False,
@@ -94,6 +97,7 @@ def artifact(
         results.append(
             ax_row(
                 prompt_tokens=prompt,
+                generation_tokens=generation_tokens,
                 prefill_tok_s=candidate_prefill,
                 decode_tok_s=candidate_decode,
                 enabled=True,
@@ -207,6 +211,29 @@ class DirectGemma4FfnRoutePromotionTests(unittest.TestCase):
                 [path],
                 expect_decision=checker.PROMOTION_CANDIDATE,
             )
+
+    def test_required_generation_tokens_default_to_128(self) -> None:
+        path = self.write_fixture(artifact(generation_tokens=64))
+
+        with self.assertRaisesRegex(
+            checker.DirectGemma4FfnRoutePromotionError,
+            "missing required prompt/generation shape",
+        ):
+            checker.check_direct_gemma4_ffn_route_promotion(
+                [path],
+                expect_decision=checker.PROMOTION_CANDIDATE,
+            )
+
+    def test_required_generation_tokens_can_be_overridden_for_exploration(self) -> None:
+        path = self.write_fixture(artifact(generation_tokens=64))
+
+        decision = checker.check_direct_gemma4_ffn_route_promotion(
+            [path],
+            expect_decision=checker.PROMOTION_CANDIDATE,
+            required_generation_tokens=64,
+        )
+
+        self.assertEqual(decision.decision, checker.PROMOTION_CANDIDATE)
 
     def test_promotion_candidate_rejects_dirty_git_artifact_by_default(self) -> None:
         path = self.write_fixture(artifact(git_tracked_dirty=True))

@@ -19,6 +19,7 @@ BASELINE_POLICY = "direct_no_ngram_acceleration"
 NOT_PROMOTED = "not_promoted"
 PROMOTION_CANDIDATE = "promotion_candidate"
 DEFAULT_REQUIRED_PROMPTS = (128, 512, 2048)
+DEFAULT_REQUIRED_GENERATION_TOKENS = 128
 DEFAULT_SHORT_GUARD_PROMPTS = (128, 512)
 DEFAULT_LONG_PROMPT = 2048
 DEFAULT_MIN_LONG_PREFILL_RATIO = 1.10
@@ -164,10 +165,15 @@ def collect_route_comparisons(
     artifacts: list[Path],
     *,
     required_prompts: tuple[int, ...],
+    required_generation_tokens: int,
     allowed_route_classifications: tuple[str, ...],
     model_fragments: tuple[str, ...],
     require_clean_git: bool,
 ) -> list[RouteComparison]:
+    _require(
+        required_generation_tokens > 0,
+        "--required-generation-tokens must be positive",
+    )
     baselines: dict[tuple[int, int], dict[str, Any]] = {}
     candidates: dict[tuple[int, int], dict[str, Any]] = {}
 
@@ -205,15 +211,18 @@ def collect_route_comparisons(
             )
             target[key] = row
 
-    required = set(required_prompts)
-    observed_prompts = {prompt for prompt, _ in baselines} | {prompt for prompt, _ in candidates}
-    missing = sorted(required - observed_prompts)
-    _require(not missing, f"missing required prompt(s): {missing}")
+    required = {(prompt, required_generation_tokens) for prompt in required_prompts}
+    observed_shapes = set(baselines) | set(candidates)
+    missing = sorted(required - observed_shapes)
+    _require(
+        not missing,
+        f"missing required prompt/generation shape(s): {missing}",
+    )
 
     comparisons: list[RouteComparison] = []
     for key, candidate in sorted(candidates.items()):
         prompt, generation = key
-        if prompt not in required:
+        if key not in required:
             continue
         baseline = baselines.get(key)
         _require(
@@ -254,11 +263,14 @@ def collect_route_comparisons(
             )
         )
 
-    covered = {comparison.prompt_tokens for comparison in comparisons}
+    covered = {
+        (comparison.prompt_tokens, comparison.generation_tokens)
+        for comparison in comparisons
+    }
     missing_candidate = sorted(required - covered)
     _require(
         not missing_candidate,
-        f"missing candidate row(s) for required prompt(s): {missing_candidate}",
+        f"missing candidate row(s) for required prompt/generation shape(s): {missing_candidate}",
     )
     return comparisons
 
@@ -267,6 +279,7 @@ def decide_direct_gemma4_ffn_route_promotion(
     artifacts: list[Path],
     *,
     required_prompts: tuple[int, ...] = DEFAULT_REQUIRED_PROMPTS,
+    required_generation_tokens: int = DEFAULT_REQUIRED_GENERATION_TOKENS,
     short_guard_prompts: tuple[int, ...] = DEFAULT_SHORT_GUARD_PROMPTS,
     long_prompt: int = DEFAULT_LONG_PROMPT,
     min_long_prefill_ratio: float = DEFAULT_MIN_LONG_PREFILL_RATIO,
@@ -283,6 +296,7 @@ def decide_direct_gemma4_ffn_route_promotion(
     comparisons = collect_route_comparisons(
         artifacts,
         required_prompts=required_prompts,
+        required_generation_tokens=required_generation_tokens,
         allowed_route_classifications=allowed_route_classifications,
         model_fragments=model_fragments,
         require_clean_git=require_clean_git,
@@ -324,6 +338,7 @@ def check_direct_gemma4_ffn_route_promotion(
     *,
     expect_decision: str,
     required_prompts: tuple[int, ...] = DEFAULT_REQUIRED_PROMPTS,
+    required_generation_tokens: int = DEFAULT_REQUIRED_GENERATION_TOKENS,
     short_guard_prompts: tuple[int, ...] = DEFAULT_SHORT_GUARD_PROMPTS,
     long_prompt: int = DEFAULT_LONG_PROMPT,
     min_long_prefill_ratio: float = DEFAULT_MIN_LONG_PREFILL_RATIO,
@@ -335,6 +350,7 @@ def check_direct_gemma4_ffn_route_promotion(
     decision = decide_direct_gemma4_ffn_route_promotion(
         artifacts,
         required_prompts=required_prompts,
+        required_generation_tokens=required_generation_tokens,
         short_guard_prompts=short_guard_prompts,
         long_prompt=long_prompt,
         min_long_prefill_ratio=min_long_prefill_ratio,
@@ -365,6 +381,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=PROMOTION_CANDIDATE,
     )
     parser.add_argument("--required-prompt", action="append", type=int, default=None)
+    parser.add_argument(
+        "--required-generation-tokens",
+        type=int,
+        default=DEFAULT_REQUIRED_GENERATION_TOKENS,
+    )
     parser.add_argument("--short-guard-prompt", action="append", type=int, default=None)
     parser.add_argument("--long-prompt", type=int, default=DEFAULT_LONG_PROMPT)
     parser.add_argument("--min-long-prefill-ratio", type=float, default=DEFAULT_MIN_LONG_PREFILL_RATIO)
@@ -403,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
             args.artifact,
             expect_decision=args.expect_decision,
             required_prompts=required_prompts,
+            required_generation_tokens=args.required_generation_tokens,
             short_guard_prompts=short_guard_prompts,
             long_prompt=args.long_prompt,
             min_long_prefill_ratio=args.min_long_prefill_ratio,
