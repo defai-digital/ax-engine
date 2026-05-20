@@ -178,6 +178,36 @@ class DirectGemma4FfnRoutePromotionTests(unittest.TestCase):
                 expect_decision=checker.PROMOTION_CANDIDATE,
             )
 
+    def test_candidate_row_must_use_candidate_engine_key(self) -> None:
+        payload = artifact()
+        candidate = payload["results"][1]  # type: ignore[index]
+        candidate["engine"] = checker.BASELINE_ENGINE  # type: ignore[index]
+        path = self.write_fixture(payload)
+
+        with self.assertRaisesRegex(
+            checker.DirectGemma4FfnRoutePromotionError,
+            "baseline row .* must not carry enabled route attempts",
+        ):
+            checker.check_direct_gemma4_ffn_route_promotion(
+                [path],
+                expect_decision=checker.PROMOTION_CANDIDATE,
+            )
+
+    def test_candidate_engine_row_must_carry_route_attempts(self) -> None:
+        payload = artifact()
+        candidate = payload["results"][1]  # type: ignore[index]
+        candidate.pop("ax_mlx_direct_cpp_gemma4_post_attn_ffn")  # type: ignore[union-attr]
+        path = self.write_fixture(payload)
+
+        with self.assertRaisesRegex(
+            checker.DirectGemma4FfnRoutePromotionError,
+            "candidate row .* must carry route attempts > 0",
+        ):
+            checker.check_direct_gemma4_ffn_route_promotion(
+                [path],
+                expect_decision=checker.PROMOTION_CANDIDATE,
+            )
+
     def test_promotion_candidate_rejects_dirty_git_artifact_by_default(self) -> None:
         path = self.write_fixture(artifact(git_tracked_dirty=True))
 

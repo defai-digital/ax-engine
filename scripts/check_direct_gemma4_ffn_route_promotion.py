@@ -183,8 +183,26 @@ def collect_route_comparisons(
             key = _row_key(row, owner)
             route = _route_summary(row)
             attempts = int(route.get("attempts", 0)) if route else 0
-            target = candidates if attempts > 0 else baselines
-            _require(key not in target, f"duplicate {'candidate' if attempts > 0 else 'baseline'} row for prompt={key[0]} generation={key[1]}")
+            engine = row.get("engine")
+            if engine == CANDIDATE_ENGINE:
+                _require(
+                    attempts > 0,
+                    f"candidate row for prompt={key[0]} generation={key[1]} "
+                    "must carry route attempts > 0",
+                )
+                target = candidates
+            else:
+                _require(
+                    attempts == 0,
+                    f"baseline row for prompt={key[0]} generation={key[1]} "
+                    "must not carry enabled route attempts",
+                )
+                target = baselines
+            _require(
+                key not in target,
+                f"duplicate {'candidate' if engine == CANDIDATE_ENGINE else 'baseline'} "
+                f"row for prompt={key[0]} generation={key[1]}",
+            )
             target[key] = row
 
     required = set(required_prompts)
