@@ -202,6 +202,40 @@ pub(crate) fn squeeze_switch_singleton(x: &MlxArray) -> MlxArray {
     }
 }
 
+/// Gather-matmul for expert weights (quantized or dense).
+///
+/// `x`: [..., hidden], `qw.weight`: [num_experts, expert_size, hidden] (or packed).
+/// `indices`: [..., top_k].  Returns [..., top_k, out_size].
+pub(crate) fn qw_gather(
+    x: &MlxArray,
+    qw: &QuantizedWeight,
+    indices: &MlxArray,
+    sorted_indices: bool,
+) -> MlxArray {
+    if let Some(scales) = &qw.scales {
+        gather_qmm(
+            x,
+            &qw.weight,
+            scales,
+            qw.biases.as_ref(),
+            indices,
+            true,
+            Some(qw.group_size),
+            Some(qw.bits),
+            sorted_indices,
+            None,
+        )
+    } else {
+        // Dense experts: weight shape [N, out, in] → need [N, in, out] for gather_mm.
+        let ndim = qw.weight.ndim();
+        let mut axes: Vec<i32> = (0..ndim as i32).collect();
+        let last = axes.len() - 1;
+        axes.swap(last - 1, last);
+        let wt = transpose(&qw.weight, &axes, None);
+        gather_mm(x, &wt, indices, sorted_indices, None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,39 +300,5 @@ mod tests {
             add_then_multiply_scalar_metal_impl(&a, &b, &vector_scale).is_none(),
             "only exact scalar layer-scale tensors are fused"
         );
-    }
-}
-
-/// Gather-matmul for expert weights (quantized or dense).
-///
-/// `x`: [..., hidden], `qw.weight`: [num_experts, expert_size, hidden] (or packed).
-/// `indices`: [..., top_k].  Returns [..., top_k, out_size].
-pub(crate) fn qw_gather(
-    x: &MlxArray,
-    qw: &QuantizedWeight,
-    indices: &MlxArray,
-    sorted_indices: bool,
-) -> MlxArray {
-    if let Some(scales) = &qw.scales {
-        gather_qmm(
-            x,
-            &qw.weight,
-            scales,
-            qw.biases.as_ref(),
-            indices,
-            true,
-            Some(qw.group_size),
-            Some(qw.bits),
-            sorted_indices,
-            None,
-        )
-    } else {
-        // Dense experts: weight shape [N, out, in] → need [N, in, out] for gather_mm.
-        let ndim = qw.weight.ndim();
-        let mut axes: Vec<i32> = (0..ndim as i32).collect();
-        let last = axes.len() - 1;
-        axes.swap(last - 1, last);
-        let wt = transpose(&qw.weight, &axes, None);
-        gather_mm(x, &wt, indices, sorted_indices, None)
     }
 }
