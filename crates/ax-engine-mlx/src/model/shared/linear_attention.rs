@@ -1,4 +1,7 @@
-use mlx_sys::{MlxArray, MlxDtype, concatenate, reshape, slice_last_dim, zeros};
+use mlx_sys::{
+    MlxArray, MlxDtype, concatenate, qwen_linear_attention_inputs_packed, reshape, slice_last_dim,
+    zeros,
+};
 use std::time::Instant;
 
 use super::super::config::{LinearAttentionConfig, ModelConfig};
@@ -7,6 +10,7 @@ use super::super::profile::{
     linear_attention_profile_eval_elapsed, record_linear_attention_profile_layer,
 };
 use super::utils::qw;
+use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::{
     gated_delta_kernel, linear_attention_conv1d, normalize_linear_attention_qk, rms_norm_gated,
@@ -117,6 +121,13 @@ pub(crate) fn linear_attention_inputs(
     profile_enabled: bool,
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
     if let (Some(qkvz_w), Some(ba_w)) = (&w.in_proj_qkvz, &w.in_proj_ba) {
+        if !profile_enabled
+            && fastpath::direct_cpp_linear_attention_inputs_enabled()
+            && let Some(outputs) = linear_attention_inputs_packed_direct(cfg, x, qkvz_w, ba_w)
+        {
+            return outputs;
+        }
+
         let profile_started = Instant::now();
         let mixed_qkvz = qw(x, qkvz_w);
         linear_attention_profile_eval_elapsed(
@@ -270,4 +281,59 @@ pub(crate) fn linear_attention_inputs(
         &[&b],
     );
     (qkv, z, a, b)
+}
+
+fn linear_attention_inputs_packed_direct(
+    cfg: &LinearAttentionConfig,
+    x: &MlxArray,
+    qkvz_w: &crate::weights::QuantizedWeight,
+    ba_w: &crate::weights::QuantizedWeight,
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    let qkvz_quantized = qkvz_w.scales.is_some();
+    let ba_quantized = ba_w.scales.is_some();
+    if qkvz_quantized
+        && ba_quantized
+        && (qkvz_w.group_size != ba_w.group_size || qkvz_w.bits != ba_w.bits)
+    {
+        return None;
+    }
+    let group_size = if qkvz_quantized {
+        qkvz_w.group_size
+    } else {
+        ba_w.group_size
+    };
+    let bits = if qkvz_quantized {
+        qkvz_w.bits
+    } else {
+        ba_w.bits
+    };
+
+    qwen_linear_attention_inputs_packed(
+        x,
+        &qkvz_w.weight,
+        qkvz_w.scales.as_ref(),
+        qkvz_w.biases.as_ref(),
+        &ba_w.weight,
+        ba_w.scales.as_ref(),
+        ba_w.biases.as_ref(),
+        cfg.num_key_heads as i32,
+        cfg.num_value_heads as i32,
+        cfg.key_head_dim as i32,
+        cfg.value_head_dim as i32,
+        group_size,
+        bits,
+        None,
+    )
+    .filter(|(qkv, z, a, b)| {
+        qkv.shape() == vec![1, x.shape()[1], cfg.conv_dim() as i32]
+            && z.shape()
+                == vec![
+                    1,
+                    x.shape()[1],
+                    cfg.num_value_heads as i32,
+                    cfg.value_head_dim as i32,
+                ]
+            && a.shape() == vec![1, x.shape()[1], cfg.num_value_heads as i32]
+            && b.shape() == vec![1, x.shape()[1], cfg.num_value_heads as i32]
+    })
 }

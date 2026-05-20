@@ -223,6 +223,18 @@ env_flag!(
     "AX_MLX_DIRECT_CPP_QK_NORM_ROPE"
 );
 
+env_flag!(
+    /// `AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS` — opt-in direct C++ route
+    /// for Qwen linear-attention packed QKVZ/BA projection staging.
+    ///
+    /// **Default: OFF**. This is intentionally an evidence-gated route: the
+    /// shim skips per-op `mlx-c` dispatches for the packed projection,
+    /// reshape, slice, and concat boundary, but real Qwen 27B decode A/B
+    /// evidence is still required before any default-on promotion.
+    direct_cpp_linear_attention_inputs_enabled,
+    "AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — load-time packing for Qwen
     /// linear-attention projections.
@@ -451,6 +463,21 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_LINEAR_ATTENTION_PACK_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn direct_cpp_linear_attention_inputs_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_INPUTS_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_INPUTS_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_INPUTS_ENABLED",
             "1"
         ));
     }

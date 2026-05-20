@@ -2,6 +2,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include "mlx/c/array.h"
@@ -87,6 +88,145 @@ mx::array quantized_matmul_affine_impl(
       std::make_optional<int>(bits),
       "affine",
       stream);
+}
+
+mx::array projection_affine_or_dense_impl(
+    const mx::array& x,
+    const mx::array& weight,
+    std::optional<mx::array> scales,
+    std::optional<mx::array> biases,
+    int group_size,
+    int bits,
+    mx::StreamOrDevice stream) {
+  if (scales.has_value()) {
+    return quantized_matmul_affine_impl(
+        x, weight, *scales, std::move(biases), group_size, bits, stream);
+  }
+  auto transposed_weight = mx::transpose(weight, {1, 0}, stream);
+  return mx::matmul(x, transposed_weight, stream);
+}
+
+mx::array slice_last_dim_impl(
+    const mx::array& x,
+    int start,
+    int stop,
+    mx::StreamOrDevice stream) {
+  if (x.ndim() == 0) {
+    throw std::runtime_error("slice_last_dim expects at least one dimension");
+  }
+  mx::Shape starts(x.ndim(), 0);
+  mx::Shape stops = x.shape();
+  starts[x.ndim() - 1] = start;
+  stops[x.ndim() - 1] = stop;
+  return mx::slice(x, std::move(starts), std::move(stops), stream);
+}
+
+std::tuple<mx::array, mx::array, mx::array, mx::array>
+qwen_linear_attention_inputs_packed_impl(
+    const mx::array& x,
+    const mx::array& qkvz_weight,
+    std::optional<mx::array> qkvz_scales,
+    std::optional<mx::array> qkvz_biases,
+    const mx::array& ba_weight,
+    std::optional<mx::array> ba_scales,
+    std::optional<mx::array> ba_biases,
+    int num_key_heads,
+    int num_value_heads,
+    int key_head_dim,
+    int value_head_dim,
+    int group_size,
+    int bits,
+    mx::StreamOrDevice stream) {
+  if (num_key_heads <= 0 || num_value_heads <= 0 ||
+      key_head_dim <= 0 || value_head_dim <= 0) {
+    throw std::runtime_error("linear attention packed inputs require positive dimensions");
+  }
+  if (num_value_heads % num_key_heads != 0) {
+    throw std::runtime_error("num_value_heads must be divisible by num_key_heads");
+  }
+
+  auto mixed_qkvz = projection_affine_or_dense_impl(
+      x,
+      qkvz_weight,
+      std::move(qkvz_scales),
+      std::move(qkvz_biases),
+      group_size,
+      bits,
+      stream);
+  if (mixed_qkvz.ndim() != 3) {
+    throw std::runtime_error("packed qkvz projection must produce [B, S, C]");
+  }
+
+  const int batch = mixed_qkvz.shape(0);
+  const int seq = mixed_qkvz.shape(1);
+  const int value_heads_per_key = num_value_heads / num_key_heads;
+  const int value_dim_per_key = value_heads_per_key * value_head_dim;
+  const int qkvz_per_key = key_head_dim * 2 + value_dim_per_key * 2;
+  if (mixed_qkvz.shape(2) != num_key_heads * qkvz_per_key) {
+    throw std::runtime_error("packed qkvz width does not match linear attention config");
+  }
+
+  mixed_qkvz = mx::reshape(
+      mixed_qkvz,
+      {batch, seq, num_key_heads, qkvz_per_key},
+      stream);
+  auto q = slice_last_dim_impl(mixed_qkvz, 0, key_head_dim, stream);
+  auto k = slice_last_dim_impl(mixed_qkvz, key_head_dim, key_head_dim * 2, stream);
+  auto v = slice_last_dim_impl(
+      mixed_qkvz,
+      key_head_dim * 2,
+      key_head_dim * 2 + value_dim_per_key,
+      stream);
+  auto z = slice_last_dim_impl(
+      mixed_qkvz,
+      key_head_dim * 2 + value_dim_per_key,
+      qkvz_per_key,
+      stream);
+
+  const int key_dim = num_key_heads * key_head_dim;
+  const int value_dim = num_value_heads * value_head_dim;
+  auto qkv = mx::concatenate(
+      {
+          mx::reshape(q, {batch, seq, key_dim}, stream),
+          mx::reshape(k, {batch, seq, key_dim}, stream),
+          mx::reshape(v, {batch, seq, value_dim}, stream),
+      },
+      2,
+      stream);
+  z = mx::reshape(z, {batch, seq, num_value_heads, value_head_dim}, stream);
+
+  auto mixed_ba = projection_affine_or_dense_impl(
+      x,
+      ba_weight,
+      std::move(ba_scales),
+      std::move(ba_biases),
+      group_size,
+      bits,
+      stream);
+  if (mixed_ba.ndim() != 3) {
+    throw std::runtime_error("packed ba projection must produce [B, S, C]");
+  }
+  if (mixed_ba.shape(0) != batch || mixed_ba.shape(1) != seq) {
+    throw std::runtime_error("packed ba projection shape must match qkvz batch/sequence");
+  }
+  if (mixed_ba.shape(2) != num_key_heads * value_heads_per_key * 2) {
+    throw std::runtime_error("packed ba width does not match linear attention config");
+  }
+
+  auto ba = mx::reshape(
+      mixed_ba,
+      {batch, seq, num_key_heads, value_heads_per_key * 2},
+      stream);
+  auto b = mx::reshape(
+      slice_last_dim_impl(ba, 0, value_heads_per_key, stream),
+      {batch, seq, num_value_heads},
+      stream);
+  auto a = mx::reshape(
+      slice_last_dim_impl(ba, value_heads_per_key, value_heads_per_key * 2, stream),
+      {batch, seq, num_value_heads},
+      stream);
+
+  return {qkv, z, a, b};
 }
 
 mx::array qk_norm_rope_bhsd_from_proj_impl(
@@ -253,6 +393,51 @@ extern "C" int ax_mlx_gelu_approx_quantized_ffn(
             group_size,
             bits,
             s));
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+extern "C" int ax_mlx_qwen_linear_attention_inputs_packed(
+    mlx_array* qkv_res,
+    mlx_array* z_res,
+    mlx_array* a_res,
+    mlx_array* b_res,
+    const mlx_array x,
+    const mlx_array qkvz_weight,
+    const mlx_array qkvz_scales,
+    const mlx_array qkvz_biases,
+    const mlx_array ba_weight,
+    const mlx_array ba_scales,
+    const mlx_array ba_biases,
+    int num_key_heads,
+    int num_value_heads,
+    int key_head_dim,
+    int value_head_dim,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  try {
+    auto [qkv, z, a, b] = qwen_linear_attention_inputs_packed_impl(
+        array_ref(x),
+        array_ref(qkvz_weight),
+        optional_array(qkvz_scales),
+        optional_array(qkvz_biases),
+        array_ref(ba_weight),
+        optional_array(ba_scales),
+        optional_array(ba_biases),
+        num_key_heads,
+        num_value_heads,
+        key_head_dim,
+        value_head_dim,
+        group_size,
+        bits,
+        stream_or_default(stream));
+    set_array(qkv_res, std::move(qkv));
+    set_array(z_res, std::move(z));
+    set_array(a_res, std::move(a));
+    set_array(b_res, std::move(b));
     return 0;
   } catch (...) {
     return 1;

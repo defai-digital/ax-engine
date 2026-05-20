@@ -66,6 +66,27 @@ unsafe extern "C" {
         eps: libc::c_float,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
+
+    fn ax_mlx_qwen_linear_attention_inputs_packed(
+        qkv_res: *mut ffi::mlx_array,
+        z_res: *mut ffi::mlx_array,
+        a_res: *mut ffi::mlx_array,
+        b_res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        qkvz_weight: ffi::mlx_array,
+        qkvz_scales: ffi::mlx_array,
+        qkvz_biases: ffi::mlx_array,
+        ba_weight: ffi::mlx_array,
+        ba_scales: ffi::mlx_array,
+        ba_biases: ffi::mlx_array,
+        num_key_heads: libc::c_int,
+        num_value_heads: libc::c_int,
+        key_head_dim: libc::c_int,
+        value_head_dim: libc::c_int,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
 }
 
 fn optional_int(value: Option<i32>, default: i32) -> ffi::mlx_optional_int_ {
@@ -473,6 +494,71 @@ pub fn gemma4_post_attn_ffn_block(
     } else {
         out
     }
+}
+
+/// Direct C++ shim for Qwen linear-attention packed input projection.
+///
+/// This collapses the packed QKVZ/BA projection plus reshape/slice/concat
+/// staging into one Rust FFI call. It returns `None` on unsupported shapes or
+/// shim failure so model code can keep the portable MLX composition as the
+/// fail-closed fallback.
+#[allow(clippy::too_many_arguments)]
+pub fn qwen_linear_attention_inputs_packed(
+    x: &MlxArray,
+    qkvz_weight: &MlxArray,
+    qkvz_scales: Option<&MlxArray>,
+    qkvz_biases: Option<&MlxArray>,
+    ba_weight: &MlxArray,
+    ba_scales: Option<&MlxArray>,
+    ba_biases: Option<&MlxArray>,
+    num_key_heads: i32,
+    num_value_heads: i32,
+    key_head_dim: i32,
+    value_head_dim: i32,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut qkv = MlxArray::empty();
+        let mut z = MlxArray::empty();
+        let mut a = MlxArray::empty();
+        let mut b = MlxArray::empty();
+        let rc = ax_mlx_qwen_linear_attention_inputs_packed(
+            &mut qkv.inner,
+            &mut z.inner,
+            &mut a.inner,
+            &mut b.inner,
+            x.inner,
+            qkvz_weight.inner,
+            qkvz_scales
+                .map(|scales| scales.inner)
+                .unwrap_or_else(null_ffi_array),
+            qkvz_biases
+                .map(|biases| biases.inner)
+                .unwrap_or_else(null_ffi_array),
+            ba_weight.inner,
+            ba_scales
+                .map(|scales| scales.inner)
+                .unwrap_or_else(null_ffi_array),
+            ba_biases
+                .map(|biases| biases.inner)
+                .unwrap_or_else(null_ffi_array),
+            num_key_heads,
+            num_value_heads,
+            key_head_dim,
+            value_head_dim,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            return Some((qkv, z, a, b));
+        }
+    }
+    None
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
@@ -1583,6 +1669,191 @@ mod tests {
         assert_eq!(direct.shape(), vec![1, n_heads, seq, head_dim]);
         assert_eq!(reference.shape(), direct.shape());
         assert_close_f32(direct.data_f32(), reference.data_f32(), 1.0e-6);
+    }
+
+    #[test]
+    fn qwen_linear_attention_inputs_packed_direct_matches_portable_composition() {
+        let seq = 2_i32;
+        let hidden = 32_i32;
+        let num_key_heads = 2_i32;
+        let num_value_heads = 4_i32;
+        let key_head_dim = 3_i32;
+        let value_head_dim = 2_i32;
+        let value_heads_per_key = num_value_heads / num_key_heads;
+        let value_dim_per_key = value_heads_per_key * value_head_dim;
+        let qkvz_per_key = key_head_dim * 2 + value_dim_per_key * 2;
+        let qkvz_out = num_key_heads * qkvz_per_key;
+        let ba_out = num_key_heads * value_heads_per_key * 2;
+
+        let x_data: Vec<f32> = (0..(seq * hidden))
+            .map(|i| ((i as f32) - 31.0) * 0.03125)
+            .collect();
+        let qkvz_weight_data: Vec<f32> = (0..(qkvz_out * hidden))
+            .map(|i| ((i as f32) - 448.0) * 0.0005)
+            .collect();
+        let ba_weight_data: Vec<f32> = (0..(ba_out * hidden))
+            .map(|i| ((i as f32) - 128.0) * 0.001)
+            .collect();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[1, seq, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_weight = MlxArray::from_raw_data(
+            qkvz_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkvz_weight_data.as_slice()),
+            &[qkvz_out, hidden],
+            MlxDtype::Float32,
+        );
+        let ba_weight = MlxArray::from_raw_data(
+            ba_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(ba_weight_data.as_slice()),
+            &[ba_out, hidden],
+            MlxDtype::Float32,
+        );
+        let qkvz_q = quantize(
+            &qkvz_weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let ba_q = quantize(
+            &ba_weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(qkvz_q.len(), 3);
+        assert_eq!(ba_q.len(), 3);
+
+        let prev = crate::op_count::op_count_snapshot();
+        let (direct_qkv, direct_z, direct_a, direct_b) = qwen_linear_attention_inputs_packed(
+            &x,
+            &qkvz_q[0],
+            Some(&qkvz_q[1]),
+            Some(&qkvz_q[2]),
+            &ba_q[0],
+            Some(&ba_q[1]),
+            Some(&ba_q[2]),
+            num_key_heads,
+            num_value_heads,
+            key_head_dim,
+            value_head_dim,
+            32,
+            4,
+            None,
+        )
+        .expect("direct packed linear-attention shim should accept qwen-compatible shapes");
+        assert_eq!(
+            crate::op_count::op_count_take(prev),
+            1,
+            "direct C++ linear-attention input shim should count as one Rust FFI dispatch"
+        );
+
+        let mixed_qkvz = quantized_matmul(
+            &x,
+            &qkvz_q[0],
+            &qkvz_q[1],
+            Some(&qkvz_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let mixed_qkvz = reshape(&mixed_qkvz, &[1, seq, num_key_heads, qkvz_per_key], None);
+        let q = slice_last_dim(&mixed_qkvz, 0, key_head_dim, None);
+        let k = slice_last_dim(&mixed_qkvz, key_head_dim, key_head_dim * 2, None);
+        let v = slice_last_dim(
+            &mixed_qkvz,
+            key_head_dim * 2,
+            key_head_dim * 2 + value_dim_per_key,
+            None,
+        );
+        let z = slice_last_dim(
+            &mixed_qkvz,
+            key_head_dim * 2 + value_dim_per_key,
+            qkvz_per_key,
+            None,
+        );
+        let portable_qkv = concatenate(
+            &[
+                &reshape(&q, &[1, seq, num_key_heads * key_head_dim], None),
+                &reshape(&k, &[1, seq, num_key_heads * key_head_dim], None),
+                &reshape(&v, &[1, seq, num_value_heads * value_head_dim], None),
+            ],
+            2,
+            None,
+        );
+        let portable_z = reshape(&z, &[1, seq, num_value_heads, value_head_dim], None);
+
+        let mixed_ba = quantized_matmul(
+            &x,
+            &ba_q[0],
+            &ba_q[1],
+            Some(&ba_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let ba = reshape(
+            &mixed_ba,
+            &[1, seq, num_key_heads, value_heads_per_key * 2],
+            None,
+        );
+        let portable_b = reshape(
+            &slice_last_dim(&ba, 0, value_heads_per_key, None),
+            &[1, seq, num_value_heads],
+            None,
+        );
+        let portable_a = reshape(
+            &slice_last_dim(&ba, value_heads_per_key, value_heads_per_key * 2, None),
+            &[1, seq, num_value_heads],
+            None,
+        );
+
+        let direct_qkv = contiguous(&direct_qkv, None);
+        let direct_z = contiguous(&direct_z, None);
+        let direct_a = contiguous(&direct_a, None);
+        let direct_b = contiguous(&direct_b, None);
+        let portable_qkv = contiguous(&portable_qkv, None);
+        let portable_z = contiguous(&portable_z, None);
+        let portable_a = contiguous(&portable_a, None);
+        let portable_b = contiguous(&portable_b, None);
+        eval(&[
+            &direct_qkv,
+            &direct_z,
+            &direct_a,
+            &direct_b,
+            &portable_qkv,
+            &portable_z,
+            &portable_a,
+            &portable_b,
+        ]);
+
+        assert_eq!(
+            direct_qkv.shape(),
+            vec![
+                1,
+                seq,
+                num_key_heads * key_head_dim * 2 + num_value_heads * value_head_dim
+            ]
+        );
+        assert_eq!(
+            direct_z.shape(),
+            vec![1, seq, num_value_heads, value_head_dim]
+        );
+        assert_eq!(direct_a.shape(), vec![1, seq, num_value_heads]);
+        assert_eq!(direct_b.shape(), vec![1, seq, num_value_heads]);
+        assert_close_f32(direct_qkv.data_f32(), portable_qkv.data_f32(), 1.0e-6);
+        assert_close_f32(direct_z.data_f32(), portable_z.data_f32(), 1.0e-6);
+        assert_close_f32(direct_a.data_f32(), portable_a.data_f32(), 1.0e-6);
+        assert_close_f32(direct_b.data_f32(), portable_b.data_f32(), 1.0e-6);
     }
 
     #[test]
