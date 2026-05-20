@@ -124,6 +124,19 @@ AX_DIRECT_HOTPATH_FALLBACK_COUNTERS = {
     "ax_mlx_single_decode_steps": "single-decode fallback steps",
     "ax_mlx_ngram_decode_steps": "n-gram decode steps",
     "ax_mlx_dense_ffn_split_gate_up_layers": "dense FFN split gate/up fallback layers",
+    "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": (
+        "direct C++ linear-attention input fallback calls"
+    ),
+    "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": (
+        "direct C++ linear-attention input profile-blocked calls"
+    ),
+}
+
+AX_DIRECT_CPP_LINEAR_ATTENTION_INPUT_COUNTERS = {
+    "attempts": "ax_mlx_direct_cpp_linear_attention_inputs_attempts",
+    "hits": "ax_mlx_direct_cpp_linear_attention_inputs_hits",
+    "fallbacks": "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks",
+    "profile_blocked": "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked",
 }
 
 PUBLIC_CLAIM_EVIDENCE = {
@@ -1133,6 +1146,49 @@ def validate_direct_hotpath_no_hidden_fallbacks(
         )
 
 
+def validate_direct_cpp_linear_attention_input_summary(
+    *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
+) -> None:
+    if not require_phase0:
+        return
+    telemetry = row.get("ax_mlx_telemetry")
+    if not isinstance(telemetry, dict):
+        raise ArtifactCheckError(f"{artifact_path} direct AX row lacks AX MLX telemetry")
+
+    counters = {
+        field: int(telemetry.get(counter_key, 0))
+        for field, counter_key in AX_DIRECT_CPP_LINEAR_ATTENTION_INPUT_COUNTERS.items()
+    }
+    if counters["attempts"] <= 0:
+        if "ax_mlx_direct_cpp_linear_attention_inputs" in row:
+            raise ArtifactCheckError(
+                f"{artifact_path} direct AX row has direct C++ linear-attention "
+                "summary without route attempts"
+            )
+        return
+
+    summary = row.get("ax_mlx_direct_cpp_linear_attention_inputs")
+    if not isinstance(summary, dict):
+        raise ArtifactCheckError(
+            f"{artifact_path} direct AX row lacks direct C++ linear-attention summary"
+        )
+    if summary.get("schema_version") != "ax.mlx_direct_cpp_linear_attention_inputs.v1":
+        raise ArtifactCheckError(
+            f"{artifact_path} direct AX row has invalid direct C++ linear-attention summary schema"
+        )
+    for field, expected in counters.items():
+        if int(summary.get(field, -1)) != expected:
+            raise ArtifactCheckError(
+                f"{artifact_path} direct AX row direct C++ linear-attention "
+                f"summary has {field}={summary.get(field)!r}; expected {expected}"
+            )
+    if counters["hits"] <= 0:
+        raise ArtifactCheckError(
+            f"{artifact_path} direct AX row attempted direct C++ linear-attention "
+            "inputs but recorded no hits"
+        )
+
+
 def validate_ngram_claim_telemetry(
     *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
 ) -> None:
@@ -1389,6 +1445,11 @@ def validate_artifact_row(
             require_phase0=require_phase0,
         )
         validate_direct_hotpath_no_hidden_fallbacks(
+            artifact_path=artifact_path,
+            row=row,
+            require_phase0=require_phase0,
+        )
+        validate_direct_cpp_linear_attention_input_summary(
             artifact_path=artifact_path,
             row=row,
             require_phase0=require_phase0,

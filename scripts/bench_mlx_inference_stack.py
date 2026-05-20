@@ -292,6 +292,13 @@ AX_NGRAM_ACCEPT_AT_DEPTH_KEYS = [
 
 AX_NGRAM_ACCEPT_RATE_KEY = "ax_ngram_accept_rate_micros"
 
+AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUT_KEYS = [
+    "ax_mlx_direct_cpp_linear_attention_inputs_attempts",
+    "ax_mlx_direct_cpp_linear_attention_inputs_hits",
+    "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks",
+    "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked",
+]
+
 AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_prefill_steps",
     "ax_mlx_prefill_wall_us",
@@ -332,6 +339,7 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_prefix_cache_bytes_kib",
     "ax_mlx_dense_ffn_gate_up_packed_layers",
     "ax_mlx_dense_ffn_split_gate_up_layers",
+    *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUT_KEYS,
 ]
 
 AX_MLX_PREFIX_CACHE_MAX_KEYS = {
@@ -1869,22 +1877,7 @@ def route_with_more_decisions(
     current_decisions = current.get("crossover_decisions") or {}
     priority_keys = {
         *AX_NGRAM_TELEMETRY_KEYS,
-        "ax_mlx_decode_steps",
-        "ax_mlx_decode_wall_us",
-        "ax_mlx_direct_pipeline_steps",
-        "ax_mlx_direct_pipeline_wall_us",
-        "ax_mlx_direct_pipeline_forward_wall_us",
-        "ax_mlx_direct_pipeline_argmax_wall_us",
-        "ax_mlx_direct_pipeline_async_eval_wall_us",
-        "ax_mlx_direct_pipeline_next_complete_wall_us",
-        "ax_mlx_direct_pipeline_pending_eval_wall_us",
-        "ax_mlx_direct_pipeline_pending_read_wall_us",
-        "ax_mlx_direct_pipeline_op_count",
-        "ax_mlx_single_decode_steps",
-        "ax_mlx_single_decode_wall_us",
-        "ax_mlx_ngram_decode_steps",
-        "ax_mlx_ngram_decode_wall_us",
-        "ax_mlx_bonus_tokens",
+        *AX_MLX_TELEMETRY_KEYS,
         *AX_MLX_PREFILL_PROFILE_KEYS,
         *AX_MLX_DECODE_PROFILE_KEYS,
     }
@@ -2099,6 +2092,47 @@ def summarize_ax_mlx_decode_route(telemetry: dict[str, int]) -> dict[str, Any]:
             decode_wall_us,
         ),
         "bonus_tokens": int(telemetry.get("ax_mlx_bonus_tokens", 0)),
+    }
+
+
+def summarize_ax_mlx_direct_cpp_linear_attention_inputs(
+    telemetry: dict[str, int],
+) -> dict[str, Any]:
+    attempts = int(
+        telemetry.get("ax_mlx_direct_cpp_linear_attention_inputs_attempts", 0)
+    )
+    if attempts <= 0:
+        return {}
+    hits = int(telemetry.get("ax_mlx_direct_cpp_linear_attention_inputs_hits", 0))
+    fallbacks = int(
+        telemetry.get("ax_mlx_direct_cpp_linear_attention_inputs_fallbacks", 0)
+    )
+    profile_blocked = int(
+        telemetry.get("ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked", 0)
+    )
+    accounted = hits + fallbacks
+    if accounted < attempts:
+        classification = "incomplete_accounting"
+    elif profile_blocked > 0 and hits > 0:
+        classification = "mixed_hit_profile_blocked"
+    elif profile_blocked > 0:
+        classification = "profile_blocked_fallback"
+    elif hits == attempts and fallbacks == 0:
+        classification = "all_hits"
+    elif hits > 0 and fallbacks > 0:
+        classification = "mixed_hit_fallback"
+    elif fallbacks >= attempts:
+        classification = "all_fallback"
+    else:
+        classification = "incomplete_accounting"
+    return {
+        "schema_version": "ax.mlx_direct_cpp_linear_attention_inputs.v1",
+        "classification": classification,
+        "attempts": attempts,
+        "hits": hits,
+        "fallbacks": fallbacks,
+        "profile_blocked": profile_blocked,
+        "hit_rate_micros": int(round(hits * 1_000_000 / attempts)),
     }
 
 
@@ -2730,6 +2764,11 @@ def bench_axengine(
         "ax_mlx_decode_profile": summarize_ax_mlx_decode_profile(runs),
         "trials": runs,
     }
+    direct_cpp_linear_inputs = summarize_ax_mlx_direct_cpp_linear_attention_inputs(
+        ax_mlx_telemetry
+    )
+    if direct_cpp_linear_inputs:
+        row["ax_mlx_direct_cpp_linear_attention_inputs"] = direct_cpp_linear_inputs
     cache_warm_trials = sum(1 for run in runs if run.get("prefill_cache_warm"))
     if cache_warm_trials > 0:
         # Document at row level so README updaters and aggregators can detect

@@ -643,6 +643,8 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             "ax_mlx_single_decode_steps",
             "ax_mlx_ngram_decode_steps",
             "ax_mlx_dense_ffn_split_gate_up_layers",
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks",
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked",
         ]
         for key in fallback_keys:
             with self.subTest(key=key):
@@ -666,8 +668,75 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                         checker.check_readme_performance(
                             repo_root=root,
                             readme_path=root / "README.md",
-                            expected_metric_count=7,
-                        )
+                        expected_metric_count=7,
+                    )
+
+    def test_direct_ax_row_accepts_direct_cpp_linear_attention_hits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx":
+                    row["ax_mlx_telemetry"].update(
+                        {
+                            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 4,
+                            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 4,
+                            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+                            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+                        }
+                    )
+                    row["ax_mlx_direct_cpp_linear_attention_inputs"] = {
+                        "schema_version": "ax.mlx_direct_cpp_linear_attention_inputs.v1",
+                        "classification": "all_hits",
+                        "attempts": 4,
+                        "hits": 4,
+                        "fallbacks": 0,
+                        "profile_blocked": 0,
+                        "hit_rate_micros": 1_000_000,
+                    }
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            result = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=root / "README.md",
+                expected_metric_count=7,
+            )
+
+        self.assertEqual(len(result), 7)
+
+    def test_direct_ax_row_rejects_direct_cpp_linear_attention_without_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx":
+                    row["ax_mlx_telemetry"].update(
+                        {
+                            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 4,
+                            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 4,
+                            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+                            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+                        }
+                    )
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "lacks direct C\\+\\+ linear-attention summary",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=7,
+                )
 
     def test_direct_ax_row_rejects_fused_kv_decode_fallback_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
