@@ -34,6 +34,11 @@ def direct_mlx_artifact(candidate: str = "gelu_approx_mul") -> dict:
         portable_name = "portable_gelu_approx_quantized_ffn"
         direct_name = "direct_cpp_gelu_approx_quantized_ffn"
         shape = [8, 4]
+    elif candidate == "qk_norm_rope":
+        portable_name = "portable_qk_norm_rope"
+        direct_name = "direct_cpp_qk_norm_rope"
+        # cols=16 splits into n_heads=4 * head_dim=4; output is BHSD.
+        shape = [1, 4, 8, 4]
     else:
         raise AssertionError(f"unknown candidate {candidate}")
     return {
@@ -47,6 +52,8 @@ def direct_mlx_artifact(candidate: str = "gelu_approx_mul") -> dict:
             "rows": 8,
             "cols": 16,
             "down_cols": 4,
+            "head_dim": 4,
+            "n_heads": 4,
             "dtype": "float32",
             "group_size": 64,
             "bits": 4,
@@ -97,6 +104,30 @@ class DirectMlxHotpathProbeArtifactTests(unittest.TestCase):
 
     def test_valid_quantized_ffn_artifact_passes(self) -> None:
         checker.validate_artifact(direct_mlx_artifact("gelu_approx_quantized_ffn"))
+
+    def test_valid_qk_norm_rope_artifact_passes(self) -> None:
+        checker.validate_artifact(direct_mlx_artifact("qk_norm_rope"))
+
+    def test_qk_norm_rope_rejects_head_dim_n_heads_cols_mismatch(self) -> None:
+        artifact = direct_mlx_artifact("qk_norm_rope")
+        # cols=16 no longer matches n_heads * head_dim once n_heads is bumped.
+        artifact["config"]["n_heads"] = 5
+
+        with self.assertRaisesRegex(
+            checker.DirectMlxHotpathProbeArtifactError,
+            r"n_heads \* config\.head_dim must equal config\.cols",
+        ):
+            checker.validate_artifact(artifact)
+
+    def test_qk_norm_rope_rejects_2d_shape(self) -> None:
+        artifact = direct_mlx_artifact("qk_norm_rope")
+        # The shape contract for qk_norm_rope is BHSD ([1, n_heads, rows,
+        # head_dim]). Falling back to the matmul-style [rows, output_cols]
+        # shape must fail closed.
+        artifact["correctness"]["shape"] = [8, 16]
+
+        with self.assertRaisesRegex(checker.DirectMlxHotpathProbeArtifactError, "shape"):
+            checker.validate_artifact(artifact)
 
     def test_quantized_ffn_rejects_unsupported_group_size(self) -> None:
         artifact = direct_mlx_artifact("gelu_approx_quantized_ffn")

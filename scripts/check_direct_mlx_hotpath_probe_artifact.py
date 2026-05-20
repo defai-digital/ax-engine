@@ -30,6 +30,10 @@ CANDIDATE_MEASUREMENTS = {
         "portable_gelu_approx_quantized_ffn",
         "direct_cpp_gelu_approx_quantized_ffn",
     ),
+    "qk_norm_rope": (
+        "portable_qk_norm_rope",
+        "direct_cpp_qk_norm_rope",
+    ),
 }
 SPEEDUP_MEASUREMENT = "direct_cpp_speedup_ratio"
 DEFAULT_MAX_ABS_ERROR = 1e-6
@@ -154,6 +158,17 @@ def validate_artifact(
         bits = _positive_integer(config.get("bits"), "config.bits")
         _require(group_size in {32, 64, 128}, "config.group_size must be one of 32, 64, 128")
         _require(bits == 4, "config.bits must be 4")
+    expected_shape: list[int]
+    if candidate == "qk_norm_rope":
+        head_dim = _positive_integer(config.get("head_dim"), "config.head_dim")
+        n_heads = _positive_integer(config.get("n_heads"), "config.n_heads")
+        _require(
+            n_heads * head_dim == cols,
+            "config.n_heads * config.head_dim must equal config.cols for qk_norm_rope",
+        )
+        expected_shape = [1, n_heads, rows, head_dim]
+    else:
+        expected_shape = [rows, output_cols]
     _require(config.get("dtype") == "float32", "config.dtype must be float32")
     _positive_integer(config.get("iterations"), "config.iterations")
 
@@ -164,7 +179,7 @@ def validate_artifact(
         f"correctness.max_abs_error must be <= {max_abs_error}",
     )
     shape = _array(correctness.get("shape"), "correctness.shape")
-    _require(shape == [rows, output_cols], "correctness.shape must match expected output shape")
+    _require(shape == expected_shape, "correctness.shape must match expected output shape")
 
     measurements = _measurement_map(doc)
     for name in (portable_measurement, direct_measurement, SPEEDUP_MEASUREMENT):
