@@ -221,6 +221,24 @@ impl MlxArray {
             std::slice::from_raw_parts(ptr, len)
         }
     }
+
+    /// Read the first u32 element without dtype or length validation.
+    ///
+    /// This is for hot scalar-token paths where the caller already owns the
+    /// contract: the array must be an eval'd MLX uint32 array, typically the
+    /// result of `argmax`. It avoids extra FFI metadata calls (`dtype` and
+    /// `nbytes`) on every generated token.
+    pub fn first_u32_unchecked(&self) -> u32 {
+        debug_assert_eq!(
+            self.dtype(),
+            MlxDtype::Uint32,
+            "first_u32_unchecked requires Uint32 dtype"
+        );
+        unsafe {
+            let ptr = ffi::mlx_array_data_uint32(self.inner);
+            if ptr.is_null() { 0 } else { *ptr }
+        }
+    }
 }
 
 impl Clone for MlxArray {

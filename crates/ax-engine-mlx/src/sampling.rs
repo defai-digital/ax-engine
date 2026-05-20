@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use mlx_sys::{MlxArray, eval, multiply, random_categorical};
+use mlx_sys::{MlxArray, eval_first_u32, multiply, random_categorical};
 
 /// Minimal xorshift64 PRNG — no external dependency.
 ///
@@ -210,8 +210,7 @@ pub fn sample_categorical_gpu(logits: &MlxArray, temperature: f32) -> u32 {
     let inv_temp_arr = MlxArray::from_f32(inv_temp);
     let scaled = multiply(logits, &inv_temp_arr, None);
     let token_arr = random_categorical(&scaled, None);
-    eval(&[&token_arr]);
-    token_arr.data_u32().first().copied().unwrap_or(0)
+    eval_first_u32(&token_arr)
 }
 
 fn recent_repetition_tokens(tokens: &[u32], context_size: Option<u32>) -> &[u32] {

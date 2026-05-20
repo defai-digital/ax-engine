@@ -1179,7 +1179,7 @@ pub fn single_decode_with_turboquant_context(
         targets.push(&token_arr);
         targets.extend(kv_refs);
         eval(&targets);
-        token_arr.data_u32().first().copied().unwrap_or(0)
+        token_arr.first_u32_unchecked()
     };
 
     ngram.observe(tok);

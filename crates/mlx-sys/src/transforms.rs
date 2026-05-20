@@ -25,6 +25,15 @@ pub fn eval(arrays: &[&MlxArray]) {
     }
 }
 
+/// Evaluate a scalar uint32 array and return its first element.
+///
+/// Intended for generated-token readback (`argmax` over logits). Callers must
+/// pass an array whose first element is a valid uint32 scalar or vector entry.
+pub fn eval_first_u32(array: &MlxArray) -> u32 {
+    eval(&[array]);
+    array.first_u32_unchecked()
+}
+
 /// Enable MLX graph compilation globally.
 ///
 /// When enabled, MLX caches and reuses compiled compute graphs across calls
@@ -98,5 +107,19 @@ pub fn max_recommended_working_set_size() -> usize {
         }
         ffi::mlx_device_info_free(info);
         size
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MlxArray, argmax};
+
+    #[test]
+    fn eval_first_u32_reads_argmax_scalar() {
+        let logits = MlxArray::from_f32_slice(&[0.0, 2.0, 1.0]);
+        let token = argmax(&logits, None);
+
+        assert_eq!(eval_first_u32(&token), 1);
     }
 }

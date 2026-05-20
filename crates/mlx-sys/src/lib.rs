@@ -69,6 +69,6 @@ pub use ops::{
 };
 pub use stream::MlxStream;
 pub use transforms::{
-    async_eval, clear_cache, enable_compile, eval, max_recommended_working_set_size,
-    set_wired_limit,
+    async_eval, clear_cache, enable_compile, eval, eval_first_u32,
+    max_recommended_working_set_size, set_wired_limit,
 };

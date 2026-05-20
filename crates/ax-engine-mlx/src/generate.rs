@@ -141,7 +141,7 @@ pub fn chunked_prefill(
                 // GPU argmax over [vocab] logits -> token ID.
                 let token_arr = argmax(&logits, None);
                 eval_with_kv_refs(&token_arr, cache);
-                token_arr.data_u32().first().copied().unwrap_or(0)
+                token_arr.first_u32_unchecked()
             };
             // Free MLX's graph/intermediate-array cache after prefill.
             // SwiftLM does the same (MLX.Memory.clearCache()) to reclaim GPU
@@ -310,7 +310,7 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
     eval(&[pending]);
     let pending_eval_wall_us = elapsed_us(pending_eval_started);
     let pending_read_started = Instant::now();
-    let tok = pending.data_u32().first().copied().unwrap_or(0);
+    let tok = pending.first_u32_unchecked();
     let pending_read_wall_us = elapsed_us(pending_read_started);
 
     DirectPipelineAdvance {
@@ -404,7 +404,7 @@ pub fn decode_step_with_turboquant_context(
         // Deterministic argmax path: GPU argmax, no CPU data movement.
         let token_arr = argmax(&logits, None);
         eval_with_kv_refs(&token_arr, cache);
-        token_arr.data_u32().first().copied().unwrap_or(0)
+        token_arr.first_u32_unchecked()
     }
 }
 
