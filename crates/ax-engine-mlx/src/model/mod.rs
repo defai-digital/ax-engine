@@ -1093,7 +1093,8 @@ fn finalize_lm_head_logits(
 }
 
 /// Compute per-layer input vectors for Gemma4 2B/4B models from a pre-built
-/// 1-D `[seq]` token-ID array.  Accepts lazy (unevaluated) arrays.
+/// scalar, 1-D `[seq]`, or singleton matrix token-ID array. Accepts lazy
+/// (unevaluated) arrays.
 ///
 /// Returns `Some(Vec<MlxArray>)` of length `num_layers`, each `[1, seq, per_layer_dim]`,
 /// or `None` when the model does not use per-layer input gating.
@@ -1102,7 +1103,7 @@ fn finalize_lm_head_logits(
 fn compute_per_layer_inputs_arr(
     cfg: &ModelConfig,
     weights: &ModelWeights,
-    ids_1d: &MlxArray, // [seq] u32, may be unevaluated
+    ids_1d: &MlxArray, // scalar/[seq]/[1, 1] u32, may be unevaluated
     hidden: &MlxArray, // [1, seq, hidden] after embed_scale — used for model projection
 ) -> Option<Vec<MlxArray>> {
     let per_layer_dim = cfg.hidden_size_per_layer_input;
@@ -1114,12 +1115,19 @@ fn compute_per_layer_inputs_arr(
     let proj_norm_w = weights.per_layer_proj_norm.as_ref()?;
 
     let num_layers = cfg.layer_count;
-    let seq = ids_1d.shape()[0]; // shape metadata available without eval
+    let scalar_ids_storage;
+    let ids = if ids_1d.ndim() == 0 {
+        scalar_ids_storage = reshape(ids_1d, &[1_i32], None);
+        &scalar_ids_storage
+    } else {
+        ids_1d
+    };
+    let seq = ids.shape()[0]; // shape metadata available without eval
     let dtype = MlxDtype::Bfloat16;
 
     // 1. Per-layer token embeddings: [1, seq, num_layers * per_layer_dim]
     //    embed_tokens_per_layer(input_ids) * sqrt(per_layer_dim)
-    let embed_out = embed_tokens_arr(ids_1d, embed_w, num_layers * per_layer_dim);
+    let embed_out = embed_tokens_arr(ids, embed_w, num_layers * per_layer_dim);
     let embed_out = if embed_out.dtype() != dtype {
         astype(&embed_out, dtype, None)
     } else {
@@ -1800,6 +1808,40 @@ mod tests {
         assert_close(from_scalar.data_f32(), from_1d.data_f32(), 0.0);
         assert_close(from_1d.data_f32(), from_2d.data_f32(), 0.0);
         assert_close(from_2d.data_f32(), &[4.0, 5.0], 0.0);
+    }
+
+    #[test]
+    fn per_layer_inputs_accept_scalar_token_ids() {
+        let mut cfg = cfg(false);
+        cfg.layer_count = 2;
+        cfg.hidden_size = 2;
+        cfg.hidden_size_per_layer_input = 2;
+        let token_id = [2_u32];
+        let ids_scalar = MlxArray::from_raw_data(
+            token_id.as_ptr().cast(),
+            std::mem::size_of_val(&token_id),
+            &[],
+            MlxDtype::Uint32,
+        );
+        let hidden = zeros(&[1, 1, 2], MlxDtype::Bfloat16, None);
+        let weights = ModelWeights {
+            token_embedding: dense_weight(&[3, 2]),
+            final_norm: zeros(&[2], MlxDtype::Float32, None),
+            lm_head: dense_weight(&[3, 2]),
+            layers: Vec::new(),
+            per_layer_embed: Some(dense_weight(&[3, 4])),
+            per_layer_model_proj: Some(dense_weight(&[4, 2])),
+            per_layer_proj_norm: Some(zeros(&[2], MlxDtype::Float32, None)),
+        };
+
+        let per_layer = compute_per_layer_inputs_arr(&cfg, &weights, &ids_scalar, &hidden)
+            .expect("per-layer inputs should be enabled");
+        let refs = per_layer.iter().collect::<Vec<_>>();
+        eval(&refs);
+
+        assert_eq!(per_layer.len(), 2);
+        assert_eq!(per_layer[0].shape(), vec![1, 1, 2]);
+        assert_eq!(per_layer[1].shape(), vec![1, 1, 2]);
     }
 
     fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
