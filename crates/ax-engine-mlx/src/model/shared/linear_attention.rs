@@ -7,7 +7,11 @@ use std::time::Instant;
 use super::super::config::{LinearAttentionConfig, ModelConfig};
 use super::super::profile::{
     LinearAttentionProfileStage, linear_attention_profile_enabled,
-    linear_attention_profile_eval_elapsed, record_linear_attention_profile_layer,
+    linear_attention_profile_eval_elapsed, record_linear_attention_direct_cpp_inputs_attempt,
+    record_linear_attention_direct_cpp_inputs_fallback,
+    record_linear_attention_direct_cpp_inputs_hit,
+    record_linear_attention_direct_cpp_inputs_profile_blocked,
+    record_linear_attention_profile_layer,
 };
 use super::utils::qw;
 use crate::fastpath;
@@ -121,11 +125,19 @@ pub(crate) fn linear_attention_inputs(
     profile_enabled: bool,
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
     if let (Some(qkvz_w), Some(ba_w)) = (&w.in_proj_qkvz, &w.in_proj_ba) {
-        if !profile_enabled
-            && fastpath::direct_cpp_linear_attention_inputs_enabled()
-            && let Some(outputs) = linear_attention_inputs_packed_direct(cfg, x, qkvz_w, ba_w)
-        {
-            return outputs;
+        if fastpath::direct_cpp_linear_attention_inputs_enabled() {
+            record_linear_attention_direct_cpp_inputs_attempt();
+            if profile_enabled {
+                record_linear_attention_direct_cpp_inputs_profile_blocked();
+                record_linear_attention_direct_cpp_inputs_fallback();
+            } else if let Some(outputs) =
+                linear_attention_inputs_packed_direct(cfg, x, qkvz_w, ba_w)
+            {
+                record_linear_attention_direct_cpp_inputs_hit();
+                return outputs;
+            } else {
+                record_linear_attention_direct_cpp_inputs_fallback();
+            }
         }
 
         let profile_started = Instant::now();

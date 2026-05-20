@@ -21,6 +21,10 @@ pub struct LinearAttentionProfileSnapshot {
     pub enabled: u32,
     pub layers: u32,
     pub tokens: u32,
+    pub direct_cpp_inputs_attempts: u32,
+    pub direct_cpp_inputs_hits: u32,
+    pub direct_cpp_inputs_fallbacks: u32,
+    pub direct_cpp_inputs_profile_blocked: u32,
     pub projection_wall_us: u32,
     pub projection_qkvz_wall_us: u32,
     pub projection_ba_wall_us: u32,
@@ -255,6 +259,27 @@ pub(super) fn record_linear_attention_profile_layer(tokens: i32) {
     profile.enabled = 1;
     profile.layers = profile.layers.saturating_add(1);
     profile.tokens = profile.tokens.saturating_add(tokens.max(0) as u32);
+}
+
+pub(super) fn record_linear_attention_direct_cpp_inputs_attempt() {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    profile.direct_cpp_inputs_attempts = profile.direct_cpp_inputs_attempts.saturating_add(1);
+}
+
+pub(super) fn record_linear_attention_direct_cpp_inputs_hit() {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    profile.direct_cpp_inputs_hits = profile.direct_cpp_inputs_hits.saturating_add(1);
+}
+
+pub(super) fn record_linear_attention_direct_cpp_inputs_fallback() {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    profile.direct_cpp_inputs_fallbacks = profile.direct_cpp_inputs_fallbacks.saturating_add(1);
+}
+
+pub(super) fn record_linear_attention_direct_cpp_inputs_profile_blocked() {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    profile.direct_cpp_inputs_profile_blocked =
+        profile.direct_cpp_inputs_profile_blocked.saturating_add(1);
 }
 
 pub(super) fn record_linear_attention_profile_stage(

@@ -1378,6 +1378,18 @@ impl LinearAttentionProfileSnapshot {
         self.enabled = self.enabled.max(other.enabled);
         self.layers = self.layers.saturating_add(other.layers);
         self.tokens = self.tokens.saturating_add(other.tokens);
+        self.direct_cpp_inputs_attempts = self
+            .direct_cpp_inputs_attempts
+            .saturating_add(other.direct_cpp_inputs_attempts);
+        self.direct_cpp_inputs_hits = self
+            .direct_cpp_inputs_hits
+            .saturating_add(other.direct_cpp_inputs_hits);
+        self.direct_cpp_inputs_fallbacks = self
+            .direct_cpp_inputs_fallbacks
+            .saturating_add(other.direct_cpp_inputs_fallbacks);
+        self.direct_cpp_inputs_profile_blocked = self
+            .direct_cpp_inputs_profile_blocked
+            .saturating_add(other.direct_cpp_inputs_profile_blocked);
         self.projection_wall_us = self
             .projection_wall_us
             .saturating_add(other.projection_wall_us);
@@ -1408,62 +1420,93 @@ impl LinearAttentionProfileSnapshot {
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
-        if self.enabled == 0 {
+        let direct_inputs_active = self.direct_cpp_inputs_attempts != 0
+            || self.direct_cpp_inputs_hits != 0
+            || self.direct_cpp_inputs_fallbacks != 0
+            || self.direct_cpp_inputs_profile_blocked != 0;
+        if self.enabled == 0 && !direct_inputs_active {
             return;
         }
 
-        let entries = [
-            ("ax_mlx_linear_attention_profile_enabled", self.enabled),
-            ("ax_mlx_linear_attention_profile_layers", self.layers),
-            ("ax_mlx_linear_attention_profile_tokens", self.tokens),
-            (
-                "ax_mlx_linear_attention_profile_projection_wall_us",
-                self.projection_wall_us,
-            ),
-            (
-                "ax_mlx_linear_attention_profile_projection_qkvz_wall_us",
-                self.projection_qkvz_wall_us,
-            ),
-            (
-                "ax_mlx_linear_attention_profile_projection_ba_wall_us",
-                self.projection_ba_wall_us,
-            ),
-            (
-                "ax_mlx_linear_attention_profile_projection_qkv_wall_us",
-                self.projection_qkv_wall_us,
-            ),
-            (
-                "ax_mlx_linear_attention_profile_projection_z_wall_us",
-                self.projection_z_wall_us,
-            ),
-            (
-                "ax_mlx_linear_attention_profile_projection_a_wall_us",
-                self.projection_a_wall_us,
-            ),
-            (
-                "ax_mlx_linear_attention_profile_projection_b_wall_us",
-                self.projection_b_wall_us,
-            ),
-            (
-                "ax_mlx_linear_attention_profile_conv_wall_us",
-                self.conv_wall_us,
-            ),
-            (
-                "ax_mlx_linear_attention_profile_qk_norm_wall_us",
-                self.qk_norm_wall_us,
-            ),
-            (
-                "ax_mlx_linear_attention_profile_recurrent_wall_us",
-                self.recurrent_wall_us,
-            ),
-            (
-                "ax_mlx_linear_attention_profile_output_wall_us",
-                self.output_wall_us,
-            ),
-        ];
+        if self.enabled != 0 {
+            let entries = [
+                ("ax_mlx_linear_attention_profile_enabled", self.enabled),
+                ("ax_mlx_linear_attention_profile_layers", self.layers),
+                ("ax_mlx_linear_attention_profile_tokens", self.tokens),
+                (
+                    "ax_mlx_linear_attention_profile_projection_wall_us",
+                    self.projection_wall_us,
+                ),
+                (
+                    "ax_mlx_linear_attention_profile_projection_qkvz_wall_us",
+                    self.projection_qkvz_wall_us,
+                ),
+                (
+                    "ax_mlx_linear_attention_profile_projection_ba_wall_us",
+                    self.projection_ba_wall_us,
+                ),
+                (
+                    "ax_mlx_linear_attention_profile_projection_qkv_wall_us",
+                    self.projection_qkv_wall_us,
+                ),
+                (
+                    "ax_mlx_linear_attention_profile_projection_z_wall_us",
+                    self.projection_z_wall_us,
+                ),
+                (
+                    "ax_mlx_linear_attention_profile_projection_a_wall_us",
+                    self.projection_a_wall_us,
+                ),
+                (
+                    "ax_mlx_linear_attention_profile_projection_b_wall_us",
+                    self.projection_b_wall_us,
+                ),
+                (
+                    "ax_mlx_linear_attention_profile_conv_wall_us",
+                    self.conv_wall_us,
+                ),
+                (
+                    "ax_mlx_linear_attention_profile_qk_norm_wall_us",
+                    self.qk_norm_wall_us,
+                ),
+                (
+                    "ax_mlx_linear_attention_profile_recurrent_wall_us",
+                    self.recurrent_wall_us,
+                ),
+                (
+                    "ax_mlx_linear_attention_profile_output_wall_us",
+                    self.output_wall_us,
+                ),
+            ];
 
-        for (key, value) in entries {
-            decisions.upsert_route_decision(key, value);
+            for (key, value) in entries {
+                decisions.upsert_route_decision(key, value);
+            }
+        }
+
+        if direct_inputs_active {
+            let entries = [
+                (
+                    "ax_mlx_direct_cpp_linear_attention_inputs_attempts",
+                    self.direct_cpp_inputs_attempts,
+                ),
+                (
+                    "ax_mlx_direct_cpp_linear_attention_inputs_hits",
+                    self.direct_cpp_inputs_hits,
+                ),
+                (
+                    "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks",
+                    self.direct_cpp_inputs_fallbacks,
+                ),
+                (
+                    "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked",
+                    self.direct_cpp_inputs_profile_blocked,
+                ),
+            ];
+
+            for (key, value) in entries {
+                decisions.upsert_route_decision(key, value);
+            }
         }
     }
 }
@@ -7018,6 +7061,7 @@ mod tests {
             qk_norm_wall_us: 30,
             recurrent_wall_us: 90,
             output_wall_us: 20,
+            ..LinearAttentionProfileSnapshot::default()
         };
         profile.merge_from(LinearAttentionProfileSnapshot {
             enabled: 1,
@@ -7034,6 +7078,7 @@ mod tests {
             qk_norm_wall_us: 45,
             recurrent_wall_us: 135,
             output_wall_us: 30,
+            ..LinearAttentionProfileSnapshot::default()
         });
 
         let mut decisions = Vec::new();
@@ -7074,6 +7119,48 @@ mod tests {
         let mut disabled_decisions = Vec::new();
         LinearAttentionProfileSnapshot::default().append_route_decisions(&mut disabled_decisions);
         assert!(disabled_decisions.is_empty());
+    }
+
+    #[test]
+    fn linear_attention_direct_cpp_route_decisions_emit_when_attempted() {
+        let mut profile = LinearAttentionProfileSnapshot {
+            direct_cpp_inputs_attempts: 2,
+            direct_cpp_inputs_hits: 1,
+            direct_cpp_inputs_fallbacks: 1,
+            direct_cpp_inputs_profile_blocked: 1,
+            ..LinearAttentionProfileSnapshot::default()
+        };
+        profile.merge_from(LinearAttentionProfileSnapshot {
+            direct_cpp_inputs_attempts: 3,
+            direct_cpp_inputs_hits: 2,
+            direct_cpp_inputs_fallbacks: 1,
+            direct_cpp_inputs_profile_blocked: 0,
+            ..LinearAttentionProfileSnapshot::default()
+        });
+
+        let mut decisions = Vec::new();
+        profile.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get("ax_mlx_direct_cpp_linear_attention_inputs_attempts"),
+            Some(&5)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_cpp_linear_attention_inputs_hits"),
+            Some(&3)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_cpp_linear_attention_inputs_fallbacks"),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked"),
+            Some(&1)
+        );
+        assert!(!decisions.contains_key("ax_mlx_linear_attention_profile_enabled"));
     }
 
     #[test]
