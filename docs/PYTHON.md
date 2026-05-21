@@ -432,7 +432,7 @@ target a running `ax-engine-server` instance through its OpenAI-compatible
 endpoints. The module has no extra dependencies beyond `langchain-core` and the
 Python standard library — no separate HTTP library is required.
 
-```python
+```bash
 pip install langchain-core
 ```
 
