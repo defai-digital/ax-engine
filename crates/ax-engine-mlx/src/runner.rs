@@ -4507,11 +4507,17 @@ impl MlxRunner {
         state
             .ngram_acceleration
             .record_request_disabled_reason(state.ngram_request_disable_reason);
-        if is_greedy {
+        let result = if is_greedy {
             vec![self.run_direct_pipeline_decode(state, last_token)]
         } else {
             self.run_single_decode(state, last_token, sampling)
-        }
+        };
+        maybe_reenable_linear_ngram_from_fallback_output(
+            state,
+            self.ngram_policy_variant,
+            is_greedy,
+        );
+        result
     }
 
     fn run_no_draft_decode(
@@ -4985,6 +4991,29 @@ fn linear_ngram_initial_prompt_should_disable_request(
     has_linear_attention
         && prompt_class == crate::ngram_accel::PROMPT_CLASS_NON_REPEATING
         && initial_draft_empty
+}
+
+fn maybe_reenable_linear_ngram_from_fallback_output(
+    state: &mut RequestState,
+    variant: NgramPolicyVariant,
+    is_greedy: bool,
+) {
+    if !is_greedy
+        || !state.ngram_acceleration_disabled_for_request
+        || state.ngram_request_disable_reason != NgramRequestDisableReason::LinearNoDraft
+    {
+        return;
+    }
+
+    let draft = ngram_acceleration_draft(&state.ngram, true, state.ngram_posterior_mean(), variant);
+    if draft.draft.is_empty() {
+        return;
+    }
+
+    state.ngram_acceleration_disabled_for_request = false;
+    state.ngram_request_disable_reason = NgramRequestDisableReason::None;
+    state.linear_ngram_no_draft_streak = 0;
+    state.ngram_disabled_steps = 0;
 }
 
 fn ngram_policy_variant_from_env() -> NgramPolicyVariant {
@@ -7736,6 +7765,85 @@ mod tests {
                 true,
             ),
             "dense models can cheaply roll back and should keep the existing gate"
+        );
+    }
+
+    #[test]
+    fn linear_attention_direct_fallback_reenables_when_output_builds_draft() {
+        let mut state = RequestState::new(1, RequestId(7));
+        state.ngram_acceleration_disabled_for_request = true;
+        state.ngram_request_disable_reason = NgramRequestDisableReason::LinearNoDraft;
+        state.linear_ngram_no_draft_streak = LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD;
+        state.ngram_disabled_steps = LINEAR_NGRAM_RETRY_INTERVAL;
+
+        state.ngram.feed(&[1, 2, 3, 4, 9]);
+        maybe_reenable_linear_ngram_from_fallback_output(
+            &mut state,
+            NgramPolicyVariant::MajorityRecency,
+            true,
+        );
+        assert!(
+            state.ngram_acceleration_disabled_for_request,
+            "one observed continuation is below the linear-attention support gate"
+        );
+
+        state.ngram.feed(&[1, 2, 3, 4, 9, 1, 2, 3, 4]);
+        maybe_reenable_linear_ngram_from_fallback_output(
+            &mut state,
+            NgramPolicyVariant::MajorityRecency,
+            true,
+        );
+
+        assert!(!state.ngram_acceleration_disabled_for_request);
+        assert_eq!(
+            state.ngram_request_disable_reason,
+            NgramRequestDisableReason::None
+        );
+        assert_eq!(state.linear_ngram_no_draft_streak, 0);
+        assert_eq!(state.ngram_disabled_steps, 0);
+    }
+
+    #[test]
+    fn linear_attention_reenable_keeps_short_output_disable_closed() {
+        let mut state = RequestState::new(1, RequestId(7));
+        state.ngram_acceleration_disabled_for_request = true;
+        state.ngram_request_disable_reason = NgramRequestDisableReason::ShortOutputBudget;
+        state
+            .ngram
+            .feed(&[1, 2, 3, 4, 9, 1, 2, 3, 4, 9, 1, 2, 3, 4]);
+
+        maybe_reenable_linear_ngram_from_fallback_output(
+            &mut state,
+            NgramPolicyVariant::MajorityRecency,
+            true,
+        );
+
+        assert!(state.ngram_acceleration_disabled_for_request);
+        assert_eq!(
+            state.ngram_request_disable_reason,
+            NgramRequestDisableReason::ShortOutputBudget
+        );
+    }
+
+    #[test]
+    fn linear_attention_reenable_requires_greedy_exact_decode() {
+        let mut state = RequestState::new(1, RequestId(7));
+        state.ngram_acceleration_disabled_for_request = true;
+        state.ngram_request_disable_reason = NgramRequestDisableReason::LinearNoDraft;
+        state
+            .ngram
+            .feed(&[1, 2, 3, 4, 9, 1, 2, 3, 4, 9, 1, 2, 3, 4]);
+
+        maybe_reenable_linear_ngram_from_fallback_output(
+            &mut state,
+            NgramPolicyVariant::MajorityRecency,
+            false,
+        );
+
+        assert!(state.ngram_acceleration_disabled_for_request);
+        assert_eq!(
+            state.ngram_request_disable_reason,
+            NgramRequestDisableReason::LinearNoDraft
         );
     }
 
