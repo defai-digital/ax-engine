@@ -45,8 +45,13 @@ evidence:
   real route reach (`420/420` post-input hits, zero fallbacks) and reduced
   linear-attention op count from 42.0 to 26.0 ops/layer. The same short
   warmed trace was throughput-neutral/noisy (`157.59` vs `154.30` tok/s),
-  so this is **not** promotion evidence. The flag stays opt-in until a clean
-  inference-stack A/B proves a repeated throughput win above run-to-run noise.
+  so that smoke was **not** promotion evidence. A later real inference-stack
+  A/B on the same model
+  (`benchmarks/results/mlx-inference/2026-05-21-qwen35-post-input-ab/`)
+  proved full route coverage (`150/150` post-input hits at each prompt length,
+  zero fallbacks) and small positive decode medians at p128/p512/p2048
+  (+0.42%, +0.62%, +0.51%). The flag still stays opt-in because this is a
+  sub-1% gain, not a strong default-on promotion margin.
 - **Fused `add + rms_norm` Metal kernel** for the post-attention
   residual + ffn_norm boundary. The decode profile identified this stage
   as 52.7% of `AX_MLX_DECODE_PROFILE=1` wall share. The custom kernel
