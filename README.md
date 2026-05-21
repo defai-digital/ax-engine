@@ -203,7 +203,7 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-base=benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-rerun/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-qwen36-35b-a3b-shared-expert-pack-readme-refresh/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/; ax-base=benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-rerun/; ax-overlay=benchmarks/results/mlx-inference/2026-05-20-qwen36-35b-a3b-shared-expert-pack-readme-refresh-r3/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
@@ -216,7 +216,7 @@ below come from
 `benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-rerun/`.
 The Qwen 3.6 35B A3B 4-bit row is refreshed by the shared-expert gate/up packed
 projection artifact in
-`benchmarks/results/mlx-inference/2026-05-20-qwen36-35b-a3b-shared-expert-pack-readme-refresh/`.
+`benchmarks/results/mlx-inference/2026-05-20-qwen36-35b-a3b-shared-expert-pack-readme-refresh-r3/`.
 The sweep used the opt-in `AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS=1` hot
 path; all Qwen 3.6 artifact rows report
 `ax.mlx_direct_cpp_linear_attention_inputs.v1` with `classification=all_hits`,
@@ -283,9 +283,9 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 | Qwen 3.6 27B | 8-bit | 128 | 559.4 | 219.3 | **705.6 (+221.7%)** |
 |  |  | 512 | 798.2 | 520.2 | **879.4 (+69.0%)** |
 |  |  | 2048 | 741.9 | 787.4 | **878.4 (+11.6%)** |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 539.4 | **1,326.5 (+145.9%)** |
-|  |  | 512 | 3,146.6 | 1,599.5 | **3,084.3 (+92.8%)** |
-|  |  | 2048 | 3,542.3 | 3,513.1 | **3,836.6 (+9.2%)** |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 539.4 | **1,310.4 (+143.0%)** |
+|  |  | 512 | 3,146.6 | 1,599.5 | **3,074.6 (+92.2%)** |
+|  |  | 2048 | 3,542.3 | 3,513.1 | **3,895.5 (+10.9%)** |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
@@ -346,9 +346,9 @@ collapsed output loop.
 | Qwen 3.6 27B | 8-bit | 128 | 18.3 | 18.7 | 17.9 (-3.9%) | 18.0 (-3.8%) |
 |  |  | 512 | 18.2 | 18.6 | 17.8 (-4.1%) | 17.9 (-3.8%) |
 |  |  | 2048 | 12.7 | 18.4 | 17.8 (-3.5%) | 17.8 (-3.5%) |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 140.1 | **154.8 (+10.5%)** | **158.0 (+12.8%)** |
-|  |  | 512 | 108.2 | 136.5 | **152.4 (+11.7%)** | **152.4 (+11.7%)** |
-|  |  | 2048 | 105.7 | 134.5 | **151.6 (+12.8%)** | **150.3 (+11.8%)** |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 140.1 | **150.8 (+7.7%)** | **157.6 (+12.5%)** |
+|  |  | 512 | 108.2 | 136.5 | **150.1 (+10.0%)** | **155.1 (+13.7%)** |
+|  |  | 2048 | 105.7 | 134.5 | **152.2 (+13.2%)** | **148.6 (+10.5%)** |
 
 Qwen 3.6 27B 4-bit at prompt=2048 originally produced zero decode tokens
 because 4-bit quantization noise pushed an EOS token to argmax at decode
@@ -406,9 +406,9 @@ so server/client timing does not get mixed with runner-time throughput.
 | Qwen 3.6 27B | 8-bit | 128 | 228.8 | 583.6 | **181.4 (-68.9%)** |
 |  |  | 512 | 641.5 | 984.2 | **582.2 (-40.8%)** |
 |  |  | 2048 | 2,760.6 | 2,601.1 | **2,331.4 (-10.4%)** |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 237.3 | **96.5 (-59.3%)** |
-|  |  | 512 | 162.7 | 320.1 | **166.0 (-48.1%)** |
-|  |  | 2048 | 578.2 | 583.0 | **533.8 (-8.4%)** |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 237.3 | **97.7 (-58.8%)** |
+|  |  | 512 | 162.7 | 320.1 | **166.5 (-48.0%)** |
+|  |  | 2048 | 578.2 | 583.0 | **525.7 (-9.8%)** |
 
 Embedding benchmarks are kept out of this README summary; see
 [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md) for embedding throughput, serving,
