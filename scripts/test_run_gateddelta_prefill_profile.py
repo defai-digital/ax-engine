@@ -71,6 +71,8 @@ class GatedDeltaPrefillProfileRunnerTests(unittest.TestCase):
         self.assertIn("Preflight:", result.stdout)
         self.assertIn("Command:", result.stdout)
         self.assertIn("--gateddelta-prefill-profile", result.stdout)
+        self.assertIn("--repetitions 5", result.stdout)
+        self.assertIn("--cooldown 15", result.stdout)
         self.assertNotIn("model-manifest.json is missing", result.stdout)
         self.assertFalse(output_dir_exists)
         self.assertFalse(artifact_exists)
