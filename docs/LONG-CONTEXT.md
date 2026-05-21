@@ -107,7 +107,7 @@ python3 scripts/bench_mlx_inference_stack.py \
   --model-dir /path/to/mlx-model \
   --prompt-tokens 1024,2048,4096,8192,16384 \
   --generation-tokens 1 \
-  --repetitions 3 \
+  --repetitions 5 \
   --llama-cpp-bench /path/to/llama-bench \
   --llama-cpp-gguf /path/to/model.gguf \
   --llama-cpp-decode-at-depth \
