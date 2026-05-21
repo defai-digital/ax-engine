@@ -89,10 +89,10 @@ provenance information. Manifests are checked into `benchmarks/manifests/`.
 ```json
 {
   "family": "qwen3_5",
-  "revision": "mlx-community/Qwen3-9B-4bit",
+  "revision": "phase1-canonical",
   "quant": "4bit",
-  "tokenizer_revision": "...",
-  "chat_template_revision": "..."
+  "tokenizer_revision": "qwen-tokenizer-v1",
+  "chat_template_revision": "chatml-v1"
 }
 ```
 
