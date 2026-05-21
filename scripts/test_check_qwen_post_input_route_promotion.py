@@ -69,6 +69,8 @@ def row(
         "prompt_tokens": prompt_tokens,
         "generation_tokens": generation_tokens,
         "decode_tok_s": metric(decode_tok_s),
+        checker.INPUT_ROUTE_FLAG: True,
+        checker.POST_INPUT_ROUTE_FLAG: bool(enabled),
         "ax_mlx_direct_cpp_linear_attention_inputs": input_route(),
     }
     if enabled:
@@ -181,6 +183,36 @@ class QwenPostInputRoutePromotionTests(unittest.TestCase):
         with self.assertRaisesRegex(
             checker.QwenPostInputRoutePromotionError,
             "baseline row must not carry post-input route summary",
+        ):
+            checker.check_qwen_post_input_route_promotion(
+                [path],
+                expect_decision=checker.PROMOTION_CANDIDATE,
+            )
+
+    def test_baseline_route_flags_must_match_engine_role(self) -> None:
+        payload = artifact()
+        baseline = payload["results"][0]  # type: ignore[index]
+        baseline[checker.POST_INPUT_ROUTE_FLAG] = True  # type: ignore[index]
+        path = self.write_fixture(payload)
+
+        with self.assertRaisesRegex(
+            checker.QwenPostInputRoutePromotionError,
+            "baseline.ax_direct_linear_attention_post_input_route must be False",
+        ):
+            checker.check_qwen_post_input_route_promotion(
+                [path],
+                expect_decision=checker.PROMOTION_CANDIDATE,
+            )
+
+    def test_candidate_route_flags_must_match_engine_role(self) -> None:
+        payload = artifact()
+        candidate = payload["results"][1]  # type: ignore[index]
+        candidate[checker.POST_INPUT_ROUTE_FLAG] = False  # type: ignore[index]
+        path = self.write_fixture(payload)
+
+        with self.assertRaisesRegex(
+            checker.QwenPostInputRoutePromotionError,
+            "candidate.ax_direct_linear_attention_post_input_route must be True",
         ):
             checker.check_qwen_post_input_route_promotion(
                 [path],

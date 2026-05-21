@@ -23,6 +23,8 @@ POST_INPUT_ROUTE_SCHEMA_VERSION = "ax.mlx_direct_cpp_linear_attention_post_input
 BASELINE_ENGINE = "ax_engine_mlx_direct_linear_attention_inputs"
 CANDIDATE_ENGINE = "ax_engine_mlx_direct_linear_attention_post_input"
 BASELINE_POLICY = "direct_no_ngram_acceleration"
+INPUT_ROUTE_FLAG = "ax_direct_linear_attention_inputs_route"
+POST_INPUT_ROUTE_FLAG = "ax_direct_linear_attention_post_input_route"
 NOT_PROMOTED = "not_promoted"
 PROMOTION_CANDIDATE = "promotion_candidate"
 DEFAULT_REQUIRED_PROMPTS = (128, 512, 2048)
@@ -90,6 +92,15 @@ def _metric_median(row: dict[str, Any], key: str, owner: str) -> float:
     value = _number(metric.get("median"), f"{owner}.{key}.median")
     _require(value > 0.0, f"{owner}.{key}.median must be positive")
     return value
+
+
+def _require_route_flag(
+    row: dict[str, Any],
+    key: str,
+    expected: bool,
+    owner: str,
+) -> None:
+    _require(row.get(key) is expected, f"{owner}.{key} must be {expected}")
 
 
 def _row_key(row: dict[str, Any], owner: str) -> tuple[int, int]:
@@ -203,6 +214,10 @@ def collect_route_comparisons(
         prompt, generation = key
         baseline = baselines[key]
         candidate = candidates[key]
+        _require_route_flag(baseline, INPUT_ROUTE_FLAG, True, "baseline")
+        _require_route_flag(baseline, POST_INPUT_ROUTE_FLAG, False, "baseline")
+        _require_route_flag(candidate, INPUT_ROUTE_FLAG, True, "candidate")
+        _require_route_flag(candidate, POST_INPUT_ROUTE_FLAG, True, "candidate")
         base_input = _mapping(
             baseline.get("ax_mlx_direct_cpp_linear_attention_inputs"),
             "baseline.ax_mlx_direct_cpp_linear_attention_inputs",
