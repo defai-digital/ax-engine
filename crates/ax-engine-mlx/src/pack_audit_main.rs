@@ -30,6 +30,7 @@ fn main() {
     let mut la_absent = 0u32;
     let mut ffn_packed = 0u32;
     let mut ffn_split = 0u32;
+    let mut ffn_partial = 0u32;
     let mut ffn_absent = 0u32;
 
     for (idx, layer) in weights.layers.iter().enumerate() {
@@ -61,15 +62,33 @@ fn main() {
             None => la_absent += 1,
         }
 
-        if layer.down_proj.is_some() {
-            if layer.gate_up_packed.is_some() {
-                ffn_packed += 1;
-            } else if layer.gate_proj.is_some() && layer.up_proj.is_some() {
+        // Mirror the linear-attention semantics: truly absent FFN (no
+        // down_proj) is a separate bucket from degenerate layers that have
+        // down_proj but are missing the gate/up pair. The earlier version
+        // labelled the degenerate case `ffn_absent` and silently dropped
+        // truly-absent FFN layers, which made the printed `absent_layers`
+        // counter mean different things for linear-attn vs dense FFN.
+        match (
+            layer.down_proj.as_ref(),
+            layer.gate_up_packed.as_ref(),
+            layer.gate_proj.as_ref(),
+            layer.up_proj.as_ref(),
+        ) {
+            (Some(_), Some(_), _, _) => ffn_packed += 1,
+            (Some(_), None, Some(_), Some(_)) => {
                 ffn_split += 1;
                 println!("  layer {idx}: dense FFN SPLIT (gate+up)");
-            } else {
-                ffn_absent += 1;
             }
+            (Some(_), None, gate, up) => {
+                ffn_partial += 1;
+                println!(
+                    "  layer {idx}: dense FFN PARTIAL down=true gate_up_packed=false \
+                     gate={} up={}",
+                    gate.is_some(),
+                    up.is_some(),
+                );
+            }
+            (None, _, _, _) => ffn_absent += 1,
         }
     }
 
@@ -87,5 +106,6 @@ fn main() {
     println!("dense_ffn:");
     println!("  gate_up_packed_layers: {ffn_packed}");
     println!("  split_gate_up_layers:  {ffn_split}");
+    println!("  partial_layers:        {ffn_partial}");
     println!("  absent_layers:         {ffn_absent}");
 }
