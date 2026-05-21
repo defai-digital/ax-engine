@@ -69,6 +69,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_mlx_forward_profile_artifact.py \
   scripts/check_linear_attention_pack_promotion.py \
   scripts/test_check_linear_attention_pack_promotion.py \
+  scripts/check_qwen_post_input_route_promotion.py \
+  scripts/test_check_qwen_post_input_route_promotion.py \
   scripts/check_mlx_prefill_claim_cycle.py \
   scripts/test_mlx_prefill_claim_cycle.py \
   scripts/update_readme_from_bench.py \
@@ -103,6 +105,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_check_direct_gemma4_ffn_route_promotion.py \
   scripts/test_check_direct_mlx_no_production_route.py \
   scripts/test_check_mlx_fastpath_env_controls.py \
+  scripts/test_check_qwen_post_input_route_promotion.py \
   scripts/test_check_linear_attention_pack_promotion.py \
   scripts/test_check_mla_prefix_restore_evidence.py \
   scripts/test_check_mla_prefix_restore_retirement.py \
@@ -151,6 +154,7 @@ bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_direct_mlx_no_production_route.py
 "$PYTHON_BIN" scripts/check_mlx_fastpath_env_controls.py
 "$PYTHON_BIN" scripts/check_linear_attention_pack_promotion.py
+"$PYTHON_BIN" scripts/check_qwen_post_input_route_promotion.py
 "$PYTHON_BIN" scripts/check_mla_prefix_restore_evidence.py
 "$PYTHON_BIN" scripts/check_mla_prefix_restore_retirement.py
 "$PYTHON_BIN" scripts/render_readme_performance_charts.py --check

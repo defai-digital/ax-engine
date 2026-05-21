@@ -68,7 +68,7 @@ class TurboQuantQualityArtifactRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("dry_run=true", result.stdout)
-        self.assertIn("--repetitions 3", result.stdout)
+        self.assertIn("--repetitions 5", result.stdout)
         self.assertIn("--cooldown 3", result.stdout)
         self.assertIn("--generation-tokens 256", result.stdout)
         self.assertIn("--prompt-tokens 8192", result.stdout)
