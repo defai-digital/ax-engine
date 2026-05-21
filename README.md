@@ -211,12 +211,9 @@ and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 These rows are a provenance-tracked composite. The `mlx_lm` reference rows come
 from `benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/`. The
-refreshed AX direct and n-gram rows for most Gemma 4 and Qwen 3.6 rows shown
+refreshed AX direct and n-gram rows for all 12 Gemma 4 and Qwen 3.6 rows shown
 below come from
-`benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-rerun/`.
-The Qwen 3.6 35B A3B 4-bit row is refreshed by the shared-expert gate/up packed
-projection artifact in
-`benchmarks/results/mlx-inference/2026-05-20-qwen36-35b-a3b-shared-expert-pack-readme-refresh-r3/`.
+`benchmarks/results/mlx-inference/2026-05-21-ax-only-post-shim-sweep/`.
 The sweep used the opt-in `AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS=1` hot
 path; all Qwen 3.6 artifact rows report
 `ax.mlx_direct_cpp_linear_attention_inputs.v1` with `classification=all_hits`,
@@ -224,7 +221,7 @@ path; all Qwen 3.6 artifact rows report
 The `llama.cpp Metal*` column is also injected from
 `benchmarks/manifests/llama_cpp_metal/inventory.json` and the
 `benchmarks/results/mlx-inference/2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/`
-Gemma 4 E2B 4-bit recheck. Refreshed AX rows use generation=128, 3
+Gemma 4 E2B 4-bit recheck. Refreshed AX rows use generation=128, 5
 repetitions, a 15-second cooldown between trials, AX prefix cache disabled for
 cold prefill and TTFT measurement, and production-build binaries. MLX and AX
 rows also use matching prompt SHA checks. Long-greedy AX prefill rows are

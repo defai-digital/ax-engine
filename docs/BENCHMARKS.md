@@ -9,9 +9,11 @@ The root `README.md` summarizes the high-traffic Gemma 4 and Qwen 3.6 rows
 under the **Performance** section. The full public result tables and result
 interpretation live in `docs/PERFORMANCE.md`. The current README snapshot is
 backed by
-`benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/`. Older result
-sets remain useful diagnostic history, but they should not be described as the
-current public table unless README is rolled back to those artifacts.
+`benchmarks/results/mlx-inference/2026-05-21-ax-only-post-shim-sweep/` (AX rows)
+plus `benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/`
+(mlx_lm reference rows). Older result sets remain useful diagnostic history,
+but they should not be described as the current public table unless README is
+rolled back to those artifacts.
 
 A result is useful only when the workload, runtime route, reference engine,
 host, model, sampling policy, and artifact schema are explicit.
