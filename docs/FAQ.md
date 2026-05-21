@@ -70,8 +70,8 @@ Model references: [Gemma 4](https://deepmind.google/models/gemma/gemma-4/),
 
 ## Where is the serving roadmap?
 
-AX Engine v4.9.0 is the current serving-oriented runtime baseline. The active
-serving roadmap, shipped v4.9.0 runtime work, and evidence gates live in
+AX Engine v4.10.0 is the current serving-oriented runtime baseline. The active
+serving roadmap, shipped v4.10.0 runtime work, and evidence gates live in
 [`docs/ROADMAP.md`](ROADMAP.md).
 
 ## Why does the repo-owned MLX runtime require M2 Max or newer?

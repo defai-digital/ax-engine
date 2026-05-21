@@ -1,6 +1,6 @@
 # Roadmap
 
-AX Engine v4.9.0 is the current serving-oriented runtime baseline. It carries
+AX Engine v4.10.0 is the current serving-oriented runtime baseline. It carries
 forward the v4.8.0 Apache License 2.0 release line and includes:
 
 - disk-backed L2 prefix cache
