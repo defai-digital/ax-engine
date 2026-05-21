@@ -57,6 +57,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_render_mlx_p2_latency_report.py \
   scripts/run_mlx_p2_latency_artifacts.py \
   scripts/test_run_mlx_p2_latency_artifacts.py \
+  scripts/test_run_mlx_artifact_wrappers.py \
   scripts/check_gateddelta_prefill_profile_artifact.py \
   scripts/test_gateddelta_prefill_profile_artifact.py \
   scripts/render_gateddelta_prefill_profile_report.py \
@@ -144,6 +145,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_run_turboquant_quality_artifact.py \
   scripts/test_long_context_comparison_artifact.py \
   scripts/test_long_context_decode_at_depth_artifact.py \
+  scripts/test_run_mlx_artifact_wrappers.py \
   scripts/test_verify_prefix_reuse_equivalence.py \
   scripts/test_profile_kv_multiturn_chat_evidence.py
 bash scripts/check-bench-inference-stack.sh
