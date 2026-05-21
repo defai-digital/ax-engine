@@ -3,7 +3,7 @@
 // Requires a running ax-engine-server on http://127.0.0.1:8080.
 //
 // Run:
-//   cd examples/swift && swift run Stream
+//   cd sdk/swift && swift run StreamExample
 
 import AxEngine
 import Foundation

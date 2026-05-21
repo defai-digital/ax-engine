@@ -3,7 +3,7 @@
 // Requires a running ax-engine-server on http://127.0.0.1:8080.
 //
 // Run:
-//   cd examples/swift && swift run Chat
+//   cd sdk/swift && swift run ChatExample
 
 import AxEngine
 
