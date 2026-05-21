@@ -94,6 +94,25 @@ unsafe extern "C" {
         bits: libc::c_int,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
+
+    fn ax_mlx_qwen_linear_attention_post_input(
+        q_res: *mut ffi::mlx_array,
+        k_res: *mut ffi::mlx_array,
+        v_res: *mut ffi::mlx_array,
+        new_conv_state_res: *mut ffi::mlx_array,
+        qkv: ffi::mlx_array,
+        conv_weight: ffi::mlx_array,
+        cached_conv_state: ffi::mlx_array,
+        num_key_heads: libc::c_int,
+        key_head_dim: libc::c_int,
+        num_value_heads: libc::c_int,
+        value_head_dim: libc::c_int,
+        conv_kernel_dim: libc::c_int,
+        q_scale: libc::c_float,
+        k_scale: libc::c_float,
+        rms_norm_eps: libc::c_float,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
 }
 
 fn optional_int(value: Option<i32>, default: i32) -> ffi::mlx_optional_int_ {
@@ -581,6 +600,68 @@ pub fn qwen_linear_attention_inputs_packed(
         );
         if rc == 0 {
             return Some((qkv, z, a, b));
+        }
+    }
+    None
+}
+
+/// Direct C++ shim for the Qwen linear-attention post-input block: depthwise
+/// `conv1d` (with cached state carry), SiLU, last-dim split, head-major reshape,
+/// per-head RMSNorm on q and k, and scale-by-precomputed-constants.
+///
+/// This is everything between `qwen_linear_attention_inputs_packed` and the
+/// `qwen35_gated_delta_v3` custom Metal kernel, fused into one Rust→C++ FFI
+/// round-trip. The per-decode-token mlx-c dispatch count for a Qwen 3.6 27B
+/// linear-attention layer drops from ~14 to 1 — the savings are bounded by the
+/// AX-vs-mlx-python marshalling delta (~250ns/op), not by GPU work.
+///
+/// Returns `(q, k, v, new_conv_state)` on success, or `None` if the C++ side
+/// rejects the shapes (the caller must keep the portable composition as a
+/// fail-closed fallback).
+#[allow(clippy::too_many_arguments)]
+pub fn qwen_linear_attention_post_input(
+    qkv: &MlxArray,
+    conv_weight: &MlxArray,
+    cached_conv_state: Option<&MlxArray>,
+    num_key_heads: i32,
+    key_head_dim: i32,
+    num_value_heads: i32,
+    value_head_dim: i32,
+    conv_kernel_dim: i32,
+    q_scale: f32,
+    k_scale: f32,
+    rms_norm_eps: f32,
+    s: Option<&MlxStream>,
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut q = MlxArray::empty();
+        let mut k = MlxArray::empty();
+        let mut v = MlxArray::empty();
+        let mut new_conv_state = MlxArray::empty();
+        let rc = ax_mlx_qwen_linear_attention_post_input(
+            &mut q.inner,
+            &mut k.inner,
+            &mut v.inner,
+            &mut new_conv_state.inner,
+            qkv.inner,
+            conv_weight.inner,
+            cached_conv_state
+                .map(|state| state.inner)
+                .unwrap_or_else(null_ffi_array),
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            conv_kernel_dim,
+            q_scale,
+            k_scale,
+            rms_norm_eps,
+            stream,
+        );
+        if rc == 0 {
+            return Some((q, k, v, new_conv_state));
         }
     }
     None
@@ -1916,6 +1997,206 @@ mod tests {
         assert_close_f32(direct_z.data_f32(), portable_z.data_f32(), 1.0e-6);
         assert_close_f32(direct_a.data_f32(), portable_a.data_f32(), 1.0e-6);
         assert_close_f32(direct_b.data_f32(), portable_b.data_f32(), 1.0e-6);
+    }
+
+    #[test]
+    fn qwen_linear_attention_post_input_direct_matches_portable_composition() {
+        let batch = 1_i32;
+        let seq = 2_i32;
+        let num_key_heads = 2_i32;
+        let key_head_dim = 4_i32;
+        let num_value_heads = 4_i32;
+        let value_head_dim = 3_i32;
+        let conv_kernel_dim = 4_i32;
+        let tail_len = conv_kernel_dim - 1;
+        let key_dim = num_key_heads * key_head_dim;
+        let value_dim = num_value_heads * value_head_dim;
+        let conv_dim = 2 * key_dim + value_dim;
+        let (q_scale, k_scale) = (1.0_f32 / (key_head_dim as f32).sqrt(), 0.5_f32);
+        let eps = 1.0e-6_f32;
+
+        let qkv_data: Vec<f32> = (0..(batch * seq * conv_dim))
+            .map(|i| ((i as f32) - 16.0) * 0.0625)
+            .collect();
+        let conv_weight_data: Vec<f32> = (0..(conv_dim * conv_kernel_dim))
+            .map(|i| ((i as f32) - 32.0) * 0.015625)
+            .collect();
+        let cached_state_data: Vec<f32> = (0..(batch * tail_len * conv_dim))
+            .map(|i| ((i as f32) - 8.0) * 0.03125)
+            .collect();
+        let qkv = MlxArray::from_raw_data(
+            qkv_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkv_data.as_slice()),
+            &[batch, seq, conv_dim],
+            MlxDtype::Float32,
+        );
+        // conv1d weight layout is [out_channels, kernel_w, in_channels_per_group].
+        // Depthwise (`groups = conv_dim`) → in_channels_per_group = 1.
+        let conv_weight = MlxArray::from_raw_data(
+            conv_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(conv_weight_data.as_slice()),
+            &[conv_dim, conv_kernel_dim, 1],
+            MlxDtype::Float32,
+        );
+        let cached_state = MlxArray::from_raw_data(
+            cached_state_data.as_ptr() as *const u8,
+            std::mem::size_of_val(cached_state_data.as_slice()),
+            &[batch, tail_len, conv_dim],
+            MlxDtype::Float32,
+        );
+
+        let prev = crate::op_count::op_count_snapshot();
+        let (direct_q, direct_k, direct_v, direct_state) = qwen_linear_attention_post_input(
+            &qkv,
+            &conv_weight,
+            Some(&cached_state),
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            conv_kernel_dim,
+            q_scale,
+            k_scale,
+            eps,
+            None,
+        )
+        .expect("post-input shim should accept qwen-compatible shapes");
+        assert_eq!(
+            crate::op_count::op_count_take(prev),
+            1,
+            "direct C++ post-input shim should count as one Rust FFI dispatch"
+        );
+
+        // Portable composition: matches `linear_attention_conv1d` +
+        // `split_linear_attention_qkv` + `normalize_linear_attention_qk` in
+        // `crates/ax-engine-mlx/src/linear_attention_ops.rs`.
+        let conv_input = concatenate(&[&cached_state, &qkv], 1, None);
+        let total = conv_input.shape()[1];
+        let portable_state = slice(
+            &conv_input,
+            &[0, total - tail_len, 0],
+            &[batch, total, conv_dim],
+            &[1, 1, 1],
+            None,
+        );
+        let conv_out = conv1d(&conv_input, &conv_weight, 1, 0, 1, conv_dim, None);
+        let silued = multiply(&conv_out, &sigmoid(&conv_out, None), None);
+        let q_flat = slice_last_dim(&silued, 0, key_dim, None);
+        let k_flat = slice_last_dim(&silued, key_dim, 2 * key_dim, None);
+        let v_flat = slice_last_dim(&silued, 2 * key_dim, 2 * key_dim + value_dim, None);
+        let q_heads = reshape(&q_flat, &[batch, seq, num_key_heads, key_head_dim], None);
+        let k_heads = reshape(&k_flat, &[batch, seq, num_key_heads, key_head_dim], None);
+        let v_heads = reshape(
+            &v_flat,
+            &[batch, seq, num_value_heads, value_head_dim],
+            None,
+        );
+        let q_normed = crate::fast::rms_norm(&q_heads, None, eps, None);
+        let k_normed = crate::fast::rms_norm(&k_heads, None, eps, None);
+        let q_scale_arr = MlxArray::from_raw_data(
+            &q_scale as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1],
+            MlxDtype::Float32,
+        );
+        let k_scale_arr = MlxArray::from_raw_data(
+            &k_scale as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1],
+            MlxDtype::Float32,
+        );
+        let portable_q = multiply(&q_normed, &q_scale_arr, None);
+        let portable_k = multiply(&k_normed, &k_scale_arr, None);
+        let portable_v = v_heads;
+
+        eval(&[
+            &direct_q,
+            &direct_k,
+            &direct_v,
+            &direct_state,
+            &portable_q,
+            &portable_k,
+            &portable_v,
+            &portable_state,
+        ]);
+
+        assert_eq!(
+            direct_q.shape(),
+            vec![batch, seq, num_key_heads, key_head_dim]
+        );
+        assert_eq!(
+            direct_k.shape(),
+            vec![batch, seq, num_key_heads, key_head_dim]
+        );
+        assert_eq!(
+            direct_v.shape(),
+            vec![batch, seq, num_value_heads, value_head_dim]
+        );
+        assert_eq!(direct_state.shape(), vec![batch, tail_len, conv_dim]);
+        assert_close_f32(direct_q.data_f32(), portable_q.data_f32(), 1.0e-6);
+        assert_close_f32(direct_k.data_f32(), portable_k.data_f32(), 1.0e-6);
+        assert_close_f32(direct_v.data_f32(), portable_v.data_f32(), 1.0e-6);
+        assert_close_f32(direct_state.data_f32(), portable_state.data_f32(), 1.0e-6);
+    }
+
+    #[test]
+    fn qwen_linear_attention_post_input_direct_handles_empty_cached_state() {
+        // First decode step in a fresh sequence: cached_conv_state is None,
+        // shim must materialise zeros internally and still return the right
+        // tail slice.
+        let batch = 1_i32;
+        let seq = 1_i32;
+        let num_key_heads = 1_i32;
+        let key_head_dim = 32_i32; // gated_delta kernel requires Dk % 32 == 0
+        let num_value_heads = 1_i32;
+        let value_head_dim = 4_i32;
+        let conv_kernel_dim = 4_i32;
+        let key_dim = num_key_heads * key_head_dim;
+        let value_dim = num_value_heads * value_head_dim;
+        let conv_dim = 2 * key_dim + value_dim;
+
+        let qkv_data: Vec<f32> = (0..(batch * seq * conv_dim))
+            .map(|i| i as f32 * 0.01)
+            .collect();
+        let conv_weight_data: Vec<f32> = (0..(conv_dim * conv_kernel_dim))
+            .map(|i| ((i as f32) - 16.0) * 0.0078125)
+            .collect();
+        let qkv = MlxArray::from_raw_data(
+            qkv_data.as_ptr() as *const u8,
+            std::mem::size_of_val(qkv_data.as_slice()),
+            &[batch, seq, conv_dim],
+            MlxDtype::Float32,
+        );
+        let conv_weight = MlxArray::from_raw_data(
+            conv_weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(conv_weight_data.as_slice()),
+            &[conv_dim, conv_kernel_dim, 1],
+            MlxDtype::Float32,
+        );
+
+        let result = qwen_linear_attention_post_input(
+            &qkv,
+            &conv_weight,
+            None,
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            conv_kernel_dim,
+            1.0,
+            1.0,
+            1.0e-6,
+            None,
+        );
+        assert!(
+            result.is_some(),
+            "shim must accept None cached_conv_state by materialising zeros internally"
+        );
+        let (_, _, _, new_state) = result.unwrap();
+        assert_eq!(
+            new_state.shape(),
+            vec![batch, conv_kernel_dim - 1, conv_dim]
+        );
     }
 
     #[test]

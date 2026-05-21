@@ -1025,8 +1025,16 @@ fn forward_lazy_single_with_turboquant_context_and_logits_mode(
         );
     }
 
+    // Always-on host-wall timer over the 64-layer loop. No eval barrier — just
+    // accumulates the Rust+mlx-c graph-build cost of every layer so
+    // `direct_pipeline_forward_layer_loop_wall_us` can separate the layer-loop
+    // share of `forward_wall_us` from the embed/per-layer-input prologue and
+    // the rms-norm/lm-head epilogue. Routed via thread-local Cell to avoid any
+    // public-API churn on `forward_lazy_single_*`.
+    let layer_loop_started = Instant::now();
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
+        let layer_ops_before = mlx_sys::op_count_snapshot();
         hidden = layer_forward_with_turboquant_context(
             cfg,
             layer_w,
@@ -1038,12 +1046,21 @@ fn forward_lazy_single_with_turboquant_context_and_logits_mode(
             Some(&decode_mask),
             turboquant_context,
         );
+        let layer_ops_delta = mlx_sys::op_count_take(layer_ops_before);
+        crate::generate::record_layer_ops(layer_w.linear_attn.is_some(), layer_ops_delta);
     }
+    crate::generate::record_forward_layer_loop_wall_us(
+        layer_loop_started
+            .elapsed()
+            .as_micros()
+            .min(u32::MAX as u128) as u32,
+    );
     // Single token: hidden shape is [1, 1, hidden_size] — no sequence slice needed.
     // Return the logits as `[1, 1, vocab]`; the only consumer is `argmax(_, None)`
     // which operates on the last axis and produces `[1, 1]` (later read via
     // `data_u32().first()`). Skipping the flatten saves one reshape op per step
     // versus returning a 1-D `[vocab]` array.
+    let head_started = Instant::now();
     let lm_head_started = profile_decode.then(Instant::now);
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
@@ -1056,6 +1073,9 @@ fn forward_lazy_single_with_turboquant_context_and_logits_mode(
             &[&logits],
         );
     }
+    crate::generate::record_forward_head_wall_us(
+        head_started.elapsed().as_micros().min(u32::MAX as u128) as u32,
+    );
     if profile_decode {
         record_decode_profile_step(weights.layers.len() as u32);
     }

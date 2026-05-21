@@ -1005,21 +1005,37 @@ fn kv_layer_windows_from_config(cfg: &ModelConfig) -> Vec<Option<usize>> {
 struct WeightLayoutTelemetry {
     dense_ffn_gate_up_packed_layers: u32,
     dense_ffn_split_gate_up_layers: u32,
+    linear_attention_qkvz_ba_packed_layers: u32,
+    linear_attention_split_qkvba_layers: u32,
 }
 
 impl WeightLayoutTelemetry {
     fn from_weights(weights: &ModelWeights) -> Self {
         let mut telemetry = Self::default();
         for layer in &weights.layers {
-            if layer.down_proj.is_none() {
-                continue;
+            if layer.down_proj.is_some() {
+                if layer.gate_up_packed.is_some() {
+                    telemetry.dense_ffn_gate_up_packed_layers =
+                        telemetry.dense_ffn_gate_up_packed_layers.saturating_add(1);
+                } else if layer.gate_proj.is_some() && layer.up_proj.is_some() {
+                    telemetry.dense_ffn_split_gate_up_layers =
+                        telemetry.dense_ffn_split_gate_up_layers.saturating_add(1);
+                }
             }
-            if layer.gate_up_packed.is_some() {
-                telemetry.dense_ffn_gate_up_packed_layers =
-                    telemetry.dense_ffn_gate_up_packed_layers.saturating_add(1);
-            } else if layer.gate_proj.is_some() && layer.up_proj.is_some() {
-                telemetry.dense_ffn_split_gate_up_layers =
-                    telemetry.dense_ffn_split_gate_up_layers.saturating_add(1);
+            if let Some(la) = layer.linear_attn.as_ref() {
+                if la.in_proj_qkvz.is_some() && la.in_proj_ba.is_some() {
+                    telemetry.linear_attention_qkvz_ba_packed_layers = telemetry
+                        .linear_attention_qkvz_ba_packed_layers
+                        .saturating_add(1);
+                } else if la.in_proj_qkv.is_some()
+                    && la.in_proj_z.is_some()
+                    && la.in_proj_a.is_some()
+                    && la.in_proj_b.is_some()
+                {
+                    telemetry.linear_attention_split_qkvba_layers = telemetry
+                        .linear_attention_split_qkvba_layers
+                        .saturating_add(1);
+                }
             }
         }
         telemetry
@@ -1033,6 +1049,14 @@ impl WeightLayoutTelemetry {
         decisions.upsert_route_decision(
             "ax_mlx_dense_ffn_split_gate_up_layers",
             self.dense_ffn_split_gate_up_layers,
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers",
+            self.linear_attention_qkvz_ba_packed_layers,
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_linear_attention_split_qkvba_layers",
+            self.linear_attention_split_qkvba_layers,
         );
     }
 }
@@ -1051,6 +1075,8 @@ struct DecodeTelemetry {
     direct_pipeline_steps: u32,
     direct_pipeline_wall_us: u32,
     direct_pipeline_forward_wall_us: u32,
+    direct_pipeline_forward_layer_loop_wall_us: u32,
+    direct_pipeline_forward_head_wall_us: u32,
     direct_pipeline_argmax_wall_us: u32,
     direct_pipeline_async_eval_wall_us: u32,
     direct_pipeline_next_complete_wall_us: u32,
@@ -1114,6 +1140,12 @@ impl DecodeTelemetry {
         self.direct_pipeline_forward_wall_us = self
             .direct_pipeline_forward_wall_us
             .saturating_add(timings.forward_wall_us);
+        self.direct_pipeline_forward_layer_loop_wall_us = self
+            .direct_pipeline_forward_layer_loop_wall_us
+            .saturating_add(timings.forward_layer_loop_wall_us);
+        self.direct_pipeline_forward_head_wall_us = self
+            .direct_pipeline_forward_head_wall_us
+            .saturating_add(timings.forward_head_wall_us);
         self.direct_pipeline_argmax_wall_us = self
             .direct_pipeline_argmax_wall_us
             .saturating_add(timings.argmax_wall_us);
@@ -1186,6 +1218,12 @@ impl DecodeTelemetry {
         self.direct_pipeline_forward_wall_us = self
             .direct_pipeline_forward_wall_us
             .saturating_add(other.direct_pipeline_forward_wall_us);
+        self.direct_pipeline_forward_layer_loop_wall_us = self
+            .direct_pipeline_forward_layer_loop_wall_us
+            .saturating_add(other.direct_pipeline_forward_layer_loop_wall_us);
+        self.direct_pipeline_forward_head_wall_us = self
+            .direct_pipeline_forward_head_wall_us
+            .saturating_add(other.direct_pipeline_forward_head_wall_us);
         self.direct_pipeline_argmax_wall_us = self
             .direct_pipeline_argmax_wall_us
             .saturating_add(other.direct_pipeline_argmax_wall_us);
@@ -1259,6 +1297,14 @@ impl DecodeTelemetry {
             (
                 "ax_mlx_direct_pipeline_forward_wall_us",
                 self.direct_pipeline_forward_wall_us,
+            ),
+            (
+                "ax_mlx_direct_pipeline_forward_layer_loop_wall_us",
+                self.direct_pipeline_forward_layer_loop_wall_us,
+            ),
+            (
+                "ax_mlx_direct_pipeline_forward_head_wall_us",
+                self.direct_pipeline_forward_head_wall_us,
             ),
             (
                 "ax_mlx_direct_pipeline_argmax_wall_us",
@@ -1391,6 +1437,18 @@ impl LinearAttentionProfileSnapshot {
         self.direct_cpp_inputs_profile_blocked = self
             .direct_cpp_inputs_profile_blocked
             .saturating_add(other.direct_cpp_inputs_profile_blocked);
+        self.direct_cpp_post_input_attempts = self
+            .direct_cpp_post_input_attempts
+            .saturating_add(other.direct_cpp_post_input_attempts);
+        self.direct_cpp_post_input_hits = self
+            .direct_cpp_post_input_hits
+            .saturating_add(other.direct_cpp_post_input_hits);
+        self.direct_cpp_post_input_fallbacks = self
+            .direct_cpp_post_input_fallbacks
+            .saturating_add(other.direct_cpp_post_input_fallbacks);
+        self.direct_cpp_post_input_profile_blocked = self
+            .direct_cpp_post_input_profile_blocked
+            .saturating_add(other.direct_cpp_post_input_profile_blocked);
         self.projection_wall_us = self
             .projection_wall_us
             .saturating_add(other.projection_wall_us);
@@ -1425,7 +1483,11 @@ impl LinearAttentionProfileSnapshot {
             || self.direct_cpp_inputs_hits != 0
             || self.direct_cpp_inputs_fallbacks != 0
             || self.direct_cpp_inputs_profile_blocked != 0;
-        if self.enabled == 0 && !direct_inputs_active {
+        let direct_post_input_active = self.direct_cpp_post_input_attempts != 0
+            || self.direct_cpp_post_input_hits != 0
+            || self.direct_cpp_post_input_fallbacks != 0
+            || self.direct_cpp_post_input_profile_blocked != 0;
+        if self.enabled == 0 && !direct_inputs_active && !direct_post_input_active {
             return;
         }
 
@@ -1502,6 +1564,31 @@ impl LinearAttentionProfileSnapshot {
                 (
                     "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked",
                     self.direct_cpp_inputs_profile_blocked,
+                ),
+            ];
+
+            for (key, value) in entries {
+                decisions.upsert_route_decision(key, value);
+            }
+        }
+
+        if direct_post_input_active {
+            let entries = [
+                (
+                    "ax_mlx_direct_cpp_linear_attention_post_input_attempts",
+                    self.direct_cpp_post_input_attempts,
+                ),
+                (
+                    "ax_mlx_direct_cpp_linear_attention_post_input_hits",
+                    self.direct_cpp_post_input_hits,
+                ),
+                (
+                    "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks",
+                    self.direct_cpp_post_input_fallbacks,
+                ),
+                (
+                    "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked",
+                    self.direct_cpp_post_input_profile_blocked,
                 ),
             ];
 
@@ -2538,7 +2625,9 @@ pub struct MlxRunner {
     direct_clear_cache_cadence: u32,
     /// Weight-layout snapshot computed once at construction. `runner.run`
     /// emits this as `ax_mlx_dense_ffn_gate_up_packed_layers` /
-    /// `ax_mlx_dense_ffn_split_gate_up_layers` route decisions every step.
+    /// `ax_mlx_dense_ffn_split_gate_up_layers` and
+    /// `ax_mlx_linear_attention_qkvz_ba_packed_layers` /
+    /// `ax_mlx_linear_attention_split_qkvba_layers` route decisions every step.
     /// The counts are invariant under decode (weights don't change post-init)
     /// so caching avoids the 64-layer iteration per scheduler step.
     weight_layout_telemetry: WeightLayoutTelemetry,
@@ -6251,6 +6340,74 @@ mod tests {
             decisions.get("ax_mlx_dense_ffn_split_gate_up_layers"),
             Some(&1)
         );
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_qkvz_ba_packed_layers"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_split_qkvba_layers"),
+            Some(&0)
+        );
+    }
+
+    fn linear_attn_split_weights() -> crate::weights::LinearAttentionWeights {
+        crate::weights::LinearAttentionWeights {
+            in_proj_qkv: Some(unit_weight()),
+            in_proj_z: Some(unit_weight()),
+            in_proj_a: Some(unit_weight()),
+            in_proj_b: Some(unit_weight()),
+            in_proj_qkvz: None,
+            in_proj_ba: None,
+            conv1d_dense: mlx_sys::zeros(&[1, 1, 1], MlxDtype::Float32, None),
+            dt_bias: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
+            a_log: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
+            norm: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
+            out_proj: unit_weight(),
+        }
+    }
+
+    fn linear_attn_packed_weights() -> crate::weights::LinearAttentionWeights {
+        crate::weights::LinearAttentionWeights {
+            in_proj_qkv: None,
+            in_proj_z: None,
+            in_proj_a: None,
+            in_proj_b: None,
+            in_proj_qkvz: Some(unit_weight()),
+            in_proj_ba: Some(unit_weight()),
+            conv1d_dense: mlx_sys::zeros(&[1, 1, 1], MlxDtype::Float32, None),
+            dt_bias: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
+            a_log: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
+            norm: mlx_sys::zeros(&[1], MlxDtype::Float32, None),
+            out_proj: unit_weight(),
+        }
+    }
+
+    #[test]
+    fn weight_layout_telemetry_counts_linear_attention_packed_and_split_layers() {
+        let mut packed = runner_test_layer();
+        packed.linear_attn = Some(linear_attn_packed_weights());
+        let mut split_a = runner_test_layer();
+        split_a.linear_attn = Some(linear_attn_split_weights());
+        let mut split_b = runner_test_layer();
+        split_b.linear_attn = Some(linear_attn_split_weights());
+
+        let telemetry = WeightLayoutTelemetry::from_weights(&runner_test_weights(vec![
+            packed, split_a, split_b,
+        ]));
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_qkvz_ba_packed_layers"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_linear_attention_split_qkvba_layers"),
+            Some(&2)
+        );
     }
 
     fn dense_manifest() -> NativeModelManifest {
@@ -7231,6 +7388,48 @@ mod tests {
     }
 
     #[test]
+    fn linear_attention_direct_cpp_post_input_route_decisions_emit_when_attempted() {
+        let mut profile = LinearAttentionProfileSnapshot {
+            direct_cpp_post_input_attempts: 2,
+            direct_cpp_post_input_hits: 1,
+            direct_cpp_post_input_fallbacks: 1,
+            direct_cpp_post_input_profile_blocked: 1,
+            ..LinearAttentionProfileSnapshot::default()
+        };
+        profile.merge_from(LinearAttentionProfileSnapshot {
+            direct_cpp_post_input_attempts: 3,
+            direct_cpp_post_input_hits: 2,
+            direct_cpp_post_input_fallbacks: 1,
+            direct_cpp_post_input_profile_blocked: 0,
+            ..LinearAttentionProfileSnapshot::default()
+        });
+
+        let mut decisions = Vec::new();
+        profile.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get("ax_mlx_direct_cpp_linear_attention_post_input_attempts"),
+            Some(&5)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_cpp_linear_attention_post_input_hits"),
+            Some(&3)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_cpp_linear_attention_post_input_fallbacks"),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked"),
+            Some(&1)
+        );
+        assert!(!decisions.contains_key("ax_mlx_linear_attention_profile_enabled"));
+    }
+
+    #[test]
     fn direct_mlx_hotpath_route_decisions_emit_when_attempted() {
         let mut profile = DirectMlxHotpathProfileSnapshot {
             gemma4_post_attn_ffn_attempts: 2,
@@ -7598,11 +7797,17 @@ mod tests {
         telemetry.record_direct_pipeline(11);
         telemetry.record_direct_pipeline_timings(DirectPipelineTimings {
             forward_wall_us: 3,
+            forward_layer_loop_wall_us: 2,
+            forward_head_wall_us: 1,
             argmax_wall_us: 4,
             async_eval_wall_us: 2,
             next_complete_wall_us: 6,
             pending_eval_wall_us: 5,
             pending_read_wall_us: 1,
+            linear_attention_layer_ops: 0,
+            linear_attention_layer_count: 0,
+            full_attention_layer_ops: 0,
+            full_attention_layer_count: 0,
         });
         telemetry.record_direct_pipeline_op_count(42);
         telemetry.record_single_decode(13);
@@ -7642,6 +7847,14 @@ mod tests {
         assert_eq!(
             decisions.get("ax_mlx_direct_pipeline_forward_wall_us"),
             Some(&3)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_forward_layer_loop_wall_us"),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_forward_head_wall_us"),
+            Some(&1)
         );
         assert_eq!(
             decisions.get("ax_mlx_direct_pipeline_argmax_wall_us"),

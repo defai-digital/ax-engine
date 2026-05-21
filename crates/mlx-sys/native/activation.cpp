@@ -237,6 +237,110 @@ qwen_linear_attention_inputs_packed_impl(
   return {qkv, z, a, b};
 }
 
+// Qwen linear-attention post-input block: from the concatenated qkv produced
+// by `qwen_linear_attention_inputs_packed` (or the portable composition),
+// run depthwise conv1d with cached state carry, SiLU, last-dim split into
+// (q_flat, k_flat, v_flat), reshape into head-major layout, then RMSNorm + scale
+// on q and k. This is everything between input staging and the
+// `qwen35_gated_delta_v3` custom Metal kernel, packed into one Rust→C++ FFI
+// round-trip so the per-decode-token op-count drops from ~14 mlx-c dispatches
+// per linear-attention layer to 1.
+std::tuple<mx::array, mx::array, mx::array, mx::array>
+qwen_linear_attention_post_input_impl(
+    const mx::array& qkv,
+    const mx::array& conv_weight,
+    std::optional<mx::array> cached_conv_state,
+    int num_key_heads,
+    int key_head_dim,
+    int num_value_heads,
+    int value_head_dim,
+    int conv_kernel_dim,
+    float q_scale,
+    float k_scale,
+    float rms_norm_eps,
+    mx::StreamOrDevice stream) {
+  if (qkv.ndim() != 3) {
+    throw std::runtime_error("linear attention post-input expects [B, T, conv_dim] qkv");
+  }
+  if (conv_weight.ndim() != 3) {
+    throw std::runtime_error("linear attention post-input expects 3-D conv1d weight");
+  }
+  if (num_key_heads <= 0 || num_value_heads <= 0 || key_head_dim <= 0 ||
+      value_head_dim <= 0 || conv_kernel_dim <= 0) {
+    throw std::runtime_error("linear attention post-input requires positive dimensions");
+  }
+  if (num_value_heads % num_key_heads != 0) {
+    throw std::runtime_error("num_value_heads must be divisible by num_key_heads");
+  }
+
+  const int batch = qkv.shape(0);
+  const int seq = qkv.shape(1);
+  const int conv_dim = qkv.shape(2);
+  const int key_dim = num_key_heads * key_head_dim;
+  const int value_dim = num_value_heads * value_head_dim;
+  if (conv_dim != 2 * key_dim + value_dim) {
+    throw std::runtime_error(
+        "linear attention post-input qkv last dim must equal 2*key_dim + value_dim");
+  }
+  const int tail_len = conv_kernel_dim - 1;
+  if (tail_len < 0) {
+    throw std::runtime_error("conv_kernel_dim must be >= 1");
+  }
+
+  // 1. Build (or reuse) the conv-state carry. mlx_lm initialises state as
+  //    `mx::zeros([B, tail_len, conv_dim], dtype)` matching the qkv dtype.
+  mx::array conv_state = cached_conv_state.has_value()
+      ? std::move(cached_conv_state.value())
+      : mx::zeros({batch, tail_len, conv_dim}, qkv.dtype(), stream);
+  if (conv_state.ndim() != 3 || conv_state.shape(0) != batch ||
+      conv_state.shape(1) != tail_len || conv_state.shape(2) != conv_dim) {
+    throw std::runtime_error("cached conv state shape mismatch");
+  }
+
+  // 2. Concatenate prior state with current step's qkv along the time axis,
+  //    then slice the tail to feed forward as the next call's state.
+  auto conv_input = mx::concatenate({conv_state, qkv}, 1, stream);
+  const int total = conv_input.shape(1);
+  auto new_conv_state = mx::slice(
+      conv_input,
+      mx::Shape{0, total - tail_len, 0},
+      mx::Shape{batch, total, conv_dim},
+      mx::Shape{1, 1, 1},
+      stream);
+
+  // 3. Depthwise conv1d (groups = conv_dim) and SiLU. The Rust composition
+  //    uses padding=0; the prepended state carry compensates for the kernel
+  //    receptive field so no zero padding is required.
+  auto conv_out = mx::conv1d(conv_input, conv_weight, 1, 0, 1, conv_dim, stream);
+  conv_out = mx::multiply(conv_out, mx::sigmoid(conv_out, stream), stream);
+
+  // 4. Split [B, T, conv_dim] into (q_flat, k_flat, v_flat) along last axis.
+  auto q_flat = slice_last_dim_impl(conv_out, 0, key_dim, stream);
+  auto k_flat = slice_last_dim_impl(conv_out, key_dim, 2 * key_dim, stream);
+  auto v_flat = slice_last_dim_impl(conv_out, 2 * key_dim, 2 * key_dim + value_dim, stream);
+
+  // 5. Reshape into head-major layout matching `split_linear_attention_qkv`.
+  auto q = mx::reshape(q_flat, {batch, seq, num_key_heads, key_head_dim}, stream);
+  auto k = mx::reshape(k_flat, {batch, seq, num_key_heads, key_head_dim}, stream);
+  auto v = mx::reshape(v_flat, {batch, seq, num_value_heads, value_head_dim}, stream);
+
+  // 6. Per-head RMSNorm on q and k (no learned weight, just normalisation).
+  //    Matches `normalize_linear_attention_qk` which calls `rms_norm(q, None, eps)`.
+  std::optional<mx::array> no_weight = std::nullopt;
+  auto q_normed = mx::fast::rms_norm(q, no_weight, rms_norm_eps, stream);
+  auto k_normed = mx::fast::rms_norm(k, no_weight, rms_norm_eps, stream);
+
+  // 7. Scale by precomputed (q_scale, k_scale) constants. These are derived
+  //    from `linear_attention_qk_scale(key_head_dim)` in Rust; passing them in
+  //    avoids replicating that derivation here.
+  auto q_scale_arr = mx::array(q_scale, q.dtype());
+  auto k_scale_arr = mx::array(k_scale, k.dtype());
+  q = mx::multiply(q_normed, q_scale_arr, stream);
+  k = mx::multiply(k_normed, k_scale_arr, stream);
+
+  return {q, k, v, new_conv_state};
+}
+
 mx::array qk_norm_rope_bhsd_from_proj_impl(
     const mx::array& proj,
     std::optional<mx::array> norm,
@@ -461,6 +565,47 @@ extern "C" int ax_mlx_qwen_linear_attention_inputs_packed(
     set_array(z_res, std::move(z));
     set_array(a_res, std::move(a));
     set_array(b_res, std::move(b));
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+extern "C" int ax_mlx_qwen_linear_attention_post_input(
+    mlx_array* q_res,
+    mlx_array* k_res,
+    mlx_array* v_res,
+    mlx_array* new_conv_state_res,
+    const mlx_array qkv,
+    const mlx_array conv_weight,
+    const mlx_array cached_conv_state,
+    int num_key_heads,
+    int key_head_dim,
+    int num_value_heads,
+    int value_head_dim,
+    int conv_kernel_dim,
+    float q_scale,
+    float k_scale,
+    float rms_norm_eps,
+    const mlx_stream stream) {
+  try {
+    auto [q, k, v, new_conv_state] = qwen_linear_attention_post_input_impl(
+        array_ref(qkv),
+        array_ref(conv_weight),
+        optional_array(cached_conv_state),
+        num_key_heads,
+        key_head_dim,
+        num_value_heads,
+        value_head_dim,
+        conv_kernel_dim,
+        q_scale,
+        k_scale,
+        rms_norm_eps,
+        stream_or_default(stream));
+    set_array(q_res, std::move(q));
+    set_array(k_res, std::move(k));
+    set_array(v_res, std::move(v));
+    set_array(new_conv_state_res, std::move(new_conv_state));
     return 0;
   } catch (...) {
     return 1;

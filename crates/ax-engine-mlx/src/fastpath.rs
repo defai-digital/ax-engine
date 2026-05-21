@@ -258,6 +258,25 @@ env_flag!(
     "AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"
 );
 
+env_flag!(
+    /// `AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT` — opt-in direct C++
+    /// route for the Qwen linear-attention post-input block.
+    ///
+    /// **Default: OFF**. Pairs with the sibling input-staging shim
+    /// (`AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS`) to cover the bracketing
+    /// portion of the linear-attention layer around the `qwen35_gated_delta_v3`
+    /// custom Metal kernel. The shim fuses conv1d (with cached-state carry),
+    /// SiLU, last-dim split into q/k/v, head-major reshape, per-head RMSNorm
+    /// on q and k, and scale-by-precomputed-constants — ~14 mlx-c dispatches
+    /// per Qwen 3.6 layer collapsed to one Rust→C++ round-trip. Per-token
+    /// projected savings are bounded by the AX-vs-mlx-python marshalling
+    /// delta (~250 ns/op × ~13 ops × 48 layers ≈ 156 µs/tok). Stays opt-in
+    /// until a thermal-settled A/B records a measurable decode-tok/s shift
+    /// above the run-to-run noise floor on real artifacts.
+    direct_cpp_linear_attention_post_input_enabled,
+    "AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — load-time packing for Qwen
     /// linear-attention projections.
@@ -501,6 +520,21 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_INPUTS_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn direct_cpp_linear_attention_post_input_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_POST_INPUT_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_POST_INPUT_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_POST_INPUT_ENABLED",
             "1"
         ));
     }

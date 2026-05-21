@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -21,6 +22,15 @@ pub const DEFAULT_PREFILL_CHUNK: usize = GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DirectPipelineTimings {
     pub forward_wall_us: u32,
+    /// Subset of `forward_wall_us`: time spent inside the 64-layer
+    /// `layer_forward_with_turboquant_context` loop. Always recorded (no eval
+    /// barrier inserted). The residual `forward_wall_us - layer_loop_wall_us -
+    /// head_wall_us` covers embed-tokens + per-layer-input + dtype-cast +
+    /// scale-hidden graph-build cost.
+    pub forward_layer_loop_wall_us: u32,
+    /// Subset of `forward_wall_us`: time spent in the post-layer final RMSNorm
+    /// + lm-head qmatmul + logit finalize chain. Always recorded.
+    pub forward_head_wall_us: u32,
     pub argmax_wall_us: u32,
     pub async_eval_wall_us: u32,
     /// Diagnostic-only: time spent in the synchronous `eval(next_token)` barrier
@@ -31,6 +41,91 @@ pub struct DirectPipelineTimings {
     pub next_complete_wall_us: u32,
     pub pending_eval_wall_us: u32,
     pub pending_read_wall_us: u32,
+    /// Total mlx-sys FFI op count dispatched across all Qwen linear-attention
+    /// layers in the most recent forward. Divide by
+    /// `linear_attention_layer_count` to get ops/layer. Zero for models without
+    /// linear-attention layers.
+    pub linear_attention_layer_ops: u64,
+    pub linear_attention_layer_count: u32,
+    /// Total mlx-sys FFI op count dispatched across all standard-SDPA layers
+    /// (Gemma 4, full-attention slices of Qwen 3.6, Llama 3, etc.) in the most
+    /// recent forward. Divide by `full_attention_layer_count` to get ops/layer.
+    pub full_attention_layer_ops: u64,
+    pub full_attention_layer_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ForwardStageTimings {
+    pub layer_loop_wall_us: u32,
+    pub head_wall_us: u32,
+    pub linear_attention_layer_ops: u64,
+    pub linear_attention_layer_count: u32,
+    pub full_attention_layer_ops: u64,
+    pub full_attention_layer_count: u32,
+}
+
+thread_local! {
+    static FORWARD_STAGE_TIMINGS: Cell<ForwardStageTimings> = const {
+        Cell::new(ForwardStageTimings {
+            layer_loop_wall_us: 0,
+            head_wall_us: 0,
+            linear_attention_layer_ops: 0,
+            linear_attention_layer_count: 0,
+            full_attention_layer_ops: 0,
+            full_attention_layer_count: 0,
+        })
+    };
+}
+
+fn reset_forward_stage_timings() {
+    FORWARD_STAGE_TIMINGS.with(|cell| cell.set(ForwardStageTimings::default()));
+}
+
+fn take_forward_stage_timings() -> ForwardStageTimings {
+    FORWARD_STAGE_TIMINGS.with(|cell| cell.replace(ForwardStageTimings::default()))
+}
+
+/// Record the wall time spent inside the per-layer forward loop. Called once
+/// per decode forward by `forward_lazy_single_*`. Always-on; uses a thread-local
+/// `Cell` to avoid any locking on the hot path.
+pub(crate) fn record_forward_layer_loop_wall_us(us: u32) {
+    FORWARD_STAGE_TIMINGS.with(|cell| {
+        let mut current = cell.get();
+        current.layer_loop_wall_us = current.layer_loop_wall_us.saturating_add(us);
+        cell.set(current);
+    });
+}
+
+/// Record the wall time spent inside the post-layer RMSNorm + lm-head chain.
+pub(crate) fn record_forward_head_wall_us(us: u32) {
+    FORWARD_STAGE_TIMINGS.with(|cell| {
+        let mut current = cell.get();
+        current.head_wall_us = current.head_wall_us.saturating_add(us);
+        cell.set(current);
+    });
+}
+
+/// Record the number of mlx-sys FFI ops dispatched for one layer's forward pass,
+/// classified by whether the layer uses the Qwen linear-attention recurrence or
+/// the standard full-attention SDPA. Counts plus invocations are aggregated per
+/// forward and read by `advance_direct_pipeline_*` so direct-cpp shim targeting
+/// can be driven from real per-layer-kind op distributions instead of guesswork.
+pub(crate) fn record_layer_ops(is_linear_attention: bool, op_delta: u64) {
+    FORWARD_STAGE_TIMINGS.with(|cell| {
+        let mut current = cell.get();
+        if is_linear_attention {
+            current.linear_attention_layer_ops =
+                current.linear_attention_layer_ops.saturating_add(op_delta);
+            current.linear_attention_layer_count =
+                current.linear_attention_layer_count.saturating_add(1);
+        } else {
+            current.full_attention_layer_ops =
+                current.full_attention_layer_ops.saturating_add(op_delta);
+            current.full_attention_layer_count =
+                current.full_attention_layer_count.saturating_add(1);
+        }
+        cell.set(current);
+    });
 }
 
 pub struct DirectPipelineAdvance {
@@ -270,6 +365,7 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
     // forward_lazy_single accepts an unevaluated MlxArray, so this runs entirely
     // on the CPU without waiting for `pending` to be materialised.
     let token_offset = cache.seq_len;
+    reset_forward_stage_timings();
     let forward_started = Instant::now();
     let logits = forward_lazy_single_argmax_with_turboquant_context(
         cfg,
@@ -280,6 +376,7 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
         turboquant_context,
     );
     let forward_wall_us = elapsed_us(forward_started);
+    let forward_stage = take_forward_stage_timings();
     cache.seq_len += 1;
     let argmax_started = Instant::now();
     let next_token_arr = argmax(&logits, None);
@@ -318,11 +415,17 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
         next_pending: next_token_arr,
         timings: DirectPipelineTimings {
             forward_wall_us,
+            forward_layer_loop_wall_us: forward_stage.layer_loop_wall_us,
+            forward_head_wall_us: forward_stage.head_wall_us,
             argmax_wall_us,
             async_eval_wall_us,
             next_complete_wall_us,
             pending_eval_wall_us,
             pending_read_wall_us,
+            linear_attention_layer_ops: forward_stage.linear_attention_layer_ops,
+            linear_attention_layer_count: forward_stage.linear_attention_layer_count,
+            full_attention_layer_ops: forward_stage.full_attention_layer_ops,
+            full_attention_layer_count: forward_stage.full_attention_layer_count,
         },
     }
 }

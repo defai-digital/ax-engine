@@ -19,3 +19,11 @@ tracing.workspace = true
 [[bin]]
 name = "mlx-bench"
 path = "src/bench_main.rs"
+
+[[bin]]
+name = "pack-audit"
+path = "src/pack_audit_main.rs"
+
+[[bin]]
+name = "decode-trace"
+path = "src/decode_trace_main.rs"

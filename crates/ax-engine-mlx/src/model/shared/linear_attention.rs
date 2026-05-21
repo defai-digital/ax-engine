@@ -1,6 +1,6 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, concatenate, qwen_linear_attention_inputs_packed, reshape, slice_last_dim,
-    zeros,
+    MlxArray, MlxDtype, concatenate, qwen_linear_attention_inputs_packed,
+    qwen_linear_attention_post_input, reshape, slice_last_dim, zeros,
 };
 use std::time::Instant;
 
@@ -11,6 +11,10 @@ use super::super::profile::{
     record_linear_attention_direct_cpp_inputs_fallback,
     record_linear_attention_direct_cpp_inputs_hit,
     record_linear_attention_direct_cpp_inputs_profile_blocked,
+    record_linear_attention_direct_cpp_post_input_attempt,
+    record_linear_attention_direct_cpp_post_input_fallback,
+    record_linear_attention_direct_cpp_post_input_hit,
+    record_linear_attention_direct_cpp_post_input_profile_blocked,
     record_linear_attention_profile_layer,
 };
 use super::utils::qw;
@@ -53,24 +57,8 @@ pub(crate) fn linear_attention_forward(
     );
 
     let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
-    let profile_started = Instant::now();
-    let (conv_out, new_conv_state) =
-        linear_attention_conv1d(linear_cfg, &qkv, &linear_w.conv1d_dense, conv_state);
-    linear_attention_profile_eval_elapsed(
-        profile_enabled,
-        LinearAttentionProfileStage::Conv,
-        profile_started,
-        &[&conv_out, &new_conv_state],
-    );
-    let qkv = split_linear_attention_qkv(linear_cfg, &conv_out);
-    let profile_started = Instant::now();
-    let (q, k) = normalize_linear_attention_qk(linear_cfg, &qkv.q, &qkv.k, cfg.rms_norm_eps);
-    linear_attention_profile_eval_elapsed(
-        profile_enabled,
-        LinearAttentionProfileStage::QkNorm,
-        profile_started,
-        &[&q, &k],
-    );
+    let (q, k, v, new_conv_state) =
+        linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, conv_state, profile_enabled);
     // `a_log` and `dt_bias` are pre-cast to f32 at weight-load time (see
     // `load_linear_attention_weights` in `weights.rs`). mlx_lm preserves A_log
     // as float32 and computes g in float32 precision; doing the cast per
@@ -95,7 +83,7 @@ pub(crate) fn linear_attention_forward(
     // g and beta are computed inside the Metal kernel (fused) instead of as separate
     // lazy MLX ops, eliminating ~8 kernel dispatches per layer.
     let (out, new_recurrent_state) =
-        gated_delta_kernel(&q, &k, &qkv.v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
+        gated_delta_kernel(&q, &k, &v, &a_log_f32, &a, &dt_bias_f32, &b, &state);
     linear_attention_profile_eval_elapsed(
         profile_enabled,
         LinearAttentionProfileStage::Recurrent,
@@ -115,6 +103,73 @@ pub(crate) fn linear_attention_forward(
         &[&out],
     );
     out
+}
+
+/// Run the linear-attention post-input chain (conv1d + SiLU + split + per-head
+/// reshape + qk RMSNorm + scale) as either:
+/// (a) one direct-C++ FFI round-trip via `qwen_linear_attention_post_input` when
+///     the env flag is set AND per-layer linear-attention profiling is off, or
+/// (b) the portable Rust composition that mirrors mlx_lm's reference.
+///
+/// `profile_enabled` blocks the shim because the shim does not surface
+/// `LinearAttentionProfileStage::Conv` / `QkNorm` per-stage eval barriers; the
+/// portable path is preserved exactly so profiling-driven decode artifacts
+/// remain fair against any future Rust-side optimisation.
+fn linear_attention_post_input(
+    cfg: &ModelConfig,
+    linear_cfg: &LinearAttentionConfig,
+    linear_w: &crate::weights::LinearAttentionWeights,
+    qkv: &MlxArray,
+    cached_conv_state: Option<&MlxArray>,
+    profile_enabled: bool,
+) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
+    if fastpath::direct_cpp_linear_attention_post_input_enabled() {
+        record_linear_attention_direct_cpp_post_input_attempt();
+        if profile_enabled {
+            record_linear_attention_direct_cpp_post_input_profile_blocked();
+            record_linear_attention_direct_cpp_post_input_fallback();
+        } else if let Some(outputs) = qwen_linear_attention_post_input(
+            qkv,
+            &linear_w.conv1d_dense,
+            cached_conv_state,
+            linear_cfg.num_key_heads as i32,
+            linear_cfg.key_head_dim as i32,
+            linear_cfg.num_value_heads as i32,
+            linear_cfg.value_head_dim as i32,
+            linear_cfg.conv_kernel_dim as i32,
+            linear_cfg.q_scale,
+            linear_cfg.k_scale,
+            cfg.rms_norm_eps,
+            None,
+        ) {
+            record_linear_attention_direct_cpp_post_input_hit();
+            return outputs;
+        } else {
+            record_linear_attention_direct_cpp_post_input_fallback();
+        }
+    }
+
+    // Portable composition — exact mirror of the C++ shim, used when the flag
+    // is off, when profiling is on, or when the shim rejected the shapes.
+    let profile_started = Instant::now();
+    let (conv_out, new_conv_state) =
+        linear_attention_conv1d(linear_cfg, qkv, &linear_w.conv1d_dense, cached_conv_state);
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::Conv,
+        profile_started,
+        &[&conv_out, &new_conv_state],
+    );
+    let split = split_linear_attention_qkv(linear_cfg, &conv_out);
+    let profile_started = Instant::now();
+    let (q, k) = normalize_linear_attention_qk(linear_cfg, &split.q, &split.k, cfg.rms_norm_eps);
+    linear_attention_profile_eval_elapsed(
+        profile_enabled,
+        LinearAttentionProfileStage::QkNorm,
+        profile_started,
+        &[&q, &k],
+    );
+    (q, k, split.v, new_conv_state)
 }
 
 pub(crate) fn linear_attention_inputs(
