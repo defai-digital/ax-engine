@@ -13,4 +13,10 @@ pub mod turboquant_metal;
 pub mod weight_rotation;
 pub mod weights;
 
+pub mod diagnostics {
+    pub use crate::model::profile::{
+        LinearAttentionProfileSnapshot, take_linear_attention_profile_snapshot,
+    };
+}
+
 pub use runner::{EmbedCompileCacheStats, MlxPrefixCacheStore, MlxRunner};

@@ -14,6 +14,7 @@ use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::{
+    diagnostics::take_linear_attention_profile_snapshot,
     generate::{
         DEFAULT_PREFILL_CHUNK, advance_direct_pipeline_with_timings_and_turboquant_context,
         chunked_prefill, start_direct_pipeline,
@@ -156,6 +157,23 @@ fn main() {
             avg * layers_per_tok
         );
     }
+    let linear_profile = take_linear_attention_profile_snapshot();
+    println!();
+    println!("linear-attention direct C++ counters:");
+    println!(
+        "  inputs:     attempts={} hits={} fallbacks={} profile_blocked={}",
+        linear_profile.direct_cpp_inputs_attempts,
+        linear_profile.direct_cpp_inputs_hits,
+        linear_profile.direct_cpp_inputs_fallbacks,
+        linear_profile.direct_cpp_inputs_profile_blocked
+    );
+    println!(
+        "  post-input: attempts={} hits={} fallbacks={} profile_blocked={}",
+        linear_profile.direct_cpp_post_input_attempts,
+        linear_profile.direct_cpp_post_input_hits,
+        linear_profile.direct_cpp_post_input_fallbacks,
+        linear_profile.direct_cpp_post_input_profile_blocked
+    );
     println!();
     println!(
         "decode tok/s = {:.2}",
