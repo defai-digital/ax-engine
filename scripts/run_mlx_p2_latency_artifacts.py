@@ -608,8 +608,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--context-tokens", type=int, default=8192)
     parser.add_argument("--startup-generation-tokens", type=int, default=128)
     parser.add_argument("--concurrent-generation-tokens", type=int, default=1)
-    parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--cooldown", type=float, default=5.0)
+    parser.add_argument("--repetitions", type=int, default=5)
+    parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument(
         "--axengine-port",
         type=int,

@@ -16,7 +16,7 @@ OUTPUT_ROOT="$ROOT_DIR/benchmarks/community-results/local"
 PROMPT_TOKENS="${AX_BENCH_PROMPT_TOKENS:-128,512,2048}"
 GENERATION_TOKENS="${AX_BENCH_GENERATION_TOKENS:-128}"
 REPETITIONS="${AX_BENCH_REPETITIONS:-5}"
-COOLDOWN="${AX_BENCH_COOLDOWN:-3}"
+COOLDOWN="${AX_BENCH_COOLDOWN:-15}"
 PREFILL_STEP_SIZE="${AX_BENCH_PREFILL_STEP_SIZE:-2048}"
 RUN_LABEL="${AX_BENCH_RUN_LABEL:-}"
 AX_COMPARE_POLICIES=1
@@ -34,7 +34,7 @@ Options:
   --prompt-tokens LIST          Comma-separated prompt lengths. Defaults to 128,512,2048.
   --generation-tokens N         Generated token count. Defaults to 128.
   --repetitions N               Timed repetitions. Defaults to 5.
-  --cooldown SECONDS            Cooldown between repetitions. Defaults to 3.
+  --cooldown SECONDS            Cooldown between repetitions. Defaults to 15.
   --prefill-step-size N         MLX prefill step size. Defaults to 2048.
   --run-label LABEL             Human-readable output directory label.
   --direct-only                 Emit only the direct same-policy AX row.

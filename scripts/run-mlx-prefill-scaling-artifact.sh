@@ -13,7 +13,7 @@ OUTPUT_ROOT="$ROOT_DIR/benchmarks/results/mlx-inference/prefill-scaling-runs"
 PROMPT_TOKENS="${AX_MLX_PREFILL_PROMPT_TOKENS:-1024,2048,4096,8192}"
 GENERATION_TOKENS="${AX_MLX_PREFILL_GENERATION_TOKENS:-1}"
 REPETITIONS="${AX_MLX_PREFILL_REPETITIONS:-5}"
-COOLDOWN="${AX_MLX_PREFILL_COOLDOWN:-5}"
+COOLDOWN="${AX_MLX_PREFILL_COOLDOWN:-15}"
 PREFILL_STEP_SIZE="${AX_MLX_PREFILL_STEP_SIZE:-2048}"
 MODEL_ID="${AX_MLX_PREFILL_MODEL_ID:-}"
 RUN_LABEL="${AX_MLX_PREFILL_RUN_LABEL:-}"
@@ -31,7 +31,7 @@ Options:
   --prompt-tokens LIST      Comma-separated context sizes. Defaults to 1024,2048,4096,8192.
   --generation-tokens N     Generated token count. Defaults to 1 for prefill/TTFT evidence.
   --repetitions N           Timed repetitions. Defaults to 5.
-  --cooldown SECONDS        Cooldown between repetitions. Defaults to 5.
+  --cooldown SECONDS        Cooldown between repetitions. Defaults to 15.
   --prefill-step-size N     MLX prefill step size. Defaults to 2048.
   --model-id ID             Artifact model id. Defaults to the model directory path used by the harness.
   --run-label LABEL         Human-readable output directory label.

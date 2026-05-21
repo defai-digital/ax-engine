@@ -15,7 +15,7 @@ STARTUP_GENERATION_TOKENS="${AX_MLX_P2_STARTUP_GENERATION_TOKENS:-128}"
 CONCURRENT_GENERATION_TOKENS="${AX_MLX_P2_CONCURRENT_GENERATION_TOKENS:-1}"
 CONCURRENCY_LEVELS="${AX_MLX_P2_CONCURRENCY_LEVELS:-1,2,4}"
 REPETITIONS="${AX_MLX_P2_REPETITIONS:-5}"
-COOLDOWN="${AX_MLX_P2_COOLDOWN:-5}"
+COOLDOWN="${AX_MLX_P2_COOLDOWN:-15}"
 MODEL_ID="${AX_MLX_P2_MODEL_ID:-}"
 RUN_LABEL="${AX_MLX_P2_RUN_LABEL:-}"
 HOST_LABEL="${AX_MLX_P2_HOST_LABEL:-unknown_apple_silicon}"
@@ -37,7 +37,7 @@ Options:
   --concurrent-generation-tokens N  Generated token count for concurrent-prefill rows. Defaults to 1.
   --concurrency-levels LIST         Comma-separated concurrency levels. Defaults to 1,2,4.
   --repetitions N                   Timed repetitions. Defaults to 5.
-  --cooldown SECONDS                Cooldown between repetitions. Defaults to 5.
+  --cooldown SECONDS                Cooldown between repetitions. Defaults to 15.
   --model-id ID                     Artifact model id. Defaults to the model directory path used by the runner.
   --run-label LABEL                 Human-readable output directory label.
   --host-label LABEL                Host label recorded in artifacts. Defaults to unknown_apple_silicon.
