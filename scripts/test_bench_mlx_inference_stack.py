@@ -61,6 +61,10 @@ def write_gateddelta_model(
 
 
 class MlxInferenceStackBenchTests(unittest.TestCase):
+    def test_default_repetition_and_cooldown_contract_matches_docs(self) -> None:
+        self.assertEqual(bench.DEFAULT_REPETITIONS, 5)
+        self.assertEqual(bench.DEFAULT_COOLDOWN, 15.0)
+
     def test_hf_cache_roots_follow_hugging_face_env_order(self) -> None:
         with patch.dict(
             os.environ,
