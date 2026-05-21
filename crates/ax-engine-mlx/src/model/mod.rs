@@ -1885,6 +1885,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,
@@ -1951,6 +1952,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,
@@ -2123,6 +2125,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,
@@ -2261,6 +2264,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,
@@ -2985,6 +2989,27 @@ mod tests {
     }
 
     #[test]
+    fn shared_expert_forward_uses_packed_gate_up_projection() {
+        let mut cfg = cfg(false);
+        cfg.hidden_size = 1;
+        cfg.moe_expert_intermediate_size = 1;
+        cfg.uses_geglu = false;
+        let mut weights = empty_layer_weights(1);
+        weights.shared_gate_up_proj = Some(dense_weight_from_data(&[2.0, 1.0], &[2, 1]));
+        weights.shared_down_proj = Some(dense_weight_from_data(&[1.0], &[1, 1]));
+        let x = array_f32(&[1.0], &[1, 1, 1]);
+
+        let actual = shared_expert_forward(&cfg, &weights, &x);
+        let gate = array_f32(&[2.0], &[1, 1, 1]);
+        let up = array_f32(&[1.0], &[1, 1, 1]);
+        let hidden = swiglu(&gate, &up);
+        let expected = qw(&hidden, weights.shared_down_proj.as_ref().unwrap());
+
+        eval(&[&actual, &expected]);
+        assert_close(actual.data_f32(), expected.data_f32(), 1e-5);
+    }
+
+    #[test]
     fn glm_full_forward_spans_dense_and_moe_layers() {
         let mut manifest = glm4_moe_lite_manifest();
         manifest.hidden_size = 8;
@@ -3094,6 +3119,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,
@@ -3187,6 +3213,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,
@@ -3256,6 +3283,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,
@@ -3325,6 +3353,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,
@@ -3394,6 +3423,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,
@@ -3506,6 +3536,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,

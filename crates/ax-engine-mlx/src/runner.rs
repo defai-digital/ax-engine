@@ -6196,6 +6196,7 @@ mod tests {
             per_layer_proj_w: None,
             per_layer_post_norm: None,
             shared_expert_gate: None,
+            shared_gate_up_proj: None,
             shared_gate_proj: None,
             shared_up_proj: None,
             shared_down_proj: None,

@@ -80,6 +80,7 @@ pub struct LayerWeights {
     pub per_layer_post_norm: Option<MlxArray>,
     // MoE: expert weights (shape [num_experts, expert_size, hidden] / packed).
     pub shared_expert_gate: Option<QuantizedWeight>,
+    pub shared_gate_up_proj: Option<QuantizedWeight>,
     pub shared_gate_proj: Option<QuantizedWeight>,
     pub shared_up_proj: Option<QuantizedWeight>,
     pub shared_down_proj: Option<QuantizedWeight>,
@@ -500,6 +501,18 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         } else {
             None
         };
+        let (shared_gate_up_proj, shared_gate_proj, shared_up_proj) =
+            match (shared_gate_proj, shared_up_proj) {
+                (Some(gate), Some(up)) => {
+                    if dense_ffn_gate_up_packing_enabled() {
+                        let packed = pack_dense_ffn_gate_up_projection(&gate, &up)?;
+                        (Some(packed), None, None)
+                    } else {
+                        (None, Some(gate), Some(up))
+                    }
+                }
+                (gate, up) => (None, gate, up),
+            };
 
         let gate_up_exps_packed = if has_role(specs, NativeTensorRole::FfnGateUpExpsPacked, idx) {
             Some(take_weight(
@@ -721,6 +734,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             per_layer_proj_w,
             per_layer_post_norm,
             shared_expert_gate,
+            shared_gate_up_proj,
             shared_gate_proj,
             shared_up_proj,
             shared_down_proj,

@@ -187,6 +187,18 @@ pub(crate) fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxA
     }
 }
 
+fn packed_ffn_activation(
+    cfg: &ModelConfig,
+    gate_up: &MlxArray,
+    hidden_dim: i32,
+) -> Option<MlxArray> {
+    if cfg.uses_geglu {
+        packed_geglu_metal(gate_up, hidden_dim)
+    } else {
+        packed_swiglu_metal(gate_up, hidden_dim)
+    }
+}
+
 static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
@@ -489,19 +501,40 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
 }
 
 pub(crate) fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
-    let gate = qw(
-        x,
-        w.shared_gate_proj
-            .as_ref()
-            .expect("shared expert must have gate projection"),
-    );
-    let up = qw(
-        x,
-        w.shared_up_proj
-            .as_ref()
-            .expect("shared expert must have up projection"),
-    );
-    let hidden = dense_ffn_activation(cfg, &gate, &up);
+    let hidden = if let Some(packed) = w.shared_gate_up_proj.as_ref() {
+        let gate_up = qw(x, packed);
+        let packed_dim = gate_up
+            .shape()
+            .last()
+            .copied()
+            .expect("packed shared expert output must have a last dimension");
+        assert!(
+            packed_dim > 0 && packed_dim % 2 == 0,
+            "packed shared expert output last dimension must be positive and even, got {packed_dim}"
+        );
+        let half = packed_dim / 2;
+        if let Some(hidden) = packed_ffn_activation(cfg, &gate_up, half) {
+            hidden
+        } else {
+            let gate = mlx_slice_last_dim(&gate_up, 0, half);
+            let up = mlx_slice_last_dim(&gate_up, half, half * 2);
+            dense_ffn_activation(cfg, &gate, &up)
+        }
+    } else {
+        let gate = qw(
+            x,
+            w.shared_gate_proj
+                .as_ref()
+                .expect("shared expert must have gate projection"),
+        );
+        let up = qw(
+            x,
+            w.shared_up_proj
+                .as_ref()
+                .expect("shared expert must have up projection"),
+        );
+        dense_ffn_activation(cfg, &gate, &up)
+    };
     let shared = qw(
         &hidden,
         w.shared_down_proj
