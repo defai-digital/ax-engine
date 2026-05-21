@@ -298,10 +298,6 @@ formula_path = Path(sys.argv[1])
 bins = sys.argv[2:]
 text = formula_path.read_text(encoding="utf-8")
 
-# Already all present — nothing to do
-if all(f'"{binary}"' in text for binary in bins):
-    raise SystemExit(0)
-
 # Match any bin.install line(s) — handles both combined and separate forms
 bin_re = re.compile(r'^(?P<indent>[ \t]*)bin\.install\b(?P<rest>[^\n]*)$', re.MULTILINE)
 matches = list(bin_re.finditer(text))
@@ -310,20 +306,16 @@ if not matches:
 
 indent = matches[0].group("indent")
 
-# Collect all binary names already present in any bin.install line (preserving order)
-existing: list[str] = []
-seen: set[str] = set()
-for m in matches:
-    for name in re.findall(r'"([^"]+)"', m.group("rest")):
-        if name not in seen:
-            existing.append(name)
-            seen.add(name)
+# RELEASE_BINS is the source of truth. Replace all bin.install lines with one
+# canonical line listing exactly RELEASE_BINS in order. This removes stale
+# entries from prior releases when a binary is dropped from the build.
+combined = indent + "bin.install " + ", ".join(f'"{b}"' for b in bins)
 
-# Merge: existing first, then any required bins not yet present
-all_bins = existing + [b for b in bins if b not in seen]
-combined = indent + "bin.install " + ", ".join(f'"{b}"' for b in all_bins)
+# Canonical already — single bin.install line, exact match
+if len(matches) == 1 and matches[0].group(0) == combined:
+    raise SystemExit(0)
 
-# Replace the first bin.install with the combined line; remove subsequent ones
+# Replace the first bin.install with the canonical line; remove subsequent ones
 counter: list[int] = [0]
 
 def replacer(m: re.Match) -> str:
@@ -336,13 +328,13 @@ new_text = re.sub(r'\n{3,}', '\n\n', new_text)
 formula_path.write_text(new_text, encoding="utf-8")
 PY
 
-for bin in "${RELEASE_BINS[@]}"; do
-    if ! grep -qF "\"$bin\"" "$FORMULA_PATH"; then
-        echo "error: formula does not install $bin after update" >&2
-        echo "       check the formula manually: $FORMULA_PATH" >&2
-        exit 1
-    fi
-done
+# Verify the canonical bin.install line landed and no stale binary entries remain.
+EXPECTED_BIN_LINE="bin.install $(printf '"%s", ' "${RELEASE_BINS[@]}" | sed 's/, $//')"
+if ! grep -qF "$EXPECTED_BIN_LINE" "$FORMULA_PATH"; then
+    echo "error: formula does not contain canonical line: $EXPECTED_BIN_LINE" >&2
+    echo "       check the formula manually: $FORMULA_PATH" >&2
+    exit 1
+fi
 
 echo "▶ validating formula syntax…"
 ruby -c "$FORMULA_PATH" > /dev/null

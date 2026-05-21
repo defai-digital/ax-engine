@@ -13,5 +13,5 @@ Gem::Specification.new do |spec|
 
   spec.files = Dir["lib/**/*.rb", "ax_engine.gemspec"]
 
-  spec.metadata["source_code_uri"] = "https://github.com/ax-engine/ax-engine-v4"
+  spec.metadata["source_code_uri"] = "https://github.com/defai-digital/ax-engine"
 end

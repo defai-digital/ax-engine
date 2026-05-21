@@ -199,7 +199,7 @@ A matrix manifest is a separate file that references multiple scenario manifests
   "class": "scenario_matrix",
   "members": [
     { "manifest": "benchmarks/manifests/scenario/chat_qwen_short.json" },
-    { "manifest": "benchmarks/manifests/scenario/shared_prefix_long.json", "label": "prefix-long" }
+    { "manifest": "benchmarks/manifests/scenario/shared_prefix_qwen_enterprise.json", "label": "prefix-long" }
   ]
 }
 ```
