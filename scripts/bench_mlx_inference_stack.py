@@ -300,6 +300,13 @@ AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUT_KEYS = [
     "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked",
 ]
 
+AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT_KEYS = [
+    "ax_mlx_direct_cpp_linear_attention_post_input_attempts",
+    "ax_mlx_direct_cpp_linear_attention_post_input_hits",
+    "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks",
+    "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked",
+]
+
 AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN_KEYS = [
     "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts",
     "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits",
@@ -348,6 +355,7 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_dense_ffn_gate_up_packed_layers",
     "ax_mlx_dense_ffn_split_gate_up_layers",
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUT_KEYS,
+    *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT_KEYS,
     *AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN_KEYS,
 ]
 
@@ -2173,6 +2181,51 @@ def summarize_ax_mlx_direct_cpp_linear_attention_inputs(
     }
 
 
+def summarize_ax_mlx_direct_cpp_linear_attention_post_input(
+    telemetry: dict[str, int],
+) -> dict[str, Any]:
+    attempts = int(
+        telemetry.get("ax_mlx_direct_cpp_linear_attention_post_input_attempts", 0)
+    )
+    if attempts <= 0:
+        return {}
+    hits = int(
+        telemetry.get("ax_mlx_direct_cpp_linear_attention_post_input_hits", 0)
+    )
+    fallbacks = int(
+        telemetry.get("ax_mlx_direct_cpp_linear_attention_post_input_fallbacks", 0)
+    )
+    profile_blocked = int(
+        telemetry.get(
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked", 0
+        )
+    )
+    accounted = hits + fallbacks
+    if accounted < attempts:
+        classification = "incomplete_accounting"
+    elif profile_blocked > 0 and hits > 0:
+        classification = "mixed_hit_profile_blocked"
+    elif profile_blocked > 0:
+        classification = "profile_blocked_fallback"
+    elif hits == attempts and fallbacks == 0:
+        classification = "all_hits"
+    elif hits > 0 and fallbacks > 0:
+        classification = "mixed_hit_fallback"
+    elif fallbacks >= attempts:
+        classification = "all_fallback"
+    else:
+        classification = "incomplete_accounting"
+    return {
+        "schema_version": "ax.mlx_direct_cpp_linear_attention_post_input.v1",
+        "classification": classification,
+        "attempts": attempts,
+        "hits": hits,
+        "fallbacks": fallbacks,
+        "profile_blocked": profile_blocked,
+        "hit_rate_micros": int(round(hits * 1_000_000 / attempts)),
+    }
+
+
 def summarize_ax_mlx_direct_cpp_gemma4_post_attn_ffn(
     telemetry: dict[str, int],
 ) -> dict[str, Any]:
@@ -2847,6 +2900,13 @@ def bench_axengine(
     )
     if direct_cpp_linear_inputs:
         row["ax_mlx_direct_cpp_linear_attention_inputs"] = direct_cpp_linear_inputs
+    direct_cpp_linear_post_input = (
+        summarize_ax_mlx_direct_cpp_linear_attention_post_input(ax_mlx_telemetry)
+    )
+    if direct_cpp_linear_post_input:
+        row["ax_mlx_direct_cpp_linear_attention_post_input"] = (
+            direct_cpp_linear_post_input
+        )
     direct_cpp_gemma4_ffn = summarize_ax_mlx_direct_cpp_gemma4_post_attn_ffn(
         ax_mlx_telemetry
     )

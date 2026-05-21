@@ -558,6 +558,41 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(route["attempts"], 4)
         self.assertEqual(route["hits"], 4)
 
+    def test_axengine_summary_exposes_direct_cpp_linear_attention_post_input_route(self) -> None:
+        run = {
+            "prefill_s": 0.2,
+            "decode_s": 0.1,
+            "ttft_ms": 200.0,
+            "prefill_tok_s": 15.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+            "ax_mlx_telemetry": {
+                "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 4,
+                "ax_mlx_direct_cpp_linear_attention_post_input_hits": 4,
+                "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+                "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            },
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[run, run]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+            )
+
+        route = row["ax_mlx_direct_cpp_linear_attention_post_input"]
+        self.assertEqual(
+            route["schema_version"],
+            "ax.mlx_direct_cpp_linear_attention_post_input.v1",
+        )
+        self.assertEqual(route["classification"], "all_hits")
+        self.assertEqual(route["attempts"], 4)
+        self.assertEqual(route["hits"], 4)
+
     def test_axengine_summary_exposes_direct_cpp_gemma4_post_attn_ffn_route(self) -> None:
         run = {
             "prefill_s": 0.2,
@@ -1918,6 +1953,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_direct_cpp_linear_attention_inputs_hits": 4,
                     "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
                     "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+                    "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 2,
+                    "ax_mlx_direct_cpp_linear_attention_post_input_hits": 2,
+                    "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+                    "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
                     "unrelated": 99,
                 }
             }
@@ -1952,6 +1991,13 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             4,
         )
         self.assertEqual(telemetry["ax_mlx_direct_cpp_linear_attention_inputs_hits"], 4)
+        self.assertEqual(
+            telemetry["ax_mlx_direct_cpp_linear_attention_post_input_attempts"],
+            2,
+        )
+        self.assertEqual(
+            telemetry["ax_mlx_direct_cpp_linear_attention_post_input_hits"], 2
+        )
         self.assertEqual(telemetry["ax_mlx_single_decode_steps"], 0)
         self.assertEqual(telemetry["ax_mlx_bonus_tokens"], 0)
         self.assertNotIn("unrelated", telemetry)
@@ -1990,12 +2036,21 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             summary["ax_mlx_direct_cpp_linear_attention_inputs_attempts"],
             4,
         )
+        self.assertEqual(
+            summary["ax_mlx_direct_cpp_linear_attention_post_input_attempts"],
+            2,
+        )
 
         direct_cpp_summary = bench.summarize_ax_mlx_direct_cpp_linear_attention_inputs(
             telemetry
         )
         self.assertEqual(direct_cpp_summary["classification"], "all_hits")
         self.assertEqual(direct_cpp_summary["hit_rate_micros"], 1_000_000)
+        direct_cpp_post_input_summary = (
+            bench.summarize_ax_mlx_direct_cpp_linear_attention_post_input(telemetry)
+        )
+        self.assertEqual(direct_cpp_post_input_summary["classification"], "all_hits")
+        self.assertEqual(direct_cpp_post_input_summary["hit_rate_micros"], 1_000_000)
         self.assertEqual(summary["ax_mlx_decode_wall_us"], 200)
         self.assertEqual(summary["ax_mlx_direct_pipeline_forward_wall_us"], 40)
         self.assertEqual(summary["ax_mlx_direct_pipeline_argmax_wall_us"], 2)
