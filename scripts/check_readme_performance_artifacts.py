@@ -93,6 +93,20 @@ AX_DIRECT_CLAIM_STATUSES = {
     "direct_same_policy_baseline",
 }
 
+AX_DIRECT_ENGINE_KEYS = {
+    "ax_engine_mlx",
+    "ax_engine_mlx_linear_pack",
+    "ax_engine_mlx_dense_ffn_pack",
+    "ax_engine_mlx_direct_gemma4_ffn",
+    "ax_engine_mlx_direct_linear_attention_inputs",
+    "ax_engine_mlx_direct_linear_attention_post_input",
+}
+
+AX_OWNED_MLX_ROW_ENGINE_KEYS = AX_DIRECT_ENGINE_KEYS | {
+    "mlx_lm",
+    "ax_engine_mlx_ngram_accel",
+}
+
 AX_NGRAM_CLAIM_STATUSES = {
     "ngram_acceleration_effective_throughput",
     "ngram_no_draft_direct_fallback",
@@ -1501,7 +1515,7 @@ def validate_artifact_row(
         baseline = row.get("baseline", {})
         if row.get("method") != "mlx_lm.benchmark" or baseline.get("role") != "primary_reference":
             raise ArtifactCheckError(f"{artifact_path} mlx_lm row lacks primary reference identity")
-    elif engine == "ax_engine_mlx":
+    elif engine in AX_DIRECT_ENGINE_KEYS:
         if row.get("ax_decode_policy") != "direct_no_ngram_acceleration":
             raise ArtifactCheckError(f"{artifact_path} direct AX row lacks direct policy")
         if (
@@ -1624,30 +1638,26 @@ def collect_artifact_rows(
                 require_phase0=phase0_claim_gate_enabled(artifact),
             )
             engine = row.get("engine")
-            if engine not in {
-                "mlx_lm",
-                "ax_engine_mlx",
-                "ax_engine_mlx_ngram_accel",
-            }:
+            if engine not in AX_OWNED_MLX_ROW_ENGINE_KEYS:
                 continue
             if engine == "mlx_lm":
                 seen_reference_shapes.add(
                     (int(row["prompt_tokens"]), int(row["generation_tokens"]))
                 )
-            if include_engines is not None and engine not in include_engines:
-                continue
             prompt_tokens = int(row["prompt_tokens"])
-            if (
-                include_prompt_tokens is not None
-                and prompt_tokens not in include_prompt_tokens
-            ):
-                continue
             validate_artifact_row(
                 artifact_path=path,
                 artifact=artifact,
                 row=row,
                 prompt_hashes=prompt_hashes,
             )
+            if include_engines is not None and engine not in include_engines:
+                continue
+            if (
+                include_prompt_tokens is not None
+                and prompt_tokens not in include_prompt_tokens
+            ):
+                continue
             generation_tokens = int(row["generation_tokens"])
             for table_name in table_names:
                 key = (

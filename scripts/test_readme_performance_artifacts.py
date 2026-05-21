@@ -673,6 +673,46 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                         expected_metric_count=7,
                     )
 
+    def test_direct_ax_variant_rows_reject_hidden_hotpath_fallback_counters(
+        self,
+    ) -> None:
+        variant_engines = sorted(checker.AX_DIRECT_ENGINE_KEYS - {"ax_engine_mlx"})
+        for engine in variant_engines:
+            with self.subTest(engine=engine):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self.write_fixture(root)
+                    artifact_path = (
+                        root
+                        / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+                    )
+                    artifact = json.loads(artifact_path.read_text())
+                    direct_row = next(
+                        row
+                        for row in artifact["results"]
+                        if row["engine"] == "ax_engine_mlx"
+                    )
+                    variant_row = dict(direct_row)
+                    variant_row["engine"] = engine
+                    variant_row["ax_mlx_telemetry"] = dict(
+                        direct_row["ax_mlx_telemetry"]
+                    )
+                    variant_row["ax_mlx_telemetry"][
+                        "ax_mlx_single_decode_steps"
+                    ] = 1
+                    artifact["results"].append(variant_row)
+                    artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+                    with self.assertRaisesRegex(
+                        checker.ArtifactCheckError,
+                        "hidden hotpath fallback counters",
+                    ):
+                        checker.check_readme_performance(
+                            repo_root=root,
+                            readme_path=root / "README.md",
+                            expected_metric_count=7,
+                        )
+
     def test_direct_ax_row_accepts_direct_cpp_linear_attention_hits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
