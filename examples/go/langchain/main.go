@@ -8,7 +8,7 @@
 //   ax-engine-server running on http://127.0.0.1:8080
 //
 // Run:
-//   cd examples/go && go run ./langchain
+//   cd examples/go/langchain && go run .
 
 package main
 
