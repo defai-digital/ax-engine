@@ -36,6 +36,17 @@ evidence:
   Result: neutral within ±0.3% — confirmed at
   `benchmarks/results/mlx-inference/ab-direct-cpp-linear-inputs/`
   (commits `7ddd0ca` → `9a054da`). The flag stays opt-in.
+- **Linear-attention post-input fastpath**
+  (`AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT`). Fuses the chain
+  `conv1d(+ cached state carry) -> SiLU -> last-dim split -> head-major
+  reshape -> per-head RMSNorm on q/k -> scale-by-precomputed-constants`
+  into one Rust-to-C++ FFI round-trip. A Qwen 3.6 35B-A3B 4-bit
+  `decode-trace` smoke with packed linear-attention inputs enabled showed
+  real route reach (`420/420` post-input hits, zero fallbacks) and reduced
+  linear-attention op count from 42.0 to 26.0 ops/layer. The same short
+  warmed trace was throughput-neutral/noisy (`157.59` vs `154.30` tok/s),
+  so this is **not** promotion evidence. The flag stays opt-in until a clean
+  inference-stack A/B proves a repeated throughput win above run-to-run noise.
 - **Fused `add + rms_norm` Metal kernel** for the post-attention
   residual + ffn_norm boundary. The decode profile identified this stage
   as 52.7% of `AX_MLX_DECODE_PROFILE=1` wall share. The custom kernel
@@ -114,3 +125,32 @@ on top of MLX, vs. running mlx_lm's tight benchmark loop. Future
 attempts should require either an `mx.compile`-analog (item 1 above)
 or whole-layer fusion (item 2) — single-op-fusion attempts have a low
 ceiling and have already been tried.
+
+## Diagnostic instrumentation retained
+
+The follow-up Qwen linear-attention work added finer telemetry for the host
+side of direct decode. The diagnostic surface is kept merged because it is
+independently useful for any future MLX-host work:
+
+- `ax_mlx_direct_pipeline_forward_layer_loop_wall_us` /
+  `ax_mlx_direct_pipeline_forward_head_wall_us` route decisions
+  split `forward_wall_us` so a single bench reveals whether host
+  cost lives in the layer loop, the lm-head, or the embed prologue
+  (`runner.rs::DecodeTelemetry`).
+- `DirectPipelineTimings::linear_attention_layer_ops` /
+  `full_attention_layer_ops` per-layer-kind FFI op counts via
+  `mlx_sys::op_count` brackets around each layer's forward
+  (`model/mod.rs` layer loop, `generate.rs::ForwardStageTimings`).
+- `ax_mlx_linear_attention_qkvz_ba_packed_layers` /
+  `ax_mlx_linear_attention_split_qkvba_layers` route decisions
+  confirm whether load-time projection packing actually engaged
+  on a given checkpoint (`runner.rs::WeightLayoutTelemetry`).
+- `cargo run --release --bin pack-audit -- <model_dir>` - load
+  weights and print per-layer pack state, no graph eval. Use
+  before running any benchmark to confirm the artifact actually
+  consumes the packed paths the code intends.
+- `cargo run --release --bin decode-trace -- <model_dir> [steps]` -
+  direct-pipeline decode loop with the full per-step host wall
+  breakdown, including the per-layer-kind op counts. Use for
+  isolated host-side experiments that don't need the full bench
+  sweep harness.
