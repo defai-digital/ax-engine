@@ -548,7 +548,7 @@ python3 scripts/bench_mlx_inference_stack.py \
   --model-dir /path/to/local/mlx-model \
   --prompt-tokens 128,512,2048 --generation-tokens 128 \
   --ax-compare-policies --repetitions 5 \
-  --output benchmarks/results/mlx-inference/2026-05-04/gemma-4-e2b-it-4bit.json
+  --output benchmarks/results/mlx-inference/$(date +%F)/gemma-4-e2b-it-4bit.json
 
 # Secondary workload-contract benchmark
 ./target/release/ax-engine-bench scenario \
