@@ -23,7 +23,7 @@ Benchmark shape:
 - `prefill_step_size=2048`
 - 128 generated tokens
 - temperature 0
-- 3 repetitions per engine/model/prompt row
+- 5 repetitions per engine/model/prompt row
 - 15-second cooldown between trials and 45-second inter-model pause
 
 The current README generation-model snapshot is a provenance-tracked composite
@@ -114,7 +114,7 @@ claim, not as a general production-serving benchmark. The review covers:
 | Prompt provenance | Prompt-token JSON artifacts with fixed token IDs, vocabulary size, seed, and hash | Reproducible prompt input across AX and reference rows |
 | Decode policy separation | Direct AX rows run with n-gram acceleration disabled; default AX rows report n-gram effective throughput | Clear separation between same-policy decode and AX user-default acceleration |
 | Prefill/decode split | Tables report prefill tok/s separately from decode tok/s | Prefill gains are not attributed to n-gram decode acceleration |
-| Repeated measurement | 3 repetitions per engine/model/prompt row, reported through medians | Reduced single-run noise within the current host and prompt shape |
+| Repeated measurement | 5 repetitions per engine/model/prompt row, reported through medians | Reduced single-run noise within the current host and prompt shape |
 | Route identity | AX artifacts record runtime route and fixed-schema n-gram telemetry fields | No-draft fallback, direct pipeline, and n-gram rows can be distinguished |
 | Output-quality caveat | Random-token greedy prompts can collapse into repeated output, but throughput artifact status stays limited to direct/n-gram fallback evidence | Public rows are performance evidence; coherent-output claims require separate token-output validation |
 | Scope disclosure | Methodology states host, batch size, generated-token count, temperature, and `prefill_step_size` | Readers can see that current public rows are batch=1, short/mid-prompt evidence |

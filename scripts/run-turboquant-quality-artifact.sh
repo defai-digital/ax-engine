@@ -12,7 +12,7 @@ MODEL_DIR="${AX_TURBOQUANT_MODEL_DIR:-}"
 OUTPUT_ROOT="$ROOT_DIR/benchmarks/results/turboquant/quality-runs"
 CONTEXT_TOKENS="${AX_TURBOQUANT_CONTEXT_TOKENS:-8192}"
 GENERATION_TOKENS="${AX_TURBOQUANT_GENERATION_TOKENS:-256}"
-REPETITIONS="${AX_TURBOQUANT_REPETITIONS:-3}"
+REPETITIONS="${AX_TURBOQUANT_REPETITIONS:-5}"
 COOLDOWN="${AX_TURBOQUANT_COOLDOWN:-3}"
 PREFILL_STEP_SIZE="${AX_TURBOQUANT_PREFILL_STEP_SIZE:-2048}"
 MODEL_ID="${AX_TURBOQUANT_MODEL_ID:-}"
@@ -35,7 +35,7 @@ Options:
   --output-root PATH            Output root. Defaults to benchmarks/results/turboquant/quality-runs.
   --context-tokens N            Prompt token count. Defaults to 8192; must be at least 8192 for the quality gate.
   --generation-tokens N         Generated token count. Defaults to 256; must be at least 128 for the quality gate.
-  --repetitions N               Timed AX repetitions. Defaults to 3; must be at least 2 for promotion readiness.
+  --repetitions N               Timed AX repetitions. Defaults to 5; must be at least 2 for promotion readiness.
   --cooldown SECONDS            Cooldown between repetitions. Defaults to 3; must be positive for promotion readiness.
   --prefill-step-size N         MLX prefill step size. Defaults to 2048.
   --model-id ID                 Artifact model id. Defaults to model directory basename.

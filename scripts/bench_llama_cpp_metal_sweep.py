@@ -647,7 +647,7 @@ def main() -> None:
     )
     parser.add_argument("--prompt-tokens", default="128,512,2048")
     parser.add_argument("--generation-tokens", type=int, default=128)
-    parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument("--n-gpu-layers", type=int, default=99)
     parser.add_argument(
