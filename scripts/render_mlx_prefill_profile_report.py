@@ -133,7 +133,7 @@ def render_one_model(profile: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_all(profiles: list[dict[str, Any]]) -> str:
+def render_all(profiles: list[dict[str, Any]], results_dir: Path) -> str:
     out: list[str] = []
     out.append("# AX MLX prefill-stage profile baseline")
     out.append("")
@@ -147,7 +147,8 @@ def render_all(profiles: list[dict[str, Any]]) -> str:
         "of the immediate umbrella stage."
     )
     out.append("")
-    out.append("Source: `benchmarks/results/mlx-inference/2026-05-15-prefill-profile-baseline/`.")
+    source_path = str(results_dir).rstrip("/") + "/"
+    out.append(f"Source: `{source_path}`.")
     out.append("")
     out.append("## Cross-model hot-stage summary")
     out.append("")
@@ -213,7 +214,7 @@ def main() -> int:
         print("no profiles loaded — was --ax-prefill-profile set?", file=sys.stderr)
         return 3
 
-    report = render_all(profiles)
+    report = render_all(profiles, args.results_dir)
     if args.output:
         args.output.write_text(report)
         print(f"wrote {args.output}", file=sys.stderr)
