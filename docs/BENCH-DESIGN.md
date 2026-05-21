@@ -70,10 +70,10 @@ provenance information. Manifests are checked into `benchmarks/manifests/`.
 
 ```json
 {
-  "schema_version": "ax.bench.v1",
+  "schema_version": "ax.engine_bench.manifest.v1",
   "id": "chat_qwen_short",
   "class": "scenario",            // or "replay"
-  "scenario": "dense_prefill_decode_chat",
+  "scenario": "chat",
   "model": { ... },
   "runtime": { ... },
   "sampling": { ... },
@@ -194,12 +194,12 @@ A matrix manifest is a separate file that references multiple scenario manifests
 
 ```json
 {
-  "schema_version": "ax.bench.v1",
+  "schema_version": "ax.engine_bench.matrix.v1",
   "id": "mlx_dense_phase7",
   "class": "scenario_matrix",
   "members": [
-    { "manifest": "benchmarks/manifests/scenario/chat_qwen_short.json" },
-    { "manifest": "benchmarks/manifests/scenario/shared_prefix_qwen_enterprise.json", "label": "prefix-long" }
+    { "manifest": "../scenario/chat_qwen_short.json" },
+    { "manifest": "../scenario/shared_prefix_qwen_enterprise.json", "label": "prefix-long" }
   ]
 }
 ```
