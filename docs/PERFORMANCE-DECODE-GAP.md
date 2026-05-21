@@ -162,3 +162,21 @@ independently useful for any future MLX-host work:
   breakdown, including the per-layer-kind op counts. Use for
   isolated host-side experiments that don't need the full bench
   sweep harness.
+
+## Next Qwen investigation
+
+Do not continue optimizing the Qwen linear-attention post-input route in
+isolation. It already proves route reach and dispatch reduction, but the
+cooled A/B stayed below the promotion gate. The next Qwen work should first
+rank the remaining bottleneck with:
+
+- `scripts/run-gateddelta-prefill-profile.sh` on Qwen 3.6 35B A3B 4-bit, to
+  split prefill time across projection, conv, Q/K norm, recurrent, and output
+  stages.
+- `decode-trace` with both linear-attention direct routes enabled, to identify
+  the remaining decode host/op-count region before any larger layer-wide probe.
+
+Any new direct-MLX Qwen route still needs clean paired inference-stack rows,
+explicit route flags, all-hit summaries, zero fallback/profile-blocked counters,
+and a repeated decode ratio of at least 1.01 before it can be considered for
+default-on promotion.
