@@ -54,14 +54,20 @@ pub struct DirectPipelineTimings {
     pub full_attention_layer_count: u32,
 }
 
+/// Per-forward thread-local accumulator that `advance_direct_pipeline_*`
+/// resets-before / takes-after each direct-pipeline step. Values flow out via
+/// `DirectPipelineTimings`; this struct is an internal carrier and intentionally
+/// has no public accessors (a previous draft exposed
+/// `forward_stage_timings_snapshot()` for trace harnesses, which was withdrawn
+/// once the same data shipped through `DirectPipelineTimings`).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ForwardStageTimings {
-    pub layer_loop_wall_us: u32,
-    pub head_wall_us: u32,
-    pub linear_attention_layer_ops: u64,
-    pub linear_attention_layer_count: u32,
-    pub full_attention_layer_ops: u64,
-    pub full_attention_layer_count: u32,
+struct ForwardStageTimings {
+    layer_loop_wall_us: u32,
+    head_wall_us: u32,
+    linear_attention_layer_ops: u64,
+    linear_attention_layer_count: u32,
+    full_attention_layer_ops: u64,
+    full_attention_layer_count: u32,
 }
 
 thread_local! {
