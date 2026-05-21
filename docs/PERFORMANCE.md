@@ -30,18 +30,23 @@ The current README generation-model snapshot is a provenance-tracked composite
 from:
 
 ```text
-benchmarks/results/mlx-inference/2026-05-14-ax-direct-ngram-r4/
+benchmarks/results/mlx-inference/2026-05-20-ax-only-readme-refresh-all-direct-ngram-rerun/
+benchmarks/results/mlx-inference/2026-05-20-qwen36-35b-a3b-shared-expert-pack-readme-refresh-r3/
 ```
 
-This 14-model AX refresh reruns the direct and n-gram AX rows on the post-W1.3
-binaries and carries forward the same-host `mlx_lm` / `mlx_swift_lm` reference
-rows from `benchmarks/results/mlx-inference/2026-05-13-full-fresh/` inside each
-artifact. All rows use the same prompt-token contract, prompt SHA checks, and
-generation=128 shape. The AX rows were produced with production-build server
-binaries (`[profile.release]`: LTO thin, `codegen-units=1`, `panic=abort`,
-stripped debuginfo). This composite is intentional: the third-party reference
-rows stay attached to the same artifact contract while AX-only refreshes can
-update current runtime behavior without rerunning the reference adapters.
+Most Gemma 4 and Qwen 3.6 rows come from the first directory's 12-model AX
+refresh, which reruns the direct and n-gram AX rows on current binaries and
+reuses the same-host `mlx_lm` reference rows from
+`benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/` inside each
+artifact (`ax_only_refresh.reference_results_source` records the exact source
+file per artifact). The Qwen 3.6 35B A3B 4-bit row is overlaid from the second
+directory's shared-expert gate/up packed-projection refresh. All rows use the
+same prompt-token contract, prompt SHA checks, and generation=128 shape. The
+AX rows were produced with production-build server binaries
+(`[profile.release]`: LTO thin, `codegen-units=1`, `panic=abort`, stripped
+debuginfo). This composite is intentional: the third-party reference rows stay
+attached to the same artifact contract while AX-only refreshes can update
+current runtime behavior without rerunning the reference adapters.
 
 `ax direct baseline` is the direct same-policy comparison against `mlx_lm`; the
 benchmark starts the AX server with n-gram acceleration disabled for this row.
