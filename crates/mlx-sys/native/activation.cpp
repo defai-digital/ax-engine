@@ -70,6 +70,14 @@ mx::array gelu_approx_mul_impl(
   return mx::multiply(activated, x, stream);
 }
 
+mx::array silu_mul_impl(
+    const mx::array& gate,
+    const mx::array& x,
+    mx::StreamOrDevice stream) {
+  auto activated = mx::multiply(gate, mx::sigmoid(gate, stream), stream);
+  return mx::multiply(activated, x, stream);
+}
+
 mx::array quantized_matmul_affine_impl(
     const mx::array& x,
     const mx::array& weight,
@@ -334,6 +342,21 @@ extern "C" int ax_mlx_gelu_approx_mul(
     set_array(
         res,
         gelu_approx_mul_impl(array_ref(gate), array_ref(x), stream_or_default(stream)));
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+extern "C" int ax_mlx_silu_mul(
+    mlx_array* res,
+    const mlx_array gate,
+    const mlx_array x,
+    const mlx_stream stream) {
+  try {
+    set_array(
+        res,
+        silu_mul_impl(array_ref(gate), array_ref(x), stream_or_default(stream)));
     return 0;
   } catch (...) {
     return 1;

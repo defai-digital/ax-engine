@@ -10,6 +10,13 @@ unsafe extern "C" {
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
+    fn ax_mlx_silu_mul(
+        res: *mut ffi::mlx_array,
+        gate: ffi::mlx_array,
+        x: ffi::mlx_array,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_gelu_approx_mul_matmul(
         res: *mut ffi::mlx_array,
         gate: ffi::mlx_array,
@@ -204,6 +211,24 @@ pub fn gelu_approx_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> 
         }
     }
     multiply(&gelu_approx(gate, s), x, s)
+}
+
+/// Compute `silu(gate) * x` through AX's direct MLX C++ shim.
+///
+/// This preserves Qwen-family SwiGLU math while collapsing the portable
+/// `sigmoid + multiply + multiply` wrapper chain behind one FFI call. If the
+/// direct shim reports an error, fall back to the portable wrapper composition.
+pub fn silu_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_silu_mul(&mut res.inner, gate.inner, x.inner, stream);
+        if rc == 0 {
+            return res;
+        }
+    }
+    multiply(&silu(gate, s), x, s)
 }
 
 /// Compute `matmul(gelu_approx(gate) * x, weight)` through AX's direct MLX C++ shim.
@@ -1555,6 +1580,43 @@ mod tests {
             direct_f32.data_f32().to_vec(),
             portable_f32.data_f32().to_vec(),
             "direct C++ activation shim must preserve mlx-lm GEGLU math"
+        );
+    }
+
+    #[test]
+    fn silu_mul_direct_matches_portable_composition() {
+        let gate_data: Vec<f32> = (0..24).map(|i| ((i as f32) - 12.0) * 0.125).collect();
+        let x_data: Vec<f32> = (0..24).map(|i| ((i as f32) + 1.0) * 0.03125).collect();
+        let gate = MlxArray::from_raw_data(
+            gate_data.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_data.as_slice()),
+            &[2, 3, 4],
+            MlxDtype::Float32,
+        );
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[2, 3, 4],
+            MlxDtype::Float32,
+        );
+
+        let prev = crate::op_count::op_count_snapshot();
+        let direct = silu_mul(&gate, &x, None);
+        assert_eq!(
+            crate::op_count::op_count_take(prev),
+            1,
+            "direct C++ SwiGLU activation shim should count as one Rust FFI dispatch"
+        );
+        let portable = multiply(&silu(&gate, None), &x, None);
+        let direct_f32 = astype(&direct, MlxDtype::Float32, None);
+        let portable_f32 = astype(&portable, MlxDtype::Float32, None);
+        eval(&[&direct_f32, &portable_f32]);
+
+        assert_eq!(direct_f32.shape(), vec![2, 3, 4]);
+        assert_eq!(
+            direct_f32.data_f32().to_vec(),
+            portable_f32.data_f32().to_vec(),
+            "direct C++ SwiGLU activation shim must preserve silu(gate) * x math"
         );
     }
 

@@ -1,8 +1,8 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
-    expand_dims_axes, gelu_approx_mul, multiply, reshape, rms_norm, slice_last_dim, softmax,
-    sum_axis, take, take_along_axis, topk_axis,
+    expand_dims_axes, gelu_approx_mul, multiply, reshape, rms_norm, silu_mul, slice_last_dim,
+    softmax, sum_axis, take, take_along_axis, topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -157,8 +157,7 @@ pub(crate) fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
             && let Ok(compiled) = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
                 let gate = inputs.get(0);
                 let up = inputs.get(1);
-                let activated = mlx_sys::ops::silu(&gate, None);
-                vec![multiply(&activated, &up, None)]
+                vec![silu_mul(&gate, &up, None)]
             })
             .compile(true)
         {
@@ -174,7 +173,7 @@ pub(crate) fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
     {
         return out;
     }
-    multiply(&mlx_sys::ops::silu(gate, None), up, None)
+    silu_mul(gate, up, None)
 }
 
 pub(crate) fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxArray) -> MlxArray {
@@ -183,7 +182,7 @@ pub(crate) fn dense_ffn_activation(cfg: &ModelConfig, gate: &MlxArray, up: &MlxA
     } else if fastpath::prefill_ffn_compile_swiglu_enabled() {
         swiglu(gate, up)
     } else {
-        multiply(&mlx_sys::ops::silu(gate, None), up, None)
+        silu_mul(gate, up, None)
     }
 }
 
