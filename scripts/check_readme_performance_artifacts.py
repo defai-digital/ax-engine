@@ -1197,6 +1197,11 @@ def validate_direct_cpp_linear_attention_input_summary(
                 f"{artifact_path} direct AX row direct C++ linear-attention "
                 f"summary has {field}={summary.get(field)!r}; expected {expected}"
             )
+    if summary.get("classification") != "all_hits":
+        raise ArtifactCheckError(
+            f"{artifact_path} direct AX row direct C++ linear-attention "
+            f"summary is not all_hits: {summary.get('classification')!r}"
+        )
     if counters["hits"] <= 0:
         raise ArtifactCheckError(
             f"{artifact_path} direct AX row attempted direct C++ linear-attention "
@@ -1241,6 +1246,12 @@ def validate_direct_cpp_linear_attention_post_input_summary(
                 f"{artifact_path} direct AX row direct C++ linear-attention "
                 f"post-input summary has {field}={summary.get(field)!r}; expected {expected}"
             )
+    if summary.get("classification") != "all_hits":
+        raise ArtifactCheckError(
+            f"{artifact_path} direct AX row direct C++ linear-attention "
+            "post-input summary is not all_hits: "
+            f"{summary.get('classification')!r}"
+        )
     if counters["hits"] <= 0:
         raise ArtifactCheckError(
             f"{artifact_path} direct AX row attempted direct C++ linear-attention "

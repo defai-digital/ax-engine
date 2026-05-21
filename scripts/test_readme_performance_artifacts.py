@@ -785,6 +785,67 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=7,
                 )
 
+    def test_direct_ax_row_rejects_incomplete_direct_cpp_linear_attention_hits(
+        self,
+    ) -> None:
+        cases = [
+            (
+                "ax_mlx_direct_cpp_linear_attention_inputs",
+                {
+                    "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 4,
+                    "ax_mlx_direct_cpp_linear_attention_inputs_hits": 3,
+                    "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+                    "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+                },
+                "ax.mlx_direct_cpp_linear_attention_inputs.v1",
+                "direct C\\+\\+ linear-attention summary is not all_hits",
+            ),
+            (
+                "ax_mlx_direct_cpp_linear_attention_post_input",
+                {
+                    "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 4,
+                    "ax_mlx_direct_cpp_linear_attention_post_input_hits": 3,
+                    "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+                    "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+                },
+                "ax.mlx_direct_cpp_linear_attention_post_input.v1",
+                "direct C\\+\\+ linear-attention post-input summary is not all_hits",
+            ),
+        ]
+        for summary_key, telemetry, schema_version, expected_error in cases:
+            with self.subTest(summary_key=summary_key):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self.write_fixture(root)
+                    artifact_path = (
+                        root
+                        / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+                    )
+                    artifact = json.loads(artifact_path.read_text())
+                    for row in artifact["results"]:
+                        if row["engine"] == "ax_engine_mlx":
+                            row["ax_mlx_telemetry"].update(telemetry)
+                            row[summary_key] = {
+                                "schema_version": schema_version,
+                                "classification": "incomplete_accounting",
+                                "attempts": 4,
+                                "hits": 3,
+                                "fallbacks": 0,
+                                "profile_blocked": 0,
+                                "hit_rate_micros": 750_000,
+                            }
+                    artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+                    with self.assertRaisesRegex(
+                        checker.ArtifactCheckError,
+                        expected_error,
+                    ):
+                        checker.check_readme_performance(
+                            repo_root=root,
+                            readme_path=root / "README.md",
+                            expected_metric_count=7,
+                        )
+
     def test_direct_ax_row_rejects_fused_kv_decode_fallback_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
