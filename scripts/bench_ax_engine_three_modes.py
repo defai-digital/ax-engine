@@ -188,7 +188,7 @@ def main() -> None:
     parser.add_argument("--tokens-file", type=Path)
     parser.add_argument("--max-output-tokens", type=int, default=128)
     parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--runs", type=int, default=6)
+    parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
