@@ -24,6 +24,8 @@ Current command surface:
 - `ax-engine-bench matrix`
 - `ax-engine-bench doctor`
 - `ax-engine-bench metal-build`
+- `ax-engine-bench generate-manifest`
+- `ax-engine-bench serving-stress`
 - `ax-engine-bench generate`
 - `ax-engine-bench stream`
 
