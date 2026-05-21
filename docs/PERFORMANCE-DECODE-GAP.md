@@ -51,7 +51,10 @@ evidence:
   proved full route coverage (`150/150` post-input hits at each prompt length,
   zero fallbacks) and small positive decode medians at p128/p512/p2048
   (+0.42%, +0.62%, +0.51%). The flag still stays opt-in because this is a
-  sub-1% gain, not a strong default-on promotion margin.
+  sub-1% gain, not a strong default-on promotion margin. The decision is now
+  guarded by `scripts/check_qwen_post_input_route_promotion.py`, which requires
+  paired route flags, all-hit summaries, zero fallback/profile-blocked counters,
+  and a minimum decode ratio of 1.01; the current artifact is `not_promoted`.
 - **Fused `add + rms_norm` Metal kernel** for the post-attention
   residual + ffn_norm boundary. The decode profile identified this stage
   as 52.7% of `AX_MLX_DECODE_PROFILE=1` wall share. The custom kernel
