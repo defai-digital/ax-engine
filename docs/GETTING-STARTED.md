@@ -281,7 +281,7 @@ python3 scripts/bench_mlx_inference_stack.py \
   --prompt-tokens 512,2048 \
   --generation-tokens 128 \
   --repetitions 5 \
-  --cooldown 5
+  --cooldown 15
 ```
 
 That harness requires `mlx_lm.benchmark` as the primary reference and fails

@@ -107,7 +107,7 @@ python3 scripts/bench_mlx_inference_stack.py \
   --prompt-tokens 512,2048 \
   --generation-tokens 128 \
   --repetitions 5 \
-  --cooldown 5
+  --cooldown 15
 ```
 
 When `--model-dir` is omitted, the harness resolves `--model-repo-id` from the

@@ -84,7 +84,7 @@ python3 scripts/bench_mlx_inference_stack.py \
   --prompt-tokens 512,2048 \
   --generation-tokens 128 \
   --repetitions 5 \
-  --cooldown 5
+  --cooldown 15
 ```
 
 `mlx_lm.benchmark` is mandatory. The script fails closed if the matching

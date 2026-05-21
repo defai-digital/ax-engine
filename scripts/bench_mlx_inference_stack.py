@@ -14,7 +14,7 @@ Examples:
     --prompt-tokens 128,512,2048 \
     --generation-tokens 128 \
     --repetitions 5 \
-    --cooldown 5
+    --cooldown 15
 
 Optional llama.cpp Metal baseline:
   python3 scripts/bench_mlx_inference_stack.py \
