@@ -3,12 +3,12 @@ require_relative "client"
 
 # LangChain integration for AX Engine.
 #
-# Provides two classes compatible with the langchain-rb gem:
+# Provides two classes compatible with the langchainrb gem:
 #
 #   AxEngine::Langchain::ChatModel  — wraps /v1/chat/completions
 #   AxEngine::Langchain::LLM        — wraps /v1/completions
 #
-# Requires the langchain-rb gem (gem install langchain-rb).
+# Requires the langchainrb gem (gem install langchainrb).
 # Uses stdlib HTTP only for inference — no extra HTTP libraries needed.
 #
 # Example:
@@ -24,8 +24,8 @@ module AxEngine
       require "langchain"
     rescue LoadError
       raise LoadError,
-        "ax_engine/langchain requires the langchain-rb gem. " \
-        "Install it with: gem install langchain-rb"
+        "ax_engine/langchain requires the langchainrb gem. " \
+        "Install it with: gem install langchainrb"
     end
 
     # Shared parameter helpers.
@@ -71,7 +71,7 @@ module AxEngine
         super(**kwargs)
       end
 
-      # Compatible with langchain-rb's Langchain::LLM::Base#chat interface.
+      # Compatible with langchainrb's Langchain::LLM::Base#chat interface.
       #
       # @param messages [Array<Hash>]  e.g. [{role: "user", content: "Hi"}]
       # @param stream   [Boolean]      if true, yields delta strings and returns nil
@@ -111,7 +111,7 @@ module AxEngine
         super(**kwargs)
       end
 
-      # Compatible with langchain-rb's Langchain::LLM::Base#complete interface.
+      # Compatible with langchainrb's Langchain::LLM::Base#complete interface.
       #
       # @param prompt  [String]
       # @param stream  [Boolean]  if true, yields delta strings and returns nil

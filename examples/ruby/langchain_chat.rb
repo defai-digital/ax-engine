@@ -1,7 +1,7 @@
 # LangChain chat example using AX Engine Ruby SDK.
 #
 # Requires:
-#   gem install langchain-rb
+#   gem install langchainrb
 #   ax-engine-server running on http://127.0.0.1:8080
 #
 # Run:

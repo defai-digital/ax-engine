@@ -144,12 +144,12 @@ end
 ## LangChain Integration
 
 `sdk/ruby/lib/ax_engine/langchain.rb` provides two classes compatible with
-the [langchain-rb](https://github.com/patterns-ai-core/langchain) gem:
+the [langchainrb](https://github.com/patterns-ai-core/langchainrb) gem:
 
 - `AxEngine::Langchain::ChatModel` — backed by `/v1/chat/completions`
 - `AxEngine::Langchain::LLM` — backed by `/v1/completions`
 
-Requires `gem install langchain-rb`. Uses `AxEngine::Client` (stdlib HTTP)
+Requires `gem install langchainrb`. Uses `AxEngine::Client` (stdlib HTTP)
 internally — no extra HTTP gems needed.
 
 ```ruby
@@ -193,7 +193,7 @@ Both classes accept: `base_url`, `headers`, `timeout`, `max_tokens`,
 ```bash
 # Requires ax-engine-server on http://127.0.0.1:8080
 ruby examples/ruby/chat.rb
-ruby examples/ruby/langchain_chat.rb  # requires: gem install langchain-rb
+ruby examples/ruby/langchain_chat.rb  # requires: gem install langchainrb
 ```
 
 ## Running Tests
