@@ -2,7 +2,8 @@
  * LangChain chat example using AX Engine.
  *
  * Requires:
- *   npm install @langchain/core @ax-engine/sdk
+ *   npm install @langchain/core
+ *   npm install @ax-engine/sdk   (or: npm install ./javascript/ax-engine)
  *   ax-engine-server running on http://127.0.0.1:8080
  *
  * Run:
