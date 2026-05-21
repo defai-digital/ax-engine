@@ -24,7 +24,7 @@ Benchmark shape:
 - 128 generated tokens
 - temperature 0
 - 5 repetitions per engine/model/prompt row
-- 15-second cooldown between trials and 45-second inter-model pause
+- 15-second cooldown between trials
 
 The current README generation-model snapshot is a provenance-tracked composite
 from:
