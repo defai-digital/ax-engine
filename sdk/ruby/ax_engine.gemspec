@@ -7,7 +7,7 @@ Gem::Specification.new do |spec|
   spec.description = "Zero-dependency Ruby client for ax-engine-server. " \
                      "Supports native generate, OpenAI-compatible completions, " \
                      "chat, embeddings, and SSE streaming."
-  spec.license     = "MIT"
+  spec.license     = "Apache-2.0"
 
   spec.required_ruby_version = ">= 2.7"
 
