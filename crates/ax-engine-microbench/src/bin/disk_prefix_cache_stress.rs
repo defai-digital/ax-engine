@@ -16,6 +16,10 @@ const DEFAULT_OVERLAP_KEYS: usize = 8;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        print_help();
+        return;
+    }
     let result = if args.iter().any(|arg| arg == "--worker") {
         run_worker(&args)
     } else {
@@ -28,6 +32,18 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn print_help() {
+    println!(
+        "Usage: disk-prefix-cache-stress [--output <path>] [--workers N] \\\n    [--iterations N] [--payload-bytes N] [--overlap-keys N]\n\n\
+Concurrent disk-prefix-cache stress probe. Spawns worker processes that \n\
+hammer the on-disk prefix cache with overlapping keys, then runs an \n\
+eviction-pressure pass. Writes a JSON artifact to --output, or to stdout \n\
+when --output is omitted.\n\n\
+Defaults: workers={}, iterations={}, payload-bytes={}, overlap-keys={}.",
+        DEFAULT_WORKERS, DEFAULT_ITERATIONS, DEFAULT_PAYLOAD_BYTES, DEFAULT_OVERLAP_KEYS
+    );
 }
 
 fn run_orchestrator(args: &[String]) -> Result<(), String> {
