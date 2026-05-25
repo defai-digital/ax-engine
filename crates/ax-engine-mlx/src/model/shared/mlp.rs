@@ -783,17 +783,15 @@ pub(crate) fn moe_router_gemma4(
     let normed = rms_norm(hidden, Some(combined_scale), cfg.rms_norm_eps, None);
 
     let expert_scores = qw(&normed, router_proj);
-    let (top_k_indices, mut top_k_weights) = top_k_by_argpartition(
+    let (top_k_indices, top_k_weights) = top_k_by_argpartition(
         &expert_scores,
         cfg.moe_expert_count,
         cfg.moe_experts_per_token,
         true,
     );
-    // Apply per-expert output scale (initialized to ones; fine-tuned checkpoints may differ).
-    if let Some(pes) = &w.router_expert_scale {
-        let gathered = take(pes, &top_k_indices, 0, None);
-        top_k_weights = multiply(&top_k_weights, &gathered, None);
-    }
+    // Per-expert output scale is applied by the Gemma4 expert tail. Deferring
+    // it lets the direct Metal weighted-sum path avoid a separate gather and
+    // multiply node per decode layer.
     (top_k_indices, top_k_weights)
 }
 
@@ -1142,6 +1140,34 @@ pub(crate) fn moe_experts_forward(
     top_k_indices: &MlxArray,
     top_k_weights: &MlxArray,
 ) -> MlxArray {
+    moe_experts_forward_impl(cfg, w, x, top_k_indices, top_k_weights, None)
+}
+
+pub(crate) fn moe_experts_forward_gemma4(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    top_k_indices: &MlxArray,
+    top_k_weights: &MlxArray,
+) -> MlxArray {
+    moe_experts_forward_impl(
+        cfg,
+        w,
+        x,
+        top_k_indices,
+        top_k_weights,
+        w.router_expert_scale.as_ref(),
+    )
+}
+
+fn moe_experts_forward_impl(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    top_k_indices: &MlxArray,
+    top_k_weights: &MlxArray,
+    top_k_expert_scale: Option<&MlxArray>,
+) -> MlxArray {
     // Match MLX SwitchGLU: [batch, seq, hidden] → [batch, seq, 1, 1, hidden].
     // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
     let x_exp = expand_dims_axes(x, &[-2, -3], None);
@@ -1196,11 +1222,30 @@ pub(crate) fn moe_experts_forward(
     // Weighted sum over top_k dimension → [1, seq, hidden]. Gemma4 decode hits
     // this in every layer; fuse multiply + reduction + cast to keep the direct
     // pipeline graph smaller. Other MoE families keep the generic MLX path.
-    if cfg.gemma4_moe_router
-        && let Some(out) = gemma4_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype())
-    {
-        return out;
+    if cfg.gemma4_moe_router {
+        if let Some(expert_scale) = top_k_expert_scale {
+            if let Some(out) = gemma4_moe_weighted_scaled_sum_metal(
+                &down_out,
+                top_k_weights,
+                top_k_indices,
+                expert_scale,
+                x.dtype(),
+            ) {
+                return out;
+            }
+        } else if let Some(out) = gemma4_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype())
+        {
+            return out;
+        }
     }
+    let scaled_weights;
+    let top_k_weights = if let Some(expert_scale) = top_k_expert_scale {
+        let gathered = take(expert_scale, top_k_indices, 0, None);
+        scaled_weights = multiply(top_k_weights, &gathered, None);
+        &scaled_weights
+    } else {
+        top_k_weights
+    };
     let seq_dim = down_out.ndim() as i32;
     let top_k_axis = seq_dim - 2; // second-to-last dim
     let scores_exp = expand_dims(top_k_weights, top_k_weights.ndim() as i32, None);
@@ -1363,6 +1408,41 @@ mod tests {
         let direct = sum_axis(&weighted, 2, false, None);
         let metal = gemma4_moe_weighted_sum_metal(&down, &weights, MlxDtype::Float32)
             .expect("weighted-sum Metal kernel should support f32 inputs");
+        eval(&[&direct, &metal]);
+
+        assert_eq!(metal.shape(), vec![1, 2, 4]);
+        assert_close(metal.data_f32(), direct.data_f32(), 1.0e-5);
+    }
+
+    #[test]
+    fn gemma4_moe_weighted_scaled_sum_metal_matches_mlx_ops() {
+        let down_data: Vec<f32> = (0..24).map(|i| ((i as f32) - 8.0) * 0.037).collect();
+        let weight_data: Vec<f32> = vec![0.1, 0.25, 0.65, 0.5, 0.125, 0.375];
+        let indices_data: Vec<u32> = vec![2, 0, 3, 1, 3, 0];
+        let scale_data: Vec<f32> = vec![0.75, 1.25, 0.5, 1.5];
+        let down = array_f32(&down_data, &[1, 2, 3, 4]);
+        let weights = array_f32(&weight_data, &[1, 2, 3]);
+        let indices = MlxArray::from_raw_data(
+            indices_data.as_ptr() as *const u8,
+            std::mem::size_of_val(indices_data.as_slice()),
+            &[1, 2, 3],
+            MlxDtype::Uint32,
+        );
+        let scale = array_f32(&scale_data, &[4]);
+
+        let gathered = take(&scale, &indices, 0, None);
+        let scaled_weights = multiply(&weights, &gathered, None);
+        let scores_exp = expand_dims(&scaled_weights, scaled_weights.ndim() as i32, None);
+        let weighted = multiply(&down, &scores_exp, None);
+        let direct = sum_axis(&weighted, 2, false, None);
+        let metal = gemma4_moe_weighted_scaled_sum_metal(
+            &down,
+            &weights,
+            &indices,
+            &scale,
+            MlxDtype::Float32,
+        )
+        .expect("weighted scaled-sum Metal kernel should support f32 inputs");
         eval(&[&direct, &metal]);
 
         assert_eq!(metal.shape(), vec![1, 2, 4]);

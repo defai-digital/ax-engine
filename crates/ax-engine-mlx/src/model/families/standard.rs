@@ -13,10 +13,10 @@ use super::super::profile::{
 use super::super::shared::{
     add_then_multiply_scalar, attention_mask_array, attention_output_projection,
     direct_qk_norm_rope_route_enabled, ffn_swiglu, flatten_attention_output_bhsd,
-    full_precision_attention, moe_experts_forward, moe_router_gemma4, moe_router_glm,
-    moe_router_qwen3, per_layer_input_gate, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj, qkv_project, qw, rms_norm_opt, shape_element_count,
-    shared_expert_forward, turboquant_decode_attention_experimental,
+    full_precision_attention, moe_experts_forward, moe_experts_forward_gemma4, moe_router_gemma4,
+    moe_router_glm, moe_router_qwen3, per_layer_input_gate, prepare_value_bhsd_from_proj,
+    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj, qkv_project, qw, rms_norm_opt,
+    shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
@@ -627,7 +627,7 @@ pub(crate) fn layer_forward(
                 );
             }
             let expert_started = profile_gemma4_moe_decode.then(Instant::now);
-            let h2 = moe_experts_forward(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
+            let h2 = moe_experts_forward_gemma4(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
             if let Some(started) = expert_started {
                 profile_eval_elapsed(
                     profile_gemma4_moe_decode,
