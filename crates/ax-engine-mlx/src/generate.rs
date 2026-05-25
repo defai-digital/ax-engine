@@ -24,13 +24,15 @@ pub const DEFAULT_PREFILL_CHUNK: usize = GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 pub struct DirectPipelineTimings {
     pub forward_wall_us: u32,
     /// Subset of `forward_wall_us`: time spent inside the 64-layer
-    /// `layer_forward_with_turboquant_context` loop. Always recorded (no eval
-    /// barrier inserted). The residual `forward_wall_us - layer_loop_wall_us -
-    /// head_wall_us` covers embed-tokens + per-layer-input + dtype-cast +
-    /// scale-hidden graph-build cost.
+    /// `layer_forward_with_turboquant_context` loop. Zero unless
+    /// `AX_MLX_DIRECT_PIPELINE_STAGE_PROFILE=1` is set. The residual
+    /// `forward_wall_us - layer_loop_wall_us - head_wall_us` covers
+    /// embed-tokens + per-layer-input + dtype-cast + scale-hidden graph-build
+    /// cost.
     pub forward_layer_loop_wall_us: u32,
     /// Subset of `forward_wall_us`: time spent in the post-layer final RMSNorm
-    /// + lm-head qmatmul + logit finalize chain. Always recorded.
+    /// + lm-head qmatmul + logit finalize chain. Zero unless
+    /// `AX_MLX_DIRECT_PIPELINE_STAGE_PROFILE=1` is set.
     pub forward_head_wall_us: u32,
     pub argmax_wall_us: u32,
     pub async_eval_wall_us: u32,
@@ -93,8 +95,7 @@ fn take_forward_stage_timings() -> ForwardStageTimings {
 }
 
 /// Record the wall time spent inside the per-layer forward loop. Called once
-/// per decode forward by `forward_lazy_single_*`. Always-on; uses a thread-local
-/// `Cell` to avoid any locking on the hot path.
+/// per profiled decode forward by `forward_lazy_single_*`.
 pub(crate) fn record_forward_layer_loop_wall_us(us: u32) {
     FORWARD_STAGE_TIMINGS.with(|cell| {
         let mut current = cell.get();
@@ -146,11 +147,21 @@ fn elapsed_us(started: Instant) -> u32 {
 }
 
 static DIRECT_PIPELINE_BARRIER_ENABLED: OnceLock<bool> = OnceLock::new();
+static DIRECT_PIPELINE_STAGE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 fn direct_pipeline_barrier_enabled() -> bool {
     *DIRECT_PIPELINE_BARRIER_ENABLED.get_or_init(|| {
         matches!(
             std::env::var("AX_MLX_DIRECT_PIPELINE_BARRIER").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+    })
+}
+
+pub(crate) fn direct_pipeline_stage_profile_enabled() -> bool {
+    *DIRECT_PIPELINE_STAGE_PROFILE_ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("AX_MLX_DIRECT_PIPELINE_STAGE_PROFILE").as_deref(),
             Ok("1") | Ok("true") | Ok("yes")
         )
     })
@@ -511,7 +522,10 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
     // forward_lazy_single accepts an unevaluated MlxArray, so this runs entirely
     // on the CPU without waiting for `pending` to be materialised.
     let token_offset = cache.seq_len;
-    reset_forward_stage_timings();
+    let stage_profile = direct_pipeline_stage_profile_enabled();
+    if stage_profile {
+        reset_forward_stage_timings();
+    }
     let forward_started = Instant::now();
     let logits = forward_lazy_single_argmax_with_turboquant_context(
         cfg,
@@ -522,7 +536,11 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
         turboquant_context,
     );
     let forward_wall_us = elapsed_us(forward_started);
-    let forward_stage = take_forward_stage_timings();
+    let forward_stage = if stage_profile {
+        take_forward_stage_timings()
+    } else {
+        ForwardStageTimings::default()
+    };
     cache.seq_len += 1;
     let argmax_started = Instant::now();
     let next_token_arr = argmax(&logits, None);

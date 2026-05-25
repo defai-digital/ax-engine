@@ -4658,7 +4658,8 @@ impl MlxRunner {
 
     fn run_direct_pipeline_once(&self, state: &mut RequestState, bootstrap_token: MlxArray) -> u32 {
         let branch_started = Instant::now();
-        let op_count_before = mlx_sys::op_count_snapshot();
+        let stage_profile = crate::generate::direct_pipeline_stage_profile_enabled();
+        let op_count_before = stage_profile.then(mlx_sys::op_count_snapshot);
         let turboquant_context = self.turboquant_model_decode_context();
         let advanced = advance_direct_pipeline_with_timings_and_turboquant_context(
             &self.cfg,
@@ -4667,13 +4668,15 @@ impl MlxRunner {
             &mut state.cache,
             turboquant_context.as_ref(),
         );
-        let op_count_delta = mlx_sys::op_count_take(op_count_before);
         state
             .decode_telemetry
             .record_direct_pipeline(elapsed_us(branch_started));
-        state
-            .decode_telemetry
-            .record_direct_pipeline_op_count(op_count_delta);
+        if let Some(op_count_before) = op_count_before {
+            let op_count_delta = mlx_sys::op_count_take(op_count_before);
+            state
+                .decode_telemetry
+                .record_direct_pipeline_op_count(op_count_delta);
+        }
         state
             .decode_telemetry
             .record_direct_pipeline_timings(advanced.timings);
