@@ -435,6 +435,39 @@ mx::array gemma4_post_attn_ffn_block_impl(
   }
   return out;
 }
+
+std::pair<mx::array, mx::array> add_rms_norm_pair_impl(
+    const mx::array& x,
+    const mx::array& y,
+    const mx::array& norm_weight,
+    float eps,
+    mx::StreamOrDevice stream) {
+  auto residual = mx::add(x, y, stream);
+  auto normed = mx::fast::rms_norm(residual, norm_weight, eps, stream);
+  return {residual, normed};
+}
+
+mx::array quantized_matmul_rms_norm_impl(
+    const mx::array& x,
+    const mx::array& weight,
+    const mx::array& scales,
+    std::optional<mx::array> biases,
+    int group_size,
+    int bits,
+    const mx::array& norm_weight,
+    float eps,
+    mx::StreamOrDevice stream) {
+  auto projected = quantized_matmul_affine_impl(
+      x,
+      weight,
+      scales,
+      std::move(biases),
+      group_size,
+      bits,
+      stream);
+  return mx::fast::rms_norm(projected, norm_weight, eps, stream);
+}
+
 } // namespace
 
 extern "C" int ax_mlx_gelu_approx_mul(
@@ -477,6 +510,88 @@ extern "C" int ax_mlx_gelu_approx_mul_matmul(
     auto s = stream_or_default(stream);
     auto hidden = gelu_approx_mul_impl(array_ref(gate), array_ref(x), s);
     set_array(res, mx::matmul(hidden, array_ref(weight), s));
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+extern "C" int ax_mlx_gelu_approx_mul_quantized_matmul(
+    mlx_array* res,
+    const mlx_array gate,
+    const mlx_array x,
+    const mlx_array weight,
+    const mlx_array scales,
+    const mlx_array biases,
+    int group_size,
+    int bits,
+    const mlx_stream stream) {
+  try {
+    auto s = stream_or_default(stream);
+    auto hidden = gelu_approx_mul_impl(array_ref(gate), array_ref(x), s);
+    set_array(
+        res,
+        quantized_matmul_affine_impl(
+            hidden,
+            array_ref(weight),
+            array_ref(scales),
+            optional_array(biases),
+            group_size,
+            bits,
+            s));
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+extern "C" int ax_mlx_add_rms_norm_pair(
+    mlx_array* residual_res,
+    mlx_array* normed_res,
+    const mlx_array x,
+    const mlx_array y,
+    const mlx_array norm_weight,
+    float eps,
+    const mlx_stream stream) {
+  try {
+    auto [residual, normed] = add_rms_norm_pair_impl(
+        array_ref(x),
+        array_ref(y),
+        array_ref(norm_weight),
+        eps,
+        stream_or_default(stream));
+    set_array(residual_res, std::move(residual));
+    set_array(normed_res, std::move(normed));
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+extern "C" int ax_mlx_quantized_matmul_rms_norm(
+    mlx_array* res,
+    const mlx_array x,
+    const mlx_array weight,
+    const mlx_array scales,
+    const mlx_array biases,
+    int group_size,
+    int bits,
+    const mlx_array norm_weight,
+    float eps,
+    const mlx_stream stream) {
+  try {
+    set_array(
+        res,
+        quantized_matmul_rms_norm_impl(
+            array_ref(x),
+            array_ref(weight),
+            array_ref(scales),
+            optional_array(biases),
+            group_size,
+            bits,
+            array_ref(norm_weight),
+            eps,
+            stream_or_default(stream)));
     return 0;
   } catch (...) {
     return 1;

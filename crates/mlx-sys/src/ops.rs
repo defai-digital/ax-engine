@@ -25,6 +25,18 @@ unsafe extern "C" {
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
 
+    fn ax_mlx_gelu_approx_mul_quantized_matmul(
+        res: *mut ffi::mlx_array,
+        gate: ffi::mlx_array,
+        x: ffi::mlx_array,
+        weight: ffi::mlx_array,
+        scales: ffi::mlx_array,
+        biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
     fn ax_mlx_gelu_approx_quantized_ffn(
         res: *mut ffi::mlx_array,
         x: ffi::mlx_array,
@@ -70,6 +82,29 @@ unsafe extern "C" {
         down_biases: ffi::mlx_array,
         group_size: libc::c_int,
         bits: libc::c_int,
+        eps: libc::c_float,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
+    fn ax_mlx_add_rms_norm_pair(
+        residual_res: *mut ffi::mlx_array,
+        normed_res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        y: ffi::mlx_array,
+        norm_weight: ffi::mlx_array,
+        eps: libc::c_float,
+        stream: ffi::mlx_stream,
+    ) -> libc::c_int;
+
+    fn ax_mlx_quantized_matmul_rms_norm(
+        res: *mut ffi::mlx_array,
+        x: ffi::mlx_array,
+        weight: ffi::mlx_array,
+        scales: ffi::mlx_array,
+        biases: ffi::mlx_array,
+        group_size: libc::c_int,
+        bits: libc::c_int,
+        norm_weight: ffi::mlx_array,
         eps: libc::c_float,
         stream: ffi::mlx_stream,
     ) -> libc::c_int;
@@ -278,6 +313,51 @@ pub fn gelu_approx_mul_matmul(
         }
     }
     matmul(&multiply(&gelu_approx(gate, s), x, s), weight, s)
+}
+
+/// Compute `quantized_matmul(gelu_approx(gate) * x, weight, ...)`.
+#[allow(clippy::too_many_arguments)]
+pub fn gelu_approx_mul_quantized_matmul(
+    gate: &MlxArray,
+    x: &MlxArray,
+    weight: &MlxArray,
+    scales: &MlxArray,
+    biases: Option<&MlxArray>,
+    group_size: i32,
+    bits: i32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let biases = biases.map(|b| b.inner).unwrap_or_else(null_ffi_array);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_gelu_approx_mul_quantized_matmul(
+            &mut res.inner,
+            gate.inner,
+            x.inner,
+            weight.inner,
+            scales.inner,
+            biases,
+            group_size,
+            bits,
+            stream,
+        );
+        if rc == 0 {
+            return res;
+        }
+    }
+    let hidden = gelu_approx_mul(gate, x, s);
+    quantized_matmul(
+        &hidden,
+        weight,
+        scales,
+        biases,
+        true,
+        Some(group_size),
+        Some(bits),
+        s,
+    )
 }
 
 /// Compute a packed dense GEGLU FFN block through AX's direct MLX C++ shim.
@@ -665,6 +745,99 @@ pub fn qwen_linear_attention_post_input(
         }
     }
     None
+}
+
+/// Compute `(add(x, y), rms_norm(add(x, y), norm_weight, eps))` in one C++ call.
+///
+/// Both outputs are usually needed immediately: the residual sum for the
+/// downstream FFN residual add, and the normed output as the FFN matmul
+/// input. Returning them together saves one MLX graph node per call site
+/// versus the two-step composition.
+///
+/// Falls back to `add + rms_norm` on shim error.
+pub fn add_rms_norm_pair(
+    x: &MlxArray,
+    y: &MlxArray,
+    norm_weight: &MlxArray,
+    eps: f32,
+    s: Option<&MlxStream>,
+) -> (MlxArray, MlxArray) {
+    crate::op_count::bump();
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut residual = MlxArray::empty();
+        let mut normed = MlxArray::empty();
+        let rc = ax_mlx_add_rms_norm_pair(
+            &mut residual.inner,
+            &mut normed.inner,
+            x.inner,
+            y.inner,
+            norm_weight.inner,
+            eps,
+            stream,
+        );
+        if rc == 0 {
+            return (residual, normed);
+        }
+    }
+    let residual = add(x, y, s);
+    let normed = crate::fast::rms_norm(&residual, Some(norm_weight), eps, s);
+    (residual, normed)
+}
+
+/// Compute `rms_norm(quantized_matmul(x, weight, ...), norm_weight, eps)` in one C++ call.
+///
+/// Fuses a quantized down-projection with the following RMSNorm (post-FFN
+/// norm pattern in Gemma-family dense layers). Saves one MLX graph node per
+/// call site.
+///
+/// Falls back to `quantized_matmul + rms_norm` on shim error.
+#[allow(clippy::too_many_arguments)]
+pub fn quantized_matmul_rms_norm(
+    x: &MlxArray,
+    weight: &MlxArray,
+    scales: &MlxArray,
+    biases: Option<&MlxArray>,
+    group_size: i32,
+    bits: i32,
+    norm_weight: &MlxArray,
+    eps: f32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let biases_raw = biases.map(|b| b.inner).unwrap_or_else(null_ffi_array);
+        let mut res = MlxArray::empty();
+        let rc = ax_mlx_quantized_matmul_rms_norm(
+            &mut res.inner,
+            x.inner,
+            weight.inner,
+            scales.inner,
+            biases_raw,
+            group_size,
+            bits,
+            norm_weight.inner,
+            eps,
+            stream,
+        );
+        if rc == 0 {
+            return res;
+        }
+    }
+    let projected = quantized_matmul(
+        x,
+        weight,
+        scales,
+        biases,
+        true,
+        Some(group_size),
+        Some(bits),
+        s,
+    );
+    crate::fast::rms_norm(&projected, Some(norm_weight), eps, s)
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
@@ -2196,6 +2369,77 @@ mod tests {
         assert_eq!(
             new_state.shape(),
             vec![batch, conv_kernel_dim - 1, conv_dim]
+        );
+    }
+
+    #[test]
+    fn gelu_approx_mul_quantized_matmul_direct_matches_portable_composition() {
+        let gate_data: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.03125).collect();
+        let x_data: Vec<f32> = (0..64).map(|i| ((i as f32) + 1.0) * 0.015625).collect();
+        let weight_data: Vec<f32> = (0..1024).map(|i| ((i as f32) - 512.0) * 0.0005).collect();
+        let gate = MlxArray::from_raw_data(
+            gate_data.as_ptr() as *const u8,
+            std::mem::size_of_val(gate_data.as_slice()),
+            &[2, 32],
+            MlxDtype::Float32,
+        );
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            std::mem::size_of_val(x_data.as_slice()),
+            &[2, 32],
+            MlxDtype::Float32,
+        );
+        let weight = MlxArray::from_raw_data(
+            weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(weight_data.as_slice()),
+            &[32, 32],
+            MlxDtype::Float32,
+        );
+        let quantized = quantize(
+            &weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(quantized.len(), 3);
+
+        let prev = crate::op_count::op_count_snapshot();
+        let direct = gelu_approx_mul_quantized_matmul(
+            &gate,
+            &x,
+            &quantized[0],
+            &quantized[1],
+            Some(&quantized[2]),
+            32,
+            4,
+            None,
+        );
+        assert_eq!(
+            crate::op_count::op_count_take(prev),
+            1,
+            "direct C++ activation+quantized-matmul shim should count as one Rust FFI dispatch"
+        );
+
+        let hidden = gelu_approx_mul(&gate, &x, None);
+        let portable = quantized_matmul(
+            &hidden,
+            &quantized[0],
+            &quantized[1],
+            Some(&quantized[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        eval(&[&direct, &portable]);
+
+        assert_eq!(direct.shape(), vec![2, 32]);
+        assert_eq!(
+            direct.data_f32().to_vec(),
+            portable.data_f32().to_vec(),
+            "direct C++ activation+quantized-matmul shim must preserve portable math"
         );
     }
 

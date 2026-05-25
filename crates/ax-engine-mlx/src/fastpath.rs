@@ -157,6 +157,19 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_GEGLU_MUL_METAL` — route split Gemma-family GEGLU
+    /// `gelu_approx(gate) * up` through a custom MLX Metal elementwise node.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_GEGLU_MUL_METAL=0`).
+    ///
+    /// This covers MoE expert paths where gate/up projections are already
+    /// materialized as separate tensors. Packed dense FFN layers use the
+    /// narrower packed GEGLU kernel below.
+    geglu_mul_metal_enabled,
+    "AX_MLX_GEGLU_MUL_METAL"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DENSE_GEGLU_PACKED_METAL` — route packed dense Gemma-family
     /// GEGLU activation through a custom MLX Metal elementwise kernel.
     ///
@@ -186,6 +199,22 @@ env_flag_default_on!(
     /// compiled-closure / imperative SwiGLU path.
     dense_swiglu_packed_metal_enabled,
     "AX_MLX_DENSE_SWIGLU_PACKED_METAL"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_GEMMA4_PER_LAYER_GELU_MUL_METAL` — fuse Gemma4 per-layer input
+    /// `gelu_approx(gate) * per_layer_input` into one custom MLX Metal
+    /// elementwise node.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_GEMMA4_PER_LAYER_GELU_MUL_METAL=0`).
+    ///
+    /// Gemma 4 E2B/4B apply this gate in every decoder layer. The unfused path
+    /// expands approximate GELU into a chain of scalar elementwise MLX ops before
+    /// the per-layer projection. Unsupported shapes and dtypes fall back to the
+    /// stable direct MLX shim.
+    gemma4_per_layer_gelu_mul_metal_enabled,
+    "AX_MLX_GEMMA4_PER_LAYER_GELU_MUL_METAL"
 );
 
 env_flag_default_on!(
@@ -232,6 +261,30 @@ env_flag!(
     /// rotation.
     direct_cpp_gemma4_post_attn_ffn_enabled,
     "AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"
+);
+
+env_flag!(
+    /// `AX_MLX_DENSE_ADD_RMS_NORM_PAIR` — fuse the attention residual-add and
+    /// pre-FFN RMSNorm into one C++ call for dense-layer decode.
+    ///
+    /// **Default: OFF**. A/B on Gemma 4 31B showed this shim regresses by
+    /// ~0.1% on that model. The C++ function call overhead (2 output arrays,
+    /// extra parameter marshaling) exceeds the savings from one fewer Rust→C
+    /// FFI crossing. Left as opt-in for future re-evaluation.
+    dense_add_rms_norm_pair_enabled,
+    "AX_MLX_DENSE_ADD_RMS_NORM_PAIR"
+);
+
+env_flag!(
+    /// `AX_MLX_DENSE_QMATMUL_RMS_NORM` — fuse the dense FFN down-projection
+    /// and post-FFN RMSNorm into one C++ call.
+    ///
+    /// **Default: OFF**. A/B on Gemma 4 31B showed ~0.45% regression. The
+    /// C++ wrapper overhead (10 parameters, optional biases conversion) exceeds
+    /// the savings from one fewer Rust→C FFI crossing. MLX graph node count is
+    /// unchanged either way. Left as opt-in for future re-evaluation.
+    dense_qmatmul_rms_norm_enabled,
+    "AX_MLX_DENSE_QMATMUL_RMS_NORM"
 );
 
 env_flag!(
@@ -575,6 +628,36 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_DENSE_SWIGLU_PACKED_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn geglu_mul_metal_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_GEGLU_MUL_METAL_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_GEGLU_MUL_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_GEGLU_MUL_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn gemma4_per_layer_gelu_mul_metal_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_PER_LAYER_GELU_MUL_METAL_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_PER_LAYER_GELU_MUL_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_GEMMA4_PER_LAYER_GELU_MUL_METAL_ENABLED",
             "1"
         ));
     }

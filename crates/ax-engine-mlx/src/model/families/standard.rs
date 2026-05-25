@@ -14,7 +14,7 @@ use super::super::shared::{
     add_then_multiply_scalar, attention_mask_array, attention_output_projection,
     direct_qk_norm_rope_route_enabled, ffn_swiglu, flatten_attention_output_bhsd,
     full_precision_attention, moe_experts_forward, moe_experts_forward_gemma4, moe_router_gemma4,
-    moe_router_glm, moe_router_qwen3, per_layer_input_gate, prepare_value_bhsd_from_proj,
+    moe_router_glm, moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
     qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj, qkv_project, qw, rms_norm_opt,
     shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
 };
@@ -540,7 +540,27 @@ pub(crate) fn layer_forward(
 
     // 15. Residual.
     let residual_norm_started = profile_forward_layer.then(Instant::now);
-    let hidden = add(hidden, &attn_proj, None);
+    let last_only_active = last_position_only_after_attention && seq > 1;
+
+    // Fused residual-add + pre-FFN norm: for non-sliced, non-profiled decode
+    // steps, combine `add(hidden, attn_proj)` and `rms_norm(hidden, ffn_norm)`
+    // into one C++ call. Returns both the residual and the normed output
+    // together, saving one MLX graph node per layer. Falls back to the split
+    // path when profiling barriers are active or last-position slicing is
+    // required (terminal prefill layer).
+    let fused_normed: Option<MlxArray>;
+    let hidden = if !last_only_active
+        && !profile_forward_layer
+        && fastpath::dense_add_rms_norm_pair_enabled()
+    {
+        let (h, n) =
+            mlx_sys::add_rms_norm_pair(hidden, &attn_proj, &w.ffn_norm, cfg.rms_norm_eps, None);
+        fused_normed = Some(n);
+        h
+    } else {
+        fused_normed = None;
+        add(hidden, &attn_proj, None)
+    };
 
     // 15a. Optional last-position-only slice for the terminal prefill layer.
     // KV cache writes happened inside attention; downstream consumers (final
@@ -548,7 +568,6 @@ pub(crate) fn layer_forward(
     // here lets the FFN run on `[1, 1, hidden]` instead of `[1, seq, hidden]`,
     // which is the dominant cost on long prompts. See the function-level
     // doc for the correctness contract.
-    let last_only_active = last_position_only_after_attention && seq > 1;
     let (hidden, per_layer_input_owned) = if last_only_active {
         let last = (seq - 1) as i32;
         let hs = cfg.hidden_size as i32;
@@ -574,8 +593,12 @@ pub(crate) fn layer_forward(
         per_layer_input
     };
 
-    // 16. Pre-FFN norm.
-    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    // 16. Pre-FFN norm (skipped when the fused path already computed it).
+    let normed2 = if let Some(n) = fused_normed {
+        n
+    } else {
+        rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None)
+    };
     if let Some(started) = residual_norm_started {
         forward_profile_eval_elapsed(
             profile_decode_layer,
@@ -592,8 +615,7 @@ pub(crate) fn layer_forward(
         if cfg.gemma4_moe_router {
             // Gemma4 dual-path: dense sub-block + expert sub-block.
             let dense_started = profile_gemma4_moe_decode.then(Instant::now);
-            let h1 = ffn_swiglu(cfg, w, &normed2);
-            let h1 = rms_norm_opt(&h1, w.ffn_post_norm1.as_ref(), cfg.rms_norm_eps);
+            let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref());
             if let Some(started) = dense_started {
                 profile_eval_elapsed(
                     profile_gemma4_moe_decode,
@@ -664,8 +686,7 @@ pub(crate) fn layer_forward(
         }
     } else {
         // Dense path (Qwen3, Gemma4 non-MoE layers).
-        let out = ffn_swiglu(cfg, w, &normed2);
-        rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
+        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref())
     };
     if let Some(started) = ffn_started {
         forward_profile_eval_elapsed(
@@ -692,8 +713,7 @@ pub(crate) fn layer_forward(
         per_layer_input,
     ) {
         let residual = add(&hidden, &ffn_out, None);
-        let gated = per_layer_input_gate(&qw(&residual, gate_w), pli);
-        let projected = qw(&gated, proj_w);
+        let projected = per_layer_input_gate_project(&qw(&residual, gate_w), pli, proj_w);
         let normed = rms_norm(&projected, Some(post_norm), cfg.rms_norm_eps, None);
         if let Some(scalar) = &w.layer_scalar {
             add_then_multiply_scalar(&residual, &normed, scalar)

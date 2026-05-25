@@ -57,7 +57,7 @@ pub(crate) fn layer_forward(
         }
         moe_out
     } else {
-        ffn_swiglu(cfg, w, &normed2)
+        ffn_swiglu(cfg, w, &normed2, None)
     };
     let ffn_out = rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
     if let Some(started) = ffn_started {

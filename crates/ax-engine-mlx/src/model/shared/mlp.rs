@@ -1,8 +1,9 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
-    expand_dims_axes, gelu_approx_mul, multiply, reshape, rms_norm, silu_mul, slice_last_dim,
-    softmax, sum_axis, take, take_along_axis, topk_axis,
+    expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, multiply,
+    quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax, sum_axis,
+    take, take_along_axis, topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -19,6 +20,33 @@ use super::utils::{
     mlx_slice_last_dim, qkv_slices, qw, qw_gather, scalar_like, scale_hidden, shape_element_count,
     squeeze_switch_singleton,
 };
+
+static GELU_MUL_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+const GELU_MUL_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    T gate_v = gate[idx];
+    T x_v = x[idx];
+    T half_v = static_cast<T>(0.5f);
+    T one_v = static_cast<T>(1.0f);
+    T sqrt_2_over_pi_v = static_cast<T>(0.7978846f);
+    T coeff_v = static_cast<T>(0.044715f);
+
+    T gate2 = static_cast<T>(static_cast<float>(gate_v) * static_cast<float>(gate_v));
+    T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_v));
+    T cubic = static_cast<T>(static_cast<float>(coeff_v) * static_cast<float>(gate3));
+    T inner = static_cast<T>(static_cast<float>(gate_v) + static_cast<float>(cubic));
+    T scaled = static_cast<T>(static_cast<float>(sqrt_2_over_pi_v) * static_cast<float>(inner));
+    T t = static_cast<T>(tanh(static_cast<float>(scaled)));
+    T one_plus_t = static_cast<T>(static_cast<float>(one_v) + static_cast<float>(t));
+    T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_v));
+    T activated = static_cast<T>(static_cast<float>(half_gate) * static_cast<float>(one_plus_t));
+    out[idx] = static_cast<T>(static_cast<float>(activated) * static_cast<float>(x_v));
+"#;
 
 pub(crate) fn qkv_project(
     cfg: &ModelConfig,
@@ -120,13 +148,101 @@ pub(crate) fn attention_output_projection(
 /// production surface because MLX compiled closures are thread/stream-registry
 /// sensitive in the Rust server worker model.
 pub(crate) fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
+    if let Some(out) = gelu_approx_mul_metal(gate, x, fastpath::geglu_mul_metal_enabled()) {
+        return out;
+    }
     gelu_approx_mul(gate, x, None)
 }
 
 pub(crate) fn per_layer_input_gate(gate: &MlxArray, per_layer_input: &MlxArray) -> MlxArray {
+    if let Some(out) = gelu_approx_mul_metal(
+        gate,
+        per_layer_input,
+        fastpath::gemma4_per_layer_gelu_mul_metal_enabled(),
+    ) {
+        return out;
+    }
     // mlx-lm keeps this Gemma4DecoderLayer per-layer input gate imperative;
     // the direct shim preserves the same math with one stable FFI call.
     gelu_approx_mul(gate, per_layer_input, None)
+}
+
+fn gelu_approx_mul_metal(gate: &MlxArray, x: &MlxArray, enabled: bool) -> Option<MlxArray> {
+    if !enabled {
+        return None;
+    }
+    if gate.shape() != x.shape() || gate.dtype() != x.dtype() {
+        return None;
+    }
+    if !matches!(
+        gate.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    let shape = gate.shape();
+    let element_count = shape
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    let element_count = i32::try_from(element_count).ok()?;
+    let kernel = GELU_MUL_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_gemma_gelu_mul_v1",
+            &["gate", "x"],
+            &["out"],
+            GELU_MUL_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[gate, x],
+        &[KernelOutputSpec {
+            shape,
+            dtype: gate.dtype(),
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "T",
+                dtype: gate.dtype(),
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
+}
+
+pub(crate) fn per_layer_input_gate_project(
+    gate: &MlxArray,
+    per_layer_input: &MlxArray,
+    proj_w: &QuantizedWeight,
+) -> MlxArray {
+    if let Some(gated) = gelu_approx_mul_metal(
+        gate,
+        per_layer_input,
+        fastpath::gemma4_per_layer_gelu_mul_metal_enabled(),
+    ) {
+        return qw(&gated, proj_w);
+    }
+    if let Some(scales) = proj_w.scales.as_ref() {
+        return gelu_approx_mul_quantized_matmul(
+            gate,
+            per_layer_input,
+            &proj_w.weight,
+            scales,
+            proj_w.biases.as_ref(),
+            proj_w.group_size,
+            proj_w.bits,
+            None,
+        );
+    }
+    qw(&per_layer_input_gate(gate, per_layer_input), proj_w)
 }
 
 /// SwiGLU compiled helper — mirrors `geglu()` but with SiLU activation.
@@ -547,7 +663,12 @@ fn gemma4_moe_weighted_scaled_sum_metal(
     outputs.pop()
 }
 
-pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
+pub(crate) fn ffn_swiglu(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    post_norm: Option<&MlxArray>,
+) -> MlxArray {
     let seq = x.shape().get(1).copied().unwrap_or(1);
     let profile_decode = seq == 1 && decode_profile_enabled();
     let profile_prefill = seq > 1 && prefill_profile_enabled();
@@ -604,12 +725,47 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
                     &[&ffn_hidden],
                 );
                 let down_started = Instant::now();
-                let out = qw(
-                    &ffn_hidden,
-                    w.down_proj
-                        .as_ref()
-                        .expect("dense FFN layer must have down_proj"),
-                );
+                let down = w
+                    .down_proj
+                    .as_ref()
+                    .expect("dense FFN layer must have down_proj");
+                if let Some(norm_w) = post_norm {
+                    if !profile_decode
+                        && !profile_prefill
+                        && fastpath::dense_qmatmul_rms_norm_enabled()
+                        && let Some(scales) = down.scales.as_ref()
+                    {
+                        let out = quantized_matmul_rms_norm(
+                            &ffn_hidden,
+                            &down.weight,
+                            scales,
+                            down.biases.as_ref(),
+                            down.group_size,
+                            down.bits,
+                            norm_w,
+                            cfg.rms_norm_eps,
+                            None,
+                        );
+                        forward_profile_eval_elapsed(
+                            profile_decode,
+                            profile_prefill,
+                            DecodeProfileStage::PostAttnFfnDown,
+                            down_started,
+                            &[&out],
+                        );
+                        return out;
+                    }
+                    let out = qw(&ffn_hidden, down);
+                    forward_profile_eval_elapsed(
+                        profile_decode,
+                        profile_prefill,
+                        DecodeProfileStage::PostAttnFfnDown,
+                        down_started,
+                        &[&out],
+                    );
+                    return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
+                }
+                let out = qw(&ffn_hidden, down);
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
@@ -641,12 +797,47 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
                     &[&ffn_hidden],
                 );
                 let down_started = Instant::now();
-                let out = qw(
-                    &ffn_hidden,
-                    w.down_proj
-                        .as_ref()
-                        .expect("dense FFN layer must have down_proj"),
-                );
+                let down = w
+                    .down_proj
+                    .as_ref()
+                    .expect("dense FFN layer must have down_proj");
+                if let Some(norm_w) = post_norm {
+                    if !profile_decode
+                        && !profile_prefill
+                        && fastpath::dense_qmatmul_rms_norm_enabled()
+                        && let Some(scales) = down.scales.as_ref()
+                    {
+                        let out = quantized_matmul_rms_norm(
+                            &ffn_hidden,
+                            &down.weight,
+                            scales,
+                            down.biases.as_ref(),
+                            down.group_size,
+                            down.bits,
+                            norm_w,
+                            cfg.rms_norm_eps,
+                            None,
+                        );
+                        forward_profile_eval_elapsed(
+                            profile_decode,
+                            profile_prefill,
+                            DecodeProfileStage::PostAttnFfnDown,
+                            down_started,
+                            &[&out],
+                        );
+                        return out;
+                    }
+                    let out = qw(&ffn_hidden, down);
+                    forward_profile_eval_elapsed(
+                        profile_decode,
+                        profile_prefill,
+                        DecodeProfileStage::PostAttnFfnDown,
+                        down_started,
+                        &[&out],
+                    );
+                    return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
+                }
+                let out = qw(&ffn_hidden, down);
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
@@ -701,12 +892,47 @@ pub(crate) fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> M
         &[&ffn_hidden],
     );
     let down_started = Instant::now();
-    let out = qw(
-        &ffn_hidden,
-        w.down_proj
-            .as_ref()
-            .expect("dense FFN layer must have down_proj"),
-    );
+    let down = w
+        .down_proj
+        .as_ref()
+        .expect("dense FFN layer must have down_proj");
+    if let Some(norm_w) = post_norm {
+        if !profile_decode
+            && !profile_prefill
+            && fastpath::dense_qmatmul_rms_norm_enabled()
+            && let Some(scales) = down.scales.as_ref()
+        {
+            let out = quantized_matmul_rms_norm(
+                &ffn_hidden,
+                &down.weight,
+                scales,
+                down.biases.as_ref(),
+                down.group_size,
+                down.bits,
+                norm_w,
+                cfg.rms_norm_eps,
+                None,
+            );
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                down_started,
+                &[&out],
+            );
+            return out;
+        }
+        let out = qw(&ffn_hidden, down);
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::PostAttnFfnDown,
+            down_started,
+            &[&out],
+        );
+        return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
+    }
+    let out = qw(&ffn_hidden, down);
     forward_profile_eval_elapsed(
         profile_decode,
         profile_prefill,
@@ -1393,6 +1619,31 @@ mod tests {
         eval(&[&direct, &metal]);
 
         assert_eq!(metal.shape(), vec![1, 3, 8]);
+        assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
+    }
+
+    #[test]
+    fn split_geglu_metal_matches_direct_geglu_for_bf16_gate_up() {
+        let gate_data: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.059).collect();
+        let up_data: Vec<f32> = (0..32).map(|i| ((i as f32) + 3.0) * 0.031).collect();
+        let gate = astype(
+            &array_f32(&gate_data, &[1, 1, 4, 8]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let up = astype(
+            &array_f32(&up_data, &[1, 1, 4, 8]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+
+        let direct = astype(&gelu_approx_mul(&gate, &up, None), MlxDtype::Float32, None);
+        let metal = gelu_approx_mul_metal(&gate, &up, true)
+            .expect("split GEGLU Metal kernel should support bf16 gate/up");
+        let metal = astype(&metal, MlxDtype::Float32, None);
+        eval(&[&direct, &metal]);
+
+        assert_eq!(metal.shape(), vec![1, 1, 4, 8]);
         assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
     }
 
