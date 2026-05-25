@@ -49,18 +49,31 @@ pub fn mtp_head_forward(
 
     // 3. Attention sub-layer (Qwen3NextAttention).
     //
-    // q_proj output = [1, 1, n_heads * head_dim * 2]:
-    //   first half  = queries  [1, 1, n_heads * head_dim]
-    //   second half = gate     [1, 1, n_heads * head_dim]
-    // Output = o_proj(sdpa_out) * sigmoid(gate), then residual.
+    // q_proj output = [1, 1, n_heads * head_dim * 2] with per-head interleaving:
+    //   [h0_query(head_dim), h0_gate(head_dim), h1_query(head_dim), h1_gate(head_dim), ...]
+    // This matches mlx-lm: `mx.split(q_proj_out.reshape(B,L,n_heads,-1), 2, axis=-1)`.
+    // We must reshape to [1, 1, n_heads, 2*head_dim] and then slice the last dim —
+    // NOT a simple first-half / second-half slice (which mixes heads).
+    // Output = o_proj(sdpa_out * sigmoid(gate)), then residual.
     {
         let normed = rms_norm(&h, Some(&head.attn_norm), cfg.rms_norm_eps, None);
 
-        // Split q_proj output into queries and gate.
+        // Reshape q_proj output to expose per-head query/gate layout.
+        let n_h = head.n_heads as i32;
+        let hd  = head.head_dim as i32;
+        let q_half = n_h * hd;
         let qg_raw = qw(&normed, &head.q_proj); // [1, 1, n_heads * head_dim * 2]
-        let q_half = (head.n_heads * head.head_dim) as i32;
-        let q_raw = slice(&qg_raw, &[0, 0, 0], &[1, 1, q_half], &[1, 1, 1], None);
-        let gate  = slice(&qg_raw, &[0, 0, q_half], &[1, 1, q_half * 2], &[1, 1, 1], None);
+        let qg_heads = reshape(&qg_raw, &[1_i32, 1, n_h, 2 * hd], None); // [1, 1, n_heads, 2*hd]
+        let q_raw = reshape(
+            &slice(&qg_heads, &[0, 0, 0, 0], &[1, 1, n_h, hd], &[1, 1, 1, 1], None),
+            &[1_i32, 1, q_half],
+            None,
+        );
+        let gate = reshape(
+            &slice(&qg_heads, &[0, 0, 0, hd], &[1, 1, n_h, 2 * hd], &[1, 1, 1, 1], None),
+            &[1_i32, 1, q_half],
+            None,
+        );
 
         let k_raw = qw(&normed, &head.k_proj);
         let v_raw = qw(&normed, &head.v_proj);
@@ -122,11 +135,8 @@ pub fn mtp_head_forward(
         let attn_flat = flatten_attention_output_bhsd(&attn_out, 1, head.n_heads, head.head_dim);
 
         // Apply sigmoid gating: o_proj(attn_flat * sigmoid(gate)).
-        let gate_sig = sigmoid(&gate, None);
-        let gated = multiply(&attn_flat, &gate_sig, None);
-        // Flatten gate back to same shape as attn_flat for element-wise multiply.
-        let gated_flat = reshape(&gated, &[1_i32, 1, q_half], None);
-        let attn_proj = qw(&gated_flat, &head.o_proj);
+        let gated = multiply(&attn_flat, &sigmoid(&gate, None), None);
+        let attn_proj = qw(&gated, &head.o_proj);
         h = add(&h, &attn_proj, None);
     }
 
