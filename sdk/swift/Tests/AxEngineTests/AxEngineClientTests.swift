@@ -71,6 +71,26 @@ private func sseResponse(_ text: String) -> (HTTPURLResponse, Data) {
     return (resp, Data(text.utf8))
 }
 
+/// Read HTTP body data from a URLRequest intercepted by URLProtocol.
+///
+/// When URLSession sends a request through URLProtocol, Foundation may move the
+/// body to httpBodyStream (observed with session.bytes(for:) in Swift 6).  This
+/// helper falls back to draining the stream so tests do not depend on which
+/// storage Foundation chose.
+private func readBody(_ req: URLRequest) -> Data? {
+    if let body = req.httpBody { return body }
+    guard let stream = req.httpBodyStream else { return nil }
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while stream.hasBytesAvailable {
+        let n = stream.read(&buffer, maxLength: buffer.count)
+        if n > 0 { data.append(contentsOf: buffer.prefix(n)) }
+    }
+    return data.isEmpty ? nil : data
+}
+
 // MARK: - Tests
 
 final class AxEngineClientTests: XCTestCase {
@@ -112,7 +132,7 @@ final class AxEngineClientTests: XCTestCase {
     func testChatCompletionEncodesBody() async throws {
         var captured: [String: Any] = [:]
         MockURLProtocol.handler = { req in
-            captured = (try? JSONSerialization.jsonObject(with: req.httpBody!) as? [String: Any]) ?? [:]
+            captured = readBody(req).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
             return jsonResponse([
                 "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
                 "choices": [["index": 0, "message": ["role": "assistant", "content": "ok"], "finish_reason": "stop"]],
@@ -200,7 +220,7 @@ final class AxEngineClientTests: XCTestCase {
     func testStreamChatCompletionSetsStreamTrue() async throws {
         var captured: [String: Any] = [:]
         MockURLProtocol.handler = { req in
-            captured = (try? JSONSerialization.jsonObject(with: req.httpBody!) as? [String: Any]) ?? [:]
+            captured = readBody(req).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
             return sseResponse("data: [DONE]\n\n")
         }
         for try await _ in makeClient().streamChatCompletion(.init(

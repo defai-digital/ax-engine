@@ -30,8 +30,8 @@ pub struct DirectPipelineTimings {
     /// embed-tokens + per-layer-input + dtype-cast + scale-hidden graph-build
     /// cost.
     pub forward_layer_loop_wall_us: u32,
-    /// Subset of `forward_wall_us`: time spent in the post-layer final RMSNorm
-    /// + lm-head qmatmul + logit finalize chain. Zero unless
+    /// Subset of `forward_wall_us`: time spent in the post-layer RMSNorm,
+    /// lm-head qmatmul, and logit finalize chain. Zero unless
     /// `AX_MLX_DIRECT_PIPELINE_STAGE_PROFILE=1` is set.
     pub forward_head_wall_us: u32,
     pub argmax_wall_us: u32,
