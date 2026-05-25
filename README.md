@@ -1,6 +1,6 @@
 # AX Engine
 
-### Faster Inference: MTP, Prefill, Decode, and TTFT
+### MTPLX vs AX-Engine
 
 <table>
 <tr>
@@ -20,6 +20,8 @@
 <td><img src="docs/assets/perf-mtp-quality-accept-rate.svg" alt="flappy Quality accept rate chart with d=2 and d=3 bars"></td>
 </tr>
 </table>
+
+### llama.cpp metal vs mlx-lm vs AX-Engine
 
 <table>
 <tr>
