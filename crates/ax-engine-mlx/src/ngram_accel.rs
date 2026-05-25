@@ -135,6 +135,12 @@ const MAX_CONTINUATIONS_PER_CONTEXT: usize = 4;
 struct ContinuationStats {
     token: u32,
     count: u32,
+    /// Number of times this continuation was observed in the prompt context
+    /// (rather than in generated output). Prompt-derived evidence allows
+    /// linear-attention models to draft with `min_support=1` instead of the
+    /// output-only threshold, enabling immediate speculation on the first
+    /// decode step for repeating real-workload prompts.
+    prompt_count: u32,
     last_seen: u64,
     accepted: u32,
     rejected: u32,
@@ -145,6 +151,10 @@ struct NgramPrediction {
     token: u32,
     /// Observations where `token` was the continuation for this context key.
     support: u32,
+    /// Prompt-sourced observations for the currently selected continuation.
+    /// Prompt-derived bigrams bypass the `LINEAR_MIN_NGRAM_SUPPORT=2` threshold,
+    /// allowing linear-attention models to draft immediately on repeating prompts.
+    selected_prompt_count: u32,
     /// Total observations for this context key across all continuations.
     total: u32,
     /// Observation index for the selected continuation.  Used to break equal
@@ -163,10 +173,12 @@ struct NgramPrediction {
 }
 
 impl NgramPrediction {
-    fn new(token: u32, last_seen: u64) -> Self {
+    fn new(token: u32, last_seen: u64, from_prompt: bool) -> Self {
+        let prompt_count = if from_prompt { 1 } else { 0 };
         let continuations = vec![ContinuationStats {
             token,
             count: 1,
+            prompt_count,
             last_seen,
             accepted: 0,
             rejected: 0,
@@ -174,6 +186,7 @@ impl NgramPrediction {
         Self {
             token,
             support: 1,
+            selected_prompt_count: prompt_count,
             total: 1,
             last_seen,
             key_last_seen: last_seen,
@@ -186,7 +199,7 @@ impl NgramPrediction {
         self.support as f32 / self.total as f32
     }
 
-    fn record(&mut self, token: u32, last_seen: u64) {
+    fn record(&mut self, token: u32, last_seen: u64, from_prompt: bool) {
         self.total = self.total.saturating_add(1);
         self.key_last_seen = last_seen;
         if let Some(stats) = self
@@ -195,11 +208,15 @@ impl NgramPrediction {
             .find(|stats| stats.token == token)
         {
             stats.count = stats.count.saturating_add(1);
+            if from_prompt {
+                stats.prompt_count = stats.prompt_count.saturating_add(1);
+            }
             stats.last_seen = last_seen;
         } else {
             self.continuations.push(ContinuationStats {
                 token,
                 count: 1,
+                prompt_count: if from_prompt { 1 } else { 0 },
                 last_seen,
                 accepted: 0,
                 rejected: 0,
@@ -263,9 +280,11 @@ impl NgramPrediction {
         {
             self.token = stats.token;
             self.support = stats.count;
+            self.selected_prompt_count = stats.prompt_count;
             self.last_seen = stats.last_seen;
         } else {
             self.support = 0;
+            self.selected_prompt_count = 0;
             self.last_seen = self.key_last_seen;
         }
     }
@@ -332,6 +351,14 @@ pub struct NgramDraftPolicy {
     pub max_len: usize,
     pub min_support: u32,
     pub confidence_threshold: f32,
+    /// When true, bigrams whose `selected_prompt_count >= 1` are allowed to
+    /// draft even when their output-derived `count < min_support`. This lowers
+    /// the effective minimum to 1 for prompt-seeded continuations, enabling
+    /// linear-attention models to draft from the first decode step on repeating
+    /// real-workload prompts. Must be `false` for the initial-disable check
+    /// (see `linear_ngram_initial_prompt_should_disable_request`) so that
+    /// non-repeating random-token prompts remain correctly classified.
+    pub bypass_prompt_min_support: bool,
 }
 
 impl NgramDraftPolicy {
@@ -341,6 +368,7 @@ impl NgramDraftPolicy {
             max_len,
             min_support,
             confidence_threshold,
+            bypass_prompt_min_support: false,
         }
     }
 }
@@ -387,11 +415,23 @@ impl NgramTable {
         }
     }
 
-    /// Ingest a slice of tokens (call with the prompt, then with each batch
-    /// of accepted tokens as generation proceeds).
+    /// Ingest a slice of tokens (call with each batch of accepted output tokens
+    /// as generation proceeds).
     pub fn feed(&mut self, tokens: &[u32]) {
         for &t in tokens {
-            self.observe(t);
+            self.observe(t, false);
+        }
+    }
+
+    /// Ingest prompt tokens, marking each bigram as prompt-sourced.
+    ///
+    /// Prompt-sourced bigrams satisfy the `LINEAR_MIN_NGRAM_SUPPORT` threshold
+    /// with a single observation, enabling linear-attention models to draft
+    /// immediately on the first decode step for repeating real-workload prompts
+    /// without waiting for two output-derived observations.
+    pub fn feed_from_prompt(&mut self, tokens: &[u32]) {
+        for &t in tokens {
+            self.observe(t, true);
         }
     }
 
@@ -431,7 +471,7 @@ impl NgramTable {
     }
 
     /// Record one token and update the n-gram table.
-    fn observe(&mut self, t: u32) {
+    fn observe(&mut self, t: u32, from_prompt: bool) {
         self.observation_index = self.observation_index.saturating_add(1);
         let observation_index = self.observation_index;
         let n = self.tail.len();
@@ -445,6 +485,7 @@ impl NgramTable {
                 observation_index,
                 MAX_CONTEXTS_PER_ORDER,
                 CONTEXT_PRUNE_BATCH,
+                from_prompt,
             );
             if n >= 3 {
                 update_prediction_and_prune(
@@ -454,6 +495,7 @@ impl NgramTable {
                     observation_index,
                     MAX_CONTEXTS_PER_ORDER,
                     CONTEXT_PRUNE_BATCH,
+                    from_prompt,
                 );
                 if n >= 4 {
                     update_prediction_and_prune(
@@ -463,6 +505,7 @@ impl NgramTable {
                         observation_index,
                         MAX_CONTEXTS_PER_ORDER,
                         CONTEXT_PRUNE_BATCH,
+                        from_prompt,
                     );
                 }
             }
@@ -703,12 +746,23 @@ fn draft_step_from_prediction(
     prediction: &NgramPrediction,
     policy: NgramDraftPolicy,
 ) -> Option<u32> {
+    // Prompt-derived bigrams bypass min_support when `bypass_prompt_min_support`
+    // is set. This is enabled during actual decode but NOT during the initial-
+    // disable check (`linear_ngram_initial_prompt_should_disable_request`) so
+    // that non-repeating random-token prompts are still classified correctly and
+    // do not trigger unwanted speculation on their random prompt bigrams.
+    let effective_min_support =
+        if policy.bypass_prompt_min_support && prediction.selected_prompt_count >= 1 {
+            1
+        } else {
+            policy.min_support
+        };
     match policy.variant {
         NgramPolicyVariant::MajorityRecency | NgramPolicyVariant::SharedPoolMajority => {
             prediction_passes(
                 prediction.support,
                 prediction.effective_confidence(),
-                policy.min_support,
+                effective_min_support,
                 policy.confidence_threshold,
             )
             .then_some(prediction.token)
@@ -719,7 +773,7 @@ fn draft_step_from_prediction(
             prediction_passes(
                 latest.count,
                 confidence,
-                policy.min_support,
+                effective_min_support,
                 policy.confidence_threshold,
             )
             .then_some(latest.token)
@@ -775,15 +829,16 @@ fn update_prediction_and_prune<K>(
     last_seen: u64,
     max_entries: usize,
     prune_batch: usize,
+    from_prompt: bool,
 ) where
     K: Clone + Eq + std::hash::Hash,
 {
     match map.get_mut(&key) {
         Some(p) => {
-            p.record(token, last_seen);
+            p.record(token, last_seen, from_prompt);
         }
         None => {
-            map.insert(key, NgramPrediction::new(token, last_seen));
+            map.insert(key, NgramPrediction::new(token, last_seen, from_prompt));
             prune_oldest_predictions(map, max_entries, prune_batch);
         }
     }
@@ -1248,7 +1303,7 @@ pub fn single_decode_with_turboquant_context(
         token_arr.first_u32_unchecked()
     };
 
-    ngram.observe(tok);
+    ngram.observe(tok, false);
     vec![tok]
 }
 
@@ -1465,12 +1520,14 @@ mod tests {
             max_len: 1,
             min_support: 1,
             confidence_threshold: 0.0,
+            bypass_prompt_min_support: false,
         });
         let latest = t.predict_with_policy(NgramDraftPolicy {
             variant: NgramPolicyVariant::LlamaMapLatest,
             max_len: 1,
             min_support: 1,
             confidence_threshold: 0.0,
+            bypass_prompt_min_support: false,
         });
 
         assert_eq!(default.draft, vec![3]);
@@ -1499,6 +1556,63 @@ mod tests {
         assert_eq!(
             filtered.rejection,
             Some(NgramDraftRejection::ConfidenceFiltered)
+        );
+    }
+
+    #[test]
+    fn prompt_sourced_bigrams_bypass_linear_min_support_threshold() {
+        // Simulates what happens when seed_generation_ngram_from_prompt seeds
+        // the table and then the first few output tokens position the tail so
+        // that a prompt bigram is the relevant lookup key.
+        //
+        // Prompt [1,2,3] seeds bigram (1,2)→3 with prompt_count=1.
+        // Then output [9,1,2] runs through the table (simulating first decode
+        // steps), placing the tail at [3,9,1,2].
+        // Prediction now looks for bigram (1,2)→3 — found with prompt_count=1.
+        let mut t = NgramTable::new();
+        // Seed from prompt: creates bigram (1,2)→3 with prompt_count=1.
+        t.feed_from_prompt(&[1, 2, 3]);
+        // Simulate a few output tokens to reposition the tail.
+        t.feed(&[9, 1, 2]);
+        // With min_support=2 and bypass_prompt_min_support=true (the policy
+        // used during actual linear-attention decode), bigram (1,2)→3 has
+        // prompt_count=1 → min_support is lowered to 1 → draft is produced.
+        let bypass_policy = NgramDraftPolicy {
+            variant: NgramPolicyVariant::MajorityRecency,
+            max_len: 1,
+            min_support: 2,
+            confidence_threshold: 0.0,
+            bypass_prompt_min_support: true,
+        };
+        let draft = t.predict_with_policy(bypass_policy);
+        assert_eq!(
+            draft.draft,
+            vec![3],
+            "prompt-sourced bigram should draft despite min_support=2 when bypass enabled"
+        );
+
+        // Without bypass, the same policy blocks the draft (count=1 < min_support=2).
+        let strict_policy = NgramDraftPolicy {
+            bypass_prompt_min_support: false,
+            ..bypass_policy
+        };
+        let blocked_bypass = t.predict_with_policy(strict_policy);
+        assert_eq!(
+            blocked_bypass.draft,
+            Vec::<u32>::new(),
+            "prompt-sourced bigram must be blocked when bypass is disabled"
+        );
+
+        // Same sequence without prompt source: bigram (1,2)→3 has count=1
+        // but prompt_count=0 → min_support=2 is NOT bypassed even with bypass=true.
+        let mut t2 = NgramTable::new();
+        t2.feed(&[1, 2, 3]);
+        t2.feed(&[9, 1, 2]);
+        let blocked = t2.predict_with_policy(bypass_policy);
+        assert_eq!(
+            blocked.draft,
+            Vec::<u32>::new(),
+            "output-only bigram with count=1 should not draft at min_support=2"
         );
     }
 
@@ -1625,7 +1739,7 @@ mod tests {
         let prune_batch = 16;
         let mut map = HashMap::new();
         for token in 0..=max_entries as u32 {
-            map.insert(token, NgramPrediction::new(token, token as u64));
+            map.insert(token, NgramPrediction::new(token, token as u64, false));
         }
 
         prune_oldest_predictions(&mut map, max_entries, prune_batch);
@@ -1647,7 +1761,7 @@ mod tests {
         let overflow = prune_batch + 9;
         let mut map = HashMap::new();
         for token in 0..(max_entries + overflow) as u32 {
-            map.insert(token, NgramPrediction::new(token, token as u64));
+            map.insert(token, NgramPrediction::new(token, token as u64, false));
         }
 
         prune_oldest_predictions(&mut map, max_entries, prune_batch);
@@ -1664,10 +1778,10 @@ mod tests {
         let max_entries = 2;
         let prune_batch = 1;
         let mut map = HashMap::new();
-        update_prediction_and_prune(&mut map, 1, 10, 1, max_entries, prune_batch);
-        update_prediction_and_prune(&mut map, 2, 20, 2, max_entries, prune_batch);
+        update_prediction_and_prune(&mut map, 1, 10, 1, max_entries, prune_batch, false);
+        update_prediction_and_prune(&mut map, 2, 20, 2, max_entries, prune_batch, false);
 
-        update_prediction_and_prune(&mut map, 1, 11, 3, max_entries, prune_batch);
+        update_prediction_and_prune(&mut map, 1, 11, 3, max_entries, prune_batch, false);
 
         assert_eq!(
             map.len(),
@@ -1677,7 +1791,7 @@ mod tests {
         assert!(map.contains_key(&1));
         assert!(map.contains_key(&2));
 
-        update_prediction_and_prune(&mut map, 3, 30, 4, max_entries, prune_batch);
+        update_prediction_and_prune(&mut map, 3, 30, 4, max_entries, prune_batch, false);
         assert_eq!(map.len(), max_entries);
         assert!(
             !map.contains_key(&2),

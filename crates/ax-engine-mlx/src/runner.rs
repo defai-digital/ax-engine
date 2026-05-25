@@ -2721,7 +2721,9 @@ fn seed_generation_ngram_from_prompt(state: &mut RequestState) {
         .prompt_prefix_tokens
         .len()
         .saturating_sub(NGRAM_PROMPT_FEED_MAX);
-    state.ngram.feed(&state.prompt_prefix_tokens[feed_start..]);
+    state
+        .ngram
+        .feed_from_prompt(&state.prompt_prefix_tokens[feed_start..]);
 }
 
 /// Cache key for the embedding-forward compiled closure: thread- and
@@ -5668,11 +5670,15 @@ fn ngram_acceleration_draft(
     let policy = if has_linear_attention {
         // Dense rollback is O(1); linear-attention partial-reject pays
         // branch/recompute, so cap at DEFAULT_DRAFT_LEN to bound recompute cost.
+        // bypass_prompt_min_support=true: prompt-seeded bigrams draft with a
+        // single observation, enabling speculation from step 1 on repeating
+        // real-workload prompts without waiting for two output observations.
         NgramDraftPolicy {
             variant,
             max_len,
             min_support: LINEAR_MIN_NGRAM_SUPPORT,
             confidence_threshold,
+            bypass_prompt_min_support: true,
         }
     } else {
         // Dense models extend up to MAX_DRAFT_LEN when the posterior and n-gram
@@ -5682,6 +5688,7 @@ fn ngram_acceleration_draft(
             max_len,
             min_support: 1,
             confidence_threshold,
+            bypass_prompt_min_support: false,
         }
     };
     ngram.predict_with_policy(policy)
