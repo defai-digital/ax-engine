@@ -200,6 +200,8 @@ fn packed_ffn_activation(
 
 static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 const PACKED_GEGLU_KERNEL_SOURCE: &str = r#"
     uint idx = thread_position_in_grid.x;
@@ -235,6 +237,50 @@ const PACKED_SWIGLU_KERNEL_SOURCE: &str = r#"
     float up_v = static_cast<float>(gate_up[up_idx]);
     float activated = gate_v / (1.0f + exp(-gate_v));
     out[idx] = static_cast<T>(activated * up_v);
+"#;
+
+const GEMMA4_MOE_WEIGHTED_SUM_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    uint hidden_idx = idx % HiddenDim;
+    uint row = idx / HiddenDim;
+    uint down_base = row * TopK * HiddenDim + hidden_idx;
+    uint weight_base = row * TopK;
+    float acc = 0.0f;
+
+    for (uint k = 0; k < TopK; ++k) {
+        float y = static_cast<float>(down_out[down_base + k * HiddenDim]);
+        float w = static_cast<float>(top_k_weights[weight_base + k]);
+        acc += y * w;
+    }
+
+    out[idx] = static_cast<OutT>(acc);
+"#;
+
+const GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    uint hidden_idx = idx % HiddenDim;
+    uint row = idx / HiddenDim;
+    uint down_base = row * TopK * HiddenDim + hidden_idx;
+    uint weight_base = row * TopK;
+    float acc = 0.0f;
+
+    for (uint k = 0; k < TopK; ++k) {
+        uint expert_idx = top_k_indices[weight_base + k];
+        float y = static_cast<float>(down_out[down_base + k * HiddenDim]);
+        float w = static_cast<float>(top_k_weights[weight_base + k]);
+        float scale = static_cast<float>(expert_scale[expert_idx]);
+        acc += y * w * scale;
+    }
+
+    out[idx] = static_cast<OutT>(acc);
 "#;
 
 fn packed_geglu_metal(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArray> {
@@ -312,6 +358,178 @@ fn packed_glu_metal_impl(
             KernelTemplateArg::Dtype {
                 name: "T",
                 dtype: gate_up.dtype(),
+            },
+            KernelTemplateArg::Int {
+                name: "HiddenDim",
+                value: hidden_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
+}
+
+fn gemma4_moe_weighted_sum_metal(
+    down_out: &MlxArray,
+    top_k_weights: &MlxArray,
+    output_dtype: MlxDtype,
+) -> Option<MlxArray> {
+    if !matches!(
+        down_out.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        top_k_weights.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        output_dtype,
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+
+    let down_shape = down_out.shape();
+    let weights_shape = top_k_weights.shape();
+    if down_shape.len() != weights_shape.len() + 1 || weights_shape.is_empty() {
+        return None;
+    }
+    let hidden_dim = *down_shape.last()?;
+    let top_k = *weights_shape.last()?;
+    if top_k <= 0 || hidden_dim <= 0 {
+        return None;
+    }
+    if down_shape[..down_shape.len() - 1] != weights_shape[..] {
+        return None;
+    }
+
+    let mut out_shape = weights_shape[..weights_shape.len() - 1].to_vec();
+    out_shape.push(hidden_dim);
+    let element_count = out_shape
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    let element_count = i32::try_from(element_count).ok()?;
+
+    let kernel = GEMMA4_MOE_WEIGHTED_SUM_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_gemma4_moe_weighted_sum_v1",
+            &["down_out", "top_k_weights"],
+            &["out"],
+            GEMMA4_MOE_WEIGHTED_SUM_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[down_out, top_k_weights],
+        &[KernelOutputSpec {
+            shape: out_shape,
+            dtype: output_dtype,
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "OutT",
+                dtype: output_dtype,
+            },
+            KernelTemplateArg::Int {
+                name: "TopK",
+                value: top_k,
+            },
+            KernelTemplateArg::Int {
+                name: "HiddenDim",
+                value: hidden_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
+}
+
+fn gemma4_moe_weighted_scaled_sum_metal(
+    down_out: &MlxArray,
+    top_k_weights: &MlxArray,
+    top_k_indices: &MlxArray,
+    expert_scale: &MlxArray,
+    output_dtype: MlxDtype,
+) -> Option<MlxArray> {
+    if !matches!(
+        down_out.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        top_k_weights.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || top_k_indices.dtype() != MlxDtype::Uint32
+        || !matches!(
+            expert_scale.dtype(),
+            MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+        )
+        || !matches!(
+            output_dtype,
+            MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+        )
+    {
+        return None;
+    }
+
+    let down_shape = down_out.shape();
+    let weights_shape = top_k_weights.shape();
+    if weights_shape != top_k_indices.shape()
+        || down_shape.len() != weights_shape.len() + 1
+        || weights_shape.is_empty()
+        || expert_scale.shape().len() != 1
+    {
+        return None;
+    }
+    let hidden_dim = *down_shape.last()?;
+    let top_k = *weights_shape.last()?;
+    if top_k <= 0 || hidden_dim <= 0 {
+        return None;
+    }
+    if down_shape[..down_shape.len() - 1] != weights_shape[..] {
+        return None;
+    }
+
+    let mut out_shape = weights_shape[..weights_shape.len() - 1].to_vec();
+    out_shape.push(hidden_dim);
+    let element_count = out_shape
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    let element_count = i32::try_from(element_count).ok()?;
+
+    let kernel = GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_gemma4_moe_weighted_scaled_sum_v1",
+            &["down_out", "top_k_weights", "top_k_indices", "expert_scale"],
+            &["out"],
+            GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[down_out, top_k_weights, top_k_indices, expert_scale],
+        &[KernelOutputSpec {
+            shape: out_shape,
+            dtype: output_dtype,
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "OutT",
+                dtype: output_dtype,
+            },
+            KernelTemplateArg::Int {
+                name: "TopK",
+                value: top_k,
             },
             KernelTemplateArg::Int {
                 name: "HiddenDim",
@@ -975,7 +1193,14 @@ pub(crate) fn moe_experts_forward(
     ));
     let down_out = gather_inputs.unsort(down_out);
 
-    // Weighted sum over top_k dimension → [1, seq, hidden]
+    // Weighted sum over top_k dimension → [1, seq, hidden]. Gemma4 decode hits
+    // this in every layer; fuse multiply + reduction + cast to keep the direct
+    // pipeline graph smaller. Other MoE families keep the generic MLX path.
+    if cfg.gemma4_moe_router
+        && let Some(out) = gemma4_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype())
+    {
+        return out;
+    }
     let seq_dim = down_out.ndim() as i32;
     let top_k_axis = seq_dim - 2; // second-to-last dim
     let scores_exp = expand_dims(top_k_weights, top_k_weights.ndim() as i32, None);
@@ -1124,6 +1349,24 @@ mod tests {
 
         assert_eq!(metal.shape(), vec![1, 3, 8]);
         assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
+    }
+
+    #[test]
+    fn gemma4_moe_weighted_sum_metal_matches_mlx_ops() {
+        let down_data: Vec<f32> = (0..24).map(|i| ((i as f32) - 8.0) * 0.037).collect();
+        let weight_data: Vec<f32> = vec![0.1, 0.25, 0.65, 0.5, 0.125, 0.375];
+        let down = array_f32(&down_data, &[1, 2, 3, 4]);
+        let weights = array_f32(&weight_data, &[1, 2, 3]);
+
+        let scores_exp = expand_dims(&weights, weights.ndim() as i32, None);
+        let weighted = multiply(&down, &scores_exp, None);
+        let direct = sum_axis(&weighted, 2, false, None);
+        let metal = gemma4_moe_weighted_sum_metal(&down, &weights, MlxDtype::Float32)
+            .expect("weighted-sum Metal kernel should support f32 inputs");
+        eval(&[&direct, &metal]);
+
+        assert_eq!(metal.shape(), vec![1, 2, 4]);
+        assert_close(metal.data_f32(), direct.data_f32(), 1.0e-5);
     }
 
     #[test]
