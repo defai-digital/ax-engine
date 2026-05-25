@@ -165,6 +165,11 @@ def extract_suite_summary(artifact: dict, suite_name: str) -> dict:
         "ax_ngram_decode_tok_s": median_decode(ngram_rows),
         "ax_ngram_accept_rate": mean_accept_rate(ngram_rows),
         "ax_mtp_accept_rate": mean_mtp_accept_rate(ngram_rows),
+        # Provenance fields surfaced in summary warnings.
+        "ax_mtp_max_depth": artifact.get("ax_mtp_max_depth"),
+        "ax_mtp_fast_tail_topk_sampling": bool(artifact.get("ax_mtp_fast_tail_topk_sampling", False)),
+        "build_dirty": bool(artifact.get("build", {}).get("git_tracked_dirty", False)),
+        "build_commit": artifact.get("build", {}).get("commit", "unknown")[:12],
     }
 
 
@@ -192,30 +197,48 @@ def write_summary(
     lines: list[str] = []
     lines.append("# MTP Benchmark Summary")
     lines.append("")
-    lines.append(f"Date: {run_date}")
-    lines.append(f"Model: `{model_dir.name}`")
-    lines.append(f"Sampling: temperature={MTP_SAMPLING['temperature']}, top_p={MTP_SAMPLING['top_p']}, top_k={MTP_SAMPLING['top_k']}")
-    lines.append(f"Generation tokens: {MTP_GENERATION_TOKENS}")
-    lines.append(f"Repetitions: {repetitions} + 1 warmup")
+    lines.append(f"Date: {run_date}  ")
+    lines.append(f"Model: `{model_dir.name}`  ")
+    lines.append(f"Sampling: temperature={MTP_SAMPLING['temperature']}, top_p={MTP_SAMPLING['top_p']}, top_k={MTP_SAMPLING['top_k']}  ")
+    lines.append(f"Generation tokens: {MTP_GENERATION_TOKENS}  ")
+    lines.append(f"Repetitions: {repetitions} + 1 warmup  ")
     lines.append("")
+
+    # Dirty build warning — surfaces when any suite artifact was built from uncommitted changes.
+    any_dirty = any(s.get("build_dirty", False) for s in suite_summaries)
+    if any_dirty:
+        commit = suite_summaries[0].get("build_commit", "unknown") if suite_summaries else "unknown"
+        lines.append(f"> **WARNING: dirty build** — this run used uncommitted source changes (base commit `{commit}`).  ")
+        lines.append("> Numbers are not reproducible from any tagged commit. Do not promote to PERFORMANCE.md  ")
+        lines.append("> or README until a clean build is confirmed.  ")
+        lines.append("")
 
     if mtplx_ref:
         meta = mtplx_ref["meta"]
         lines.append(f"MTPLX reference: version={meta.get('mtplx_version', 'unknown')}, hardware={meta.get('hardware', 'unknown')}")
         lines.append("")
 
+    # Experimental-flag caveat.
+    fast_tail_used = any(s.get("ax_mtp_fast_tail_topk_sampling", False) for s in suite_summaries)
+    if fast_tail_used:
+        lines.append("> **Note:** `AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING=1` was active for one or more suites.  ")
+        lines.append("> top-p is not applied on the fast tail-sampling path; these rows are diagnostic only  ")
+        lines.append("> and **not** comparable to MTPLX standard rejection sampling.  ")
+        lines.append("")
+
     lines.append("## Decode throughput (tok/s, median across cases)")
     lines.append("")
 
     if mtplx_ref:
-        lines.append("| Suite | AX direct | AX MTP | AX MTP accept rate | MTPLX reference | MTPLX accept rate | MTPLX depth |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|")
+        lines.append("| Suite | AX depth | AX direct | AX MTP | AX MTP accept rate | MTPLX reference | MTPLX accept rate | MTPLX depth |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     else:
-        lines.append("| Suite | AX direct | AX MTP | AX MTP accept rate |")
-        lines.append("|---|---:|---:|---:|")
+        lines.append("| Suite | AX depth | AX direct | AX MTP | AX MTP accept rate |")
+        lines.append("|---|---:|---:|---:|---:|")
 
     for s in suite_summaries:
         suite = s["suite"]
+        ax_depth = str(s["ax_mtp_max_depth"]) if s.get("ax_mtp_max_depth") is not None else "default"
         direct = f"{s['ax_direct_decode_tok_s']:.1f}" if s["ax_direct_decode_tok_s"] is not None else "—"
         ngram = f"{s['ax_ngram_decode_tok_s']:.1f}" if s["ax_ngram_decode_tok_s"] is not None else "—"
         mtp_accept = s.get("ax_mtp_accept_rate")
@@ -228,9 +251,9 @@ def write_summary(
             m_decode = f"{ref['decode_tok_s']:.1f}" if "decode_tok_s" in ref else "—"
             m_accept = f"{ref['accept_rate']:.1%}" if "accept_rate" in ref else "—"
             m_depth = str(ref.get("depth", "—"))
-            lines.append(f"| {suite} | {direct} | {ngram} | {accept} | {m_decode} | {m_accept} | {m_depth} |")
+            lines.append(f"| {suite} | {ax_depth} | {direct} | {ngram} | {accept} | {m_decode} | {m_accept} | {m_depth} |")
         else:
-            lines.append(f"| {suite} | {direct} | {ngram} | {accept} |")
+            lines.append(f"| {suite} | {ax_depth} | {direct} | {ngram} | {accept} |")
 
     lines.append("")
     lines.append("## Artifact provenance")

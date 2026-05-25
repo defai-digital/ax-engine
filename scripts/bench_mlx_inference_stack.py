@@ -225,6 +225,23 @@ def normalize_model_repo_id_for_cache(
     return model_repo_id
 
 
+def infer_hf_repo_id_from_path(path: Path) -> str | None:
+    """Infer a HuggingFace repo_id from an HF cache snapshot path.
+
+    HF cache layout: .../hub/models--<org>--<repo>/snapshots/<hash>
+    Returns 'org/repo' or None when the path does not follow that structure.
+    """
+    for parent in (path, *path.parents):
+        name = parent.name
+        if name.startswith("models--"):
+            slug = name[len("models--"):]
+            if "--" in slug:
+                org, rest = slug.split("--", 1)
+                if org and rest:
+                    return f"{org}/{rest}"
+    return None
+
+
 def ensure_ax_engine_server_binary(*, build: bool = True) -> None:
     if build:
         cmd = ["cargo", "build", "-p", "ax-engine-server", "--release"]
@@ -4036,6 +4053,12 @@ def main() -> None:
     except RuntimeError as error:
         parser.error(str(error))
     args.model_dir = resolved_model_dir
+    # Backfill model_repo_id from HF cache path when --model-dir was given without --model-repo-id.
+    # Without this, the default placeholder ends up in the artifact's model_repo_id field.
+    if not model_repo_id_arg_explicit and args.model_repo_id == DEFAULT_MODEL_REPO_ID:
+        inferred = infer_hf_repo_id_from_path(resolved_model_dir)
+        if inferred:
+            args.model_repo_id = inferred
     if not model_arg_explicit:
         args.model = str(args.model_dir) if model_dir_explicit else args.model_repo_id
     if args.ax_mtp_max_depth is not None and args.ax_mtp_max_depth < 0:
