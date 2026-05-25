@@ -460,6 +460,61 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertAlmostEqual(run["client_wall_total_ms"], 456.0, places=6)
         self.assertEqual(run["ttft_ms"], 100.0)
 
+    def test_axengine_one_run_decode_rate_matches_mlx_lm_generation_contract(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __iter__(self):
+                frames = [
+                    {
+                        "step": {"runner_time_us": 200_000, "scheduled_tokens": 4},
+                        "request": {"output_len": 1},
+                    },
+                    {
+                        "step": {"runner_time_us": 500_000, "scheduled_tokens": 1},
+                        "request": {"output_len": 2},
+                    },
+                    {
+                        "step": {"runner_time_us": 500_000, "scheduled_tokens": 1},
+                        "request": {"output_len": 3},
+                    },
+                    {
+                        "response": {
+                            "output_tokens": [42, 43, 44],
+                        },
+                    },
+                ]
+                for event_name, payload in (
+                    ("step", frames[0]),
+                    ("step", frames[1]),
+                    ("step", frames[2]),
+                    ("response", frames[3]),
+                ):
+                    yield f"event: {event_name}\n".encode()
+                    yield b"data: " + json.dumps(payload).encode() + b"\n"
+                    yield b"\n"
+
+        class FakeConnection:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def request(self, *_args, **_kwargs) -> None:
+                pass
+
+            def getresponse(self) -> FakeResponse:
+                return FakeResponse()
+
+            def close(self) -> None:
+                pass
+
+        with patch.object(bench.http.client, "HTTPConnection", FakeConnection):
+            with patch.object(bench.time, "perf_counter", side_effect=[10.0, 10.1, 11.0]):
+                run = bench.axengine_one_run(19091, [1, 2, 3, 4], 3)
+
+        self.assertEqual(run["output_tokens"], 3.0)
+        self.assertEqual(run["decode_s"], 1.0)
+        self.assertEqual(run["decode_tok_s"], 3.0)
+
     def test_axengine_summary_exposes_kv_compression_blocker_row_fields(self) -> None:
         run = {
             "prefill_s": 0.3,

@@ -2732,7 +2732,14 @@ def axengine_one_run(
     prompt_tokens = len(tokens)
     prefill_s = prefill_us / 1_000_000
     decode_s = decode_us / 1_000_000
-    measured_decode_tokens = max(output_tokens - 1, 0)
+    # Match `mlx_lm.benchmark`'s `generation_tps` contract.  Upstream
+    # `stream_generate` resets its generation timer after the first token is
+    # available, but the final response still reports `generation_tokens=N` and
+    # computes throughput as N divided by that post-first-token interval.  AX's
+    # streamed runner timing similarly keeps the prompt/prefill step separate
+    # from decode step timing, so use the full generated-token count here
+    # instead of subtracting the prefill-produced first token.
+    measured_decode_tokens = max(output_tokens, 0)
 
     # The recent shared-prefix-cache change (commit 0887e8f) lets warmup
     # trials populate KV cache that subsequent measurement trials hit. On a
