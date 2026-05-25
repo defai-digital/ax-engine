@@ -1,11 +1,16 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use mlx_sys::{MlxArray, argmax, eval, slice};
+use mlx_sys::{
+    MlxArray, MlxDtype, argmax, argpartition_axis, astype, eval, eval_first_u32, multiply,
+    random_categorical, slice, take_along_axis,
+};
 
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical, sample_categorical_gpu,
+    sample_indexed_categorical,
 };
 
+use crate::fastpath::mtp_fast_tail_topk_sampling_enabled;
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward_all_positions,
@@ -1103,10 +1108,70 @@ pub(crate) fn sample_logit_row(
     if sampling.temperature <= 0.0 {
         return argmax_tok;
     }
+    if let Some(tok) = sample_logit_row_topk_candidate_cpu(logits_all, pos, vocab, sampling, rng) {
+        return tok;
+    }
     let p = pos as i32;
     let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
     eval(&[&row]);
     sample_categorical(row.data_f32(), sampling, &[], rng)
+}
+
+fn sample_logit_row_topk_gpu(
+    logits_all: &MlxArray,
+    pos: usize,
+    vocab: i32,
+    sampling: MlxSamplingParams,
+) -> Option<u32> {
+    if !mtp_fast_tail_topk_sampling_enabled() || sampling.top_k == 0 || sampling.temperature <= 0.0
+    {
+        return None;
+    }
+    let k = (sampling.top_k as i32).min(vocab);
+    if k <= 0 {
+        return None;
+    }
+    let p = pos as i32;
+    let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
+    let inv_temp = MlxArray::from_f32(1.0 / sampling.temperature);
+    let scaled = multiply(&row, &inv_temp, None);
+    let part_indices = argpartition_axis(&scaled, -k, -1, None);
+    let top_indices = slice(&part_indices, &[0, vocab - k], &[1, vocab], &[1, 1], None);
+    let top_logits = take_along_axis(&scaled, &top_indices, -1, None);
+    let sampled_local = random_categorical(&top_logits, None);
+    let local = eval_first_u32(&sampled_local) as usize;
+    let top_indices = astype(&top_indices, MlxDtype::Uint32, None);
+    eval(&[&top_indices]);
+    top_indices.data_u32().get(local).copied()
+}
+
+fn sample_logit_row_topk_candidate_cpu(
+    logits_all: &MlxArray,
+    pos: usize,
+    vocab: i32,
+    sampling: MlxSamplingParams,
+    rng: &mut Xorshift64,
+) -> Option<u32> {
+    if sampling.top_k == 0 || sampling.uses_repetition_penalty() || sampling.temperature <= 0.0 {
+        return None;
+    }
+    if mtp_fast_tail_topk_sampling_enabled() {
+        return sample_logit_row_topk_gpu(logits_all, pos, vocab, sampling);
+    }
+
+    let k = (sampling.top_k as i32).min(vocab);
+    if k <= 0 {
+        return None;
+    }
+    let p = pos as i32;
+    let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
+    let part_indices = argpartition_axis(&row, -k, -1, None);
+    let top_indices = slice(&part_indices, &[0, vocab - k], &[1, vocab], &[1, 1], None);
+    let top_logits = take_along_axis(&row, &top_indices, -1, None);
+    let top_indices = astype(&top_indices, MlxDtype::Uint32, None);
+    eval(&[&top_logits, &top_indices]);
+
+    sample_indexed_categorical(top_logits.data_f32(), top_indices.data_u32(), sampling, rng)
 }
 
 /// Single-token decode fallback (used when n-gram table has no prediction).

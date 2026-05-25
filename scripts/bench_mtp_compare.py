@@ -72,6 +72,8 @@ def run_ax_suite(
     repetitions: int,
     cooldown: float,
     mtp_only: bool = False,
+    mtp_max_depth: int | None = None,
+    mtp_fast_tail_topk_sampling: bool = False,
     enable_thinking: bool = False,
 ) -> dict:
     """Run bench_mlx_inference_stack.py for one real-prompt suite.
@@ -97,6 +99,10 @@ def run_ax_suite(
         "--skip-mlx-lm",
         "--output", str(artifact_path),
     ]
+    if mtp_max_depth is not None:
+        cmd.extend(["--ax-mtp-max-depth", str(mtp_max_depth)])
+    if mtp_fast_tail_topk_sampling:
+        cmd.append("--ax-mtp-fast-tail-topk-sampling")
     if not enable_thinking:
         cmd.append("--no-thinking")
     print(f"\n=== MTP suite: {suite_name} ===", flush=True)
@@ -180,16 +186,17 @@ def write_summary(
     mtplx_ref: dict | None = None,
     model_dir: Path,
     run_date: str,
+    repetitions: int,
 ) -> Path:
     """Write a markdown summary table to <output_dir>/summary.md."""
     lines: list[str] = []
     lines.append("# MTP Benchmark Summary")
     lines.append("")
-    lines.append(f"Date: {run_date}  ")
-    lines.append(f"Model: `{model_dir.name}`  ")
-    lines.append(f"Sampling: temperature={MTP_SAMPLING['temperature']}, top_p={MTP_SAMPLING['top_p']}, top_k={MTP_SAMPLING['top_k']}  ")
-    lines.append(f"Generation tokens: {MTP_GENERATION_TOKENS}  ")
-    lines.append(f"Repetitions: {MTP_REPETITIONS} + 1 warmup  ")
+    lines.append(f"Date: {run_date}")
+    lines.append(f"Model: `{model_dir.name}`")
+    lines.append(f"Sampling: temperature={MTP_SAMPLING['temperature']}, top_p={MTP_SAMPLING['top_p']}, top_k={MTP_SAMPLING['top_k']}")
+    lines.append(f"Generation tokens: {MTP_GENERATION_TOKENS}")
+    lines.append(f"Repetitions: {repetitions} + 1 warmup")
     lines.append("")
 
     if mtplx_ref:
@@ -312,6 +319,20 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-mtp-max-depth",
+        type=int,
+        default=None,
+        help="Set AX_MLX_MTP_MAX_DEPTH for AX server rows while benchmarking.",
+    )
+    parser.add_argument(
+        "--ax-mtp-fast-tail-topk-sampling",
+        action="store_true",
+        help=(
+            "Set AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING=1 for AX server rows. "
+            "Diagnostic only; top-p is not applied on the fast tail-sampling path."
+        ),
+    )
+    parser.add_argument(
         "--enable-thinking",
         dest="enable_thinking",
         action="store_true",
@@ -323,6 +344,8 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if args.ax_mtp_max_depth is not None and args.ax_mtp_max_depth < 0:
+        parser.error("--ax-mtp-max-depth must be >= 0")
 
     run_date = date.today().isoformat()
     suites = KNOWN_SUITES if "all" in args.suites else args.suites
@@ -354,6 +377,8 @@ def main() -> None:
             repetitions=args.repetitions,
             cooldown=args.cooldown,
             mtp_only=args.mtp_only,
+            mtp_max_depth=args.ax_mtp_max_depth,
+            mtp_fast_tail_topk_sampling=args.ax_mtp_fast_tail_topk_sampling,
             enable_thinking=args.enable_thinking,
         )
         summary = extract_suite_summary(artifact, suite_name)
@@ -375,6 +400,7 @@ def main() -> None:
         mtplx_ref=mtplx_ref,
         model_dir=args.model_dir,
         run_date=run_date,
+        repetitions=args.repetitions,
     )
     print(f"\n=== Summary written to {summary_path} ===", flush=True)
 

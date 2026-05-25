@@ -563,11 +563,11 @@ pub fn forward_all_positions_with_turboquant_context(
 }
 
 /// Forward all positions, returning both per-position logits `[seq, vocab]` and
-/// the pre-norm hidden state at the final position `[1, 1, hidden_size]`.
+/// post-final-norm hidden states `[1, seq, hidden_size]`.
 ///
-/// The final hidden is the input to `final_norm + lm_head` — MTP heads use this
-/// as the `main_hidden` for the first draft head's forward pass.
-pub fn forward_all_positions_with_final_hidden(
+/// MTP heads use a selected row from the returned post-norm hidden states as
+/// the `main_hidden` for the first draft head's forward pass.
+pub fn forward_all_positions_with_post_norm(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
@@ -610,18 +610,30 @@ pub fn forward_all_positions_with_final_hidden(
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
     let logits_out = reshape(&logits_f32, &[seq_i, cfg.vocab_size as i32], None);
+    (logits_out, normed)
+}
 
-    // Extract post-norm hidden at last position for MTP head input.
-    // The model-manifest specifies hidden_variant="post_norm": MTP expects
-    // the final-normed representation, not the raw pre-norm transformer output.
-    let last_post_norm = if normed.shape().get(1).copied().unwrap_or(1) > 1 {
-        let last = (token_ids.len() - 1) as i32;
-        let hs = cfg.hidden_size as i32;
-        slice(&normed, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None)
-    } else {
-        normed.clone()
-    };
-    (logits_out, last_post_norm)
+/// Forward all positions, returning both per-position logits `[seq, vocab]` and
+/// the post-final-norm hidden state at the final position `[1, 1, hidden_size]`.
+pub fn forward_all_positions_with_final_hidden(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> (MlxArray, MlxArray) {
+    let (logits, post_norm) =
+        forward_all_positions_with_post_norm(cfg, weights, token_ids, cache, token_offset);
+    let last = (token_ids.len() - 1) as i32;
+    let hs = cfg.hidden_size as i32;
+    let last_post_norm = slice(
+        &post_norm,
+        &[0, last, 0],
+        &[1, last + 1, hs],
+        &[1, 1, 1],
+        None,
+    );
+    (logits, last_post_norm)
 }
 
 /// Cache-free single transformer layer for dense embedding models.

@@ -1,0 +1,29 @@
+{
+  "schema_version": "ax.mtp_compare_reference.v1",
+  "mtplx_version": "0.3.7",
+  "hardware": "Apple M5 Max 128GB",
+  "run_date": "2026-05-23",
+  "model": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+  "model_quant": "4bit-base-q6-sidecar",
+  "sampling": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+  "max_tokens": 1000,
+  "warmup_reps": 1,
+  "measure_reps": 5,
+  "cooldown_s": 15,
+  "results": [
+    {
+      "suite": "flappy",
+      "decode_tok_s": 47.7,
+      "accept_rate": 0.694,
+      "depth": 3,
+      "notes": "MTPLX 0.3.7 at depth=3 on flappy suite"
+    },
+    {
+      "suite": "long_code",
+      "decode_tok_s": 56.4,
+      "accept_rate": 0.848,
+      "depth": 3,
+      "notes": "MTPLX 0.3.7 at depth=3 on long_code suite"
+    }
+  ]
+}

@@ -1,6 +1,25 @@
 # AX Engine
 
-### Faster Inference: Prefill, Decode, and TTFT
+### Faster Inference: MTP, Prefill, Decode, and TTFT
+
+<table>
+<tr>
+<td align="center"><strong>Qwen3.6 27B Speed tok/s</strong></td>
+<td align="center"><strong>Qwen3.6 27B Speed accept rate</strong></td>
+</tr>
+<tr>
+<td><img src="docs/assets/perf-mtp-speed-tok-s.svg" alt="Bar chart comparing MTPLX 0.3.7 on the left and AX Engine MTP on the right for Qwen3.6 27B Speed tok/s on the flappy benchmark suite"></td>
+<td><img src="docs/assets/perf-mtp-speed-accept-rate.svg" alt="Bar chart comparing MTPLX 0.3.7 on the left and AX Engine MTP on the right for Qwen3.6 27B Speed accept rate on the flappy benchmark suite"></td>
+</tr>
+<tr>
+<td align="center"><strong>Qwen3.6 27B Quality tok/s</strong></td>
+<td align="center"><strong>Qwen3.6 27B Quality accept rate</strong></td>
+</tr>
+<tr>
+<td><img src="docs/assets/perf-mtp-quality-tok-s.svg" alt="Bar chart comparing MTPLX 0.3.7 on the left and AX Engine MTP on the right for Qwen3.6 27B Quality tok/s on the flappy benchmark suite"></td>
+<td><img src="docs/assets/perf-mtp-quality-accept-rate.svg" alt="Bar chart comparing MTPLX 0.3.7 on the left and AX Engine MTP on the right for Qwen3.6 27B Quality accept rate on the flappy benchmark suite"></td>
+</tr>
+</table>
 
 <table>
 <tr>
@@ -230,6 +249,24 @@ boundary; they are not full-logits prompt scoring throughput.
 Percentages are versus `mlx_lm`. The `llama.cpp Metal*` column is a
 shape-compatible external reference; it does not share prompt-token hashes with
 the MLX rows.
+
+### MTP speculative decoding
+
+AX Engine supports native MTP decoding for the Youssofal Qwen3.6 27B MTPLX
+Speed and Quality bundles. The current focused smoke benchmark uses the
+high-repetition `flappy` coding suite on Apple M5 Max 128 GB with
+temperature=0.6, top_p=0.95, top_k=20, and 1000 generated tokens. These are
+sampled decode rows, not greedy-exact baselines.
+
+| Model bundle | Suite | AX MTP | AX accept rate | MTPLX 0.3.7 | MTPLX accept rate |
+|---|---|---:|---:|---:|---:|
+| Qwen3.6 27B MTPLX Speed | flappy | **54.6 tok/s** | 93.6% | 47.7 tok/s | 69.4% |
+| Qwen3.6 27B MTPLX Quality | flappy | **35.2 tok/s** | 90.4% | 34.3 tok/s | 79.9% |
+
+Full MTP methodology, caveats, artifact links, and reproduction commands live in
+[`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode). The benchmark
+result directory format and MTPLX reference JSON contract are documented in
+[`benchmarks/results/mtp-compare/README.md`](benchmarks/results/mtp-compare/README.md).
 
 <!-- llama-cpp-column-disclaimer -->
 **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are NOT prompt-hash parity with the other columns. The intent is rough side-by-side context against a well-known third-party Metal runtime, not head-to-head comparison. MLX bit-widths are mapped to the nearest standard bartowski GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0). No percentage delta is shown for this column because the prompt is not shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.

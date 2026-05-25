@@ -102,6 +102,16 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
+env_flag!(
+    /// `AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING` — opt-in MTP/n-gram tail sampler
+    /// that samples from the top-k logits on GPU and reads back only scalar
+    /// indices instead of transferring a full vocabulary row to CPU. This is a
+    /// throughput diagnostic path: it intentionally ignores top-p filtering and
+    /// falls back unless `top_k > 0`.
+    mtp_fast_tail_topk_sampling_enabled,
+    "AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU` — Qwen3 / GLM / shared-expert
     /// SwiGLU compile fusion (W1 spike K of fusion PRD).

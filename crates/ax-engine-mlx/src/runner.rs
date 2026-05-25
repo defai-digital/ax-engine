@@ -7,7 +7,8 @@ use std::time::Instant;
 
 use mlx_sys::{
     MlxArray, MlxDtype, MlxStream, add, astype, clear_cache, divide, enable_compile,
-    max_recommended_working_set_size, multiply, power, set_wired_limit, sum_axis,
+    max_recommended_working_set_size, multiply, power, set_wired_limit, slice, softmax, sum_axis,
+    take,
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
@@ -78,7 +79,7 @@ use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
     DecodeProfileSnapshot, DirectMlxHotpathProfileSnapshot, Gemma4MoeProfileSnapshot,
     LinearAttentionProfileSnapshot, ModelConfig, PrefillProfileSnapshot,
-    TurboQuantModelDecodeContext, forward_all_positions_with_final_hidden,
+    TurboQuantModelDecodeContext, forward_all_positions_with_post_norm,
     take_decode_profile_snapshot, take_direct_mlx_hotpath_profile_snapshot,
     take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
     take_prefill_profile_snapshot,
@@ -1069,19 +1070,93 @@ struct MtpTelemetry {
     draft_tokens: u32,
     accepted_tokens: u32,
     decode_steps: u32,
+    full_accept_steps: u32,
+    partial_reject_steps: u32,
+    complete_miss_steps: u32,
+    cache_clone_wall_us: u32,
+    verify_forward_wall_us: u32,
+    verify_eval_wall_us: u32,
+    accept_wall_us: u32,
+    rollback_wall_us: u32,
+    tail_sample_wall_us: u32,
+    draft_wall_us: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MtpStepTimings {
+    cache_clone_wall_us: u32,
+    verify_forward_wall_us: u32,
+    verify_eval_wall_us: u32,
+    accept_wall_us: u32,
+    rollback_wall_us: u32,
+    tail_sample_wall_us: u32,
+    draft_wall_us: u32,
 }
 
 impl MtpTelemetry {
     fn record_step(&mut self, drafted: usize, accepted: usize) {
         self.draft_tokens = self.draft_tokens.saturating_add(saturating_u32(drafted));
-        self.accepted_tokens = self.accepted_tokens.saturating_add(saturating_u32(accepted));
+        self.accepted_tokens = self
+            .accepted_tokens
+            .saturating_add(saturating_u32(accepted));
         self.decode_steps = self.decode_steps.saturating_add(1);
+        if accepted == drafted {
+            self.full_accept_steps = self.full_accept_steps.saturating_add(1);
+        } else if accepted == 0 {
+            self.complete_miss_steps = self.complete_miss_steps.saturating_add(1);
+        } else {
+            self.partial_reject_steps = self.partial_reject_steps.saturating_add(1);
+        }
+    }
+
+    fn record_timings(&mut self, timings: MtpStepTimings) {
+        self.cache_clone_wall_us = self
+            .cache_clone_wall_us
+            .saturating_add(timings.cache_clone_wall_us);
+        self.verify_forward_wall_us = self
+            .verify_forward_wall_us
+            .saturating_add(timings.verify_forward_wall_us);
+        self.verify_eval_wall_us = self
+            .verify_eval_wall_us
+            .saturating_add(timings.verify_eval_wall_us);
+        self.accept_wall_us = self.accept_wall_us.saturating_add(timings.accept_wall_us);
+        self.rollback_wall_us = self
+            .rollback_wall_us
+            .saturating_add(timings.rollback_wall_us);
+        self.tail_sample_wall_us = self
+            .tail_sample_wall_us
+            .saturating_add(timings.tail_sample_wall_us);
+        self.draft_wall_us = self.draft_wall_us.saturating_add(timings.draft_wall_us);
     }
 
     fn merge_from(&mut self, other: Self) {
         self.draft_tokens = self.draft_tokens.saturating_add(other.draft_tokens);
         self.accepted_tokens = self.accepted_tokens.saturating_add(other.accepted_tokens);
         self.decode_steps = self.decode_steps.saturating_add(other.decode_steps);
+        self.full_accept_steps = self
+            .full_accept_steps
+            .saturating_add(other.full_accept_steps);
+        self.partial_reject_steps = self
+            .partial_reject_steps
+            .saturating_add(other.partial_reject_steps);
+        self.complete_miss_steps = self
+            .complete_miss_steps
+            .saturating_add(other.complete_miss_steps);
+        self.cache_clone_wall_us = self
+            .cache_clone_wall_us
+            .saturating_add(other.cache_clone_wall_us);
+        self.verify_forward_wall_us = self
+            .verify_forward_wall_us
+            .saturating_add(other.verify_forward_wall_us);
+        self.verify_eval_wall_us = self
+            .verify_eval_wall_us
+            .saturating_add(other.verify_eval_wall_us);
+        self.accept_wall_us = self.accept_wall_us.saturating_add(other.accept_wall_us);
+        self.rollback_wall_us = self.rollback_wall_us.saturating_add(other.rollback_wall_us);
+        self.tail_sample_wall_us = self
+            .tail_sample_wall_us
+            .saturating_add(other.tail_sample_wall_us);
+        self.draft_wall_us = self.draft_wall_us.saturating_add(other.draft_wall_us);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -1089,6 +1164,16 @@ impl MtpTelemetry {
             ("ax_mtp_draft_tokens", self.draft_tokens),
             ("ax_mtp_accepted_tokens", self.accepted_tokens),
             ("ax_mtp_decode_steps", self.decode_steps),
+            ("ax_mtp_full_accept_steps", self.full_accept_steps),
+            ("ax_mtp_partial_reject_steps", self.partial_reject_steps),
+            ("ax_mtp_complete_miss_steps", self.complete_miss_steps),
+            ("ax_mtp_cache_clone_wall_us", self.cache_clone_wall_us),
+            ("ax_mtp_verify_forward_wall_us", self.verify_forward_wall_us),
+            ("ax_mtp_verify_eval_wall_us", self.verify_eval_wall_us),
+            ("ax_mtp_accept_wall_us", self.accept_wall_us),
+            ("ax_mtp_rollback_wall_us", self.rollback_wall_us),
+            ("ax_mtp_tail_sample_wall_us", self.tail_sample_wall_us),
+            ("ax_mtp_draft_wall_us", self.draft_wall_us),
         ];
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);
@@ -2519,6 +2604,11 @@ struct RequestState {
     /// Draft token(s) generated by the MTP head at the previous decode step.
     /// Empty on the first decode step or after a rejected draft.
     mtp_pending_draft: Vec<u32>,
+    /// Log-probabilities of `mtp_pending_draft` under the draft distribution.
+    /// Used for rejection-sampling acceptance: accept draft[i] with probability
+    /// min(1, p_target(draft[i]) / exp(mtp_pending_draft_log_probs[i])).
+    /// Empty when draft_sampling.temperature == 0 (greedy acceptance fallback).
+    mtp_pending_draft_log_probs: Vec<f32>,
     /// Pre-norm hidden state saved from the last successful MTP verify pass.
     /// Used as `main_hidden` for the MTP head at the next decode step.
     mtp_pending_hidden: Option<MlxArray>,
@@ -2568,6 +2658,7 @@ impl RequestState {
             mtp_cache: None,
             mtp_decode_count: 0,
             mtp_pending_draft: Vec::new(),
+            mtp_pending_draft_log_probs: Vec::new(),
             mtp_pending_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
             mtp_prefill_hidden: None,
@@ -4753,10 +4844,11 @@ impl MlxRunner {
     /// Returns verified output tokens (1 or more) in the same format as n-gram
     /// `ngram_accel_decode_step` / `run_single_decode`.
     ///
-    /// Acceptance uses argmax (greedy) comparison — the same policy as n-gram
-    /// speculative decoding.  Correction and bonus tokens are sampled from the
-    /// main model logits with `sampling`, so the final output token respects the
-    /// request's temperature/top-p/top-k settings.
+    /// When draft log-probs are available (temperature sampling), acceptance uses
+    /// rejection sampling: accept draft[i] with probability
+    /// min(1, p_target(draft[i]) / p_draft(draft[i])).
+    /// When log-probs are absent (greedy draft or temperature==0), falls back to
+    /// greedy argmax comparison.
     fn run_mtp_decode(
         &self,
         state: &mut RequestState,
@@ -4770,6 +4862,7 @@ impl MlxRunner {
         let token_offset = state.cache.seq_len;
         let has_linear_attention = self.cfg.linear_attention.is_some();
         let vocab = self.cfg.vocab_size as i32;
+        let mut mtp_timings = MtpStepTimings::default();
 
         // Build verify sequence: [last_token] ++ pending_draft.
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + pending.len());
@@ -4781,37 +4874,61 @@ impl MlxRunner {
         // with trim_to, so we clone the cache and run verification on the clone.
         // On full acceptance we swap the clone in; on partial/no acceptance we
         // run a committed-prefix recompute on the original cache.
-        // Returns (logits_all, final_hidden, accept_count, all_accepted, correction_argmax_tok).
+        // Returns (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok).
         // correction_argmax_tok is predicted[accept_count]: the argmax token at the
         // first rejected (or bonus) position, used as fallback for sample_logit_row.
-        let (logits_all, final_hidden, accept_count, all_accepted, correction_argmax_tok) =
+        let (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok) =
             if has_linear_attention {
+                let clone_started = Instant::now();
                 let mut verify_cache = state.cache.clone();
-                let (logits_all, final_hidden) = forward_all_positions_with_final_hidden(
+                mtp_timings.cache_clone_wall_us = elapsed_us(clone_started);
+                let verify_forward_started = Instant::now();
+                let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
                     &self.cfg,
                     &self.weights,
                     &verify_input,
                     &mut verify_cache,
                     token_offset,
                 );
+                mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 verify_cache.seq_len += verify_len;
 
                 let predicted_arr = argmax(&logits_all, None);
+                // Pre-compute draft token target probabilities lazily (before eval)
+                // so they are evaluated in the same GPU dispatch as the verify pass.
+                let lazy_target_probs = compute_mtp_target_probs_lazy(
+                    &logits_all,
+                    &pending,
+                    &state.mtp_pending_draft_log_probs,
+                    vocab,
+                    sampling,
+                );
                 let kv_refs = verify_cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
                 targets.push(&predicted_arr);
-                targets.push(&logits_all);
-                targets.push(&final_hidden);
-                targets.extend(kv_refs);
-                eval(&targets);
-                let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
-
-                let mut ac = 0usize;
-                for i in 0..pending.len() {
-                    if predicted[i] == pending[i] { ac += 1; } else { break; }
+                targets.push(&post_norm_all);
+                if let Some(ref ltp) = lazy_target_probs {
+                    targets.push(ltp);
                 }
-                let all_accepted = ac == pending.len();
+                targets.extend(kv_refs);
+                let verify_eval_started = Instant::now();
+                eval(&targets);
+                mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                let accept_started = Instant::now();
+                let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                let target_probs_cpu: Option<Vec<f32>> =
+                    lazy_target_probs.map(|arr| arr.data_f32().to_vec());
 
+                let (ac, all_accepted) = mtp_accept_count(
+                    &pending,
+                    &state.mtp_pending_draft_log_probs,
+                    target_probs_cpu.as_deref(),
+                    &predicted,
+                    &mut state.rng,
+                );
+                mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                let rollback_started = Instant::now();
                 if all_accepted {
                     let _ = verify_cache.trim_to(token_offset + 1 + ac);
                     state.cache = verify_cache;
@@ -4825,34 +4942,57 @@ impl MlxRunner {
                         token_offset,
                     );
                 }
-                (logits_all, final_hidden, ac, all_accepted, predicted[ac])
+                mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                (logits_all, draft_hidden, ac, all_accepted, predicted[ac])
             } else {
                 // Non-linear-attention: run directly, trim on rejection.
-                let (logits_all, final_hidden) = forward_all_positions_with_final_hidden(
+                let verify_forward_started = Instant::now();
+                let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
                     &self.cfg,
                     &self.weights,
                     &verify_input,
                     &mut state.cache,
                     token_offset,
                 );
+                mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 state.cache.seq_len += verify_len;
 
                 let predicted_arr = argmax(&logits_all, None);
+                // Pre-compute draft token target probabilities lazily (before eval).
+                let lazy_target_probs = compute_mtp_target_probs_lazy(
+                    &logits_all,
+                    &pending,
+                    &state.mtp_pending_draft_log_probs,
+                    vocab,
+                    sampling,
+                );
                 let kv_refs = state.cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
                 targets.push(&predicted_arr);
-                targets.push(&logits_all);
-                targets.push(&final_hidden);
-                targets.extend(kv_refs);
-                eval(&targets);
-                let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
-
-                let mut ac = 0usize;
-                for i in 0..pending.len() {
-                    if predicted[i] == pending[i] { ac += 1; } else { break; }
+                targets.push(&post_norm_all);
+                if let Some(ref ltp) = lazy_target_probs {
+                    targets.push(ltp);
                 }
-                let all_accepted = ac == pending.len();
+                targets.extend(kv_refs);
+                let verify_eval_started = Instant::now();
+                eval(&targets);
+                mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                let accept_started = Instant::now();
+                let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                let target_probs_cpu: Option<Vec<f32>> =
+                    lazy_target_probs.map(|arr| arr.data_f32().to_vec());
 
+                let (ac, all_accepted) = mtp_accept_count(
+                    &pending,
+                    &state.mtp_pending_draft_log_probs,
+                    target_probs_cpu.as_deref(),
+                    &predicted,
+                    &mut state.rng,
+                );
+                mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                let rollback_started = Instant::now();
                 let committed_len = token_offset + 1 + ac;
                 let trimmed = state.cache.trim_to(committed_len);
                 debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
@@ -4866,11 +5006,14 @@ impl MlxRunner {
                     }
                     state.mtp_decode_count = new_mtp_len;
                 }
-                (logits_all, final_hidden, ac, all_accepted, predicted[ac])
+                mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                (logits_all, draft_hidden, ac, all_accepted, predicted[ac])
             };
 
         // For linear attention with rejection, trim MTP cache too.
         if has_linear_attention && !all_accepted {
+            let rollback_started = Instant::now();
             let rejected_count = pending.len() - accept_count;
             if rejected_count > 0 {
                 let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
@@ -4879,11 +5022,15 @@ impl MlxRunner {
                 }
                 state.mtp_decode_count = new_mtp_len;
             }
+            mtp_timings.rollback_wall_us = mtp_timings
+                .rollback_wall_us
+                .saturating_add(elapsed_us(rollback_started));
         }
 
         // Collect output tokens: accepted draft tokens followed by correction/bonus.
         // Correction/bonus token sampled from logits to respect temperature.
         let mut result: Vec<u32> = pending[..accept_count].to_vec();
+        let tail_sample_started = Instant::now();
         let tail_tok = sample_logit_row(
             &logits_all,
             correction_argmax_tok,
@@ -4892,37 +5039,35 @@ impl MlxRunner {
             sampling,
             &mut state.rng,
         );
+        mtp_timings.tail_sample_wall_us = elapsed_us(tail_sample_started);
         result.push(tail_tok);
 
         state.ngram.feed(&result);
 
         // Record MTP draft/accept telemetry (only when there was a pending draft).
         if !pending.is_empty() {
-            state
-                .mtp_telemetry
-                .record_step(pending.len(), accept_count);
+            state.mtp_telemetry.record_step(pending.len(), accept_count);
         }
 
-        // Generate new draft tokens when the hidden state is valid.
-        let use_hidden = all_accepted || pending.is_empty();
-        if use_hidden {
-            let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-            // RoPE positions are managed internally by mtp_head_forward using
-            // cache.seq_len (matching mlx-lm's cache.offset convention).
-            let (new_draft, added) = mtp_draft_tokens(
-                &self.weights,
-                &self.cfg,
-                &final_hidden,
-                tail_tok,
-                cache,
-            );
-            state.mtp_decode_count += added;
-            state.mtp_pending_draft = new_draft;
-            state.mtp_pending_hidden = Some(final_hidden);
-        } else {
-            state.mtp_pending_draft.clear();
-            state.mtp_pending_hidden = None;
-        }
+        // Generate new draft tokens from the hidden row that produced the correction/bonus token.
+        let draft_started = Instant::now();
+        let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+        // RoPE positions are managed internally by mtp_head_forward using
+        // cache.seq_len (matching mlx-lm's cache.offset convention).
+        let (new_draft, new_log_probs, added) = mtp_draft_tokens(
+            &self.weights,
+            &self.cfg,
+            &draft_hidden,
+            tail_tok,
+            cache,
+            &mut state.rng,
+        );
+        state.mtp_decode_count += added;
+        state.mtp_pending_draft = new_draft;
+        state.mtp_pending_draft_log_probs = new_log_probs;
+        state.mtp_pending_hidden = Some(draft_hidden);
+        mtp_timings.draft_wall_us = elapsed_us(draft_started);
+        state.mtp_telemetry.record_timings(mtp_timings);
 
         result
     }
@@ -4977,6 +5122,7 @@ impl MlxRunner {
         state.linear_ngram_no_draft_streak = 0;
         // Reset MTP draft state for the new generation.
         state.mtp_pending_draft.clear();
+        state.mtp_pending_draft_log_probs.clear();
         state.mtp_pending_hidden = None;
         state.mtp_decode_count = 0;
         if let Some(ref mut c) = state.mtp_cache {
@@ -5144,6 +5290,94 @@ impl MlxRunner {
         }
 
         result
+    }
+}
+
+fn slice_post_norm_hidden(post_norm_all: &MlxArray, pos: usize, hidden_size: usize) -> MlxArray {
+    let p = pos as i32;
+    let hs = hidden_size as i32;
+    slice(post_norm_all, &[0, p, 0], &[1, p + 1, hs], &[1, 1, 1], None)
+}
+
+/// Build a lazy MLX array holding p_target(draft_token_i) for each draft position.
+///
+/// Returns `None` when rejection sampling is not applicable (no log_probs, temperature == 0,
+/// or pending is empty). The returned array is unevaluated — callers MUST include it in the
+/// same eval batch as the verify-pass outputs to avoid a second GPU sync point.
+///
+/// Shape of returned array: `[n]` float32 where `n = pending.len()`.
+fn compute_mtp_target_probs_lazy(
+    logits_all: &MlxArray,
+    pending: &[u32],
+    pending_log_probs: &[f32],
+    vocab: i32,
+    target_sampling: MlxSamplingParams,
+) -> Option<MlxArray> {
+    if pending.is_empty()
+        || pending_log_probs.len() != pending.len()
+        || target_sampling.temperature <= 0.0
+    {
+        return None;
+    }
+
+    let n = pending.len();
+    // Scale logits by 1/T and softmax on GPU — lazy, not yet evaluated.
+    let inv_temp = mlx_scalar_f32(1.0 / target_sampling.temperature);
+    let scaled = multiply(logits_all, &inv_temp, None);
+    let probs = softmax(&scaled, -1, None); // [verify_len, vocab] lazy
+
+    // Flatten probs and gather the single probability for each draft token.
+    // flat_idx[i] = i * vocab + pending[i] → picks the draft token's probability in each row.
+    let flat_indices: Vec<i32> = (0..n)
+        .map(|i| i as i32 * vocab + pending[i] as i32)
+        .collect();
+    let flat_idx_arr = MlxArray::from_raw_data(
+        flat_indices.as_ptr() as *const u8,
+        flat_indices.len() * 4,
+        &[n as i32],
+        MlxDtype::Int32,
+    );
+    use mlx_sys::reshape as mlx_reshape;
+    let probs_flat = mlx_reshape(&probs, &[-1_i32], None);
+    Some(take(&probs_flat, &flat_idx_arr, 0, None)) // [n] lazy
+}
+
+/// Perform rejection-sampling acceptance using pre-evaluated target probabilities.
+///
+/// `target_probs_cpu`: pre-computed p_target(draft_token_i) for each position, already
+/// transferred from GPU. When `None`, falls back to greedy argmax comparison.
+fn mtp_accept_count(
+    pending: &[u32],
+    pending_log_probs: &[f32],
+    target_probs_cpu: Option<&[f32]>,
+    predicted: &[u32],
+    rng: &mut Xorshift64,
+) -> (usize, bool) {
+    if let Some(tprobs) = target_probs_cpu {
+        // Rejection sampling: accept d with probability min(1, p_target(d) / p_draft(d)).
+        let mut ac = 0usize;
+        for i in 0..pending.len() {
+            let p_target_d = tprobs[i].max(0.0_f32);
+            let p_draft = pending_log_probs[i].exp().max(1e-37_f32);
+            let accept_prob = (p_target_d / p_draft).min(1.0_f32);
+            if rng.next_f32() < accept_prob {
+                ac += 1;
+            } else {
+                break;
+            }
+        }
+        (ac, ac == pending.len())
+    } else {
+        // Greedy acceptance fallback (temperature == 0 or no log_probs stored).
+        let mut ac = 0usize;
+        for i in 0..pending.len() {
+            if predicted[i] == pending[i] {
+                ac += 1;
+            } else {
+                break;
+            }
+        }
+        (ac, ac == pending.len())
     }
 }
 
@@ -6023,6 +6257,41 @@ mod tests {
             !states.contains_key(&id),
             "completed request must not leave orphaned state"
         );
+    }
+
+    #[test]
+    fn mtp_telemetry_tracks_acceptance_step_classes() {
+        let mut telemetry = MtpTelemetry::default();
+
+        telemetry.record_step(3, 3);
+        telemetry.record_step(3, 1);
+        telemetry.record_step(3, 0);
+        telemetry.record_timings(MtpStepTimings {
+            cache_clone_wall_us: 10,
+            verify_forward_wall_us: 20,
+            verify_eval_wall_us: 30,
+            accept_wall_us: 40,
+            rollback_wall_us: 50,
+            tail_sample_wall_us: 60,
+            draft_wall_us: 70,
+        });
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+
+        assert!(decisions.contains(&("ax_mtp_draft_tokens".into(), 9)));
+        assert!(decisions.contains(&("ax_mtp_accepted_tokens".into(), 4)));
+        assert!(decisions.contains(&("ax_mtp_decode_steps".into(), 3)));
+        assert!(decisions.contains(&("ax_mtp_full_accept_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_partial_reject_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_complete_miss_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_cache_clone_wall_us".into(), 10)));
+        assert!(decisions.contains(&("ax_mtp_verify_forward_wall_us".into(), 20)));
+        assert!(decisions.contains(&("ax_mtp_verify_eval_wall_us".into(), 30)));
+        assert!(decisions.contains(&("ax_mtp_accept_wall_us".into(), 40)));
+        assert!(decisions.contains(&("ax_mtp_rollback_wall_us".into(), 50)));
+        assert!(decisions.contains(&("ax_mtp_tail_sample_wall_us".into(), 60)));
+        assert!(decisions.contains(&("ax_mtp_draft_wall_us".into(), 70)));
     }
 
     fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {

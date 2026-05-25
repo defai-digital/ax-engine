@@ -287,6 +287,16 @@ AX_NGRAM_TELEMETRY_KEYS = [
     "ax_mtp_draft_tokens",
     "ax_mtp_accepted_tokens",
     "ax_mtp_decode_steps",
+    "ax_mtp_full_accept_steps",
+    "ax_mtp_partial_reject_steps",
+    "ax_mtp_complete_miss_steps",
+    "ax_mtp_cache_clone_wall_us",
+    "ax_mtp_verify_forward_wall_us",
+    "ax_mtp_verify_eval_wall_us",
+    "ax_mtp_accept_wall_us",
+    "ax_mtp_rollback_wall_us",
+    "ax_mtp_tail_sample_wall_us",
+    "ax_mtp_draft_wall_us",
 ]
 
 # PRD §8 Phase 6 helper: stable ordered list of the accept-at-depth keys so
@@ -1698,6 +1708,8 @@ def start_axengine(
     direct_linear_attention_inputs_route: bool = False,
     direct_linear_attention_post_input_route: bool = False,
     direct_gemma4_post_attn_ffn_route: bool = False,
+    mtp_max_depth: int | None = None,
+    mtp_fast_tail_topk_sampling: bool = False,
     prefill_chunk: int | None = None,
     max_batch_tokens: int | None = None,
     prefix_cache_enabled: bool = False,
@@ -1754,7 +1766,15 @@ def start_axengine(
         env["AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT"] = "1"
     if direct_gemma4_post_attn_ffn_route:
         env["AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"] = "1"
+    if mtp_max_depth is not None:
+        env["AX_MLX_MTP_MAX_DEPTH"] = str(mtp_max_depth)
+    if mtp_fast_tail_topk_sampling:
+        env["AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING"] = "1"
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
+    if mtp_max_depth is not None:
+        print(f"  [ax-engine] AX_MLX_MTP_MAX_DEPTH={mtp_max_depth}", file=sys.stderr)
+    if mtp_fast_tail_topk_sampling:
+        print("  [ax-engine] AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING=1", file=sys.stderr)
     if not prefix_cache_enabled:
         print(
             "  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement",
@@ -3792,6 +3812,24 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-mtp-max-depth",
+        type=int,
+        default=None,
+        help=(
+            "Set AX_MLX_MTP_MAX_DEPTH for AX server rows. Use this to sweep "
+            "MTP depth caps against MTPLX reference models."
+        ),
+    )
+    parser.add_argument(
+        "--ax-mtp-fast-tail-topk-sampling",
+        action="store_true",
+        help=(
+            "Set AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING=1 for AX server rows. "
+            "Diagnostic only: samples the correction token from top-k logits on GPU "
+            "and does not apply top-p filtering."
+        ),
+    )
+    parser.add_argument(
         "--ax-gemma4-moe-profile",
         action="store_true",
         help=(
@@ -4000,6 +4038,8 @@ def main() -> None:
     args.model_dir = resolved_model_dir
     if not model_arg_explicit:
         args.model = str(args.model_dir) if model_dir_explicit else args.model_repo_id
+    if args.ax_mtp_max_depth is not None and args.ax_mtp_max_depth < 0:
+        parser.error("--ax-mtp-max-depth must be >= 0")
     if args.ax_ngram_accel and args.ax_direct:
         parser.error("--ax-ngram-accel conflicts with --ax-direct")
     if args.ax_ngram_accel and args.ax_compare_policies:
@@ -4428,6 +4468,8 @@ def main() -> None:
                         direct_linear_attention_post_input_route
                     ),
                     direct_gemma4_post_attn_ffn_route=direct_gemma4_post_attn_ffn_route,
+                    mtp_max_depth=args.ax_mtp_max_depth,
+                    mtp_fast_tail_topk_sampling=args.ax_mtp_fast_tail_topk_sampling,
                     prefill_chunk=args.prefill_step_size,
                     # Scheduler caps per-step prefill at max_batch_tokens. To
                     # let the runner emit one chunked_prefill call per request
@@ -4575,6 +4617,8 @@ def main() -> None:
         "repetitions": args.repetitions,
         "cooldown": args.cooldown,
         "prefill_step_size": args.prefill_step_size,
+        "ax_mtp_max_depth": args.ax_mtp_max_depth,
+        "ax_mtp_fast_tail_topk_sampling": bool(args.ax_mtp_fast_tail_topk_sampling),
         "ax_prefix_cache_mode": (
             AX_PREFIX_CACHE_ENABLED_MODE
             if args.ax_enable_prefix_cache

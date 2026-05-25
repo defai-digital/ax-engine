@@ -201,27 +201,34 @@ should not be read as a complete inference-serving proof. In particular:
 ## MTP Mode
 
 <!-- mtp-results-update: update numbers below after each bench_mtp_compare.py run -->
-AX n-gram acceleration measured on coding-shaped real-prompt suites against the
-`Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed` model (4-bit base + Q6 sidecar)
-on Apple M5 Max 128 GB. Sampling: temperature=0.6, top_p=0.95, top_k=20,
-max_tokens=1000. These rows are `sampling_not_distribution_exact` and are not
-greedy-exact baselines.
+AX MTP acceleration is measured on coding-shaped real-prompt suites against the
+`Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed` and
+`Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality` bundles on Apple M5 Max
+128 GB. Sampling: temperature=0.6, top_p=0.95, top_k=20, max_tokens=1000.
+These rows are `sampling_not_distribution_exact` and are not greedy-exact
+baselines.
 
-MTPLX 0.3.7 is the external reference (run separately; numbers injected). The
-AX numbers are n-gram speculative decoding with committed cache (depth=3),
-which re-runs MTP head with the verifier's pre-final-norm hidden after each
-verify step to keep drafter KV current.
+MTPLX 0.3.7 is the external reference (run separately; numbers injected when a
+matching reference artifact is available). AX MTP uses verifier-hidden-state
+drafting, rejection sampling, and a verify path that avoids materializing the
+full logits tensor as an eval root for the target distribution.
 
-### Last recorded results (2026-05-23 · `benchmarks/results/mtp-compare/2026-05-23-ax-mtp-depth3-committed/`)
+### Last recorded focused smoke results (2026-05-25)
 
-| Suite | AX direct (tok/s) | AX n-gram depth=3 (tok/s) | Accept rate | MTPLX 0.3.7 (tok/s) | MTPLX accept rate |
-|---|---:|---:|---:|---:|---:|
-| flappy    | — | **28.7** | 79.8% | 47.7 | 69.4% |
-| long_code | — | **25.4** | 74.6% | 56.4 | 84.8% |
+These rows are focused implementation smoke checks, not the full long-generation
+publication matrix. They prove the current hot path on the high-repetition
+`flappy` suite and should stay separate from broader multi-suite claims.
 
-The remaining gap vs MTPLX is device-D2 draft core and adaptive depth gating.
-AX depth=3+committed recovers depth=1 throughput and improves `long_code`
-acceptance from 66.5% (depth=1) to 74.6%.
+| Model bundle | Suite | AX depth cap | AX MTP (tok/s) | AX accept rate | MTPLX 0.3.7 (tok/s) | MTPLX depth | MTPLX accept rate | Artifact |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| Speed (4-bit base + Q6 sidecar) | flappy | 2 | **54.6** | 93.6% | 47.7 | 3 | 69.4% | [summary](../benchmarks/results/mtp-compare/2026-05-25-speed-depth2-no-full-logits-eval-smoke/summary.md) |
+| Quality (4-bit base + Q8 sidecar) | flappy | 3 | **35.2** | 90.4% | 34.3 | 3 | 79.9% | [summary](../benchmarks/results/mtp-compare/2026-05-25-quality-depth3-no-full-logits-eval-smoke/summary.md) |
+
+The Speed reference comes from
+`benchmarks/results/mtp-compare/2026-05-23-mtplx-ref/mtplx.json`. The Quality
+reference is the local MTPLX 0.3.7 matrix row for
+`Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality`, `flappy`, depth=3
+(`34.336897` tok/s, 79.9% accept).
 
 ### Updating these numbers
 
@@ -231,11 +238,17 @@ Run `bench_mtp_compare.py` after any n-gram or MTP-related change:
 python3 scripts/bench_mtp_compare.py \
   --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
   --mtplx-results benchmarks/results/mtp-compare/<prev-run>/mtplx-ref.json \
-  --output-dir benchmarks/results/mtp-compare/$(date +%F)-ax-mtp-all
+  --suites flappy \
+  --mtp-only \
+  --ax-mtp-max-depth 2 \
+  --repetitions 1 \
+  --cooldown 5 \
+  --output-dir benchmarks/results/mtp-compare/$(date +%F)-speed-depth2-smoke
 ```
 
-Then copy the numbers from the generated `summary.md` into the table above and
-update the artifact path in the section header comment.
+Use `--ax-mtp-max-depth 3` for the Quality bundle. Then copy the numbers from
+the generated `summary.md` into the table above and update the artifact path in
+the section header comment.
 
 Artifacts live in `benchmarks/results/mtp-compare/`. See
 [`benchmarks/results/mtp-compare/README.md`](../benchmarks/results/mtp-compare/README.md)

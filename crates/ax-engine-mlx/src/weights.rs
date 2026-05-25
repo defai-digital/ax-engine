@@ -16,6 +16,7 @@ use crate::fastpath::{
     dense_attention_qkv_packing_enabled, dense_ffn_gate_up_packing_enabled,
     linear_attention_projection_packing_enabled,
 };
+use crate::sampling::MlxSamplingParams;
 
 /// All weight arrays for one model.
 pub struct ModelWeights {
@@ -74,6 +75,10 @@ pub struct MtpWeights {
     pub head_dim: usize,
     /// Maximum speculative depth: how many times to apply this head recurrently.
     pub max_depth: usize,
+    /// Sampling parameters for draft token generation.
+    /// From `mtplx_runtime.json` `recommended_draft_sampler` (default: temp=0.7, top_k=20, top_p=0.95).
+    /// Temperature > 0 enables rejection-sampling acceptance instead of greedy argmax comparison.
+    pub draft_sampling: MlxSamplingParams,
 }
 
 /// Weights (and optional quantization data) for one transformer layer.
@@ -804,8 +809,14 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     crate::weight_rotation::shadow_log_rotation_candidates(specs);
 
     // Load MTP sidecar if present (e.g. `mtp.safetensors` alongside the main files).
-    let mtp_max_depth = load_mtp_sidecar(&root, &mut name_map);
-    let mtp = load_mtp(&mut name_map, mtp_max_depth);
+    let (mtp_max_depth, mtp_draft_sampling, mtp_sidecar_bits) =
+        load_mtp_sidecar(&root, &mut name_map);
+    let mtp = load_mtp(
+        &mut name_map,
+        mtp_max_depth,
+        mtp_draft_sampling,
+        mtp_sidecar_bits,
+    );
 
     let mut model = ModelWeights {
         token_embedding,
@@ -832,26 +843,34 @@ fn mtp_take_plain(name_map: &mut HashMap<String, MlxArray>, key: &str) -> Option
 /// Take a (possibly quantized) weight from `name_map` by base key.
 /// Looks for `{key}.weight` (or `{key}` directly) plus optional `.scales` / `.biases`.
 /// Returns `None` if the base weight is absent.
-fn mtp_take_weight(name_map: &mut HashMap<String, MlxArray>, base: &str) -> Option<QuantizedWeight> {
+///
+/// `bits_hint`: when `Some(b)`, use `b` as the quantization bits (overrides inference).
+/// Pass `None` to infer; inferred bits default to 4 when ambiguous.
+fn mtp_take_weight(
+    name_map: &mut HashMap<String, MlxArray>,
+    base: &str,
+    bits_hint: Option<i32>,
+) -> Option<QuantizedWeight> {
     let weight_key = format!("{base}.weight");
-    let weight = name_map.remove(&weight_key).or_else(|| name_map.remove(base))?;
+    let weight = name_map
+        .remove(&weight_key)
+        .or_else(|| name_map.remove(base))?;
     let scales = name_map.remove(&format!("{base}.scales"));
     let biases = name_map.remove(&format!("{base}.biases"));
     let (group_size, bits) = if let Some(ref s) = scales {
-        // Infer from packed weight shape and scales shape.
-        // 4-bit packed: weight.cols = real_cols / 8 → real_cols = weight.cols * 8
-        // scales.cols = real_cols / group_size → group_size = real_cols / scales.cols
         let w_shape = weight.shape();
         let s_shape = s.shape();
+        let bits = bits_hint.unwrap_or(4);
+        let pack_factor = (32 / bits) as usize; // 4-bit → 8; 8-bit → 4
         let gs = if w_shape.len() == 2 && s_shape.len() == 2 && s_shape[1] > 0 {
-            let real_cols = (w_shape[1] as usize) * 8; // 4-bit pack factor = 8
+            let real_cols = (w_shape[1] as usize) * pack_factor;
             let scale_cols = s_shape[1] as usize;
             let inferred = real_cols / scale_cols;
             if inferred == 0 { 64 } else { inferred as i32 }
         } else {
             64
         };
-        (gs, 4)
+        (gs, bits)
     } else {
         (1, 32)
     };
@@ -866,16 +885,28 @@ fn mtp_take_weight(name_map: &mut HashMap<String, MlxArray>, base: &str) -> Opti
 
 /// Load the MTP sidecar file (`mtp.safetensors`) if present alongside the main model.
 ///
-/// Adds sidecar tensors into `name_map` and returns the speculative depth to use
-/// (from `mtplx_runtime.json` if present, else 1). Returns 0 when no sidecar exists.
-fn load_mtp_sidecar(root: &std::path::Path, name_map: &mut HashMap<String, MlxArray>) -> usize {
+/// Adds sidecar tensors into `name_map` and returns
+/// `(max_depth, draft_sampling, sidecar_bits)`:
+/// - `max_depth`: from `mtplx_runtime.json` `mtp_depth_max` (default 1, 0 when no sidecar).
+/// - `draft_sampling`: from `mtplx_runtime.json` `recommended_draft_sampler`
+///   (defaults: temperature=0.7, top_k=20, top_p=0.95).
+/// - `sidecar_bits`: `Some(8)` for INT8 sidecars, `Some(4)` for INT4, or
+///   `None` (default 4).
+fn load_mtp_sidecar(
+    root: &std::path::Path,
+    name_map: &mut HashMap<String, MlxArray>,
+) -> (usize, MlxSamplingParams, Option<i32>) {
+    // MTPLX default draft sampler: temperature slightly above target (0.6) to
+    // ensure rejection-sampling acceptance rates ≥97%.
+    let default_draft = MlxSamplingParams::new(0.7, 0.95, 20);
+
     let sidecar = root.join("mtp.safetensors");
     if !sidecar.exists() {
-        return 0;
+        return (0, default_draft, None);
     }
     let tensors = match load_safetensors(&sidecar, None) {
         Ok(t) => t,
-        Err(_) => return 0,
+        Err(_) => return (0, default_draft, None),
     };
     if !tensors.is_empty() {
         let refs: Vec<&MlxArray> = tensors.values().collect();
@@ -883,48 +914,89 @@ fn load_mtp_sidecar(root: &std::path::Path, name_map: &mut HashMap<String, MlxAr
     }
     name_map.extend(tensors);
 
-    // Try to read mtp_depth_max from MTPLX runtime config.
+    // Parse depth, draft sampling, and sidecar quantization bits from MTPLX runtime config.
     let runtime_path = root.join("mtplx_runtime.json");
     if let Ok(bytes) = std::fs::read(&runtime_path)
         && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
-        && let Some(d) = v.get("mtp_depth_max").and_then(|x| x.as_u64())
     {
-        return d as usize;
+        let depth = apply_mtp_max_depth_cap(
+            v.get("mtp_depth_max").and_then(|x| x.as_u64()).unwrap_or(1) as usize,
+        );
+        let draft_sampling = if let Some(ds) = v.get("recommended_draft_sampler") {
+            let temp = ds
+                .get("temperature")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.7) as f32;
+            let top_k = ds.get("top_k").and_then(|x| x.as_u64()).unwrap_or(20) as u32;
+            let top_p = ds.get("top_p").and_then(|x| x.as_f64()).unwrap_or(0.95) as f32;
+            MlxSamplingParams::new(temp, top_p, top_k)
+        } else {
+            default_draft
+        };
+        // Detect sidecar quantization bits from the free-text `mtp_sidecar` description.
+        // "INT8" → 8-bit; "INT4" / "4bit" → 4-bit; default → None (caller infers from shapes).
+        let sidecar_bits = v.get("mtp_sidecar").and_then(|s| s.as_str()).map(|s| {
+            let upper = s.to_ascii_uppercase();
+            if upper.contains("INT8") || upper.contains("8BIT") {
+                8
+            } else {
+                4
+            }
+        });
+        return (depth, draft_sampling, sidecar_bits);
     }
-    1
+    (apply_mtp_max_depth_cap(1), default_draft, None)
+}
+
+fn apply_mtp_max_depth_cap(depth: usize) -> usize {
+    let Ok(raw) = std::env::var("AX_MLX_MTP_MAX_DEPTH") else {
+        return depth;
+    };
+    match parse_mtp_max_depth_cap(&raw) {
+        Some(cap) => depth.min(cap),
+        None => depth,
+    }
+}
+
+fn parse_mtp_max_depth_cap(raw: &str) -> Option<usize> {
+    raw.trim().parse::<usize>().ok()
 }
 
 /// Try to load MTP weights from `mtp.*` keys in `name_map`.
 ///
 /// Returns `None` when no MTP keys are found, allowing graceful fallback to
 /// n-gram speculative decoding.
-fn load_mtp(name_map: &mut HashMap<String, MlxArray>, max_depth: usize) -> Option<MtpWeights> {
+fn load_mtp(
+    name_map: &mut HashMap<String, MlxArray>,
+    max_depth: usize,
+    draft_sampling: MlxSamplingParams,
+    sidecar_bits: Option<i32>,
+) -> Option<MtpWeights> {
     if max_depth == 0 {
         return None;
     }
 
+    let bits = sidecar_bits; // propagated to all mtp_take_weight calls
+
     // Global norms and FC projection (required).
-    let pre_fc_norm_embedding =
-        mtp_take_plain(name_map, "mtp.pre_fc_norm_embedding.weight")?;
-    let pre_fc_norm_hidden =
-        mtp_take_plain(name_map, "mtp.pre_fc_norm_hidden.weight")?;
+    let pre_fc_norm_embedding = mtp_take_plain(name_map, "mtp.pre_fc_norm_embedding.weight")?;
+    let pre_fc_norm_hidden = mtp_take_plain(name_map, "mtp.pre_fc_norm_hidden.weight")?;
     let mtp_norm = mtp_take_plain(name_map, "mtp.norm.weight")?;
-    let fc = mtp_take_weight(name_map, "mtp.fc")?;
+    let fc = mtp_take_weight(name_map, "mtp.fc", bits)?;
 
     // Layer-0 weights (the single transformer layer applied recurrently).
     let p = "mtp.layers.0";
     let attn_norm = mtp_take_plain(name_map, &format!("{p}.input_layernorm.weight"))?;
-    let ffn_norm =
-        mtp_take_plain(name_map, &format!("{p}.post_attention_layernorm.weight"))?;
+    let ffn_norm = mtp_take_plain(name_map, &format!("{p}.post_attention_layernorm.weight"))?;
     let q_norm = mtp_take_plain(name_map, &format!("{p}.self_attn.q_norm.weight"));
     let k_norm = mtp_take_plain(name_map, &format!("{p}.self_attn.k_norm.weight"));
-    let q_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.q_proj"))?;
-    let k_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.k_proj"))?;
-    let v_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.v_proj"))?;
-    let o_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.o_proj"))?;
-    let gate_proj = mtp_take_weight(name_map, &format!("{p}.mlp.gate_proj"))?;
-    let up_proj = mtp_take_weight(name_map, &format!("{p}.mlp.up_proj"))?;
-    let down_proj = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"))?;
+    let q_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.q_proj"), bits)?;
+    let k_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.k_proj"), bits)?;
+    let v_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.v_proj"), bits)?;
+    let o_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.o_proj"), bits)?;
+    let gate_proj = mtp_take_weight(name_map, &format!("{p}.mlp.gate_proj"), bits)?;
+    let up_proj = mtp_take_weight(name_map, &format!("{p}.mlp.up_proj"), bits)?;
+    let down_proj = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"), bits)?;
 
     // Infer n_heads, n_kv_heads, head_dim from projection weight shapes.
     //
@@ -975,6 +1047,7 @@ fn load_mtp(name_map: &mut HashMap<String, MlxArray>, max_depth: usize) -> Optio
         n_kv_heads,
         head_dim,
         max_depth,
+        draft_sampling,
     })
 }
 
@@ -3384,6 +3457,55 @@ mod tests {
         assert_eq!(weight.group_size, 64);
         assert_eq!(weight.bits, 8);
         assert!(weight.scales.is_some());
+    }
+
+    #[test]
+    fn mtp_take_weight_defaults_to_int4_shape_inference() {
+        let mut name_map = HashMap::from([
+            (
+                "mtp.layers.0.mlp.up_proj.weight".to_string(),
+                zeros(&[128, 352], MlxDtype::Uint32, None),
+            ),
+            (
+                "mtp.layers.0.mlp.up_proj.scales".to_string(),
+                zeros(&[128, 44], MlxDtype::Bfloat16, None),
+            ),
+        ]);
+
+        let weight = mtp_take_weight(&mut name_map, "mtp.layers.0.mlp.up_proj", None)
+            .expect("MTP INT4 weight should load");
+
+        assert_eq!(weight.bits, 4);
+        assert_eq!(weight.group_size, 64);
+    }
+
+    #[test]
+    fn mtp_take_weight_uses_int8_sidecar_hint_for_group_inference() {
+        let mut name_map = HashMap::from([
+            (
+                "mtp.layers.0.mlp.up_proj.weight".to_string(),
+                zeros(&[128, 704], MlxDtype::Uint32, None),
+            ),
+            (
+                "mtp.layers.0.mlp.up_proj.scales".to_string(),
+                zeros(&[128, 22], MlxDtype::Bfloat16, None),
+            ),
+        ]);
+
+        let weight = mtp_take_weight(&mut name_map, "mtp.layers.0.mlp.up_proj", Some(8))
+            .expect("MTP INT8 weight should load");
+
+        assert_eq!(weight.bits, 8);
+        assert_eq!(weight.group_size, 128);
+    }
+
+    #[test]
+    fn parse_mtp_max_depth_cap_accepts_zero_and_positive_values() {
+        assert_eq!(parse_mtp_max_depth_cap("0"), Some(0));
+        assert_eq!(parse_mtp_max_depth_cap("2"), Some(2));
+        assert_eq!(parse_mtp_max_depth_cap(" 3 "), Some(3));
+        assert_eq!(parse_mtp_max_depth_cap(""), None);
+        assert_eq!(parse_mtp_max_depth_cap("abc"), None);
     }
 
     #[test]

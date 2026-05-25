@@ -193,6 +193,177 @@ pub fn sample_categorical(
         .unwrap_or(0)
 }
 
+/// Sample from a pre-filtered set of `(token_id, logit)` candidates.
+///
+/// This preserves the same temperature/top-p behavior as `sample_categorical`
+/// for callers that have already selected the top-k candidates on GPU and only
+/// want to transfer that small candidate set to CPU.
+pub fn sample_indexed_categorical(
+    logits: &[f32],
+    indices: &[u32],
+    sampling: MlxSamplingParams,
+    rng: &mut Xorshift64,
+) -> Option<u32> {
+    if logits.is_empty() || logits.len() != indices.len() {
+        return None;
+    }
+
+    let best = logits
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| indices[i])
+        .unwrap_or(0);
+    if sampling.temperature <= 0.0 {
+        return Some(best);
+    }
+
+    let inv_temp = 1.0 / sampling.temperature;
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let mut candidates: Vec<(usize, f32)> = logits
+        .iter()
+        .zip(indices.iter())
+        .map(|(&logit, &idx)| {
+            let prob = ((logit - max_l) * inv_temp).exp();
+            (idx as usize, if prob.is_finite() { prob } else { 0.0 })
+        })
+        .collect();
+    let sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if sum == 0.0 || !sum.is_finite() {
+        return Some(best);
+    }
+
+    apply_top_k_top_p(&mut candidates, sampling.top_k, sampling.top_p);
+    let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if filtered_sum == 0.0 || !filtered_sum.is_finite() {
+        return Some(best);
+    }
+
+    let threshold = rng.next_f32() * filtered_sum;
+    let mut cumsum = 0.0f32;
+    for (idx, prob) in candidates.iter() {
+        cumsum += *prob;
+        if cumsum >= threshold {
+            return Some(*idx as u32);
+        }
+    }
+    candidates
+        .iter()
+        .copied()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(idx, _)| idx as u32)
+}
+
+/// Return the log-probability of `token` within a pre-filtered candidate set.
+///
+/// The candidate set is treated like the post-top-k set used by
+/// `sample_indexed_categorical`; top-p is applied over that set before
+/// normalisation.
+pub fn indexed_token_logprob(
+    logits: &[f32],
+    indices: &[u32],
+    token: u32,
+    sampling: MlxSamplingParams,
+) -> Option<f32> {
+    if logits.is_empty() || logits.len() != indices.len() {
+        return None;
+    }
+    if sampling.temperature <= 0.0 {
+        let best = logits
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| indices[i])?;
+        return if best == token { Some(0.0) } else { None };
+    }
+
+    let inv_temp = 1.0 / sampling.temperature;
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let mut candidates: Vec<(usize, f32)> = logits
+        .iter()
+        .zip(indices.iter())
+        .map(|(&logit, &idx)| {
+            let prob = ((logit - max_l) * inv_temp).exp();
+            (idx as usize, if prob.is_finite() { prob } else { 0.0 })
+        })
+        .collect();
+
+    apply_top_k_top_p(&mut candidates, sampling.top_k, sampling.top_p);
+    let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if filtered_sum == 0.0 || !filtered_sum.is_finite() {
+        return None;
+    }
+
+    candidates
+        .iter()
+        .find(|(idx, _)| *idx == token as usize)
+        .map(|(_, prob)| (*prob / filtered_sum).ln().max(-30.0))
+}
+
+/// Sample one token with temperature / top-k / top-p filtering; also return its
+/// log-probability under the filtered distribution.
+///
+/// Used for MTP draft tokens so the caller can perform rejection-sampling
+/// acceptance: `accept_prob = min(1, p_target(d) / p_draft(d))`.
+///
+/// Returns `(token, log_prob)`.  When `temperature <= 0.0` (greedy), returns
+/// `(argmax, 0.0)` — the convention that log_prob=0 signals a point-mass draft
+/// that should fall back to greedy acceptance rather than rejection sampling.
+pub fn sample_categorical_with_logprob(
+    logits: &[f32],
+    sampling: MlxSamplingParams,
+    rng: &mut Xorshift64,
+) -> (u32, f32) {
+    if logits.is_empty() {
+        return (0, 0.0);
+    }
+    if sampling.temperature <= 0.0 {
+        return (argmax_f32(logits), 0.0);
+    }
+
+    let inv_temp = 1.0 / sampling.temperature;
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+    let mut candidates: Vec<(usize, f32)> = logits
+        .iter()
+        .enumerate()
+        .map(|(idx, &logit)| {
+            let p = ((logit - max_l) * inv_temp).exp();
+            (idx, if p.is_finite() { p } else { 0.0 })
+        })
+        .collect();
+
+    let total_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if total_sum == 0.0 || !total_sum.is_finite() {
+        return (argmax_f32(logits), 0.0);
+    }
+
+    if sampling.top_k > 0 || sampling.top_p < 1.0 {
+        apply_top_k_top_p(&mut candidates, sampling.top_k, sampling.top_p);
+    }
+
+    let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if filtered_sum == 0.0 || !filtered_sum.is_finite() {
+        return (argmax_f32(logits), 0.0);
+    }
+
+    let threshold = rng.next_f32() * filtered_sum;
+    let mut cumsum = 0.0f32;
+    // Default to highest-prob candidate (candidates are sorted descending after apply_top_k_top_p).
+    let (mut sampled_idx, mut sampled_prob) = candidates[0];
+    for (i, p) in candidates.iter().copied() {
+        cumsum += p;
+        if cumsum >= threshold {
+            sampled_idx = i;
+            sampled_prob = p;
+            break;
+        }
+    }
+
+    let log_prob = (sampled_prob / filtered_sum).ln().max(-30.0);
+    (sampled_idx as u32, log_prob)
+}
+
 /// GPU-side categorical sampling from logits.
 ///
 /// Returns the sampled token ID. Uses MLX's `random_categorical` which runs
@@ -359,6 +530,54 @@ mod tests {
             let tok = sample_categorical(&logits, sampling, &[], &mut rng);
             assert!(tok < 3, "top_p=0.5 should exclude token {tok}");
         }
+    }
+
+    #[test]
+    fn indexed_categorical_samples_from_original_token_ids() {
+        let logits = vec![0.0_f32, 4.0, 1.0];
+        let indices = vec![42_u32, 99, 7];
+        let mut rng = Xorshift64::new(23);
+
+        for _ in 0..20 {
+            assert_eq!(
+                sample_indexed_categorical(
+                    &logits,
+                    &indices,
+                    MlxSamplingParams::new(0.01, 1.0, 0),
+                    &mut rng
+                ),
+                Some(99)
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_categorical_applies_top_p_over_candidate_set() {
+        let logits = vec![1.0_f32; 4];
+        let indices = vec![10_u32, 11, 12, 13];
+        let mut rng = Xorshift64::new(29);
+        let sampling = MlxSamplingParams::new(1.0, 0.5, 0);
+
+        for _ in 0..100 {
+            let tok = sample_indexed_categorical(&logits, &indices, sampling, &mut rng).unwrap();
+            assert!(
+                tok == 10 || tok == 11,
+                "top_p=0.5 should keep first half of equal-prob candidates, got {tok}"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_token_logprob_uses_filtered_distribution() {
+        let logits = vec![1.0_f32; 4];
+        let indices = vec![10_u32, 11, 12, 13];
+        let sampling = MlxSamplingParams::new(1.0, 0.5, 0);
+
+        assert!(
+            (indexed_token_logprob(&logits, &indices, 10, sampling).unwrap() - 0.5_f32.ln()).abs()
+                < 1e-6
+        );
+        assert_eq!(indexed_token_logprob(&logits, &indices, 12, sampling), None);
     }
 
     #[test]

@@ -8,8 +8,8 @@ use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward, forward_all_positions_with_final_hidden,
-    forward_argmax_with_turboquant_context,
-    forward_lazy_single_argmax_with_turboquant_context, forward_with_turboquant_context,
+    forward_argmax_with_turboquant_context, forward_lazy_single_argmax_with_turboquant_context,
+    forward_with_turboquant_context,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical, sample_categorical_gpu,
@@ -292,7 +292,12 @@ pub fn chunked_prefill_with_final_hidden(
             let end = (offset + chunk_size).min(cache_only_prefix_len);
             let chunk = &prompt_tokens[offset..end];
             let _logits = forward_argmax_with_turboquant_context(
-                cfg, weights, chunk, cache, cache.seq_len, None,
+                cfg,
+                weights,
+                chunk,
+                cache,
+                cache.seq_len,
+                None,
             );
             cache.seq_len += chunk.len();
             eval_kv_refs(cache);
@@ -308,7 +313,13 @@ pub fn chunked_prefill_with_final_hidden(
         cache.seq_len += 1;
         let logits_row = {
             use mlx_sys::{astype, reshape, slice};
-            let lv = slice(&logits_all, &[0, 0], &[1, cfg.vocab_size as i32], &[1, 1], None);
+            let lv = slice(
+                &logits_all,
+                &[0, 0],
+                &[1, cfg.vocab_size as i32],
+                &[1, 1],
+                None,
+            );
             let lv = astype(&lv, MlxDtype::Float32, None);
             reshape(&lv, &[cfg.vocab_size as i32], None)
         };
@@ -353,7 +364,12 @@ pub fn chunked_prefill_with_final_hidden(
                 };
                 eval(&[&last_logits_f32]);
                 let logits_data = last_logits_f32.data_f32();
-                sample_categorical(logits_data, sampling, sampling_request.repetition_tokens, rng)
+                sample_categorical(
+                    logits_data,
+                    sampling,
+                    sampling_request.repetition_tokens,
+                    rng,
+                )
             } else {
                 let token_arr = argmax(&logits_all, None);
                 eval_with_kv_refs(&token_arr, cache);
@@ -368,7 +384,12 @@ pub fn chunked_prefill_with_final_hidden(
             return (tok, final_hidden);
         } else {
             let logits = forward_argmax_with_turboquant_context(
-                cfg, weights, chunk, cache, chunk_offset, None,
+                cfg,
+                weights,
+                chunk,
+                cache,
+                chunk_offset,
+                None,
             );
             cache.seq_len += chunk.len();
             offset = end;

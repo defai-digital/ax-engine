@@ -1,15 +1,17 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, astype, concatenate, multiply,
-    reshape, rms_norm, scaled_dot_product_attention_with_mask, sigmoid, silu_mul, slice,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, astype, concatenate,
+    eval, multiply, reshape, rms_norm, scaled_dot_product_attention_with_mask, sigmoid, silu_mul,
+    slice, softmax, take, take_along_axis,
 };
 
 use crate::kv_cache::MlxKVCache;
-use crate::model::{ModelConfig, embed_tokens};
 use crate::model::shared::{
     apply_final_logit_softcap, flatten_attention_output_bhsd, prepare_value_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj, qw,
 };
-use crate::weights::{MtpWeights, ModelWeights};
+use crate::model::{ModelConfig, embed_tokens};
+use crate::sampling::{MlxSamplingParams, Xorshift64, indexed_token_logprob};
+use crate::weights::{ModelWeights, MtpWeights};
 
 /// Run one recurrent MTP head forward pass for a single decode step.
 ///
@@ -42,8 +44,18 @@ pub fn mtp_head_forward(
 
     // 2. Combined input: fc(cat([enorm(embed), hnorm(hidden)])).
     //    concat_order = "embedding_hidden" → [enorm, hnorm] along last dim.
-    let enormed = rms_norm(&embed, Some(&head.pre_fc_norm_embedding), cfg.rms_norm_eps, None);
-    let hnormed = rms_norm(main_hidden, Some(&head.pre_fc_norm_hidden), cfg.rms_norm_eps, None);
+    let enormed = rms_norm(
+        &embed,
+        Some(&head.pre_fc_norm_embedding),
+        cfg.rms_norm_eps,
+        None,
+    );
+    let hnormed = rms_norm(
+        main_hidden,
+        Some(&head.pre_fc_norm_hidden),
+        cfg.rms_norm_eps,
+        None,
+    );
     let combined = concatenate(&[&enormed, &hnormed], -1, None);
     let mut h = qw(&combined, &head.fc);
 
@@ -60,17 +72,29 @@ pub fn mtp_head_forward(
 
         // Reshape q_proj output to expose per-head query/gate layout.
         let n_h = head.n_heads as i32;
-        let hd  = head.head_dim as i32;
+        let hd = head.head_dim as i32;
         let q_half = n_h * hd;
         let qg_raw = qw(&normed, &head.q_proj); // [1, 1, n_heads * head_dim * 2]
         let qg_heads = reshape(&qg_raw, &[1_i32, 1, n_h, 2 * hd], None); // [1, 1, n_heads, 2*hd]
         let q_raw = reshape(
-            &slice(&qg_heads, &[0, 0, 0, 0], &[1, 1, n_h, hd], &[1, 1, 1, 1], None),
+            &slice(
+                &qg_heads,
+                &[0, 0, 0, 0],
+                &[1, 1, n_h, hd],
+                &[1, 1, 1, 1],
+                None,
+            ),
             &[1_i32, 1, q_half],
             None,
         );
         let gate = reshape(
-            &slice(&qg_heads, &[0, 0, 0, hd], &[1, 1, n_h, 2 * hd], &[1, 1, 1, 1], None),
+            &slice(
+                &qg_heads,
+                &[0, 0, 0, hd],
+                &[1, 1, n_h, 2 * hd],
+                &[1, 1, 1, 1],
+                None,
+            ),
             &[1_i32, 1, q_half],
             None,
         );
@@ -173,9 +197,17 @@ pub fn mtp_hidden_to_logits(
 
 /// Draft up to `head.max_depth` tokens by applying the MTP head recurrently.
 ///
-/// Returns `(draft_tokens, draft_count)`:
-/// * `draft_tokens[i]` — greedy-sampled draft token at depth `i+1`.
-/// * `draft_count`     — how many entries were appended to `cache` (= draft_tokens.len()).
+/// Returns `(draft_tokens, draft_log_probs, draft_count)`:
+/// * `draft_tokens[i]`    — greedy argmax draft token at depth `i+1`.
+/// * `draft_log_probs[i]` — log-probability of `draft_tokens[i]` under the draft distribution.
+///   When `draft_sampling.temperature == 0` (greedy), log_prob is 0.0 (point-mass convention).
+/// * `draft_count`        — how many entries were appended to `cache`.
+///
+/// When `temperature > 0`, tokens are still selected by argmax for throughput; the returned
+/// log_probs use temperature-scaled full-vocab probabilities and enable rejection-sampling
+/// acceptance in `run_mtp_decode`. top-k/top-p are not applied on this fast path.
+/// When `temperature == 0`, tokens are greedy argmax and acceptance falls back to exact
+/// argmax comparison.
 ///
 /// Gracefully handles `weights.mtp = None` by returning empty.
 pub fn mtp_draft_tokens(
@@ -184,39 +216,131 @@ pub fn mtp_draft_tokens(
     first_hidden: &MlxArray,
     first_token: u32,
     cache: &mut MlxKVCache,
-) -> (Vec<u32>, usize) {
+    _rng: &mut Xorshift64,
+) -> (Vec<u32>, Vec<f32>, usize) {
     let Some(head) = weights.mtp.as_ref() else {
-        return (vec![], 0);
+        return (vec![], vec![], 0);
     };
     if head.max_depth == 0 {
-        return (vec![], 0);
+        return (vec![], vec![], 0);
     }
 
+    let use_temperature = head.draft_sampling.temperature > 0.0;
+    let use_topk_logprob = use_temperature && head.draft_sampling.top_k > 0;
     let mut draft_tokens = Vec::with_capacity(head.max_depth);
+    let mut draft_log_probs = Vec::with_capacity(head.max_depth);
+    // Lazy arrays holding p(draft_token) under the temperature-scaled draft distribution.
+    // Evaluated in one batch after all depth iterations to avoid per-step GPU sync.
+    let mut lazy_probs: Vec<MlxArray> = Vec::with_capacity(head.max_depth);
 
     let mut prev_hidden = first_hidden.clone();
     let mut prev_token = first_token;
 
-    for _ in 0..head.max_depth {
-        let new_hidden = mtp_head_forward(
-            head,
-            &prev_hidden,
-            prev_token,
-            weights,
-            cache,
-            cfg,
-        );
+    // inv_temp scalar, computed once outside the loop.
+    let inv_temp_arr = if use_temperature {
+        Some(MlxArray::from_f32(1.0 / head.draft_sampling.temperature))
+    } else {
+        None
+    };
 
+    for _ in 0..head.max_depth {
+        let new_hidden = mtp_head_forward(head, &prev_hidden, prev_token, weights, cache, cfg);
         let logits = mtp_hidden_to_logits(&new_hidden, head, weights, cfg);
-        let draft_token = greedy_sample_logits(&logits);
+
+        let draft_token = if use_topk_logprob {
+            if let Some((tok, log_prob)) =
+                greedy_sample_logits_with_topk_logprob(&logits, head.draft_sampling, cfg.vocab_size)
+            {
+                draft_log_probs.push(log_prob);
+                tok
+            } else {
+                let tok = greedy_sample_logits(&logits);
+                draft_log_probs.push(-30.0);
+                tok
+            }
+        } else {
+            // Greedy argmax: transfers only 1 u32. The argmax eval also materialises
+            // `logits` on GPU, which is required before we compute the lazy softmax below.
+            let draft_token = greedy_sample_logits(&logits);
+            if let Some(ref inv_t) = inv_temp_arr {
+                // Lazily compute p(draft_token) from the temperature-scaled distribution.
+                // No eval here — all these lazy arrays are batched-eval'd after the loop.
+                let scaled = multiply(&logits, inv_t, None);
+                let probs = softmax(&scaled, -1, None); // [vocab]
+                let idx_data = [draft_token as i32];
+                let idx_arr = MlxArray::from_raw_data(
+                    idx_data.as_ptr() as *const u8,
+                    4,
+                    &[1_i32],
+                    MlxDtype::Int32,
+                );
+                let prob_d = take(&probs, &idx_arr, 0, None); // [1]
+                lazy_probs.push(prob_d);
+            } else {
+                draft_log_probs.push(0.0);
+            }
+            draft_token
+        };
 
         draft_tokens.push(draft_token);
         prev_hidden = new_hidden;
         prev_token = draft_token;
     }
 
+    // Batch-eval all lazy prob arrays (one GPU sync for all depths, not one per depth).
+    if !use_topk_logprob && use_temperature && !lazy_probs.is_empty() {
+        let refs: Vec<&MlxArray> = lazy_probs.iter().collect();
+        eval(&refs);
+        draft_log_probs.extend(lazy_probs.iter().map(|arr| {
+            let p = arr.data_f32()[0].max(0.0_f32);
+            if p > 0.0 {
+                p.ln().max(-30.0)
+            } else {
+                -30.0_f32
+            }
+        }));
+    }
+    if draft_log_probs.len() < draft_tokens.len() {
+        draft_log_probs.extend(std::iter::repeat_n(
+            0.0_f32,
+            draft_tokens.len() - draft_log_probs.len(),
+        ));
+    }
+    let draft_log_probs: Vec<f32> = draft_log_probs
+        .into_iter()
+        .take(draft_tokens.len())
+        .collect();
+
     let added = draft_tokens.len();
-    (draft_tokens, added)
+    (draft_tokens, draft_log_probs, added)
+}
+
+fn greedy_sample_logits_with_topk_logprob(
+    logits: &MlxArray,
+    sampling: MlxSamplingParams,
+    vocab_size: usize,
+) -> Option<(u32, f32)> {
+    let vocab = vocab_size as i32;
+    let k = (sampling.top_k as i32).min(vocab);
+    if k <= 0 || sampling.temperature <= 0.0 {
+        return None;
+    }
+    let row = reshape(logits, &[1_i32, vocab], None);
+    let part_indices = argpartition_axis(&row, -k, -1, None);
+    let top_indices = slice(&part_indices, &[0, vocab - k], &[1, vocab], &[1, 1], None);
+    let top_logits = take_along_axis(&row, &top_indices, -1, None);
+    let top_indices = astype(&top_indices, MlxDtype::Uint32, None);
+    eval(&[&top_logits, &top_indices]);
+
+    let logits_cpu = top_logits.data_f32();
+    let indices_cpu = top_indices.data_u32();
+    let token = logits_cpu
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .and_then(|(i, _)| indices_cpu.get(i).copied())?;
+    let log_prob = indexed_token_logprob(logits_cpu, indices_cpu, token, sampling).unwrap_or(-30.0);
+    Some((token, log_prob))
 }
 
 /// Greedy argmax over a `[vocab_size]` f32 logit array.
