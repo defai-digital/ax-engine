@@ -4,20 +4,20 @@
 
 <table>
 <tr>
-<td align="center"><strong>Qwen3.6 27B Speed tok/s</strong></td>
-<td align="center"><strong>Qwen3.6 27B Speed accept rate</strong></td>
+<td align="center"><strong>Speed tok/s</strong></td>
+<td align="center"><strong>Speed accept rate</strong></td>
 </tr>
 <tr>
-<td><img src="docs/assets/perf-mtp-speed-tok-s.svg" alt="Bar chart comparing MTPLX 0.3.7 on the left and AX Engine MTP on the right for Qwen3.6 27B Speed tok/s on the flappy benchmark suite"></td>
-<td><img src="docs/assets/perf-mtp-speed-accept-rate.svg" alt="Bar chart comparing MTPLX 0.3.7 on the left and AX Engine MTP on the right for Qwen3.6 27B Speed accept rate on the flappy benchmark suite"></td>
+<td><img src="docs/assets/perf-mtp-speed-tok-s.svg" alt="flappy Speed tok/s chart with d=2 and d=3 bars"></td>
+<td><img src="docs/assets/perf-mtp-speed-accept-rate.svg" alt="flappy Speed accept rate chart with d=2 and d=3 bars"></td>
 </tr>
 <tr>
-<td align="center"><strong>Qwen3.6 27B Quality tok/s</strong></td>
-<td align="center"><strong>Qwen3.6 27B Quality accept rate</strong></td>
+<td align="center"><strong>Quality tok/s</strong></td>
+<td align="center"><strong>Quality accept rate</strong></td>
 </tr>
 <tr>
-<td><img src="docs/assets/perf-mtp-quality-tok-s.svg" alt="Bar chart comparing MTPLX 0.3.7 on the left and AX Engine MTP on the right for Qwen3.6 27B Quality tok/s on the flappy benchmark suite"></td>
-<td><img src="docs/assets/perf-mtp-quality-accept-rate.svg" alt="Bar chart comparing MTPLX 0.3.7 on the left and AX Engine MTP on the right for Qwen3.6 27B Quality accept rate on the flappy benchmark suite"></td>
+<td><img src="docs/assets/perf-mtp-quality-tok-s.svg" alt="flappy Quality tok/s chart with d=2 and d=3 bars"></td>
+<td><img src="docs/assets/perf-mtp-quality-accept-rate.svg" alt="flappy Quality accept rate chart with d=2 and d=3 bars"></td>
 </tr>
 </table>
 
@@ -258,10 +258,12 @@ high-repetition `flappy` coding suite on Apple M5 Max 128 GB with
 temperature=0.6, top_p=0.95, top_k=20, and 1000 generated tokens. These are
 sampled decode rows, not greedy-exact baselines.
 
-| Model bundle | Suite | AX MTP | AX accept rate | MTPLX 0.3.7 | MTPLX accept rate |
-|---|---|---:|---:|---:|---:|
-| Qwen3.6 27B MTPLX Speed | flappy | **54.6 tok/s** | 93.6% | 47.7 tok/s | 69.4% |
-| Qwen3.6 27B MTPLX Quality | flappy | **35.2 tok/s** | 90.4% | 34.3 tok/s | 79.9% |
+| Model bundle | Suite | Depth | AX MTP | AX accept | MTPLX 0.3.7 | MTPLX accept |
+|---|---|---:|---:|---:|---:|---:|
+| Qwen3.6 27B MTPLX Speed | flappy | 2 | **47.7 tok/s** | 92.2% | 47.6 tok/s | 77.3% |
+| Qwen3.6 27B MTPLX Quality | flappy | 2 | **29.1 tok/s** | 89.9% | 31.5 tok/s | 80.8% |
+| Qwen3.6 27B MTPLX Speed | flappy | 3 | **39.0 tok/s** | 83.1% | 46.3 tok/s | 69.4% |
+| Qwen3.6 27B MTPLX Quality | flappy | 3 | **28.0 tok/s** | 84.0% | 34.3 tok/s | 79.9% |
 
 Full MTP methodology, caveats, artifact links, and reproduction commands live in
 [`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode). The benchmark

@@ -210,45 +210,64 @@ baselines.
 
 MTPLX 0.3.7 is the external reference (run separately; numbers injected when a
 matching reference artifact is available). AX MTP uses verifier-hidden-state
-drafting, rejection sampling, and a verify path that avoids materializing the
-full logits tensor as an eval root for the target distribution.
+drafting and standard rejection sampling.
 
 ### Last recorded focused smoke results (2026-05-25)
 
 These rows are focused implementation smoke checks, not the full long-generation
-publication matrix. They prove the current hot path on the high-repetition
-`flappy` suite and should stay separate from broader multi-suite claims.
+publication matrix. Rows are split by MTP depth so the README charts can show
+depth=2 and depth=3 separately.
+
+> **Build note:** all 2026-05-25 AX artifacts had `git_tracked_dirty: true`
+> (active development, uncommitted source changes). Numbers are directionally
+> correct but are not reproducible from any tagged commit.
 
 | Model bundle | Suite | AX depth cap | AX MTP (tok/s) | AX accept rate | MTPLX 0.3.7 (tok/s) | MTPLX depth | MTPLX accept rate | Artifact |
 |---|---|---:|---:|---:|---:|---:|---:|---|
-| Speed (4-bit base + Q6 sidecar) | flappy | 2 | **54.6** | 93.6% | 47.7 | 3 | 69.4% | [summary](../benchmarks/results/mtp-compare/2026-05-25-speed-depth2-no-full-logits-eval-smoke/summary.md) |
-| Quality (4-bit base + Q8 sidecar) | flappy | 3 | **35.2** | 90.4% | 34.3 | 3 | 79.9% | [summary](../benchmarks/results/mtp-compare/2026-05-25-quality-depth3-no-full-logits-eval-smoke/summary.md) |
+| Speed (4-bit base + Q6 sidecar) | flappy | 2 | **47.7** | 92.2% | 47.6 | 2 | 77.3% | [summary](../benchmarks/results/mtp-compare/2026-05-25-speed-depth2-topk-draft-tail-smoke/summary.md) |
+| Quality (4-bit base + Q8 sidecar) | flappy | 2 | **29.1** | 89.9% | 31.5 | 2 | 80.8% | [summary](../benchmarks/results/mtp-compare/2026-05-25-quality-depth2-topk-draft-tail-smoke/summary.md) |
+| Speed (4-bit base + Q6 sidecar) | flappy | 3 | **39.0** | 83.1% | 46.3 | 3 | 69.4% | [summary](../benchmarks/results/mtp-compare/2026-05-25-speed-depth3-smoke/summary.md) |
+| Quality (4-bit base + Q8 sidecar) | flappy | 3 | **28.0** | 84.0% | 34.3 | 3 | 79.9% | [summary](../benchmarks/results/mtp-compare/2026-05-25-quality-depth3-topk-draft-tail-smoke/summary.md) |
 
-The Speed reference comes from
-`benchmarks/results/mtp-compare/2026-05-23-mtplx-ref/mtplx.json`. The Quality
-reference is the local MTPLX 0.3.7 matrix row for
-`Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality`, `flappy`, depth=3
-(`34.336897` tok/s, 79.9% accept).
+The MTPLX references come from the local MTPLX 0.3.7 matrix rows for the same
+bundle, `flappy` suite, depth, sampler settings, and 1000 generated tokens.
+
+**Experimental variants not in this table:** during the same session several
+non-standard code paths were explored—`no-full-logits-eval` (skips evaluating
+the target logit tensor as an eager eval root) and `partial-hidden` (uses a
+truncated hidden state for draft generation). These produced 47–55 tok/s on the
+Speed model but skip parts of the verification algorithm and have not been
+validated for output-distribution correctness. Do not compare them against MTPLX
+standard rejection sampling until a correctness audit is complete.
+
+**Long-code suite note:** the `long_code` suite showed AX MTP at ~30 tok/s
+versus MTPLX 56.4 tok/s (from `ax-mtp-all-v4`). MTP overhead exceeded the
+speculation gain on that workload, indicating a regression relative to the ~32
+tok/s greedy baseline. This needs investigation before drawing conclusions about
+long-context MTP performance.
 
 ### Updating these numbers
 
-Run `bench_mtp_compare.py` after any n-gram or MTP-related change:
+Run `bench_mtp_compare.py` after any n-gram or MTP-related change. Use a **clean
+build** (no uncommitted changes) and `--ax-mtp-max-depth 3` to match MTPLX's
+reference depth:
 
 ```bash
 python3 scripts/bench_mtp_compare.py \
   --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
-  --mtplx-results benchmarks/results/mtp-compare/<prev-run>/mtplx-ref.json \
+  --mtplx-results benchmarks/results/mtp-compare/2026-05-23-mtplx-ref/mtplx.json \
   --suites flappy \
   --mtp-only \
-  --ax-mtp-max-depth 2 \
-  --repetitions 1 \
-  --cooldown 5 \
-  --output-dir benchmarks/results/mtp-compare/$(date +%F)-speed-depth2-smoke
+  --ax-mtp-max-depth 3 \
+  --repetitions 5 \
+  --cooldown 15 \
+  --output-dir benchmarks/results/mtp-compare/$(date +%F)-speed-depth3-smoke
 ```
 
-Use `--ax-mtp-max-depth 3` for the Quality bundle. Then copy the numbers from
-the generated `summary.md` into the table above and update the artifact path in
-the section header comment.
+Use `--model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Quality` for the Quality
+bundle. Then copy the numbers from the generated `summary.md` into the table
+above and update the artifact path. Verify `summary.md` shows no dirty-build
+warning before promoting numbers.
 
 Artifacts live in `benchmarks/results/mtp-compare/`. See
 [`benchmarks/results/mtp-compare/README.md`](../benchmarks/results/mtp-compare/README.md)
