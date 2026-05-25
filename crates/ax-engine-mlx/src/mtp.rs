@@ -16,22 +16,26 @@ use crate::weights::{MtpWeights, ModelWeights};
 /// Returns new hidden state `[1, 1, hidden_size]`.  Caller applies
 /// `rms_norm(h, mtp_norm) @ lm_head` to get draft logits.
 ///
-/// * `head`         — shared MTP weights (reused across all depth levels).
-/// * `main_hidden`  — post-norm hidden from the main model (hidden_variant="post_norm")
+/// * `head`        — shared MTP weights (reused across all depth levels).
+/// * `main_hidden` — post-norm hidden from the main model (hidden_variant="post_norm")
 ///   or output from a preceding MTP head call, shape `[1, 1, hidden_size]`.
-/// * `prev_token`   — token ID predicted at the previous level.
-/// * `weights`      — main model weights (for the shared token embedding).
-/// * `cache`        — shared 1-layer KV cache for this head (grows by 1 per call).
-/// * `token_offset` — tokens already in `cache` (= calls made so far).
+/// * `prev_token`  — token ID predicted at the previous level.
+/// * `weights`     — main model weights (for the shared token embedding).
+/// * `cache`       — shared 1-layer KV cache for this head (grows by 1 per call).
+///
+/// RoPE offset is taken from `cache.seq_len` before appending, matching the
+/// mlx-lm `cache.offset` convention: position 0 for the first MTP call, 1 for
+/// the second, etc.  Callers must NOT pass absolute sequence positions.
 pub fn mtp_head_forward(
     head: &MtpWeights,
     main_hidden: &MlxArray,
     prev_token: u32,
     weights: &ModelWeights,
     cache: &mut MlxKVCache,
-    token_offset: usize,
     cfg: &ModelConfig,
 ) -> MlxArray {
+    // Use the MTP KV-cache length as the RoPE offset (matches mlx-lm cache.offset).
+    let token_offset = cache.seq_len;
     // 1. Embed prev_token → [1, 1, hidden_size] in bf16.
     let embed = embed_tokens(&[prev_token], &weights.token_embedding, cfg.hidden_size);
     let embed = astype(&embed, MlxDtype::Bfloat16, None);
@@ -163,8 +167,6 @@ pub fn mtp_hidden_to_logits(
 /// * `draft_tokens[i]` — greedy-sampled draft token at depth `i+1`.
 /// * `draft_count`     — how many entries were appended to `cache` (= draft_tokens.len()).
 ///
-/// `start_offset` is the current number of tokens already in `cache` (used for RoPE).
-///
 /// Gracefully handles `weights.mtp = None` by returning empty.
 pub fn mtp_draft_tokens(
     weights: &ModelWeights,
@@ -172,7 +174,6 @@ pub fn mtp_draft_tokens(
     first_hidden: &MlxArray,
     first_token: u32,
     cache: &mut MlxKVCache,
-    start_offset: usize,
 ) -> (Vec<u32>, usize) {
     let Some(head) = weights.mtp.as_ref() else {
         return (vec![], 0);
@@ -186,14 +187,13 @@ pub fn mtp_draft_tokens(
     let mut prev_hidden = first_hidden.clone();
     let mut prev_token = first_token;
 
-    for i in 0..head.max_depth {
+    for _ in 0..head.max_depth {
         let new_hidden = mtp_head_forward(
             head,
             &prev_hidden,
             prev_token,
             weights,
             cache,
-            start_offset + i,
             cfg,
         );
 

@@ -4907,19 +4907,14 @@ impl MlxRunner {
         let use_hidden = all_accepted || pending.is_empty();
         if use_hidden {
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-            // RoPE position of first draft token = seq_len after accepting tail_tok.
-            // tail_tok is NOT yet in the main model KV cache (added next step as last_token),
-            // so the first draft slot is at seq_len + 1 (one past the tail_tok slot).
-            // mtp_decode_count tracks KV entry count for trim_to; these diverge from
-            // sequence positions after any partial rejection.
-            let start_offset = state.cache.seq_len + 1;
+            // RoPE positions are managed internally by mtp_head_forward using
+            // cache.seq_len (matching mlx-lm's cache.offset convention).
             let (new_draft, added) = mtp_draft_tokens(
                 &self.weights,
                 &self.cfg,
                 &final_hidden,
                 tail_tok,
                 cache,
-                start_offset,
             );
             state.mtp_decode_count += added;
             state.mtp_pending_draft = new_draft;
@@ -4999,25 +4994,23 @@ impl MlxRunner {
         // from the prompt before decode starts, improving acceptance rates.
         // `mtp_prefill_hidden` and `mtp_prefill_output_tok` are set during
         // `chunked_prefill_with_final_hidden` and consumed (take) here.
-        if let (Some(prefill_hidden), Some(prefill_tok)) = (
+        if let (Some(prefill_hidden), Some(prefill_tok), Some(head)) = (
             state.mtp_prefill_hidden.take(),
             state.mtp_prefill_output_tok.take(),
+            self.weights.mtp.as_ref(),
         ) {
-            if let Some(head) = self.weights.mtp.as_ref() {
-                let last_prompt_pos = state.cache.seq_len.saturating_sub(1);
-                let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-                let warmup_hidden = crate::mtp::mtp_head_forward(
-                    head,
-                    &prefill_hidden,
-                    prefill_tok,
-                    &self.weights,
-                    cache,
-                    last_prompt_pos,
-                    &self.cfg,
-                );
-                mlx_sys::eval(&[&warmup_hidden]);
-                state.mtp_decode_count = 1;
-            }
+            let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+            // cache.seq_len = 0 here; mtp_head_forward uses it as RoPE offset.
+            let warmup_hidden = crate::mtp::mtp_head_forward(
+                head,
+                &prefill_hidden,
+                prefill_tok,
+                &self.weights,
+                cache,
+                &self.cfg,
+            );
+            mlx_sys::eval(&[&warmup_hidden]);
+            state.mtp_decode_count = 1;
         }
 
         // Skip n-gram entirely for short output budgets: failed speculation
