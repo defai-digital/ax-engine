@@ -244,7 +244,43 @@ export interface ModelCard {
   id: string;
   object: string;
   owned_by: string;
+  capabilities: ModelCapabilities;
+  limit: ModelLimit;
+  context_length: number;
+  max_output_tokens: number;
+  ax_engine: AxEngineModelMetadata;
   runtime: RuntimeInfo;
+}
+
+export interface ModelCapabilities {
+  temperature: boolean;
+  reasoning: boolean;
+  attachment: boolean;
+  toolcall: boolean;
+  input: ModelModalities;
+  output: ModelModalities;
+  interleaved: boolean;
+}
+
+export interface ModelModalities {
+  text: boolean;
+  audio: boolean;
+  image: boolean;
+  video: boolean;
+  pdf: boolean;
+}
+
+export interface ModelLimit {
+  context: number;
+  output: number;
+}
+
+export interface AxEngineModelMetadata {
+  native_generate_supported: boolean;
+  openai_completions_supported: boolean;
+  openai_chat_completions_supported: boolean;
+  openai_tool_calling_supported: boolean;
+  openai_text_input_supported: boolean;
 }
 
 export interface ModelsResponse {

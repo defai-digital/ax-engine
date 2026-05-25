@@ -8,7 +8,7 @@ not as a claim that the entire OpenAI API is implemented.
 
 | Endpoint | Status | Runtime paths | Request scope | Response scope |
 |---|---|---|---|---|
-| `GET /v1/models` | Preview-compatible model list | All server modes | None | OpenAI-style `object=list`, one local model card, AX runtime metadata |
+| `GET /v1/models` | Preview-compatible model list | All server modes | None | OpenAI-style `object=list`, one local model card, AX runtime metadata, conservative `capabilities`, `limit`, `context_length`, `max_output_tokens`, and `ax_engine` integration metadata |
 | `POST /v1/completions` | Preview-compatible text completion | `llama_cpp`, `mlx_lm_delegated` | `prompt` as one string or one token array; string-array batch prompts are rejected until per-prompt result assembly is implemented; `max_tokens` optional, defaults to 256; `temperature`, `top_p`, `seed`, `stream`, `metadata` | OpenAI-style completion envelope or SSE chunks with `system_fingerprint: null`; `usage` only when backend token counts are authoritative |
 | `POST /v1/chat/completions` | Preview-compatible text chat completion | `llama_cpp`, `mlx_lm_delegated` | text-only messages; roles `system`, `user`, `assistant`, `tool`, `function`; `max_tokens` optional, defaults to 256; `temperature`, `top_p`, `seed`, `stream`, `metadata` | OpenAI-style chat envelope or SSE chunks with `system_fingerprint: null` after AX renders messages with the selected model-family prompt template |
 | `POST /v1/embeddings` | AX embedding route with OpenAI-shaped response | repo-owned MLX embedding-capable sessions | token-array `input`; optional `pooling`, `normalize`, and `encoding_format` placeholder | OpenAI-style embedding list with float vectors and token usage |
@@ -54,3 +54,8 @@ semantics.
 AX Engine should remain an inference runtime. Tool execution, permissions,
 network effects, and workflow orchestration belong to caller applications or a
 separate control plane.
+
+`GET /v1/models` therefore reports `capabilities.toolcall=false` and
+`ax_engine.openai_tool_calling_supported=false`. Integrations such as `ax-code`
+should treat those fields as authoritative instead of assuming generic
+OpenAI-compatible providers support tool calls.

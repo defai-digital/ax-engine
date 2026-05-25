@@ -48,6 +48,14 @@ for await (const event of client.streamChatCompletion({
 ## Native ax-engine API
 
 ```js
+const models = await client.models();
+const model = models.data[0];
+
+// Integrations should trust these fields instead of assuming generic
+// OpenAI-compatible tool-call support.
+console.log(model.capabilities.toolcall); // false today
+console.log(model.ax_engine.openai_chat_completions_supported);
+
 // Token-based generate
 const result = await client.generate({
   input_tokens: [1, 2, 3],

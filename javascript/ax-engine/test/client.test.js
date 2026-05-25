@@ -40,6 +40,55 @@ test("runtime fetches preview runtime metadata", async () => {
   });
 });
 
+test("models fetches ax-code-safe capability metadata", async () => {
+  await withServer((req, res) => {
+    assert.equal(req.method, "GET");
+    assert.equal(req.url, "/v1/models");
+    res.setHeader("content-type", "application/json");
+    res.end(
+      JSON.stringify({
+        object: "list",
+        data: [
+          {
+            id: "qwen3",
+            object: "model",
+            owned_by: "ax-engine-v4",
+            capabilities: {
+              temperature: true,
+              reasoning: false,
+              attachment: false,
+              toolcall: false,
+              input: { text: true, audio: false, image: false, video: false, pdf: false },
+              output: { text: true, audio: false, image: false, video: false, pdf: false },
+              interleaved: false,
+            },
+            limit: { context: 16384, output: 2048 },
+            context_length: 16384,
+            max_output_tokens: 2048,
+            ax_engine: {
+              native_generate_supported: true,
+              openai_completions_supported: true,
+              openai_chat_completions_supported: true,
+              openai_tool_calling_supported: false,
+              openai_text_input_supported: true,
+            },
+            runtime: {
+              selected_backend: "llama_cpp",
+            },
+          },
+        ],
+      }),
+    );
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    const models = await client.models();
+    assert.equal(models.data[0].capabilities.toolcall, false);
+    assert.equal(models.data[0].capabilities.input.text, true);
+    assert.equal(models.data[0].limit.context, 16384);
+    assert.equal(models.data[0].ax_engine.openai_tool_calling_supported, false);
+  });
+});
+
 test("generate posts JSON to preview endpoint", async () => {
   await withServer((req, res) => {
     assert.equal(req.method, "POST");
