@@ -29,6 +29,51 @@ pub struct ModelWeights {
     pub per_layer_model_proj: Option<QuantizedWeight>,
     /// RMSNorm weight over per_layer_dim applied after model projection (Gemma4 2B/4B).
     pub per_layer_proj_norm: Option<MlxArray>,
+    /// MTP (Multi-Token Prediction) weights loaded from a `mtp.safetensors` sidecar.
+    /// `None` when the checkpoint has no MTP sidecar.
+    pub mtp: Option<MtpWeights>,
+}
+
+/// Weights for a recurrent MTP (Multi-Token Prediction) draft head.
+///
+/// The single transformer layer is applied up to `max_depth` times to produce
+/// up to `max_depth` speculative draft tokens per decode step.
+///
+/// Input combination: `fc(cat([rms_norm(embed(prev_token), pre_fc_norm_embedding),
+///                              rms_norm(main_hidden, pre_fc_norm_hidden)], dim=-1))`
+/// Draft logits: `rms_norm(h, mtp_norm) @ main_model.lm_head`
+pub struct MtpWeights {
+    /// FC projection: concat(enorm, hnorm) [2*hidden] → hidden.  Plain BF16.
+    pub fc: QuantizedWeight,
+    /// Final RMSNorm before applying the shared lm_head (mtp.norm.weight).
+    pub mtp_norm: MlxArray,
+    /// Pre-FC RMSNorm applied to the embedded token (mtp.pre_fc_norm_embedding.weight).
+    pub pre_fc_norm_embedding: MlxArray,
+    /// Pre-FC RMSNorm applied to the main model hidden state (mtp.pre_fc_norm_hidden.weight).
+    pub pre_fc_norm_hidden: MlxArray,
+    // Transformer layer norms.
+    pub attn_norm: MlxArray,
+    pub ffn_norm: MlxArray,
+    /// Optional per-head QK norms (Qwen3-style).
+    pub q_norm: Option<MlxArray>,
+    pub k_norm: Option<MlxArray>,
+    // Attention projections.
+    pub q_proj: QuantizedWeight,
+    pub k_proj: QuantizedWeight,
+    pub v_proj: QuantizedWeight,
+    pub o_proj: QuantizedWeight,
+    // FFN projections.
+    pub gate_proj: QuantizedWeight,
+    pub up_proj: QuantizedWeight,
+    pub down_proj: QuantizedWeight,
+    /// Number of query heads (inferred from q_proj shape).
+    pub n_heads: usize,
+    /// Number of KV heads (inferred from k_proj shape).
+    pub n_kv_heads: usize,
+    /// Per-head dimension (inferred from q_proj / n_heads).
+    pub head_dim: usize,
+    /// Maximum speculative depth: how many times to apply this head recurrently.
+    pub max_depth: usize,
 }
 
 /// Weights (and optional quantization data) for one transformer layer.
@@ -758,6 +803,10 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
 
     crate::weight_rotation::shadow_log_rotation_candidates(specs);
 
+    // Load MTP sidecar if present (e.g. `mtp.safetensors` alongside the main files).
+    let mtp_max_depth = load_mtp_sidecar(&root, &mut name_map);
+    let mtp = load_mtp(&mut name_map, mtp_max_depth);
+
     let mut model = ModelWeights {
         token_embedding,
         final_norm,
@@ -766,11 +815,167 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         per_layer_embed,
         per_layer_model_proj,
         per_layer_proj_norm,
+        mtp,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;
 
     Ok(model)
+}
+
+/// Take a plain (non-quantized) tensor from `name_map` by exact key.
+/// Returns `None` if the key is absent (does not require the key to be present).
+fn mtp_take_plain(name_map: &mut HashMap<String, MlxArray>, key: &str) -> Option<MlxArray> {
+    name_map.remove(key)
+}
+
+/// Take a (possibly quantized) weight from `name_map` by base key.
+/// Looks for `{key}.weight` (or `{key}` directly) plus optional `.scales` / `.biases`.
+/// Returns `None` if the base weight is absent.
+fn mtp_take_weight(name_map: &mut HashMap<String, MlxArray>, base: &str) -> Option<QuantizedWeight> {
+    let weight_key = format!("{base}.weight");
+    let weight = name_map.remove(&weight_key).or_else(|| name_map.remove(base))?;
+    let scales = name_map.remove(&format!("{base}.scales"));
+    let biases = name_map.remove(&format!("{base}.biases"));
+    let (group_size, bits) = if let Some(ref s) = scales {
+        // Infer from packed weight shape and scales shape.
+        // 4-bit packed: weight.cols = real_cols / 8 → real_cols = weight.cols * 8
+        // scales.cols = real_cols / group_size → group_size = real_cols / scales.cols
+        let w_shape = weight.shape();
+        let s_shape = s.shape();
+        let gs = if w_shape.len() == 2 && s_shape.len() == 2 && s_shape[1] > 0 {
+            let real_cols = (w_shape[1] as usize) * 8; // 4-bit pack factor = 8
+            let scale_cols = s_shape[1] as usize;
+            let inferred = real_cols / scale_cols;
+            if inferred == 0 { 64 } else { inferred as i32 }
+        } else {
+            64
+        };
+        (gs, 4)
+    } else {
+        (1, 32)
+    };
+    Some(QuantizedWeight {
+        weight,
+        scales,
+        biases,
+        group_size,
+        bits,
+    })
+}
+
+/// Load the MTP sidecar file (`mtp.safetensors`) if present alongside the main model.
+///
+/// Adds sidecar tensors into `name_map` and returns the speculative depth to use
+/// (from `mtplx_runtime.json` if present, else 1). Returns 0 when no sidecar exists.
+fn load_mtp_sidecar(root: &std::path::Path, name_map: &mut HashMap<String, MlxArray>) -> usize {
+    let sidecar = root.join("mtp.safetensors");
+    if !sidecar.exists() {
+        return 0;
+    }
+    let tensors = match load_safetensors(&sidecar, None) {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    if !tensors.is_empty() {
+        let refs: Vec<&MlxArray> = tensors.values().collect();
+        eval(&refs);
+    }
+    name_map.extend(tensors);
+
+    // Try to read mtp_depth_max from MTPLX runtime config.
+    let runtime_path = root.join("mtplx_runtime.json");
+    if let Ok(bytes) = std::fs::read(&runtime_path)
+        && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && let Some(d) = v.get("mtp_depth_max").and_then(|x| x.as_u64())
+    {
+        return d as usize;
+    }
+    1
+}
+
+/// Try to load MTP weights from `mtp.*` keys in `name_map`.
+///
+/// Returns `None` when no MTP keys are found, allowing graceful fallback to
+/// n-gram speculative decoding.
+fn load_mtp(name_map: &mut HashMap<String, MlxArray>, max_depth: usize) -> Option<MtpWeights> {
+    if max_depth == 0 {
+        return None;
+    }
+
+    // Global norms and FC projection (required).
+    let pre_fc_norm_embedding =
+        mtp_take_plain(name_map, "mtp.pre_fc_norm_embedding.weight")?;
+    let pre_fc_norm_hidden =
+        mtp_take_plain(name_map, "mtp.pre_fc_norm_hidden.weight")?;
+    let mtp_norm = mtp_take_plain(name_map, "mtp.norm.weight")?;
+    let fc = mtp_take_weight(name_map, "mtp.fc")?;
+
+    // Layer-0 weights (the single transformer layer applied recurrently).
+    let p = "mtp.layers.0";
+    let attn_norm = mtp_take_plain(name_map, &format!("{p}.input_layernorm.weight"))?;
+    let ffn_norm =
+        mtp_take_plain(name_map, &format!("{p}.post_attention_layernorm.weight"))?;
+    let q_norm = mtp_take_plain(name_map, &format!("{p}.self_attn.q_norm.weight"));
+    let k_norm = mtp_take_plain(name_map, &format!("{p}.self_attn.k_norm.weight"));
+    let q_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.q_proj"))?;
+    let k_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.k_proj"))?;
+    let v_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.v_proj"))?;
+    let o_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.o_proj"))?;
+    let gate_proj = mtp_take_weight(name_map, &format!("{p}.mlp.gate_proj"))?;
+    let up_proj = mtp_take_weight(name_map, &format!("{p}.mlp.up_proj"))?;
+    let down_proj = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"))?;
+
+    // Infer n_heads, n_kv_heads, head_dim from projection weight shapes.
+    //
+    // Qwen3-next-MTP attention (Qwen3NextAttention) produces queries AND a gating
+    // signal from a single q_proj: output = n_heads * head_dim * 2 (first half =
+    // queries, second half = gate applied after attention with a sigmoid).
+    // So q_rows = n_heads * head_dim * 2 → n_heads = q_rows / (head_dim * 2).
+    //
+    // head_dim is inferred from q_norm weight shape when available (most reliable),
+    // otherwise probed from candidate values.
+    let q_shape = q_proj.weight.shape();
+    let k_shape = k_proj.weight.shape();
+    let q_rows = q_shape.first().copied()? as usize;
+    let k_rows = k_shape.first().copied()? as usize;
+    // q_norm weight is a 1-D array of size [head_dim].
+    let head_dim = q_norm
+        .as_ref()
+        .and_then(|qn| qn.shape().first().copied())
+        .map(|d| d as usize)
+        .or_else(|| {
+            // Fallback: probe common head_dims assuming q_rows = n_heads * head_dim * 2.
+            [256usize, 128, 64, 96]
+                .iter()
+                .copied()
+                .find(|&d| (q_rows / 2).is_multiple_of(d))
+        })?;
+    // q_proj rows = n_heads * head_dim * 2 (queries + gate).
+    let n_heads = q_rows / (head_dim * 2);
+    let n_kv_heads = k_rows / head_dim;
+
+    Some(MtpWeights {
+        fc,
+        mtp_norm,
+        pre_fc_norm_embedding,
+        pre_fc_norm_hidden,
+        attn_norm,
+        ffn_norm,
+        q_norm,
+        k_norm,
+        q_proj,
+        k_proj,
+        v_proj,
+        o_proj,
+        gate_proj,
+        up_proj,
+        down_proj,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        max_depth,
+    })
 }
 
 /// Detect a sibling `model.rotated.safetensors` and, when the runtime is in

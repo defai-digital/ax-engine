@@ -1064,7 +1064,7 @@ fn verify_draft(
     }
 }
 
-fn recompute_committed_prefix(
+pub(crate) fn recompute_committed_prefix(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     cache: &mut MlxKVCache,
@@ -1092,7 +1092,7 @@ fn recompute_committed_prefix(
 /// `logits_all` has shape `[verify_len, vocab]` and is already materialised.
 /// Slices one `[1, vocab]` row — avoids copying the full multi-position
 /// tensor to CPU when temperature > 0.
-fn sample_logit_row(
+pub(crate) fn sample_logit_row(
     logits_all: &MlxArray,
     argmax_tok: u32,
     pos: usize,
@@ -1105,6 +1105,7 @@ fn sample_logit_row(
     }
     let p = pos as i32;
     let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
+    eval(&[&row]);
     sample_categorical(row.data_f32(), sampling, &[], rng)
 }
 

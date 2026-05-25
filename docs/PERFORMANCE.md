@@ -198,6 +198,49 @@ should not be read as a complete inference-serving proof. In particular:
   cache-primitive stress. They do not replace a full AX-serving soak for
   production-serving latency or availability claims.
 
+## MTP Mode
+
+<!-- mtp-results-update: update numbers below after each bench_mtp_compare.py run -->
+AX n-gram acceleration measured on coding-shaped real-prompt suites against the
+`Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed` model (4-bit base + Q6 sidecar)
+on Apple M5 Max 128 GB. Sampling: temperature=0.6, top_p=0.95, top_k=20,
+max_tokens=1000. These rows are `sampling_not_distribution_exact` and are not
+greedy-exact baselines.
+
+MTPLX 0.3.7 is the external reference (run separately; numbers injected). The
+AX numbers are n-gram speculative decoding with committed cache (depth=3),
+which re-runs MTP head with the verifier's pre-final-norm hidden after each
+verify step to keep drafter KV current.
+
+### Last recorded results (2026-05-23 · `benchmarks/results/mtp-compare/2026-05-23-ax-mtp-depth3-committed/`)
+
+| Suite | AX direct (tok/s) | AX n-gram depth=3 (tok/s) | Accept rate | MTPLX 0.3.7 (tok/s) | MTPLX accept rate |
+|---|---:|---:|---:|---:|---:|
+| flappy    | — | **28.7** | 79.8% | 47.7 | 69.4% |
+| long_code | — | **25.4** | 74.6% | 56.4 | 84.8% |
+
+The remaining gap vs MTPLX is device-D2 draft core and adaptive depth gating.
+AX depth=3+committed recovers depth=1 throughput and improves `long_code`
+acceptance from 66.5% (depth=1) to 74.6%.
+
+### Updating these numbers
+
+Run `bench_mtp_compare.py` after any n-gram or MTP-related change:
+
+```bash
+python3 scripts/bench_mtp_compare.py \
+  --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
+  --mtplx-results benchmarks/results/mtp-compare/<prev-run>/mtplx-ref.json \
+  --output-dir benchmarks/results/mtp-compare/$(date +%F)-ax-mtp-all
+```
+
+Then copy the numbers from the generated `summary.md` into the table above and
+update the artifact path in the section header comment.
+
+Artifacts live in `benchmarks/results/mtp-compare/`. See
+[`benchmarks/results/mtp-compare/README.md`](../benchmarks/results/mtp-compare/README.md)
+for the full directory structure and MTPLX reference JSON format.
+
 ## Additional Testing Plan
 
 More testing is needed before making production-serving or long-context claims.

@@ -63,7 +63,7 @@ pub use ops::{
     divide, erf, exp, expand_dims, expand_dims_axes, flatten, floor, from_fp8, gather_mm,
     gather_qmm, gelu, gelu_approx, gelu_approx_mul, gemma4_post_attn_ffn_block, greater_equal,
     less, log, log1p, logical_and, matmul, maximum, minimum, multiply, negative, outer, pad, power,
-    put_along_axis, qk_norm_rope_bhsd_from_proj, quantize, quantized_matmul,
+    put_along_axis, qk_norm_rope_bhsd_from_proj, quantize, quantized_matmul, sigmoid,
     qwen_linear_attention_inputs_packed, qwen_linear_attention_post_input, random_categorical,
     repeat, repeat_axis, reshape, silu_mul, sin, slice, slice_last_dim, slice_update, softmax,
     softmax_precise, split, stack, stop_gradient, subtract, sum_axis, take, take_along_axis, tanh,

@@ -282,6 +282,11 @@ AX_NGRAM_TELEMETRY_KEYS = [
     "ax_ngram_accept_at_depth_5",
     "ax_ngram_accept_at_depth_6",
     "ax_ngram_accept_at_depth_7",
+    # MTP (Multi-Token Prediction) speculative decode telemetry.
+    # Present when model has an mtp.safetensors sidecar (MTPLX models).
+    "ax_mtp_draft_tokens",
+    "ax_mtp_accepted_tokens",
+    "ax_mtp_decode_steps",
 ]
 
 # PRD §8 Phase 6 helper: stable ordered list of the accept-at-depth keys so
@@ -1339,6 +1344,7 @@ def tokenize_real_prompt(
     prompt: str,
     *,
     chat_template: bool,
+    enable_thinking: bool = True,
 ) -> list[int]:
     """Encode a real prompt to token IDs.
 
@@ -1349,6 +1355,11 @@ def tokenize_real_prompt(
     immediate EOS at decode step 0 because the model never saw an
     end-of-turn marker. `chat_template=False` encodes the literal text
     and is the right choice for base (non-IT) models.
+
+    `enable_thinking=False` passes `enable_thinking=False` to
+    `apply_chat_template`, which for Qwen3-series models pre-fills the
+    `<think></think>` block so the model skips reasoning and generates
+    the answer directly.  Ignored when `chat_template=False`.
     """
     if chat_template:
         if not hasattr(tokenizer, "apply_chat_template"):
@@ -1356,10 +1367,14 @@ def tokenize_real_prompt(
                 "tokenizer does not expose apply_chat_template; "
                 "rerun with --no-real-prompt-chat-template for raw encoding"
             )
+        kwargs: dict[str, Any] = {}
+        if not enable_thinking:
+            kwargs["enable_thinking"] = False
         encoded = tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
             tokenize=True,
             add_generation_prompt=True,
+            **kwargs,
         )
         return [int(token) for token in encoded]
     return [int(token) for token in tokenizer.encode(prompt)]
@@ -1437,6 +1452,7 @@ def build_real_prompts(
     artifact_root: Path,
     *,
     chat_template: bool = True,
+    enable_thinking: bool = True,
 ) -> list[dict[str, Any]]:
     """Build prompt_doc list from a real-text JSONL suite.
 
@@ -1445,6 +1461,7 @@ def build_real_prompts(
     `prompt_suite_id` carried on every row; the suite case ids become
     the `prompt_case_id`. `chat_template=True` (the default) is required
     for instruction-tuned models; pass `False` for base/raw models.
+    `enable_thinking=False` disables Qwen3-series think mode.
     """
     cases = load_real_prompt_suite(suite_path)
     suite_id = Path(suite_path).stem
@@ -1453,7 +1470,8 @@ def build_real_prompts(
     prompts: list[dict[str, Any]] = []
     for case in cases:
         tokens = tokenize_real_prompt(
-            tokenizer, case.prompt, chat_template=chat_template
+            tokenizer, case.prompt, chat_template=chat_template,
+            enable_thinking=enable_thinking,
         )
         prompts.append(
             write_real_prompt_tokens(
@@ -2595,14 +2613,18 @@ def axengine_one_run(
     *,
     capture_output_token_ids: bool = False,
     server_pid: int | None = None,
+    sampler: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     request_started = time.perf_counter()
     first_output_wall_s: float | None = None
+    sampling_dict: dict[str, Any] = {"ignore_eos": True}
+    if sampler:
+        sampling_dict.update(sampler)
     payload = json.dumps(
         {
             "input_tokens": tokens,
             "max_output_tokens": generation_tokens,
-            "sampling": {"ignore_eos": True},
+            "sampling": sampling_dict,
         }
     ).encode()
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
@@ -2810,6 +2832,7 @@ def bench_axengine(
     capture_output_token_ids: bool = False,
     server_pid: int | None = None,
     prefix_cache_enabled: bool = False,
+    sampler: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     engine_key = engine_key_override or (
         AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
@@ -2823,7 +2846,7 @@ def bench_axengine(
         f"kv_compression={kv_compression}",
         file=sys.stderr,
     )
-    axengine_one_run(port, tokens, generation_tokens, server_pid=server_pid)
+    axengine_one_run(port, tokens, generation_tokens, server_pid=server_pid, sampler=sampler)
     if cooldown > 0:
         time.sleep(cooldown)
 
@@ -2835,6 +2858,7 @@ def bench_axengine(
             generation_tokens,
             capture_output_token_ids=capture_output_token_ids,
             server_pid=server_pid,
+            sampler=sampler,
         )
         runs.append(run)
         prefill_label = (
@@ -2884,7 +2908,7 @@ def bench_axengine(
             telemetry=ngram_summary,
             ax_mlx_telemetry=ax_mlx_telemetry,
         ),
-        "ax_decode_claim_mode": ax_decode_claim_mode(direct_mode, sampler=None),
+        "ax_decode_claim_mode": ax_decode_claim_mode(direct_mode, sampler=sampler),
         "prompt_contract": "mlx_lm_random_tokens_seed_0",
         "random_seed": MLX_LM_RANDOM_SEED,
         "batch_size": 1,
@@ -2902,16 +2926,10 @@ def bench_axengine(
         "ngram_acceleration_telemetry": ngram_summary,
         "ngram_accept_at_depth": summarize_ngram_accept_at_depth(ngram_summary),
         # Sampler config (PRD §7.1 release-claim artifact requirement).
-        # The current bench harness runs greedy by default; the field is
-        # always present and the canonical signature equals "greedy" when
-        # no sampling knob is active.
-        "sampler_settings": None,
+        # Greedy by default; non-None when --ax-sampling is active.
+        # canonical signature equals "greedy" when no knob is set.
+        "sampler_settings": canonical_sampler_signature(sampler) if sampler else "greedy",
         # Row identity block + same-policy baseline pointer (PRD §8 Phase 6).
-        # Direct rows record their own identity in
-        # ``ax_decode_same_policy_baseline_identity`` because they ARE the
-        # baseline; n-gram rows point at the matching direct row's identity
-        # (constructed from the same prompt + seed + budget, so the two
-        # identities round-trip equal under ``canonical_*`` helpers).
         "ax_decode_row_identity": build_row_identity(
             model_id=(
                 model_metadata.get("model_family")
@@ -2921,7 +2939,7 @@ def bench_axengine(
             tokens=tokens,
             seed=MLX_LM_RANDOM_SEED,
             max_output_tokens=generation_tokens,
-            sampler=None,
+            sampler=sampler,
         ),
         "ax_decode_same_policy_baseline_identity": build_row_identity(
             model_id=(
@@ -2932,7 +2950,7 @@ def bench_axengine(
             tokens=tokens,
             seed=MLX_LM_RANDOM_SEED,
             max_output_tokens=generation_tokens,
-            sampler=None,
+            sampler=sampler,
         ),
         "ax_mlx_telemetry": ax_mlx_telemetry,
         "ax_mlx_decode_route": summarize_ax_mlx_decode_route(ax_mlx_telemetry),
@@ -3657,6 +3675,18 @@ def main() -> None:
             "Use this flag only for base / non-IT models."
         ),
     )
+    parser.add_argument(
+        "--no-thinking",
+        dest="enable_thinking",
+        action="store_false",
+        default=True,
+        help=(
+            "Pass enable_thinking=False to apply_chat_template. For Qwen3-series "
+            "models this pre-fills the <think></think> block so the model skips "
+            "reasoning and generates answers directly. Matches MTPLX's default "
+            "enable_thinking=false runtime setting."
+        ),
+    )
     parser.add_argument("--generation-tokens", type=int, default=DEFAULT_GENERATION_TOKENS)
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN)
@@ -3746,6 +3776,19 @@ def main() -> None:
             "Run ax-engine twice: direct same-policy first, then n-gram "
             f"acceleration. Emits {AX_ENGINE_DIRECT_KEY} and "
             f"{AX_ENGINE_NGRAM_ACCEL_KEY}."
+        ),
+    )
+    parser.add_argument(
+        "--ax-sampling",
+        type=json.loads,
+        default=None,
+        metavar="JSON",
+        help=(
+            "JSON object of extra sampling knobs sent in every AX HTTP request "
+            "(e.g. '{\"temperature\": 0.6, \"top_p\": 0.95, \"top_k\": 20}'). "
+            "Omit for greedy (default). Non-greedy rows are labeled "
+            "sampling_not_distribution_exact and cannot be promoted as "
+            "distribution-exact baselines."
         ),
     )
     parser.add_argument(
@@ -4146,6 +4189,7 @@ def main() -> None:
             args.model_dir,
             prompt_artifact_root,
             chat_template=args.real_prompt_chat_template,
+            enable_thinking=args.enable_thinking,
         )
     else:
         prompts = build_reference_prompts(
@@ -4419,6 +4463,7 @@ def main() -> None:
                             capture_output_token_ids=args.capture_output_token_ids,
                             server_pid=proc.pid,
                             prefix_cache_enabled=args.ax_enable_prefix_cache,
+                            sampler=args.ax_sampling,
                         )
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size

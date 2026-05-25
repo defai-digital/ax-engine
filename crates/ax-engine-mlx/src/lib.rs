@@ -5,6 +5,7 @@ pub mod generate;
 pub mod kv_cache;
 pub(crate) mod linear_attention_ops;
 pub mod model;
+pub mod mtp;
 pub mod ngram_accel;
 pub mod runner;
 pub mod sampling;

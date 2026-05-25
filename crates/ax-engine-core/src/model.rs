@@ -111,6 +111,8 @@ pub enum NativeTensorRole {
     FinalNorm,
     LmHead,
     RopeFreqs,
+    /// Catch-all for extension roles (e.g. MTP sidecar tensors) not yet enumerated here.
+    #[serde(other)]
     Other,
 }
 
@@ -1045,7 +1047,9 @@ fn validate_native_model_manifest(
         validate_quantized_source_path(root_dir, tensor)?;
         validate_tensor_quantization(tensor)?;
 
-        if tensor.role.requires_layer_index() {
+        if tensor.role == NativeTensorRole::Other {
+            // Extension/sidecar roles (e.g. MTP): skip layer_index validation entirely.
+        } else if tensor.role.requires_layer_index() {
             let Some(layer_index) = tensor.layer_index else {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!("tensor {} requires layer_index", tensor.name),

@@ -7,7 +7,8 @@ use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
-    ModelConfig, TurboQuantModelDecodeContext, forward, forward_argmax_with_turboquant_context,
+    ModelConfig, TurboQuantModelDecodeContext, forward, forward_all_positions_with_final_hidden,
+    forward_argmax_with_turboquant_context,
     forward_lazy_single_argmax_with_turboquant_context, forward_with_turboquant_context,
 };
 use crate::sampling::{
@@ -253,6 +254,124 @@ pub fn chunked_prefill(
             // Drain GPU queue asynchronously. logits depends on the KV cache
             // transitively (via SDPA), so evaluating logits materialises the
             // appended KV slice_update nodes and prevents O(N²) graph growth.
+            async_eval(&[&logits]);
+        }
+    }
+}
+
+/// Like `chunked_prefill` but also returns the pre-norm hidden at the last
+/// prompt position.  Used by the MTP warmup path to prime the MTP head's KV
+/// cache with one entry from the prefill context before decode starts.
+///
+/// The final chunk is always processed with `forward_all_positions_with_final_hidden`
+/// so the hidden is available even when sampling is greedy.  The remainder of
+/// the implementation is identical to `chunked_prefill`.
+pub fn chunked_prefill_with_final_hidden(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    chunk_size: usize,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+) -> (u32, MlxArray) {
+    use mlx_sys::MlxDtype;
+    let sampling = sampling_request.params;
+    let chunk_size = chunk_size.max(1);
+    let total = prompt_tokens.len();
+
+    // cache_only_prefix_len fast path: no final-hidden support (short path).
+    // Fall back to the normal chunked_prefill for this case and return a
+    // placeholder hidden (zero-shaped).  MTP warmup skips None returns;
+    // this case is rare for MTP-benchmark runs (all tokens processed as a
+    // single mlx-lm-style batch).
+    let cache_only_prefix_len = mlx_lm_style_cache_only_prefix_len(total, sampling);
+    if cache_only_prefix_len > 0 {
+        let mut offset = 0;
+        while offset < cache_only_prefix_len {
+            let end = (offset + chunk_size).min(cache_only_prefix_len);
+            let chunk = &prompt_tokens[offset..end];
+            let _logits = forward_argmax_with_turboquant_context(
+                cfg, weights, chunk, cache, cache.seq_len, None,
+            );
+            cache.seq_len += chunk.len();
+            eval_kv_refs(cache);
+            clear_cache();
+            offset = end;
+        }
+        // Use a single-token decode step for the last position: extract
+        // the final hidden by running a full forward with hidden output.
+        let last_tok = prompt_tokens[cache_only_prefix_len];
+        let last_offset = cache.seq_len;
+        let (logits_all, final_hidden) =
+            forward_all_positions_with_final_hidden(cfg, weights, &[last_tok], cache, last_offset);
+        cache.seq_len += 1;
+        let logits_row = {
+            use mlx_sys::{astype, reshape, slice};
+            let lv = slice(&logits_all, &[0, 0], &[1, cfg.vocab_size as i32], &[1, 1], None);
+            let lv = astype(&lv, MlxDtype::Float32, None);
+            reshape(&lv, &[cfg.vocab_size as i32], None)
+        };
+        let token_arr = argmax(&logits_row, None);
+        eval_kv_refs(cache);
+        eval(&[&token_arr, &final_hidden]);
+        clear_cache();
+        let tok = token_arr.data_u32()[0];
+        return (tok, final_hidden);
+    }
+
+    let mut offset = 0;
+    loop {
+        let end = (offset + chunk_size).min(total);
+        let chunk = &prompt_tokens[offset..end];
+        let is_final_chunk = end == total;
+        let chunk_offset = cache.seq_len;
+
+        if is_final_chunk {
+            // Always use forward_all_positions_with_final_hidden for the last chunk
+            // so we get the hidden even for greedy sampling.
+            let (logits_all, final_hidden) =
+                forward_all_positions_with_final_hidden(cfg, weights, chunk, cache, chunk_offset);
+            cache.seq_len += chunk.len();
+
+            let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+                eval_with_kv_refs(&logits_all, cache);
+                // Extract last-row logits [vocab].
+                let seq = chunk.len() as i32;
+                let vocab = cfg.vocab_size as i32;
+                let last_logits = {
+                    use mlx_sys::slice;
+                    slice(&logits_all, &[seq - 1, 0], &[seq, vocab], &[1, 1], None)
+                };
+                let last_logits = {
+                    use mlx_sys::reshape;
+                    reshape(&last_logits, &[vocab], None)
+                };
+                let last_logits_f32 = {
+                    use mlx_sys::astype;
+                    astype(&last_logits, MlxDtype::Float32, None)
+                };
+                eval(&[&last_logits_f32]);
+                let logits_data = last_logits_f32.data_f32();
+                sample_categorical(logits_data, sampling, sampling_request.repetition_tokens, rng)
+            } else {
+                let token_arr = argmax(&logits_all, None);
+                eval_with_kv_refs(&token_arr, cache);
+                token_arr.data_u32()[0]
+            };
+            // Materialize final_hidden before clear_cache(): its computation graph
+            // shares intermediate buffers with logits_all; those buffers may be
+            // returned to the pool by clear_cache() before the warmup consumer
+            // gets a chance to evaluate the lazy slice.
+            eval(&[&final_hidden]);
+            clear_cache();
+            return (tok, final_hidden);
+        } else {
+            let logits = forward_argmax_with_turboquant_context(
+                cfg, weights, chunk, cache, chunk_offset, None,
+            );
+            cache.seq_len += chunk.len();
+            offset = end;
             async_eval(&[&logits]);
         }
     }
