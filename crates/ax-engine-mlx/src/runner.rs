@@ -6,7 +6,7 @@ use std::thread::{self, ThreadId};
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxStream, add, astype, clear_cache, divide, enable_compile,
+    MlxArray, MlxDtype, MlxStream, add, astype, clear_cache, divide, enable_compile, eval,
     max_recommended_working_set_size, multiply, power, set_wired_limit, slice, softmax, sum_axis,
     take,
 };
@@ -3923,6 +3923,7 @@ impl MlxRunner {
             }
             ExecutionMode::Decode => {
                 let decode_started = Instant::now();
+                let final_by_max_output = generated_len.saturating_add(1) >= max_output;
                 let tok = if generated_len == 0 {
                     if let Some(tok) = state.cached_prefill_output_token.take() {
                         kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
@@ -3938,6 +3939,7 @@ impl MlxRunner {
                             sampling,
                             is_greedy,
                             terminal_token_ids,
+                            final_by_max_output,
                         )
                     }
                 } else {
@@ -3947,6 +3949,7 @@ impl MlxRunner {
                         sampling,
                         is_greedy,
                         terminal_token_ids,
+                        final_by_max_output,
                     )
                 };
                 state
@@ -4577,6 +4580,7 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
         is_greedy: bool,
         terminal_token_ids: &[u32],
+        final_by_max_output: bool,
     ) -> u32 {
         // Serve pre-verified bonus tokens without re-running the model.
         // (Bonus tokens only exist on the n-gram acceleration path; the direct pipeline
@@ -4596,6 +4600,13 @@ impl MlxRunner {
         // step returns (and the first SSE event fires) without waiting for the
         // decode graph construction.
         if self.disable_ngram_acceleration && is_greedy {
+            if final_by_max_output && state.pending_direct.is_some() {
+                let pending = state
+                    .pending_direct
+                    .take()
+                    .expect("direct pipeline final step requires pending_direct");
+                return self.run_direct_pipeline_finish_pending(state, pending);
+            }
             if state.pending_direct.is_some() {
                 return self.run_direct_pipeline_continue(state);
             }
@@ -4603,6 +4614,9 @@ impl MlxRunner {
                 .next_model_last_token
                 .or_else(|| input_tokens.last().copied())
                 .unwrap_or(0);
+            if final_by_max_output {
+                return self.run_direct_pipeline_bootstrap_final(state, last_token);
+            }
             return self.run_direct_pipeline_bootstrap(state, last_token);
         }
 
@@ -4654,6 +4668,52 @@ impl MlxRunner {
             .decode_telemetry
             .record_direct_bootstrap(elapsed_us(bootstrap_started));
         self.run_direct_pipeline_once(state, bootstrap_token)
+    }
+
+    fn run_direct_pipeline_bootstrap_final(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+    ) -> u32 {
+        let bootstrap_started = Instant::now();
+        let turboquant_context = self.turboquant_model_decode_context();
+        let bootstrap_token = start_direct_pipeline_with_turboquant_context(
+            &self.cfg,
+            &self.weights,
+            last_token,
+            &mut state.cache,
+            turboquant_context.as_ref(),
+        );
+        state
+            .decode_telemetry
+            .record_direct_bootstrap(elapsed_us(bootstrap_started));
+        self.run_direct_pipeline_finish_pending(state, bootstrap_token)
+    }
+
+    fn run_direct_pipeline_finish_pending(
+        &self,
+        state: &mut RequestState,
+        pending: MlxArray,
+    ) -> u32 {
+        let branch_started = Instant::now();
+        let pending_eval_started = Instant::now();
+        eval(&[&pending]);
+        let pending_eval_wall_us = elapsed_us(pending_eval_started);
+        let pending_read_started = Instant::now();
+        let tok = pending.first_u32_unchecked();
+        let pending_read_wall_us = elapsed_us(pending_read_started);
+        state
+            .decode_telemetry
+            .record_direct_pipeline(elapsed_us(branch_started));
+        state
+            .decode_telemetry
+            .record_direct_pipeline_timings(DirectPipelineTimings {
+                pending_eval_wall_us,
+                pending_read_wall_us,
+                ..DirectPipelineTimings::default()
+            });
+        state.decode_telemetry.record_production_decode_eval();
+        tok
     }
 
     fn run_direct_pipeline_once(&self, state: &mut RequestState, bootstrap_token: MlxArray) -> u32 {
