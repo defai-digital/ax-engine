@@ -761,6 +761,10 @@ impl NgramAccelerationTelemetry {
                 self.fallback_linear_no_draft_steps =
                     self.fallback_linear_no_draft_steps.saturating_add(1);
             }
+            NgramRequestDisableReason::LinearInitialNoDraft => {
+                self.fallback_linear_no_draft_steps =
+                    self.fallback_linear_no_draft_steps.saturating_add(1);
+            }
         }
     }
 
@@ -2674,6 +2678,7 @@ enum NgramRequestDisableReason {
     None,
     ShortOutputBudget,
     LinearNoDraft,
+    LinearInitialNoDraft,
 }
 
 impl RequestState {
@@ -5283,7 +5288,7 @@ impl MlxRunner {
         state.ngram_request_disable_reason = if short_output_budget {
             NgramRequestDisableReason::ShortOutputBudget
         } else if linear_initial_prompt_without_draft {
-            NgramRequestDisableReason::LinearNoDraft
+            NgramRequestDisableReason::LinearInitialNoDraft
         } else {
             NgramRequestDisableReason::None
         };
@@ -5604,18 +5609,8 @@ fn extend_prompt_prefix_tokens(
         state.prompt_prefix_tokens.truncate(expected_start);
     } else if state.prompt_prefix_tokens.len() < expected_start {
         state.prompt_prefix_tokens = item.reused_prefix_token_slice.clone();
-        // Re-seed the n-gram table with the rehydrated reused prefix so the
-        // drafter sees the full prompt context, not just freshly-prefilled chunks.
-        state.ngram.feed(&state.prompt_prefix_tokens);
     }
     state.prompt_prefix_tokens.extend_from_slice(token_ids);
-    // Feed prompt tokens into the n-gram drafter at prefill time. Without this
-    // the table starts decode empty and only proposes from self-emitted output,
-    // which collapses to zero acceleration on models that generate coherent
-    // (non-repeating) decode from synthetic random prompts (e.g. Qwen 3.6 27B).
-    // Prompt-seeded n-grams are how the literature's "input-output overlap"
-    // wins (summarization, QA, edit/refactor) actually materialize.
-    state.ngram.feed(token_ids);
 }
 
 fn full_prefill_recompute_tokens_for_warmup_fallback(
@@ -8569,6 +8564,28 @@ mod tests {
         assert_eq!(
             state.ngram_request_disable_reason,
             NgramRequestDisableReason::ShortOutputBudget
+        );
+    }
+
+    #[test]
+    fn linear_attention_reenable_keeps_initial_no_draft_disable_closed() {
+        let mut state = RequestState::new(1, RequestId(7));
+        state.ngram_acceleration_disabled_for_request = true;
+        state.ngram_request_disable_reason = NgramRequestDisableReason::LinearInitialNoDraft;
+        state
+            .ngram
+            .feed(&[1, 2, 3, 4, 9, 1, 2, 3, 4, 9, 1, 2, 3, 4]);
+
+        maybe_reenable_linear_ngram_from_fallback_output(
+            &mut state,
+            NgramPolicyVariant::MajorityRecency,
+            true,
+        );
+
+        assert!(state.ngram_acceleration_disabled_for_request);
+        assert_eq!(
+            state.ngram_request_disable_reason,
+            NgramRequestDisableReason::LinearInitialNoDraft
         );
     }
 
