@@ -807,6 +807,21 @@ measured 34.199 tok/s on the same p128/g128 shape, effectively identical to the
 clean n-gram recheck and still far below the 40.096 tok/s target. No default
 change is promoted.
 
+Another dirty-code probe extended the existing `add_rms_norm_pair` opt-in to
+Qwen linear-attention layers, fusing the post-attention residual add and
+pre-FFN RMSNorm for the 48 linear layers. This directly targeted the
+`post_attn_residual_norm` profile bucket and mirrors the existing standard
+full-attention opt-in surface. It did not improve the blocker:
+
+- Qwen 3.6 27B 4-bit p128/g128 with `AX_MLX_DENSE_ADD_RMS_NORM_PAIR=1`:
+  34.250 tok/s
+- clean n-gram recheck context: 34.210 tok/s
+- current `mlx_lm` reference: 33.980 tok/s
+- target: 40.096 tok/s
+
+The result is below the 2% acceptance threshold and far below the 1.18x goal.
+The code probe was removed.
+
 The next inspected fusion boundary was the decode-only linear-attention
 recurrent update followed by `RMSNormGated(y, z)`. This is not directly
 fusible with the current GatedDelta decode kernel because the kernel's
@@ -827,6 +842,7 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-mode-probe/qwen3_6-27b-4bit-p128-g128-direct.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ngram-clean-recheck/qwen3_6-27b-4bit-p128-g128-ngram.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-dense-qmatmul-rms-ab/qwen3_6-27b-4bit-p128-g128-qmatmul-rms-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-add-rms-pair-probe/qwen3_6-27b-4bit-p128-g128-linear-add-rms-pair.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-gateddelta-tile-probe/qwen3_6-27b-4bit-p128-g128-tile8.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-gateddelta-tile-probe/qwen3_6-27b-4bit-p128-g128-tile16.json`
 
