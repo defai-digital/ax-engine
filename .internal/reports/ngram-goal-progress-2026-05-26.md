@@ -697,6 +697,29 @@ The runner already checks MTP before n-gram and before direct fallback when
 for this checkpoint. The missing sidecar explains why the p128/g64 row keeps
 all `ax_mtp_*` counters at zero.
 
+A local sidecar probe used `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed`, whose
+main model shards resolve to the same local Hugging Face blob hashes as
+`mlx-community/Qwen3.6-27B-4bit`, but adds `mtp.safetensors` and
+`mtplx_runtime.json`. This activates AX MTP, but it is slower than the direct
+fallback and much slower than the 40.096 tok/s target for the blocker row.
+
+| Mode | Decode tok/s | MTP draft tokens | MTP accepted tokens | Decode route |
+| --- | ---: | ---: | ---: | --- |
+| default depth | 21.644 | 102 | 28 | `mixed` |
+| `--ax-mtp-max-depth 1` | 27.971 | 42 | 20 | `mixed` |
+
+The depth-1 cap reduces MTP overhead, but still loses to the current
+`mlx-community/Qwen3.6-27B-4bit` direct fallback at about 34.5 tok/s. The
+default-depth run spent 1.646s in MTP verify eval, 1.010s in rollback, and
+0.241s in draft work; the depth-1 run still spent 1.415s in verify eval,
+0.704s in rollback, and 0.097s in draft work. Existing AX MTP therefore does
+not provide a usable verified-draft fallback for the random-token Qwen blocker.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-mtplx-speed-source-probe/qwen3_6-27b-mtplx-speed-p128-g64.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-mtplx-speed-source-probe/qwen3_6-27b-mtplx-speed-p128-g64-depth1.json`
+
 TurboQuant fused decode was also checked as an existing direct-fallback speed
 surface. A focused Qwen 3.6 27B 4-bit p128/g64 run used
 `--experimental-mlx-kv-compression turboquant-fused-experimental` with
