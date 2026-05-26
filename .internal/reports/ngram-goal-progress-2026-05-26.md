@@ -1035,6 +1035,33 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-decode-profile-current/qwen3_6-27b-4bit-p128-g64-decode-profile.json`
 
+### Qwen linear layer compile-with-state probe
+
+A dirty-code probe wrapped each Qwen linear-attention decode layer in an
+`mlx_compile` closure, using the conv state and recurrent state as explicit
+inputs/outputs. This tested a larger boundary than the earlier
+`rms_norm_gated -> out_proj` compile probe and follows the remaining
+`mlx_compile` direction from the next-target list.
+
+The route was opt-in via `AX_MLX_QWEN_LINEAR_LAYER_COMPILE=1`, decode-only, and
+restricted to dense non-profiling linear-attention layers with existing cache
+state. Validation while the probe existed:
+
+- `cargo fmt --check`
+- `cargo test -p ax-engine-mlx linear_attention_forward_returns_hidden_shape_and_updates_cache --quiet`
+- `cargo test -p ax-engine-mlx qwen35_linear_attention_config_matches_reference_interval --quiet`
+- `cargo build -p ax-engine-server --release`
+
+Real Qwen 3.6 27B 4-bit p128/g128 throughput measured 34.208 tok/s. This is
+effectively identical to the clean n-gram recheck context, still far below the
+40.096 tok/s target, and it increased peak process memory to about 14.16 GB.
+The run stayed on `linear_no_draft_direct_pipeline_fallback` with zero draft
+attempts. The probe code was removed.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-layer-compile-probe/qwen3_6-27b-4bit-p128-g128-linear-layer-compile.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
