@@ -221,7 +221,7 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; ax-base=benchmarks/results/mlx-inference/2026-05-25-ax-only-direct-mode-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; reference@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/; ax-overlay@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; ax-base=benchmarks/results/mlx-inference/2026-05-25-ax-only-direct-mode-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; reference@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/; ax-overlay@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/; ax-overlay@p2048=benchmarks/results/mlx-inference/2026-05-26-qwen35-p2048-ngram-clean-recheck/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
@@ -232,7 +232,9 @@ rows and refreshed AX direct-mode rows for the 12 Gemma 4 and Qwen 3.6 rows
 shown below come from
 `benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/`, with a
 clean current-commit Qwen 3.6 27B 8-bit prompt=128 recheck overlaid from
-`benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/`.
+`benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/`
+and a Qwen 3.6 35B A3B 4-bit prompt=2048 n-gram recheck overlaid from
+`benchmarks/results/mlx-inference/2026-05-26-qwen35-p2048-ngram-clean-recheck/`.
 The default AX n-gram column remains sourced from
 `benchmarks/results/mlx-inference/2026-05-25-ax-only-direct-mode-refresh/`
 where no newer n-gram measurement exists for the same prompt and generation
@@ -384,7 +386,7 @@ collapsed output loop.
 |  |  | 2048 | 12.7 | 17.8 | **18.0 (+1.0%)** | 18.2 (-1.3%) |
 | Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 134.6 | **159.0 (+18.1%)** | **159.0 (+13.5%)** |
 |  |  | 512 | 108.2 | 131.9 | **156.8 (+18.8%)** | **157.4 (+15.3%)** |
-|  |  | 2048 | 105.7 | 131.7 | **154.9 (+17.6%)** | **155.3 (+15.5%)** |
+|  |  | 2048 | 105.7 | 131.7 | **154.9 (+17.6%)** | **233.4 (+77.3%)** |
 
 Qwen 3.6 27B 4-bit at prompt=2048 originally produced zero decode tokens
 because 4-bit quantization noise pushed an EOS token to argmax at decode
