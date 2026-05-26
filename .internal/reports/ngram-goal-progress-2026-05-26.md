@@ -430,6 +430,46 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ffn-gate-up-pack-probe/qwen3_6-27b-4bit-p128-pack-off.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ffn-gate-up-pack-probe/qwen3_6-27b-8bit-p128-pack-off.json`
 
+### Linear-attention projection packing kill-switch A/B
+
+Upstream `mlx_lm` Qwen3.5 keeps the linear-attention projections split as
+`qkv`, `z`, `b`, and `a`. AX's default load-time pack materializes compatible
+split weights into `qkvz` and `ba`. A focused kill-switch probe tested
+`AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS=0`.
+
+The 4-bit rows improved slightly, but the result is not enough for the goal and
+is not clean enough to promote across the Qwen family. The split route also
+raises peak memory because the packed replacement is no longer used.
+
+| Model | Prompt | pack-off tok/s | current reference tok/s | Direction |
+| --- | ---: | ---: | ---: | --- |
+| Qwen 3.6 27B 4-bit | 128 | 34.428 | 34.211 | +0.6% |
+| Qwen 3.6 27B 4-bit | 512 | 34.469 | 34.129 | +1.0% |
+| Qwen 3.6 27B 4-bit | 2048 | 34.069 | 33.821 | +0.7% |
+| Qwen 3.6 27B 5-bit | 128 | 28.416 | 28.226 | +0.7% |
+| Qwen 3.6 27B 5-bit | 512 | 28.523 | 28.335 | +0.7% |
+| Qwen 3.6 27B 5-bit | 2048 | 28.011 | 28.126 | -0.4% |
+| Qwen 3.6 27B 6-bit | 128 | 25.006 | 24.891 | +0.5% |
+| Qwen 3.6 27B 6-bit | 512 | 25.148 | 25.306 | -0.6% |
+| Qwen 3.6 27B 6-bit | 2048 | 23.511 | 23.990 | -2.0% |
+| Qwen 3.6 27B 8-bit | 128 | 18.902 | 18.774 | +0.7% |
+
+An isolated `AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_INPUTS=0` probe on 4-bit
+p128 measured 34.174 tok/s while keeping peak memory near the packed route, so
+the useful signal is not just disabling the C++ inputs wrapper. No default
+change is promoted from this probe.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-4bit-p128-pack-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-4bit-p512-p2048-pack-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-5bit-p128-pack-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-5bit-p512-p2048-pack-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-6bit-p128-pack-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-6bit-p512-p2048-pack-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-8bit-p128-pack-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-inputs-off-probe/qwen3_6-27b-4bit-p128-inputs-off.json`
+
 ### QK norm/ROPE direct C++ route
 
 The opt-in `AX_MLX_DIRECT_CPP_QK_NORM_ROPE=1` route was rechecked after the
