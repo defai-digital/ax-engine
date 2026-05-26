@@ -221,7 +221,7 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; ax-base=benchmarks/results/mlx-inference/2026-05-25-ax-only-direct-mode-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; reference@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/; ax-overlay@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/; ax-overlay@p2048=benchmarks/results/mlx-inference/2026-05-26-qwen35-p2048-ngram-clean-recheck/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; ax-base=benchmarks/results/mlx-inference/2026-05-25-ax-only-direct-mode-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; reference@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/; ax-overlay@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/; ax-decode-overlay@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-ngram-no-draft-clean-recheck/; ax-overlay@p2048=benchmarks/results/mlx-inference/2026-05-26-qwen35-p2048-ngram-clean-recheck/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
@@ -233,6 +233,8 @@ shown below come from
 `benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/`, with a
 clean current-commit Qwen 3.6 27B 8-bit prompt=128 recheck overlaid from
 `benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/`
+and a Qwen 3.6 27B 8-bit prompt=128 n-gram no-draft recheck overlaid from
+`benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-ngram-no-draft-clean-recheck/`
 and a Qwen 3.6 35B A3B 4-bit prompt=2048 n-gram recheck overlaid from
 `benchmarks/results/mlx-inference/2026-05-26-qwen35-p2048-ngram-clean-recheck/`.
 The default AX n-gram column remains sourced from
@@ -381,7 +383,7 @@ collapsed output loop.
 | Qwen 3.6 27B | 6-bit | 128 | 21.3 | 24.4 | **24.5 (+0.6%)** | **24.5 (+2.2%)** |
 |  |  | 512 | 21.3 | 24.3 | **24.5 (+0.7%)** | 24.5 (-1.2%) |
 |  |  | 2048 | 15.4 | 24.1 | **24.4 (+1.1%)** | 24.3 (-1.2%) |
-| Qwen 3.6 27B | 8-bit | 128 | 18.3 | 18.2 | **18.2 (+0.3%)** | 18.4 (-1.7%) |
+| Qwen 3.6 27B | 8-bit | 128 | 18.3 | 18.2 | **18.2 (+0.3%)** | 17.9 (-1.6%) |
 |  |  | 512 | 18.2 | 18.1 | **18.1 (+0.3%)** | 18.3 (-1.8%) |
 |  |  | 2048 | 12.7 | 17.8 | **18.0 (+1.0%)** | 18.2 (-1.3%) |
 | Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 134.6 | **159.0 (+18.1%)** | **159.0 (+13.5%)** |
