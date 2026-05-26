@@ -149,6 +149,19 @@ blocker probes, but still far below the +18% goal:
 - Qwen 3.6 27B 6-bit p512: 25.362 tok/s, up from 24.042 tok/s (+5.5%) and now
   above the 24.776 tok/s `mlx_lm` row, but still below the 29.236 tok/s target.
 
+A follow-up kernel-launch probe changed the retained RMSNorm+gate Metal route
+to launch one threadgroup lane per `HeadDim` instead of 256 lanes, because the
+Qwen blocker has `HeadDim=128` and the previous launch leaves half the lanes
+idle. This did not help the real p128/g128 blocker:
+
+- Qwen 3.6 27B 4-bit p128/g128: 34.244 tok/s
+- clean n-gram recheck context: 34.210 tok/s
+- current `mlx_lm` reference: 33.980 tok/s
+- target: 40.096 tok/s
+
+The result is below the 2% acceptance threshold and far below the 1.18x goal.
+The code probe was removed.
+
 The sequential post-commit sweep on `8ceae3ed9748846f2b4e3449e7a04462683c57c9`
 kept the same conclusion. The best non-passing improvement is Qwen 3.6 27B
 6-bit p128 at +8.3%; most other failing rows are still direct-fallback parity.
@@ -160,6 +173,7 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-probe/qwen3_6-27b-4bit-p128.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-probe/qwen3_6-27b-8bit-p128.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-probe/qwen3_6-27b-6bit-p512.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-launch-probe/qwen3_6-27b-4bit-p128-g128-rms-full-gate-headdim.json`
 
 ## Diagnostics
 
