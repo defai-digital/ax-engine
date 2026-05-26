@@ -1062,6 +1062,58 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-layer-compile-probe/qwen3_6-27b-4bit-p128-g128-linear-layer-compile.json`
 
+### Upstream async decode-loop parity checkpoint
+
+The remaining Qwen blocker was re-checked against upstream `mlx_lm`'s
+`generate_step` loop instead of assuming the AX direct fallback was missing a
+simple scheduling trick. Upstream runs:
+
+- `_step(y)` to build the next decode graph
+- `mx.async_eval(next_y, next_logprobs)` before yielding the current token
+- `mx.eval(y)` only for the first yielded token boundary
+
+AX's direct fallback already mirrors the same shape for greedy decode:
+
+- `start_direct_pipeline_with_turboquant_context` submits the first pending
+  argmax with `async_eval`
+- `advance_direct_pipeline_with_timings_and_turboquant_context` builds the next
+  graph from the lazy pending token, submits it with `async_eval`, then
+  materializes the previous pending token
+- Qwen random-token n-gram fallback uses this direct pipeline after the
+  request-local no-draft classification
+
+Current Qwen 3.6 27B 4-bit p128/g128 telemetry confirms the route is already the
+direct pipeline rather than a single-token synchronous loop:
+
+| Counter | Value |
+| --- | ---: |
+| `ax_mlx_decode_steps` | 127 |
+| `ax_mlx_direct_pipeline_steps` | 127 |
+| `ax_mlx_direct_pipeline_wall_us` | 3,736,428 |
+| `ax_mlx_direct_pipeline_forward_wall_us` | 243,528 |
+| `ax_mlx_direct_pipeline_async_eval_wall_us` | 3,491,480 |
+| `ax_mlx_direct_pipeline_pending_eval_wall_us` | 814 |
+| `ax_mlx_single_decode_steps` | 0 |
+| `ax_mlx_ngram_decode_steps` | 0 |
+
+This rules out a high-impact fix that only moves the token readback/eval
+boundary. The expensive part is still the submitted decode graph itself, and the
+row has zero n-gram draft attempts:
+
+- `ax_ngram_draft_attempts`: 0
+- `ax_ngram_accepted_tokens`: 0
+- `ax_ngram_request_disabled_steps`: 127
+- effective route: `linear_no_draft_direct_pipeline_fallback`
+
+The aligned remaining choices are therefore either a genuinely different
+verified draft source for the random-token contract, or a much larger model
+execution change that reduces the Qwen decode graph itself. Small eval-boundary
+or readback changes are not expected to close the 18% target gap.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ngram-clean-recheck/qwen3_6-27b-4bit-p128-g128-ngram.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
