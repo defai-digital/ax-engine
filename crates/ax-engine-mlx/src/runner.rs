@@ -4908,6 +4908,11 @@ impl MlxRunner {
             }
             if is_greedy {
                 state.ngram_disabled_steps = LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL;
+                // Same stale-lookahead hazard as the ngram-failure cooldown
+                // path: any pending_direct built during a prior cooldown cycle
+                // is now at the wrong cache position.
+                state.pending_direct = None;
+                state.direct_pipeline_emitted_tokens = 0;
                 state
                     .ngram_acceleration
                     .record_cooldown_event(LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL);
@@ -5541,6 +5546,12 @@ impl MlxRunner {
             state.ngram_posterior_mean(),
         ) {
             state.ngram_disabled_steps = disabled_steps;
+            // Any pending_direct from a previous cooldown cycle is now stale:
+            // the n-gram steps that just ran advanced cache.seq_len
+            // independently, so the lookahead array points at the wrong
+            // position. Force a Bootstrap on the first new cooldown step.
+            state.pending_direct = None;
+            state.direct_pipeline_emitted_tokens = 0;
             state
                 .ngram_acceleration
                 .record_cooldown_event(disabled_steps);
