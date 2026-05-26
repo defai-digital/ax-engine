@@ -467,6 +467,22 @@ layers under the default environment. Therefore the pack-off A/B above remains
 a valid kill-switch probe, and the split `model_config.linear_attention_projection_layout`
 field should not be treated as runtime proof.
 
+A follow-up dirty-code probe tried a narrower conditional change: keep
+linear-attention projection packing enabled generally, but skip it only for
+quantized 4-bit split Qwen linear-attention projections. This reproduced the
+small 4-bit pack-off signal but did not meet the bar for a default runtime
+change:
+
+- Qwen 3.6 27B 4-bit p128/g128: 34.442 tok/s
+- clean n-gram recheck context: 34.210 tok/s
+- current `mlx_lm` reference: 33.980 tok/s
+- delta versus clean n-gram context: about +0.7%
+- delta versus `mlx_lm`: about +1.4%
+- target: 40.096 tok/s
+
+The result is below the 2% acceptance threshold for a useful probe and far
+below the 1.18x goal. The code probe was removed.
+
 Artifacts:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-4bit-p128-pack-off.json`
@@ -477,6 +493,7 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-6bit-p512-p2048-pack-off.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-8bit-p128-pack-off.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-inputs-off-probe/qwen3_6-27b-4bit-p128-inputs-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-4bit-skip-probe/qwen3_6-27b-4bit-p128-g128-pack4-skip.json`
 
 ### Full-attention QKV projection packing kill-switch A/B
 
