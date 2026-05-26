@@ -2820,6 +2820,15 @@ fn seed_generation_ngram_from_prompt(state: &mut RequestState) {
         .feed_from_prompt(&state.prompt_prefix_tokens[feed_start..]);
 }
 
+fn seed_generation_ngram_from_prefill_output(
+    state: &mut RequestState,
+    prefill_output_token: Option<u32>,
+) {
+    if let Some(token) = prefill_output_token {
+        state.ngram.feed(&[token]);
+    }
+}
+
 /// Cache key for the embedding-forward compiled closure: thread- and
 /// shape-specific. MLX compiled closures are stream-registry sensitive, so a
 /// closure compiled on one worker thread must not be applied on another.
@@ -5253,6 +5262,7 @@ impl MlxRunner {
         // the first decode step and disabling n-gram acceleration for
         // LINEAR_NGRAM_RETRY_INTERVAL steps — wiping out most of the generation.
         seed_generation_ngram_from_prompt(state);
+        seed_generation_ngram_from_prefill_output(state, prefill_output_token);
 
         // Classify the full prompt once per generation. record_prompt_class is
         // max-merge friendly so re-entry from an unusual code path cannot
@@ -6890,6 +6900,26 @@ mod tests {
         assert!(
             suffix_only.ngram.predict(1).is_empty(),
             "feeding only the final prefill item loses the prompt context needed for deterministic warm_extend",
+        );
+    }
+
+    #[test]
+    fn generation_ngram_seed_includes_prefill_output_token() {
+        let mut state = RequestState::new(2, RequestId(13));
+        state.prompt_prefix_tokens = vec![1, 2, 3, 1, 2, 3];
+
+        seed_generation_ngram_from_prompt(&mut state);
+        assert_eq!(
+            state.ngram.predict(1),
+            vec![1],
+            "prompt tail predicts from the final prompt context before the first generated token is committed",
+        );
+
+        seed_generation_ngram_from_prefill_output(&mut state, Some(1));
+        assert_eq!(
+            state.ngram.predict(1),
+            vec![2],
+            "the prefill-sampled first output token must become part of the next decode context",
         );
     }
 

@@ -507,6 +507,39 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-attn-output-gate-probe/qwen3_6-27b-4bit-p128-linear-min1.json`
 
+### Prefill output n-gram feed fix
+
+The prefill step samples the first generated token before the decode loop
+starts, but the request-local n-gram table previously only received prompt
+tokens at generation initialization. Subsequent direct fallback decode steps
+fed their outputs, so the table was missing exactly the first generated token
+from its context window. The fix feeds `prefill_output_token` into the n-gram
+table after seeding the prompt tail. A focused unit test now verifies that the
+next prediction context advances from prompt tail to generated-token tail.
+
+Validation:
+
+- `cargo fmt --check`
+- `cargo test -p ax-engine-mlx generation_ngram_seed --quiet`
+- `cargo test -p ax-engine-mlx ngram --quiet`
+- `cargo build -p ax-engine-server --release`
+
+Qwen 3.6 27B 4-bit skip-`mlx_lm` probe:
+
+| prompt tokens | pre-fix postcommit | post-fix probe | change | n-gram accepted |
+| --- | ---: | ---: | ---: | ---: |
+| 128 | 34.192 tok/s | 34.211 tok/s | +0.06% | 0 |
+| 512 | 34.157 tok/s | 34.129 tok/s | -0.08% | 1 |
+| 2048 | 33.831 tok/s | 33.821 tok/s | -0.03% | 1 |
+
+This is kept as a state-correctness fix, not as a throughput fix. It does not
+change the remaining blocker: the random-token Qwen rows still lack enough
+accepted draft tokens to approach the 1.18x target.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-prefill-output-feed-probe/qwen3_6-27b-4bit.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
