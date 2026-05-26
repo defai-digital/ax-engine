@@ -47,6 +47,13 @@ hardware-level 3D manufacturing equivalent. "Quantum-inspired" techniques are
 allowed only as offline classical policy search that emits reproducible
 artifacts and promotes small static runtime rules after normal evidence gates.
 
+New raw MLX/Metal custom-kernel development is disabled for this performance
+track. Existing developed and active kernel paths may remain, be maintained, and
+receive correctness or integration fixes. This track may use microbenchmarks to
+measure scheduler, cache, speculation, sampler, existing-kernel, or MLX
+call-boundary overhead, but it must not propose new custom kernels or replacing
+Apple-maintained MLX/Metal kernels as an implementation route.
+
 ## Design Rules
 
 - Keep the serving runtime deterministic. Do not add request-time annealing,
@@ -63,6 +70,10 @@ artifacts and promotes small static runtime rules after normal evidence gates.
 - Keep scheduler logic independent from runner-local physical buffer details. The
   scheduler may consume route metadata and cache signals, but it must not depend
   on MLX pointer identity or compressed-buffer internals.
+- Do not use this ADR to justify new raw MLX/Metal custom-kernel development.
+  Existing developed kernel paths can be kept and maintained, but new kernel work
+  is out of scope even when a benchmark shows a bottleneck. Prefer MLX
+  graph/stream policy, cache layout, scheduling, or speculation changes first.
 - Keep public language neutral: use "cache-local serving", "speculative
   decoding", "prefix reuse", "offline policy search", or "autotuning". Reserve
   "Quantum OP" for internal planning only.
@@ -99,7 +110,11 @@ host, command, git state, prompt/decode shape, and completed-row status.
 - Negative search results are acceptable evidence when they show that a policy
   does not beat the baseline under correctness and quality constraints.
 - AX keeps its current product boundary: high-throughput Apple Silicon serving
-  above MLX, not a replacement for MLX kernels or a quantum runtime.
+  above MLX, not new replacement work for MLX kernels, Metal kernels, or a
+  quantum runtime.
+- Existing developed kernel paths are not removed by this ADR. They remain
+  governed by their current contracts and can receive maintenance, safety, and
+  integration fixes.
 
 ## Rejected Alternatives
 
@@ -119,8 +134,11 @@ behavior. Search belongs offline; serving consumes static rules.
 Rejected. AX cannot reproduce hardware stacking in software. The useful lesson is
 locality and reuse, expressed through cache, scheduler, and speculation policy.
 
-### Replace MLX kernels with custom kernels by default
+### Add new MLX/Metal custom kernels as part of this performance track
 
-Rejected. Custom kernels may be justified by microbenchmarks for a specific
-hotspot, but the default project boundary remains MLX-owned kernels and AX-owned
-runtime behavior above them.
+Rejected. New custom-kernel development is too risky for the cache-local
+speculative serving track. It expands correctness, portability, and maintenance
+risk while competing with the safer runtime-policy work that AX already owns.
+Existing developed and active kernel paths stay in place. Future new-kernel
+experiments, if ever reopened, require a separate ADR and must not be bundled
+into this work.

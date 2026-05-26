@@ -42,6 +42,9 @@ LLM serving:
 - No request-time annealing, Bayesian optimization, evolutionary search, or other
   live optimizer in the serving loop.
 - No claim that AX replaces MLX/Metal kernels.
+- No new raw MLX/Metal custom-kernel development or new custom-kernel
+  substitution as part of this PRD. Existing developed and active kernel paths may
+  stay and receive maintenance, correctness, or integration fixes.
 - No public performance update from a diagnostic or single-run artifact.
 - No scheduler dependency on MLX pointer identity or runner-private compressed KV
   buffer details.
@@ -59,6 +62,11 @@ LLM serving:
 - Existing MTP and n-gram rows show that effective throughput can improve on
   repetition-heavy workloads, but those wins are workload-sensitive and must be
   separated from raw kernel speed.
+- New raw MLX/Metal custom-kernel development is intentionally excluded. The
+  safer optimization surface is runtime policy above MLX: cache locality, prefix
+  reuse, speculation, scheduling, graph/stream reuse, and measurement quality.
+  Existing developed kernel paths remain available for maintenance and
+  measurement.
 - `.internal/planning/quantum-op.md` already defines quantum-inspired work as
   offline classical policy search and rejects public quantum runtime framing.
 - TurboQuant KV compression remains experimental and off by default; it may
@@ -157,6 +165,10 @@ Before a public performance claim changes, require:
   baseline for the same model, prompt, decode shape, and route.
 - Offline search outputs never change runtime defaults without a companion
   implementation slice and validation.
+- No acceptance criterion may depend on adding new MLX/Metal custom kernels. Rows
+  that use already-developed active kernel paths are acceptable only when the
+  improvement being claimed comes from this PRD's runtime-policy surface or when
+  the row is clearly labeled as existing-kernel maintenance evidence.
 - Public docs do not use quantum or hardware-manufacturing language as a
   performance explanation.
 
