@@ -1203,6 +1203,10 @@ struct DecodeTelemetry {
     direct_pipeline_pending_eval_wall_us: u32,
     direct_pipeline_pending_read_wall_us: u32,
     direct_pipeline_op_count: u64,
+    direct_pipeline_linear_attention_layer_ops: u64,
+    direct_pipeline_linear_attention_layer_count: u32,
+    direct_pipeline_full_attention_layer_ops: u64,
+    direct_pipeline_full_attention_layer_count: u32,
     single_decode_steps: u32,
     single_decode_wall_us: u32,
     ngram_decode_steps: u32,
@@ -1281,6 +1285,18 @@ impl DecodeTelemetry {
         self.direct_pipeline_pending_read_wall_us = self
             .direct_pipeline_pending_read_wall_us
             .saturating_add(timings.pending_read_wall_us);
+        self.direct_pipeline_linear_attention_layer_ops = self
+            .direct_pipeline_linear_attention_layer_ops
+            .saturating_add(timings.linear_attention_layer_ops);
+        self.direct_pipeline_linear_attention_layer_count = self
+            .direct_pipeline_linear_attention_layer_count
+            .saturating_add(timings.linear_attention_layer_count);
+        self.direct_pipeline_full_attention_layer_ops = self
+            .direct_pipeline_full_attention_layer_ops
+            .saturating_add(timings.full_attention_layer_ops);
+        self.direct_pipeline_full_attention_layer_count = self
+            .direct_pipeline_full_attention_layer_count
+            .saturating_add(timings.full_attention_layer_count);
     }
 
     fn record_single_decode(&mut self, wall_us: u32) {
@@ -1362,6 +1378,18 @@ impl DecodeTelemetry {
         self.direct_pipeline_op_count = self
             .direct_pipeline_op_count
             .saturating_add(other.direct_pipeline_op_count);
+        self.direct_pipeline_linear_attention_layer_ops = self
+            .direct_pipeline_linear_attention_layer_ops
+            .saturating_add(other.direct_pipeline_linear_attention_layer_ops);
+        self.direct_pipeline_linear_attention_layer_count = self
+            .direct_pipeline_linear_attention_layer_count
+            .saturating_add(other.direct_pipeline_linear_attention_layer_count);
+        self.direct_pipeline_full_attention_layer_ops = self
+            .direct_pipeline_full_attention_layer_ops
+            .saturating_add(other.direct_pipeline_full_attention_layer_ops);
+        self.direct_pipeline_full_attention_layer_count = self
+            .direct_pipeline_full_attention_layer_count
+            .saturating_add(other.direct_pipeline_full_attention_layer_count);
         self.single_decode_steps = self
             .single_decode_steps
             .saturating_add(other.single_decode_steps);
@@ -1449,6 +1477,22 @@ impl DecodeTelemetry {
             (
                 "ax_mlx_direct_pipeline_op_count",
                 u32::try_from(self.direct_pipeline_op_count).unwrap_or(u32::MAX),
+            ),
+            (
+                "ax_mlx_direct_pipeline_linear_attention_layer_ops",
+                u32::try_from(self.direct_pipeline_linear_attention_layer_ops).unwrap_or(u32::MAX),
+            ),
+            (
+                "ax_mlx_direct_pipeline_linear_attention_layer_count",
+                self.direct_pipeline_linear_attention_layer_count,
+            ),
+            (
+                "ax_mlx_direct_pipeline_full_attention_layer_ops",
+                u32::try_from(self.direct_pipeline_full_attention_layer_ops).unwrap_or(u32::MAX),
+            ),
+            (
+                "ax_mlx_direct_pipeline_full_attention_layer_count",
+                self.direct_pipeline_full_attention_layer_count,
             ),
             ("ax_mlx_single_decode_steps", self.single_decode_steps),
             ("ax_mlx_single_decode_wall_us", self.single_decode_wall_us),
@@ -3901,6 +3945,8 @@ impl MlxRunner {
                         &mut state,
                         max_output,
                         kv_compression_layer_eligible,
+                        Some(tok),
+                        is_greedy,
                     );
                     prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                 }
@@ -3932,6 +3978,8 @@ impl MlxRunner {
                             &mut state,
                             max_output,
                             kv_compression_layer_eligible,
+                            Some(tok),
+                            is_greedy,
                         );
                         tok
                     } else {
@@ -5142,6 +5190,8 @@ impl MlxRunner {
         state: &mut RequestState,
         max_output: u32,
         layer_eligible: Option<&[bool]>,
+        prefill_output_token: Option<u32>,
+        is_greedy: bool,
     ) -> Option<u32> {
         // Seed the n-gram table with the tail of the prompt.
         // Only the last NGRAM_PROMPT_FEED_MAX tokens are fed: long prompts
@@ -5241,10 +5291,36 @@ impl MlxRunner {
         let kv_compression_shadow_sync_wall_us =
             self.sync_turboquant_shadow_storage_if_needed(state, true, layer_eligible);
 
-        // The direct pipeline bootstrap (start_direct_pipeline_with_turboquant_context)
-        // is deferred to the first decode call in decode_one, so that prefill runner
-        // steps return before the decode graph is constructed.  This keeps the
-        // bootstrap's CPU graph-build time out of the TTFT measurement.
+        // Mirror mlx_lm.generate_step's first-yield boundary for the direct
+        // greedy baseline: before the first token is yielded, mlx_lm already
+        // builds and submits the next `_step(y)` via async_eval. Prime AX's
+        // direct pipeline at the same prefill/first-token boundary so the
+        // measured generation interval starts with a pending token instead of
+        // paying one decode-step bootstrap.
+        if self.disable_ngram_acceleration
+            && is_greedy
+            && max_output > 1
+            && let Some(prefill_tok) = prefill_output_token
+        {
+            let bootstrap_started = Instant::now();
+            let turboquant_context = self.turboquant_model_decode_context();
+            let bootstrap_token = start_direct_pipeline_with_turboquant_context(
+                &self.cfg,
+                &self.weights,
+                prefill_tok,
+                &mut state.cache,
+                turboquant_context.as_ref(),
+            );
+            state.pending_direct = Some(bootstrap_token);
+            // The first generated token was produced at the prefill boundary.
+            // `chunked_prefill` already mirrors mlx_lm's immediate post-first
+            // clear_cache; count that token so the direct decode loop does not
+            // clear again after token 2.
+            state.direct_pipeline_emitted_tokens = 1;
+            state
+                .decode_telemetry
+                .record_direct_bootstrap(elapsed_us(bootstrap_started));
+        }
 
         kv_compression_shadow_sync_wall_us
     }
@@ -8583,10 +8659,10 @@ mod tests {
             next_complete_wall_us: 6,
             pending_eval_wall_us: 5,
             pending_read_wall_us: 1,
-            linear_attention_layer_ops: 0,
-            linear_attention_layer_count: 0,
-            full_attention_layer_ops: 0,
-            full_attention_layer_count: 0,
+            linear_attention_layer_ops: 22,
+            linear_attention_layer_count: 2,
+            full_attention_layer_ops: 20,
+            full_attention_layer_count: 4,
         });
         telemetry.record_direct_pipeline_op_count(42);
         telemetry.record_single_decode(13);
@@ -8656,6 +8732,22 @@ mod tests {
             Some(&1)
         );
         assert_eq!(decisions.get("ax_mlx_direct_pipeline_op_count"), Some(&42));
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_linear_attention_layer_ops"),
+            Some(&22)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_linear_attention_layer_count"),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_full_attention_layer_ops"),
+            Some(&20)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_direct_pipeline_full_attention_layer_count"),
+            Some(&4)
+        );
         assert_eq!(decisions.get("ax_mlx_single_decode_steps"), Some(&1));
         assert_eq!(decisions.get("ax_mlx_single_decode_wall_us"), Some(&13));
         assert_eq!(decisions.get("ax_mlx_ngram_decode_steps"), Some(&1));
@@ -8674,6 +8766,7 @@ mod tests {
         assert!(!direct_pipeline_clear_cache_due(1, 0));
         assert!(direct_pipeline_clear_cache_due(1, 1));
         assert!(direct_pipeline_clear_cache_due(2, 1));
+        assert!(!direct_pipeline_clear_cache_due(2, 256));
     }
 
     #[test]

@@ -1999,12 +1999,18 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_direct_pipeline_steps": 2,
                     "ax_mlx_direct_pipeline_wall_us": 70,
                     "ax_mlx_direct_pipeline_forward_wall_us": 40,
+                    "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 35,
+                    "ax_mlx_direct_pipeline_forward_head_wall_us": 4,
                     "ax_mlx_direct_pipeline_argmax_wall_us": 2,
                     "ax_mlx_direct_pipeline_async_eval_wall_us": 5,
                     "ax_mlx_direct_pipeline_next_complete_wall_us": 9,
                     "ax_mlx_direct_pipeline_pending_eval_wall_us": 20,
                     "ax_mlx_direct_pipeline_pending_read_wall_us": 3,
                     "ax_mlx_direct_pipeline_op_count": 84,
+                    "ax_mlx_direct_pipeline_linear_attention_layer_ops": 44,
+                    "ax_mlx_direct_pipeline_linear_attention_layer_count": 2,
+                    "ax_mlx_direct_pipeline_full_attention_layer_ops": 40,
+                    "ax_mlx_direct_pipeline_full_attention_layer_count": 4,
                     "ax_mlx_prefix_cache_hits": 1,
                     "ax_mlx_prefix_cache_blocked_policy_disabled": 2,
                     "ax_mlx_prefix_cache_reused_tokens": 16,
@@ -2033,12 +2039,28 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_steps"], 2)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_wall_us"], 70)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_forward_wall_us"], 40)
+        self.assertEqual(
+            telemetry["ax_mlx_direct_pipeline_forward_layer_loop_wall_us"], 35
+        )
+        self.assertEqual(telemetry["ax_mlx_direct_pipeline_forward_head_wall_us"], 4)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_argmax_wall_us"], 2)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_async_eval_wall_us"], 5)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_next_complete_wall_us"], 9)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_pending_eval_wall_us"], 20)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_pending_read_wall_us"], 3)
         self.assertEqual(telemetry["ax_mlx_direct_pipeline_op_count"], 84)
+        self.assertEqual(
+            telemetry["ax_mlx_direct_pipeline_linear_attention_layer_ops"], 44
+        )
+        self.assertEqual(
+            telemetry["ax_mlx_direct_pipeline_linear_attention_layer_count"], 2
+        )
+        self.assertEqual(
+            telemetry["ax_mlx_direct_pipeline_full_attention_layer_ops"], 40
+        )
+        self.assertEqual(
+            telemetry["ax_mlx_direct_pipeline_full_attention_layer_count"], 4
+        )
         self.assertEqual(telemetry["ax_mlx_prefix_cache_hits"], 1)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_reused_tokens"], 16)
@@ -2112,12 +2134,24 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(direct_cpp_post_input_summary["hit_rate_micros"], 1_000_000)
         self.assertEqual(summary["ax_mlx_decode_wall_us"], 200)
         self.assertEqual(summary["ax_mlx_direct_pipeline_forward_wall_us"], 40)
+        self.assertEqual(
+            summary["ax_mlx_direct_pipeline_forward_layer_loop_wall_us"], 35
+        )
+        self.assertEqual(summary["ax_mlx_direct_pipeline_forward_head_wall_us"], 4)
         self.assertEqual(summary["ax_mlx_direct_pipeline_argmax_wall_us"], 2)
         self.assertEqual(summary["ax_mlx_direct_pipeline_async_eval_wall_us"], 5)
         self.assertEqual(summary["ax_mlx_direct_pipeline_next_complete_wall_us"], 9)
         self.assertEqual(summary["ax_mlx_direct_pipeline_pending_eval_wall_us"], 20)
         self.assertEqual(summary["ax_mlx_direct_pipeline_pending_read_wall_us"], 3)
         self.assertEqual(summary["ax_mlx_direct_pipeline_op_count"], 84)
+        self.assertEqual(
+            summary["ax_mlx_direct_pipeline_linear_attention_layer_ops"], 44
+        )
+        self.assertEqual(
+            summary["ax_mlx_direct_pipeline_linear_attention_layer_count"], 2
+        )
+        self.assertEqual(summary["ax_mlx_direct_pipeline_full_attention_layer_ops"], 40)
+        self.assertEqual(summary["ax_mlx_direct_pipeline_full_attention_layer_count"], 4)
         self.assertEqual(summary["ax_mlx_prefix_cache_hits"], 1)
         self.assertEqual(summary["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(summary["ax_mlx_prefix_cache_reused_tokens"], 16)
@@ -2130,12 +2164,18 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 "ax_mlx_direct_pipeline_steps": 10,
                 "ax_mlx_direct_pipeline_wall_us": 900,
                 "ax_mlx_direct_pipeline_forward_wall_us": 300,
+                "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 240,
+                "ax_mlx_direct_pipeline_forward_head_wall_us": 30,
                 "ax_mlx_direct_pipeline_argmax_wall_us": 100,
                 "ax_mlx_direct_pipeline_async_eval_wall_us": 400,
                 "ax_mlx_direct_pipeline_next_complete_wall_us": 600,
                 "ax_mlx_direct_pipeline_pending_eval_wall_us": 80,
                 "ax_mlx_direct_pipeline_pending_read_wall_us": 20,
                 "ax_mlx_direct_pipeline_op_count": 350,
+                "ax_mlx_direct_pipeline_linear_attention_layer_ops": 220,
+                "ax_mlx_direct_pipeline_linear_attention_layer_count": 10,
+                "ax_mlx_direct_pipeline_full_attention_layer_ops": 130,
+                "ax_mlx_direct_pipeline_full_attention_layer_count": 5,
             }
         )
         self.assertEqual(direct["classification"], "direct_pipeline")
@@ -2143,6 +2183,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(direct["direct_pipeline_wall_share_micros"], 900_000)
         self.assertEqual(direct["direct_pipeline_forward_wall_us"], 300)
         self.assertEqual(direct["direct_pipeline_forward_wall_share_micros"], 333_333)
+        self.assertEqual(direct["direct_pipeline_forward_layer_loop_wall_us"], 240)
+        self.assertEqual(
+            direct["direct_pipeline_forward_layer_loop_wall_share_micros"], 800_000
+        )
+        self.assertEqual(direct["direct_pipeline_forward_head_wall_us"], 30)
+        self.assertEqual(
+            direct["direct_pipeline_forward_head_wall_share_micros"], 100_000
+        )
         self.assertEqual(direct["direct_pipeline_argmax_wall_us"], 100)
         self.assertEqual(direct["direct_pipeline_argmax_wall_share_micros"], 111_111)
         self.assertEqual(direct["direct_pipeline_async_eval_wall_us"], 400)
@@ -2167,6 +2215,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertEqual(direct["direct_pipeline_op_count"], 350)
         self.assertEqual(direct["direct_pipeline_op_count_per_step"], 35)
+        self.assertEqual(direct["direct_pipeline_linear_attention_layer_ops"], 220)
+        self.assertEqual(direct["direct_pipeline_linear_attention_layer_count"], 10)
+        self.assertEqual(direct["direct_pipeline_linear_attention_ops_per_layer"], 22)
+        self.assertEqual(direct["direct_pipeline_full_attention_layer_ops"], 130)
+        self.assertEqual(direct["direct_pipeline_full_attention_layer_count"], 5)
+        self.assertEqual(direct["direct_pipeline_full_attention_ops_per_layer"], 26)
 
         mixed = bench.summarize_ax_mlx_decode_route(
             {

@@ -302,42 +302,54 @@ env_flag!(
 
 env_flag!(
     /// `AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS` — opt-in direct C++ route
-    /// for Qwen linear-attention packed QKVZ/BA projection staging.
+    /// for Qwen linear-attention packed QKVZ/BA projection staging. This
+    /// global flag force-enables the route for any compatible caller shape.
     ///
-    /// **Default: OFF**. The shim skips per-op `mlx-c` dispatches for the
-    /// packed projection, reshape, slice, and concat boundary. Decode A/B
-    /// on Qwen 3.6 27B 4-bit (M5 Max, 3 reps with 20s inter-row cooldown
-    /// and a 30s pre-run thermal settle, 100% fastpath hit rate over 144
-    /// invocations) measured both prefill and decode neutral within the
-    /// run-to-run noise floor (±0.3% prefill, ±0.1% decode) across
-    /// 128/512/2048 prompts. The fused projection saves per-op FFI
-    /// dispatch but does not move the wall-clock needle in production
-    /// decode shape — the per-step gap to `mlx_lm.benchmark` lives in a
-    /// different stage. The flag stays opt-in because neutral evidence is
-    /// not enough to justify flipping the default surface area. See
-    /// `benchmarks/results/mlx-inference/ab-direct-cpp-linear-inputs/`
-    /// (raw artifacts).
+    /// **Default: OFF**. The Qwen3.5/Qwen3Next production default is controlled
+    /// by `AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_INPUTS`; keep this separate
+    /// opt-in surface for A/B and non-Qwen compatibility probes.
     direct_cpp_linear_attention_inputs_enabled,
     "AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_INPUTS` — default Qwen
+    /// linear-attention packed QKVZ/BA projection staging direct C++ route.
+    ///
+    /// **Default: ON for Qwen3.5/Qwen3Next only** (kill-switch via
+    /// `AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_INPUTS=0`). The route skips
+    /// per-op `mlx-c` dispatches for packed projection, reshape, slice, and
+    /// concat staging before the Qwen gated-delta block. It is family-scoped
+    /// because the verified win is on Qwen linear-attention decode when paired
+    /// with the post-input route.
+    qwen_direct_cpp_linear_attention_inputs_enabled,
+    "AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"
+);
+
 env_flag!(
     /// `AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT` — opt-in direct C++
-    /// route for the Qwen linear-attention post-input block.
+    /// route for the Qwen linear-attention post-input block. This global flag
+    /// force-enables the route for any compatible caller shape.
     ///
-    /// **Default: OFF**. Pairs with the sibling input-staging shim
-    /// (`AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS`) to cover the bracketing
-    /// portion of the linear-attention layer around the `qwen35_gated_delta_v3`
-    /// custom Metal kernel. The shim fuses conv1d (with cached-state carry),
-    /// SiLU, last-dim split into q/k/v, head-major reshape, per-head RMSNorm
-    /// on q and k, and scale-by-precomputed-constants — ~14 mlx-c dispatches
-    /// per Qwen 3.6 layer collapsed to one Rust→C++ round-trip. Per-token
-    /// projected savings are bounded by the AX-vs-mlx-python marshalling
-    /// delta (~250 ns/op × ~13 ops × 48 layers ≈ 156 µs/tok). Stays opt-in
-    /// until a thermal-settled A/B records a measurable decode-tok/s shift
-    /// above the run-to-run noise floor on real artifacts.
+    /// **Default: OFF**. The Qwen3.5/Qwen3Next production default is controlled
+    /// by `AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT`; keep this
+    /// separate opt-in surface for A/B and non-Qwen compatibility probes.
     direct_cpp_linear_attention_post_input_enabled,
     "AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT` — default Qwen
+    /// linear-attention post-input direct C++ route.
+    ///
+    /// **Default: ON for Qwen3.5/Qwen3Next only** (kill-switch via
+    /// `AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT=0`). The route
+    /// fuses conv1d (with cached-state carry), SiLU, last-dim split into q/k/v,
+    /// head-major reshape, per-head RMSNorm on q and k, and scale constants
+    /// into one Rust→C++ round-trip while leaving the gated-delta Metal kernel
+    /// and all non-Qwen families on their existing paths.
+    qwen_direct_cpp_linear_attention_post_input_enabled,
+    "AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT"
 );
 
 env_flag_default_on!(
@@ -588,6 +600,21 @@ mod tests {
     }
 
     #[test]
+    fn qwen_direct_cpp_linear_attention_inputs_uses_default_on_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_QWEN_DIRECT_LINEAR_ATTENTION_INPUTS_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_QWEN_DIRECT_LINEAR_ATTENTION_INPUTS_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_QWEN_DIRECT_LINEAR_ATTENTION_INPUTS_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
     fn direct_cpp_linear_attention_post_input_uses_opt_in_contract() {
         assert!(!parse_bool_env(
             "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_POST_INPUT_UNSET"
@@ -598,6 +625,21 @@ mod tests {
         ));
         assert!(probe(
             "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_POST_INPUT_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_direct_cpp_linear_attention_post_input_uses_default_on_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_QWEN_DIRECT_LINEAR_ATTENTION_POST_INPUT_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_QWEN_DIRECT_LINEAR_ATTENTION_POST_INPUT_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_QWEN_DIRECT_LINEAR_ATTENTION_POST_INPUT_ENABLED",
             "1"
         ));
     }

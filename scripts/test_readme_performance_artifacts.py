@@ -193,7 +193,7 @@ class TrackedDirtyAllowlistTests(unittest.TestCase):
         self.assertTrue(checker.is_benchmark_doc_only_path("README.md"))
         self.assertTrue(
             checker.is_benchmark_doc_only_path(
-                "docs/assets/perf-decode-128-box-whisker.svg"
+                "docs/assets/perf-gemma4-decode-box-whisker.svg"
             )
         )
 
@@ -242,7 +242,7 @@ class TrackedDirtyAllowlistTests(unittest.TestCase):
     def test_tracked_dirty_aggregate_accepts_post_processing_only(self) -> None:
         status = [
             " M README.md",
-            " M docs/assets/perf-decode-512-box-whisker.svg",
+            " M docs/assets/perf-qwen-decode-box-whisker.svg",
             " M scripts/update_readme_from_bench.py",
             " M scripts/test_update_readme_from_bench.py",
             " M scripts/bench_llama_cpp_metal_sweep.py",
@@ -595,8 +595,8 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     "git_tracked_dirty": True,
                     "git_tracked_status": [
                         " M README.md",
-                        " M docs/assets/perf-decode-2048-box-whisker.svg",
-                        " M docs/assets/perf-prefill-512-box-whisker.svg",
+                        " M docs/assets/perf-gemma4-decode-box-whisker.svg",
+                        " M docs/assets/perf-qwen-prefill-box-whisker.svg",
                     ],
                 }
             },

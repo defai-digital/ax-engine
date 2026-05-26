@@ -202,6 +202,14 @@ pub(crate) fn attention_mask_array(
 
     let offset = key_len.saturating_sub(seq_len);
     if let Some(window) = sliding_window {
+        // mlx-lm's Gemma4 RotatingKVCache uses max_size == sliding_window and
+        // returns no mask for single-token decode once only the retained window
+        // is presented to SDPA. When key_len <= window the sliding constraint is
+        // already satisfied for the lone query, so an explicit all-true mask is
+        // unnecessary graph work.
+        if seq_len == 1 && key_len <= window {
+            return None;
+        }
         // When there is no KV-cache offset and the prompt fits entirely within
         // the window, the sliding constraint never fires: every (i, j) pair
         // where i >= j already satisfies i - j < seq_len <= window.  A plain

@@ -48,7 +48,8 @@ pub(crate) fn linear_attention_forward(
     }
 
     let profile_started = Instant::now();
-    let (qkv, z, a, b) = linear_attention_inputs(linear_cfg, linear_w, x, seq, profile_enabled);
+    let (qkv, z, a, b) =
+        linear_attention_inputs(cfg, linear_cfg, linear_w, x, seq, profile_enabled);
     linear_attention_profile_eval_elapsed(
         profile_enabled,
         LinearAttentionProfileStage::Projection,
@@ -123,7 +124,9 @@ fn linear_attention_post_input(
     cached_conv_state: Option<&MlxArray>,
     profile_enabled: bool,
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
-    if fastpath::direct_cpp_linear_attention_post_input_enabled() {
+    let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(cfg)
+        && fastpath::qwen_direct_cpp_linear_attention_post_input_enabled();
+    if fastpath::direct_cpp_linear_attention_post_input_enabled() || qwen_default_enabled {
         record_linear_attention_direct_cpp_post_input_attempt();
         if profile_enabled {
             record_linear_attention_direct_cpp_post_input_profile_blocked();
@@ -173,6 +176,7 @@ fn linear_attention_post_input(
 }
 
 pub(crate) fn linear_attention_inputs(
+    model_cfg: &ModelConfig,
     cfg: &LinearAttentionConfig,
     w: &crate::weights::LinearAttentionWeights,
     x: &MlxArray,
@@ -180,7 +184,9 @@ pub(crate) fn linear_attention_inputs(
     profile_enabled: bool,
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
     if let (Some(qkvz_w), Some(ba_w)) = (&w.in_proj_qkvz, &w.in_proj_ba) {
-        if fastpath::direct_cpp_linear_attention_inputs_enabled() {
+        let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(model_cfg)
+            && fastpath::qwen_direct_cpp_linear_attention_inputs_enabled();
+        if fastpath::direct_cpp_linear_attention_inputs_enabled() || qwen_default_enabled {
             record_linear_attention_direct_cpp_inputs_attempt();
             if profile_enabled {
                 record_linear_attention_direct_cpp_inputs_profile_blocked();
@@ -348,6 +354,10 @@ pub(crate) fn linear_attention_inputs(
         &[&b],
     );
     (qkv, z, a, b)
+}
+
+fn qwen_linear_attention_direct_cpp_default_family(cfg: &ModelConfig) -> bool {
+    matches!(cfg.model_family.as_str(), "qwen3_5" | "qwen3_next")
 }
 
 fn linear_attention_inputs_packed_direct(

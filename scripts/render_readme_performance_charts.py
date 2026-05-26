@@ -24,15 +24,44 @@ SERIES = [
     ("llama_cpp_metal", "llama.cpp", "#f97316", "#c2410c"),
     ("mlx_lm", "mlx_lm", "#f2b705", "#9a6a00"),
     ("ax_engine_mlx", "ax_engine", "#2eaf5f", "#176c37"),
-    ("ax_engine_mlx_ngram_accel", "ax_engine + n-gram", "#137a3d", "#0b4f28"),
+    ("ax_engine_mlx_ngram_accel", "ax+n-gram", "#137a3d", "#0b4f28"),
 ]
 
-WIDTH = 460
-HEIGHT = 276
-LEFT = 52
-RIGHT = 442
-TOP = 46
-BOTTOM = 206
+FAMILY_SLUGS: dict[str, list[str]] = {
+    "gemma4": [
+        "gemma-4-e2b-it-4bit",
+        "gemma-4-e2b-it-5bit",
+        "gemma-4-e2b-it-6bit",
+        "gemma-4-e2b-it-8bit",
+        "gemma-4-e4b-it-4bit",
+        "gemma-4-26b-a4b-it-4bit",
+        "gemma-4-31b-it-4bit",
+    ],
+    "qwen": [
+        "qwen3_6-27b-4bit",
+        "qwen3_6-27b-5bit",
+        "qwen3_6-27b-6bit",
+        "qwen3_6-27b-8bit",
+        "qwen3_6-35b-a3b-4bit",
+    ],
+}
+
+FAMILY_LABELS: dict[str, str] = {
+    "gemma4": "Gemma 4",
+    "qwen": "Qwen 3.6",
+}
+
+FAMILY_CHART_WIDTH = 540
+FAMILY_CHART_HEIGHT = 278
+FAMILY_LEFT = 52
+FAMILY_RIGHT = 524
+FAMILY_TOP = 46
+FAMILY_BOTTOM = 214
+
+# fill-opacity and stroke-opacity per context length (lighter = shorter prompt)
+CTX_FILL_OPACITY = {128: 0.08, 512: 0.17, 2048: 0.30}
+CTX_STROKE_OPACITY = {128: 0.55, 512: 0.78, 2048: 1.0}
+
 FONT = "Inter,Segoe UI,Arial,sans-serif"
 RED = "#dc2626"
 
@@ -52,9 +81,18 @@ class SeriesStats:
 
 
 @dataclass(frozen=True)
-class PromptGroupStats:
+class EngineContextStats:
     prompt_tokens: int
-    series: tuple[SeriesStats, ...]
+    stats: SeriesStats
+
+
+@dataclass(frozen=True)
+class EngineGroupStats:
+    engine: str
+    label: str
+    color: str
+    dot_color: str
+    context_stats: tuple[EngineContextStats, ...]
 
 
 @dataclass(frozen=True)
@@ -66,6 +104,7 @@ class ChartSpec:
     output_slug: str
     metric: str
     series_engines: tuple[str, ...]
+    family: str
 
 
 @dataclass(frozen=True)
@@ -82,21 +121,23 @@ class MtpBenchmarkRow:
 
 CHARTS = [
     ChartSpec(
-        title="Prefill rate",
+        title="Gemma 4 — Prefill rate",
         subtitle=None,
         unit="tok/s",
         direction_label="Higher is better",
-        output_slug="prefill",
+        output_slug="gemma4-prefill",
         metric="prefill",
+        family="gemma4",
         series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
     ),
     ChartSpec(
-        title="Decode rate",
+        title="Gemma 4 — Decode rate",
         subtitle="AX n-gram is the default policy",
         unit="tok/s",
         direction_label="Higher is better",
-        output_slug="decode",
+        output_slug="gemma4-decode",
         metric="decode",
+        family="gemma4",
         series_engines=(
             "llama_cpp_metal",
             "mlx_lm",
@@ -105,12 +146,48 @@ CHARTS = [
         ),
     ),
     ChartSpec(
-        title="TTFT",
+        title="Gemma 4 — TTFT",
         subtitle=None,
         unit="ms",
         direction_label="Lower is better",
-        output_slug="ttft",
+        output_slug="gemma4-ttft",
         metric="ttft",
+        family="gemma4",
+        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+    ),
+    ChartSpec(
+        title="Qwen 3.6 — Prefill rate",
+        subtitle=None,
+        unit="tok/s",
+        direction_label="Higher is better",
+        output_slug="qwen-prefill",
+        metric="prefill",
+        family="qwen",
+        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
+    ),
+    ChartSpec(
+        title="Qwen 3.6 — Decode rate",
+        subtitle="AX n-gram is the default policy",
+        unit="tok/s",
+        direction_label="Higher is better",
+        output_slug="qwen-decode",
+        metric="decode",
+        family="qwen",
+        series_engines=(
+            "llama_cpp_metal",
+            "mlx_lm",
+            "ax_engine_mlx",
+            "ax_engine_mlx_ngram_accel",
+        ),
+    ),
+    ChartSpec(
+        title="Qwen 3.6 — TTFT",
+        subtitle=None,
+        unit="ms",
+        direction_label="Lower is better",
+        output_slug="qwen-ttft",
+        metric="ttft",
+        family="qwen",
         series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
     ),
 ]
@@ -333,45 +410,6 @@ def infer_llama_results_dir(repo_root: Path) -> Path:
     return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
 
 
-def collect_values(
-    rows: list[dict[str, Any]],
-    spec: ChartSpec,
-    expected_model_count: int,
-) -> list[PromptGroupStats]:
-    groups: list[PromptGroupStats] = []
-    for prompt_tokens in PROMPT_TOKENS:
-        series_stats: list[SeriesStats] = []
-        for engine, label, color, dot_color in series_for_chart(spec):
-            values: list[float] = []
-            for row in rows:
-                if row.get("engine") != engine or row.get("prompt_tokens") != prompt_tokens:
-                    continue
-                if spec.metric == "prefill":
-                    values.append(metric_median(row, "prefill_tok_s"))
-                elif spec.metric == "decode":
-                    values.append(metric_median(row, "decode_tok_s"))
-                elif spec.metric == "ttft":
-                    if engine in {"llama_cpp_metal", "mlx_lm"}:
-                        values.append(prompt_tokens / metric_median(row, "prefill_tok_s") * 1000)
-                    else:
-                        values.append(metric_median(row, "ttft_ms"))
-                else:
-                    raise ChartError(f"unknown metric: {spec.metric}")
-            if len(values) != expected_model_count:
-                raise ChartError(
-                    f"{spec.metric} chart expected {expected_model_count} values "
-                    f"for {engine} at {prompt_tokens} prompt tokens, found {len(values)}"
-                )
-            series_stats.append(summarize(values, engine, label, color, dot_color))
-        groups.append(PromptGroupStats(prompt_tokens, tuple(series_stats)))
-    return groups
-
-
-def y_scale(value: float, axis_max: float) -> float:
-    clamped = max(0.0, min(value, axis_max))
-    return BOTTOM - (clamped / axis_max) * (BOTTOM - TOP)
-
-
 def nice_axis_ceiling(value: float) -> float:
     if value <= 0:
         raise ChartError("chart axis requires a positive maximum value")
@@ -381,11 +419,6 @@ def nice_axis_ceiling(value: float) -> float:
         if normalized <= candidate:
             return candidate * magnitude
     return 10.0 * magnitude
-
-
-def chart_axis_max(group: PromptGroupStats) -> float:
-    largest_value = max(stat.maximum for stat in group.series)
-    return nice_axis_ceiling(largest_value * 1.05)
 
 
 def short_number(value: float) -> str:
@@ -399,108 +432,187 @@ def short_number(value: float) -> str:
     return f"{value:.1f}"
 
 
-def series_x_positions(series_count: int) -> list[float]:
-    if series_count < 1:
-        raise ChartError("chart requires at least one series")
-    plot_width = RIGHT - LEFT
-    step = plot_width / series_count
-    return [LEFT + step * (index + 0.5) for index in range(series_count)]
+def chart_output_name(spec: ChartSpec) -> str:
+    return f"perf-{spec.output_slug}-box-whisker.svg"
 
 
-def box_width(series_count: int) -> float:
-    plot_width = RIGHT - LEFT
-    return min(34.0, plot_width / max(series_count, 1) * 0.38)
+def collect_family_values(
+    rows: list[dict[str, Any]],
+    spec: ChartSpec,
+) -> list[EngineGroupStats]:
+    family_slugs = set(FAMILY_SLUGS[spec.family])
+    family_rows = [r for r in rows if r.get("_slug") in family_slugs]
+    expected_count = len(FAMILY_SLUGS[spec.family])
+
+    engine_groups: list[EngineGroupStats] = []
+    for engine, label, color, dot_color in series_for_chart(spec):
+        context_stats_list: list[EngineContextStats] = []
+        for prompt_tokens in PROMPT_TOKENS:
+            values: list[float] = []
+            for row in family_rows:
+                if row.get("engine") != engine or row.get("prompt_tokens") != prompt_tokens:
+                    continue
+                if spec.metric == "prefill":
+                    values.append(metric_median(row, "prefill_tok_s"))
+                elif spec.metric == "decode":
+                    values.append(metric_median(row, "decode_tok_s"))
+                elif spec.metric == "ttft":
+                    if engine in {"llama_cpp_metal", "mlx_lm"}:
+                        values.append(prompt_tokens / metric_median(row, "prefill_tok_s") * 1000)
+                    else:
+                        values.append(metric_median(row, "ttft_ms"))
+                else:
+                    raise ChartError(f"unknown metric: {spec.metric}")
+            if len(values) != expected_count:
+                raise ChartError(
+                    f"{spec.metric} chart expected {expected_count} values "
+                    f"for {engine} at {prompt_tokens} tok in family {spec.family!r}, "
+                    f"found {len(values)}"
+                )
+            context_stats_list.append(
+                EngineContextStats(
+                    prompt_tokens=prompt_tokens,
+                    stats=summarize(values, engine, label, color, dot_color),
+                )
+            )
+        engine_groups.append(
+            EngineGroupStats(
+                engine=engine,
+                label=label,
+                color=color,
+                dot_color=dot_color,
+                context_stats=tuple(context_stats_list),
+            )
+        )
+    return engine_groups
 
 
-def best_median(group: PromptGroupStats, spec: ChartSpec) -> float:
-    medians = [stat.median for stat in group.series]
-    if spec.metric == "ttft":
-        return min(medians)
-    return max(medians)
+def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) -> str:
+    all_maxima = [cs.stats.maximum for eg in engine_groups for cs in eg.context_stats]
+    axis_max = nice_axis_ceiling(max(all_maxima) * 1.05)
 
+    all_medians = [cs.stats.median for eg in engine_groups for cs in eg.context_stats]
+    best_med = min(all_medians) if spec.metric == "ttft" else max(all_medians)
+    best_label = "lowest median" if spec.metric == "ttft" else "highest median"
 
-def chart_output_name(spec: ChartSpec, prompt_tokens: int) -> str:
-    return f"perf-{spec.output_slug}-{prompt_tokens}-box-whisker.svg"
+    n_engines = len(engine_groups)
+    plot_width = FAMILY_RIGHT - FAMILY_LEFT
+    group_step = plot_width / n_engines
+    sub_spacing = 30.0
+    sub_bar_w = 16.0
+    sub_offsets = [-sub_spacing, 0.0, sub_spacing]
 
+    def fy(v: float) -> float:
+        clamped = max(0.0, min(v, axis_max))
+        return FAMILY_BOTTOM - (clamped / axis_max) * (FAMILY_BOTTOM - FAMILY_TOP)
 
-def render_chart(spec: ChartSpec, group: PromptGroupStats) -> str:
-    axis_max = chart_axis_max(group)
-    series_description = ", ".join(stat.label for stat in group.series)
-    best_median_description = "lowest median" if spec.metric == "ttft" else "highest median"
-    title = f"{spec.title} - {group.prompt_tokens} tok"
-    x_positions = series_x_positions(len(group.series))
-    current_box_width = box_width(len(group.series))
+    engine_desc = ", ".join(eg.label for eg in engine_groups)
+    ctx_desc = "/".join(str(pt) for pt in PROMPT_TOKENS)
+    family_label = FAMILY_LABELS.get(spec.family, spec.family)
 
     lines = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
-        f"<title>{escape(title)}</title>",
-        (
-            f"<desc>Box-and-Whisker Plot comparing {escape(series_description)} "
-            f"at {group.prompt_tokens} prompt tokens across README benchmark rows "
-            f"on a linear y-axis. A red dotted horizontal line marks the "
-            f"{best_median_description} in this chart.</desc>"
-        ),
-        f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#ffffff"/>',
-        f'<text x="52" y="22" font-family="{FONT}" font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
+        f'<svg xmlns="http://www.w3.org/2000/svg"'
+        f' width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}"'
+        f' viewBox="0 0 {FAMILY_CHART_WIDTH} {FAMILY_CHART_HEIGHT}"'
+        f' role="img" aria-labelledby="title desc">',
+        f"<title>{escape(spec.title)}</title>",
+        f"<desc>Grouped box-and-whisker plot comparing {escape(engine_desc)}"
+        f" at {escape(ctx_desc)} prompt tokens for {escape(family_label)} models."
+        f" A red dotted line marks the {best_label}.</desc>",
+        f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#ffffff"/>',
+        f'<text x="{FAMILY_LEFT}" y="22" font-family="{FONT}"'
+        f' font-size="16" font-weight="700" fill="#111827">{escape(spec.title)}</text>',
     ]
     if spec.subtitle:
         lines.append(
-            f'<text x="52" y="40" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(spec.subtitle)}</text>'
+            f'<text x="{FAMILY_LEFT}" y="40" font-family="{FONT}"'
+            f' font-size="10" fill="#6b7280">{escape(spec.subtitle)}</text>'
         )
     lines.extend(
         [
-            f'<text x="442" y="22" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(spec.unit)}</text>',
-            f'<text x="442" y="40" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">{escape(spec.direction_label)}</text>',
+            f'<text x="{FAMILY_RIGHT}" y="22" text-anchor="end" font-family="{FONT}"'
+            f' font-size="10" fill="#6b7280">{escape(spec.unit)}</text>',
+            f'<text x="{FAMILY_RIGHT}" y="40" text-anchor="end" font-family="{FONT}"'
+            f' font-size="10" font-weight="700" fill="#374151">{escape(spec.direction_label)}</text>',
         ]
     )
 
-    for value in (0.0, axis_max / 2, axis_max):
-        y = y_scale(value, axis_max)
-        lines.append(f'<line x1="{LEFT}" y1="{y:.1f}" x2="{RIGHT}" y2="{y:.1f}" stroke="#e5e7eb" stroke-width="1"/>')
+    for grid_val in (0.0, axis_max / 2, axis_max):
+        gy = fy(grid_val)
         lines.append(
-            f'<text x="44" y="{y + 3:.1f}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{short_number(value)}</text>'
+            f'<line x1="{FAMILY_LEFT}" y1="{gy:.1f}"'
+            f' x2="{FAMILY_RIGHT}" y2="{gy:.1f}" stroke="#e5e7eb" stroke-width="1"/>'
+        )
+        lines.append(
+            f'<text x="44" y="{gy + 3:.1f}" text-anchor="end" font-family="{FONT}"'
+            f' font-size="10" fill="#6b7280">{short_number(grid_val)}</text>'
         )
 
-    best_y = y_scale(best_median(group, spec), axis_max)
+    best_y = fy(best_med)
     lines.append(
-        f'<line x1="{LEFT}" y1="{best_y:.1f}" x2="{RIGHT}" y2="{best_y:.1f}" stroke="{RED}" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
+        f'<line x1="{FAMILY_LEFT}" y1="{best_y:.1f}"'
+        f' x2="{FAMILY_RIGHT}" y2="{best_y:.1f}"'
+        f' stroke="{RED}" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
     )
 
-    dot_offsets = (
-        -current_box_width * 0.24,
-        -current_box_width * 0.12,
-        0,
-        current_box_width * 0.12,
-        current_box_width * 0.24,
-    )
-    for stat, x in zip(group.series, x_positions):
-        y_min = y_scale(stat.minimum, axis_max)
-        y_q1 = y_scale(stat.q1, axis_max)
-        y_med = y_scale(stat.median, axis_max)
-        y_q3 = y_scale(stat.q3, axis_max)
-        y_max = y_scale(stat.maximum, axis_max)
-        box_y = min(y_q1, y_q3)
-        box_h = max(abs(y_q3 - y_q1), 1.0)
-        cap_left = x - current_box_width * 0.36
-        cap_right = x + current_box_width * 0.36
-        box_left = x - current_box_width / 2
-        lines.extend(
-            [
-                f'<line x1="{x:g}" y1="{y_max:.1f}" x2="{x:g}" y2="{y_min:.1f}" stroke="{stat.color}" stroke-width="1.7"/>',
-                f'<line x1="{cap_left:g}" y1="{y_max:.1f}" x2="{cap_right:g}" y2="{y_max:.1f}" stroke="{stat.color}" stroke-width="1.7"/>',
-                f'<line x1="{cap_left:g}" y1="{y_min:.1f}" x2="{cap_right:g}" y2="{y_min:.1f}" stroke="{stat.color}" stroke-width="1.7"/>',
-                f'<rect x="{box_left:g}" y="{box_y:.1f}" width="{current_box_width:g}" height="{box_h:.1f}" rx="3" fill="{stat.color}" fill-opacity="0.18" stroke="{stat.color}" stroke-width="1.7"/>',
-                f'<line x1="{box_left:g}" y1="{y_med:.1f}" x2="{box_left + current_box_width:g}" y2="{y_med:.1f}" stroke="{stat.color}" stroke-width="2.4"/>',
-                f'<text x="{x:g}" y="226" text-anchor="middle" font-family="{FONT}" font-size="9" fill="#111827">{escape(stat.label)}</text>',
-                f'<text x="{x:g}" y="242" text-anchor="middle" font-family="{FONT}" font-size="9" fill="#6b7280">med {short_number(stat.median)}</text>',
-            ]
-        )
-        for value_index, value in enumerate(stat.values):
-            dot_x = x + dot_offsets[value_index % len(dot_offsets)]
-            dot_y = y_scale(value, axis_max)
-            lines.append(
-                f'<circle cx="{dot_x:g}" cy="{dot_y:.1f}" r="1.5" fill="{stat.dot_color}" fill-opacity="0.9"/>'
+    dot_jitter = (-3.0, -1.5, 0.0, 1.5, 3.0)
+    y_ctx = FAMILY_BOTTOM + 15
+    y_eng = FAMILY_BOTTOM + 32
+
+    for i, eg in enumerate(engine_groups):
+        group_center = FAMILY_LEFT + (i + 0.5) * group_step
+
+        for j, cs in enumerate(eg.context_stats):
+            sub_x = group_center + sub_offsets[j]
+            fill_op = CTX_FILL_OPACITY[cs.prompt_tokens]
+            stroke_op = CTX_STROKE_OPACITY[cs.prompt_tokens]
+            s = cs.stats
+
+            y_min = fy(s.minimum)
+            y_q1 = fy(s.q1)
+            y_med = fy(s.median)
+            y_q3 = fy(s.q3)
+            y_max_v = fy(s.maximum)
+            box_y = min(y_q1, y_q3)
+            box_h = max(abs(y_q3 - y_q1), 1.0)
+            cap_left = sub_x - sub_bar_w * 0.36
+            cap_right = sub_x + sub_bar_w * 0.36
+            box_left = sub_x - sub_bar_w / 2
+
+            sa = f'stroke="{eg.color}" stroke-opacity="{stroke_op}"'
+            lines.extend(
+                [
+                    f'<line x1="{sub_x:g}" y1="{y_max_v:.1f}"'
+                    f' x2="{sub_x:g}" y2="{y_min:.1f}" {sa} stroke-width="1.7"/>',
+                    f'<line x1="{cap_left:g}" y1="{y_max_v:.1f}"'
+                    f' x2="{cap_right:g}" y2="{y_max_v:.1f}" {sa} stroke-width="1.7"/>',
+                    f'<line x1="{cap_left:g}" y1="{y_min:.1f}"'
+                    f' x2="{cap_right:g}" y2="{y_min:.1f}" {sa} stroke-width="1.7"/>',
+                    f'<rect x="{box_left:g}" y="{box_y:.1f}"'
+                    f' width="{sub_bar_w:g}" height="{box_h:.1f}" rx="2"'
+                    f' fill="{eg.color}" fill-opacity="{fill_op}" {sa} stroke-width="1.7"/>',
+                    f'<line x1="{box_left:g}" y1="{y_med:.1f}"'
+                    f' x2="{box_left + sub_bar_w:g}" y2="{y_med:.1f}" {sa} stroke-width="2.4"/>',
+                    f'<text x="{sub_x:g}" y="{y_ctx}"'
+                    f' text-anchor="middle" font-family="{FONT}"'
+                    f' font-size="8" fill="#6b7280">{cs.prompt_tokens}</text>',
+                ]
             )
+
+            for vi, val in enumerate(s.values):
+                dx = dot_jitter[vi % len(dot_jitter)]
+                dy = fy(val)
+                dot_op = round(stroke_op * 0.9, 2)
+                lines.append(
+                    f'<circle cx="{sub_x + dx:g}" cy="{dy:.1f}" r="1.4"'
+                    f' fill="{eg.dot_color}" fill-opacity="{dot_op}"/>'
+                )
+
+        lines.append(
+            f'<text x="{group_center:g}" y="{y_eng}"'
+            f' text-anchor="middle" font-family="{FONT}"'
+            f' font-size="9" font-weight="700" fill="#111827">{escape(eg.label)}</text>'
+        )
 
     lines.append("</svg>")
     return "".join(lines) + "\n"
@@ -770,12 +882,11 @@ def main() -> int:
         else:
             benchmark_rows = load_composite_rows(args.readme, spec.metric, readme_slugs)
         rows = benchmark_rows + llama_rows
-        groups = collect_values(rows, spec, expected_model_count=len(readme_slugs))
-        for group in groups:
-            output_path = args.output_dir / chart_output_name(spec, group.prompt_tokens)
-            content = render_chart(spec, group)
-            if not write_chart(output_path, content, args.check):
-                mismatches.append(output_path)
+        engine_groups = collect_family_values(rows, spec)
+        output_path = args.output_dir / chart_output_name(spec)
+        content = render_family_chart(spec, engine_groups)
+        if not write_chart(output_path, content, args.check):
+            mismatches.append(output_path)
 
     if mismatches:
         print("README performance charts are stale:", file=sys.stderr)

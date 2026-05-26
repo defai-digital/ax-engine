@@ -3702,7 +3702,13 @@ mod tests {
 
     #[test]
     fn attention_mask_array_keeps_full_kv_for_sliding_attention() {
-        // decode (seq=1) with cache offset — offset > 0 so explicit mask still built
+        // mlx-lm's RotatingKVCache returns no mask for decode when SDPA already
+        // receives only the retained sliding window.
+        assert!(attention_mask_array(1, 4, Some(4)).is_none());
+        assert!(attention_mask_array(1, 3, Some(4)).is_none());
+
+        // If a caller still presents more than the retained window, the mask is
+        // required to hide older keys.
         let mask = attention_mask_array(1, 6, Some(4)).expect("decode needs sliding mask");
 
         assert_eq!(mask.shape(), vec![1, 6]);
