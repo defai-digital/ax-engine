@@ -478,6 +478,22 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-8bit-p128-pack-off.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-inputs-off-probe/qwen3_6-27b-4bit-p128-inputs-off.json`
 
+### Full-attention QKV projection packing kill-switch A/B
+
+Upstream `mlx_lm` Qwen3Next full-attention layers keep `q_proj`, `k_proj`, and
+`v_proj` split. AX's compatible full-attention layers can pack Q/K/V at load
+time, so a focused kill-switch probe tested `AX_MLX_PACK_QKV_PROJECTIONS=0` on
+the Qwen 3.6 27B 4-bit p128/g128 blocker row.
+
+The result was neutral: 34.247 tok/s versus the clean n-gram recheck at
+34.210 tok/s, about +0.1% and below the 2% acceptance threshold for a useful
+probe result. It remains far below the 40.096 tok/s 1.18x target, so no default
+change is promoted.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-full-attn-qkv-pack-off-probe/qwen3_6-27b-4bit-p128-g128-qkv-pack-off.json`
+
 ### QK norm/ROPE direct C++ route
 
 The opt-in `AX_MLX_DIRECT_CPP_QK_NORM_ROPE=1` route was rechecked after the
