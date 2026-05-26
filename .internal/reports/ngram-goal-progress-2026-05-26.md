@@ -507,6 +507,22 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-qk-rope-current-probe/qwen3_6-27b-4bit-p128.json`
 
+### QK norm flat-path kill-switch probe
+
+Another full-attention QK-normalization shape probe tested
+`AX_MLX_QK_NORM_FLAT=1`, which routes Q/K RMSNorm through the flat BSHD reshape
+path and blocks the direct QK+RoPE C++ route. This covers the remaining
+full-attention QK-normalization layout difference that was not covered by the
+direct C++ route check.
+
+The result was neutral on the Qwen 3.6 27B 4-bit p128/g128 blocker shape:
+34.213 tok/s versus the clean n-gram recheck at 34.210 tok/s. The route remains
+diagnostic-only and is not promoted.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-qk-norm-flat-probe/qwen3_6-27b-4bit-p128-g128-qk-flat.json`
+
 ### Dense FFN `mlx_compile` block
 
 An opt-in probe wrapped the dense FFN decode block
