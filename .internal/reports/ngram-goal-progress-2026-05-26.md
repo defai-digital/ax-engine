@@ -1142,6 +1142,45 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ngram-clean-recheck/qwen3_6-27b-4bit-p128-g128-ngram.json`
 
+### Current blocked audit
+
+The repeated blocker is now concrete: under the `mlx_lm.benchmark`
+random-token prompt contract, the remaining Qwen 3.6 27B rows do not expose a
+useful draft source for AX's default n-gram mode.
+
+Current-state checks:
+
+- ordinary n-gram policy replay finds zero accepted tokens for p128 and at most
+  2-3 accepted tokens for p512/p2048, even with widened offline policy bounds
+- the local `mlx-community/Qwen3.6-27B-4bit` snapshot has `mtp_num_hidden_layers`
+  in `config.json`, but the AX manifest has 851 tensors and zero `mtp.*` tensors
+- the same snapshot contains no `mtp.safetensors` and no `mtplx_runtime.json`
+- the runner already checks `weights.mtp.is_some()` before n-gram/direct
+  fallback, so there is no dormant MTP path to enable for this artifact
+- a local sidecar variant activates AX MTP but remains slower than direct
+  fallback and below the target
+- direct fallback already mirrors upstream `mlx_lm` async decode scheduling
+- the Qwen linear-attention input and post-input fastpaths are active in the
+  blocker row (`direct_cpp_linear_attention_inputs_hits=48`,
+  `direct_cpp_linear_attention_post_input_hits=48`,
+  `qwen_linear_attention_decode_post_input_metal_hits=48`)
+- small/medium graph-boundary probes across RMS/gate, packed SwiGLU, dense FFN,
+  linear layer compile, projection packing, QK/ROPE, add/RMS, GatedDelta tiles,
+  and direct-pipeline unroll all failed to produce a >=2% useful win
+
+This does not prove that no future full model rewrite could ever make direct
+fallback 18% faster than `mlx_lm`, but it does prove the current requested
+end-state cannot be reached by continuing to tune the default n-gram policy or
+by activating an existing verified draft path in the current local artifact.
+Meaningful progress toward the stated goal now needs an external change in at
+least one of:
+
+- a Qwen 3.6 27B benchmark artifact with a usable MTP/verified-draft sidecar
+- a changed benchmark contract with real repeated prompts where n-gram has
+  candidate support
+- a changed objective that targets direct Qwen execution parity/optimization
+  separately from n-gram acceleration
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
