@@ -345,6 +345,13 @@ AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT_KEYS = [
     "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked",
 ]
 
+AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_KEYS = [
+    "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts",
+    "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits",
+    "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks",
+    "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked",
+]
+
 AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN_KEYS = [
     "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts",
     "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits",
@@ -400,6 +407,7 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_dense_ffn_split_gate_up_layers",
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUT_KEYS,
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT_KEYS,
+    *AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_KEYS,
     *AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN_KEYS,
 ]
 

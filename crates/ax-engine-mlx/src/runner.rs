@@ -1617,6 +1617,18 @@ impl LinearAttentionProfileSnapshot {
         self.direct_cpp_post_input_profile_blocked = self
             .direct_cpp_post_input_profile_blocked
             .saturating_add(other.direct_cpp_post_input_profile_blocked);
+        self.decode_post_input_metal_attempts = self
+            .decode_post_input_metal_attempts
+            .saturating_add(other.decode_post_input_metal_attempts);
+        self.decode_post_input_metal_hits = self
+            .decode_post_input_metal_hits
+            .saturating_add(other.decode_post_input_metal_hits);
+        self.decode_post_input_metal_fallbacks = self
+            .decode_post_input_metal_fallbacks
+            .saturating_add(other.decode_post_input_metal_fallbacks);
+        self.decode_post_input_metal_profile_blocked = self
+            .decode_post_input_metal_profile_blocked
+            .saturating_add(other.decode_post_input_metal_profile_blocked);
         self.projection_wall_us = self
             .projection_wall_us
             .saturating_add(other.projection_wall_us);
@@ -1655,7 +1667,15 @@ impl LinearAttentionProfileSnapshot {
             || self.direct_cpp_post_input_hits != 0
             || self.direct_cpp_post_input_fallbacks != 0
             || self.direct_cpp_post_input_profile_blocked != 0;
-        if self.enabled == 0 && !direct_inputs_active && !direct_post_input_active {
+        let decode_post_input_metal_active = self.decode_post_input_metal_attempts != 0
+            || self.decode_post_input_metal_hits != 0
+            || self.decode_post_input_metal_fallbacks != 0
+            || self.decode_post_input_metal_profile_blocked != 0;
+        if self.enabled == 0
+            && !direct_inputs_active
+            && !direct_post_input_active
+            && !decode_post_input_metal_active
+        {
             return;
         }
 
@@ -1757,6 +1777,31 @@ impl LinearAttentionProfileSnapshot {
                 (
                     "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked",
                     self.direct_cpp_post_input_profile_blocked,
+                ),
+            ];
+
+            for (key, value) in entries {
+                decisions.upsert_route_decision(key, value);
+            }
+        }
+
+        if decode_post_input_metal_active {
+            let entries = [
+                (
+                    "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts",
+                    self.decode_post_input_metal_attempts,
+                ),
+                (
+                    "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits",
+                    self.decode_post_input_metal_hits,
+                ),
+                (
+                    "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks",
+                    self.decode_post_input_metal_fallbacks,
+                ),
+                (
+                    "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked",
+                    self.decode_post_input_metal_profile_blocked,
                 ),
             ];
 
@@ -4881,6 +4926,9 @@ impl MlxRunner {
         if state.ngram_disabled_steps > 0 {
             state.ngram_disabled_steps -= 1;
             state.ngram_acceleration.record_cooldown_step();
+            if is_greedy && self.cfg.linear_attention.is_some() {
+                return Some(vec![self.run_direct_pipeline_decode(state, last_token)]);
+            }
             return Some(self.run_single_decode(state, last_token, sampling));
         }
 
@@ -5302,7 +5350,7 @@ impl MlxRunner {
         // direct pipeline at the same prefill/first-token boundary so the
         // measured generation interval starts with a pending token instead of
         // paying one decode-step bootstrap.
-        if self.disable_ngram_acceleration
+        if (self.disable_ngram_acceleration || state.ngram_acceleration_disabled_for_request)
             && is_greedy
             && max_output > 1
             && let Some(prefill_tok) = prefill_output_token
@@ -5701,7 +5749,11 @@ fn maybe_reenable_linear_ngram_from_fallback_output(
 ) {
     if !is_greedy
         || !state.ngram_acceleration_disabled_for_request
-        || state.ngram_request_disable_reason != NgramRequestDisableReason::LinearNoDraft
+        || !matches!(
+            state.ngram_request_disable_reason,
+            NgramRequestDisableReason::LinearNoDraft
+                | NgramRequestDisableReason::LinearInitialNoDraft
+        )
     {
         return;
     }
@@ -8201,6 +8253,48 @@ mod tests {
     }
 
     #[test]
+    fn linear_attention_decode_post_input_metal_route_decisions_emit_when_attempted() {
+        let mut profile = LinearAttentionProfileSnapshot {
+            decode_post_input_metal_attempts: 2,
+            decode_post_input_metal_hits: 1,
+            decode_post_input_metal_fallbacks: 1,
+            decode_post_input_metal_profile_blocked: 1,
+            ..LinearAttentionProfileSnapshot::default()
+        };
+        profile.merge_from(LinearAttentionProfileSnapshot {
+            decode_post_input_metal_attempts: 3,
+            decode_post_input_metal_hits: 2,
+            decode_post_input_metal_fallbacks: 1,
+            decode_post_input_metal_profile_blocked: 0,
+            ..LinearAttentionProfileSnapshot::default()
+        });
+
+        let mut decisions = Vec::new();
+        profile.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get("ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts"),
+            Some(&5)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_qwen_linear_attention_decode_post_input_metal_hits"),
+            Some(&3)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks"),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked"),
+            Some(&1)
+        );
+        assert!(!decisions.contains_key("ax_mlx_linear_attention_profile_enabled"));
+    }
+
+    #[test]
     fn direct_mlx_hotpath_route_decisions_emit_when_attempted() {
         let mut profile = DirectMlxHotpathProfileSnapshot {
             gemma4_post_attn_ffn_attempts: 2,
@@ -8568,7 +8662,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_attention_reenable_keeps_initial_no_draft_disable_closed() {
+    fn linear_attention_reenable_can_reopen_initial_no_draft_disable() {
         let mut state = RequestState::new(1, RequestId(7));
         state.ngram_acceleration_disabled_for_request = true;
         state.ngram_request_disable_reason = NgramRequestDisableReason::LinearInitialNoDraft;
@@ -8582,11 +8676,13 @@ mod tests {
             true,
         );
 
-        assert!(state.ngram_acceleration_disabled_for_request);
+        assert!(!state.ngram_acceleration_disabled_for_request);
         assert_eq!(
             state.ngram_request_disable_reason,
-            NgramRequestDisableReason::LinearInitialNoDraft
+            NgramRequestDisableReason::None
         );
+        assert_eq!(state.linear_ngram_no_draft_streak, 0);
+        assert_eq!(state.ngram_disabled_steps, 0);
     }
 
     #[test]

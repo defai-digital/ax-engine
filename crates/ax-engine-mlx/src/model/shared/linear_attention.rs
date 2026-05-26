@@ -7,7 +7,11 @@ use std::time::Instant;
 use super::super::config::{LinearAttentionConfig, ModelConfig};
 use super::super::profile::{
     LinearAttentionProfileStage, linear_attention_profile_enabled,
-    linear_attention_profile_eval_elapsed, record_linear_attention_direct_cpp_inputs_attempt,
+    linear_attention_profile_eval_elapsed, record_linear_attention_decode_post_input_metal_attempt,
+    record_linear_attention_decode_post_input_metal_fallback,
+    record_linear_attention_decode_post_input_metal_hit,
+    record_linear_attention_decode_post_input_metal_profile_blocked,
+    record_linear_attention_direct_cpp_inputs_attempt,
     record_linear_attention_direct_cpp_inputs_fallback,
     record_linear_attention_direct_cpp_inputs_hit,
     record_linear_attention_direct_cpp_inputs_profile_blocked,
@@ -21,8 +25,8 @@ use super::utils::qw;
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::{
-    gated_delta_kernel, linear_attention_conv1d, normalize_linear_attention_qk, rms_norm_gated,
-    split_linear_attention_qkv,
+    gated_delta_kernel, linear_attention_conv1d, linear_attention_decode_post_input_metal,
+    normalize_linear_attention_qk, rms_norm_gated, split_linear_attention_qkv,
 };
 use crate::weights::LayerWeights;
 
@@ -126,6 +130,27 @@ fn linear_attention_post_input(
 ) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
     let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(cfg)
         && fastpath::qwen_direct_cpp_linear_attention_post_input_enabled();
+    let seq = qkv.shape().get(1).copied().unwrap_or_default();
+    if seq == 1 && fastpath::qwen_linear_attention_decode_post_input_metal_enabled() {
+        record_linear_attention_decode_post_input_metal_attempt();
+        if profile_enabled {
+            record_linear_attention_decode_post_input_metal_profile_blocked();
+            record_linear_attention_decode_post_input_metal_fallback();
+        } else if let Some(outputs) = linear_attention_decode_post_input_metal(
+            linear_cfg,
+            qkv,
+            &linear_w.conv1d_dense,
+            cached_conv_state,
+            linear_cfg.q_scale,
+            linear_cfg.k_scale,
+            cfg.rms_norm_eps,
+        ) {
+            record_linear_attention_decode_post_input_metal_hit();
+            return outputs;
+        } else {
+            record_linear_attention_decode_post_input_metal_fallback();
+        }
+    }
     if fastpath::direct_cpp_linear_attention_post_input_enabled() || qwen_default_enabled {
         record_linear_attention_direct_cpp_post_input_attempt();
         if profile_enabled {

@@ -353,6 +353,33 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL` — route Qwen
+    /// linear-attention single-token decode post-input work through one Metal
+    /// kernel.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL=0`).
+    ///
+    /// This is narrower than the direct C++ post-input route: it only engages
+    /// for `seq=1`, an existing cached conv state, equal Q/K/V head dims, and a
+    /// power-of-two head dim. Unsupported shapes fall back to the existing
+    /// C++/portable post-input paths.
+    qwen_linear_attention_decode_post_input_metal_enabled,
+    "AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_QWEN_GATED_DELTA_DECODE_METAL` — route Qwen single-token
+    /// GatedDelta recurrent updates through the decode-specialized Metal
+    /// kernel.
+    ///
+    /// **Default: ON** for A/B until the Qwen decode benchmark decides whether
+    /// this specialization is net-positive with the post-input Metal route.
+    qwen_gated_delta_decode_metal_enabled,
+    "AX_MLX_QWEN_GATED_DELTA_DECODE_METAL"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS` — load-time packing for Qwen
     /// linear-attention projections.
     ///
@@ -640,6 +667,36 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_QWEN_DIRECT_LINEAR_ATTENTION_POST_INPUT_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_linear_attention_decode_post_input_metal_uses_default_on_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_gated_delta_decode_metal_uses_default_on_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_DECODE_METAL_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_DECODE_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_QWEN_GATED_DELTA_DECODE_METAL_ENABLED",
             "1"
         ));
     }

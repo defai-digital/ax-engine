@@ -19,6 +19,8 @@ pub struct LinearAttentionQkv {
 }
 
 static GATED_DELTA_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static GATED_DELTA_DECODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static DECODE_POST_INPUT_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static RMS_NORM_GATE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 pub(crate) const GATED_DELTA_SHORT_THREADGROUP_CACHE_CAPACITY: usize = 512;
 pub(crate) const GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY: usize = 1024;
@@ -84,6 +86,131 @@ pub fn linear_attention_conv1d(
     );
     let conv_out = conv1d(&conv_input, conv_weight, 1, 0, 1, conv_dim, None);
     (mlx_sys::ops::silu(&conv_out, None), new_state)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn linear_attention_decode_post_input_metal(
+    cfg: &LinearAttentionConfig,
+    qkv: &MlxArray,
+    conv_weight: &MlxArray,
+    cached_conv_state: Option<&MlxArray>,
+    q_scale: f32,
+    k_scale: f32,
+    eps: f32,
+) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
+    if !fastpath::qwen_linear_attention_decode_post_input_metal_enabled() {
+        return None;
+    }
+    let conv_state = cached_conv_state?;
+    let qkv_shape = qkv.shape();
+    if qkv_shape.len() != 3 || qkv_shape[1] != 1 {
+        return None;
+    }
+    if cfg.key_head_dim != cfg.value_head_dim {
+        return None;
+    }
+    if !cfg.key_head_dim.is_power_of_two() || cfg.key_head_dim > 256 {
+        return None;
+    }
+    if cfg.conv_kernel_dim < 1 {
+        return None;
+    }
+    let batch = qkv_shape[0];
+    let conv_dim = cfg.conv_dim() as i32;
+    let tail_len = cfg.conv_kernel_dim as i32 - 1;
+    if qkv_shape[2] != conv_dim {
+        return None;
+    }
+    if conv_state.shape() != vec![batch, tail_len, conv_dim] {
+        return None;
+    }
+    if conv_weight.shape() != vec![conv_dim, cfg.conv_kernel_dim as i32, 1] {
+        return None;
+    }
+
+    let kernel = DECODE_POST_INPUT_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen_linear_attention_decode_post_input_v1",
+            &[
+                "qkv",
+                "conv_weight",
+                "conv_state",
+                "q_scale",
+                "k_scale",
+                "eps",
+            ],
+            &["q", "k", "v", "new_conv_state"],
+            DECODE_POST_INPUT_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let q_scale_arr = scalar_f32_as(q_scale, MlxDtype::Float32);
+    let k_scale_arr = scalar_f32_as(k_scale, MlxDtype::Float32);
+    let eps_arr = scalar_f32_as(eps, MlxDtype::Float32);
+    let groups = (cfg.num_key_heads * 2 + cfg.num_value_heads) as i32;
+    let head_dim = cfg.key_head_dim as i32;
+    let outputs = kernel.apply_with_template(
+        &[
+            qkv,
+            conv_weight,
+            conv_state,
+            &q_scale_arr,
+            &k_scale_arr,
+            &eps_arr,
+        ],
+        &[
+            KernelOutputSpec {
+                shape: vec![batch, 1, cfg.num_key_heads as i32, head_dim],
+                dtype: qkv.dtype(),
+            },
+            KernelOutputSpec {
+                shape: vec![batch, 1, cfg.num_key_heads as i32, head_dim],
+                dtype: qkv.dtype(),
+            },
+            KernelOutputSpec {
+                shape: vec![batch, 1, cfg.num_value_heads as i32, head_dim],
+                dtype: qkv.dtype(),
+            },
+            KernelOutputSpec {
+                shape: vec![batch, tail_len, conv_dim],
+                dtype: qkv.dtype(),
+            },
+        ],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "T",
+                dtype: qkv.dtype(),
+            },
+            KernelTemplateArg::Int {
+                name: "Hk",
+                value: cfg.num_key_heads as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "Hv",
+                value: cfg.num_value_heads as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "HeadDim",
+                value: head_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "ConvKernelDim",
+                value: cfg.conv_kernel_dim as i32,
+            },
+        ],
+        (head_dim, 1, batch * groups),
+        (head_dim, 1, 1),
+        None,
+    );
+
+    let mut outputs = outputs.into_iter();
+    Some((
+        outputs.next()?,
+        outputs.next()?,
+        outputs.next()?,
+        outputs.next()?,
+    ))
 }
 
 pub fn split_linear_attention_qkv(
@@ -193,6 +320,24 @@ pub fn gated_delta_kernel(
     let key_head_dim = q_shape[3];
     let num_value_heads = v_shape[2];
     let value_head_dim = v_shape[3];
+    if seq == 1 && fastpath::qwen_gated_delta_decode_metal_enabled() {
+        return gated_delta_decode_kernel(
+            q,
+            k,
+            v,
+            a_log,
+            a_raw,
+            dt_bias,
+            b_raw,
+            state,
+            batch,
+            num_key_heads,
+            key_head_dim,
+            num_value_heads,
+            value_head_dim,
+            state_shape,
+        );
+    }
     let seq_i32 = scalar_i32(seq);
     assert!(
         seq <= GATED_DELTA_THREADGROUP_CACHE_CAPACITY as i32,
@@ -293,6 +438,96 @@ pub fn gated_delta_kernel(
     (
         outputs.next().expect("gated delta y output"),
         outputs.next().expect("gated delta state output"),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gated_delta_decode_kernel(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    a_log: &MlxArray,
+    a_raw: &MlxArray,
+    dt_bias: &MlxArray,
+    b_raw: &MlxArray,
+    state: &MlxArray,
+    batch: i32,
+    num_key_heads: i32,
+    key_head_dim: i32,
+    num_value_heads: i32,
+    value_head_dim: i32,
+    state_shape: Vec<i32>,
+) -> (MlxArray, MlxArray) {
+    assert!(
+        key_head_dim % 32 == 0,
+        "gated_delta_kernel requires key_head_dim divisible by 32 (got {key_head_dim})"
+    );
+    assert!(
+        num_key_heads > 0 && num_value_heads % num_key_heads == 0,
+        "gated_delta_kernel requires num_value_heads to be a multiple of num_key_heads \
+         (got {num_value_heads} value heads, {num_key_heads} key heads)"
+    );
+
+    let kernel = GATED_DELTA_DECODE_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "qwen35_gated_delta_decode_v1",
+            &[
+                "q", "k", "v", "a_log", "a_raw", "dt_bias", "b_raw", "state_in",
+            ],
+            &["y", "state_out"],
+            GATED_DELTA_DECODE_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+
+    let outputs = kernel.apply_with_template(
+        &[q, k, v, a_log, a_raw, dt_bias, b_raw, state],
+        &[
+            KernelOutputSpec {
+                shape: vec![batch, 1, num_value_heads, value_head_dim],
+                dtype: q.dtype(),
+            },
+            KernelOutputSpec {
+                shape: state_shape,
+                dtype: state.dtype(),
+            },
+        ],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "InT",
+                dtype: q.dtype(),
+            },
+            KernelTemplateArg::Dtype {
+                name: "StT",
+                dtype: state.dtype(),
+            },
+            KernelTemplateArg::Int {
+                name: "Dk",
+                value: key_head_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "Dv",
+                value: value_head_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "Hk",
+                value: num_key_heads,
+            },
+            KernelTemplateArg::Int {
+                name: "Hv",
+                value: num_value_heads,
+            },
+        ],
+        (32, value_head_dim, batch * num_value_heads),
+        (32, 4, 1),
+        None,
+    );
+
+    let mut outputs = outputs.into_iter();
+    (
+        outputs.next().expect("gated delta decode y output"),
+        outputs.next().expect("gated delta decode state output"),
     )
 }
 
@@ -405,6 +640,76 @@ const RMS_NORM_GATE_KERNEL_SOURCE: &str = r#"
     out[idx] = static_cast<T>(activated * normed_v);
 "#;
 
+const DECODE_POST_INPUT_KERNEL_SOURCE: &str = r#"
+    constexpr int KeyDim = Hk * HeadDim;
+    constexpr int ValueDim = Hv * HeadDim;
+    constexpr int ConvDim = 2 * KeyDim + ValueDim;
+    constexpr int TailLen = ConvKernelDim - 1;
+    constexpr int Groups = 2 * Hk + Hv;
+
+    const int lane = thread_position_in_threadgroup.x;
+    const int z = thread_position_in_grid.z;
+    const int batch_idx = z / Groups;
+    const int group_idx = z - batch_idx * Groups;
+
+    threadgroup float squares[256];
+
+    int channel = 0;
+    bool is_q = group_idx < Hk;
+    bool is_k = group_idx >= Hk && group_idx < 2 * Hk;
+    if (is_q) {
+      channel = group_idx * HeadDim + lane;
+    } else if (is_k) {
+      channel = KeyDim + (group_idx - Hk) * HeadDim + lane;
+    } else {
+      channel = 2 * KeyDim + (group_idx - 2 * Hk) * HeadDim + lane;
+    }
+
+    auto qkv_b = qkv + batch_idx * ConvDim;
+    auto state_b = conv_state + batch_idx * TailLen * ConvDim;
+    auto new_state_b = new_conv_state + batch_idx * TailLen * ConvDim;
+
+    float acc = static_cast<float>(qkv_b[channel]) *
+        static_cast<float>(conv_weight[channel * ConvKernelDim + TailLen]);
+    for (int t = 0; t < TailLen; ++t) {
+      acc += static_cast<float>(state_b[t * ConvDim + channel]) *
+          static_cast<float>(conv_weight[channel * ConvKernelDim + t]);
+    }
+    float activated = acc / (1.0f + exp(-acc));
+
+    for (int t = 0; t < TailLen - 1; ++t) {
+      new_state_b[t * ConvDim + channel] = state_b[(t + 1) * ConvDim + channel];
+    }
+    if (TailLen > 0) {
+      new_state_b[(TailLen - 1) * ConvDim + channel] =
+          static_cast<T>(qkv_b[channel]);
+    }
+
+    if (is_q || is_k) {
+      squares[lane] = activated * activated;
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      for (int stride = HeadDim >> 1; stride > 0; stride >>= 1) {
+        if (lane < stride) {
+          squares[lane] += squares[lane + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+      }
+      float norm_scale = rsqrt(squares[0] / static_cast<float>(HeadDim) + eps[0]);
+      if (is_q) {
+        int head = group_idx;
+        q[(batch_idx * Hk + head) * HeadDim + lane] =
+            static_cast<T>(activated * norm_scale * q_scale[0]);
+      } else {
+        int head = group_idx - Hk;
+        k[(batch_idx * Hk + head) * HeadDim + lane] =
+            static_cast<T>(activated * norm_scale * k_scale[0]);
+      }
+    } else {
+      int head = group_idx - 2 * Hk;
+      v[(batch_idx * Hv + head) * HeadDim + lane] = static_cast<T>(activated);
+    }
+"#;
+
 const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     const int t_len = seq_len[0];
     auto n = thread_position_in_grid.z;
@@ -502,6 +807,74 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
       k_ += Hk * Dk;
       v_ += Hv * Dv;
       y += Hv * Dv;
+    }
+
+    for (int i = 0; i < n_per_t; ++i) {
+      o_state[s_base + i] = static_cast<StT>(state[i]);
+    }
+"#;
+
+const GATED_DELTA_DECODE_KERNEL_SOURCE: &str = r#"
+    auto n = thread_position_in_grid.z;
+    auto b_idx = n / Hv;
+    auto hv_idx = n % Hv;
+    auto hk_idx = hv_idx / (Hv / Hk);
+    constexpr int n_per_t = Dk / 32;
+
+    // q, k: [B, 1, Hk, Dk] InT
+    auto q_ = q + b_idx * Hk * Dk + hk_idx * Dk;
+    auto k_ = k + b_idx * Hk * Dk + hk_idx * Dk;
+
+    // v, y: [B, 1, Hv, Dv] InT
+    auto v_ = v + b_idx * Hv * Dv + hv_idx * Dv;
+    y += b_idx * Hv * Dv + hv_idx * Dv;
+
+    auto dk_idx = thread_position_in_threadgroup.x;
+    auto dv_idx = thread_position_in_grid.y;
+
+    threadgroup float g_t;
+    threadgroup float beta_t;
+    if (thread_index_in_threadgroup == 0) {
+      const float exp_a_log = exp(static_cast<float>(a_log[hv_idx]));
+      const float dt_bias_v = static_cast<float>(dt_bias[hv_idx]);
+      float a_plus_dt = static_cast<float>(a_raw[b_idx * Hv + hv_idx]) + dt_bias_v;
+      float sp = a_plus_dt > 20.0f ? a_plus_dt : log1p(exp(a_plus_dt));
+      g_t = exp(-exp_a_log * sp);
+      float b_val = static_cast<float>(b_raw[b_idx * Hv + hv_idx]);
+      beta_t = static_cast<float>(static_cast<InT>(1.0f / (1.0f + exp(-b_val))));
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // state_in, state_out: [B, Hv, Dv, Dk] StT
+    auto i_state = state_in + (n * Dv + dv_idx) * Dk;
+    auto o_state = state_out + (n * Dv + dv_idx) * Dk;
+
+    const int s_base = n_per_t * dk_idx;
+
+    float state[n_per_t];
+    for (int i = 0; i < n_per_t; ++i) {
+      state[i] = static_cast<float>(i_state[s_base + i]);
+    }
+
+    const float v_t = static_cast<float>(v_[dv_idx]);
+
+    float kv_mem = 0.0f;
+    for (int i = 0; i < n_per_t; ++i) {
+      state[i] = state[i] * g_t;
+      kv_mem += state[i] * static_cast<float>(k_[s_base + i]);
+    }
+    kv_mem = simd_sum(kv_mem);
+
+    const float delta = (v_t - kv_mem) * beta_t;
+
+    float out = 0.0f;
+    for (int i = 0; i < n_per_t; ++i) {
+      state[i] = state[i] + static_cast<float>(k_[s_base + i]) * delta;
+      out += state[i] * static_cast<float>(q_[s_base + i]);
+    }
+    out = simd_sum(out);
+    if (thread_index_in_simdgroup == 0) {
+      y[dv_idx] = static_cast<InT>(out);
     }
 
     for (int i = 0; i < n_per_t; ++i) {
@@ -804,6 +1177,60 @@ mod tests {
     }
 
     #[test]
+    fn gated_delta_decode_kernel_matches_cpu_reference_for_single_token() {
+        const SEQ: usize = 1;
+        const KEY_HEAD_DIM: usize = 32;
+        const VALUE_HEAD_DIM: usize = 4;
+
+        let q_data: Vec<f32> = (0..KEY_HEAD_DIM)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.03)
+            .collect();
+        let k_data: Vec<f32> = (0..KEY_HEAD_DIM)
+            .map(|idx| ((idx % 5) as f32 - 2.0) * 0.02)
+            .collect();
+        let v_data = vec![0.10, -0.05, 0.07, 0.03];
+        let a_log_data = vec![-0.2];
+        let a_raw_data = vec![0.1];
+        let dt_bias_data = vec![0.05];
+        let b_raw_data = vec![0.25];
+        let state_data: Vec<f32> = (0..VALUE_HEAD_DIM * KEY_HEAD_DIM)
+            .map(|idx| ((idx % 11) as f32 - 5.0) * 0.005)
+            .collect();
+        let (expected_y, expected_state) = gated_delta_cpu_reference(
+            &q_data,
+            &k_data,
+            &v_data,
+            &a_log_data,
+            &a_raw_data,
+            &dt_bias_data,
+            &b_raw_data,
+            &state_data,
+            SEQ,
+            KEY_HEAD_DIM,
+            VALUE_HEAD_DIM,
+        );
+
+        let q = f32_array(&q_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let k = f32_array(&k_data, &[1, SEQ as i32, 1, KEY_HEAD_DIM as i32]);
+        let v = f32_array(&v_data, &[1, SEQ as i32, 1, VALUE_HEAD_DIM as i32]);
+        let a_log = f32_array(&a_log_data, &[1]);
+        let a_raw = f32_array(&a_raw_data, &[1, SEQ as i32, 1]);
+        let dt_bias = f32_array(&dt_bias_data, &[1]);
+        let b_raw = f32_array(&b_raw_data, &[1, SEQ as i32, 1]);
+        let state = f32_array(
+            &state_data,
+            &[1, 1, VALUE_HEAD_DIM as i32, KEY_HEAD_DIM as i32],
+        );
+
+        let (y, new_state) =
+            gated_delta_kernel(&q, &k, &v, &a_log, &a_raw, &dt_bias, &b_raw, &state);
+        mlx_sys::eval(&[&y, &new_state]);
+
+        assert_close("decode_y", y.data_f32(), &expected_y, 1e-6);
+        assert_close("decode_state", new_state.data_f32(), &expected_state, 1e-6);
+    }
+
+    #[test]
     fn normalize_linear_attention_qk_preserves_reference_shapes() {
         let (q_scale, k_scale) = linear_attention_qk_scale(32);
         let cfg = LinearAttentionConfig {
@@ -825,6 +1252,87 @@ mod tests {
         assert_eq!(k.shape(), vec![1, 2, 1, 32]);
         assert_eq!(q.dtype(), MlxDtype::Bfloat16);
         assert_eq!(k.dtype(), MlxDtype::Bfloat16);
+    }
+
+    #[test]
+    fn decode_post_input_metal_matches_portable_composition() {
+        let (q_scale, k_scale) = linear_attention_qk_scale(32);
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 2,
+            num_key_heads: 1,
+            key_head_dim: 32,
+            value_head_dim: 32,
+            conv_kernel_dim: 4,
+            q_scale,
+            k_scale,
+        };
+        let conv_dim = cfg.conv_dim();
+        let qkv_data: Vec<f32> = (0..conv_dim)
+            .map(|idx| ((idx % 17) as f32 - 8.0) * 0.01)
+            .collect();
+        let state_data: Vec<f32> = (0..3 * conv_dim)
+            .map(|idx| ((idx % 13) as f32 - 6.0) * 0.005)
+            .collect();
+        let weight_data: Vec<f32> = (0..conv_dim * cfg.conv_kernel_dim)
+            .map(|idx| ((idx % 7) as f32 - 3.0) * 0.02)
+            .collect();
+        let qkv = f32_array(&qkv_data, &[1, 1, conv_dim as i32]);
+        let state = f32_array(&state_data, &[1, 3, conv_dim as i32]);
+        let weight = f32_array(
+            &weight_data,
+            &[conv_dim as i32, cfg.conv_kernel_dim as i32, 1],
+        );
+
+        let (conv_out, portable_state) = linear_attention_conv1d(&cfg, &qkv, &weight, Some(&state));
+        let split = split_linear_attention_qkv(&cfg, &conv_out);
+        let (portable_q, portable_k) =
+            normalize_linear_attention_qk(&cfg, &split.q, &split.k, 1e-6);
+        let (metal_q, metal_k, metal_v, metal_state) = linear_attention_decode_post_input_metal(
+            &cfg,
+            &qkv,
+            &weight,
+            Some(&state),
+            q_scale,
+            k_scale,
+            1e-6,
+        )
+        .expect("decode post-input Metal path should accept Qwen-like shape");
+        mlx_sys::eval(&[
+            &portable_q,
+            &portable_k,
+            &split.v,
+            &portable_state,
+            &metal_q,
+            &metal_k,
+            &metal_v,
+            &metal_state,
+        ]);
+
+        assert_close(
+            "decode_post_input_q",
+            metal_q.data_f32(),
+            portable_q.data_f32(),
+            1e-5,
+        );
+        assert_close(
+            "decode_post_input_k",
+            metal_k.data_f32(),
+            portable_k.data_f32(),
+            1e-5,
+        );
+        assert_close(
+            "decode_post_input_v",
+            metal_v.data_f32(),
+            split.v.data_f32(),
+            1e-5,
+        );
+        assert_close(
+            "decode_post_input_state",
+            metal_state.data_f32(),
+            portable_state.data_f32(),
+            1e-6,
+        );
     }
 
     #[test]

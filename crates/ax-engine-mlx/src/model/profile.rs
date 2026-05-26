@@ -29,6 +29,10 @@ pub struct LinearAttentionProfileSnapshot {
     pub direct_cpp_post_input_hits: u32,
     pub direct_cpp_post_input_fallbacks: u32,
     pub direct_cpp_post_input_profile_blocked: u32,
+    pub decode_post_input_metal_attempts: u32,
+    pub decode_post_input_metal_hits: u32,
+    pub decode_post_input_metal_fallbacks: u32,
+    pub decode_post_input_metal_profile_blocked: u32,
     pub projection_wall_us: u32,
     pub projection_qkvz_wall_us: u32,
     pub projection_ba_wall_us: u32,
@@ -322,6 +326,30 @@ pub(super) fn record_linear_attention_direct_cpp_post_input_profile_blocked() {
     let mut profile = linear_attention_profile().lock().unwrap();
     profile.direct_cpp_post_input_profile_blocked = profile
         .direct_cpp_post_input_profile_blocked
+        .saturating_add(1);
+}
+
+pub(super) fn record_linear_attention_decode_post_input_metal_attempt() {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    profile.decode_post_input_metal_attempts =
+        profile.decode_post_input_metal_attempts.saturating_add(1);
+}
+
+pub(super) fn record_linear_attention_decode_post_input_metal_hit() {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    profile.decode_post_input_metal_hits = profile.decode_post_input_metal_hits.saturating_add(1);
+}
+
+pub(super) fn record_linear_attention_decode_post_input_metal_fallback() {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    profile.decode_post_input_metal_fallbacks =
+        profile.decode_post_input_metal_fallbacks.saturating_add(1);
+}
+
+pub(super) fn record_linear_attention_decode_post_input_metal_profile_blocked() {
+    let mut profile = linear_attention_profile().lock().unwrap();
+    profile.decode_post_input_metal_profile_blocked = profile
+        .decode_post_input_metal_profile_blocked
         .saturating_add(1);
 }
 
