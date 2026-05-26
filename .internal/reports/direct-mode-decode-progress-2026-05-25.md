@@ -563,15 +563,19 @@ PASS if AX direct is at least 0.980x of `mlx_lm`.
 | Qwen3.6 27B 4-bit | same-session | 2048 | 1.001x | PASS |
 | Qwen3.6 27B 5-bit | same-session | 128 | 1.001x | PASS |
 | Qwen3.6 27B 6-bit | same-session | 128 | 1.006x | PASS |
-| Qwen3.6 27B 8-bit | same-session | 128 | 0.999x | PASS |
+| Qwen3.6 27B 8-bit | clean current-commit p128 recheck plus same-session p512/p2048 | 512 | 1.003x | PASS |
 | Qwen3.6 35B A3B 4-bit | same-session | 2048 | 1.176x | PASS |
 
 Full-row interpretation:
 
-- All 36 prompt rows pass the 0.980x acceptance rule.
-- 35/36 rows are strictly above `mlx_lm`.
-- The only row below `mlx_lm` is Qwen3.6 27B 8-bit prompt 128 at 0.999x
-  (`0.10%` below `mlx_lm`), which is inside the user-approved 2% tolerance.
+- All 36 prompt rows are now strictly above `mlx_lm` after the clean
+  current-commit Qwen3.6 27B 8-bit prompt=128 recheck.
+- The previous lowest row was Qwen3.6 27B 8-bit prompt=128 at 0.999x
+  (`0.10%` below `mlx_lm`) in the 3-repetition exploratory sweep. The clean
+  current-commit 5-repetition recheck measured `mlx_lm=18.182 tok/s` and
+  AX direct `18.239 tok/s`, ratio `1.003x`, with `git_tracked_dirty=false`.
+- The tracked clean recheck artifact is
+  `benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/`.
 - Current installed `mlx_lm.benchmark` no longer loads the dense Gemma E2B/E4B
   snapshots used by the README rows: it reports extra self-attention
   parameters after the model depth expected by the loader. For those rows, the

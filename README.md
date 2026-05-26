@@ -221,7 +221,7 @@ and runtime path are all present.
 
 ## Performance ([full performance docs](docs/PERFORMANCE.md))
 
-<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; ax-base=benchmarks/results/mlx-inference/2026-05-25-ax-only-direct-mode-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; ax-base=benchmarks/results/mlx-inference/2026-05-25-ax-only-direct-mode-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/; reference@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/; ax-overlay@p128=benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/ -->
 The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
 visible. Full result tables and interpretation live in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
@@ -230,8 +230,10 @@ and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 These rows are a provenance-tracked composite. The current `mlx_lm` reference
 rows and refreshed AX direct-mode rows for the 12 Gemma 4 and Qwen 3.6 rows
 shown below come from
-`benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/`. The
-default AX n-gram column remains sourced from
+`benchmarks/results/mlx-inference/2026-05-26-direct-mode-acceptance/`, with a
+clean current-commit Qwen 3.6 27B 8-bit prompt=128 recheck overlaid from
+`benchmarks/results/mlx-inference/2026-05-26-qwen27-8bit-p128-clean-recheck/`.
+The default AX n-gram column remains sourced from
 `benchmarks/results/mlx-inference/2026-05-25-ax-only-direct-mode-refresh/`
 where no newer n-gram measurement exists for the same prompt and generation
 shape.
@@ -314,7 +316,7 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 | Qwen 3.6 27B | 6-bit | 128 | 537.7 | 366.1 | **609.7 (+66.5%)** |
 |  |  | 512 | 756.1 | 669.7 | **823.7 (+23.0%)** |
 |  |  | 2048 | 689.3 | 839.9 | **857.0 (+2.0%)** |
-| Qwen 3.6 27B | 8-bit | 128 | 559.4 | 301.3 | **551.4 (+83.0%)** |
+| Qwen 3.6 27B | 8-bit | 128 | 559.4 | 302.2 | **564.3 (+86.7%)** |
 |  |  | 512 | 798.2 | 610.4 | **811.5 (+32.9%)** |
 |  |  | 2048 | 741.9 | 821.7 | **851.4 (+3.6%)** |
 | Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 614.6 | **1,223.7 (+99.1%)** |
@@ -377,7 +379,7 @@ collapsed output loop.
 | Qwen 3.6 27B | 6-bit | 128 | 21.3 | 24.4 | **24.5 (+0.6%)** | **24.5 (+2.2%)** |
 |  |  | 512 | 21.3 | 24.3 | **24.5 (+0.7%)** | 24.5 (-1.2%) |
 |  |  | 2048 | 15.4 | 24.1 | **24.4 (+1.1%)** | 24.3 (-1.2%) |
-| Qwen 3.6 27B | 8-bit | 128 | 18.3 | 18.1 | 18.1 (-0.1%) | 18.4 (-1.7%) |
+| Qwen 3.6 27B | 8-bit | 128 | 18.3 | 18.2 | **18.2 (+0.3%)** | 18.4 (-1.7%) |
 |  |  | 512 | 18.2 | 18.1 | **18.1 (+0.3%)** | 18.3 (-1.8%) |
 |  |  | 2048 | 12.7 | 17.8 | **18.0 (+1.0%)** | 18.2 (-1.3%) |
 | Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 134.6 | **159.0 (+18.1%)** | **159.0 (+13.5%)** |
@@ -437,7 +439,7 @@ so server/client timing does not get mixed with runner-time throughput.
 | Qwen 3.6 27B | 6-bit | 128 | 238.1 | 349.6 | **209.9 (-40.0%)** |
 |  |  | 512 | 677.2 | 764.5 | **621.6 (-18.7%)** |
 |  |  | 2048 | 2,971.2 | 2,438.4 | **2,389.6 (-2.0%)** |
-| Qwen 3.6 27B | 8-bit | 128 | 228.8 | 424.9 | **232.1 (-45.4%)** |
+| Qwen 3.6 27B | 8-bit | 128 | 228.8 | 423.5 | **226.8 (-46.4%)** |
 |  |  | 512 | 641.5 | 838.8 | **630.9 (-24.8%)** |
 |  |  | 2048 | 2,760.6 | 2,492.4 | **2,405.5 (-3.5%)** |
 | Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 208.3 | **104.6 (-49.8%)** |
