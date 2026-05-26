@@ -216,24 +216,25 @@ pub fn mtp_draft_tokens(
     first_hidden: &MlxArray,
     first_token: u32,
     cache: &mut MlxKVCache,
+    max_depth_cap: Option<usize>,
     _rng: &mut Xorshift64,
 ) -> (Vec<u32>, Vec<f32>, usize) {
     let Some(head) = weights.mtp.as_ref() else {
         return (vec![], vec![], 0);
     };
-    if head.max_depth == 0 {
+    let max_depth = max_depth_cap.unwrap_or(head.max_depth).min(head.max_depth);
+    if max_depth == 0 {
         return (vec![], vec![], 0);
     }
 
     let use_temperature = head.draft_sampling.temperature > 0.0;
     let use_topk_logprob = use_temperature && head.draft_sampling.top_k > 0;
-    let mut draft_tokens = Vec::with_capacity(head.max_depth);
-    let mut draft_log_probs = Vec::with_capacity(head.max_depth);
+    let mut draft_tokens = Vec::with_capacity(max_depth);
+    let mut draft_log_probs = Vec::with_capacity(max_depth);
     // Lazy arrays holding p(draft_token) under the temperature-scaled draft distribution.
     // Evaluated in one batch after all depth iterations to avoid per-step GPU sync.
-    let mut lazy_probs: Vec<MlxArray> = Vec::with_capacity(head.max_depth);
-    let mut lazy_topk_logprobs: Vec<Option<(MlxArray, MlxArray)>> =
-        Vec::with_capacity(head.max_depth);
+    let mut lazy_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut lazy_topk_logprobs: Vec<Option<(MlxArray, MlxArray)>> = Vec::with_capacity(max_depth);
 
     let mut prev_hidden = first_hidden.clone();
     let mut prev_token = first_token;
@@ -245,7 +246,7 @@ pub fn mtp_draft_tokens(
         None
     };
 
-    for _ in 0..head.max_depth {
+    for _ in 0..max_depth {
         let new_hidden = mtp_head_forward(head, &prev_hidden, prev_token, weights, cache, cfg);
         let logits = mtp_hidden_to_logits(&new_hidden, head, weights, cfg);
 

@@ -2702,6 +2702,9 @@ struct RequestState {
     /// min(1, p_target(draft[i]) / exp(mtp_pending_draft_log_probs[i])).
     /// Empty when draft_sampling.temperature == 0 (greedy acceptance fallback).
     mtp_pending_draft_log_probs: Vec<f32>,
+    /// Request-local MTP draft depth cap.  Adapted from the last accept/reject
+    /// outcome so low-acceptance prompts stop paying for deeper draft chains.
+    mtp_adaptive_max_depth: usize,
     /// Pre-norm hidden state saved from the last successful MTP verify pass.
     /// Used as `main_hidden` for the MTP head at the next decode step.
     mtp_pending_hidden: Option<MlxArray>,
@@ -2753,6 +2756,7 @@ impl RequestState {
             mtp_decode_count: 0,
             mtp_pending_draft: Vec::new(),
             mtp_pending_draft_log_probs: Vec::new(),
+            mtp_adaptive_max_depth: 0,
             mtp_pending_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
             mtp_prefill_hidden: None,
@@ -5263,6 +5267,14 @@ impl MlxRunner {
             state.mtp_telemetry.record_step(pending.len(), accept_count);
         }
 
+        let mtp_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
+        state.mtp_adaptive_max_depth = mtp_next_adaptive_depth(
+            state.mtp_adaptive_max_depth,
+            mtp_max_depth,
+            pending.len(),
+            accept_count,
+        );
+
         // Generate new draft tokens from the hidden row that produced the correction/bonus token.
         let draft_started = Instant::now();
         let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
@@ -5274,6 +5286,7 @@ impl MlxRunner {
             &draft_hidden,
             tail_tok,
             cache,
+            Some(state.mtp_adaptive_max_depth),
             &mut state.rng,
         );
         state.mtp_decode_count += added;
@@ -5340,6 +5353,7 @@ impl MlxRunner {
         // Reset MTP draft state for the new generation.
         state.mtp_pending_draft.clear();
         state.mtp_pending_draft_log_probs.clear();
+        state.mtp_adaptive_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
         state.mtp_pending_hidden = None;
         state.mtp_decode_count = 0;
         if let Some(ref mut c) = state.mtp_cache {
@@ -5549,6 +5563,33 @@ fn mtp_verify_needs_argmax(
 ) -> bool {
     target_sampling.temperature <= 0.0
         || (!pending.is_empty() && pending_log_probs.len() != pending.len())
+}
+
+fn mtp_next_adaptive_depth(
+    current_depth: usize,
+    max_depth: usize,
+    pending_len: usize,
+    accept_count: usize,
+) -> usize {
+    if max_depth == 0 {
+        return 0;
+    }
+
+    let current_depth = if current_depth == 0 {
+        max_depth
+    } else {
+        current_depth.clamp(1, max_depth)
+    };
+
+    if pending_len == 0 {
+        return current_depth;
+    }
+
+    if accept_count >= pending_len {
+        return current_depth.saturating_add(1).min(max_depth);
+    }
+
+    accept_count.clamp(1, max_depth)
 }
 
 /// Build a lazy MLX array holding p_target(draft_token_i) for each draft position.
@@ -6556,6 +6597,17 @@ mod tests {
             &[-0.1, -0.2],
             MlxSamplingParams::greedy()
         ));
+    }
+
+    #[test]
+    fn mtp_adaptive_depth_shrinks_on_partial_reject_and_recovers_on_full_accept() {
+        assert_eq!(mtp_next_adaptive_depth(0, 3, 0, 0), 3);
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 2), 2);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1), 1);
+        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 1), 2);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 2), 3);
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0), 1);
+        assert_eq!(mtp_next_adaptive_depth(3, 0, 3, 3), 0);
     }
 
     fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {
