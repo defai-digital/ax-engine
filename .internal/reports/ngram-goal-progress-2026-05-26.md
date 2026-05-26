@@ -462,6 +462,51 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-dense-ffn-compile-block-probe/qwen3_6-27b-4bit-p128.json`
 
+### Attention output gate Metal probe
+
+Qwen3Next full-attention layers apply `attn_out * sigmoid(gate)` before
+`o_proj`, matching upstream `mlx_lm`. A dirty-code opt-in probe fused that
+elementwise pair into a single Metal node while leaving the quantized output
+projection unchanged. The unit test passed and the p128 A/B was too small to
+promote:
+
+- `AX_MLX_ATTN_OUTPUT_GATE_METAL=1`: 34.226 tok/s
+- same dirty build, flag off: 34.158 tok/s
+- delta: about +0.20%, within run noise and far below the 40.096 tok/s target
+
+The probe code was removed.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-attn-output-gate-probe/qwen3_6-27b-4bit-p128.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-attn-output-gate-probe/qwen3_6-27b-4bit-p128-default.json`
+
+### Linear n-gram min-support probe
+
+The p128 output-token diagnostic shows local output repetition, but the
+linear-attention n-gram policy requires two observations for a generated-output
+context before drafting. A dirty-code opt-in probe allowed
+`AX_MLX_LINEAR_NGRAM_MIN_SUPPORT=1` to test whether single-observation
+generated repeats can recover the random-token prompt case. It did produce
+draft attempts, but none were accepted:
+
+- Qwen 3.6 27B 4-bit p128: 33.187 tok/s, below the 34.158 same-build direct
+  fallback row
+- `ax_ngram_draft_attempts`: 2
+- `ax_ngram_draft_tokens`: 6
+- `ax_ngram_accepted_tokens`: 0
+- `ax_mlx_ngram_decode_steps`: 2
+- `ax_mlx_ngram_decode_wall_us`: 167,200
+
+The probe confirms that lowering the linear min-support gate adds expensive
+complete misses on the random-token blocker rather than useful bonus tokens.
+The probe code was removed and the release binary was rebuilt from the clean
+source tree.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-attn-output-gate-probe/qwen3_6-27b-4bit-p128-linear-min1.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
