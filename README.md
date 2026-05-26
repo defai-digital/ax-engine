@@ -140,7 +140,10 @@ runtime layer can produce higher effective throughput than the reference MLX
 runtimes on matching benchmark shapes:
 
 - **N-gram acceleration** reaches up to 3.1x mlx_lm decode
-  throughput on high-hit benchmark rows with no second draft model
+  throughput on high-hit benchmark rows with no second draft model. It is a
+  workload-sensitive path; Qwen 3.6 27B random-token rows below currently fall
+  back near direct decode because the prompt/output stream does not provide a
+  useful n-gram draft source.
 - **Coding-shaped decode is a natural fit when local repetition exists**,
   including completion, edit loops, structured diffs, JSON/tool output, imports,
   indentation, and repeated identifiers
@@ -348,6 +351,11 @@ and the
 [synthetic repeated-output loop](docs/NGRAM-ACCELERATION.md#synthetic-repeated-output-loops)
 caveat for random-token rows whose throughput may be measured on a
 collapsed output loop.
+
+The Qwen 3.6 27B rows are intentionally left in the table as a negative
+random-token result: AX's default policy falls back near direct decode when no
+accepted n-gram draft is available. They are not presented as n-gram speedup
+claims.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |
 |---|---|---:| ---: |---:|---:|---:|
