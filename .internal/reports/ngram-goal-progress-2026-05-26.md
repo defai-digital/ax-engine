@@ -1006,6 +1006,35 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-silu-quantized-ffn-probe/qwen3_6-27b-4bit-p128-g128-silu-quantized-ffn.json`
 
+### Current decode-profile checkpoint
+
+A short Qwen 3.6 27B 4-bit p128/g64 run with `AX_MLX_DECODE_PROFILE=1` was
+captured after removing the dense SwiGLU direct FFN probe. Profiling forces
+barriers and is not a throughput claim; it is only a stage-ranking artifact.
+
+The profile still points at large graph-boundary work rather than small wrapper
+work:
+
+| Profile bucket | Wall time |
+| --- | ---: |
+| post-attention FFN total | 3,289,961 us |
+| FFN gate/up qmatmul | 1,644,607 us |
+| FFN activation | 731,369 us |
+| FFN down qmatmul | 1,060,577 us |
+| post-attention residual/norm | 1,215,233 us |
+| post-attention residual gate/add | 690,613 us |
+| pre-SDPA/full-attention staging | 801,551 us |
+| SDPA | 183,858 us |
+| lm_head | 89,162 us |
+
+The same run had zero draft attempts and stayed on
+`linear_no_draft_direct_pipeline_fallback`, so it does not change the blocker
+classification.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-decode-profile-current/qwen3_6-27b-4bit-p128-g64-decode-profile.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
