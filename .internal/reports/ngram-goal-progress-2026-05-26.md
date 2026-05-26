@@ -605,6 +605,38 @@ Capture artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-prefill-output-feed-probe/qwen3_6-27b-4bit-p128-capture.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-policy-replay-capture/qwen3_6-27b-4bit-p512-p2048-capture.json`
 
+### Production direct-pipeline stage profile
+
+`AX_MLX_DIRECT_PIPELINE_STAGE_PROFILE=1` adds op-count and graph-build timing
+without decode-stage eval barriers. A focused Qwen 3.6 27B 4-bit p128/g64 run
+still used the linear no-draft direct fallback and produced no n-gram drafts:
+
+- decode: 34.500 tok/s
+- effective route: `linear_no_draft_direct_pipeline_fallback`
+- n-gram draft attempts: 0
+- request-disabled fallback steps: 63
+- direct pipeline wall: 1,852,168 us
+- direct pipeline forward graph-build: 120,554 us
+- direct pipeline async eval: 1,730,894 us
+
+The per-layer op count also shows that the remaining Qwen direct path is not
+primarily a Rust dispatch-count problem. Across 63 direct-pipeline steps:
+
+| Layer group | Layer calls | Ops | Ops/layer |
+| --- | ---: | ---: | ---: |
+| Linear attention | 3,024 | 39,312 | 13.0 |
+| Full attention | 1,008 | 31,248 | 31.0 |
+
+This reinforces the prior conclusion: after the Qwen linear-attention post-input
+and GatedDelta decode Metal routes, another small wrapper around a few MLX nodes
+is unlikely to close an 18% throughput gap. The next useful probe should target
+a larger Qwen dense post-attention FFN/full-attention boundary or a different
+verified draft source.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-stage-profile-prod/qwen3_6-27b-4bit-p128-g64-stage-profile.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
