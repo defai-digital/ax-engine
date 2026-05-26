@@ -551,7 +551,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
         row = {
             "engine": "ax_engine_mlx_ngram_accel",
             "prompt_tokens": 2048,
-            "sampler_settings": None,
+            "sampler_settings": "greedy",
             "prefill_work_contract": checker.MLX_LM_STYLE_PREFILL_WORK_CONTRACT,
         }
 

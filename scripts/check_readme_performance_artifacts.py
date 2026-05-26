@@ -1127,7 +1127,7 @@ def validate_ax_prefill_decode_split(
 def expected_ax_prefill_work_contract(row: dict[str, Any]) -> str:
     sampler = row.get("sampler_settings")
     prompt_tokens = int(row.get("prompt_tokens", -1))
-    if sampler is None and prompt_tokens > 512:
+    if sampler in (None, "greedy") and prompt_tokens > 512:
         return MLX_LM_STYLE_PREFILL_WORK_CONTRACT
     return HISTORICAL_PREFILL_WORK_CONTRACT
 
