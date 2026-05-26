@@ -459,6 +459,14 @@ p128 measured 34.174 tok/s while keeping peak memory near the packed route, so
 the useful signal is not just disabling the C++ inputs wrapper. No default
 change is promoted from this probe.
 
+Follow-up runtime audit: the benchmark JSON `model_config` field reports the
+original manifest layout, not the post-load runtime layout. `pack-audit` on the
+same Qwen 3.6 27B 4-bit checkpoint confirmed the actual loaded weights use
+48/48 packed QKVZ/BA linear-attention layers and 64/64 packed dense FFN gate/up
+layers under the default environment. Therefore the pack-off A/B above remains
+a valid kill-switch probe, and the split `model_config.linear_attention_projection_layout`
+field should not be treated as runtime proof.
+
 Artifacts:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-pack-off-probe/qwen3_6-27b-4bit-p128-pack-off.json`
@@ -709,6 +717,26 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-attn-norm-carry-probe/qwen3_6-27b-4bit-p128-g64.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-attn-norm-carry-probe/qwen3_6-27b-4bit-p128-g64-stage-profile.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-attn-norm-carry-probe/qwen3_6-27b-4bit-p128-g128.json`
+
+### Direct greedy chunk probe
+
+An opt-in exact greedy chunk probe tried to materialize two deterministic direct
+fallback tokens per model step and serve the second token through the existing
+bonus-token path. This was intended to amortize per-token command/eval overhead
+on the Qwen no-draft fallback row.
+
+The probe was not promoted. On the Qwen 3.6 27B 4-bit p128/g128 blocker shape,
+`AX_MLX_DIRECT_GREEDY_CHUNK=2` measured 31.546 tok/s, below both the current
+AX row (~34.2 tok/s) and the mlx_lm target boundary. Telemetry confirmed the
+route produced 63 bonus tokens and halved direct pipeline invocations, but the
+multi-token dependent graph lost the one-step `mlx_lm`-style overlap and spent
+about 3.51s in direct-pipeline async eval plus about 0.33s in pending eval.
+The runtime experiment code was removed.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-greedy-chunk-probe/qwen3_6-27b-4bit-p128-g128-chunk2.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-greedy-chunk-probe/qwen3_6-27b-4bit-p128-g128-chunk2-v2.json`
 
 ### Existing verified-draft and KV-compression fallback checks
 
