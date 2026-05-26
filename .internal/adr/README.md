@@ -10,6 +10,8 @@ This directory contains active architecture decisions for the current
 - `ADR-002-mlx-sys-inference-ffi-policy.md` - inference-first MLX binding policy.
 - `ADR-003-project-surface-boundaries.md` - server, SDK, Python, benchmark, and
   microbenchmark ownership.
+- `ADR-004-cache-local-speculative-serving.md` - cache-local serving,
+  speculative decoding, and offline policy-search boundaries.
 
 ## Policy
 

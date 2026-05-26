@@ -11,6 +11,8 @@ This directory contains active product and execution plans for the current
   microbenchmark artifacts, and performance-claim evidence.
 - `PRD-2026-05-25-sdk-server-interface-hardening.md` - server, SDK, Python, and
   chat/API interface hardening.
+- `PRD-2026-05-26-cache-local-speculative-serving.md` - cache-aware scheduling,
+  prefix reuse, speculative decode, and offline policy-search promotion gates.
 
 ## Policy
 
