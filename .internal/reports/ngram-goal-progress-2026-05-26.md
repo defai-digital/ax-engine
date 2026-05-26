@@ -76,6 +76,13 @@ and Q/K scaling into one Metal kernel. `model/profile.rs`, `runner.rs`, and
 - `ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks`
 - `ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked`
 
+`crates/ax-engine-mlx/src/linear_attention_ops.rs` now also fuses Qwen
+linear-attention output RMSNorm plus SiLU gate into one Metal kernel. The
+previous default path already fused the post-RMSNorm gate, but still submitted
+RMSNorm as a separate MLX op. The new route keeps the same
+`AX_MLX_LINEAR_ATTENTION_RMS_NORM_GATE_METAL` kill-switch and falls back to the
+old RMSNorm + gate-Metal path for unsupported shapes or dtypes.
+
 `crates/ax-engine-mlx/src/runner.rs` now lets a linear-attention request that
 started as `LinearInitialNoDraft` re-open n-gram if later generated output
 builds a valid draft. Linear-attention cooldown steps now use the direct
@@ -92,6 +99,13 @@ Validation:
 - `cargo test -p ax-engine-mlx linear_attention --quiet`
 - `cargo test -p ax-engine-mlx linear_attention_reenable --quiet`
 - `python3 -m unittest scripts.test_bench_mlx_inference_stack -v`
+- `cargo build -p ax-engine-server --release`
+
+Additional validation for the RMSNorm+gate Metal route:
+
+- `cargo test -p ax-engine-mlx rms_norm_full_gate --quiet`
+- `cargo test -p ax-engine-mlx rms_norm_gate --quiet`
+- `cargo test -p ax-engine-mlx linear_attention --quiet`
 - `cargo build -p ax-engine-server --release`
 
 Probe artifacts:
@@ -120,6 +134,23 @@ The later re-enable/direct-cooldown probe measured 34.15 tok/s, but still had
 `ax_ngram_draft_attempts=0`, `ax_ngram_request_disabled_steps=127`, and
 `ax_mlx_bonus_tokens=0`. It therefore did not move the blocker beyond direct
 fallback throughput.
+
+The RMSNorm+gate Metal route is directionally positive on focused Qwen 3.6 27B
+blocker probes, but still far below the +18% goal:
+
+- Qwen 3.6 27B 4-bit p128: 34.243 tok/s, up from 34.111 tok/s in the current
+  sweep (+0.39%), still below the 40.090 tok/s target.
+- Qwen 3.6 27B 8-bit p128: 18.774 tok/s, up from 18.155 tok/s (+3.4%) and now
+  slightly above the 18.665 tok/s `mlx_lm` row, but still below the 22.025
+  tok/s target.
+- Qwen 3.6 27B 6-bit p512: 25.362 tok/s, up from 24.042 tok/s (+5.5%) and now
+  above the 24.776 tok/s `mlx_lm` row, but still below the 29.236 tok/s target.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-probe/qwen3_6-27b-4bit-p128.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-probe/qwen3_6-27b-8bit-p128.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-probe/qwen3_6-27b-6bit-p512.json`
 
 ## Diagnostics
 
