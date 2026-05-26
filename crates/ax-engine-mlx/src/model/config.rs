@@ -7,6 +7,8 @@ pub struct LayerConfig {
     pub head_dim: usize,
     pub rope_theta: f32,
     pub rope_dims: usize,
+    /// Optional per-layer RoPE frequency denominators passed to `mlx.fast.rope`.
+    pub rope_freqs: Option<MlxArray>,
     /// None = global causal attention; Some(n) = sliding-window attention.
     pub sliding_window: Option<usize>,
     /// None = compute own K/V; Some(src) = reuse K/V from layer `src`.
@@ -403,6 +405,16 @@ pub(super) fn build_layer_configs(
         .partial_rotary_factor
         .map(|f| ((full_head_dim as f32 * f) as usize).next_multiple_of(2))
         .unwrap_or(full_head_dim);
+    let full_rope_freqs = if m.model_family == "gemma4" && full_rope_dims < full_head_dim {
+        Some(build_gemma4_proportional_rope_freqs(
+            full_head_dim,
+            full_rope_dims,
+            default_rope_theta,
+            m.rope_scaling_factor.unwrap_or(1.0),
+        ))
+    } else {
+        None
+    };
     let sliding_rope_dims = if m.model_family == "gemma4" {
         // Gemma4's partial_rotary_factor belongs to full_attention's
         // proportional RoPE. sliding_attention uses default RoPE over the full
@@ -426,7 +438,12 @@ pub(super) fn build_layer_configs(
                 LayerConfig {
                     head_dim: full_head_dim,
                     rope_theta: default_rope_theta,
-                    rope_dims: full_rope_dims,
+                    rope_dims: if full_rope_freqs.is_some() {
+                        full_head_dim
+                    } else {
+                        full_rope_dims
+                    },
+                    rope_freqs: full_rope_freqs.clone(),
                     sliding_window: None,
                     kv_source_layer,
                     v_norm_no_scale,
@@ -436,6 +453,7 @@ pub(super) fn build_layer_configs(
                     head_dim: default_head_dim,
                     rope_theta: swa_theta,
                     rope_dims: sliding_rope_dims,
+                    rope_freqs: None,
                     sliding_window,
                     kv_source_layer,
                     v_norm_no_scale,
@@ -445,16 +463,26 @@ pub(super) fn build_layer_configs(
         .collect()
 }
 
-/// Resolve per-layer params: (head_dim, rope_theta, rope_dims, sliding_window, kv_source, v_norm_no_scale).
+/// Resolve per-layer params:
+/// (head_dim, rope_theta, rope_dims, rope_freqs, sliding_window, kv_source, v_norm_no_scale).
 pub(super) fn layer_params(
     cfg: &ModelConfig,
     layer_idx: usize,
-) -> (usize, f32, usize, Option<usize>, Option<usize>, bool) {
+) -> (
+    usize,
+    f32,
+    usize,
+    Option<&MlxArray>,
+    Option<usize>,
+    Option<usize>,
+    bool,
+) {
     if let Some(lc) = cfg.layer_configs.get(layer_idx) {
         (
             lc.head_dim,
             lc.rope_theta,
             lc.rope_dims,
+            lc.rope_freqs.as_ref(),
             lc.sliding_window,
             lc.kv_source_layer,
             lc.v_norm_no_scale,
@@ -464,9 +492,30 @@ pub(super) fn layer_params(
             cfg.head_dim,
             cfg.rope_theta,
             cfg.rope_dims,
+            cfg.rope_freqs.as_ref(),
             cfg.global_sliding_window,
             None,
             false,
         )
     }
+}
+
+fn build_gemma4_proportional_rope_freqs(
+    head_dim: usize,
+    rotated_dims: usize,
+    theta: f32,
+    factor: f32,
+) -> MlxArray {
+    let rotated_pairs = rotated_dims / 2;
+    let total_pairs = head_dim / 2;
+    let freqs: Vec<f32> = (0..total_pairs)
+        .map(|i| {
+            if i < rotated_pairs {
+                factor * theta.powf((2 * i) as f32 / head_dim as f32)
+            } else {
+                f32::INFINITY
+            }
+        })
+        .collect();
+    MlxArray::from_f32_slice(&freqs)
 }

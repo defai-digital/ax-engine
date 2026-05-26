@@ -2886,6 +2886,7 @@ mod tests {
             head_dim,
             rope_theta: 10_000.0,
             rope_dims: head_dim,
+            rope_freqs: None,
             sliding_window: None,
             kv_source_layer: None,
             v_norm_no_scale: false,

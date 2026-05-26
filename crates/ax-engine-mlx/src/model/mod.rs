@@ -648,8 +648,15 @@ fn layer_forward_dense_embed(
     hidden: &MlxArray, // [batch, seq, hidden]
     layer_idx: usize,
 ) -> MlxArray {
-    let (head_dim, rope_theta, rope_dims, _sliding_window, _kv_source, v_norm_no_scale) =
-        layer_params(cfg, layer_idx);
+    let (
+        head_dim,
+        rope_theta,
+        rope_dims,
+        layer_rope_freqs,
+        _sliding_window,
+        _kv_source,
+        v_norm_no_scale,
+    ) = layer_params(cfg, layer_idx);
     let batch = hidden.shape()[0] as usize;
     let seq = hidden.shape()[1] as usize;
 
@@ -671,6 +678,10 @@ fn layer_forward_dense_embed(
         cfg.rms_norm_eps,
     );
 
+    let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+    let (rope_base, rope_freqs_ref) = rope_freqs
+        .map(|f| (None, Some(f)))
+        .unwrap_or((Some(rope_theta), None));
     let q_rope = qk_norm_rope_bhsd_from_proj(
         &q_raw,
         w.q_norm.as_ref(),
@@ -679,9 +690,9 @@ fn layer_forward_dense_embed(
         seq,
         cfg.rms_norm_eps,
         rope_dims,
-        Some(rope_theta),
+        rope_base,
         0,
-        None,
+        rope_freqs_ref,
     );
     let k_rope = qk_norm_rope_bhsd_from_proj(
         &k_raw,
@@ -691,9 +702,9 @@ fn layer_forward_dense_embed(
         seq,
         cfg.rms_norm_eps,
         rope_dims,
-        Some(rope_theta),
+        rope_base,
         0,
-        None,
+        rope_freqs_ref,
     );
 
     // 8. SDPA — k_rope/v used directly, no KV-cache writes.
@@ -2403,9 +2414,20 @@ mod tests {
         assert_eq!(cfg.layer_configs[0].rope_theta, 10_000.0);
         assert_eq!(cfg.layer_configs[0].rope_dims, 256);
         assert_eq!(cfg.layer_configs[0].sliding_window, Some(512));
+        assert!(cfg.layer_configs[0].rope_freqs.is_none());
         assert_eq!(cfg.layer_configs[1].head_dim, 512);
         assert_eq!(cfg.layer_configs[1].rope_theta, 1_000_000.0);
-        assert_eq!(cfg.layer_configs[1].rope_dims, 128);
+        assert_eq!(cfg.layer_configs[1].rope_dims, 512);
+        let full_freqs = cfg.layer_configs[1]
+            .rope_freqs
+            .as_ref()
+            .expect("Gemma4 full-attention layers should use proportional RoPE freqs");
+        eval(&[full_freqs]);
+        let freqs = full_freqs.data_f32();
+        assert_eq!(freqs.len(), 256);
+        assert_eq!(freqs[0], 1.0);
+        assert!(freqs[63].is_finite());
+        assert!(freqs[64].is_infinite());
         assert_eq!(cfg.layer_configs[1].sliding_window, None);
     }
 

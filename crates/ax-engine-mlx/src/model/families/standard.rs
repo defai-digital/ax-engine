@@ -144,8 +144,15 @@ pub(crate) fn layer_forward(
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
     last_position_only_after_attention: bool,
 ) -> MlxArray {
-    let (head_dim, rope_theta, rope_dims, sliding_window, kv_source, v_norm_no_scale) =
-        layer_params(cfg, layer_idx);
+    let (
+        head_dim,
+        rope_theta,
+        rope_dims,
+        layer_rope_freqs,
+        sliding_window,
+        kv_source,
+        v_norm_no_scale,
+    ) = layer_params(cfg, layer_idx);
 
     // 1. Attention norm.
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
@@ -167,9 +174,8 @@ pub(crate) fn layer_forward(
                 &normed,
                 w.q_proj.as_ref().expect("KV-shared layer must have q_proj"),
             );
-            let (rope_base, rope_freqs_ref) = cfg
-                .rope_freqs
-                .as_ref()
+            let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+            let (rope_base, rope_freqs_ref) = rope_freqs
                 .map(|f| (None, Some(f)))
                 .unwrap_or((Some(rope_theta), None));
             let q_rope = if direct_qk_norm_rope_route_enabled(w.q_norm.as_ref()) {
@@ -270,9 +276,8 @@ pub(crate) fn layer_forward(
                 cfg.rms_norm_eps,
             );
 
-            let (rope_base, rope_freqs_ref) = cfg
-                .rope_freqs
-                .as_ref()
+            let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+            let (rope_base, rope_freqs_ref) = rope_freqs
                 .map(|f| (None, Some(f)))
                 .unwrap_or((Some(rope_theta), None));
             let use_direct_qk_rope = direct_qk_norm_rope_route_enabled(w.q_norm.as_ref())

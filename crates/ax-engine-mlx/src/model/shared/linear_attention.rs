@@ -26,9 +26,10 @@ use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::{
     gated_delta_kernel, linear_attention_conv1d, linear_attention_decode_post_input_metal,
-    normalize_linear_attention_qk, rms_norm_gated, split_linear_attention_qkv,
+    normalize_linear_attention_qk, rms_norm_gated_with_full_gate_policy,
+    split_linear_attention_qkv,
 };
-use crate::weights::LayerWeights;
+use crate::weights::{LayerWeights, LinearAttentionWeights};
 
 pub(crate) fn linear_attention_forward(
     cfg: &ModelConfig,
@@ -98,7 +99,13 @@ pub(crate) fn linear_attention_forward(
     cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
 
     let profile_started = Instant::now();
-    let out = rms_norm_gated(&out, &z, &linear_w.norm, cfg.rms_norm_eps);
+    let out = rms_norm_gated_with_full_gate_policy(
+        &out,
+        &z,
+        &linear_w.norm,
+        cfg.rms_norm_eps,
+        linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx),
+    );
     let flat = reshape(&out, &[1, seq, linear_cfg.value_dim() as i32], None);
     let out = qw(&flat, &linear_w.out_proj);
     linear_attention_profile_eval_elapsed(
@@ -385,6 +392,40 @@ fn qwen_linear_attention_direct_cpp_default_family(cfg: &ModelConfig) -> bool {
     matches!(cfg.model_family.as_str(), "qwen3_5" | "qwen3_next")
 }
 
+fn linear_attention_full_gate_metal_allowed(
+    cfg: &ModelConfig,
+    w: &LinearAttentionWeights,
+    layer_idx: usize,
+) -> bool {
+    // Qwen3.6 27B 5-bit is token-exact against mlx_lm only when later
+    // linear-attention gated norms keep MLX's rms_norm node and use the
+    // narrower gate Metal node. The early layers retain the full fused kernel:
+    // disabling it globally regresses other correctness prompts.
+    if qwen_linear_attention_direct_cpp_default_family(cfg)
+        && !linear_attention_full_gate_metal_allowed_for_bits(
+            cfg.model_family.as_str(),
+            w.out_proj.scales.is_some(),
+            w.out_proj.bits,
+            layer_idx,
+        )
+    {
+        return false;
+    }
+    true
+}
+
+fn linear_attention_full_gate_metal_allowed_for_bits(
+    model_family: &str,
+    quantized: bool,
+    bits: i32,
+    layer_idx: usize,
+) -> bool {
+    if matches!(model_family, "qwen3_5" | "qwen3_next") && quantized && bits == 5 {
+        return layer_idx < 16;
+    }
+    true
+}
+
 fn linear_attention_inputs_packed_direct(
     cfg: &LinearAttentionConfig,
     x: &MlxArray,
@@ -438,4 +479,31 @@ fn linear_attention_inputs_packed_direct(
             && a.shape() == vec![1, x.shape()[1], cfg.num_value_heads as i32]
             && b.shape() == vec![1, x.shape()[1], cfg.num_value_heads as i32]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qwen_five_bit_full_gate_policy_keeps_only_early_layers() {
+        assert!(linear_attention_full_gate_metal_allowed_for_bits(
+            "qwen3_5", true, 5, 15
+        ));
+        assert!(!linear_attention_full_gate_metal_allowed_for_bits(
+            "qwen3_5", true, 5, 16
+        ));
+        assert!(linear_attention_full_gate_metal_allowed_for_bits(
+            "qwen3_5", true, 4, 63
+        ));
+        assert!(linear_attention_full_gate_metal_allowed_for_bits(
+            "glm4_moe_lite",
+            true,
+            5,
+            63
+        ));
+        assert!(linear_attention_full_gate_metal_allowed_for_bits(
+            "qwen3_5", false, 5, 63
+        ));
+    }
 }

@@ -524,14 +524,10 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         };
         let (shared_gate_up_proj, shared_gate_proj, shared_up_proj) =
             match (shared_gate_proj, shared_up_proj) {
-                (Some(gate), Some(up)) => {
-                    if dense_ffn_gate_up_packing_enabled() {
-                        let packed = pack_dense_ffn_gate_up_projection(&gate, &up)?;
-                        (Some(packed), None, None)
-                    } else {
-                        (None, Some(gate), Some(up))
-                    }
-                }
+                // Keep shared experts on split gate/up projections. Qwen3.6
+                // A3B's shared-expert packed path diverges from mlx_lm output,
+                // while the split path is token-exact against the reference.
+                (Some(gate), Some(up)) => (None, Some(gate), Some(up)),
                 (gate, up) => (None, gate, up),
             };
 
@@ -709,7 +705,13 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                     idx,
                     "up_proj",
                 )?;
-                if dense_ffn_gate_up_packing_enabled() {
+                if dense_ffn_gate_up_packing_enabled()
+                    && dense_ffn_gate_up_packing_supported(
+                        artifacts.manifest().model_family.as_str(),
+                        &g,
+                        &u,
+                    )
+                {
                     let packed = pack_dense_ffn_gate_up_projection(&g, &u)?;
                     (Some(packed), None, None)
                 } else {
@@ -1960,6 +1962,19 @@ fn pack_dense_ffn_gate_up_projection(
     let packed = concat_quantized_weight_rows(gate, up)?;
     eval_packed_projection(&packed);
     Ok(packed)
+}
+
+fn dense_ffn_gate_up_packing_supported(
+    model_family: &str,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> bool {
+    // Keep these families/encodings on split projections until their packed
+    // gate/up path is token-exact against mlx_lm across correctness prompts.
+    if model_family == "glm4_moe_lite" {
+        return false;
+    }
+    gate.bits != 5 && up.bits != 5
 }
 
 fn pack_glm_mla_qa_kva_projection(
@@ -3303,6 +3318,26 @@ mod tests {
         );
         assert_eq!(packed.group_size, 64);
         assert_eq!(packed.bits, 4);
+    }
+
+    #[test]
+    fn dense_ffn_gate_up_packing_support_rejects_glm_and_five_bit() {
+        let q4_gate = glm_quantized_weight(64, 4, true);
+        let q4_up = glm_quantized_weight(64, 4, true);
+        let q5_gate = glm_quantized_weight(64, 5, true);
+        let q5_up = glm_quantized_weight(64, 5, true);
+
+        assert!(dense_ffn_gate_up_packing_supported(
+            "qwen3_5", &q4_gate, &q4_up
+        ));
+        assert!(!dense_ffn_gate_up_packing_supported(
+            "glm4_moe_lite",
+            &q4_gate,
+            &q4_up
+        ));
+        assert!(!dense_ffn_gate_up_packing_supported(
+            "qwen3_5", &q5_gate, &q5_up
+        ));
     }
 
     #[test]

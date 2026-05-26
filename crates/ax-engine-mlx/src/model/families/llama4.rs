@@ -46,7 +46,8 @@ pub(crate) fn layer_forward(
 ) -> MlxArray {
     let use_rope = layer_uses_rope(cfg, layer_idx);
     let is_moe = layer_is_moe(cfg, layer_idx);
-    let (head_dim, rope_theta, rope_dims, sliding_window, _, _) = layer_params(cfg, layer_idx);
+    let (head_dim, rope_theta, rope_dims, _rope_freqs, sliding_window, _, _) =
+        layer_params(cfg, layer_idx);
 
     // 1. Attention norm.
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);

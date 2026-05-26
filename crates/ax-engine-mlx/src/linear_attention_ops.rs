@@ -533,13 +533,26 @@ fn gated_delta_decode_kernel(
 }
 
 /// Qwen3Next/Qwen3.5 gated RMSNorm: `silu(gate.float32) * rms_norm(x).float32`.
-pub fn rms_norm_gated(
+#[cfg(test)]
+fn rms_norm_gated(
     hidden_states: &MlxArray,
     gate: &MlxArray,
     weight: &MlxArray,
     eps: f32,
 ) -> MlxArray {
-    if let Some(gated) = rms_norm_full_gate_metal(hidden_states, gate, weight, eps) {
+    rms_norm_gated_with_full_gate_policy(hidden_states, gate, weight, eps, true)
+}
+
+pub fn rms_norm_gated_with_full_gate_policy(
+    hidden_states: &MlxArray,
+    gate: &MlxArray,
+    weight: &MlxArray,
+    eps: f32,
+    allow_full_gate_metal: bool,
+) -> MlxArray {
+    if allow_full_gate_metal
+        && let Some(gated) = rms_norm_full_gate_metal(hidden_states, gate, weight, eps)
+    {
         return gated;
     }
     let normed = rms_norm(hidden_states, Some(weight), eps, None);

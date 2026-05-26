@@ -1,0 +1,143 @@
+{
+  "schema_version": "ax.direct_model_io.prompts.v1",
+  "id": "direct_ngram_correctness_questions",
+  "purpose": "Prompt set for comparing AX direct MLX generation and AX n-gram mode against mlx_lm.generate_step across all local direct-support models.",
+  "comparison": {
+    "reference": "mlx_lm.generate_step",
+    "ax_modes": [
+      "direct",
+      "ngram"
+    ],
+    "recommended_max_tokens": 16,
+    "recommended_compare_tokens": 4,
+    "notes": "These prompts test token-prefix equivalence, not subjective answer quality. Stop-token-equivalent AX outputs are acceptable when AX stops before a reference stop token."
+  },
+  "prompts": [
+    {
+      "slug": "short_fact",
+      "purpose": "Basic chat-template and first-token sanity check.",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a precise assistant."
+        },
+        {
+          "role": "user",
+          "content": "What is the capital city of Japan? Answer with just the city name."
+        }
+      ]
+    },
+    {
+      "slug": "arithmetic_exact",
+      "purpose": "Short deterministic reasoning prompt that quickly exposes first-token divergence.",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Answer with only the requested final value."
+        },
+        {
+          "role": "user",
+          "content": "Compute 17 + 28. Answer with just the number."
+        }
+      ]
+    },
+    {
+      "slug": "fixed_phrase",
+      "purpose": "Exact-format output with punctuation and separators.",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Follow the requested output exactly."
+        },
+        {
+          "role": "user",
+          "content": "Print exactly this text and nothing else: alpha | beta | gamma"
+        }
+      ]
+    },
+    {
+      "slug": "short_code",
+      "purpose": "Coding-path smoke test for tokenizer, prefill, and early decode equivalence.",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a careful coding assistant."
+        },
+        {
+          "role": "user",
+          "content": "Write a Python function named add_one that returns x + 1. Keep it tiny."
+        }
+      ]
+    },
+    {
+      "slug": "json_exact",
+      "purpose": "Structured-output path with braces, booleans, and numeric tokens.",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Return compact JSON only."
+        },
+        {
+          "role": "user",
+          "content": "Return a JSON object with keys ok and count, where ok is true and count is 3."
+        }
+      ]
+    },
+    {
+      "slug": "stop_short",
+      "purpose": "Short stop-condition prompt for detecting over-generation or stop-token handling drift.",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be brief and stop immediately after the requested token."
+        },
+        {
+          "role": "user",
+          "content": "Reply with exactly one word: Done"
+        }
+      ]
+    },
+    {
+      "slug": "repeat_guard",
+      "purpose": "Repetition-count prompt for detecting runaway repetition and GLM/Qwen early-token drift.",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Avoid runaway repetition; obey exact counts."
+        },
+        {
+          "role": "user",
+          "content": "Write the word echo exactly five times separated by spaces, then stop."
+        }
+      ]
+    },
+    {
+      "slug": "ngram_pattern",
+      "purpose": "Repeated-pattern continuation intended to exercise n-gram candidate generation while still checking against mlx_lm.",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Continue simple patterns exactly."
+        },
+        {
+          "role": "user",
+          "content": "Continue the pattern with the next six words only: red blue green red blue green red blue green red blue"
+        }
+      ]
+    },
+    {
+      "slug": "glm_qwen_regression",
+      "purpose": "Regression prompt for GLM and Qwen direct-output drift found during model-family validation.",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Answer directly and avoid repetition."
+        },
+        {
+          "role": "user",
+          "content": "Say exactly three comma-separated colors, then stop."
+        }
+      ]
+    }
+  ]
+}

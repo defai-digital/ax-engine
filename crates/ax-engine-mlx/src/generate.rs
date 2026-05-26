@@ -173,13 +173,13 @@ pub(crate) fn direct_pipeline_stage_profile_enabled() -> bool {
 ///
 /// # Prefill boundary
 ///
-/// For deterministic argmax on prompts longer than 512 tokens, mirror
-/// `mlx_lm.generate_step`: prefill every prompt token except the final one as
+/// For deterministic argmax, mirror `mlx_lm.generate_step`: prefill every
+/// prompt token except the final one as
 /// cache-state-only work, then run the final prompt token through the normal
 /// single-token step to produce the first generated token. Evaluating only KV
 /// refs lets MLX's lazy graph prune the final logits path for long prompt
-/// chunks. Non-greedy sampling and short prompts keep the historical full-logits
-/// path until the sampling and small-prompt performance contracts are audited.
+/// chunks. Non-greedy sampling keeps the historical full-logits path until the
+/// sampling contract is audited.
 pub fn chunked_prefill(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -410,7 +410,7 @@ pub fn chunked_prefill_with_final_hidden(
 }
 
 fn mlx_lm_style_cache_only_prefix_len(total_tokens: usize, sampling: MlxSamplingParams) -> usize {
-    if total_tokens > 512 && sampling.temperature <= 0.0 && !sampling.uses_repetition_penalty() {
+    if total_tokens > 1 && sampling.temperature <= 0.0 && !sampling.uses_repetition_penalty() {
         total_tokens - 1
     } else {
         0
@@ -689,13 +689,13 @@ mod tests {
             mlx_lm_style_cache_only_prefix_len(513, MlxSamplingParams::greedy()),
             512
         );
-    }
-
-    #[test]
-    fn mlx_lm_style_prefill_keeps_short_prompt_on_historical_path() {
         assert_eq!(
             mlx_lm_style_cache_only_prefix_len(512, MlxSamplingParams::greedy()),
-            0
+            511
+        );
+        assert_eq!(
+            mlx_lm_style_cache_only_prefix_len(2, MlxSamplingParams::greedy()),
+            1
         );
         assert_eq!(
             mlx_lm_style_cache_only_prefix_len(1, MlxSamplingParams::greedy()),
