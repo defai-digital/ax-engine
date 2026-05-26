@@ -262,46 +262,62 @@ def download(
     return dest
 
 
+def _run_manifest_command(
+    command: list[str],
+    *,
+    quiet: bool = False,
+    cwd: Path | None = None,
+    label: str,
+) -> bool:
+    result = subprocess.run(
+        command,
+        cwd=str(cwd) if cwd is not None else None,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        out = result.stdout.strip()
+        if out and not quiet:
+            print(f"  {out}")
+        return True
+    if not quiet:
+        print(f"  {label} failed: {result.stderr.strip()}", file=sys.stderr)
+    return False
+
+
 def _try_generate_manifest(dest: Path, *, quiet: bool = False) -> bool:
-    """Try ax-engine-bench (installed) then cargo (dev). Returns True on success."""
+    """Try installed and source-checkout manifest generators. Returns True on success."""
     if shutil.which("ax-engine-bench"):
         command = ["ax-engine-bench", "generate-manifest", str(dest)]
         if quiet:
             command.append("--json")
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            out = result.stdout.strip()
-            if out and not quiet:
-                print(f"  {out}")
+        if _run_manifest_command(command, quiet=quiet, label="ax-engine-bench generate-manifest"):
             return True
-        if not quiet:
-            print(
-                f"  ax-engine-bench generate-manifest failed: {result.stderr.strip()}",
-                file=sys.stderr,
-            )
-        return False
+
+    for local_bin in (
+        REPO_ROOT / "target" / "release" / "generate-manifest",
+        REPO_ROOT / "target" / "debug" / "generate-manifest",
+    ):
+        if local_bin.is_file():
+            if _run_manifest_command(
+                [str(local_bin), str(dest)],
+                quiet=quiet,
+                label=str(local_bin),
+            ):
+                return True
 
     if shutil.which("cargo"):
-        result = subprocess.run(
+        return _run_manifest_command(
             [
                 "cargo", "run", "-q",
                 "-p", "ax-engine-core",
                 "--bin", "generate-manifest",
                 "--", str(dest),
             ],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
+            quiet=quiet,
+            cwd=REPO_ROOT,
+            label="cargo run generate-manifest",
         )
-        if result.returncode == 0:
-            out = result.stdout.strip()
-            if out and not quiet:
-                print(f"  {out}")
-            return True
 
     return False
 

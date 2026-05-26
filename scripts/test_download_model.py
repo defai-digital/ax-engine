@@ -199,6 +199,58 @@ class DownloadModelScriptTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "embedding model downloads are not managed"):
             download_model.download("mlx-community/Qwen3-Embedding-0.6B-8bit", None, quiet=True)
 
+    def test_manifest_generation_uses_local_release_binary_before_cargo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = root / "model"
+            model_dir.mkdir()
+            local_bin = root / "target" / "release" / "generate-manifest"
+            local_bin.parent.mkdir(parents=True)
+            local_bin.write_text("#!/bin/sh\n")
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+            with patch.object(download_model, "REPO_ROOT", root), patch.object(
+                download_model.shutil, "which", side_effect=lambda name: "cargo" if name == "cargo" else None
+            ), patch.object(download_model.subprocess, "run", fake_run):
+                self.assertTrue(download_model._try_generate_manifest(model_dir, quiet=True))
+
+            self.assertEqual(calls, [[str(local_bin), str(model_dir)]])
+
+    def test_manifest_generation_falls_back_after_installed_bench_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = root / "model"
+            model_dir.mkdir()
+            local_bin = root / "target" / "debug" / "generate-manifest"
+            local_bin.parent.mkdir(parents=True)
+            local_bin.write_text("#!/bin/sh\n")
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                if command[0] == "ax-engine-bench":
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="missing")
+                return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+            with patch.object(download_model, "REPO_ROOT", root), patch.object(
+                download_model.shutil,
+                "which",
+                side_effect=lambda name: "/usr/bin/ax-engine-bench" if name == "ax-engine-bench" else None,
+            ), patch.object(download_model.subprocess, "run", fake_run):
+                self.assertTrue(download_model._try_generate_manifest(model_dir, quiet=True))
+
+            self.assertEqual(
+                calls,
+                [
+                    ["ax-engine-bench", "generate-manifest", str(model_dir), "--json"],
+                    [str(local_bin), str(model_dir)],
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
