@@ -868,6 +868,32 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-turboquant-fused-probe/qwen3_6-27b-4bit-p128-g64-turboquant-fused.json`
 
+### Exact greedy direct-pipeline unroll probe
+
+A dirty-code probe tested whether the no-draft direct fallback could emit
+multiple exact greedy tokens per runner decode call by chaining lazy
+`argmax -> next forward` arrays before materializing the output tokens. This
+was intended to amortize the per-token CPU/GPU barrier without changing greedy
+sampling semantics.
+
+The result was negative on the Qwen 3.6 27B 4-bit p128/g128 blocker shape:
+
+| Mode | Decode tok/s | Pending eval wall | Direct async eval wall | Bonus tokens |
+| --- | ---: | ---: | ---: | ---: |
+| current direct fallback context | ~34.5 | n/a | n/a | 0 |
+| exact greedy unroll=2 | 31.532 | 331,814 us | 3,509,951 us | 63 |
+| exact greedy unroll=4 | 31.674 | 167,027 us | 3,653,452 us | 95 |
+
+Both unroll depths were slower than the existing one-token double-buffer direct
+pipeline. The longer lazy chain reduced runner calls, but it made the
+materialization/async-eval boundary heavier enough to lose throughput. The
+probe code was removed and no opt-in surface is promoted.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-greedy-unroll-probe/qwen3_6-27b-4bit-p128-g128-unroll2.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-greedy-unroll-probe/qwen3_6-27b-4bit-p128-g128-unroll4.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
