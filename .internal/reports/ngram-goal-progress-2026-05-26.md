@@ -676,6 +676,34 @@ Capture artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-prefill-output-feed-probe/qwen3_6-27b-4bit-p128-capture.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-policy-replay-capture/qwen3_6-27b-4bit-p512-p2048-capture.json`
 
+### Wider offline n-gram upper-bound sweep
+
+A follow-up offline replay widened the policy space beyond the shipped runtime
+variants to check whether the Qwen random-token blocker still has hidden
+n-gram headroom:
+
+- prompt-tail seed lengths: 64, 128, 512, 2048, full prompt
+- `min_support`: 1 and 2
+- confidence threshold: 0.0, 0.25, 0.4
+- max context order: 2, 3, 4, 5, 6, 8, 12
+- draft length: 2, 4, 6, 8
+
+The replay uses the captured prompt tokens plus captured output token IDs and
+feeds the first prefill-produced output token before simulating decode, matching
+the runtime seed contract. Best observed upper bounds:
+
+| Prompt | Best accepted tokens | Attempts | Complete misses | Best policy shape |
+| ---: | ---: | ---: | ---: | --- |
+| 128 | 0 | 0-2 depending on tie/policy | 0-2 | no useful policy |
+| 512 | 2 | 2 | 0 | `min_support=1`, `confidence=0.0`, short context |
+| 2048 | 3 | 2 | 0 | `min_support=1`, `confidence=0.0`, short context |
+
+Even the widened oracle-style sweep only finds at most three accepted draft
+tokens over a 128-token generation window. That is two orders of magnitude too
+small to close the Qwen rows that need roughly an 18% throughput lift, and the
+p128 blocker still has no accepted n-gram opportunity. This makes a runtime
+policy-only fix misaligned unless a new draft source is introduced.
+
 ### Production direct-pipeline stage profile
 
 `AX_MLX_DIRECT_PIPELINE_STAGE_PROFILE=1` adds op-count and graph-build timing
