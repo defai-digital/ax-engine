@@ -232,6 +232,8 @@ pub fn mtp_draft_tokens(
     // Lazy arrays holding p(draft_token) under the temperature-scaled draft distribution.
     // Evaluated in one batch after all depth iterations to avoid per-step GPU sync.
     let mut lazy_probs: Vec<MlxArray> = Vec::with_capacity(head.max_depth);
+    let mut lazy_topk_logprobs: Vec<Option<(MlxArray, MlxArray)>> =
+        Vec::with_capacity(head.max_depth);
 
     let mut prev_hidden = first_hidden.clone();
     let mut prev_token = first_token;
@@ -247,22 +249,17 @@ pub fn mtp_draft_tokens(
         let new_hidden = mtp_head_forward(head, &prev_hidden, prev_token, weights, cache, cfg);
         let logits = mtp_hidden_to_logits(&new_hidden, head, weights, cfg);
 
-        let draft_token = if use_topk_logprob {
-            if let Some((tok, log_prob)) =
-                greedy_sample_logits_with_topk_logprob(&logits, head.draft_sampling, cfg.vocab_size)
-            {
-                draft_log_probs.push(log_prob);
-                tok
-            } else {
-                let tok = greedy_sample_logits(&logits);
-                draft_log_probs.push(-30.0);
-                tok
-            }
-        } else {
+        let draft_token = {
             // Greedy argmax: transfers only 1 u32. The argmax eval also materialises
             // `logits` on GPU, which is required before we compute the lazy softmax below.
             let draft_token = greedy_sample_logits(&logits);
-            if let Some(ref inv_t) = inv_temp_arr {
+            if use_topk_logprob {
+                lazy_topk_logprobs.push(greedy_topk_logprob_arrays(
+                    &logits,
+                    head.draft_sampling,
+                    cfg.vocab_size,
+                ));
+            } else if let Some(ref inv_t) = inv_temp_arr {
                 // Lazily compute p(draft_token) from the temperature-scaled distribution.
                 // No eval here — all these lazy arrays are batched-eval'd after the loop.
                 let scaled = multiply(&logits, inv_t, None);
@@ -288,7 +285,32 @@ pub fn mtp_draft_tokens(
     }
 
     // Batch-eval all lazy prob arrays (one GPU sync for all depths, not one per depth).
-    if !use_topk_logprob && use_temperature && !lazy_probs.is_empty() {
+    if use_topk_logprob && !lazy_topk_logprobs.is_empty() {
+        let mut refs: Vec<&MlxArray> = Vec::with_capacity(lazy_topk_logprobs.len() * 2);
+        for (logits, indices) in lazy_topk_logprobs.iter().flatten() {
+            refs.push(logits);
+            refs.push(indices);
+        }
+        if !refs.is_empty() {
+            eval(&refs);
+        }
+        draft_log_probs.extend(lazy_topk_logprobs.iter().enumerate().map(|(i, arrays)| {
+            if let Some((logits, indices)) = arrays {
+                let Some(&token) = draft_tokens.get(i) else {
+                    return -30.0;
+                };
+                indexed_token_logprob(
+                    logits.data_f32(),
+                    indices.data_u32(),
+                    token,
+                    head.draft_sampling,
+                )
+                .unwrap_or(-30.0)
+            } else {
+                -30.0
+            }
+        }));
+    } else if !use_topk_logprob && use_temperature && !lazy_probs.is_empty() {
         let refs: Vec<&MlxArray> = lazy_probs.iter().collect();
         eval(&refs);
         draft_log_probs.extend(lazy_probs.iter().map(|arr| {
@@ -315,11 +337,11 @@ pub fn mtp_draft_tokens(
     (draft_tokens, draft_log_probs, added)
 }
 
-fn greedy_sample_logits_with_topk_logprob(
+fn greedy_topk_logprob_arrays(
     logits: &MlxArray,
     sampling: MlxSamplingParams,
     vocab_size: usize,
-) -> Option<(u32, f32)> {
+) -> Option<(MlxArray, MlxArray)> {
     let vocab = vocab_size as i32;
     let k = (sampling.top_k as i32).min(vocab);
     if k <= 0 || sampling.temperature <= 0.0 {
@@ -330,17 +352,7 @@ fn greedy_sample_logits_with_topk_logprob(
     let top_indices = slice(&part_indices, &[0, vocab - k], &[1, vocab], &[1, 1], None);
     let top_logits = take_along_axis(&row, &top_indices, -1, None);
     let top_indices = astype(&top_indices, MlxDtype::Uint32, None);
-    eval(&[&top_logits, &top_indices]);
-
-    let logits_cpu = top_logits.data_f32();
-    let indices_cpu = top_indices.data_u32();
-    let token = logits_cpu
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .and_then(|(i, _)| indices_cpu.get(i).copied())?;
-    let log_prob = indexed_token_logprob(logits_cpu, indices_cpu, token, sampling).unwrap_or(-30.0);
-    Some((token, log_prob))
+    Some((top_logits, top_indices))
 }
 
 /// Greedy argmax over a `[vocab_size]` f32 logit array.
