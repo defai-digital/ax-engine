@@ -684,6 +684,32 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-add-rms-default-ab/qwen3_6-27b-4bit-p128-g64-default.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-add-rms-default-ab/qwen3_6-27b-4bit-p128-g64-add-rms-off.json`
 
+### Qwen attention-norm carry probe
+
+A direct-decode probe tried carrying a precomputed next-layer attention RMSNorm
+through the Qwen 3.6 layer loop by fusing each layer's final residual add with
+the next layer's input RMSNorm. This targeted the no-draft direct fallback, not
+the n-gram policy.
+
+The probe was not promoted. It was only noise-level positive on the short g64
+probe and did not materially move the README-shaped blocker:
+
+| Shape | Decode tok/s | Baseline context | Result |
+| --- | ---: | --- | --- |
+| p128/g64 | 34.595 | prior direct-fallback probe: about 34.500 | about +0.3% |
+| p128/g128 | 34.228 | current sweep row: 34.192 | about +0.1% |
+
+The stage-profile run still reported 1,128 direct-pipeline ops/step, with 13
+ops per linear-attention layer and 31 ops per full-attention layer. This means
+the carry path did not create the intended graph-size reduction, and the runtime
+effect is far below the 40.096 tok/s target. The code probe was removed.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-attn-norm-carry-probe/qwen3_6-27b-4bit-p128-g64.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-attn-norm-carry-probe/qwen3_6-27b-4bit-p128-g64-stage-profile.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-attn-norm-carry-probe/qwen3_6-27b-4bit-p128-g128.json`
+
 ### Existing verified-draft and KV-compression fallback checks
 
 The Qwen 3.6 27B 4-bit local checkpoint used for the blocker row does not have
