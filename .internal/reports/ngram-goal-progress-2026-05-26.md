@@ -894,6 +894,33 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-greedy-unroll-probe/qwen3_6-27b-4bit-p128-g128-unroll2.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-greedy-unroll-probe/qwen3_6-27b-4bit-p128-g128-unroll4.json`
 
+### Linear-initial no-draft fast fallback probe
+
+A dirty-code probe tested a narrower CPU book-keeping reduction for the Qwen
+random-token no-draft path. When a linear-attention request was disabled at
+generation init with `LinearInitialNoDraft`, the probe skipped output-token
+feeds into the n-gram table and skipped the per-step re-enable check. The
+intended win was to remove work that cannot help the random-token blocker,
+because the prompt/output replay already showed no useful n-gram candidates.
+
+The result was not useful:
+
+- Qwen 3.6 27B 4-bit p128/g128: 34.156 tok/s
+- effective route: `linear_no_draft_direct_pipeline_fallback`
+- draft attempts: 0
+- request-disabled fallback steps: 127
+- direct-pipeline pending eval wall: 859 us
+- direct-pipeline async eval wall: 3,493,985 us
+
+The probe was slightly below the existing direct-fallback context at about
+34.5 tok/s and far below the 40.096 tok/s target. It also weakens the existing
+ability to re-enable n-gram acceleration when generated output becomes
+repetitive, so the probe code was removed and no default change is promoted.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-initial-fast-fallback-probe/qwen3_6-27b-4bit-p128-g128-fast-fallback.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
