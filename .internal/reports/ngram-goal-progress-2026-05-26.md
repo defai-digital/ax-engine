@@ -968,6 +968,44 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-initial-fast-fallback-probe/qwen3_6-27b-4bit-p128-g128-fast-fallback.json`
 
+### Qwen dense SwiGLU direct FFN probe
+
+A dirty-code probe added an opt-in direct C++ MLX shim for the Qwen packed
+dense SwiGLU FFN block:
+
+```text
+gate_up = quantized_matmul(x, gate_up_weight, ...)
+gate, up = split(gate_up, 2, axis=-1)
+hidden = silu(gate) * up
+out = quantized_matmul(hidden, down_weight, ...)
+```
+
+The wrapper matched the portable composition in the focused `mlx-sys` unit
+test, and the server built successfully. The real-model result was negative on
+the current Qwen 3.6 27B 4-bit p128/g128 blocker:
+
+- Probe: `AX_MLX_DIRECT_CPP_QWEN_DENSE_FFN=1`
+- Decode throughput: 33.875 tok/s
+- Current blocker context: about 34.19 tok/s
+- Current `mlx_lm` reference: 33.98 tok/s
+- Target: 40.096 tok/s
+- Effective route: `linear_no_draft_direct_pipeline_fallback`
+- Draft attempts: 0
+
+This is below the 2% acceptance threshold and does not move the 1.18x goal.
+The probe code was removed.
+
+Validation:
+
+- `cargo fmt --check`
+- `cargo test -p mlx-sys silu_quantized_ffn --quiet`
+- `cargo test -p ax-engine-mlx direct_cpp_qwen_dense_ffn --quiet`
+- `cargo build -p ax-engine-server --release`
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-silu-quantized-ffn-probe/qwen3_6-27b-4bit-p128-g128-silu-quantized-ffn.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
