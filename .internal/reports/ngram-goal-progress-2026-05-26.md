@@ -443,6 +443,25 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-qk-rope-current-probe/qwen3_6-27b-4bit-p128.json`
 
+### Dense FFN `mlx_compile` block
+
+An opt-in probe wrapped the dense FFN decode block
+(`gate_up qmatmul -> packed SwiGLU -> down qmatmul`) in a thread/shape/weight
+keyed `mlx_compile` closure. This tested a larger MLX graph boundary than the
+earlier small C++ wrapper while keeping the normal quantized matmul and packed
+SwiGLU ops inside the compiled graph. During the dirty-code probe, the route
+passed formatting,
+`cargo test -p ax-engine-mlx dense_ffn_compile_block --quiet`,
+`cargo test -p ax-engine-mlx fastpath::tests::dense_ffn_compile_block_uses_opt_in_contract --quiet`,
+and `cargo build -p ax-engine-server --release`, but real Qwen 3.6 27B 4-bit
+p128 throughput measured 34.164 tok/s. That is below the post-commit baseline
+of 34.192 tok/s and still far below the 40.096 tok/s target. The probe code was
+removed.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-dense-ffn-compile-block-probe/qwen3_6-27b-4bit-p128.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
