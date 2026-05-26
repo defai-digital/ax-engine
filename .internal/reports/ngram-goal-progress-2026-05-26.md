@@ -19,6 +19,38 @@ Representative failing row:
 - Ratio: about 1.00x versus the README `mlx_lm` row, still far below the 1.18x
   target
 
+Current post-commit sweep on commit `71f3166440bf4ca6cb11ffea61d544fcf2f8b999`
+confirms the blocker is the Qwen 3.6 27B family, not just one stale README row.
+The sweep used `--skip-mlx-lm --ax-ngram-accel --no-build-ax-engine`,
+`generation_tokens=128`, `repetitions=1`, and `cooldown=0`; percentages below
+compare against the current README `mlx_lm` reference rows from
+`benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`.
+
+| Model | Prompt | AX n-gram tok/s | `mlx_lm` tok/s | Delta | 1.18x target | Drafts accepted | Effective route |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Qwen 3.6 27B 4-bit | 128 | 34.111 | 33.975 | +0.4% | 40.090 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 4-bit | 512 | 34.120 | 33.905 | +0.6% | 40.008 | 1 | `ngram_verified_bonus_tokens` |
+| Qwen 3.6 27B 4-bit | 2048 | 33.722 | 33.441 | +0.8% | 39.460 | 1 | `ngram_verified_bonus_tokens` |
+| Qwen 3.6 27B 5-bit | 128 | 28.107 | 21.600 | +30.1% | 25.488 | 2 | `ngram_verified_bonus_tokens` |
+| Qwen 3.6 27B 5-bit | 512 | 28.154 | 28.133 | +0.1% | 33.197 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 5-bit | 2048 | 27.773 | 27.821 | -0.2% | 32.829 | 4 | `ngram_verified_bonus_tokens` |
+| Qwen 3.6 27B 6-bit | 128 | 24.410 | 23.993 | +1.7% | 28.312 | 0 | `ngram_attempted_no_accept_fallback` |
+| Qwen 3.6 27B 6-bit | 512 | 24.042 | 24.776 | -3.0% | 29.236 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 6-bit | 2048 | 23.314 | 24.623 | -5.3% | 29.055 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 8-bit | 128 | 18.155 | 18.665 | -2.7% | 22.025 | 0 | `ngram_attempted_no_accept_fallback` |
+| Qwen 3.6 27B 8-bit | 512 | 18.481 | 18.610 | -0.7% | 21.960 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 8-bit | 2048 | 18.452 | 18.414 | +0.2% | 21.729 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+
+Only Qwen 3.6 27B 5-bit at prompt=128 currently clears the +18% goal. All other
+Qwen 3.6 27B default n-gram rows remain at direct-fallback parity or worse.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-4bit.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-5bit.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-6bit.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-8bit.json`
+
 ## Code changes kept
 
 `crates/ax-engine-mlx/src/runner.rs` now bootstraps the direct double-buffer
@@ -166,6 +198,23 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen-post-input-metal-telemetry-probe/qwen3_6-27b-4bit-p128-stage-profile.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen-post-input-metal-telemetry-probe/qwen3_6-27b-4bit-p128-g32-decode-profile.json`
 
+The same diagnostic profile on Qwen 3.6 27B 8-bit p128/g32 shows the same
+shape, with larger FFN cost. This profile inserts barriers and is not a
+production throughput claim:
+
+- `post_attn_ffn_wall_us`: 2,182,901
+- `post_attn_ffn_gate_up_wall_us`: 1,262,923
+- `post_attn_ffn_down_wall_us`: 704,567
+- `post_attn_ffn_activation_wall_us`: 381,658
+- `post_attn_residual_norm_wall_us`: 798,890
+- `post_attn_residual_gate_wall_us`: 360,187
+- `pre_sdpa_wall_us`: 436,911
+- `lm_head_wall_us`: 77,684
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-8bit-p128-g32-decode-profile.json`
+
 Reference comparison:
 
 - `mlx_lm.generate_step` creates the model cache, processes prompt chunks,
@@ -261,6 +310,69 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen-gateddelta-decode-ab/qwen3_6-27b-4bit-p128-gateddelta-off.json`
 
+### Packed SwiGLU Metal kill-switch A/B
+
+Because upstream `mlx_lm` Qwen uses an `mx.compile(shapeless=True)` SwiGLU
+helper, a Qwen 27B probe disabled AX's packed SwiGLU Metal activation to fall
+back to the compiled SwiGLU path after the packed gate/up projection. The result
+was mixed and not safe to promote:
+
+- Qwen 3.6 27B 8-bit p128 improved from 18.155 tok/s to 18.699 tok/s in a
+  one-repetition probe, roughly back to `mlx_lm` parity but still far below the
+  22.025 tok/s 1.18x target.
+- Qwen 3.6 27B 8-bit p512 improved only slightly, from 18.481 tok/s to
+  18.595 tok/s, still below the 21.960 tok/s 1.18x target.
+- Qwen 3.6 27B 8-bit p2048 was effectively unchanged, from 18.452 tok/s to
+  18.459 tok/s, still below the 21.729 tok/s 1.18x target.
+- Qwen 3.6 27B 6-bit p128 improved slightly, from 24.410 tok/s to
+  24.741 tok/s, still below the 28.312 tok/s 1.18x target.
+- Qwen 3.6 27B 6-bit p512 regressed from 24.042 tok/s to 23.748 tok/s.
+- Qwen 3.6 27B 6-bit p2048 regressed from 23.314 tok/s to 22.873 tok/s.
+- Qwen 3.6 27B 4-bit p128 regressed from 34.111 tok/s to 33.970 tok/s in the
+  matching one-repetition probe.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-8bit-p128-swiglu-metal-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-8bit-p512-p2048-swiglu-metal-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-6bit-swiglu-metal-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-4bit-p128-swiglu-metal-off.json`
+
+### Packed SwiGLU exact-shape compile probe
+
+An opt-in packed SwiGLU `mlx_compile` probe was tested but removed. The first
+attempt used `shapeless=True`, matching upstream `mlx_lm`'s helper style, but
+MLX could not infer output shapes for `slice_last_dim` inside the compiled
+closure. Changing the diagnostic to exact-shape compilation made the unit test
+pass, but benchmark results were still far below the 1.18x target:
+
+- Qwen 3.6 27B 4-bit p128: 34.131 tok/s, effectively unchanged from the
+  34.111 tok/s current sweep row and still below the 40.090 tok/s target.
+- Qwen 3.6 27B 8-bit p128: 18.593 tok/s, better than the 18.155 tok/s default
+  row but still below the 18.665 tok/s `mlx_lm` row and far below the
+  22.025 tok/s target.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-packed-swiglu-compile-probe/qwen3_6-27b-4bit-p128.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-packed-swiglu-compile-probe/qwen3_6-27b-8bit-p128.json`
+
+### Dense FFN gate/up packing kill-switch A/B
+
+Disabling AX's dense FFN gate/up packing was also tested because upstream
+`mlx_lm` keeps Qwen gate and up projections split. This did not produce a
+material decode win and increases memory pressure in the 8-bit run:
+
+- Qwen 3.6 27B 4-bit p128: 34.167 tok/s, only +0.16% versus the 34.111 tok/s
+  current sweep row and still below the 40.090 tok/s target.
+- Qwen 3.6 27B 8-bit p128: 18.557 tok/s, still below the 18.665 tok/s
+  `mlx_lm` row and far below the 22.025 tok/s target.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ffn-gate-up-pack-probe/qwen3_6-27b-4bit-p128-pack-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ffn-gate-up-pack-probe/qwen3_6-27b-8bit-p128-pack-off.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
@@ -269,6 +381,10 @@ especially one of:
 
 - an `mlx_compile`-style per-layer or whole-decode graph boundary that treats
   cache state as explicit inputs/outputs
+- a Qwen dense FFN/residual-norm boundary that materially reduces the
+  `post_attn_ffn_gate_up`, `post_attn_ffn_down`, and `post_attn_residual_norm`
+  buckets without regressing production p128 throughput; the earlier small
+  whole-FFN C++ wrapper did not clear this bar
 - deeper Qwen linear-attention layer fusion that spans projection -> conv ->
   recurrent update -> output projection, not just the post-input section
 - a different verified draft source for random-token no-draft prompts; ordinary
