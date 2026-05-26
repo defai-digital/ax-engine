@@ -403,6 +403,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         // When FfnNorm (pre_feedforward_layernorm) is present (Gemma4), AttentionPostNorm
         // is a genuine post-attention norm applied before the residual add.  When FfnNorm
         // is absent (Qwen3), AttentionPostNorm doubles as the pre-FFN norm instead.
+        // GLM-4 is a special case: it has AttentionPostNorm but no FfnNorm, and the
+        // post_attention_layernorm is used BOTH as post-attention norm (before residual)
+        // AND as pre-FFN norm (after residual). Detect GLM via MLA-specific tensor roles.
         let (attn_post_norm, ffn_norm) = if has_role(specs, NativeTensorRole::FfnNorm, idx) {
             let apn = try_take_plain(
                 specs,
@@ -419,6 +422,17 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             )?
             .weight;
             (apn, fn_w)
+        } else if has_role(specs, NativeTensorRole::AttentionKvA, idx) {
+            let post_norm = take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AttentionPostNorm,
+                idx,
+                "attention_post_norm",
+            )?
+            .weight;
+            let ffn_norm = post_norm.clone();
+            (Some(post_norm), ffn_norm)
         } else {
             let fn_w = take_weight(
                 specs,
