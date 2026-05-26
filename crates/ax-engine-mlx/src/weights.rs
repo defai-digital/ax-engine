@@ -84,9 +84,9 @@ pub struct MtpWeights {
 /// Weights (and optional quantization data) for one transformer layer.
 pub struct LayerWeights {
     pub attn_norm: MlxArray,
-    /// post_attention_layernorm (Gemma4): applied to attn output BEFORE residual add.
-    /// For Qwen3 (no separate pre-FFN norm), this field is None and the same norm
-    /// is used as ffn_norm instead.
+    /// post_attention_layernorm for models that apply it to attention output
+    /// before the residual add (for example Gemma4). Qwen3 and GLM4MoELite use
+    /// post_attention_layernorm as the pre-FFN norm after the residual instead.
     pub attn_post_norm: Option<MlxArray>,
     pub q_norm: Option<MlxArray>,
     pub k_norm: Option<MlxArray>,
@@ -400,50 +400,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                 &artifacts.manifest().linear_attention,
             )?),
         };
-        // When FfnNorm (pre_feedforward_layernorm) is present (Gemma4), AttentionPostNorm
-        // is a genuine post-attention norm applied before the residual add.  When FfnNorm
-        // is absent (Qwen3), AttentionPostNorm doubles as the pre-FFN norm instead.
-        // GLM-4 is a special case: it has AttentionPostNorm but no FfnNorm, and the
-        // post_attention_layernorm is used BOTH as post-attention norm (before residual)
-        // AND as pre-FFN norm (after residual). Detect GLM via MLA-specific tensor roles.
-        let (attn_post_norm, ffn_norm) = if has_role(specs, NativeTensorRole::FfnNorm, idx) {
-            let apn = try_take_plain(
-                specs,
-                &mut name_map,
-                NativeTensorRole::AttentionPostNorm,
-                idx,
-            )?;
-            let fn_w = take_weight(
-                specs,
-                &mut name_map,
-                NativeTensorRole::FfnNorm,
-                idx,
-                "ffn_norm",
-            )?
-            .weight;
-            (apn, fn_w)
-        } else if has_role(specs, NativeTensorRole::AttentionKvA, idx) {
-            let post_norm = take_weight(
-                specs,
-                &mut name_map,
-                NativeTensorRole::AttentionPostNorm,
-                idx,
-                "attention_post_norm",
-            )?
-            .weight;
-            let ffn_norm = post_norm.clone();
-            (Some(post_norm), ffn_norm)
-        } else {
-            let fn_w = take_weight(
-                specs,
-                &mut name_map,
-                NativeTensorRole::AttentionPostNorm,
-                idx,
-                "attention_post_norm",
-            )?
-            .weight;
-            (None, fn_w)
-        };
+        let (attn_post_norm, ffn_norm) = take_layer_norms(specs, &mut name_map, idx)?;
         let down_proj = if has_role(specs, NativeTensorRole::FfnDown, idx) {
             Some(take_weight(
                 specs,
@@ -1337,6 +1294,15 @@ fn auto_detect_linear_attention_sanitize(
     specs: &[NativeTensorSpec],
     name_map: &HashMap<String, MlxArray>,
 ) -> WeightSanitize {
+    if !specs.iter().any(|s| {
+        matches!(
+            s.role,
+            NativeTensorRole::LinearAttentionNorm | NativeTensorRole::LinearAttentionConv1d
+        )
+    }) {
+        return WeightSanitize::None;
+    }
+
     // Sample the lowest-indexed ordinary RMSNorm rather than LinearAttentionNorm:
     // Qwen3-Next's linear_attn.norm is a gated scale consumed raw by mlx_lm and
     // can legitimately have mean_abs near zero.
@@ -2469,6 +2435,44 @@ fn try_take_plain(
     Ok(name_map.remove(&name))
 }
 
+fn take_layer_norms(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    layer_index: Option<u32>,
+) -> Result<(Option<MlxArray>, MlxArray), WeightLoadError> {
+    // When FfnNorm (pre_feedforward_layernorm) is present, AttentionPostNorm
+    // is a genuine post-attention norm applied before the residual add. When
+    // FfnNorm is absent (Qwen3 and GLM4MoELite), AttentionPostNorm is the
+    // pre-FFN norm applied after the attention residual.
+    if has_role(specs, NativeTensorRole::FfnNorm, layer_index) {
+        let attn_post_norm = try_take_plain(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionPostNorm,
+            layer_index,
+        )?;
+        let ffn_norm = take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::FfnNorm,
+            layer_index,
+            "ffn_norm",
+        )?
+        .weight;
+        Ok((attn_post_norm, ffn_norm))
+    } else {
+        let ffn_norm = take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::AttentionPostNorm,
+            layer_index,
+            "attention_post_norm",
+        )?
+        .weight;
+        Ok((None, ffn_norm))
+    }
+}
+
 fn has_role(specs: &[NativeTensorSpec], role: NativeTensorRole, layer_index: Option<u32>) -> bool {
     specs
         .iter()
@@ -2926,10 +2930,32 @@ mod tests {
 
     #[test]
     fn auto_detect_returns_none_for_non_hybrid_models() {
-        // No ordinary RMSNorm in the spec list: nothing to sample, fall
-        // through to manifest setting unchanged.
-        let specs: Vec<NativeTensorSpec> = Vec::new();
-        let name_map: HashMap<String, MlxArray> = HashMap::new();
+        // GLM MLA has small q/kv adapter RMSNorms, but no Qwen-style
+        // linear-attention conv1d/gated norm. It must not be treated as a
+        // hybrid linear-attention checkpoint that needs HF norm lifting.
+        let norm_data = vec![0.017_f32; 128];
+        let norm = MlxArray::from_raw_data(
+            norm_data.as_ptr().cast(),
+            std::mem::size_of_val(norm_data.as_slice()),
+            &[norm_data.len() as i32],
+            MlxDtype::Float32,
+        );
+        let mut name_map: HashMap<String, MlxArray> = HashMap::new();
+        name_map.insert("layers.0.self_attn.kv_a_layernorm".to_string(), norm);
+        let specs = vec![NativeTensorSpec {
+            name: "layers.0.self_attn.kv_a_layernorm".to_string(),
+            role: NativeTensorRole::AttentionKvANorm,
+            layer_index: Some(0),
+            dtype: NativeTensorDataType::F32,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantization: None,
+            quantized_source: None,
+            shape: vec![128],
+            file: PathBuf::from("model.safetensors"),
+            offset_bytes: 0,
+            length_bytes: 512,
+        }];
 
         let chosen = auto_detect_linear_attention_sanitize(&specs, &name_map);
 
@@ -3150,6 +3176,28 @@ mod tests {
         assert!(weights.q_b_proj.scales.is_none());
         assert!(weights.embed_q.scales.is_none());
         assert!(weights.unembed_out.scales.is_none());
+        assert!(name_map.is_empty());
+    }
+
+    #[test]
+    fn glm_mla_post_attention_layernorm_is_pre_ffn_only() {
+        let specs = vec![
+            spec(NativeTensorRole::AttentionKvA),
+            spec(NativeTensorRole::AttentionPostNorm),
+        ];
+        let mut name_map = HashMap::from([(
+            format!("{:?}", NativeTensorRole::AttentionPostNorm),
+            zeros(&[4], MlxDtype::Float32, None),
+        )]);
+
+        let (attn_post_norm, ffn_norm) =
+            take_layer_norms(&specs, &mut name_map, Some(0)).expect("GLM norm should load");
+
+        assert!(
+            attn_post_norm.is_none(),
+            "GLM4MoELite follows mlx_lm: post_attention_layernorm is applied after the residual as the pre-FFN norm"
+        );
+        assert_eq!(ffn_norm.shape(), vec![4]);
         assert!(name_map.is_empty());
     }
 
