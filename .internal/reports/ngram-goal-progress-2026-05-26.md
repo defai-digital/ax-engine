@@ -637,6 +637,33 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-stage-profile-prod/qwen3_6-27b-4bit-p128-g64-stage-profile.json`
 
+### Linear-attention output `mlx_compile` block
+
+An opt-in probe wrapped the Qwen linear-attention output block
+(`rms_norm_gated -> reshape -> out_proj`) in a per-thread/layer/weight keyed
+`mlx_compile` closure. This tested a larger boundary than the retained
+RMSNorm+gate Metal route while keeping the verified default path unchanged.
+The diagnostic first used MLX array byte sizes as cache identity, which would
+collide across same-shaped layers, so it was corrected to use MLX handle
+identity before validation.
+
+Validation while the probe existed:
+
+- `cargo fmt --check`
+- `cargo test -p ax-engine-mlx qwen_linear_attention_output_compile --quiet`
+- `cargo test -p ax-engine-mlx linear_attention --quiet`
+- `cargo build -p ax-engine-server --release`
+
+Real Qwen 3.6 27B 4-bit p128/g64 throughput measured 34.451 tok/s with the
+probe enabled. That is slightly below the comparable 34.500 tok/s production
+stage-profile baseline and still far below the 40.096 tok/s target. The run
+remained in `linear_no_draft_direct_pipeline_fallback` with zero n-gram draft
+attempts and 63 request-disabled fallback steps. The probe code was removed.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-output-compile-probe/qwen3_6-27b-4bit-p128-g64.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
