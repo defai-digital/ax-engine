@@ -5866,6 +5866,12 @@ fn maybe_reenable_linear_ngram_from_fallback_output(
     state.ngram_request_disable_reason = NgramRequestDisableReason::None;
     state.linear_ngram_no_draft_streak = 0;
     state.ngram_disabled_steps = 0;
+    // Discard any stale direct-pipeline lookahead that was built while
+    // ngram was disabled. Re-entering the ngram path invalidates it: the
+    // ngram draft will advance cache.seq_len independently, so
+    // pending_direct would point at the wrong sequence position.
+    state.pending_direct = None;
+    state.direct_pipeline_emitted_tokens = 0;
 }
 
 fn ngram_policy_variant_from_env() -> NgramPolicyVariant {
