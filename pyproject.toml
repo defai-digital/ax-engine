@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ax-engine"
-version = "5.0.1"
+version = "5.0.2"
 description = "Preview Python bindings for AX Engine v5"
 requires-python = ">=3.10"
 readme = "crates/ax-engine-py/README.md"
