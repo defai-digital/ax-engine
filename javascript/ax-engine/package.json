@@ -1,7 +1,7 @@
 {
   "name": "@ax-engine/sdk",
-  "version": "4.10.0",
-  "description": "JavaScript / TypeScript SDK for AX Engine v4 — local HTTP inference server",
+  "version": "5.0.1",
+  "description": "JavaScript / TypeScript SDK for AX Engine v5 — local HTTP inference server",
   "type": "module",
   "main": "./index.js",
   "exports": {
