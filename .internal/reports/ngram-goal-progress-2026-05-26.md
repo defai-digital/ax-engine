@@ -14,12 +14,11 @@ Representative failing row:
 
 - Model: `mlx-community/Qwen3.6-27B-4bit`
 - Prompt: 128 tokens
-- Published README reference: `mlx_lm` 34.0 tok/s, AX n-gram 33.3 tok/s
-- Current probe after GatedDelta + decode post-input Metal work: 34.15 tok/s
-- Ratio: about 1.00x versus the README `mlx_lm` row, still far below the 1.18x
-  target
+- Current `mlx_lm` reference: 33.98 tok/s
+- Current AX n-gram after the RMSNorm+gate Metal route: 34.19 tok/s
+- Ratio: +0.6% versus `mlx_lm`, still far below the +18% target
 
-Current post-commit sweep on commit `71f3166440bf4ca6cb11ffea61d544fcf2f8b999`
+Current post-commit sweep on commit `8ceae3ed9748846f2b4e3449e7a04462683c57c9`
 confirms the blocker is the Qwen 3.6 27B family, not just one stale README row.
 The sweep used `--skip-mlx-lm --ax-ngram-accel --no-build-ax-engine`,
 `generation_tokens=128`, `repetitions=1`, and `cooldown=0`; percentages below
@@ -28,18 +27,18 @@ compare against the current README `mlx_lm` reference rows from
 
 | Model | Prompt | AX n-gram tok/s | `mlx_lm` tok/s | Delta | 1.18x target | Drafts accepted | Effective route |
 |---|---:|---:|---:|---:|---:|---:|---|
-| Qwen 3.6 27B 4-bit | 128 | 34.111 | 33.975 | +0.4% | 40.090 | 0 | `linear_no_draft_direct_pipeline_fallback` |
-| Qwen 3.6 27B 4-bit | 512 | 34.120 | 33.905 | +0.6% | 40.008 | 1 | `ngram_verified_bonus_tokens` |
-| Qwen 3.6 27B 4-bit | 2048 | 33.722 | 33.441 | +0.8% | 39.460 | 1 | `ngram_verified_bonus_tokens` |
-| Qwen 3.6 27B 5-bit | 128 | 28.107 | 21.600 | +30.1% | 25.488 | 2 | `ngram_verified_bonus_tokens` |
-| Qwen 3.6 27B 5-bit | 512 | 28.154 | 28.133 | +0.1% | 33.197 | 0 | `linear_no_draft_direct_pipeline_fallback` |
-| Qwen 3.6 27B 5-bit | 2048 | 27.773 | 27.821 | -0.2% | 32.829 | 4 | `ngram_verified_bonus_tokens` |
-| Qwen 3.6 27B 6-bit | 128 | 24.410 | 23.993 | +1.7% | 28.312 | 0 | `ngram_attempted_no_accept_fallback` |
-| Qwen 3.6 27B 6-bit | 512 | 24.042 | 24.776 | -3.0% | 29.236 | 0 | `linear_no_draft_direct_pipeline_fallback` |
-| Qwen 3.6 27B 6-bit | 2048 | 23.314 | 24.623 | -5.3% | 29.055 | 0 | `linear_no_draft_direct_pipeline_fallback` |
-| Qwen 3.6 27B 8-bit | 128 | 18.155 | 18.665 | -2.7% | 22.025 | 0 | `ngram_attempted_no_accept_fallback` |
-| Qwen 3.6 27B 8-bit | 512 | 18.481 | 18.610 | -0.7% | 21.960 | 0 | `linear_no_draft_direct_pipeline_fallback` |
-| Qwen 3.6 27B 8-bit | 2048 | 18.452 | 18.414 | +0.2% | 21.729 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 4-bit | 128 | 34.192 | 33.980 | +0.6% | 40.096 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 4-bit | 512 | 34.157 | 33.908 | +0.7% | 40.011 | 1 | `ngram_verified_bonus_tokens` |
+| Qwen 3.6 27B 4-bit | 2048 | 33.831 | 33.459 | +1.1% | 39.482 | 1 | `ngram_verified_bonus_tokens` |
+| Qwen 3.6 27B 5-bit | 128 | 28.226 | 21.324 | +32.4% | 25.162 | 2 | `ngram_verified_bonus_tokens` |
+| Qwen 3.6 27B 5-bit | 512 | 28.335 | 28.144 | +0.7% | 33.210 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 5-bit | 2048 | 28.126 | 27.827 | +1.1% | 32.836 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 6-bit | 128 | 24.891 | 22.993 | +8.3% | 27.131 | 0 | `ngram_attempted_no_accept_fallback` |
+| Qwen 3.6 27B 6-bit | 512 | 25.306 | 24.776 | +2.1% | 29.236 | 2 | `ngram_verified_bonus_tokens` |
+| Qwen 3.6 27B 6-bit | 2048 | 23.990 | 24.623 | -2.6% | 29.055 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 8-bit | 128 | 18.774 | 18.458 | +1.7% | 21.780 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 8-bit | 512 | 18.590 | 18.616 | -0.1% | 21.966 | 0 | `linear_no_draft_direct_pipeline_fallback` |
+| Qwen 3.6 27B 8-bit | 2048 | 18.450 | 18.342 | +0.6% | 21.644 | 0 | `linear_no_draft_direct_pipeline_fallback` |
 
 Only Qwen 3.6 27B 5-bit at prompt=128 currently clears the +18% goal. All other
 Qwen 3.6 27B default n-gram rows remain at direct-fallback parity or worse.
@@ -50,6 +49,10 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-5bit.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-6bit.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-current-sweep/qwen3_6-27b-8bit.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-postcommit-sweep/qwen3_6-27b-4bit.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-postcommit-sweep/qwen3_6-27b-5bit.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-postcommit-sweep/qwen3_6-27b-6bit.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-postcommit-sweep/qwen3_6-27b-8bit.json`
 
 ## Code changes kept
 
@@ -146,6 +149,12 @@ blocker probes, but still far below the +18% goal:
 - Qwen 3.6 27B 6-bit p512: 25.362 tok/s, up from 24.042 tok/s (+5.5%) and now
   above the 24.776 tok/s `mlx_lm` row, but still below the 29.236 tok/s target.
 
+The sequential post-commit sweep on `8ceae3ed9748846f2b4e3449e7a04462683c57c9`
+kept the same conclusion. The best non-passing improvement is Qwen 3.6 27B
+6-bit p128 at +8.3%; most other failing rows are still direct-fallback parity.
+An earlier attempt to run the 4-bit and 5-bit sweeps concurrently produced
+obviously contaminated GPU results and was overwritten by sequential reruns.
+
 Artifacts:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-probe/qwen3_6-27b-4bit-p128.json`
@@ -228,6 +237,23 @@ Artifacts:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen-post-input-metal-telemetry-probe/qwen3_6-27b-4bit-p128-stage-profile.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen-post-input-metal-telemetry-probe/qwen3_6-27b-4bit-p128-g32-decode-profile.json`
+
+Post-commit decode profile after the RMSNorm+gate Metal route shows the same
+shape. This profile inserts barriers and is diagnostic only; it measured
+9.77 tok/s because every profiled bucket forces evaluation:
+
+- `post_attn_ffn_wall_us`: 6,585,761
+- `post_attn_ffn_gate_up_wall_us`: 3,140,860
+- `post_attn_ffn_activation_wall_us`: 1,460,789
+- `post_attn_ffn_down_wall_us`: 2,124,368
+- `post_attn_residual_norm_wall_us`: 2,436,850
+- `post_attn_residual_gate_wall_us`: 1,386,142
+- `pre_sdpa_wall_us`: 1,602,256
+- `lm_head_wall_us`: 180,024
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-rms-full-gate-postcommit-profile/qwen3_6-27b-4bit-p128-decode-profile.json`
 
 The same diagnostic profile on Qwen 3.6 27B 8-bit p128/g32 shows the same
 shape, with larger FFN cost. This profile inserts barriers and is not a
@@ -403,6 +429,19 @@ Artifacts:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ffn-gate-up-pack-probe/qwen3_6-27b-4bit-p128-pack-off.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ffn-gate-up-pack-probe/qwen3_6-27b-8bit-p128-pack-off.json`
+
+### QK norm/ROPE direct C++ route
+
+The opt-in `AX_MLX_DIRECT_CPP_QK_NORM_ROPE=1` route was rechecked after the
+Qwen linear-attention direct-fallback work because upstream `mlx_lm` keeps this
+section inside ordinary Python/MLX module calls. On Qwen 3.6 27B 4-bit p128 it
+measured 34.133 tok/s, effectively noise versus the 34.111 tok/s current-sweep
+baseline and far below the 40.090 tok/s target. The route remains opt-in and is
+not a useful promotion candidate for the current blocker.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-qk-rope-current-probe/qwen3_6-27b-4bit-p128.json`
 
 ## Next target
 
