@@ -684,6 +684,38 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-add-rms-default-ab/qwen3_6-27b-4bit-p128-g64-default.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-add-rms-default-ab/qwen3_6-27b-4bit-p128-g64-add-rms-off.json`
 
+### Existing verified-draft and KV-compression fallback checks
+
+The Qwen 3.6 27B 4-bit local checkpoint used for the blocker row does not have
+an MTP sidecar:
+
+- no `mtp.safetensors`
+- no `mtplx_runtime.json`
+
+The runner already checks MTP before n-gram and before direct fallback when
+`weights.mtp.is_some()`, so there is no existing MTP draft source to activate
+for this checkpoint. The missing sidecar explains why the p128/g64 row keeps
+all `ax_mtp_*` counters at zero.
+
+TurboQuant fused decode was also checked as an existing direct-fallback speed
+surface. A focused Qwen 3.6 27B 4-bit p128/g64 run used
+`--experimental-mlx-kv-compression turboquant-fused-experimental` with
+`--experimental-mlx-kv-compression-min-context-tokens 1`.
+
+- decode: 34.509 tok/s
+- effective route: `linear_no_draft_direct_pipeline_fallback`
+- n-gram draft attempts: 0
+- KV compression decode path: `full_precision_shadow`
+- eligible KV-compression layers: 0
+- fused decode attempts: 0
+
+This matches the default direct-fallback throughput and does not provide a
+usable acceleration path for the current Qwen blocker.
+
+Artifact:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-turboquant-fused-probe/qwen3_6-27b-4bit-p128-g64-turboquant-fused.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
