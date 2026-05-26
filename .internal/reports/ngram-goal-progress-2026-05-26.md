@@ -738,6 +738,32 @@ Artifacts:
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-greedy-chunk-probe/qwen3_6-27b-4bit-p128-g128-chunk2.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-greedy-chunk-probe/qwen3_6-27b-4bit-p128-g128-chunk2-v2.json`
 
+### Qwen direct fallback clean rechecks
+
+Two clean-commit p128/g128 rechecks separated n-gram no-draft overhead from the
+direct pipeline itself:
+
+| Mode | Decode tok/s | Effective route | Notes |
+| --- | ---: | --- | --- |
+| `--ax-direct` | 34.457 | `direct_pipeline_baseline` | direct same-policy row |
+| `--ax-ngram-accel` | 34.210 | `linear_no_draft_direct_pipeline_fallback` | initial non-repeating prompt disables n-gram; 127 request-disabled direct steps |
+
+The gap is below 1% and within the range where run noise can dominate, so the
+Qwen blocker is not caused by a large residual n-gram fallback tax. The useful
+target remains model execution or a real draft source.
+
+A related FFN hot-path kill-switch checked whether the dense down-projection +
+RMSNorm fused route was hurting Qwen. `AX_MLX_DENSE_QMATMUL_RMS_NORM=0`
+measured 34.199 tok/s on the same p128/g128 shape, effectively identical to the
+clean n-gram recheck and still far below the 40.096 tok/s target. No default
+change is promoted.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-mode-probe/qwen3_6-27b-4bit-p128-g128-direct.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ngram-clean-recheck/qwen3_6-27b-4bit-p128-g128-ngram.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-dense-qmatmul-rms-ab/qwen3_6-27b-4bit-p128-g128-qmatmul-rms-off.json`
+
 ### Existing verified-draft and KV-compression fallback checks
 
 The Qwen 3.6 27B 4-bit local checkpoint used for the blocker row does not have
