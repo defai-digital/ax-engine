@@ -758,11 +758,28 @@ measured 34.199 tok/s on the same p128/g128 shape, effectively identical to the
 clean n-gram recheck and still far below the 40.096 tok/s target. No default
 change is promoted.
 
+The next inspected fusion boundary was the decode-only linear-attention
+recurrent update followed by `RMSNormGated(y, z)`. This is not directly
+fusible with the current GatedDelta decode kernel because the kernel's
+threadgroup covers only a small tile of the value dimension, while RMSNorm
+requires a full 128-lane per-head reduction. A cheaper occupancy probe changed
+the GatedDelta decode `Dv` tile from 4 to 8 and 16. Neither result was useful:
+
+| GatedDelta decode tile | Decode tok/s | Result |
+| --- | ---: | --- |
+| 4 current clean recheck | 34.210 | baseline context |
+| 8 | 34.224 | noise-level |
+| 16 | 34.187 | slight regression |
+
+The tile probe code was removed.
+
 Artifacts:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-direct-mode-probe/qwen3_6-27b-4bit-p128-g128-direct.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-ngram-clean-recheck/qwen3_6-27b-4bit-p128-g128-ngram.json`
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-dense-qmatmul-rms-ab/qwen3_6-27b-4bit-p128-g128-qmatmul-rms-off.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-gateddelta-tile-probe/qwen3_6-27b-4bit-p128-g128-tile8.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-gateddelta-tile-probe/qwen3_6-27b-4bit-p128-g128-tile16.json`
 
 ### Existing verified-draft and KV-compression fallback checks
 
