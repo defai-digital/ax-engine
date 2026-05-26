@@ -540,6 +540,31 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-prefill-output-feed-probe/qwen3_6-27b-4bit.json`
 
+### Offline Qwen policy replay
+
+Captured-output replay now rules out a simple n-gram policy relaxation for the
+Qwen 3.6 27B 4-bit random-token blocker. The replay seeded the table with the
+same prompt-tail contract (`NGRAM_PROMPT_FEED_MAX=64`) plus the first prefill
+output token, then compared candidate drafts against the actually generated
+token IDs.
+
+| prompt tokens | runtime accepted | current replay | min_support=1 replay | conclusion |
+| --- | ---: | ---: | ---: | --- |
+| 128 | 0 | 0 attempts / 0 accepted | 2 attempts / 0 accepted | harmful verifier work |
+| 512 | 1 | 1 attempt / 1 accepted | 2 attempts / 2 accepted | too small to matter |
+| 2048 | 1 | 1 attempt / 1 accepted | 2 attempts / 3 accepted | too small to matter |
+
+`LlamaMapLatest` and zero confidence-threshold variants produced the same
+candidate count on these captures. Even the permissive `min_support=1` replay
+would add at most three accepted tokens across a 128-token decode, while the
+blocking rows need about an 18% decode-throughput lift. No policy-only change
+is promoted from this probe.
+
+Capture artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-prefill-output-feed-probe/qwen3_6-27b-4bit-p128-capture.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-policy-replay-capture/qwen3_6-27b-4bit-p512-p2048-capture.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
