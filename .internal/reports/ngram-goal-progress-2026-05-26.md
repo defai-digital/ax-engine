@@ -664,6 +664,26 @@ Artifact:
 
 - `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-linear-output-compile-probe/qwen3_6-27b-4bit-p128-g64.json`
 
+### Full-attention add+RMSNorm pair kill-switch A/B
+
+The default full-attention path uses `AX_MLX_DENSE_ADD_RMS_NORM_PAIR=1` to fuse
+the attention residual add and pre-FFN RMSNorm. A focused env-only A/B checked
+whether this default route was hurting the Qwen 3.6 27B 4-bit p128/g64 direct
+fallback rows.
+
+| Mode | Decode tok/s | Route | Draft attempts |
+| --- | ---: | --- | ---: |
+| default | 34.507 | `linear_no_draft_direct_pipeline_fallback` | 0 |
+| `AX_MLX_DENSE_ADD_RMS_NORM_PAIR=0` | 34.606 | `linear_no_draft_direct_pipeline_fallback` | 0 |
+
+The +0.29% difference is within run noise and far below the 40.096 tok/s
+target, so no default change is promoted.
+
+Artifacts:
+
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-add-rms-default-ab/qwen3_6-27b-4bit-p128-g64-default.json`
+- `benchmarks/results/mlx-inference/2026-05-26-ngram-qwen27-add-rms-default-ab/qwen3_6-27b-4bit-p128-g64-add-rms-off.json`
+
 ## Next target
 
 Small Rust/FFI node fusion is not enough for the remaining Qwen gap. The next
