@@ -5050,8 +5050,7 @@ impl MlxRunner {
         // On full acceptance we swap the clone in; on partial/no acceptance we
         // run a committed-prefix recompute on the original cache.
         // Returns (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok).
-        // correction_argmax_tok is predicted[accept_count]: the argmax token at the
-        // first rejected (or bonus) position, used as fallback for sample_logit_row.
+        // correction_argmax_tok is only evaluated when greedy fallback needs it.
         let (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok) =
             if has_linear_attention {
                 let clone_started = Instant::now();
@@ -5068,7 +5067,6 @@ impl MlxRunner {
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 verify_cache.seq_len += verify_len;
 
-                let predicted_arr = argmax(&logits_all, None);
                 // Pre-compute draft token target probabilities lazily (before eval)
                 // so they are evaluated in the same GPU dispatch as the verify pass.
                 let lazy_target_probs = compute_mtp_target_probs_lazy(
@@ -5078,9 +5076,20 @@ impl MlxRunner {
                     vocab,
                     sampling,
                 );
+                let predicted_arr = if mtp_verify_needs_argmax(
+                    &pending,
+                    &state.mtp_pending_draft_log_probs,
+                    sampling,
+                ) {
+                    Some(argmax(&logits_all, None))
+                } else {
+                    None
+                };
                 let kv_refs = verify_cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
-                targets.push(&predicted_arr);
+                if let Some(ref predicted) = predicted_arr {
+                    targets.push(predicted);
+                }
                 targets.push(&post_norm_all);
                 if let Some(ref ltp) = lazy_target_probs {
                     targets.push(ltp);
@@ -5090,7 +5099,10 @@ impl MlxRunner {
                 eval(&targets);
                 mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
                 let accept_started = Instant::now();
-                let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                let predicted: Vec<u32> = predicted_arr
+                    .as_ref()
+                    .map(|arr| arr.data_u32().to_vec())
+                    .unwrap_or_default();
                 let target_probs_cpu: Option<Vec<f32>> =
                     lazy_target_probs.map(|arr| arr.data_f32().to_vec());
 
@@ -5119,7 +5131,14 @@ impl MlxRunner {
                 }
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                (logits_all, draft_hidden, ac, all_accepted, predicted[ac])
+                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                (
+                    logits_all,
+                    draft_hidden,
+                    ac,
+                    all_accepted,
+                    correction_argmax_tok,
+                )
             } else {
                 // Non-linear-attention: run directly, trim on rejection.
                 let verify_forward_started = Instant::now();
@@ -5133,7 +5152,6 @@ impl MlxRunner {
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 state.cache.seq_len += verify_len;
 
-                let predicted_arr = argmax(&logits_all, None);
                 // Pre-compute draft token target probabilities lazily (before eval).
                 let lazy_target_probs = compute_mtp_target_probs_lazy(
                     &logits_all,
@@ -5142,9 +5160,20 @@ impl MlxRunner {
                     vocab,
                     sampling,
                 );
+                let predicted_arr = if mtp_verify_needs_argmax(
+                    &pending,
+                    &state.mtp_pending_draft_log_probs,
+                    sampling,
+                ) {
+                    Some(argmax(&logits_all, None))
+                } else {
+                    None
+                };
                 let kv_refs = state.cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
-                targets.push(&predicted_arr);
+                if let Some(ref predicted) = predicted_arr {
+                    targets.push(predicted);
+                }
                 targets.push(&post_norm_all);
                 if let Some(ref ltp) = lazy_target_probs {
                     targets.push(ltp);
@@ -5154,7 +5183,10 @@ impl MlxRunner {
                 eval(&targets);
                 mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
                 let accept_started = Instant::now();
-                let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                let predicted: Vec<u32> = predicted_arr
+                    .as_ref()
+                    .map(|arr| arr.data_u32().to_vec())
+                    .unwrap_or_default();
                 let target_probs_cpu: Option<Vec<f32>> =
                     lazy_target_probs.map(|arr| arr.data_f32().to_vec());
 
@@ -5183,7 +5215,14 @@ impl MlxRunner {
                 }
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                (logits_all, draft_hidden, ac, all_accepted, predicted[ac])
+                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                (
+                    logits_all,
+                    draft_hidden,
+                    ac,
+                    all_accepted,
+                    correction_argmax_tok,
+                )
             };
 
         // For linear attention with rejection, trim MTP cache too.
@@ -5403,8 +5442,8 @@ impl MlxRunner {
         // ngram_acceleration_disabled_for_request, which run_non_ngram_decode
         // intercepts before we'd ever reach MTP).  Repetition-penalty sampling
         // is incompatible with speculative decode and is excluded.
-        // Acceptance uses argmax comparison; correction/bonus tokens are sampled
-        // with the request's temperature so temperature != 0 is fully supported.
+        // Acceptance uses rejection sampling when draft log-probs are available;
+        // correction/bonus tokens are sampled with the request's temperature.
         if self.weights.mtp.is_some()
             && !self.disable_ngram_acceleration
             && !sampling.uses_repetition_penalty()
@@ -5501,6 +5540,15 @@ fn slice_post_norm_hidden(post_norm_all: &MlxArray, pos: usize, hidden_size: usi
     let p = pos as i32;
     let hs = hidden_size as i32;
     slice(post_norm_all, &[0, p, 0], &[1, p + 1, hs], &[1, 1, 1], None)
+}
+
+fn mtp_verify_needs_argmax(
+    pending: &[u32],
+    pending_log_probs: &[f32],
+    target_sampling: MlxSamplingParams,
+) -> bool {
+    target_sampling.temperature <= 0.0
+        || (!pending.is_empty() && pending_log_probs.len() != pending.len())
 }
 
 /// Build a lazy MLX array holding p_target(draft_token_i) for each draft position.
@@ -6495,6 +6543,19 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_rollback_wall_us".into(), 50)));
         assert!(decisions.contains(&("ax_mtp_tail_sample_wall_us".into(), 60)));
         assert!(decisions.contains(&("ax_mtp_draft_wall_us".into(), 70)));
+    }
+
+    #[test]
+    fn mtp_verify_skips_argmax_for_rejection_sampling_path() {
+        let sampling = MlxSamplingParams::new(0.6, 0.95, 20);
+        assert!(!mtp_verify_needs_argmax(&[], &[], sampling));
+        assert!(!mtp_verify_needs_argmax(&[1, 2], &[-0.1, -0.2], sampling));
+        assert!(mtp_verify_needs_argmax(&[1, 2], &[-0.1], sampling));
+        assert!(mtp_verify_needs_argmax(
+            &[1, 2],
+            &[-0.1, -0.2],
+            MlxSamplingParams::greedy()
+        ));
     }
 
     fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {
