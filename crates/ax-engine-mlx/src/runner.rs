@@ -947,6 +947,10 @@ fn direct_pipeline_action(has_pending_direct: bool) -> DirectPipelineAction {
     }
 }
 
+fn should_drain_pending_direct_before_ngram(is_greedy: bool, has_pending_direct: bool) -> bool {
+    is_greedy && has_pending_direct
+}
+
 fn kib_ceil(bytes: u64) -> u32 {
     if bytes == 0 {
         0
@@ -4918,7 +4922,27 @@ impl MlxRunner {
                     .record_cooldown_event(LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL);
             }
         }
+        if is_greedy {
+            if !has_linear_attention {
+                state.ngram_disabled_steps = NGRAM_RETRY_INTERVAL;
+                state
+                    .ngram_acceleration
+                    .record_cooldown_event(NGRAM_RETRY_INTERVAL);
+            }
+            return Some(vec![self.run_direct_pipeline_decode(state, last_token)]);
+        }
         None
+    }
+
+    fn finish_pending_direct_for_ngram_transition(&self, state: &mut RequestState) -> Vec<u32> {
+        let pending = state
+            .pending_direct
+            .take()
+            .expect("pending direct token must exist before n-gram transition drain");
+        let tok = self.run_direct_pipeline_finish_pending(state, pending);
+        state.ngram.feed(&[tok]);
+        state.direct_pipeline_emitted_tokens = 0;
+        vec![tok]
     }
 
     fn run_non_ngram_decode(
@@ -4944,7 +4968,7 @@ impl MlxRunner {
         if state.ngram_disabled_steps > 0 {
             state.ngram_disabled_steps -= 1;
             state.ngram_acceleration.record_cooldown_step();
-            if is_greedy && self.cfg.linear_attention.is_some() {
+            if is_greedy {
                 return Some(vec![self.run_direct_pipeline_decode(state, last_token)]);
             }
             return Some(self.run_single_decode(state, last_token, sampling));
@@ -5472,6 +5496,10 @@ impl MlxRunner {
 
         if let Some(result) = self.run_non_ngram_decode(state, last_token, sampling, is_greedy) {
             return result;
+        }
+
+        if should_drain_pending_direct_before_ngram(is_greedy, state.pending_direct.is_some()) {
+            return self.finish_pending_direct_for_ngram_transition(state);
         }
 
         let draft_outcome = ngram_acceleration_draft(
@@ -9054,6 +9082,12 @@ mod tests {
             DirectPipelineAction::ContinuePending,
             "later fallback direct steps must continue the pending lazy token"
         );
+        assert!(
+            should_drain_pending_direct_before_ngram(true, true),
+            "greedy n-gram re-entry must first materialise the pending direct token"
+        );
+        assert!(!should_drain_pending_direct_before_ngram(true, false));
+        assert!(!should_drain_pending_direct_before_ngram(false, true));
     }
 
     #[test]
