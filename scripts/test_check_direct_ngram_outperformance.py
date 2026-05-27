@@ -218,6 +218,34 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
         self.assertEqual(len(checked), 1)
         self.assertFalse(checked[0].ngram_effective_required)
 
+    def test_allows_random_prompt_request_disabled_direct_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0, prompt_source="random"),
+                    row("ax_engine_mlx", 105.0, prompt_source="random"),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        106.0,
+                        status="ngram_no_draft_direct_fallback",
+                        route="no_draft_fallback",
+                        prompt_source="random",
+                    ),
+                ],
+            )
+
+            checked = checker.check_artifact_dir(
+                root,
+                min_delta_pct=0.0,
+                require_effective_ngram=True,
+                require_sweep_ok=True,
+            )
+
+        self.assertEqual(len(checked), 1)
+        self.assertFalse(checked[0].ngram_effective_required)
+
     def test_allows_ngram_fallback_when_requested(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
