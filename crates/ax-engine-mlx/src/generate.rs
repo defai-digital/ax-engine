@@ -8,8 +8,8 @@ use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward, forward_all_positions_with_final_hidden,
-    forward_argmax_with_turboquant_context, forward_lazy_single_argmax_with_turboquant_context,
-    forward_with_turboquant_context,
+    forward_all_positions_with_post_norm, forward_argmax_with_turboquant_context,
+    forward_lazy_single_argmax_with_turboquant_context, forward_with_turboquant_context,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical, sample_categorical_gpu,
@@ -286,6 +286,31 @@ pub fn chunked_prefill_with_final_hidden(
     sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
 ) -> (u32, MlxArray) {
+    let (tok, hidden, _) = chunked_prefill_with_mtp_history(
+        cfg,
+        weights,
+        prompt_tokens,
+        cache,
+        chunk_size,
+        sampling_request,
+        rng,
+    );
+    (tok, hidden)
+}
+
+/// Like `chunked_prefill_with_final_hidden`, but returns the full post-norm
+/// hidden sequence for the final prefill chunk plus the committed token IDs
+/// that each hidden row predicts. MTP uses this to seed its recurrent cache
+/// with prompt/history transitions instead of only the final prefill token.
+pub fn chunked_prefill_with_mtp_history(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    chunk_size: usize,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+) -> (u32, MlxArray, Vec<u32>) {
     use mlx_sys::MlxDtype;
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
@@ -339,7 +364,7 @@ pub fn chunked_prefill_with_final_hidden(
         eval(&[&token_arr, &final_hidden]);
         clear_cache();
         let tok = token_arr.data_u32()[0];
-        return (tok, final_hidden);
+        return (tok, final_hidden, vec![tok]);
     }
 
     let mut offset = 0;
@@ -352,8 +377,8 @@ pub fn chunked_prefill_with_final_hidden(
         if is_final_chunk {
             // Always use forward_all_positions_with_final_hidden for the last chunk
             // so we get the hidden even for greedy sampling.
-            let (logits_all, final_hidden) =
-                forward_all_positions_with_final_hidden(cfg, weights, chunk, cache, chunk_offset);
+            let (logits_all, post_norm_all) =
+                forward_all_positions_with_post_norm(cfg, weights, chunk, cache, chunk_offset);
             cache.seq_len += chunk.len();
 
             let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
@@ -386,13 +411,18 @@ pub fn chunked_prefill_with_final_hidden(
                 eval_with_kv_refs(&token_arr, cache);
                 token_arr.data_u32()[0]
             };
-            // Materialize final_hidden before clear_cache(): its computation graph
+            // Materialize post_norm_all before clear_cache(): its computation graph
             // shares intermediate buffers with logits_all; those buffers may be
             // returned to the pool by clear_cache() before the warmup consumer
             // gets a chance to evaluate the lazy slice.
-            eval(&[&final_hidden]);
+            let mut history_tokens = Vec::with_capacity(chunk.len());
+            if chunk.len() > 1 {
+                history_tokens.extend_from_slice(&chunk[1..]);
+            }
+            history_tokens.push(tok);
+            eval(&[&post_norm_all]);
             clear_cache();
-            return (tok, final_hidden);
+            return (tok, post_norm_all, history_tokens);
         } else {
             let logits = forward_argmax_with_turboquant_context(
                 cfg,

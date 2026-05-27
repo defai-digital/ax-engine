@@ -118,9 +118,10 @@ throughput baselines.
   artifact directory. By default it reads the current README artifact directory
   line and writes `docs/assets/perf-*-box-whisker.svg`; use `--check` to fail
   if the checked-in charts are stale.
-- `render_mtp_flappy_charts.py`: renders the four README MTP flappy SVG charts
-  from `docs/PERFORMANCE.md#mtp-mode`. Each chart has four bars: MTPLX and
-  AX Engine MTP at d=2, then MTPLX and AX Engine MTP at d=3.
+- `render_mtp_flappy_charts.py`: renders the README MTP SVG charts from
+  `docs/PERFORMANCE.md#mtp-mode`. The checked-in set includes Speed to Speed
+  and Quality summary charts plus separate tok/s and accept-rate charts for
+  each bundle pair.
 - `bench_ax_serving.py`: online serving benchmark against
   `/v1/generate/stream`. It reads a JSONL prompt corpus, runs closed-loop
   concurrency or open-loop request-rate sweeps, and writes

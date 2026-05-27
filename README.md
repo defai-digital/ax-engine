@@ -6,12 +6,12 @@ Prompt-parity MTP comparison charts.
 
 <table>
 <tr>
-<td align="center"><strong>Speed bundle</strong></td>
-<td align="center"><strong>Quality bundle</strong></td>
+<td align="center"><strong>Speed to Speed chart</strong></td>
+<td align="center"><strong>Quality chart</strong></td>
 </tr>
 <tr>
-<td><img src="docs/assets/perf-mtp-speed-summary.svg" alt="Speed bundle d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code, with accept-rate labels"></td>
-<td><img src="docs/assets/perf-mtp-quality-summary.svg" alt="Quality bundle d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code, with accept-rate labels"></td>
+<td><img src="docs/assets/perf-mtp-speed-summary.svg" alt="Speed to Speed d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code, with accept-rate labels"></td>
+<td><img src="docs/assets/perf-mtp-quality-summary.svg" alt="Quality d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code, with accept-rate labels"></td>
 </tr>
 </table>
 
@@ -259,9 +259,9 @@ Artifact-backed MTPLX comparison:
 
 | Model bundle | Suite | Depth | AX MTP | AX accept | MTPLX 0.3.7 | MTPLX accept |
 |---|---|---:|---:|---:|---:|---:|
-| Qwen3.6 27B MTPLX Speed | flappy | 3 | 53.2 tok/s | 92.0% | **59.2 tok/s** | 99.5% |
-| Qwen3.6 27B MTPLX Speed | long_code | 3 | 52.5 tok/s | 90.4% | **59.8 tok/s** | 99.6% |
-| Qwen3.6 27B MTPLX Quality | flappy | 3 | 36.1 tok/s | 92.2% | **43.0 tok/s** | 99.4% |
+| Qwen3.6 27B MTPLX Speed | flappy | 3 | **62.9 tok/s** | 96.8% | 59.2 tok/s | 99.5% |
+| Qwen3.6 27B MTPLX Speed | long_code | 3 | **60.3 tok/s** | 98.3% | 59.8 tok/s | 99.6% |
+| Qwen3.6 27B MTPLX Quality | flappy | 3 | 40.8 tok/s | 98.5% | **43.0 tok/s** | 99.4% |
 | Qwen3.6 27B MTPLX Quality | long_code | 3 | 34.7 tok/s | 91.5% | **43.2 tok/s** | 99.7% |
 
 Full MTP methodology, caveats, artifact links, and reproduction commands live in

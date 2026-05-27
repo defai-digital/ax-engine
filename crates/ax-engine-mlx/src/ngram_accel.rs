@@ -14,7 +14,7 @@ use crate::fastpath::mtp_fast_tail_topk_sampling_enabled;
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward_all_positions,
-    forward_with_turboquant_context,
+    forward_all_positions_update_cache, forward_with_turboquant_context,
 };
 use crate::weights::ModelWeights;
 
@@ -1136,13 +1136,10 @@ pub(crate) fn recompute_committed_prefix(
     commit_input.push(last_token);
     commit_input.extend_from_slice(accepted_draft);
 
-    let logits = forward_all_positions(cfg, weights, &commit_input, cache, token_offset);
+    forward_all_positions_update_cache(cfg, weights, &commit_input, cache, token_offset);
     cache.seq_len += commit_input.len();
     let kv_refs = cache.collect_eval_refs();
-    let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
-    targets.push(&logits);
-    targets.extend(kv_refs);
-    eval(&targets);
+    eval(&kv_refs);
 }
 
 /// Sample token at `pos` in the flattened `[verify_len, vocab]` logit buffer.

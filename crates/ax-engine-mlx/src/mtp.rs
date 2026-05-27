@@ -186,9 +186,21 @@ pub fn mtp_hidden_to_logits(
     weights: &ModelWeights,
     cfg: &ModelConfig,
 ) -> MlxArray {
+    let normed = mtp_hidden_post_norm(hidden, head, cfg);
+    mtp_post_norm_to_logits(&normed, weights, cfg)
+}
+
+fn mtp_hidden_post_norm(hidden: &MlxArray, head: &MtpWeights, cfg: &ModelConfig) -> MlxArray {
+    rms_norm(hidden, Some(&head.mtp_norm), cfg.rms_norm_eps, None)
+}
+
+fn mtp_post_norm_to_logits(
+    post_norm_hidden: &MlxArray,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+) -> MlxArray {
     use mlx_sys::reshape as mlx_reshape;
-    let normed = rms_norm(hidden, Some(&head.mtp_norm), cfg.rms_norm_eps, None);
-    let logits = qw(&normed, &weights.lm_head);
+    let logits = qw(post_norm_hidden, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
     // [1, 1, vocab] → [vocab]
@@ -228,7 +240,7 @@ pub fn mtp_draft_tokens(
     }
 
     let use_temperature = head.draft_sampling.temperature > 0.0;
-    let use_topk_logprob = use_temperature && head.draft_sampling.top_k > 0;
+    let use_topk_logprob = false;
     let mut draft_tokens = Vec::with_capacity(max_depth);
     let mut draft_log_probs = Vec::with_capacity(max_depth);
     // Lazy arrays holding p(draft_token) under the temperature-scaled draft distribution.
@@ -248,7 +260,8 @@ pub fn mtp_draft_tokens(
 
     for _ in 0..max_depth {
         let new_hidden = mtp_head_forward(head, &prev_hidden, prev_token, weights, cache, cfg);
-        let logits = mtp_hidden_to_logits(&new_hidden, head, weights, cfg);
+        let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
+        let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
 
         let draft_token = {
             // Greedy argmax: transfers only 1 u32. The argmax eval also materialises
@@ -281,7 +294,7 @@ pub fn mtp_draft_tokens(
         };
 
         draft_tokens.push(draft_token);
-        prev_hidden = new_hidden;
+        prev_hidden = post_norm_hidden;
         prev_token = draft_token;
     }
 

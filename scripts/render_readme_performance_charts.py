@@ -679,6 +679,15 @@ def mtp_bundle_order(row: MtpBenchmarkRow) -> int:
     return order.get(mtp_row_key(row), 99)
 
 
+def mtp_bundle_chart_label(model_bundle: str) -> str:
+    normalized = model_bundle.lower().strip()
+    if normalized == "speed":
+        return "Speed to Speed"
+    if normalized == "quality":
+        return "Quality"
+    return model_bundle
+
+
 def mtp_depth_key(row: MtpBenchmarkRow) -> int:
     if row.ax_depth_cap != row.mtplx_depth:
         raise ChartError(
@@ -711,7 +720,8 @@ def render_mtp_summary_chart(rows: list[MtpBenchmarkRow]) -> str:
         raise ChartError("MTP summary chart rows must share model bundle")
     depths = {mtp_depth_key(row) for row in rows}
     depth_label = f"d={next(iter(depths))}" if len(depths) == 1 else "mixed depth"
-    title = f"{model_bundle} MTP {depth_label} tok/s"
+    chart_label = mtp_bundle_chart_label(model_bundle)
+    title = f"{chart_label} {depth_label} tok/s"
     axis_max = nice_axis_ceiling(
         max(max(row.mtplx_tok_s, row.ax_mtp_tok_s) for row in rows) * 1.15
     )
@@ -724,8 +734,8 @@ def render_mtp_summary_chart(rows: list[MtpBenchmarkRow]) -> str:
         f"<title>{escape(title)}</title>",
         (
             f"<desc>Bar chart comparing artifact-backed MTPLX 0.3.7 and AX "
-            f"native MTP {escape(model_bundle)} throughput on flappy and "
-            f"long_code prompt suites, with accept rate labels.</desc>"
+            f"native MTP throughput for the {escape(chart_label)} bundle pair "
+            f"on flappy and long_code prompt suites, with accept rate labels.</desc>"
         ),
         f'<rect width="{MTP_WIDTH}" height="{MTP_HEIGHT}" fill="#ffffff"/>',
         f'<text x="{MTP_LEFT}" y="22" font-family="{FONT}" font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
@@ -804,9 +814,10 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
         raise ChartError("MTP metric chart rows must share model bundle")
     depths = {mtp_depth_key(row) for row in rows}
     depth_label = f"d={next(iter(depths))}" if len(depths) == 1 else "mixed depth"
-    title_metric = "tok/s" if metric == "tok_s" else "accept rate"
+    title_metric = "tok/s" if metric == "tok_s" else "accept %"
     unit = "tok/s" if metric == "tok_s" else "%"
-    title = f"{model_bundle} MTP {depth_label} {title_metric}"
+    chart_label = mtp_bundle_chart_label(model_bundle)
+    title = f"{chart_label} {depth_label} {title_metric}"
     axis_max = (
         100.0
         if metric == "accept_rate"
@@ -830,7 +841,7 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
         (
             f"<desc>Bar chart comparing artifact-backed MTPLX 0.3.7 on the "
             f"left and AX native MTP on the right for "
-            f"{escape(model_bundle)} {escape(title_metric)} on flappy and "
+            f"{escape(chart_label)} {escape(title_metric)} on flappy and "
             f"long_code prompt suites.</desc>"
         ),
         f'<rect width="{MTP_WIDTH}" height="{MTP_HEIGHT}" fill="#ffffff"/>',

@@ -72,7 +72,7 @@ use ax_engine_core::{
 
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings_and_turboquant_context,
-    chunked_prefill, chunked_prefill_with_final_hidden, decode_step,
+    chunked_prefill, chunked_prefill_with_mtp_history, decode_step,
     start_direct_pipeline_with_turboquant_context,
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
@@ -2714,14 +2714,13 @@ struct RequestState {
     mtp_pending_hidden: Option<MlxArray>,
     /// Cumulative MTP draft/accept counters for benchmark telemetry.
     mtp_telemetry: MtpTelemetry,
-    /// Pre-norm hidden from the main model at the last prefill position.
-    /// Set by `chunked_prefill_with_final_hidden` and consumed by
+    /// Post-norm hidden rows from the final prefill chunk.
+    /// Set by `chunked_prefill_with_mtp_history` and consumed by
     /// `initialize_generation_state` to prime the MTP head's KV cache with
-    /// one warmup entry before decode starts.  `None` when MTP is absent or
-    /// prefill was not captured.
+    /// committed prompt/history transitions before decode starts.
     mtp_prefill_hidden: Option<MlxArray>,
-    /// Prefill output token stored alongside `mtp_prefill_hidden` for MTP warmup.
-    mtp_prefill_output_tok: Option<u32>,
+    /// Token IDs paired with `mtp_prefill_hidden` rows for MTP history warmup.
+    mtp_prefill_history_tokens: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2764,7 +2763,7 @@ impl RequestState {
             mtp_pending_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
             mtp_prefill_hidden: None,
-            mtp_prefill_output_tok: None,
+            mtp_prefill_history_tokens: Vec::new(),
         }
     }
 
@@ -3938,7 +3937,7 @@ impl MlxRunner {
                         effective_prefill_token_count = token_ids.len();
                         let recompute_history = state.repetition_history(token_ids, sampling);
                         if self.weights.mtp.is_some() && prefill_completes_prompt {
-                            let (tok, hidden) = chunked_prefill_with_final_hidden(
+                            let (tok, hidden, history_tokens) = chunked_prefill_with_mtp_history(
                                 &self.cfg,
                                 &self.weights,
                                 token_ids,
@@ -3948,7 +3947,7 @@ impl MlxRunner {
                                 &mut state.rng,
                             );
                             state.mtp_prefill_hidden = Some(hidden);
-                            state.mtp_prefill_output_tok = Some(tok);
+                            state.mtp_prefill_history_tokens = history_tokens;
                             tok
                         } else {
                             chunked_prefill(
@@ -3963,7 +3962,7 @@ impl MlxRunner {
                         }
                     }
                 } else if self.weights.mtp.is_some() && prefill_completes_prompt {
-                    let (tok, hidden) = chunked_prefill_with_final_hidden(
+                    let (tok, hidden, history_tokens) = chunked_prefill_with_mtp_history(
                         &self.cfg,
                         &self.weights,
                         prefill_tokens,
@@ -3973,7 +3972,7 @@ impl MlxRunner {
                         &mut state.rng,
                     );
                     state.mtp_prefill_hidden = Some(hidden);
-                    state.mtp_prefill_output_tok = Some(tok);
+                    state.mtp_prefill_history_tokens = history_tokens;
                     tok
                 } else {
                     chunked_prefill(
@@ -5388,35 +5387,44 @@ impl MlxRunner {
         if let Some(ref mut c) = state.mtp_cache {
             c.reset();
         }
-        // Clear any stale prefill capture from a previous generation.
-        // (Freshly captured hidden/token from chunked_prefill_with_final_hidden
-        // are set BEFORE initialize_generation_state is called, so they survive
-        // this reset and are consumed below in the warmup block.)
-        // We cannot clear them here because they arrive in the same step — the
-        // take() calls below drain them after reset.
-
-        // MTP prefill warmup: prime the MTP head KV cache with one entry from
-        // the last prefill position.  This gives the MTP attention some context
-        // from the prompt before decode starts, improving acceptance rates.
-        // `mtp_prefill_hidden` and `mtp_prefill_output_tok` are set during
-        // `chunked_prefill_with_final_hidden` and consumed (take) here.
-        if let (Some(prefill_hidden), Some(prefill_tok), Some(head)) = (
-            state.mtp_prefill_hidden.take(),
-            state.mtp_prefill_output_tok.take(),
-            self.weights.mtp.as_ref(),
-        ) {
+        // MTP prefill warmup: prime the MTP head KV cache with committed
+        // prompt/history transitions from the final prefill chunk. MTPLX's
+        // sustained profile does the same via committed MTP history; without
+        // this, the recurrent MTP attention starts decode with almost no
+        // prompt-side history and acceptance drops sharply.
+        if let (Some(prefill_hidden), Some(head)) =
+            (state.mtp_prefill_hidden.take(), self.weights.mtp.as_ref())
+        {
+            let history_tokens = std::mem::take(&mut state.mtp_prefill_history_tokens);
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-            // cache.seq_len = 0 here; mtp_head_forward uses it as RoPE offset.
-            let warmup_hidden = crate::mtp::mtp_head_forward(
-                head,
-                &prefill_hidden,
-                prefill_tok,
-                &self.weights,
-                cache,
-                &self.cfg,
-            );
-            mlx_sys::eval(&[&warmup_hidden]);
-            state.mtp_decode_count = 1;
+            let available_rows = prefill_hidden
+                .shape()
+                .get(1)
+                .copied()
+                .unwrap_or_default()
+                .max(0) as usize;
+            let warmup_len = available_rows.min(history_tokens.len());
+            let mut warmup_hidden: Option<MlxArray> = None;
+            for (pos, token) in history_tokens.into_iter().take(warmup_len).enumerate() {
+                let row = slice_post_norm_hidden(&prefill_hidden, pos, self.cfg.hidden_size);
+                warmup_hidden = Some(crate::mtp::mtp_head_forward(
+                    head,
+                    &row,
+                    token,
+                    &self.weights,
+                    cache,
+                    &self.cfg,
+                ));
+            }
+            if let Some(ref hidden) = warmup_hidden {
+                let kv_refs = cache.collect_eval_refs();
+                let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+                targets.push(hidden);
+                targets.extend(kv_refs);
+                mlx_sys::eval(&targets);
+                clear_cache();
+                state.mtp_decode_count = warmup_len;
+            }
         }
 
         // Skip n-gram entirely for short output budgets: failed speculation
@@ -5628,7 +5636,8 @@ fn mtp_next_adaptive_depth(
         return current_depth.saturating_add(1).min(max_depth);
     }
 
-    accept_count.clamp(1, max_depth)
+    let floor = 2.min(max_depth);
+    accept_count.clamp(floor, max_depth)
 }
 
 /// Build a lazy MLX array holding p_target(draft_token_i) for each draft position.
@@ -6648,10 +6657,10 @@ mod tests {
     fn mtp_adaptive_depth_shrinks_on_partial_reject_and_recovers_on_full_accept() {
         assert_eq!(mtp_next_adaptive_depth(0, 3, 0, 0), 3);
         assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 2), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1), 1);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1), 2);
         assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 1), 2);
         assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 2), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0), 1);
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0), 2);
         assert_eq!(mtp_next_adaptive_depth(3, 0, 3, 3), 0);
     }
 

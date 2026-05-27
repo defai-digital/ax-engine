@@ -516,6 +516,50 @@ pub fn forward_all_positions(
     )
 }
 
+/// Forward all positions only far enough to update cache state.
+///
+/// Used when a speculative branch must replay a committed prefix after a
+/// partial rejection. The caller only needs recurrent/KV state for future
+/// tokens, not logits for sampling, so this intentionally skips final norm and
+/// lm_head work.
+pub fn forward_all_positions_update_cache(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) {
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
+    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if let Some(scale) = cfg.hidden_states_scale {
+        hidden = scale_hidden(&hidden, scale);
+    }
+
+    let seq = token_ids.len();
+    let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
+        hidden = layer_forward_with_turboquant_context(
+            cfg,
+            layer_w,
+            &hidden,
+            cache,
+            li,
+            token_offset,
+            pli,
+            Some(&masks[li]),
+            None,
+        );
+    }
+}
+
 pub fn forward_all_positions_with_turboquant_context(
     cfg: &ModelConfig,
     weights: &ModelWeights,
