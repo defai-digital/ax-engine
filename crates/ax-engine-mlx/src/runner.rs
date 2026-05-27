@@ -133,6 +133,11 @@ const LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL: u32 = 4;
 /// The initial non-repeating prompt/no-draft case is handled separately before
 /// decode starts because it has no prompt-side evidence to justify slow probes.
 const LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD: u32 = 8;
+// When a linear-attention request has fallen back to the direct pipeline, do
+// not rescan the n-gram table every token looking for a re-enable point. Sparse
+// random prompts can spend the full request in fallback, and the direct path
+// should stay close to the explicit direct baseline.
+const LINEAR_NGRAM_REENABLE_PROBE_INTERVAL: u32 = 4;
 /// Maximum number of prompt tail tokens fed into the n-gram table.
 /// Long prompts (especially random-token benchmarks) would otherwise fill the
 /// table with useless bigrams that trigger false-positive n-gram acceleration and force
@@ -2698,6 +2703,9 @@ struct RequestState {
     /// n-gram draft.  Used to avoid spending an entire request in single-decode
     /// fallback when acceleration has no evidence to act on.
     linear_ngram_no_draft_streak: u32,
+    /// Countdown before probing whether direct fallback output has produced
+    /// enough repeated n-gram evidence to re-enable acceleration.
+    linear_ngram_reenable_probe_countdown: u32,
     /// Request-local fallback: once a linear-attention request proves it has no
     /// useful n-gram support, finish it on the direct pipeline.
     ngram_acceleration_disabled_for_request: bool,
@@ -2786,6 +2794,7 @@ impl RequestState {
             ngram_beta_beta: NGRAM_BETA_PRIOR_BETA,
             ngram_disabled_steps: 0,
             linear_ngram_no_draft_streak: 0,
+            linear_ngram_reenable_probe_countdown: 0,
             ngram_acceleration_disabled_for_request: false,
             ngram_request_disable_reason: NgramRequestDisableReason::None,
             bonus_queue: VecDeque::new(),
@@ -4765,7 +4774,7 @@ impl MlxRunner {
                 .next_model_last_token
                 .or_else(|| input_tokens.last().copied())
                 .unwrap_or(0);
-            return self.run_direct_pipeline_decode(state, last_token, final_by_max_output);
+            return self.run_direct_pipeline_decode(state, last_token, final_by_max_output, false);
         }
 
         let last_token = state
@@ -4789,6 +4798,7 @@ impl MlxRunner {
         state: &mut RequestState,
         last_token: u32,
         final_by_max_output: bool,
+        feed_ngram: bool,
     ) -> u32 {
         let tok = match direct_pipeline_action(state.pending_direct.is_some(), final_by_max_output)
         {
@@ -4807,7 +4817,9 @@ impl MlxRunner {
                 self.run_direct_pipeline_bootstrap(state, last_token)
             }
         };
-        state.ngram.feed(&[tok]);
+        if feed_ngram {
+            state.ngram.feed(&[tok]);
+        }
         tok
     }
 
@@ -4924,7 +4936,7 @@ impl MlxRunner {
             .ngram_acceleration
             .record_request_disabled_reason(state.ngram_request_disable_reason);
         let result = if is_greedy {
-            vec![self.run_direct_pipeline_decode(state, last_token, final_by_max_output)]
+            vec![self.run_direct_pipeline_decode(state, last_token, final_by_max_output, true)]
         } else {
             self.run_single_decode(state, last_token, sampling)
         };
@@ -4993,6 +5005,7 @@ impl MlxRunner {
                 state,
                 last_token,
                 final_by_max_output,
+                true,
             )]);
         }
         None
@@ -5044,6 +5057,7 @@ impl MlxRunner {
                     state,
                     last_token,
                     final_by_max_output,
+                    true,
                 )]);
             }
             return Some(self.run_single_decode(state, last_token, sampling));
@@ -5445,6 +5459,7 @@ impl MlxRunner {
         state.direct_pipeline_emitted_tokens = 0;
         state.ngram_disabled_steps = 0;
         state.linear_ngram_no_draft_streak = 0;
+        state.linear_ngram_reenable_probe_countdown = 0;
         // Reset MTP draft state for the new generation.
         state.mtp_pending_draft.clear();
         state.mtp_pending_draft_log_probs.clear();
@@ -5981,14 +5996,21 @@ fn maybe_reenable_linear_ngram_from_fallback_output(
         return;
     }
 
+    if state.linear_ngram_reenable_probe_countdown > 0 {
+        state.linear_ngram_reenable_probe_countdown -= 1;
+        return;
+    }
+
     let draft = ngram_acceleration_draft(&state.ngram, true, state.ngram_posterior_mean(), variant);
     if draft.draft.is_empty() {
+        state.linear_ngram_reenable_probe_countdown = LINEAR_NGRAM_REENABLE_PROBE_INTERVAL;
         return;
     }
 
     state.ngram_acceleration_disabled_for_request = false;
     state.ngram_request_disable_reason = NgramRequestDisableReason::None;
     state.linear_ngram_no_draft_streak = 0;
+    state.linear_ngram_reenable_probe_countdown = 0;
     state.ngram_disabled_steps = 0;
     // Discard any stale direct-pipeline lookahead that was built while
     // ngram was disabled. Re-entering the ngram path invalidates it: the
@@ -6719,6 +6741,16 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_rollback_wall_us".into(), 50)));
         assert!(decisions.contains(&("ax_mtp_tail_sample_wall_us".into(), 60)));
         assert!(decisions.contains(&("ax_mtp_draft_wall_us".into(), 70)));
+        // Per-depth counters: record_step(3,3) + record_step(3,1) + record_step(3,0)
+        // drafted_by_depth: all 3 steps attempted all 3 depths → [3, 3, 3]
+        // accepted_by_depth: depth0 accepted in steps 0,1; depth1+2 only in step 0
+        assert!(decisions.contains(&("ax_mtp_drafted_depth0".into(), 3)));
+        assert!(decisions.contains(&("ax_mtp_drafted_depth1".into(), 3)));
+        assert!(decisions.contains(&("ax_mtp_drafted_depth2".into(), 3)));
+        assert!(decisions.contains(&("ax_mtp_accepted_depth0".into(), 2)));
+        assert!(decisions.contains(&("ax_mtp_accepted_depth1".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_accepted_depth2".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_ngram_hit_steps".into(), 0)));
     }
 
     #[test]
@@ -8922,8 +8954,27 @@ mod tests {
             state.ngram_acceleration_disabled_for_request,
             "one observed continuation is below the linear-attention support gate"
         );
+        assert_eq!(
+            state.linear_ngram_reenable_probe_countdown,
+            LINEAR_NGRAM_REENABLE_PROBE_INTERVAL
+        );
 
         state.ngram.feed(&[1, 2, 3, 4, 9, 1, 2, 3, 4]);
+        maybe_reenable_linear_ngram_from_fallback_output(
+            &mut state,
+            NgramPolicyVariant::MajorityRecency,
+            true,
+        );
+        assert!(
+            state.ngram_acceleration_disabled_for_request,
+            "reenable probing is throttled while direct fallback is active"
+        );
+        assert_eq!(
+            state.linear_ngram_reenable_probe_countdown,
+            LINEAR_NGRAM_REENABLE_PROBE_INTERVAL - 1
+        );
+
+        state.linear_ngram_reenable_probe_countdown = 0;
         maybe_reenable_linear_ngram_from_fallback_output(
             &mut state,
             NgramPolicyVariant::MajorityRecency,
@@ -8936,6 +8987,7 @@ mod tests {
             NgramRequestDisableReason::None
         );
         assert_eq!(state.linear_ngram_no_draft_streak, 0);
+        assert_eq!(state.linear_ngram_reenable_probe_countdown, 0);
         assert_eq!(state.ngram_disabled_steps, 0);
     }
 
@@ -8982,6 +9034,7 @@ mod tests {
             NgramRequestDisableReason::None
         );
         assert_eq!(state.linear_ngram_no_draft_streak, 0);
+        assert_eq!(state.linear_ngram_reenable_probe_countdown, 0);
         assert_eq!(state.ngram_disabled_steps, 0);
     }
 
