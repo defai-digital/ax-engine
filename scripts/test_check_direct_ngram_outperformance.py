@@ -272,6 +272,58 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 1)
 
+    def test_rejects_unknown_ngram_claim_status_even_for_random_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0, prompt_source="random"),
+                    row("ax_engine_mlx", 105.0, prompt_source="random"),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        106.0,
+                        status="unknown_status",
+                        route="no_draft_fallback",
+                        prompt_source="random",
+                    ),
+                ],
+            )
+
+            with self.assertRaisesRegex(checker.GateError, "unknown claim status"):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
+    def test_rejects_unknown_ngram_effective_route_even_for_random_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0, prompt_source="random"),
+                    row("ax_engine_mlx", 105.0, prompt_source="random"),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        106.0,
+                        status="ngram_no_draft_direct_fallback",
+                        route="unknown_route",
+                        prompt_source="random",
+                    ),
+                ],
+            )
+
+            with self.assertRaisesRegex(checker.GateError, "unknown effective route"):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
     def test_sweep_skips_fail_completion_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

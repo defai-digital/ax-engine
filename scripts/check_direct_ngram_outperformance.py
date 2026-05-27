@@ -26,6 +26,22 @@ AX_NGRAM_ENGINE = "ax_engine_mlx_ngram_accel"
 NGRAM_EFFECTIVE_STATUS = "ngram_acceleration_effective_throughput"
 NGRAM_EFFECTIVE_ROUTE = "ngram_verified_bonus_tokens"
 RANDOM_PROMPT_SOURCE = "random"
+NGRAM_ALLOWED_STATUSES = {
+    NGRAM_EFFECTIVE_STATUS,
+    "ngram_no_draft_direct_fallback",
+    "ngram_no_accept_fallback",
+    "ngram_no_observed_draft_path",
+}
+NGRAM_ALLOWED_ROUTES = {
+    NGRAM_EFFECTIVE_ROUTE,
+    "linear_no_draft_direct_pipeline_fallback",
+    "linear_no_draft_mixed_fallback",
+    "linear_no_draft_single_decode_fallback",
+    "no_draft_fallback",
+    "ngram_route_not_observed",
+    "ngram_attempted_no_accept_fallback",
+    "ngram_accepted_without_decode_route",
+}
 
 
 class GateError(RuntimeError):
@@ -131,6 +147,16 @@ def check_artifact(
         ngram_delta_pct = (ngram_decode / baseline_decode - 1.0) * 100.0
         ngram_status = str(ngram.get("ax_decode_claim_status", ""))
         ngram_route = str(ngram.get("ax_decode_effective_route", ""))
+        if ngram_status not in NGRAM_ALLOWED_STATUSES:
+            raise GateError(
+                f"{artifact_path.name} prompt={prompt_tokens} n-gram row has "
+                f"unknown claim status: {ngram_status!r}"
+            )
+        if ngram_route not in NGRAM_ALLOWED_ROUTES:
+            raise GateError(
+                f"{artifact_path.name} prompt={prompt_tokens} n-gram row has "
+                f"unknown effective route: {ngram_route!r}"
+            )
 
         if direct_delta_pct <= min_delta_pct:
             raise GateError(
