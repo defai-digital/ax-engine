@@ -4784,6 +4784,7 @@ impl MlxRunner {
 
         if ngram_request_disabled_direct_fast_path(
             is_greedy,
+            sampling.uses_repetition_penalty(),
             self.weights.mtp.is_some(),
             state.ngram_acceleration_disabled_for_request,
             state.ngram_request_disable_reason,
@@ -6059,11 +6060,13 @@ fn ngram_request_disabled_fallback_should_feed_output(reason: NgramRequestDisabl
 
 fn ngram_request_disabled_direct_fast_path(
     is_greedy: bool,
+    uses_repetition_penalty: bool,
     has_mtp: bool,
     request_disabled: bool,
     reason: NgramRequestDisableReason,
 ) -> bool {
     is_greedy
+        && !uses_repetition_penalty
         && !has_mtp
         && request_disabled
         && !ngram_request_disabled_fallback_should_feed_output(reason)
@@ -9145,11 +9148,13 @@ mod tests {
         assert!(ngram_request_disabled_direct_fast_path(
             true,
             false,
+            false,
             true,
             NgramRequestDisableReason::LinearInitialNoDraft,
         ));
         assert!(ngram_request_disabled_direct_fast_path(
             true,
+            false,
             false,
             true,
             NgramRequestDisableReason::ShortOutputBudget,
@@ -9157,16 +9162,26 @@ mod tests {
         assert!(!ngram_request_disabled_direct_fast_path(
             true,
             false,
+            false,
             true,
             NgramRequestDisableReason::LinearNoDraft,
         ));
         assert!(!ngram_request_disabled_direct_fast_path(
             true,
             true,
+            false,
             true,
             NgramRequestDisableReason::LinearInitialNoDraft,
         ));
         assert!(!ngram_request_disabled_direct_fast_path(
+            true,
+            false,
+            true,
+            true,
+            NgramRequestDisableReason::LinearInitialNoDraft,
+        ));
+        assert!(!ngram_request_disabled_direct_fast_path(
+            false,
             false,
             false,
             true,
