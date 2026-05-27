@@ -125,6 +125,13 @@ and changes the effective decoding path.
   generated output creates a usable draft source.
 - Stochastic sampling rows cannot be treated as token-exact speculative wins
   unless the verifier preserves the requested sampling distribution.
+- The direct/n-gram completion gate is
+  `scripts/check_direct_ngram_outperformance.py`. It must pass without fallback
+  or sweep-skip allowances before the direct/ngram objective can be treated as
+  complete.
+- A no-draft n-gram fallback row may be useful fallback-floor evidence, but it is
+  not acceleration evidence and must not be used to satisfy accepted-draft
+  n-gram promotion.
 
 ## Validation
 

@@ -75,6 +75,14 @@ different bottleneck.
 - Recent AX direct-vs-n-gram artifacts show that direct decode improves as bits
   drop from 8 to 6 to 5 to 4, while n-gram uplift is workload and acceptance
   dependent. This supports direct-mode-first validation.
+- The 2026-05-27 direct/ngram audit is not complete. Gemma E2B completed rows
+  beat `mlx_lm`, but Qwen 3.6 27B 4-bit and 8-bit direct rows still trail
+  `mlx_lm`, Qwen 5-bit has a marginal prompt-512 direct gap, and Qwen random
+  n-gram rows are no-draft direct fallback rather than accepted-draft
+  acceleration.
+- The same sweep has missing model-artifact rows for Gemma E2B 8-bit, Gemma E4B
+  4-bit, Gemma 26B A4B 4-bit, and Gemma 31B 4-bit. These rows cannot be treated
+  as passed until local artifacts exist and the benchmark gate covers them.
 - MTPLX uses 3-bit in optional TurboQuant value-cache paths and supports lower
   draft-only LM-head bits, but its default public MTP profiles use 4-bit
   draft-only LM heads. MTPLX should not be treated as proof that 3-bit main
@@ -168,6 +176,30 @@ fallback, but they do not make the n-gram table more predictive.
   fallback until generated output creates a usable draft source.
 - Report n-gram speed as effective throughput only when the accepted-draft token
   count explains the win over the direct baseline.
+
+### Completion Gate
+
+The direct/n-gram completion gate is:
+
+```bash
+python3 scripts/check_direct_ngram_outperformance.py \
+  benchmarks/results/mlx-inference/2026-05-27-ax-direct-ngram-all-models
+```
+
+The gate is strict by default:
+
+- every completed direct row must beat the matching `mlx_lm` decode row;
+- every n-gram row must beat the matching `mlx_lm` decode row;
+- every n-gram row must be `ngram_acceleration_effective_throughput` with
+  `ngram_verified_bonus_tokens`;
+- `sweep_results.json` must contain no skipped or failed rows.
+
+Diagnostic flags are allowed only for investigation:
+
+- `--allow-ngram-fallback` checks fallback-floor throughput but does not prove
+  n-gram acceleration;
+- `--allow-sweep-skips` ignores missing local artifacts but does not prove the
+  full model matrix.
 
 ## Implementation Plan
 

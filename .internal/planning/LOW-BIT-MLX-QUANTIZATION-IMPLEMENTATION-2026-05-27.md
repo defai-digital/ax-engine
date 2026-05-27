@@ -80,6 +80,162 @@ keeping benchmark labels unambiguous.
   draft source is useful: repeated evidence, bounded draft length, cooldown after
   misses, and direct fallback are required.
 
+## Current Completion Audit
+
+Audit command:
+
+```bash
+python3 scripts/check_direct_ngram_outperformance.py \
+  benchmarks/results/mlx-inference/2026-05-27-ax-direct-ngram-all-models
+```
+
+Current result: not complete.
+
+- Completed Gemma E2B 4/5/6-bit rows are above `mlx_lm` for direct decode and
+  n-gram effective throughput.
+- Qwen 3.6 27B 4-bit direct decode is below `mlx_lm` at prompt lengths 128,
+  512, and 2048.
+- Qwen 3.6 27B 5-bit direct decode is still marginal at prompt 512, and its
+  n-gram fallback row is below `mlx_lm` at prompts 512 and 2048.
+- Qwen 3.6 27B 8-bit direct and n-gram rows are below `mlx_lm` at prompts 128,
+  512, and 2048.
+- Qwen linear-attention random-token n-gram rows are `ngram_no_draft_direct_fallback`,
+  which is correct fallback labeling, not evidence of n-gram acceleration.
+- The sweep still has missing model-artifact rows for Gemma E2B 8-bit, Gemma E4B
+  4-bit, Gemma 26B A4B 4-bit, and Gemma 31B 4-bit.
+
+The active goal cannot be marked complete until the checker passes without
+`--allow-ngram-fallback` and without `--allow-sweep-skips`, or the expected model
+matrix is explicitly narrowed by a later product decision.
+
+## Plan Schedule
+
+### Phase 0: Completion Gate And Baseline Audit
+
+Status: in progress.
+
+Tasks:
+
+- Add a direct/n-gram outperformance checker that fails when any completed AX
+  row does not beat the matching `mlx_lm` decode row.
+- Keep the checker strict by default:
+  - direct row must beat `mlx_lm`;
+  - n-gram row must beat `mlx_lm`;
+  - n-gram row must be `ngram_acceleration_effective_throughput`;
+  - `sweep_results.json` must have no non-ok rows.
+- Use `--allow-ngram-fallback` only for diagnostic fallback-floor analysis.
+- Use `--allow-sweep-skips` only while local model artifacts are unavailable.
+
+Validation:
+
+```bash
+python3 -m unittest scripts.test_check_direct_ngram_outperformance
+python3 scripts/check_direct_ngram_outperformance.py \
+  benchmarks/results/mlx-inference/2026-05-27-ax-direct-ngram-all-models
+```
+
+Expected near-term outcome: unit tests pass; real artifact gate fails with the
+known Qwen and missing-model gaps.
+
+### Phase 1: Qwen Direct Decode Recovery
+
+Status: pending.
+
+Tasks:
+
+- Run focused Qwen 3.6 27B 4/5/8-bit direct-only benchmarks from current HEAD
+  to separate stale-artifact regressions from live runtime regressions.
+- Profile direct decode only if current HEAD still trails `mlx_lm`:
+  - direct pipeline async eval wall time;
+  - Qwen linear-attention post-input Metal hit rate;
+  - gated-delta decode Metal route;
+  - dense FFN gate/up pack counters;
+  - linear-attention projection pack counters.
+- Compare against mlx-lm Qwen3.5/Qwen3Next source for any missed direct decode
+  cache/update behavior.
+- Do not promote a metadata-only win; rerun the failing prompt lengths after
+  each runtime change.
+
+Validation:
+
+```bash
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-repo-id mlx-community/Qwen3.6-27B-4bit \
+  --prompt-tokens 128,512,2048 \
+  --generation-tokens 128 \
+  --repetitions 3 \
+  --cooldown 0 \
+  --ax-direct
+```
+
+Repeat for 5-bit and 8-bit, reusing the same prompt contract or the existing
+reference rows when appropriate.
+
+### Phase 2: Qwen N-gram Fallback Floor
+
+Status: pending.
+
+Tasks:
+
+- Keep random-token Qwen rows labeled as no-draft fallback unless accepted draft
+  tokens appear.
+- Reduce no-draft fallback overhead only if it preserves the ability to re-enable
+  n-gram when generated output creates repeated evidence.
+- Add a benchmark comparison for fallback-floor rows where n-gram mode is
+  expected to behave like direct mode, not like effective speculation.
+- Keep strict completion blocked until real workload-tier prompts produce
+  accepted draft tokens or the product accepts fallback-only n-gram rows as a
+  separate non-acceleration class.
+
+Validation:
+
+```bash
+python3 scripts/check_direct_ngram_outperformance.py \
+  --allow-ngram-fallback \
+  benchmarks/results/mlx-inference/<candidate-qwen-refresh>
+```
+
+### Phase 3: Workload-Tier N-gram Evidence
+
+Status: pending.
+
+Tasks:
+
+- Add or reuse real prompt suites for:
+  - free-form chat;
+  - structured JSON/tool-loop;
+  - code edit/input-output overlap;
+  - long repeated context.
+- Require matching direct rows for every n-gram row.
+- Require accepted-draft telemetry to explain effective throughput.
+
+Validation:
+
+```bash
+python3 scripts/bench_mlx_inference_stack.py \
+  --prompt-source real \
+  --real-prompt-suite <suite.jsonl> \
+  --ax-compare-policies
+```
+
+### Phase 4: Low-Bit Manifest And Artifact Intake
+
+Status: pending.
+
+Tasks:
+
+- Implement the guarded 3-bit manifest validator only after the current 4/5/6/8
+  direct and n-gram gates have a clean baseline.
+- Intake mlx-lm `mixed_3_4` artifacts for Gemma and Qwen.
+- Preserve model-file non-commit policy.
+
+Validation:
+
+```bash
+cargo test -p ax-engine-core
+cargo test -p ax-engine-mlx
+```
+
 ## Slice 1: Experimental Manifest Gate
 
 Files:
