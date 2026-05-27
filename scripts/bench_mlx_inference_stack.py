@@ -405,6 +405,8 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_prefix_cache_bytes_kib",
     "ax_mlx_dense_ffn_gate_up_packed_layers",
     "ax_mlx_dense_ffn_split_gate_up_layers",
+    "ax_mlx_linear_attention_qkvz_ba_packed_layers",
+    "ax_mlx_linear_attention_split_qkvba_layers",
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUT_KEYS,
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT_KEYS,
     *AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_KEYS,

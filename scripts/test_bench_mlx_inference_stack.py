@@ -2014,6 +2014,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_prefix_cache_hits": 1,
                     "ax_mlx_prefix_cache_blocked_policy_disabled": 2,
                     "ax_mlx_prefix_cache_reused_tokens": 16,
+                    "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+                    "ax_mlx_linear_attention_split_qkvba_layers": 0,
                     "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 4,
                     "ax_mlx_direct_cpp_linear_attention_inputs_hits": 4,
                     "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
@@ -2064,6 +2066,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_prefix_cache_hits"], 1)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_reused_tokens"], 16)
+        self.assertEqual(telemetry["ax_mlx_linear_attention_qkvz_ba_packed_layers"], 48)
+        self.assertEqual(telemetry["ax_mlx_linear_attention_split_qkvba_layers"], 0)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_evictions"], 0)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_blocked_unsupported_layout"], 0)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_blocked_trim_failure"], 0)
@@ -2121,6 +2125,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             summary["ax_mlx_direct_cpp_linear_attention_post_input_attempts"],
             2,
         )
+        self.assertEqual(summary["ax_mlx_linear_attention_qkvz_ba_packed_layers"], 48)
+        self.assertEqual(summary["ax_mlx_linear_attention_split_qkvba_layers"], 0)
 
         direct_cpp_summary = bench.summarize_ax_mlx_direct_cpp_linear_attention_inputs(
             telemetry

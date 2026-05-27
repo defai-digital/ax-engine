@@ -139,7 +139,7 @@ known Qwen and missing-model gaps.
 
 ### Phase 1: Qwen Direct Decode Recovery
 
-Status: pending.
+Status: in progress.
 
 Tasks:
 
@@ -170,6 +170,20 @@ python3 scripts/bench_mlx_inference_stack.py \
 
 Repeat for 5-bit and 8-bit, reusing the same prompt contract or the existing
 reference rows when appropriate.
+
+Current p128 refresh evidence:
+
+- `benchmarks/results/mlx-inference/2026-05-27-qwen27b-direct-refresh/qwen3_6-27b-4bit-p128-direct-cooldown15.json`
+  refreshed current HEAD direct mode against the existing `mlx_lm` p128
+  reference. Median decode was 26.9 tok/s, below `mlx_lm` 34.0 tok/s. The row
+  was highly variable, with reps at 32.1, 26.9, and 20.3 tok/s, so it is useful
+  as regression evidence but not as a promotion artifact.
+- `benchmarks/results/mlx-inference/2026-05-27-qwen27b-direct-refresh/qwen3_6-27b-4bit-p128-linear-pack.json`
+  enabled the existing linear-attention projection pack probe. Median decode
+  improved to 32.4 tok/s and prefill improved to 571.3 tok/s, but the row still
+  did not beat the 34.0 tok/s `mlx_lm` reference. It is the current best
+  direct-mode lever for Qwen p128 but needs runtime telemetry confirming packed
+  vs split linear-attention layer counts before promotion.
 
 ### Phase 2: Qwen N-gram Fallback Floor
 
