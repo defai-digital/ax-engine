@@ -5378,26 +5378,8 @@ impl MlxRunner {
         let prompt_class = classify_prompt_class(&state.prompt_prefix_tokens);
         state.ngram_acceleration.record_prompt_class(prompt_class);
         let has_linear_attention = self.cfg.linear_attention.is_some();
-        let initial_draft_empty = if has_linear_attention
-            && prompt_class == crate::ngram_accel::PROMPT_CLASS_NON_REPEATING
-        {
-            ngram_acceleration_draft(
-                &state.ngram,
-                true,
-                state.ngram_posterior_mean(),
-                self.ngram_policy_variant,
-            )
-            .draft
-            .is_empty()
-        } else {
-            false
-        };
         let linear_initial_prompt_without_draft =
-            linear_ngram_initial_prompt_should_disable_request(
-                has_linear_attention,
-                prompt_class,
-                initial_draft_empty,
-            );
+            linear_ngram_initial_prompt_should_disable_request(has_linear_attention, prompt_class);
 
         // Reset per-generation state.
         state.bonus_queue.clear();
@@ -5918,11 +5900,8 @@ fn linear_ngram_no_draft_should_disable(streak: u32) -> bool {
 fn linear_ngram_initial_prompt_should_disable_request(
     has_linear_attention: bool,
     prompt_class: u32,
-    initial_draft_empty: bool,
 ) -> bool {
-    has_linear_attention
-        && prompt_class == crate::ngram_accel::PROMPT_CLASS_NON_REPEATING
-        && initial_draft_empty
+    has_linear_attention && prompt_class == crate::ngram_accel::PROMPT_CLASS_NON_REPEATING
 }
 
 fn maybe_reenable_linear_ngram_from_fallback_output(
@@ -8845,31 +8824,20 @@ mod tests {
             linear_ngram_initial_prompt_should_disable_request(
                 true,
                 crate::ngram_accel::PROMPT_CLASS_NON_REPEATING,
-                true,
             ),
-            "linear attention should skip slow n-gram probes when the prompt has no repeat signal and no initial draft"
+            "linear attention should skip slow n-gram probes when the prompt has no repeat signal"
         );
         assert!(
             !linear_ngram_initial_prompt_should_disable_request(
                 true,
                 crate::ngram_accel::PROMPT_CLASS_REPEATING,
-                true,
             ),
             "repeating prompts should keep the speculative path eligible"
         );
         assert!(
             !linear_ngram_initial_prompt_should_disable_request(
-                true,
-                crate::ngram_accel::PROMPT_CLASS_NON_REPEATING,
-                false,
-            ),
-            "an available initial draft is enough evidence to try n-gram"
-        );
-        assert!(
-            !linear_ngram_initial_prompt_should_disable_request(
                 false,
                 crate::ngram_accel::PROMPT_CLASS_NON_REPEATING,
-                true,
             ),
             "dense models can cheaply roll back and should keep the existing gate"
         );
