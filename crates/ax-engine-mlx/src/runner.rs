@@ -5414,22 +5414,53 @@ impl MlxRunner {
             state.mtp_draft_candidates = Some(candidates);
         }
 
-        // Generate new draft tokens from the hidden row that produced the correction/bonus token.
+        // Generate new draft tokens: attempt n-gram stacking first (ADR-008).
+        // N-gram lookup is zero-cost compared to MTP head forward (~4 ms).
+        // On hit, the MTP KV cache is reset so the next MTP step starts fresh
+        // (skipping mtp_draft_tokens leaves cache.seq_len up to max_depth positions
+        // behind the committed sequence, causing wrong RoPE offsets).
         let draft_started = Instant::now();
-        let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-        // RoPE positions are managed internally by mtp_head_forward using
-        // cache.seq_len (matching mlx-lm's cache.offset convention).
-        let (new_draft, new_log_probs, added, _top2_margins) = mtp_draft_tokens(
-            &self.weights,
-            &self.cfg,
-            &draft_hidden,
-            tail_tok,
-            cache,
-            Some(state.mtp_adaptive_max_depth),
-            state.mtp_draft_candidates.as_ref(),
-            &mut state.rng,
-        );
-        state.mtp_decode_count += added;
+        let ngram_max = 2_usize.min(state.mtp_adaptive_max_depth);
+        let ngram_outcome = if ngram_max > 0 {
+            state.ngram.predict_with_policy(NgramDraftPolicy {
+                variant: NgramPolicyVariant::MajorityRecency,
+                max_len: ngram_max,
+                min_support: 1,
+                confidence_threshold: effective_draft_confidence_threshold(),
+                adaptive_match_len: false,
+                bypass_prompt_min_support: true,
+            })
+        } else {
+            NgramDraftOutcome {
+                draft: vec![],
+                rejection: None,
+                requested_max_len: 0,
+            }
+        };
+        let recent = &result[result.len().saturating_sub(8)..];
+        let (new_draft, new_log_probs) = if !ngram_outcome.draft.is_empty()
+            && !ngram_draft_is_cycle(&ngram_outcome.draft, recent)
+        {
+            state.mtp_cache = None;
+            state.mtp_telemetry.ngram_hit_steps =
+                state.mtp_telemetry.ngram_hit_steps.saturating_add(1);
+            (ngram_outcome.draft, vec![])
+        } else {
+            // MTP head forward path (RoPE managed internally via cache.seq_len).
+            let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+            let (draft, log_probs, added, _top2_margins) = mtp_draft_tokens(
+                &self.weights,
+                &self.cfg,
+                &draft_hidden,
+                tail_tok,
+                cache,
+                Some(state.mtp_adaptive_max_depth),
+                state.mtp_draft_candidates.as_ref(),
+                &mut state.rng,
+            );
+            state.mtp_decode_count += added;
+            (draft, log_probs)
+        };
         state.mtp_pending_draft = new_draft;
         state.mtp_pending_draft_log_probs = new_log_probs;
         state.mtp_pending_hidden = Some(draft_hidden);
