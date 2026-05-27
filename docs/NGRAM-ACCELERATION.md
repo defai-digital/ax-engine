@@ -118,6 +118,30 @@ gain over direct decode; the other two cases (`rename_identifier`,
 paraphrases rather than echoing the input tokens verbatim — the
 expected fall-through behavior when input-output overlap is low.
 
+### Linear-attention no-draft fallback
+
+Linear-attention models pay more for failed speculative probes than dense models:
+partial rejection needs branch verification and recurrent-state recompute rather
+than a cheap KV trim. AX therefore separates two no-draft cases.
+
+`LinearInitialNoDraft` is assigned before decode when the prompt is classified as
+non-repeating. For that request, AX stays on the direct double-buffer pipeline
+and does not feed generated fallback tokens back into the n-gram table. This is
+intentional for random-token / sparse prompts: the prompt provided no overlap
+signal, and repeated per-token re-enable checks showed up as overhead without
+producing accepted drafts.
+
+`LinearNoDraft` is assigned after the runtime actually tried to draft and found
+no candidate. That path can still feed generated output into the n-gram table and
+periodically re-open n-gram if repeated evidence appears later. In other words,
+prompt-level no-draft is fixed direct fallback; runtime no-draft remains
+recoverable.
+
+The disabled-request direct fallback fast path is limited to greedy decode with
+no MTP head and no repetition penalty. Sampling and repetition-penalty requests
+fall back through the original single-step path so the optimization does not
+change token-selection semantics.
+
 ## Correctness contract
 
 The current verifier accepts a drafted token iff the target model's
