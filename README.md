@@ -6,12 +6,20 @@ Prompt-parity MTP comparison charts.
 
 <table>
 <tr>
-<td align="center"><strong>Speed to Speed chart</strong></td>
-<td align="center"><strong>Quality chart</strong></td>
+<td align="center"><strong>Speed tok/s</strong></td>
+<td align="center"><strong>Speed accept rate</strong></td>
 </tr>
 <tr>
-<td><img src="docs/assets/perf-mtp-speed-summary.svg" alt="Speed to Speed d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code, with accept-rate labels"></td>
-<td><img src="docs/assets/perf-mtp-quality-summary.svg" alt="Quality d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code, with accept-rate labels"></td>
+<td><img src="docs/assets/perf-mtp-speed-tok-s.svg" alt="Speed to Speed d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
+<td><img src="docs/assets/perf-mtp-speed-accept-rate.svg" alt="Speed to Speed d=3 accept-rate chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
+</tr>
+<tr>
+<td align="center"><strong>Quality tok/s</strong></td>
+<td align="center"><strong>Quality accept rate</strong></td>
+</tr>
+<tr>
+<td><img src="docs/assets/perf-mtp-quality-tok-s.svg" alt="Quality d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
+<td><img src="docs/assets/perf-mtp-quality-accept-rate.svg" alt="Quality d=3 accept-rate chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
 </tr>
 </table>
 
@@ -19,21 +27,23 @@ Prompt-parity MTP comparison charts.
 
 <table>
 <tr>
-<td align="center"><strong>Family</strong></td>
-<td align="center"><strong>Prefill rate</strong></td>
-<td align="center"><strong>Decode rate</strong></td>
-<td align="center"><strong>TTFT</strong></td>
-</tr>
-<tr>
+<td></td>
 <td align="center"><strong>Gemma 4</strong></td>
-<td><img src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
-<td><img src="docs/assets/perf-gemma4-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax+n-gram decode rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
-<td><img src="docs/assets/perf-gemma4-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Gemma 4 models at 128/512/2048 prompt tokens with a red lowest-median reference line"></td>
+<td align="center"><strong>Qwen 3.6</strong></td>
 </tr>
 <tr>
-<td align="center"><strong>Qwen 3.6</strong></td>
+<td align="center"><strong>Prefill rate</strong></td>
+<td><img src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
 <td><img src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Qwen 3.6 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
+</tr>
+<tr>
+<td align="center"><strong>Decode rate</strong></td>
+<td><img src="docs/assets/perf-gemma4-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax+n-gram decode rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
 <td><img src="docs/assets/perf-qwen-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, ax_engine, and ax+n-gram decode rates for Qwen 3.6 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
+</tr>
+<tr>
+<td align="center"><strong>TTFT</strong></td>
+<td><img src="docs/assets/perf-gemma4-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Gemma 4 models at 128/512/2048 prompt tokens with a red lowest-median reference line"></td>
 <td><img src="docs/assets/perf-qwen-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Qwen 3.6 models at 128/512/2048 prompt tokens with a red lowest-median reference line"></td>
 </tr>
 </table>

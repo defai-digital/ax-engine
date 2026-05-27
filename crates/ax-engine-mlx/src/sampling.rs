@@ -254,6 +254,72 @@ pub fn sample_indexed_categorical(
         .map(|(idx, _)| idx as u32)
 }
 
+/// Sample from a pre-filtered top-k candidate set and return `(token, log_prob)`.
+///
+/// Combines sampling and log-probability calculation in a single pass over the
+/// candidate set, which is more efficient than calling `sample_indexed_categorical`
+/// and `indexed_token_logprob` separately.  Used by MTP stochastic draft sampling
+/// so the rejection-sampling acceptance check has an accurate `q_draft(d)`.
+///
+/// Returns `None` when the candidate set is empty or malformed.
+pub fn sample_indexed_categorical_with_logprob(
+    logits: &[f32],
+    indices: &[u32],
+    sampling: MlxSamplingParams,
+    rng: &mut Xorshift64,
+) -> Option<(u32, f32)> {
+    if logits.is_empty() || logits.len() != indices.len() {
+        return None;
+    }
+    let best_i = logits
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    if sampling.temperature <= 0.0 {
+        return Some((indices[best_i], 0.0));
+    }
+
+    let inv_temp = 1.0 / sampling.temperature;
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let mut candidates: Vec<(usize, f32)> = logits
+        .iter()
+        .zip(indices.iter())
+        .map(|(&logit, &idx)| {
+            let p = ((logit - max_l) * inv_temp).exp();
+            (idx as usize, if p.is_finite() { p } else { 0.0 })
+        })
+        .collect();
+
+    let total: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if total == 0.0 || !total.is_finite() {
+        return Some((indices[best_i], 0.0));
+    }
+
+    // Apply top-p over the already-top-k-filtered set (top-k was done on GPU).
+    apply_top_k_top_p(&mut candidates, 0, sampling.top_p);
+    let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if filtered_sum == 0.0 || !filtered_sum.is_finite() {
+        return Some((indices[best_i], 0.0));
+    }
+
+    let threshold = rng.next_f32() * filtered_sum;
+    let mut cumsum = 0.0f32;
+    let mut sampled_idx = candidates[0].0;
+    let mut sampled_prob = candidates[0].1;
+    for &(idx, prob) in &candidates {
+        cumsum += prob;
+        if cumsum >= threshold {
+            sampled_idx = idx;
+            sampled_prob = prob;
+            break;
+        }
+    }
+    let log_prob = (sampled_prob / filtered_sum).ln().max(-30.0);
+    Some((sampled_idx as u32, log_prob))
+}
+
 /// Return the log-probability of `token` within a pre-filtered candidate set.
 ///
 /// The candidate set is treated like the post-top-k set used by

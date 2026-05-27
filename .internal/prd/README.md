@@ -13,6 +13,8 @@ This directory contains active product and execution plans for the current
   chat/API interface hardening.
 - `PRD-2026-05-26-cache-local-speculative-serving.md` - cache-aware scheduling,
   prefix reuse, speculative decode, and offline policy-search promotion gates.
+- `PRD-2026-05-27-experimental-low-bit-mlx-quantization.md` - gated 3-bit/2-bit
+  MLX quantization experiments, direct/n-gram/MTP evidence, and promotion gates.
 
 ## Policy
 

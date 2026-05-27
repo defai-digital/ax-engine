@@ -12,6 +12,8 @@ This directory contains active architecture decisions for the current
   microbenchmark ownership.
 - `ADR-004-cache-local-speculative-serving.md` - cache-local serving,
   speculative decoding, and offline policy-search boundaries.
+- `ADR-005-experimental-low-bit-mlx-quantization.md` - gated 3-bit/2-bit MLX
+  quantization boundaries and benchmark evidence rules.
 
 ## Policy
 

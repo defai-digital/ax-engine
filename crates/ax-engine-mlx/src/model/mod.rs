@@ -277,7 +277,7 @@ pub fn layer_forward_with_turboquant_context_last_only(
 /// this can be called with a GPU argmax result before it has been materialised.
 /// Used internally by `embed_tokens` (materialized path) and by
 /// `forward_lazy_single` (double-buffer pipelining path).
-fn embed_tokens_arr(
+pub(crate) fn embed_tokens_arr(
     ids_1d: &MlxArray,
     embedding: &QuantizedWeight,
     hidden_size: usize,

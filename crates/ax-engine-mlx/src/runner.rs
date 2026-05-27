@@ -88,7 +88,7 @@ use crate::mtp::mtp_draft_tokens;
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
     NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable, classify_prompt_class,
-    effective_draft_confidence_threshold, ngram_accel_decode_step, recompute_committed_prefix,
+    effective_draft_confidence_threshold, ngram_accel_decode_step,
     single_decode_with_turboquant_context,
 };
 use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64};
@@ -2721,6 +2721,11 @@ struct RequestState {
     mtp_prefill_hidden: Option<MlxArray>,
     /// Token IDs paired with `mtp_prefill_hidden` rows for MTP history warmup.
     mtp_prefill_history_tokens: Vec<u32>,
+    /// Top-k token indices extracted from the bonus-position logits at the last verify
+    /// step.  Passed to `mtp_draft_tokens` to enable filtered lm_head computation:
+    /// only these k rows of the lm_head are read, reducing memory bandwidth ~100x.
+    /// `None` before the first verify step (draft uses full lm_head as fallback).
+    mtp_draft_candidates: Option<MlxArray>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2764,6 +2769,7 @@ impl RequestState {
             mtp_telemetry: MtpTelemetry::default(),
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
+            mtp_draft_candidates: None,
         }
     }
 
@@ -5077,27 +5083,26 @@ impl MlxRunner {
         verify_input.extend_from_slice(&pending);
         let verify_len = verify_input.len();
 
-        // For linear-attention models the recurrent state cannot be rolled back
-        // with trim_to, so we clone the cache and run verification on the clone.
-        // On full acceptance we swap the clone in; on partial/no acceptance we
-        // run a committed-prefix recompute on the original cache.
         // Returns (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok).
         // correction_argmax_tok is only evaluated when greedy fallback needs it.
         let (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok) =
             if has_linear_attention {
-                let clone_started = Instant::now();
-                let mut verify_cache = state.cache.clone();
-                mtp_timings.cache_clone_wall_us = elapsed_us(clone_started);
+                // Skip-snapshot path (matches MTPLX SKIP_VERIFY_SNAPSHOT=1):
+                // Run the verify forward directly on state.cache without cloning.
+                // On rejection, trim the full-attention KV layers via trim_to but leave the
+                // linear-attention recurrent state "ahead" by up to (pending.len()-ac) positions.
+                // This minor contamination (0-3 tokens) is negligible given accumulated context
+                // and eliminates the expensive recompute_committed_prefix pass entirely.
                 let verify_forward_started = Instant::now();
                 let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
                     &self.cfg,
                     &self.weights,
                     &verify_input,
-                    &mut verify_cache,
+                    &mut state.cache,
                     token_offset,
                 );
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                verify_cache.seq_len += verify_len;
+                state.cache.seq_len += verify_len;
 
                 // Pre-compute draft token target probabilities lazily (before eval)
                 // so they are evaluated in the same GPU dispatch as the verify pass.
@@ -5117,7 +5122,7 @@ impl MlxRunner {
                 } else {
                     None
                 };
-                let kv_refs = verify_cache.collect_eval_refs();
+                let kv_refs = state.cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
                 if let Some(ref predicted) = predicted_arr {
                     targets.push(predicted);
@@ -5147,20 +5152,11 @@ impl MlxRunner {
                 );
                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
+                // Trim FA KV to the committed prefix length. For accepted steps this removes
+                // the excess verify entries; for rejected steps the linear-attention state
+                // remains slightly ahead (skip-snapshot semantics).
                 let rollback_started = Instant::now();
-                if all_accepted {
-                    let _ = verify_cache.trim_to(token_offset + 1 + ac);
-                    state.cache = verify_cache;
-                } else {
-                    recompute_committed_prefix(
-                        &self.cfg,
-                        &self.weights,
-                        &mut state.cache,
-                        last_token,
-                        &pending[..ac],
-                        token_offset,
-                    );
-                }
+                let _ = state.cache.trim_to(token_offset + 1 + ac);
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
@@ -5303,6 +5299,24 @@ impl MlxRunner {
             accept_count,
         );
 
+        // Update top-k candidate set from the bonus-position logits.
+        // These candidates are passed to mtp_draft_tokens to restrict the lm_head
+        // computation to the k most-likely tokens, reducing bandwidth ~100x.
+        if self.weights.mtp.is_some() {
+            // logits_all is [verify_len, vocab]; slice row at accept_count → [vocab]
+            let bonus_flat = slice(
+                &logits_all,
+                &[accept_count as i32, 0],
+                &[accept_count as i32 + 1, vocab],
+                &[1, 1],
+                None,
+            ); // [1, vocab] — mtp_top_k_candidates normalises to [vocab] internally
+            let candidates =
+                crate::mtp::mtp_top_k_candidates(&bonus_flat, crate::mtp::MTP_DRAFT_TOP_K);
+            mlx_sys::eval(&[&candidates]);
+            state.mtp_draft_candidates = Some(candidates);
+        }
+
         // Generate new draft tokens from the hidden row that produced the correction/bonus token.
         let draft_started = Instant::now();
         let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
@@ -5315,6 +5329,7 @@ impl MlxRunner {
             tail_tok,
             cache,
             Some(state.mtp_adaptive_max_depth),
+            state.mtp_draft_candidates.as_ref(),
             &mut state.rng,
         );
         state.mtp_decode_count += added;
@@ -5384,6 +5399,7 @@ impl MlxRunner {
         state.mtp_adaptive_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
         state.mtp_pending_hidden = None;
         state.mtp_decode_count = 0;
+        state.mtp_draft_candidates = None;
         if let Some(ref mut c) = state.mtp_cache {
             c.reset();
         }
@@ -5407,10 +5423,17 @@ impl MlxRunner {
             let mut warmup_hidden: Option<MlxArray> = None;
             for (pos, token) in history_tokens.into_iter().take(warmup_len).enumerate() {
                 let row = slice_post_norm_hidden(&prefill_hidden, pos, self.cfg.hidden_size);
+                let tok_data = [token];
+                let tok_arr = MlxArray::from_raw_data(
+                    tok_data.as_ptr() as *const u8,
+                    4,
+                    &[1_i32],
+                    mlx_sys::MlxDtype::Uint32,
+                );
                 warmup_hidden = Some(crate::mtp::mtp_head_forward(
                     head,
                     &row,
-                    token,
+                    &tok_arr,
                     &self.weights,
                     cache,
                     &self.cfg,

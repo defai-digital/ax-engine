@@ -51,12 +51,12 @@ FAMILY_LABELS: dict[str, str] = {
     "qwen": "Qwen 3.6",
 }
 
-FAMILY_CHART_WIDTH = 540
-FAMILY_CHART_HEIGHT = 278
+FAMILY_CHART_WIDTH = 700
+FAMILY_CHART_HEIGHT = 340
 FAMILY_LEFT = 52
-FAMILY_RIGHT = 524
+FAMILY_RIGHT = 684
 FAMILY_TOP = 46
-FAMILY_BOTTOM = 214
+FAMILY_BOTTOM = 276
 
 # fill-opacity and stroke-opacity per context length (lighter = shorter prompt)
 CTX_FILL_OPACITY = {128: 0.08, 512: 0.17, 2048: 0.30}
@@ -194,7 +194,7 @@ CHARTS = [
 
 
 MTP_WIDTH = 380
-MTP_HEIGHT = 238
+MTP_HEIGHT = 216
 MTP_LEFT = 52
 MTP_RIGHT = 354
 MTP_TOP = 50
@@ -210,12 +210,6 @@ MTP_CHART_OUTPUTS = {
     ("quality", "tok_s"): "perf-mtp-quality-tok-s.svg",
     ("quality", "accept_rate"): "perf-mtp-quality-accept-rate.svg",
 }
-
-MTP_SUMMARY_CHART_OUTPUTS = {
-    "speed": "perf-mtp-speed-summary.svg",
-    "quality": "perf-mtp-quality-summary.svg",
-}
-
 
 class ChartError(RuntimeError):
     pass
@@ -711,100 +705,6 @@ def mtp_metric_label(value: float, metric: str) -> str:
     return f"{value:.1f}"
 
 
-def render_mtp_summary_chart(rows: list[MtpBenchmarkRow]) -> str:
-    rows = sorted(rows, key=lambda row: (row.suite, mtp_depth_key(row)))
-    if not rows:
-        raise ChartError("MTP summary chart requires at least one row")
-    model_bundle = rows[0].model_bundle
-    if any(row.model_bundle != model_bundle for row in rows):
-        raise ChartError("MTP summary chart rows must share model bundle")
-    depths = {mtp_depth_key(row) for row in rows}
-    depth_label = f"d={next(iter(depths))}" if len(depths) == 1 else "mixed depth"
-    chart_label = mtp_bundle_chart_label(model_bundle)
-    title = f"{chart_label} {depth_label} tok/s"
-    axis_max = nice_axis_ceiling(
-        max(max(row.mtplx_tok_s, row.ax_mtp_tok_s) for row in rows) * 1.15
-    )
-    best_value = max(max(row.mtplx_tok_s, row.ax_mtp_tok_s) for row in rows)
-    group_step = (MTP_RIGHT - MTP_LEFT) / len(rows)
-    bar_width = min(42.0, group_step * 0.26)
-    pair_gap = bar_width * 0.22
-    lines = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_WIDTH}" height="{MTP_HEIGHT}" viewBox="0 0 {MTP_WIDTH} {MTP_HEIGHT}" role="img" aria-labelledby="title desc">',
-        f"<title>{escape(title)}</title>",
-        (
-            f"<desc>Bar chart comparing artifact-backed MTPLX 0.3.7 and AX "
-            f"native MTP throughput for the {escape(chart_label)} bundle pair "
-            f"on flappy and long_code prompt suites, with accept rate labels.</desc>"
-        ),
-        f'<rect width="{MTP_WIDTH}" height="{MTP_HEIGHT}" fill="#ffffff"/>',
-        f'<text x="{MTP_LEFT}" y="22" font-family="{FONT}" font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
-        f'<text x="{MTP_LEFT}" y="40" font-family="{FONT}" font-size="10" fill="#6b7280">flappy/long_code prompt-parity suites · label shows accept rate</text>',
-        f'<text x="{MTP_RIGHT}" y="22" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">tok/s</text>',
-        f'<text x="{MTP_RIGHT}" y="40" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
-    ]
-
-    for value in (0.0, axis_max / 2, axis_max):
-        y = mtp_y_scale(value, axis_max)
-        lines.append(
-            f'<line x1="{MTP_LEFT}" y1="{y:.1f}" x2="{MTP_RIGHT}" y2="{y:.1f}" stroke="#e5e7eb" stroke-width="1"/>'
-        )
-        lines.append(
-            f'<text x="{MTP_LEFT - 8}" y="{y + 3:.1f}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{short_number(value)}</text>'
-        )
-
-    best_y = mtp_y_scale(best_value, axis_max)
-    lines.append(
-        f'<line x1="{MTP_LEFT}" y1="{best_y:.1f}" x2="{MTP_RIGHT}" y2="{best_y:.1f}" stroke="{RED}" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
-    )
-
-    for index, row in enumerate(rows):
-        group_x = MTP_LEFT + group_step * (index + 0.5)
-        bars = (
-            (
-                "MTPLX",
-                row.mtplx_tok_s,
-                row.mtplx_accept_rate * 100.0,
-                MTP_MTPLX_COLOR,
-                MTP_MTPLX_DOT,
-                group_x - bar_width / 2 - pair_gap,
-            ),
-            (
-                "AX MTP",
-                row.ax_mtp_tok_s,
-                row.ax_accept_rate * 100.0,
-                MTP_AX_COLOR,
-                MTP_AX_DOT,
-                group_x + bar_width / 2 + pair_gap,
-            ),
-        )
-        for label, tok_s, accept_rate, color, dot_color, center_x in bars:
-            y = mtp_y_scale(tok_s, axis_max)
-            height = MTP_BOTTOM - y
-            left = center_x - bar_width / 2
-            lines.extend(
-                [
-                    f'<rect x="{left:.1f}" y="{y:.1f}" width="{bar_width:.1f}" height="{height:.1f}" rx="3" fill="{color}" fill-opacity="0.22" stroke="{color}" stroke-width="1.8"/>',
-                    f'<line x1="{left:.1f}" y1="{y:.1f}" x2="{left + bar_width:.1f}" y2="{y:.1f}" stroke="{color}" stroke-width="2.4"/>',
-                    f'<circle cx="{center_x:.1f}" cy="{y:.1f}" r="2.2" fill="{dot_color}"/>',
-                    f'<text x="{center_x:.1f}" y="{y - 8:.1f}" text-anchor="middle" font-family="{FONT}" font-size="10" font-weight="700" fill="#111827">{tok_s:.1f}</text>',
-                    f'<text x="{center_x:.1f}" y="{y + 11:.1f}" text-anchor="middle" font-family="{FONT}" font-size="8" font-weight="700" fill="#374151">{accept_rate:.1f}%</text>',
-                    f'<text x="{center_x:.1f}" y="190" text-anchor="middle" font-family="{FONT}" font-size="9" fill="#111827">{escape(label)}</text>',
-                ]
-            )
-        lines.append(
-            f'<text x="{group_x:.1f}" y="207" text-anchor="middle" font-family="{FONT}" font-size="10" font-weight="700" fill="#111827">{escape(row.suite)}</text>'
-        )
-
-    lines.extend(
-        [
-            f'<text x="{MTP_WIDTH / 2:.1f}" y="226" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">Artifact-backed MTPLX left · AX MTP right</text>',
-            "</svg>",
-        ]
-    )
-    return "".join(lines) + "\n"
-
-
 def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
     rows = sorted(rows, key=lambda row: (row.suite, mtp_depth_key(row)))
     if not rows:
@@ -815,7 +715,6 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
     depths = {mtp_depth_key(row) for row in rows}
     depth_label = f"d={next(iter(depths))}" if len(depths) == 1 else "mixed depth"
     title_metric = "tok/s" if metric == "tok_s" else "accept %"
-    unit = "tok/s" if metric == "tok_s" else "%"
     chart_label = mtp_bundle_chart_label(model_bundle)
     title = f"{chart_label} {depth_label} {title_metric}"
     axis_max = (
@@ -846,9 +745,7 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
         ),
         f'<rect width="{MTP_WIDTH}" height="{MTP_HEIGHT}" fill="#ffffff"/>',
         f'<text x="{MTP_LEFT}" y="22" font-family="{FONT}" font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
-        f'<text x="{MTP_LEFT}" y="40" font-family="{FONT}" font-size="10" fill="#6b7280">flappy/long_code prompt-parity suites</text>',
-        f'<text x="{MTP_RIGHT}" y="22" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(unit)}</text>',
-        f'<text x="{MTP_RIGHT}" y="40" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
+        f'<text x="{MTP_RIGHT}" y="22" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
     ]
 
     for value in (0.0, axis_max / 2, axis_max):
@@ -901,12 +798,7 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
             f'<text x="{group_x:.1f}" y="207" text-anchor="middle" font-family="{FONT}" font-size="10" font-weight="700" fill="#111827">{escape(row.suite)}</text>'
         )
 
-    lines.extend(
-        [
-            f'<text x="{MTP_WIDTH / 2:.1f}" y="226" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">Artifact-backed MTPLX left · AX MTP right</text>',
-            "</svg>",
-        ]
-    )
+    lines.append("</svg>")
     return "".join(lines) + "\n"
 
 
@@ -970,15 +862,6 @@ def main() -> int:
 
     mismatches: list[Path] = []
     mtp_rows = load_mtp_rows(args.performance_doc)
-    for row_key, output_name in MTP_SUMMARY_CHART_OUTPUTS.items():
-        rows = [row for row in mtp_rows if mtp_row_key(row) == row_key]
-        if not rows:
-            raise ChartError(f"MTP performance table has no {row_key!r} rows")
-        mtp_output_path = args.output_dir / output_name
-        mtp_content = render_mtp_summary_chart(rows)
-        if not write_chart(mtp_output_path, mtp_content, args.check):
-            mismatches.append(mtp_output_path)
-
     for (row_key, metric), output_name in MTP_CHART_OUTPUTS.items():
         rows = [row for row in mtp_rows if mtp_row_key(row) == row_key]
         if not rows:
