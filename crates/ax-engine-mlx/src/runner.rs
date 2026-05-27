@@ -4930,6 +4930,12 @@ impl MlxRunner {
         if is_greedy {
             if !has_linear_attention {
                 state.ngram_disabled_steps = NGRAM_RETRY_INTERVAL;
+                // Same stale-lookahead hazard as the linear-attention no-draft
+                // path: any pending_direct built before this cooldown now points
+                // at the wrong cache position once the direct pipeline advances
+                // seq_len independently during the retry interval.
+                state.pending_direct = None;
+                state.direct_pipeline_emitted_tokens = 0;
                 state
                     .ngram_acceleration
                     .record_cooldown_event(NGRAM_RETRY_INTERVAL);
