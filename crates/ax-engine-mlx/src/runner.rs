@@ -939,13 +939,22 @@ fn direct_pipeline_clear_cache_due(emitted_tokens: u32, cadence: u32) -> bool {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DirectPipelineAction {
+    FinishPending,
     ContinuePending,
+    BootstrapFinal,
     Bootstrap,
 }
 
-fn direct_pipeline_action(has_pending_direct: bool) -> DirectPipelineAction {
-    if has_pending_direct {
+fn direct_pipeline_action(
+    has_pending_direct: bool,
+    final_by_max_output: bool,
+) -> DirectPipelineAction {
+    if final_by_max_output && has_pending_direct {
+        DirectPipelineAction::FinishPending
+    } else if has_pending_direct {
         DirectPipelineAction::ContinuePending
+    } else if final_by_max_output {
+        DirectPipelineAction::BootstrapFinal
     } else {
         DirectPipelineAction::Bootstrap
     }
@@ -1092,6 +1101,9 @@ struct MtpTelemetry {
     rollback_wall_us: u32,
     tail_sample_wall_us: u32,
     draft_wall_us: u32,
+    accepted_by_depth: [u32; 3],
+    drafted_by_depth: [u32; 3],
+    ngram_hit_steps: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -4729,24 +4741,11 @@ impl MlxRunner {
         // step returns (and the first SSE event fires) without waiting for the
         // decode graph construction.
         if self.disable_ngram_acceleration && is_greedy {
-            if final_by_max_output && state.pending_direct.is_some() {
-                let pending = state
-                    .pending_direct
-                    .take()
-                    .expect("direct pipeline final step requires pending_direct");
-                return self.run_direct_pipeline_finish_pending(state, pending);
-            }
-            if state.pending_direct.is_some() {
-                return self.run_direct_pipeline_continue(state);
-            }
             let last_token = state
                 .next_model_last_token
                 .or_else(|| input_tokens.last().copied())
                 .unwrap_or(0);
-            if final_by_max_output {
-                return self.run_direct_pipeline_bootstrap_final(state, last_token);
-            }
-            return self.run_direct_pipeline_bootstrap(state, last_token);
+            return self.run_direct_pipeline_decode(state, last_token, final_by_max_output);
         }
 
         let last_token = state
@@ -4754,7 +4753,8 @@ impl MlxRunner {
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
 
-        let result = self.run_model_decode(state, last_token, sampling, is_greedy);
+        let result =
+            self.run_model_decode(state, last_token, sampling, is_greedy, final_by_max_output);
         apply_decode_result(state, &result, terminal_token_ids)
     }
 
@@ -4764,9 +4764,25 @@ impl MlxRunner {
     /// a linear-attention request proves it has no useful draft support.  The
     /// pipeline may keep the cache one lazy token ahead, so callers must continue
     /// using this path until the request finishes.
-    fn run_direct_pipeline_decode(&self, state: &mut RequestState, last_token: u32) -> u32 {
-        let tok = match direct_pipeline_action(state.pending_direct.is_some()) {
+    fn run_direct_pipeline_decode(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        final_by_max_output: bool,
+    ) -> u32 {
+        let tok = match direct_pipeline_action(state.pending_direct.is_some(), final_by_max_output)
+        {
+            DirectPipelineAction::FinishPending => {
+                let pending = state
+                    .pending_direct
+                    .take()
+                    .expect("direct pipeline final step requires pending_direct");
+                self.run_direct_pipeline_finish_pending(state, pending)
+            }
             DirectPipelineAction::ContinuePending => self.run_direct_pipeline_continue(state),
+            DirectPipelineAction::BootstrapFinal => {
+                self.run_direct_pipeline_bootstrap_final(state, last_token)
+            }
             DirectPipelineAction::Bootstrap => {
                 self.run_direct_pipeline_bootstrap(state, last_token)
             }
@@ -4881,13 +4897,14 @@ impl MlxRunner {
         last_token: u32,
         sampling: MlxSamplingParams,
         is_greedy: bool,
+        final_by_max_output: bool,
     ) -> Vec<u32> {
         state.ngram_acceleration.record_request_disabled_step();
         state
             .ngram_acceleration
             .record_request_disabled_reason(state.ngram_request_disable_reason);
         let result = if is_greedy {
-            vec![self.run_direct_pipeline_decode(state, last_token)]
+            vec![self.run_direct_pipeline_decode(state, last_token, final_by_max_output)]
         } else {
             self.run_single_decode(state, last_token, sampling)
         };
@@ -4906,6 +4923,7 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
         has_linear_attention: bool,
         is_greedy: bool,
+        final_by_max_output: bool,
         rejection: Option<NgramDraftRejection>,
     ) -> Option<Vec<u32>> {
         state.ngram_acceleration.record_no_draft();
@@ -4918,9 +4936,13 @@ impl MlxRunner {
                 state.ngram_acceleration_disabled_for_request = true;
                 state.ngram_request_disable_reason = NgramRequestDisableReason::LinearNoDraft;
                 state.ngram_acceleration.record_request_disable_event();
-                return Some(
-                    self.run_request_disabled_decode(state, last_token, sampling, is_greedy),
-                );
+                return Some(self.run_request_disabled_decode(
+                    state,
+                    last_token,
+                    sampling,
+                    is_greedy,
+                    final_by_max_output,
+                ));
             }
             if is_greedy {
                 state.ngram_disabled_steps = LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL;
@@ -4947,7 +4969,11 @@ impl MlxRunner {
                     .ngram_acceleration
                     .record_cooldown_event(NGRAM_RETRY_INTERVAL);
             }
-            return Some(vec![self.run_direct_pipeline_decode(state, last_token)]);
+            return Some(vec![self.run_direct_pipeline_decode(
+                state,
+                last_token,
+                final_by_max_output,
+            )]);
         }
         None
     }
@@ -4969,6 +4995,7 @@ impl MlxRunner {
         last_token: u32,
         sampling: MlxSamplingParams,
         is_greedy: bool,
+        final_by_max_output: bool,
     ) -> Option<Vec<u32>> {
         if self.disable_ngram_acceleration {
             return Some(self.run_single_decode(state, last_token, sampling));
@@ -4979,7 +5006,13 @@ impl MlxRunner {
         }
 
         if state.ngram_acceleration_disabled_for_request {
-            return Some(self.run_request_disabled_decode(state, last_token, sampling, is_greedy));
+            return Some(self.run_request_disabled_decode(
+                state,
+                last_token,
+                sampling,
+                is_greedy,
+                final_by_max_output,
+            ));
         }
 
         // N-gram acceleration disabled: count down and use single decode.
@@ -4987,7 +5020,11 @@ impl MlxRunner {
             state.ngram_disabled_steps -= 1;
             state.ngram_acceleration.record_cooldown_step();
             if is_greedy {
-                return Some(vec![self.run_direct_pipeline_decode(state, last_token)]);
+                return Some(vec![self.run_direct_pipeline_decode(
+                    state,
+                    last_token,
+                    final_by_max_output,
+                )]);
             }
             return Some(self.run_single_decode(state, last_token, sampling));
         }
@@ -5503,6 +5540,7 @@ impl MlxRunner {
         last_token: u32,
         sampling: MlxSamplingParams,
         is_greedy: bool,
+        final_by_max_output: bool,
     ) -> Vec<u32> {
         let has_linear_attention = self.cfg.linear_attention.is_some();
 
@@ -5520,7 +5558,9 @@ impl MlxRunner {
             return self.run_mtp_decode(state, last_token, sampling);
         }
 
-        if let Some(result) = self.run_non_ngram_decode(state, last_token, sampling, is_greedy) {
+        if let Some(result) =
+            self.run_non_ngram_decode(state, last_token, sampling, is_greedy, final_by_max_output)
+        {
             return result;
         }
 
@@ -5547,6 +5587,7 @@ impl MlxRunner {
                 sampling,
                 has_linear_attention,
                 is_greedy,
+                final_by_max_output,
                 rejection,
             ) {
                 return result;
@@ -9124,14 +9165,24 @@ mod tests {
     #[test]
     fn request_fallback_direct_pipeline_reuses_pending_step() {
         assert_eq!(
-            direct_pipeline_action(false),
+            direct_pipeline_action(false, false),
             DirectPipelineAction::Bootstrap,
             "first fallback direct step must bootstrap the pipeline"
         );
         assert_eq!(
-            direct_pipeline_action(true),
+            direct_pipeline_action(true, false),
             DirectPipelineAction::ContinuePending,
             "later fallback direct steps must continue the pending lazy token"
+        );
+        assert_eq!(
+            direct_pipeline_action(true, true),
+            DirectPipelineAction::FinishPending,
+            "final fallback direct step must not submit unused lookahead work"
+        );
+        assert_eq!(
+            direct_pipeline_action(false, true),
+            DirectPipelineAction::BootstrapFinal,
+            "single-token final fallback must materialise without keeping a pending token"
         );
         assert!(
             should_drain_pending_direct_before_ngram(true, true),
