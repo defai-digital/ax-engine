@@ -308,6 +308,10 @@ pub fn mtp_top_k_candidates(logit_row: &MlxArray, k: usize) -> MlxArray {
 /// in acceptance.  This yields ~89% accept rate but reduces per-draft bandwidth from 640MB
 /// to 5MB, producing ~68 tok/s vs ~49 tok/s for the mixed filtered/full approach.
 ///
+/// Returns `(draft_tokens, draft_log_probs, added, top2_margins)`.
+/// `top2_margins[d]` is the rank-1 minus rank-2 logit gap at depth `d` from the filtered
+/// path's partial logits (0.0 for the full-vocab fallback path).  Used by ADR-009 EV gate.
+///
 /// Gracefully handles `weights.mtp = None` by returning empty.
 #[allow(clippy::too_many_arguments)]
 pub fn mtp_draft_tokens(
@@ -319,13 +323,13 @@ pub fn mtp_draft_tokens(
     max_depth_cap: Option<usize>,
     candidates: Option<&MlxArray>,
     _rng: &mut Xorshift64,
-) -> (Vec<u32>, Vec<f32>, usize) {
+) -> (Vec<u32>, Vec<f32>, usize, [f32; 3]) {
     let Some(head) = weights.mtp.as_ref() else {
-        return (vec![], vec![], 0);
+        return (vec![], vec![], 0, [0.0; 3]);
     };
     let max_depth = max_depth_cap.unwrap_or(head.max_depth).min(head.max_depth);
     if max_depth == 0 {
-        return (vec![], vec![], 0);
+        return (vec![], vec![], 0, [0.0; 3]);
     }
 
     let use_temperature = head.draft_sampling.temperature > 0.0;
@@ -334,6 +338,11 @@ pub fn mtp_draft_tokens(
     // Lazy arrays holding p(draft_token) under the temperature-scaled draft distribution.
     // Evaluated in one batch after all depth iterations to avoid per-step GPU sync.
     let mut lazy_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    // Lazy draft token arrays for the filtered path — resolved in a single batch eval
+    // after all depths, eliminating per-depth GPU sync round-trips.
+    let mut lazy_draft_tok_arrs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    // Partial logits saved per depth for top2_margin extraction after the batch eval.
+    let mut partial_logits_arrs: Vec<MlxArray> = Vec::with_capacity(max_depth);
 
     let mut prev_hidden = first_hidden.clone();
     // Wrap first_token as a GPU uint32 [1] array.
@@ -373,7 +382,7 @@ pub fn mtp_draft_tokens(
             refined_candidates.take()
         };
 
-        let draft_token = if let Some(ref cands) = cands_owned {
+        if let Some(ref cands) = cands_owned {
             // Filtered path: compute only k logits instead of full vocab.
             // Do NOT store stochastic log_probs here — partial softmax (top-k
             // normalised) inflates p_draft vs the full-vocab p_target.
@@ -399,14 +408,20 @@ pub fn mtp_draft_tokens(
                 None
             };
 
-            // Single GPU sync: argmax + next-depth candidates together.
-            match next_depth_cands.as_ref() {
-                Some(nc) => eval(&[&local_idx_arr, nc]),
-                None => eval(&[&local_idx_arr]),
-            }
-            let local_idx = local_idx_arr.data_u32()[0] as usize;
+            // Build a lazy draft-token array: take the actual token from the candidate
+            // list using the lazy argmax index.  No GPU sync here; the entire filtered
+            // path accumulates into one batch eval after the depth loop.
+            // reshape ensures local_idx_arr is [1] for take even if argmax returns 0-dim.
+            let local_idx_1d = reshape(&local_idx_arr, &[1_i32], None);
+            let draft_tok_lazy = take(cands, &local_idx_1d, 0, None);
+
+            partial_logits_arrs.push(partial_logits);
+            lazy_draft_tok_arrs.push(draft_tok_lazy.clone());
             refined_candidates = next_depth_cands;
-            cands.data_u32()[local_idx]
+            // Chain through post-norm hidden and lazy token for next depth.
+            // MTPLX trains depth>1 heads expecting mtp_norm(prev_output) as input.
+            prev_hidden = post_norm_hidden;
+            prev_token_arr = draft_tok_lazy;
         } else {
             // Fallback full-vocab path (first draft step before candidates are available).
             let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
@@ -426,22 +441,45 @@ pub fn mtp_draft_tokens(
             } else {
                 draft_log_probs.push(0.0);
             }
-            draft_token
-        };
+            let tok_data = [draft_token];
+            let tok_arr = MlxArray::from_raw_data(
+                tok_data.as_ptr() as *const u8,
+                4,
+                &[1_i32],
+                MlxDtype::Uint32,
+            );
+            draft_tokens.push(draft_token);
+            // Chain through post-norm hidden: MTPLX trains depth>1 heads expecting
+            // mtp_norm(prev_output) as input, matching depth-1's post-norm convention.
+            // Passing raw new_hidden (no mtp_norm applied) causes ~50% reject rate.
+            prev_hidden = post_norm_hidden;
+            prev_token_arr = tok_arr;
+        }
+    }
 
-        let tok_data = [draft_token];
-        let tok_arr = MlxArray::from_raw_data(
-            tok_data.as_ptr() as *const u8,
-            4,
-            &[1_i32],
-            MlxDtype::Uint32,
-        );
-        draft_tokens.push(draft_token);
-        // Chain through post-norm hidden: MTPLX trains depth>1 heads expecting
-        // mtp_norm(prev_output) as input, matching depth-1's post-norm convention.
-        // Passing raw new_hidden (no mtp_norm applied) causes ~50% reject rate.
-        prev_hidden = post_norm_hidden;
-        prev_token_arr = tok_arr;
+    // Batch-eval all lazy filtered-path arrays in one GPU dispatch.
+    // Evaluating draft_tok_arrs materialises their transitive deps (partial_logits,
+    // intermediate refined_candidates).  Including partial_logits_arrs explicitly
+    // ensures data_f32() is available for top2_margin extraction after this eval.
+    if !lazy_draft_tok_arrs.is_empty() {
+        let mut eval_targets: Vec<&MlxArray> =
+            Vec::with_capacity(lazy_draft_tok_arrs.len() + partial_logits_arrs.len());
+        for arr in &lazy_draft_tok_arrs {
+            eval_targets.push(arr);
+        }
+        for pla in &partial_logits_arrs {
+            eval_targets.push(pla);
+        }
+        eval(&eval_targets);
+        for arr in &lazy_draft_tok_arrs {
+            draft_tokens.push(arr.data_u32()[0]);
+        }
+    }
+
+    // Extract top-2 logit margins per depth (zero for the full-vocab fallback path).
+    let mut top2_margins = [0.0f32; 3];
+    for (d, pla) in partial_logits_arrs.iter().enumerate().take(3) {
+        top2_margins[d] = top2_margin_from_slice(pla.data_f32());
     }
 
     // Batch-eval all lazy prob arrays (one GPU sync for all depths, not one per depth).
@@ -473,5 +511,21 @@ pub fn mtp_draft_tokens(
         .collect();
 
     let added = draft_tokens.len();
-    (draft_tokens, draft_log_probs, added)
+    (draft_tokens, draft_log_probs, added, top2_margins)
+}
+
+/// Compute the rank-1 minus rank-2 logit gap from a partial logit slice.
+/// O(n) scan, no allocation.  Returns 0.0 when fewer than 2 values are finite.
+fn top2_margin_from_slice(data: &[f32]) -> f32 {
+    let mut m1 = f32::NEG_INFINITY;
+    let mut m2 = f32::NEG_INFINITY;
+    for &v in data {
+        if v > m1 {
+            m2 = m1;
+            m1 = v;
+        } else if v > m2 {
+            m2 = v;
+        }
+    }
+    if m2.is_finite() { m1 - m2 } else { 0.0 }
 }

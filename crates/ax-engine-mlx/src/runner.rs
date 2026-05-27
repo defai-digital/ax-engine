@@ -4931,20 +4931,29 @@ impl MlxRunner {
         is_greedy: bool,
         final_by_max_output: bool,
     ) -> Vec<u32> {
+        let feed_ngram =
+            ngram_request_disabled_fallback_should_feed_output(state.ngram_request_disable_reason);
         state.ngram_acceleration.record_request_disabled_step();
         state
             .ngram_acceleration
             .record_request_disabled_reason(state.ngram_request_disable_reason);
         let result = if is_greedy {
-            vec![self.run_direct_pipeline_decode(state, last_token, final_by_max_output, true)]
+            vec![self.run_direct_pipeline_decode(
+                state,
+                last_token,
+                final_by_max_output,
+                feed_ngram,
+            )]
         } else {
             self.run_single_decode(state, last_token, sampling)
         };
-        maybe_reenable_linear_ngram_from_fallback_output(
-            state,
-            self.ngram_policy_variant,
-            is_greedy,
-        );
+        if feed_ngram {
+            maybe_reenable_linear_ngram_from_fallback_output(
+                state,
+                self.ngram_policy_variant,
+                is_greedy,
+            );
+        }
         result
     }
 
@@ -5138,6 +5147,10 @@ impl MlxRunner {
     ///
     /// Runs a verify forward on `[last_token] ++ pending_draft`, accepts/rejects
     /// the draft, then generates a new draft with the MTP heads for the next step.
+    ///
+    /// Before the MTP head forward, an n-gram lookup is attempted (ADR-008 stacking).
+    /// On hit, the n-gram tokens are used as draft and the MTP KV cache is reset to
+    /// prevent stale RoPE offsets on the next MTP step.
     /// Returns verified output tokens (1 or more) in the same format as n-gram
     /// `ngram_accel_decode_step` / `run_single_decode`.
     ///
@@ -5406,7 +5419,7 @@ impl MlxRunner {
         let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
         // RoPE positions are managed internally by mtp_head_forward using
         // cache.seq_len (matching mlx-lm's cache.offset convention).
-        let (new_draft, new_log_probs, added) = mtp_draft_tokens(
+        let (new_draft, new_log_probs, added, _top2_margins) = mtp_draft_tokens(
             &self.weights,
             &self.cfg,
             &draft_hidden,
@@ -5706,6 +5719,19 @@ fn mtp_verify_needs_argmax(
         || (!pending.is_empty() && pending_log_probs.len() != pending.len())
 }
 
+/// Returns true if `draft` would create a repeating cycle relative to `recent`.
+/// Checks periods 3..=min(draft.len(), 8, recent.len()): if the first `period`
+/// tokens of the draft exactly match the last `period` tokens of `recent`, the
+/// draft is a cycle continuation and should not be used as a speculative draft.
+fn ngram_draft_is_cycle(draft: &[u32], recent: &[u32]) -> bool {
+    for period in 3..=draft.len().min(8).min(recent.len()) {
+        if draft[..period] == recent[recent.len() - period..] {
+            return true;
+        }
+    }
+    false
+}
+
 fn mtp_next_adaptive_depth(
     current_depth: usize,
     max_depth: usize,
@@ -5980,6 +6006,10 @@ fn linear_ngram_initial_prompt_should_disable_request(
     has_linear_attention && prompt_class == crate::ngram_accel::PROMPT_CLASS_NON_REPEATING
 }
 
+fn ngram_request_disabled_fallback_should_feed_output(reason: NgramRequestDisableReason) -> bool {
+    matches!(reason, NgramRequestDisableReason::LinearNoDraft)
+}
+
 fn maybe_reenable_linear_ngram_from_fallback_output(
     state: &mut RequestState,
     variant: NgramPolicyVariant,
@@ -5990,7 +6020,6 @@ fn maybe_reenable_linear_ngram_from_fallback_output(
         || !matches!(
             state.ngram_request_disable_reason,
             NgramRequestDisableReason::LinearNoDraft
-                | NgramRequestDisableReason::LinearInitialNoDraft
         )
     {
         return;
@@ -9014,7 +9043,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_attention_reenable_can_reopen_initial_no_draft_disable() {
+    fn linear_attention_initial_no_draft_stays_on_direct_fallback() {
         let mut state = RequestState::new(1, RequestId(7));
         state.ngram_acceleration_disabled_for_request = true;
         state.ngram_request_disable_reason = NgramRequestDisableReason::LinearInitialNoDraft;
@@ -9028,14 +9057,28 @@ mod tests {
             true,
         );
 
-        assert!(!state.ngram_acceleration_disabled_for_request);
+        assert!(
+            state.ngram_acceleration_disabled_for_request,
+            "initial non-repeating prompts stay on direct fallback for the request"
+        );
         assert_eq!(
             state.ngram_request_disable_reason,
-            NgramRequestDisableReason::None
+            NgramRequestDisableReason::LinearInitialNoDraft
         );
-        assert_eq!(state.linear_ngram_no_draft_streak, 0);
         assert_eq!(state.linear_ngram_reenable_probe_countdown, 0);
-        assert_eq!(state.ngram_disabled_steps, 0);
+    }
+
+    #[test]
+    fn request_disabled_fallback_only_feeds_ngram_for_runtime_no_draft() {
+        assert!(ngram_request_disabled_fallback_should_feed_output(
+            NgramRequestDisableReason::LinearNoDraft
+        ));
+        assert!(!ngram_request_disabled_fallback_should_feed_output(
+            NgramRequestDisableReason::LinearInitialNoDraft
+        ));
+        assert!(!ngram_request_disabled_fallback_should_feed_output(
+            NgramRequestDisableReason::ShortOutputBudget
+        ));
     }
 
     #[test]
