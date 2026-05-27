@@ -4,7 +4,9 @@
 This checker is intentionally narrower than the README provenance checker. It
 answers the active performance question directly: for every completed
 mlx-inference artifact row, does AX direct decode beat mlx_lm, and does the AX
-n-gram row both beat mlx_lm and prove effective accepted-draft throughput?
+n-gram row beat mlx_lm? For workload-shaped n-gram rows the checker also
+requires effective accepted-draft throughput. Random-token prompt rows may
+legitimately no-draft fallback because they are intentionally non-repeating.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ AX_DIRECT_ENGINE = "ax_engine_mlx"
 AX_NGRAM_ENGINE = "ax_engine_mlx_ngram_accel"
 NGRAM_EFFECTIVE_STATUS = "ngram_acceleration_effective_throughput"
 NGRAM_EFFECTIVE_ROUTE = "ngram_verified_bonus_tokens"
+RANDOM_PROMPT_SOURCE = "random"
 
 
 class GateError(RuntimeError):
@@ -41,6 +44,7 @@ class RowResult:
     ngram_delta_pct: float
     ngram_status: str
     ngram_route: str
+    ngram_effective_required: bool
 
 
 def metric_median(row: dict[str, Any], key: str) -> float:
@@ -54,6 +58,11 @@ def metric_median(row: dict[str, Any], key: str) -> float:
 
 def row_key(row: dict[str, Any]) -> tuple[int, int]:
     return int(row.get("prompt_tokens", -1)), int(row.get("generation_tokens", -1))
+
+
+def ngram_effective_required_for_row(row: dict[str, Any]) -> bool:
+    """Return whether this row is expected to prove accepted-draft throughput."""
+    return str(row.get("prompt_source", "")) != RANDOM_PROMPT_SOURCE
 
 
 def rows_by_engine_and_shape(
@@ -137,7 +146,10 @@ def check_artifact(
                 f"tok/s by min_delta_pct={min_delta_pct:.2f} "
                 f"(delta={ngram_delta_pct:+.2f}%)"
             )
-        if require_effective_ngram and (
+        ngram_effective_required = require_effective_ngram and ngram_effective_required_for_row(
+            ngram
+        )
+        if ngram_effective_required and (
             ngram_status != NGRAM_EFFECTIVE_STATUS
             or ngram_route != NGRAM_EFFECTIVE_ROUTE
         ):
@@ -159,6 +171,7 @@ def check_artifact(
                 ngram_delta_pct=ngram_delta_pct,
                 ngram_status=ngram_status,
                 ngram_route=ngram_route,
+                ngram_effective_required=ngram_effective_required,
             )
         )
     return results

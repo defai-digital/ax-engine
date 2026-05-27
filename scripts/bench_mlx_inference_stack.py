@@ -288,6 +288,7 @@ AX_NGRAM_TELEMETRY_KEYS = [
     "ax_ngram_policy_variant",
     "ax_ngram_adaptive_draft_len_steps",
     "ax_ngram_adaptive_draft_len_total",
+    "ax_prompt_class_code",
     # Per-attempt acceptance-by-depth histogram (PRD §8 Phase 6).
     # Bucket k counts draft attempts whose accept_count was exactly k;
     # attempts with accept_count >= 8 saturate into bucket 7.

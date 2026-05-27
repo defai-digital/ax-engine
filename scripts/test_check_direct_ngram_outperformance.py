@@ -30,6 +30,7 @@ def row(
     *,
     status: str | None = None,
     route: str | None = None,
+    prompt_source: str | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "engine": engine,
@@ -41,6 +42,8 @@ def row(
         payload["ax_decode_claim_status"] = status
     if route is not None:
         payload["ax_decode_effective_route"] = route
+    if prompt_source is not None:
+        payload["prompt_source"] = prompt_source
     return payload
 
 
@@ -186,6 +189,34 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
                     require_effective_ngram=True,
                     require_sweep_ok=True,
                 )
+
+    def test_allows_random_prompt_ngram_fallback_in_strict_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0, prompt_source="random"),
+                    row("ax_engine_mlx", 105.0, prompt_source="random"),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        106.0,
+                        status="ngram_no_draft_direct_fallback",
+                        route="linear_no_draft_direct_pipeline_fallback",
+                        prompt_source="random",
+                    ),
+                ],
+            )
+
+            checked = checker.check_artifact_dir(
+                root,
+                min_delta_pct=0.0,
+                require_effective_ngram=True,
+                require_sweep_ok=True,
+            )
+
+        self.assertEqual(len(checked), 1)
+        self.assertFalse(checked[0].ngram_effective_required)
 
     def test_allows_ngram_fallback_when_requested(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
