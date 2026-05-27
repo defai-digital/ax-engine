@@ -12,10 +12,10 @@ use super::super::profile::{
 };
 use super::super::shared::{
     add_then_multiply_scalar, attention_mask_array, attention_output_projection,
-    direct_qk_norm_rope_route_enabled, ffn_swiglu, flatten_attention_output_bhsd,
+    direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, flatten_attention_output_bhsd,
     full_precision_attention, moe_experts_forward, moe_experts_forward_gemma4, moe_router_gemma4,
     moe_router_glm, moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
-    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj, qkv_project, qw, rms_norm_opt,
+    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qw, rms_norm_opt,
     shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
@@ -178,9 +178,13 @@ pub(crate) fn layer_forward(
             let (rope_base, rope_freqs_ref) = rope_freqs
                 .map(|f| (None, Some(f)))
                 .unwrap_or((Some(rope_theta), None));
-            let q_rope = if direct_qk_norm_rope_route_enabled(w.q_norm.as_ref()) {
+            let direct_q_rope = direct_qk_norm_rope_route_enabled_for_family(
+                cfg.model_family.as_str(),
+                w.q_norm.as_ref(),
+            );
+            let q_rope = if direct_q_rope {
                 let qk_norm_started = profile_forward_layer.then(Instant::now);
-                let q_rope = qk_norm_rope_bhsd_from_proj(
+                let q_rope = qk_norm_rope_bhsd_from_proj_with_route(
                     &q_raw,
                     w.q_norm.as_ref(),
                     cfg.n_heads,
@@ -191,6 +195,7 @@ pub(crate) fn layer_forward(
                     rope_base,
                     token_offset,
                     rope_freqs_ref,
+                    direct_q_rope,
                 );
                 if let Some(started) = qk_norm_started {
                     forward_profile_eval_elapsed(
@@ -280,11 +285,18 @@ pub(crate) fn layer_forward(
             let (rope_base, rope_freqs_ref) = rope_freqs
                 .map(|f| (None, Some(f)))
                 .unwrap_or((Some(rope_theta), None));
-            let use_direct_qk_rope = direct_qk_norm_rope_route_enabled(w.q_norm.as_ref())
-                || direct_qk_norm_rope_route_enabled(w.k_norm.as_ref());
+            let use_direct_q_rope = direct_qk_norm_rope_route_enabled_for_family(
+                cfg.model_family.as_str(),
+                w.q_norm.as_ref(),
+            );
+            let use_direct_k_rope = direct_qk_norm_rope_route_enabled_for_family(
+                cfg.model_family.as_str(),
+                w.k_norm.as_ref(),
+            );
+            let use_direct_qk_rope = use_direct_q_rope || use_direct_k_rope;
             let (q_rope, k_rope) = if use_direct_qk_rope {
                 let qk_norm_started = profile_forward_layer.then(Instant::now);
-                let q_rope = qk_norm_rope_bhsd_from_proj(
+                let q_rope = qk_norm_rope_bhsd_from_proj_with_route(
                     &q_raw,
                     w.q_norm.as_ref(),
                     cfg.n_heads,
@@ -295,8 +307,9 @@ pub(crate) fn layer_forward(
                     rope_base,
                     token_offset,
                     rope_freqs_ref,
+                    use_direct_q_rope,
                 );
-                let k_rope = qk_norm_rope_bhsd_from_proj(
+                let k_rope = qk_norm_rope_bhsd_from_proj_with_route(
                     &k_raw,
                     w.k_norm.as_ref(),
                     kv_heads,
@@ -307,6 +320,7 @@ pub(crate) fn layer_forward(
                     rope_base,
                     token_offset,
                     rope_freqs_ref,
+                    use_direct_k_rope,
                 );
                 if let Some(started) = qk_norm_started {
                     forward_profile_eval_elapsed(

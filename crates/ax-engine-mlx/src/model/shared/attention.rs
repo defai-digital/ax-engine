@@ -56,8 +56,24 @@ pub(crate) fn qk_norm_bhsd_from_proj(
     rms_norm(&bhsd, Some(n), eps, None)
 }
 
+fn direct_qk_norm_rope_route_allowed(route_enabled: bool, norm: Option<&MlxArray>) -> bool {
+    route_enabled && !use_flat_qk_norm_path() && norm.is_some()
+}
+
 pub(crate) fn direct_qk_norm_rope_route_enabled(norm: Option<&MlxArray>) -> bool {
-    fastpath::direct_cpp_qk_norm_rope_enabled() && !use_flat_qk_norm_path() && norm.is_some()
+    direct_qk_norm_rope_route_allowed(fastpath::direct_cpp_qk_norm_rope_enabled(), norm)
+}
+
+pub(crate) fn direct_qk_norm_rope_route_enabled_for_family(
+    model_family: &str,
+    norm: Option<&MlxArray>,
+) -> bool {
+    let qwen_family_default = matches!(model_family, "qwen3_5" | "qwen3_next")
+        && fastpath::qwen_direct_cpp_qk_norm_rope_enabled();
+    direct_qk_norm_rope_route_allowed(
+        fastpath::direct_cpp_qk_norm_rope_enabled() || qwen_family_default,
+        norm,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -73,7 +89,36 @@ pub(crate) fn qk_norm_rope_bhsd_from_proj(
     token_offset: usize,
     rope_freqs: Option<&MlxArray>,
 ) -> MlxArray {
-    if direct_qk_norm_rope_route_enabled(norm) {
+    qk_norm_rope_bhsd_from_proj_with_route(
+        qw_out,
+        norm,
+        n_heads,
+        head_dim,
+        seq,
+        eps,
+        rope_dims,
+        rope_base,
+        token_offset,
+        rope_freqs,
+        direct_qk_norm_rope_route_enabled(norm),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn qk_norm_rope_bhsd_from_proj_with_route(
+    qw_out: &MlxArray,
+    norm: Option<&MlxArray>,
+    n_heads: usize,
+    head_dim: usize,
+    seq: usize,
+    eps: f32,
+    rope_dims: usize,
+    rope_base: Option<f32>,
+    token_offset: usize,
+    rope_freqs: Option<&MlxArray>,
+    direct_route_enabled: bool,
+) -> MlxArray {
+    if direct_qk_norm_rope_route_allowed(direct_route_enabled, norm) {
         return direct_qk_norm_rope_bhsd_from_proj(
             qw_out,
             norm,

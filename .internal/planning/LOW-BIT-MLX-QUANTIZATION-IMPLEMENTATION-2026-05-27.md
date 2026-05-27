@@ -184,6 +184,23 @@ Current p128 refresh evidence:
   did not beat the 34.0 tok/s `mlx_lm` reference. It is the current best
   direct-mode lever for Qwen p128 but needs runtime telemetry confirming packed
   vs split linear-attention layer counts before promotion.
+- `benchmarks/results/mlx-inference/2026-05-27-qwen27b-direct-profile/qwen3_6-27b-4bit-p128-linear-pack-stage-profile.json`
+  added clean stage-profile evidence for the same p128 shape. With Qwen
+  linear-attention projection packing active, AX direct reached 33.62 tok/s
+  versus the same-run `mlx_lm` 32.12 tok/s. The route still spent 31 MLX ops per
+  full-attention layer and 13 ops per linear-attention layer.
+- `benchmarks/results/mlx-inference/2026-05-27-qwen27b-direct-profile/qwen3_6-27b-4bit-p128-linear-pack-qkrope-stage-profile.json`
+  enabled the standard-attention direct Q/K-norm+RoPE route. It reduced
+  full-attention decode graph cost from 31 to 27 ops/layer and total direct
+  pipeline cost from 1119 to 1055 ops/step, with AX direct at 33.85 tok/s versus
+  same-run `mlx_lm` 31.80 tok/s. This supports Qwen-family default enablement
+  with an explicit kill switch, but it is still a focused p128 artifact rather
+  than the full completion gate.
+- `benchmarks/results/mlx-inference/2026-05-27-qwen27b-direct-profile/qwen3_6-27b-4bit-p128-qwen-qkrope-default-r3.json`
+  confirms the Qwen-family default route keeps the reduced 27 full-attention
+  ops/layer and 1055 ops/step without setting `AX_MLX_DIRECT_CPP_QK_NORM_ROPE`.
+  The same-run `mlx_lm` row was anomalously slow and the artifact is dirty
+  because it was captured before commit, so use it as route evidence only.
 
 ### Phase 2: Qwen N-gram Fallback Floor
 

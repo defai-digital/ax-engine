@@ -300,6 +300,18 @@ env_flag!(
     "AX_MLX_DIRECT_CPP_QK_NORM_ROPE"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_QWEN_DIRECT_CPP_QK_NORM_ROPE` — default Qwen-family direct C++
+    /// route for standard-attention Q/K `as_strided -> rms_norm -> rope`.
+    ///
+    /// **Default: ON for Qwen3.5/Qwen3Next only** (kill-switch via
+    /// `AX_MLX_QWEN_DIRECT_CPP_QK_NORM_ROPE=0`). This keeps the older global
+    /// probe opt-in for non-Qwen families while reducing the full-attention
+    /// decode op count on hybrid Qwen linear-attention models.
+    qwen_direct_cpp_qk_norm_rope_enabled,
+    "AX_MLX_QWEN_DIRECT_CPP_QK_NORM_ROPE"
+);
+
 env_flag!(
     /// `AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS` — opt-in direct C++ route
     /// for Qwen linear-attention packed QKVZ/BA projection staging. This
@@ -697,6 +709,21 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_QWEN_GATED_DELTA_DECODE_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_direct_cpp_qk_norm_rope_uses_default_on_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_QWEN_DIRECT_CPP_QK_NORM_ROPE_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_QWEN_DIRECT_CPP_QK_NORM_ROPE_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_QWEN_DIRECT_CPP_QK_NORM_ROPE_ENABLED",
             "1"
         ));
     }

@@ -352,30 +352,61 @@ pub fn mtp_draft_tokens(
         None
     };
 
-    for _ in 0..max_depth {
+    // Per-depth refined candidate sets: after each filtered lm_head pass, re-rank the
+    // K candidates by the MTP head's logit score at that depth and use the top-K/2 as
+    // candidates for the next depth.  The verify-bonus candidates are a good proxy for
+    // depth 0 (same position), but for depths 1 and 2 the MTP head's own ranking (which
+    // reflects the draft context) is more aligned with the true distribution.
+    let mut refined_candidates: Option<MlxArray> = None;
+
+    for depth_idx in 0..max_depth {
         let new_hidden = mtp_head_forward(head, &prev_hidden, &prev_token_arr, weights, cache, cfg);
         let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
 
-        // Cascaded filtered lm_head: use the same top-2048 candidates at ALL depths.
-        // Depth 1+ candidates are the depth-0 candidate set (from verify bonus logits), so
-        // ~11% of the time the true token falls outside that window — accept rate ~89%.
-        // However each filtered pass reads only 5MB vs 640MB for the full lm_head, so the
-        // 3× bandwidth savings dominate: cascaded yields ~68 tok/s vs ~49 tok/s for the
-        // depth-0-filtered / depth-1+-full approach despite the lower accept rate.
-        let candidates_this_depth = candidates;
+        // Depth 0: use verify-bonus candidates (correct position N).
+        // Depths 1+: use per-depth refined candidates derived from the previous depth's logits.
+        // Take ownership from refined_candidates so the borrow does not extend into the
+        // assignment at the end of the filtered branch.
+        let cands_owned: Option<MlxArray> = if depth_idx == 0 {
+            candidates.cloned()
+        } else {
+            refined_candidates.take()
+        };
 
-        let draft_token = if let Some(cands) = candidates_this_depth {
+        let draft_token = if let Some(ref cands) = cands_owned {
             // Filtered path: compute only k logits instead of full vocab.
-            // Local argmax maps to candidates[local_idx] for the global token.
             // Do NOT store stochastic log_probs here — partial softmax (top-k
-            // normalised) inflates p_draft vs the full-vocab p_target, causing
-            // the rejection-sampling accept rate to drop from ~99% to ~89%.
-            // Leaving draft_log_probs empty triggers greedy argmax comparison
-            // in mtp_accept_count (same as MTPLX), recovering ~99% acceptance.
+            // normalised) inflates p_draft vs the full-vocab p_target.
+            // Leaving draft_log_probs empty triggers greedy argmax comparison.
             let partial_logits =
                 mtp_post_norm_to_logits_filtered(&post_norm_hidden, cands, weights, cfg);
-            let local_idx = greedy_sample_logits(&partial_logits); // syncs GPU
-            cands.data_u32()[local_idx as usize]
+            let k = partial_logits.shape()[0];
+
+            // Inline argmax for batching with per-depth candidate refinement.
+            let logits_2d = reshape(&partial_logits, &[1_i32, k], None);
+            let local_idx_arr = argmax(&logits_2d, None);
+
+            // Build refined candidates for depth+1: re-rank current K candidates by the
+            // MTP head's score, take top-K/2.  Narrows but focuses on MTP-predicted tokens.
+            let next_depth_cands = if depth_idx + 1 < max_depth {
+                let half_k = k / 2;
+                let m1 = MlxArray::from_f32(-1.0);
+                let neg = multiply(&partial_logits, &m1, None);
+                let local_sorted = argsort_axis(&neg, 0, None);
+                let local_top = slice(&local_sorted, &[0], &[half_k], &[1], None);
+                Some(take(cands, &local_top, 0, None))
+            } else {
+                None
+            };
+
+            // Single GPU sync: argmax + next-depth candidates together.
+            match next_depth_cands.as_ref() {
+                Some(nc) => eval(&[&local_idx_arr, nc]),
+                None => eval(&[&local_idx_arr]),
+            }
+            let local_idx = local_idx_arr.data_u32()[0] as usize;
+            refined_candidates = next_depth_cands;
+            cands.data_u32()[local_idx]
         } else {
             // Fallback full-vocab path (first draft step before candidates are available).
             let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);

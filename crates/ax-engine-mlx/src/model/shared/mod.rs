@@ -8,10 +8,10 @@ pub(super) mod utils;
 
 // Re-exports for model/mod.rs and families/ modules.
 pub(crate) use attention::{
-    attention_mask_array, build_layer_masks, direct_qk_norm_rope_route_enabled,
+    attention_mask_array, build_layer_masks, direct_qk_norm_rope_route_enabled_for_family,
     flatten_attention_output_bhsd, full_precision_attention, prepare_value_bhsd,
     prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj,
-    turboquant_decode_attention_experimental,
+    qk_norm_rope_bhsd_from_proj_with_route, turboquant_decode_attention_experimental,
 };
 pub(crate) use linear_attention::linear_attention_forward;
 pub(crate) use mla::glm_mla_attention_forward;
