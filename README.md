@@ -6,20 +6,12 @@ Prompt-parity MTP comparison charts.
 
 <table>
 <tr>
-<td align="center"><strong>Speed tok/s</strong></td>
-<td align="center"><strong>Speed accept rate</strong></td>
+<td align="center"><strong>Speed bundle</strong></td>
+<td align="center"><strong>Quality bundle</strong></td>
 </tr>
 <tr>
-<td><img src="docs/assets/perf-mtp-speed-tok-s.svg" alt="Speed d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
-<td><img src="docs/assets/perf-mtp-speed-accept-rate.svg" alt="Speed d=3 accept rate chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
-</tr>
-<tr>
-<td align="center"><strong>Quality tok/s</strong></td>
-<td align="center"><strong>Quality accept rate</strong></td>
-</tr>
-<tr>
-<td><img src="docs/assets/perf-mtp-quality-tok-s.svg" alt="Quality d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
-<td><img src="docs/assets/perf-mtp-quality-accept-rate.svg" alt="Quality d=3 accept rate chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
+<td><img src="docs/assets/perf-mtp-speed-summary.svg" alt="Speed bundle d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code, with accept-rate labels"></td>
+<td><img src="docs/assets/perf-mtp-quality-summary.svg" alt="Quality bundle d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code, with accept-rate labels"></td>
 </tr>
 </table>
 
