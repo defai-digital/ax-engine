@@ -1131,6 +1131,12 @@ impl MtpTelemetry {
         } else {
             self.partial_reject_steps = self.partial_reject_steps.saturating_add(1);
         }
+        for d in 0..drafted.min(3) {
+            self.drafted_by_depth[d] = self.drafted_by_depth[d].saturating_add(1);
+            if d < accepted {
+                self.accepted_by_depth[d] = self.accepted_by_depth[d].saturating_add(1);
+            }
+        }
     }
 
     fn record_timings(&mut self, timings: MtpStepTimings) {
@@ -1181,6 +1187,13 @@ impl MtpTelemetry {
             .tail_sample_wall_us
             .saturating_add(other.tail_sample_wall_us);
         self.draft_wall_us = self.draft_wall_us.saturating_add(other.draft_wall_us);
+        for d in 0..3 {
+            self.accepted_by_depth[d] =
+                self.accepted_by_depth[d].saturating_add(other.accepted_by_depth[d]);
+            self.drafted_by_depth[d] =
+                self.drafted_by_depth[d].saturating_add(other.drafted_by_depth[d]);
+        }
+        self.ngram_hit_steps = self.ngram_hit_steps.saturating_add(other.ngram_hit_steps);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -1198,6 +1211,13 @@ impl MtpTelemetry {
             ("ax_mtp_rollback_wall_us", self.rollback_wall_us),
             ("ax_mtp_tail_sample_wall_us", self.tail_sample_wall_us),
             ("ax_mtp_draft_wall_us", self.draft_wall_us),
+            ("ax_mtp_accepted_depth0", self.accepted_by_depth[0]),
+            ("ax_mtp_accepted_depth1", self.accepted_by_depth[1]),
+            ("ax_mtp_accepted_depth2", self.accepted_by_depth[2]),
+            ("ax_mtp_drafted_depth0", self.drafted_by_depth[0]),
+            ("ax_mtp_drafted_depth1", self.drafted_by_depth[1]),
+            ("ax_mtp_drafted_depth2", self.drafted_by_depth[2]),
+            ("ax_mtp_ngram_hit_steps", self.ngram_hit_steps),
         ];
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);
