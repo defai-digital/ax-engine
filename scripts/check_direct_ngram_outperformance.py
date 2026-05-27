@@ -42,6 +42,21 @@ NGRAM_ALLOWED_ROUTES = {
     "ngram_attempted_no_accept_fallback",
     "ngram_accepted_without_decode_route",
 }
+NGRAM_STATUS_ALLOWED_ROUTES = {
+    NGRAM_EFFECTIVE_STATUS: {NGRAM_EFFECTIVE_ROUTE},
+    "ngram_no_draft_direct_fallback": {
+        "linear_no_draft_direct_pipeline_fallback",
+        "linear_no_draft_mixed_fallback",
+        "linear_no_draft_single_decode_fallback",
+        "no_draft_fallback",
+        "ngram_route_not_observed",
+    },
+    "ngram_no_accept_fallback": {"ngram_attempted_no_accept_fallback"},
+    "ngram_no_observed_draft_path": {
+        "ngram_route_not_observed",
+        "ngram_accepted_without_decode_route",
+    },
+}
 
 
 class GateError(RuntimeError):
@@ -156,6 +171,12 @@ def check_artifact(
             raise GateError(
                 f"{artifact_path.name} prompt={prompt_tokens} n-gram row has "
                 f"unknown effective route: {ngram_route!r}"
+            )
+        if ngram_route not in NGRAM_STATUS_ALLOWED_ROUTES[ngram_status]:
+            raise GateError(
+                f"{artifact_path.name} prompt={prompt_tokens} n-gram row has "
+                f"inconsistent status/route: status={ngram_status!r} "
+                f"route={ngram_route!r}"
             )
 
         if direct_delta_pct <= min_delta_pct:

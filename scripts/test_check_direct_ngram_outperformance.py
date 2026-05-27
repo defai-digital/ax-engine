@@ -324,6 +324,59 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
                     require_sweep_ok=True,
                 )
 
+    def test_rejects_inconsistent_ngram_status_route_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0, prompt_source="random"),
+                    row("ax_engine_mlx", 105.0, prompt_source="random"),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        106.0,
+                        status="ngram_no_draft_direct_fallback",
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                        prompt_source="random",
+                    ),
+                ],
+            )
+
+            with self.assertRaisesRegex(checker.GateError, "inconsistent status/route"):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
+    def test_allows_observed_no_draft_route_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0, prompt_source="random"),
+                    row("ax_engine_mlx", 105.0, prompt_source="random"),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        106.0,
+                        status="ngram_no_observed_draft_path",
+                        route="ngram_accepted_without_decode_route",
+                        prompt_source="random",
+                    ),
+                ],
+            )
+
+            checked = checker.check_artifact_dir(
+                root,
+                min_delta_pct=0.0,
+                require_effective_ngram=True,
+                require_sweep_ok=True,
+            )
+
+        self.assertEqual(len(checked), 1)
+
     def test_sweep_skips_fail_completion_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
