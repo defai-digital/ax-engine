@@ -4782,6 +4782,19 @@ impl MlxRunner {
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
 
+        if ngram_request_disabled_direct_fast_path(
+            is_greedy,
+            self.weights.mtp.is_some(),
+            state.ngram_acceleration_disabled_for_request,
+            state.ngram_request_disable_reason,
+        ) {
+            state.ngram_acceleration.record_request_disabled_step();
+            state
+                .ngram_acceleration
+                .record_request_disabled_reason(state.ngram_request_disable_reason);
+            return self.run_direct_pipeline_decode(state, last_token, final_by_max_output, false);
+        }
+
         let result =
             self.run_model_decode(state, last_token, sampling, is_greedy, final_by_max_output);
         apply_decode_result(state, &result, terminal_token_ids)
@@ -5441,7 +5454,10 @@ impl MlxRunner {
         let (new_draft, new_log_probs) = if !ngram_outcome.draft.is_empty()
             && !ngram_draft_is_cycle(&ngram_outcome.draft, recent)
         {
+            // Reset cache and count together: the next MTP step starts fresh.
+            // Resetting count keeps the linear-attention rollback trim correct.
             state.mtp_cache = None;
+            state.mtp_decode_count = 0;
             state.mtp_telemetry.ngram_hit_steps =
                 state.mtp_telemetry.ngram_hit_steps.saturating_add(1);
             (ngram_outcome.draft, vec![])
@@ -6039,6 +6055,18 @@ fn linear_ngram_initial_prompt_should_disable_request(
 
 fn ngram_request_disabled_fallback_should_feed_output(reason: NgramRequestDisableReason) -> bool {
     matches!(reason, NgramRequestDisableReason::LinearNoDraft)
+}
+
+fn ngram_request_disabled_direct_fast_path(
+    is_greedy: bool,
+    has_mtp: bool,
+    request_disabled: bool,
+    reason: NgramRequestDisableReason,
+) -> bool {
+    is_greedy
+        && !has_mtp
+        && request_disabled
+        && !ngram_request_disabled_fallback_should_feed_output(reason)
 }
 
 fn maybe_reenable_linear_ngram_from_fallback_output(
@@ -9109,6 +9137,40 @@ mod tests {
         ));
         assert!(!ngram_request_disabled_fallback_should_feed_output(
             NgramRequestDisableReason::ShortOutputBudget
+        ));
+    }
+
+    #[test]
+    fn request_disabled_direct_fast_path_skips_non_reenable_ngram_fallback() {
+        assert!(ngram_request_disabled_direct_fast_path(
+            true,
+            false,
+            true,
+            NgramRequestDisableReason::LinearInitialNoDraft,
+        ));
+        assert!(ngram_request_disabled_direct_fast_path(
+            true,
+            false,
+            true,
+            NgramRequestDisableReason::ShortOutputBudget,
+        ));
+        assert!(!ngram_request_disabled_direct_fast_path(
+            true,
+            false,
+            true,
+            NgramRequestDisableReason::LinearNoDraft,
+        ));
+        assert!(!ngram_request_disabled_direct_fast_path(
+            true,
+            true,
+            true,
+            NgramRequestDisableReason::LinearInitialNoDraft,
+        ));
+        assert!(!ngram_request_disabled_direct_fast_path(
+            false,
+            false,
+            true,
+            NgramRequestDisableReason::LinearInitialNoDraft,
         ));
     }
 
