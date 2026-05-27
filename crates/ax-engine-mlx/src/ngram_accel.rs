@@ -312,6 +312,7 @@ enum NgramContextKey {
 #[derive(Clone, Copy)]
 struct DraftStep {
     token: u32,
+    support: u32,
     source: NgramContextKey,
 }
 
@@ -351,6 +352,11 @@ pub struct NgramDraftPolicy {
     pub max_len: usize,
     pub min_support: u32,
     pub confidence_threshold: f32,
+    /// When true, cap the total draft length by the first selected match's
+    /// occurrence count (`support + 1`, bounded by `max_len`). This follows the
+    /// lightning-mlx adaptive-K rule: one-off matches may probe narrowly, while
+    /// repeated contexts can justify wider verifier batches.
+    pub adaptive_match_len: bool,
     /// When true, bigrams whose `selected_prompt_count >= 1` are allowed to
     /// draft even when their output-derived `count < min_support`. This lowers
     /// the effective minimum to 1 for prompt-seeded continuations, enabling
@@ -368,6 +374,7 @@ impl NgramDraftPolicy {
             max_len,
             min_support,
             confidence_threshold,
+            adaptive_match_len: false,
             bypass_prompt_min_support: false,
         }
     }
@@ -562,9 +569,17 @@ impl NgramTable {
         }
 
         let mut rejection = None;
-        for _ in 0..policy.max_len {
+        let mut allowed_len = policy.max_len;
+        while draft.len() < allowed_len {
             match self.select_draft_step(&buf, len, policy) {
                 DraftStepSelection::Selected(step) => {
+                    if policy.adaptive_match_len && draft.is_empty() {
+                        allowed_len = allowed_len.min((step.support as usize).saturating_add(1));
+                        if allowed_len == 0 {
+                            rejection = Some(NgramDraftRejection::ConfidenceFiltered);
+                            break;
+                        }
+                    }
                     draft.push(step.token);
                     push_prediction_context_token(&mut buf, &mut len, step.token);
                 }
@@ -635,9 +650,10 @@ impl NgramTable {
             let key = (buf[0], buf[1], buf[2], buf[3]);
             if let Some(prediction) = self.fourgrams.get(&key) {
                 match draft_step_from_prediction(prediction, policy) {
-                    Some(token) => {
+                    Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
-                            token,
+                            token: candidate.token,
+                            support: candidate.support,
                             source: NgramContextKey::Fourgram(key),
                         });
                     }
@@ -647,9 +663,10 @@ impl NgramTable {
             let key = (buf[1], buf[2], buf[3]);
             if let Some(prediction) = self.trigrams.get(&key) {
                 match draft_step_from_prediction(prediction, policy) {
-                    Some(token) => {
+                    Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
-                            token,
+                            token: candidate.token,
+                            support: candidate.support,
                             source: NgramContextKey::Trigram(key),
                         });
                     }
@@ -659,9 +676,10 @@ impl NgramTable {
             let key = (buf[2], buf[3]);
             if let Some(prediction) = self.bigrams.get(&key) {
                 match draft_step_from_prediction(prediction, policy) {
-                    Some(token) => {
+                    Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
-                            token,
+                            token: candidate.token,
+                            support: candidate.support,
                             source: NgramContextKey::Bigram(key),
                         });
                     }
@@ -672,9 +690,10 @@ impl NgramTable {
             let key = (buf[0], buf[1], buf[2]);
             if let Some(prediction) = self.trigrams.get(&key) {
                 match draft_step_from_prediction(prediction, policy) {
-                    Some(token) => {
+                    Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
-                            token,
+                            token: candidate.token,
+                            support: candidate.support,
                             source: NgramContextKey::Trigram(key),
                         });
                     }
@@ -684,9 +703,10 @@ impl NgramTable {
             let key = (buf[1], buf[2]);
             if let Some(prediction) = self.bigrams.get(&key) {
                 match draft_step_from_prediction(prediction, policy) {
-                    Some(token) => {
+                    Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
-                            token,
+                            token: candidate.token,
+                            support: candidate.support,
                             source: NgramContextKey::Bigram(key),
                         });
                     }
@@ -697,9 +717,10 @@ impl NgramTable {
             let key = (buf[0], buf[1]);
             if let Some(prediction) = self.bigrams.get(&key) {
                 match draft_step_from_prediction(prediction, policy) {
-                    Some(token) => {
+                    Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
-                            token,
+                            token: candidate.token,
+                            support: candidate.support,
                             source: NgramContextKey::Bigram(key),
                         });
                     }
@@ -745,7 +766,7 @@ enum DraftStepSelection {
 fn draft_step_from_prediction(
     prediction: &NgramPrediction,
     policy: NgramDraftPolicy,
-) -> Option<u32> {
+) -> Option<DraftCandidate> {
     // Prompt-derived bigrams bypass min_support when `bypass_prompt_min_support`
     // is set. This is enabled during actual decode but NOT during the initial-
     // disable check (`linear_ngram_initial_prompt_should_disable_request`) so
@@ -765,7 +786,10 @@ fn draft_step_from_prediction(
                 effective_min_support,
                 policy.confidence_threshold,
             )
-            .then_some(prediction.token)
+            .then_some(DraftCandidate {
+                token: prediction.token,
+                support: prediction.support,
+            })
         }
         NgramPolicyVariant::LlamaMapLatest => {
             let latest = prediction.latest_continuation()?;
@@ -776,9 +800,18 @@ fn draft_step_from_prediction(
                 effective_min_support,
                 policy.confidence_threshold,
             )
-            .then_some(latest.token)
+            .then_some(DraftCandidate {
+                token: latest.token,
+                support: latest.count,
+            })
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct DraftCandidate {
+    token: u32,
+    support: u32,
 }
 
 fn prediction_passes(support: u32, confidence: f32, min_support: u32, conf_threshold: f32) -> bool {
@@ -1517,6 +1550,7 @@ mod tests {
             max_len: 1,
             min_support: 1,
             confidence_threshold: 0.0,
+            adaptive_match_len: false,
             bypass_prompt_min_support: false,
         });
         let latest = t.predict_with_policy(NgramDraftPolicy {
@@ -1524,6 +1558,7 @@ mod tests {
             max_len: 1,
             min_support: 1,
             confidence_threshold: 0.0,
+            adaptive_match_len: false,
             bypass_prompt_min_support: false,
         });
 
@@ -1532,6 +1567,34 @@ mod tests {
             latest.draft,
             vec![9],
             "llama-map/latest policy should model overwrite-style continuation lookup"
+        );
+    }
+
+    #[test]
+    fn adaptive_match_len_caps_sparse_drafts_by_first_match_support() {
+        let policy = NgramDraftPolicy {
+            variant: NgramPolicyVariant::MajorityRecency,
+            max_len: 6,
+            min_support: 1,
+            confidence_threshold: 0.0,
+            adaptive_match_len: true,
+            bypass_prompt_min_support: false,
+        };
+
+        let mut one_off = table_from_sequence(&[1, 2, 3, 4]);
+        one_off.tail = [1, 2].into_iter().collect();
+        assert_eq!(
+            one_off.predict_with_policy(policy).draft,
+            vec![3, 4],
+            "support=1 should cap the draft to two tokens even when the chain continues"
+        );
+
+        let mut repeated = table_from_sequence(&[1, 2, 3, 4, 9, 1, 2, 3, 4]);
+        repeated.tail = [1, 2].into_iter().collect();
+        assert_eq!(
+            repeated.predict_with_policy(policy).draft,
+            vec![3, 4, 9],
+            "support=2 should allow a three-token verifier batch"
         );
     }
 
@@ -1579,6 +1642,7 @@ mod tests {
             max_len: 1,
             min_support: 2,
             confidence_threshold: 0.0,
+            adaptive_match_len: false,
             bypass_prompt_min_support: true,
         };
         let draft = t.predict_with_policy(bypass_policy);

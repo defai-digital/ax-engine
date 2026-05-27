@@ -5985,11 +5985,15 @@ fn ngram_acceleration_draft(
         // bypass_prompt_min_support=true: prompt-seeded bigrams draft with a
         // single observation, enabling speculation from step 1 on repeating
         // real-workload prompts without waiting for two output observations.
+        // adaptive_match_len=true: lightning-mlx-style support+1 cap keeps
+        // sparse one-off matches narrow while allowing repeated contexts to
+        // use the full verifier batch.
         NgramDraftPolicy {
             variant,
             max_len,
             min_support: LINEAR_MIN_NGRAM_SUPPORT,
             confidence_threshold,
+            adaptive_match_len: true,
             bypass_prompt_min_support: true,
         }
     } else {
@@ -6000,6 +6004,7 @@ fn ngram_acceleration_draft(
             max_len,
             min_support: 1,
             confidence_threshold,
+            adaptive_match_len: true,
             bypass_prompt_min_support: false,
         }
     };
