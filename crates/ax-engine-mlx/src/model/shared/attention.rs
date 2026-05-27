@@ -68,12 +68,16 @@ pub(crate) fn direct_qk_norm_rope_route_enabled_for_family(
     model_family: &str,
     norm: Option<&MlxArray>,
 ) -> bool {
-    let qwen_family_default = matches!(model_family, "qwen3_5" | "qwen3_next")
+    let qwen_family_default = qwen_direct_qk_norm_rope_default_family(model_family)
         && fastpath::qwen_direct_cpp_qk_norm_rope_enabled();
     direct_qk_norm_rope_route_allowed(
         fastpath::direct_cpp_qk_norm_rope_enabled() || qwen_family_default,
         norm,
     )
+}
+
+fn qwen_direct_qk_norm_rope_default_family(model_family: &str) -> bool {
+    model_family.starts_with("qwen")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -483,5 +487,19 @@ pub(crate) fn build_layer_masks(
                     .clone()
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::qwen_direct_qk_norm_rope_default_family;
+
+    #[test]
+    fn qwen_direct_qk_norm_rope_defaults_cover_all_qwen_families() {
+        assert!(qwen_direct_qk_norm_rope_default_family("qwen3"));
+        assert!(qwen_direct_qk_norm_rope_default_family("qwen3_5"));
+        assert!(qwen_direct_qk_norm_rope_default_family("qwen3_next"));
+        assert!(!qwen_direct_qk_norm_rope_default_family("gemma4"));
+        assert!(!qwen_direct_qk_norm_rope_default_family("llama3"));
     }
 }

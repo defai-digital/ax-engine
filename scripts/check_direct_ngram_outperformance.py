@@ -183,6 +183,11 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
     return failures
 
 
+def is_probe_artifact(path: Path) -> bool:
+    """Return true for opt-in probe artifacts that are not full gate rows."""
+    return "probe" in path.stem
+
+
 def check_artifact_dir(
     artifact_dir: Path,
     *,
@@ -204,7 +209,7 @@ def check_artifact_dir(
     artifact_paths = [
         path
         for path in sorted(artifact_dir.glob("*.json"))
-        if path.name != "sweep_results.json"
+        if path.name != "sweep_results.json" and not is_probe_artifact(path)
     ]
     if not artifact_paths:
         raise GateError(f"{artifact_dir} has no benchmark artifact JSON files")

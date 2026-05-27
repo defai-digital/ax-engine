@@ -138,6 +138,10 @@ const LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD: u32 = 8;
 /// table with useless bigrams that trigger false-positive n-gram acceleration and force
 /// expensive recompute on the very first n-gram acceleration attempt.
 const NGRAM_PROMPT_FEED_MAX: usize = 64;
+/// Repeating prompts need enough prompt history for prompt-lookup drafts to see
+/// an earlier occurrence of the current suffix. Keep this bounded, but larger
+/// than the default random-prompt guard above.
+const NGRAM_REPEATING_PROMPT_FEED_MAX: usize = 512;
 /// Minimum max_output_tokens budget required to enable n-gram acceleration.
 /// Below this, failed speculation attempts + cooldown intervals (8-16 steps)
 /// consume a disproportionate share of the total generation window.
@@ -2824,10 +2828,13 @@ fn append_tail(target: &mut Vec<u32>, source: &[u32], skip: &mut usize) {
 }
 
 fn seed_generation_ngram_from_prompt(state: &mut RequestState) {
-    let feed_start = state
-        .prompt_prefix_tokens
-        .len()
-        .saturating_sub(NGRAM_PROMPT_FEED_MAX);
+    let prompt_class = classify_prompt_class(&state.prompt_prefix_tokens);
+    let feed_max = if prompt_class == crate::ngram_accel::PROMPT_CLASS_REPEATING {
+        NGRAM_REPEATING_PROMPT_FEED_MAX
+    } else {
+        NGRAM_PROMPT_FEED_MAX
+    };
+    let feed_start = state.prompt_prefix_tokens.len().saturating_sub(feed_max);
     state
         .ngram
         .feed_from_prompt(&state.prompt_prefix_tokens[feed_start..]);
@@ -7116,6 +7123,39 @@ mod tests {
             state.ngram.predict(1),
             vec![2],
             "the prefill-sampled first output token must become part of the next decode context",
+        );
+    }
+
+    #[test]
+    fn generation_ngram_seed_extends_window_for_repeating_prompts() {
+        let block: Vec<u32> = (1..=70).collect();
+        let mut state = RequestState::new(2, RequestId(14));
+        state.prompt_prefix_tokens.extend_from_slice(&block);
+        state.prompt_prefix_tokens.extend_from_slice(&block);
+        state.prompt_prefix_tokens.extend_from_slice(&block);
+
+        seed_generation_ngram_from_prompt(&mut state);
+
+        assert_eq!(
+            state.ngram.predict(1),
+            vec![1],
+            "repeating prompts should seed enough history to find suffix continuations beyond the 64-token random-prompt guard",
+        );
+    }
+
+    #[test]
+    fn generation_ngram_seed_keeps_random_prompts_on_short_tail() {
+        let mut state = RequestState::new(2, RequestId(15));
+        state.prompt_prefix_tokens = (1..=210).collect();
+        state
+            .prompt_prefix_tokens
+            .extend_from_slice(&[147, 148, 149, 150]);
+
+        seed_generation_ngram_from_prompt(&mut state);
+
+        assert!(
+            state.ngram.predict(1).is_empty(),
+            "non-repeating prompts should keep the short tail guard and avoid long-range random false positives",
         );
     }
 

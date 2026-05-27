@@ -59,6 +59,21 @@ def write_artifact(root: Path, *, rows: list[dict[str, object]]) -> Path:
     return path
 
 
+def write_named_artifact(root: Path, name: str, *, rows: list[dict[str, object]]) -> Path:
+    path = root / name
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": checker.SCHEMA_VERSION,
+                "results": rows,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return path
+
+
 class DirectNgramOutperformanceTests(unittest.TestCase):
     def test_passes_when_direct_and_effective_ngram_beat_mlx_lm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -87,6 +102,40 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
         self.assertEqual(len(checked), 1)
         self.assertAlmostEqual(checked[0].direct_delta_pct, 5.0)
         self.assertAlmostEqual(checked[0].ngram_delta_pct, 40.0)
+
+    def test_skips_direct_only_probe_artifacts_in_gate_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            write_named_artifact(
+                root,
+                "model-dense-fusions-probe.json",
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                ],
+            )
+
+            checked = checker.check_artifact_dir(
+                root,
+                min_delta_pct=0.0,
+                require_effective_ngram=True,
+                require_sweep_ok=True,
+            )
+
+        self.assertEqual(len(checked), 1)
 
     def test_fails_when_direct_does_not_beat_mlx_lm(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
