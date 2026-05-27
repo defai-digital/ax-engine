@@ -1,0 +1,52 @@
+{
+  "mtplx_version": "0.3.7",
+  "hardware": "Apple M5 Max 128GB",
+  "run_date": "2026-05-27",
+  "runner": "scripts/bench_mtplx_prompt_suites.py",
+  "prompt_source": "benchmarks/prompts/mtp-suites/*.jsonl",
+  "profile": "sustained",
+  "depth": 3,
+  "sampling": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20
+  },
+  "max_tokens": 1000,
+  "repetitions": 5,
+  "warmup_repetitions": 1,
+  "cooldown_s": 15,
+  "results": [
+    {
+      "model_bundle": "Speed",
+      "suite": "flappy",
+      "decode_tok_s": 59.190871377536354,
+      "accept_rate": 0.9953143021914648,
+      "depth": 3,
+      "artifact": "benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/speed-flappy/mtplx.json"
+    },
+    {
+      "model_bundle": "Speed",
+      "suite": "long_code",
+      "decode_tok_s": 59.81955688211997,
+      "accept_rate": 0.9961436170212766,
+      "depth": 3,
+      "artifact": "benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/speed-long-code/mtplx.json"
+    },
+    {
+      "model_bundle": "Quality",
+      "suite": "flappy",
+      "decode_tok_s": 42.98473948908334,
+      "accept_rate": 0.9938804895608351,
+      "depth": 3,
+      "artifact": "benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/quality-flappy/mtplx.json"
+    },
+    {
+      "model_bundle": "Quality",
+      "suite": "long_code",
+      "decode_tok_s": 43.1700022911444,
+      "accept_rate": 0.9965411733404284,
+      "depth": 3,
+      "artifact": "benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/quality-long-code/mtplx.json"
+    }
+  ]
+}

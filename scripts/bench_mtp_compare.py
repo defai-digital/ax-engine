@@ -30,8 +30,8 @@ MTPLX reference JSON format (--mtplx-results):
     "mtplx_version": "0.3.7",
     "hardware": "Apple M5 Max 128GB",
     "results": [
-      {"suite": "flappy", "decode_tok_s": 47.7, "accept_rate": 0.694, "depth": 3},
-      {"suite": "long_code", "decode_tok_s": 56.4, "accept_rate": 0.848, "depth": 3}
+      {"model_bundle": "Speed", "suite": "flappy", "decode_tok_s": 59.2, "accept_rate": 0.995, "depth": 3},
+      {"model_bundle": "Speed", "suite": "long_code", "decode_tok_s": 59.8, "accept_rate": 0.996, "depth": 3}
     ]
   }
 
@@ -177,11 +177,25 @@ def load_mtplx_results(path: Path) -> dict:
     """Load MTPLX reference result JSON."""
     data = json.loads(path.read_text())
     by_suite: dict[str, dict] = {}
+    by_bundle_suite: dict[tuple[str, str], dict] = {}
     for entry in data.get("results", []):
         suite = entry.get("suite")
         if suite:
-            by_suite[suite] = entry
-    return {"meta": data, "by_suite": by_suite}
+            if "model_bundle" not in entry:
+                by_suite[suite] = entry
+            else:
+                bundle = str(entry["model_bundle"]).strip().lower()
+                by_bundle_suite[(bundle, suite)] = entry
+    return {"meta": data, "by_suite": by_suite, "by_bundle_suite": by_bundle_suite}
+
+
+def infer_model_bundle(model_dir: Path) -> str | None:
+    text = str(model_dir).lower()
+    if "quality" in text:
+        return "quality"
+    if "speed" in text:
+        return "speed"
+    return None
 
 
 def write_summary(
@@ -217,6 +231,7 @@ def write_summary(
         meta = mtplx_ref["meta"]
         lines.append(f"MTPLX reference: version={meta.get('mtplx_version', 'unknown')}, hardware={meta.get('hardware', 'unknown')}")
         lines.append("")
+    model_bundle = infer_model_bundle(model_dir)
 
     # Experimental-flag caveat.
     fast_tail_used = any(s.get("ax_mtp_fast_tail_topk_sampling", False) for s in suite_summaries)
@@ -247,7 +262,11 @@ def write_summary(
         )
 
         if mtplx_ref:
-            ref = mtplx_ref["by_suite"].get(suite, {})
+            ref = {}
+            if model_bundle is not None:
+                ref = mtplx_ref.get("by_bundle_suite", {}).get((model_bundle, suite), {})
+            if not ref:
+                ref = mtplx_ref["by_suite"].get(suite, {})
             m_decode = f"{ref['decode_tok_s']:.1f}" if "decode_tok_s" in ref else "—"
             m_accept = f"{ref['accept_rate']:.1%}" if "accept_rate" in ref else "—"
             m_depth = str(ref.get("depth", "—"))

@@ -7,7 +7,9 @@ real-prompt suites.
 
 These benchmarks compare AX n-gram acceleration against MTPLX 0.3.7 as an
 external reference on coding-shaped workloads. MTPLX results are injected from
-a separate MTPLX run rather than produced by this harness.
+a separate MTPLX run rather than produced by this harness. Publish MTPLX
+comparison rows only when the checked-in reference file contains the matching
+model bundle, suite, depth, sampler settings, and token count.
 
 ## Directory structure
 
@@ -57,6 +59,17 @@ python3 scripts/bench_mtp_compare.py \
   --repetitions 1 \
   --cooldown 5 \
   --output-dir benchmarks/results/mtp-compare/$(date +%F)-quality-depth3-smoke
+
+# Focused long-code Speed d=3 smoke
+python3 scripts/bench_mtp_compare.py \
+  --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
+  --suites long_code \
+  --mtp-only \
+  --ax-mtp-max-depth 3 \
+  --mtplx-results benchmarks/results/mtp-compare/<date>-mtplx-ref/mtplx.json \
+  --repetitions 5 \
+  --cooldown 15 \
+  --output-dir benchmarks/results/mtp-compare/$(date +%F)-speed-depth3-long-code-smoke
 ```
 
 ## Sampling configuration
@@ -68,27 +81,52 @@ claim boundaries.
 
 ## MTPLX reference JSON format
 
-Create a file with the following structure after running MTPLX separately:
+Create a file with the following structure after running MTPLX separately on
+the same prompt suite files:
 
 ```json
 {
   "mtplx_version": "0.3.7",
   "hardware": "Apple M5 Max 128GB",
-  "run_date": "2026-05-23",
+  "run_date": "2026-05-27",
+  "runner": "scripts/bench_mtplx_prompt_suites.py",
+  "prompt_source": "benchmarks/prompts/mtp-suites/*.jsonl",
   "results": [
-    {"suite": "flappy",    "decode_tok_s": 47.7, "accept_rate": 0.694, "depth": 3},
-    {"suite": "long_code", "decode_tok_s": 56.4, "accept_rate": 0.848, "depth": 3}
+    {"model_bundle": "Speed",   "suite": "flappy",    "decode_tok_s": 59.2, "accept_rate": 0.995, "depth": 3},
+    {"model_bundle": "Speed",   "suite": "long_code", "decode_tok_s": 59.8, "accept_rate": 0.996, "depth": 3},
+    {"model_bundle": "Quality", "suite": "flappy",    "decode_tok_s": 43.0, "accept_rate": 0.994, "depth": 3},
+    {"model_bundle": "Quality", "suite": "long_code", "decode_tok_s": 43.2, "accept_rate": 0.997, "depth": 3}
   ]
 }
 ```
 
 Then pass it with `--mtplx-results path/to/mtplx.json`.
 
+The prompt-parity MTPLX runner used for the published d=3 comparison is:
+
+```bash
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python scripts/bench_mtplx_prompt_suites.py \
+  --model /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
+  --suite flappy \
+  --prompts benchmarks/prompts/mtp-suites/flappy.jsonl \
+  --output benchmarks/results/mtp-compare/$(date +%F)-mtplx-d3/speed-flappy/mtplx.json \
+  --profile sustained \
+  --depth 3 \
+  --max-tokens 1000 \
+  --repetitions 5 \
+  --warmup-repetitions 1 \
+  --cooldown 15 \
+  --seed 42 \
+  --disable-thinking
+```
+
 ## Updating PERFORMANCE.md
 
 After a new run, copy the `summary.md` numbers into the
-`## MTP Mode` section of `docs/PERFORMANCE.md`. The section header comment
-marks the update location.
+`## MTP Mode` section of `docs/PERFORMANCE.md`. Put rows with matching MTPLX
+reference artifacts in the comparison table. Put AX rows without a matching
+MTPLX artifact in the AX-only smoke table. The section header comment marks the
+update location.
 
 ## Prompt suites
 

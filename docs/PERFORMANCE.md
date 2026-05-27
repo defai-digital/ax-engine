@@ -208,29 +208,38 @@ AX MTP acceleration is measured on coding-shaped real-prompt suites against the
 These rows are `sampling_not_distribution_exact` and are not greedy-exact
 baselines.
 
-MTPLX 0.3.7 is the external reference (run separately; numbers injected when a
-matching reference artifact is available). AX MTP uses verifier-hidden-state
-drafting and standard rejection sampling.
+MTPLX 0.3.7 is the external reference. The current reference rows were captured
+with `scripts/bench_mtplx_prompt_suites.py` against the same AX Engine repo
+prompt suites, not MTPLX's built-in one-case `flappy` or `long_code` suites.
+AX MTP uses verifier-hidden-state drafting and standard rejection sampling.
 
-### Last recorded focused smoke results (2026-05-25)
+### Last recorded focused smoke results (2026-05-27)
 
 These rows are focused implementation smoke checks, not the full long-generation
-publication matrix. Rows are split by MTP depth so the README charts can show
-depth=2 and depth=3 separately.
+publication matrix. The comparison table includes only prompt-parity rows where
+AX Engine and MTPLX use the same suite file, depth, sampler settings, token cap,
+and measured repetition count.
 
-> **Build note:** all 2026-05-25 AX artifacts had `git_tracked_dirty: true`
-> (active development, uncommitted source changes). Numbers are directionally
-> correct but are not reproducible from any tagged commit.
+Harness boundary: AX rows are measured through the AX Engine server SSE runner.
+MTPLX rows are measured through a local MTPLX runtime depth-sweep runner because
+MTPLX 0.3.7's public `bench run` wrapper does not pass custom prompt files into
+its direct-HTTP harness. Treat this table as prompt/sampler/depth parity, not
+identical HTTP-harness parity.
+
+> **Build note:** all 2026-05-27 AX artifacts below were captured from a clean
+> tracked worktree (`git_tracked_dirty: false`). The release server binary was
+> prebuilt and the harness was invoked with `--no-build-ax-engine` so Cargo did
+> not rewrite `Cargo.lock` during artifact capture.
 
 | Model bundle | Suite | AX depth cap | AX MTP (tok/s) | AX accept rate | MTPLX 0.3.7 (tok/s) | MTPLX depth | MTPLX accept rate | Artifact |
 |---|---|---:|---:|---:|---:|---:|---:|---|
-| Speed (4-bit base + Q6 sidecar) | flappy | 2 | **47.7** | 92.2% | 47.6 | 2 | 77.3% | [summary](../benchmarks/results/mtp-compare/2026-05-25-speed-depth2-topk-draft-tail-smoke/summary.md) |
-| Quality (4-bit base + Q8 sidecar) | flappy | 2 | **29.1** | 89.9% | 31.5 | 2 | 80.8% | [summary](../benchmarks/results/mtp-compare/2026-05-25-quality-depth2-topk-draft-tail-smoke/summary.md) |
-| Speed (4-bit base + Q6 sidecar) | flappy | 3 | **39.0** | 83.1% | 46.3 | 3 | 69.4% | [summary](../benchmarks/results/mtp-compare/2026-05-25-speed-depth3-smoke/summary.md) |
-| Quality (4-bit base + Q8 sidecar) | flappy | 3 | **28.0** | 84.0% | 34.3 | 3 | 79.9% | [summary](../benchmarks/results/mtp-compare/2026-05-25-quality-depth3-topk-draft-tail-smoke/summary.md) |
+| Speed (4-bit base + Q6 sidecar) | flappy | 3 | 53.2 | 92.0% | **59.2** | 3 | 99.5% | [AX summary](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-speed-depth3-flappy-clean/summary.md), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
+| Speed (4-bit base + Q6 sidecar) | long_code | 3 | 52.5 | 90.4% | **59.8** | 3 | 99.6% | [AX summary](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-speed-depth3-long-code-clean-nobuild/summary.md), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
+| Quality (4-bit base + Q8 sidecar) | flappy | 3 | 36.1 | 92.2% | **43.0** | 3 | 99.4% | [AX summary](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-quality-depth3-flappy-clean/summary.md), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
+| Quality (4-bit base + Q8 sidecar) | long_code | 3 | 34.7 | 91.5% | **43.2** | 3 | 99.7% | [AX summary](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-quality-depth3-long-code-clean-nobuild/summary.md), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
 
-The MTPLX references come from the local MTPLX 0.3.7 matrix rows for the same
-bundle, `flappy` suite, depth, sampler settings, and 1000 generated tokens.
+Depth=2 AX artifacts from earlier scouting are intentionally omitted from the
+publication table because MTPLX exposes depth=3 for this model family.
 
 **Experimental variants not in this table:** during the same session several
 non-standard code paths were explored—`no-full-logits-eval` (skips evaluating
@@ -240,11 +249,12 @@ Speed model but skip parts of the verification algorithm and have not been
 validated for output-distribution correctness. Do not compare them against MTPLX
 standard rejection sampling until a correctness audit is complete.
 
-**Long-code suite note:** the `long_code` suite showed AX MTP at ~30 tok/s
-versus MTPLX 56.4 tok/s (from `ax-mtp-all-v4`). MTP overhead exceeded the
-speculation gain on that workload, indicating a regression relative to the ~32
-tok/s greedy baseline. This needs investigation before drawing conclusions about
-long-context MTP performance.
+**Long-code suite note:** prompt-parity `long_code` now uses the four AX repo
+cases with 451-852 prompt tokens and 1000 generated-token caps. On the Speed
+bundle AX MTP is 52.5 tok/s versus MTPLX 59.8 tok/s (-12.2%), with AX accept
+rate 90.4% versus MTPLX 99.6%. On the Quality bundle AX MTP is 34.7 tok/s
+versus MTPLX 43.2 tok/s (-19.7%), with AX accept rate 91.5% versus MTPLX
+99.7%.
 
 ### Updating these numbers
 
@@ -255,7 +265,7 @@ reference depth:
 ```bash
 python3 scripts/bench_mtp_compare.py \
   --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
-  --mtplx-results benchmarks/results/mtp-compare/2026-05-23-mtplx-ref/mtplx.json \
+  --mtplx-results benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json \
   --suites flappy \
   --mtp-only \
   --ax-mtp-max-depth 3 \

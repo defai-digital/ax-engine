@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Render the README MTP flappy benchmark charts.
+"""Render the README MTP benchmark charts.
 
-This script writes the four MTP SVGs shown before the standard nine README
+This script writes the MTP SVGs shown before the standard nine README
 performance charts:
 
   docs/assets/perf-mtp-speed-tok-s.svg
@@ -9,8 +9,9 @@ performance charts:
   docs/assets/perf-mtp-quality-tok-s.svg
   docs/assets/perf-mtp-quality-accept-rate.svg
 
-Each chart contains two depth groups, d=2 and d=3.  Within each group MTPLX
-0.3.7 is rendered on the left and AX Engine MTP on the right.
+Each chart contains only rows with an artifact-backed MTPLX 0.3.7 reference.
+Within each model/suite group MTPLX is rendered on the left and AX Engine MTP
+on the right.
 """
 from __future__ import annotations
 
@@ -25,7 +26,6 @@ from render_readme_performance_charts import (  # noqa: E402
     ChartError,
     MTP_CHART_OUTPUTS,
     load_mtp_rows,
-    mtp_depth_key,
     mtp_row_key,
     render_mtp_metric_chart,
     write_chart,
@@ -49,27 +49,13 @@ def main() -> int:
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    mtp_rows = {
-        (mtp_row_key(row), mtp_depth_key(row)): row
-        for row in load_mtp_rows(args.performance_doc)
-    }
+    mtp_rows = load_mtp_rows(args.performance_doc)
     mismatches: list[Path] = []
 
     for (row_key, metric), output_name in MTP_CHART_OUTPUTS.items():
-        rows = [
-            row
-            for (candidate_key, _depth), row in mtp_rows.items()
-            if candidate_key == row_key
-        ]
+        rows = [row for row in mtp_rows if mtp_row_key(row) == row_key]
         if not rows:
             raise ChartError(f"MTP performance table has no {row_key!r} rows")
-        depths = {mtp_depth_key(row) for row in rows}
-        if depths != {2, 3}:
-            raise ChartError(
-                f"MTP performance table for {row_key!r} requires depths 2 and 3, "
-                f"found {sorted(depths)}"
-            )
-
         output_path = args.output_dir / output_name
         content = render_mtp_metric_chart(rows, metric)
         if write_chart(output_path, content, args.check):

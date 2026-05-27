@@ -669,6 +669,11 @@ def mtp_row_key(row: MtpBenchmarkRow) -> str:
     return row.model_bundle.lower().strip()
 
 
+def mtp_bundle_order(row: MtpBenchmarkRow) -> int:
+    order = {"speed": 0, "quality": 1}
+    return order.get(mtp_row_key(row), 99)
+
+
 def mtp_depth_key(row: MtpBenchmarkRow) -> int:
     if row.ax_depth_cap != row.mtplx_depth:
         raise ChartError(
@@ -693,16 +698,17 @@ def mtp_metric_label(value: float, metric: str) -> str:
 
 
 def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
-    rows = sorted(rows, key=mtp_depth_key)
+    rows = sorted(rows, key=lambda row: (row.suite, mtp_depth_key(row)))
     if not rows:
         raise ChartError("MTP metric chart requires at least one row")
     model_bundle = rows[0].model_bundle
-    suite = rows[0].suite
-    if any(row.model_bundle != model_bundle or row.suite != suite for row in rows):
-        raise ChartError("MTP metric chart rows must share model bundle and suite")
+    if any(row.model_bundle != model_bundle for row in rows):
+        raise ChartError("MTP metric chart rows must share model bundle")
+    depths = {mtp_depth_key(row) for row in rows}
+    depth_label = f"d={next(iter(depths))}" if len(depths) == 1 else "mixed depth"
     title_metric = "tok/s" if metric == "tok_s" else "accept rate"
     unit = "tok/s" if metric == "tok_s" else "%"
-    title = f"{model_bundle} {title_metric}"
+    title = f"{model_bundle} MTP {depth_label} {title_metric}"
     axis_max = (
         100.0
         if metric == "accept_rate"
@@ -724,14 +730,14 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_WIDTH}" height="{MTP_HEIGHT}" viewBox="0 0 {MTP_WIDTH} {MTP_HEIGHT}" role="img" aria-labelledby="title desc">',
         f"<title>{escape(title)}</title>",
         (
-            f"<desc>Bar chart comparing MTPLX 0.3.7 on the left and AX native "
-            f"MTP on the right at depth 2 and depth 3 for "
-            f"{escape(model_bundle)} {escape(title_metric)} on the "
-            f"{escape(suite)} suite.</desc>"
+            f"<desc>Bar chart comparing artifact-backed MTPLX 0.3.7 on the "
+            f"left and AX native MTP on the right for "
+            f"{escape(model_bundle)} {escape(title_metric)} on flappy and "
+            f"long_code prompt suites.</desc>"
         ),
         f'<rect width="{MTP_WIDTH}" height="{MTP_HEIGHT}" fill="#ffffff"/>',
         f'<text x="{MTP_LEFT}" y="22" font-family="{FONT}" font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
-        f'<text x="{MTP_LEFT}" y="40" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(suite)} suite</text>',
+        f'<text x="{MTP_LEFT}" y="40" font-family="{FONT}" font-size="10" fill="#6b7280">flappy/long_code prompt-parity suites</text>',
         f'<text x="{MTP_RIGHT}" y="22" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(unit)}</text>',
         f'<text x="{MTP_RIGHT}" y="40" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
     ]
@@ -783,12 +789,12 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
                 ]
             )
         lines.append(
-            f'<text x="{group_x:.1f}" y="207" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">d={row.ax_depth_cap}</text>'
+            f'<text x="{group_x:.1f}" y="207" text-anchor="middle" font-family="{FONT}" font-size="10" font-weight="700" fill="#111827">{escape(row.suite)}</text>'
         )
 
     lines.extend(
         [
-            f'<text x="{MTP_WIDTH / 2:.1f}" y="226" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">MTPLX left · AX MTP right</text>',
+            f'<text x="{MTP_WIDTH / 2:.1f}" y="226" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">Artifact-backed MTPLX left · AX MTP right</text>',
             "</svg>",
         ]
     )
@@ -854,23 +860,11 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     mismatches: list[Path] = []
-    mtp_rows = {
-        (mtp_row_key(row), mtp_depth_key(row)): row
-        for row in load_mtp_rows(args.performance_doc)
-    }
+    mtp_rows = load_mtp_rows(args.performance_doc)
     for (row_key, metric), output_name in MTP_CHART_OUTPUTS.items():
-        rows = [
-            row
-            for (candidate_key, _depth), row in mtp_rows.items()
-            if candidate_key == row_key
-        ]
+        rows = [row for row in mtp_rows if mtp_row_key(row) == row_key]
         if not rows:
             raise ChartError(f"MTP performance table has no {row_key!r} rows")
-        depths = {mtp_depth_key(row) for row in rows}
-        if depths != {2, 3}:
-            raise ChartError(
-                f"MTP performance table for {row_key!r} requires depths 2 and 3, found {sorted(depths)}"
-            )
         mtp_output_path = args.output_dir / output_name
         mtp_content = render_mtp_metric_chart(rows, metric)
         if not write_chart(mtp_output_path, mtp_content, args.check):
