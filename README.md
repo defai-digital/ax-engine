@@ -269,10 +269,10 @@ Artifact-backed MTPLX comparison:
 
 | Model bundle | Suite | Depth | AX MTP | AX accept | MTPLX 0.3.7 | MTPLX accept |
 |---|---|---:|---:|---:|---:|---:|
-| Qwen3.6 27B MTPLX Speed | flappy | 3 | **62.9 tok/s** | 96.8% | 59.2 tok/s | 99.5% |
-| Qwen3.6 27B MTPLX Speed | long_code | 3 | **60.3 tok/s** | 98.3% | 59.8 tok/s | 99.6% |
-| Qwen3.6 27B MTPLX Quality | flappy | 3 | 40.8 tok/s | 98.5% | **43.0 tok/s** | 99.4% |
-| Qwen3.6 27B MTPLX Quality | long_code | 3 | 34.7 tok/s | 91.5% | **43.2 tok/s** | 99.7% |
+| Qwen3.6 27B MTPLX Speed | flappy | 3 | **62.1 tok/s** | ~96% | 59.2 tok/s | 99.5% |
+| Qwen3.6 27B MTPLX Speed | long_code | 3 | **60.4 tok/s** | ~93% | 59.8 tok/s | 99.6% |
+| Qwen3.6 27B MTPLX Quality | flappy | 3 | 41.9 tok/s | ~94% | **43.0 tok/s** | 99.4% |
+| Qwen3.6 27B MTPLX Quality | long_code | 3 | **43.9 tok/s** | ~93% | 43.2 tok/s | 99.7% |
 
 Full MTP methodology, caveats, artifact links, and reproduction commands live in
 [`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode). The benchmark

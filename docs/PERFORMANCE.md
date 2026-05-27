@@ -226,17 +226,19 @@ MTPLX 0.3.7's public `bench run` wrapper does not pass custom prompt files into
 its direct-HTTP harness. Treat this table as prompt/sampler/depth parity, not
 identical HTTP-harness parity.
 
-> **Build note:** all 2026-05-27 AX artifacts below were captured from a clean
-> tracked worktree (`git_tracked_dirty: false`). The release server binary was
-> prebuilt and the harness was invoked with `--no-build-ax-engine` so Cargo did
-> not rewrite `Cargo.lock` during artifact capture.
+> **Build note:** Speed artifacts were captured from a clean tracked worktree
+> (`git_tracked_dirty: false`). Quality artifacts were captured with uncommitted
+> `mtp.rs` changes (`git_tracked_dirty: true`, base commit `5b8650a0`). The
+> release server binary was prebuilt and the harness was invoked with
+> `--no-build-ax-engine` so Cargo did not rewrite `Cargo.lock` during artifact
+> capture.
 
 | Model bundle | Suite | AX depth cap | AX MTP (tok/s) | AX accept rate | MTPLX 0.3.7 (tok/s) | MTPLX depth | MTPLX accept rate | Artifact |
 |---|---|---:|---:|---:|---:|---:|---:|---|
-| Speed (4-bit base + Q6 sidecar) | flappy | 3 | **62.9** | 96.8% | 59.2 | 3 | 99.5% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-speed-depth3-flappy-prompt-history-smoke/flappy/flappy.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
-| Speed (4-bit base + Q6 sidecar) | long_code | 3 | **60.3** | 98.3% | 59.8 | 3 | 99.6% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-speed-depth3-long-code-prompt-history-smoke/long_code/long_code.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
-| Quality (4-bit base + Q8 sidecar) | flappy | 3 | 40.8 | 98.5% | **43.0** | 3 | 99.4% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-quality-depth3-flappy-long-code-prompt-history-smoke/flappy/flappy.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
-| Quality (4-bit base + Q8 sidecar) | long_code | 3 | 34.7 | 91.5% | **43.2** | 3 | 99.7% | [AX summary](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-quality-depth3-long-code-clean-nobuild/summary.md), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
+| Speed (4-bit base + Q6 sidecar) | flappy | 3 | **62.1** | 95.9% | 59.2 | 3 | 99.5% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-topk4096-final/speed-flappy/flappy.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
+| Speed (4-bit base + Q6 sidecar) | long_code | 3 | **60.4** | 93.3% | 59.8 | 3 | 99.6% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-topk4096-final/speed-lc/long_code.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
+| Quality (4-bit base + Q8 sidecar) | flappy | 3 | 41.9 | 94.3% | **43.0** | 3 | 99.4% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-topk4096-final/quality-flappy-r4/flappy.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
+| Quality (4-bit base + Q8 sidecar) | long_code | 3 | **43.9** | 93.4% | 43.2 | 3 | 99.7% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-topk4096-quality-lc/long_code/long_code.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
 
 Depth=2 AX artifacts from earlier scouting are intentionally omitted from the
 publication table because MTPLX exposes depth=3 for this model family.
@@ -251,11 +253,11 @@ standard rejection sampling until a correctness audit is complete.
 
 **Long-code suite note:** prompt-parity `long_code` now uses the four AX repo
 cases with 451-852 prompt tokens and 1000 generated-token caps. On the Speed
-bundle AX MTP is 60.3 tok/s versus MTPLX 59.8 tok/s (+0.8%), with AX accept
-rate 98.3% versus MTPLX 99.6%. On the Quality bundle AX MTP is 34.7 tok/s
-versus MTPLX 43.2 tok/s (-19.7%), with AX accept rate 91.5% versus MTPLX
-99.7%. The refreshed Quality/flappy row improved to 40.8 tok/s at 98.5% accept
-but still trails MTPLX's 43.0 tok/s reference.
+bundle AX MTP is 60.4 tok/s versus MTPLX 59.8 tok/s (+1.0%), with AX accept
+rate 93.3% versus MTPLX 99.6%. On the Quality bundle AX MTP is 43.9 tok/s
+versus MTPLX 43.2 tok/s (+1.6%), with AX accept rate 93.4% versus MTPLX
+99.7%. The Quality/flappy row is 41.9 tok/s at 94.3% accept, trailing MTPLX's
+43.0 tok/s reference.
 
 ### Updating these numbers
 
