@@ -414,6 +414,33 @@ random-token contract. The artifact records the linear-attention direct C++
 input path as all-hit with no fallback/profile-blocked counters, so the dip is
 preserved as a workload/result characteristic rather than hidden.
 
+### Rapid-MLX-style speculative decoding comparison
+
+Rapid-MLX's fair suffix-decoding benchmark does **not** use the
+`Youssofal/*MTPLX*` Qwen bundle. It uses ordinary MLX community model snapshots,
+four real workloads (`chat`, `json_array`, `tool_loop`, `code_edit`), greedy
+decoding, and reliability gates that reject too-short or physically implausible
+timing windows.
+
+Use `scripts/bench_speculative_suite.py` for this comparison. It mirrors the
+Rapid-MLX SuffixDecoding drafter, keeps a lightning-style n-gram path for
+context, and records the fairness contract in the artifact:
+
+```bash
+MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
+
+python3 scripts/bench_speculative_suite.py \
+  --model-dir "$MODEL_DIR" \
+  --output-dir benchmarks/results/speculative-suite/$(date +%F)-qwen3-4b-rapid \
+  --repetitions 3 \
+  --warmup 1
+```
+
+Hybrid Qwen3.5/Qwen3.6 caches are reported as `non_trimmable_cache` for this
+suffix-decoding comparison, matching Rapid-MLX's policy of disabling generic
+spec decode on hybrid recurrent models. Qwen3.6 MTP rows remain a separate
+MTPLX comparison surface and should not be mixed with Rapid-MLX suffix results.
+
 ### Time to first token (ms) — generation=128 tokens, temp=0
 
 Lower is better. `mlx_lm` values are derived from reported prefill throughput.

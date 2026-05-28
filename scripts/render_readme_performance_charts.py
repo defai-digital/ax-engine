@@ -1198,6 +1198,254 @@ def render_ngram_accept_chart(artifact: dict) -> str:
     )
 
 
+# Canonical display names for model slugs extracted from artifact directory names.
+NGRAM_MODEL_DISPLAY: dict[str, str] = {
+    "qwen3-4b-4bit":            "Qwen3-4B",
+    "glm-4-7-flash-4bit":       "GLM-4.7F",
+    "gemma-4-e2b-4bit":         "E2B 4bit",
+    "gemma-4-e2b-5bit":         "E2B 5bit",
+    "gemma-4-e2b-6bit":         "E2B 6bit",
+    "gemma-4-e2b-8bit":         "E2B 8bit",
+    "gemma-4-e4b-4bit":         "E4B 4bit",
+    "gemma-4-26b-a4b-4bit":     "G26B-A4B",
+    "gemma-4-31b-4bit":         "G31B 4bit",
+    "qwen3-6-27b-4bit":         "Q27B 4bit",
+    "qwen3-6-27b-5bit":         "Q27B 5bit",
+    "qwen3-6-27b-6bit":         "Q27B 6bit",
+    "qwen3-6-27b-8bit":         "Q27B 8bit",
+    "qwen3-6-35b-a3b-4bit":     "Q35B-A3B",
+}
+
+# Preferred order for model display in multi-model charts (small → large).
+NGRAM_MODEL_ORDER = [
+    "qwen3-4b-4bit",
+    "glm-4-7-flash-4bit",
+    "gemma-4-e2b-4bit",
+    "gemma-4-e2b-5bit",
+    "gemma-4-e2b-6bit",
+    "gemma-4-e2b-8bit",
+    "gemma-4-e4b-4bit",
+    "gemma-4-26b-a4b-4bit",
+    "gemma-4-31b-4bit",
+    "qwen3-6-27b-4bit",
+    "qwen3-6-27b-5bit",
+    "qwen3-6-27b-6bit",
+    "qwen3-6-27b-8bit",
+    "qwen3-6-35b-a3b-4bit",
+]
+
+
+def find_ngram_artifacts_by_model(repo_root: Path) -> dict[str, dict]:
+    """Return {model_slug: artifact_dict} using the latest `-ngram` run per slug."""
+    base = repo_root / "benchmarks" / "results" / "ngram-compare"
+    result: dict[str, dict] = {}
+    for slug in NGRAM_MODEL_ORDER:
+        # Prefer the `-ngram` suffixed run, fall back to any run containing the slug.
+        candidates = sorted(base.glob(f"*{slug}*/artifact.json"), key=lambda p: p.parent.name)
+        for path in reversed(candidates):
+            try:
+                art = json.loads(path.read_text())
+                if art.get("ax_direct"):
+                    result[slug] = art
+                    break
+            except Exception:
+                continue
+    return result
+
+
+def render_ngram_models_speedup_chart(artifacts: dict[str, dict]) -> str:
+    """Grouped bar: ax_direct vs ax_ngram tok/s for high-repeat, one group per model."""
+    models = [s for s in NGRAM_MODEL_ORDER if s in artifacts]
+    if not models:
+        raise ChartError("no ngram model artifacts found")
+
+    direct_vals: list[float] = []
+    ngram_vals: list[float] = []
+    for slug in models:
+        art = artifacts[slug]
+        d = _ngram_category_median(art.get("ax_direct", []), "high_repeat", "tok_s_median") or 0.0
+        n = _ngram_category_median(art.get("ax_ngram", []), "high_repeat", "tok_s_median") or 0.0
+        direct_vals.append(d)
+        ngram_vals.append(n)
+
+    all_vals = [v for v in direct_vals + ngram_vals if v > 0]
+    if not all_vals:
+        raise ChartError("no usable tok/s data for models speedup chart")
+    axis_max = nice_axis_ceiling(max(all_vals) * 1.05)
+
+    n_models = len(models)
+    W = max(700, 55 + n_models * 75 + 30)
+    H = 320
+    LEFT, TOP, BOTTOM = 55, 56, 248
+    RIGHT = W - 25
+    plot_w = RIGHT - LEFT
+    plot_h = BOTTOM - TOP
+    bar_w = 14.0
+    bar_gap = 3.0
+    group_block = 2 * bar_w + bar_gap
+
+    def fy(v: float) -> float:
+        return BOTTOM - (max(0.0, min(v, axis_max)) / axis_max) * plot_h
+
+    title = "N-gram throughput — ax direct vs ax n-gram (high-repeat, all models)"
+    subtitle = "temp=0.6/top_p=0.95/top_k=20 · bars: ax direct (light) / ax+n-gram (dark)"
+
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}"'
+        f' viewBox="0 0 {W} {H}" role="img" aria-labelledby="title desc">',
+        f"<title>{escape(title)}</title>",
+        f"<desc>{escape(title)}</desc>",
+        f'<rect width="{W}" height="{H}" fill="#ffffff"/>',
+        f'<text x="{LEFT}" y="22" font-family="{FONT}" font-size="13" font-weight="700" fill="#111827">{escape(title)}</text>',
+        f'<text x="{LEFT}" y="36" font-family="{FONT}" font-size="9" fill="#6b7280">{escape(subtitle)}</text>',
+        f'<text x="{RIGHT}" y="22" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">tok/s</text>',
+        f'<text x="{RIGHT}" y="36" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
+    ]
+    for grid_val in (0.0, axis_max * 0.5, axis_max):
+        gy = fy(grid_val)
+        lines.append(f'<line x1="{LEFT}" y1="{gy:.1f}" x2="{RIGHT}" y2="{gy:.1f}" stroke="#e5e7eb" stroke-width="1"/>')
+        lines.append(f'<text x="{LEFT-6}" y="{gy+3:.1f}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{short_number(grid_val)}</text>')
+
+    group_step = plot_w / n_models
+    for gi, slug in enumerate(models):
+        group_center = LEFT + (gi + 0.5) * group_step
+        bar0 = group_center - group_block / 2
+        d_val, n_val = direct_vals[gi], ngram_vals[gi]
+        label = NGRAM_MODEL_DISPLAY.get(slug, slug)
+
+        for bi, (val, color, dot_color) in enumerate([
+            (d_val, "#86efac", "#16a34a"),
+            (n_val, "#2eaf5f", "#176c37"),
+        ]):
+            bx = bar0 + bi * (bar_w + bar_gap)
+            bc = bx + bar_w / 2
+            y_top = fy(val)
+            bh = BOTTOM - y_top
+            lines.extend([
+                f'<rect x="{bx:.1f}" y="{y_top:.1f}" width="{bar_w:.0f}" height="{bh:.1f}" rx="2"'
+                f' fill="{color}" fill-opacity="0.35" stroke="{dot_color}" stroke-width="1.4"/>',
+                f'<line x1="{bx:.1f}" y1="{y_top:.1f}" x2="{bx+bar_w:.1f}" y2="{y_top:.1f}" stroke="{dot_color}" stroke-width="2.2"/>',
+            ])
+            if val > 0:
+                lines.append(f'<text x="{bc:.1f}" y="{y_top-3:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" fill="{dot_color}">{val:.0f}</text>')
+
+        lines.append(f'<text x="{group_center:.1f}" y="{BOTTOM+14}" text-anchor="middle" font-family="{FONT}" font-size="8.5" font-weight="700" fill="#111827">{escape(label)}</text>')
+
+        if d_val > 0 and n_val > 0:
+            speedup = n_val / d_val
+            sy = fy(n_val) - 13
+            lines.append(f'<text x="{group_center:.1f}" y="{sy:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" font-weight="700" fill="#176c37">{speedup:.2f}×</text>')
+
+    ly = BOTTOM + 32
+    for li, (label, color, dot_color) in enumerate([
+        ("ax direct", "#86efac", "#16a34a"),
+        ("ax + n-gram", "#2eaf5f", "#176c37"),
+    ]):
+        lx = LEFT + li * 120
+        lines.extend([
+            f'<rect x="{lx}" y="{ly}" width="10" height="10" rx="2" fill="{color}" fill-opacity="0.4" stroke="{dot_color}" stroke-width="1.4"/>',
+            f'<text x="{lx+14}" y="{ly+9}" font-family="{FONT}" font-size="9" fill="#374151">{escape(label)}</text>',
+        ])
+
+    lines.append("</svg>")
+    return "".join(lines) + "\n"
+
+
+def render_ngram_models_accept_chart(artifacts: dict[str, dict]) -> str:
+    """Grouped bar: ax n-gram accept rate vs lightning accept rate, one group per model."""
+    models = [s for s in NGRAM_MODEL_ORDER if s in artifacts]
+    if not models:
+        raise ChartError("no ngram model artifacts found")
+
+    ax_vals: list[float] = []
+    lt_vals: list[float] = []
+    has_lightning = False
+    for slug in models:
+        art = artifacts[slug]
+        a = _ngram_category_median(art.get("ax_ngram", []), "high_repeat", "ngram_accept_rate")
+        l = _ngram_category_median(art.get("lightning", []), "high_repeat", "lightning_accept_rate")
+        ax_vals.append((a * 100.0) if a is not None else 0.0)
+        lt_val = (l * 100.0) if l is not None else 0.0
+        lt_vals.append(lt_val)
+        if lt_val > 0:
+            has_lightning = True
+
+    all_vals = [v for v in ax_vals + lt_vals if v > 0]
+    axis_max = min(100.0, nice_axis_ceiling(max(all_vals) * 1.25)) if all_vals else 100.0
+
+    n_models = len(models)
+    n_bars = 2 if has_lightning else 1
+    W = max(700, 55 + n_models * 75 + 30)
+    H = 320
+    LEFT, TOP, BOTTOM = 55, 56, 248
+    RIGHT = W - 25
+    plot_w = RIGHT - LEFT
+    plot_h = BOTTOM - TOP
+    bar_w = 14.0
+    bar_gap = 3.0
+    group_block = n_bars * bar_w + (n_bars - 1) * bar_gap
+
+    def fy(v: float) -> float:
+        return BOTTOM - (max(0.0, min(v, axis_max)) / axis_max) * plot_h
+
+    title = "N-gram accept rate — ax-engine vs lightning (high-repeat)"
+    subtitle = "temp=0.6 · draft token acceptance per decode step · higher = better"
+
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}"'
+        f' viewBox="0 0 {W} {H}" role="img" aria-labelledby="title desc">',
+        f"<title>{escape(title)}</title>",
+        f"<desc>{escape(title)}</desc>",
+        f'<rect width="{W}" height="{H}" fill="#ffffff"/>',
+        f'<text x="{LEFT}" y="22" font-family="{FONT}" font-size="13" font-weight="700" fill="#111827">{escape(title)}</text>',
+        f'<text x="{LEFT}" y="36" font-family="{FONT}" font-size="9" fill="#6b7280">{escape(subtitle)}</text>',
+        f'<text x="{RIGHT}" y="22" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">accept %</text>',
+        f'<text x="{RIGHT}" y="36" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
+    ]
+    for grid_val in (0.0, axis_max * 0.5, axis_max):
+        gy = fy(grid_val)
+        lines.append(f'<line x1="{LEFT}" y1="{gy:.1f}" x2="{RIGHT}" y2="{gy:.1f}" stroke="#e5e7eb" stroke-width="1"/>')
+        lines.append(f'<text x="{LEFT-6}" y="{gy+3:.1f}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{grid_val:.0f}%</text>')
+
+    group_step = plot_w / n_models
+    bar_series = [
+        (ax_vals,  "#2eaf5f", "#176c37", "ax n-gram"),
+        (lt_vals,  "#f2b705", "#9a6a00", "lightning"),
+    ][:n_bars]
+
+    for gi, slug in enumerate(models):
+        group_center = LEFT + (gi + 0.5) * group_step
+        bar0 = group_center - group_block / 2
+        label = NGRAM_MODEL_DISPLAY.get(slug, slug)
+
+        for bi, (vals, color, dot_color, _) in enumerate(bar_series):
+            val = vals[gi]
+            bx = bar0 + bi * (bar_w + bar_gap)
+            bc = bx + bar_w / 2
+            y_top = fy(val)
+            bh = BOTTOM - y_top
+            lines.extend([
+                f'<rect x="{bx:.1f}" y="{y_top:.1f}" width="{bar_w:.0f}" height="{bh:.1f}" rx="2"'
+                f' fill="{color}" fill-opacity="0.35" stroke="{dot_color}" stroke-width="1.4"/>',
+                f'<line x1="{bx:.1f}" y1="{y_top:.1f}" x2="{bx+bar_w:.1f}" y2="{y_top:.1f}" stroke="{dot_color}" stroke-width="2.2"/>',
+            ])
+            if val > 0:
+                lines.append(f'<text x="{bc:.1f}" y="{y_top-3:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" fill="{dot_color}">{val:.0f}%</text>')
+
+        lines.append(f'<text x="{group_center:.1f}" y="{BOTTOM+14}" text-anchor="middle" font-family="{FONT}" font-size="8.5" font-weight="700" fill="#111827">{escape(label)}</text>')
+
+    ly = BOTTOM + 32
+    for li, (_, color, dot_color, label) in enumerate(bar_series):
+        lx = LEFT + li * 120
+        lines.extend([
+            f'<rect x="{lx}" y="{ly}" width="10" height="10" rx="2" fill="{color}" fill-opacity="0.4" stroke="{dot_color}" stroke-width="1.4"/>',
+            f'<text x="{lx+14}" y="{ly+9}" font-family="{FONT}" font-size="9" fill="#374151">{escape(label)}</text>',
+        ])
+
+    lines.append("</svg>")
+    return "".join(lines) + "\n"
+
+
 def write_chart(path: Path, content: str, check: bool) -> bool:
     if check:
         return path.exists() and path.read_text() == content
@@ -1274,6 +1522,18 @@ def main() -> int:
             ("perf-ngram-accept.svg",      render_ngram_accept_chart),
         ]:
             content = renderer(ngram_artifact)
+            out_path = args.output_dir / out_name
+            if not write_chart(out_path, content, args.check):
+                mismatches.append(out_path)
+
+    # N-gram multi-model charts: one group per model slug.
+    ngram_artifacts = find_ngram_artifacts_by_model(args.readme.parent)
+    if ngram_artifacts:
+        for out_name, renderer in [
+            ("perf-ngram-models-toks.svg",   render_ngram_models_speedup_chart),
+            ("perf-ngram-models-accept.svg", render_ngram_models_accept_chart),
+        ]:
+            content = renderer(ngram_artifacts)
             out_path = args.output_dir / out_name
             if not write_chart(out_path, content, args.check):
                 mismatches.append(out_path)

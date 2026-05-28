@@ -1,0 +1,112 @@
+{
+  "schema": "ax.bench.ngram_vs_lightning.v2",
+  "date": "2026-05-28",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit/snapshots/efbeee6e582ebfd06abc9d65e90839c4b5d2116b",
+  "sampling": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20
+  },
+  "max_tokens": 512,
+  "warmup": 1,
+  "repetitions": 2,
+  "cooldown": 10.0,
+  "prompts": [
+    {
+      "id": "getter_setter",
+      "category": "high_repeat"
+    },
+    {
+      "id": "json_array",
+      "category": "high_repeat"
+    },
+    {
+      "id": "sql_inserts",
+      "category": "high_repeat"
+    },
+    {
+      "id": "markdown_table",
+      "category": "med_repeat"
+    },
+    {
+      "id": "csv_data",
+      "category": "med_repeat"
+    },
+    {
+      "id": "creative_story",
+      "category": "low_repeat"
+    },
+    {
+      "id": "explain_tcp",
+      "category": "low_repeat"
+    }
+  ],
+  "ax_direct": [],
+  "ax_ngram": [],
+  "lightning": [
+    {
+      "tok_s_median": 102.31266577472772,
+      "lightning_accept_rate": null,
+      "lightning_drafted": 0,
+      "lightning_accepted": 0,
+      "trimmable": true,
+      "prompt_id": "getter_setter",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 102.00143393883664,
+      "lightning_accept_rate": 0.0,
+      "lightning_drafted": 13,
+      "lightning_accepted": 0,
+      "trimmable": true,
+      "prompt_id": "json_array",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 100.46085191157866,
+      "lightning_accept_rate": 0.03278688524590164,
+      "lightning_drafted": 61,
+      "lightning_accepted": 2,
+      "trimmable": true,
+      "prompt_id": "sql_inserts",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 99.65132608287182,
+      "lightning_accept_rate": 0.02531645569620253,
+      "lightning_drafted": 79,
+      "lightning_accepted": 2,
+      "trimmable": true,
+      "prompt_id": "markdown_table",
+      "category": "med_repeat"
+    },
+    {
+      "tok_s_median": 102.73694664242612,
+      "lightning_accept_rate": 0.3522727272727273,
+      "lightning_drafted": 176,
+      "lightning_accepted": 62,
+      "trimmable": true,
+      "prompt_id": "csv_data",
+      "category": "med_repeat"
+    },
+    {
+      "tok_s_median": 101.90583169301244,
+      "lightning_accept_rate": 0.0,
+      "lightning_drafted": 4,
+      "lightning_accepted": 0,
+      "trimmable": true,
+      "prompt_id": "creative_story",
+      "category": "low_repeat"
+    },
+    {
+      "tok_s_median": 101.8867841499355,
+      "lightning_accept_rate": 0.0,
+      "lightning_drafted": 4,
+      "lightning_accepted": 0,
+      "trimmable": true,
+      "prompt_id": "explain_tcp",
+      "category": "low_repeat"
+    }
+  ],
+  "oracle": []
+}

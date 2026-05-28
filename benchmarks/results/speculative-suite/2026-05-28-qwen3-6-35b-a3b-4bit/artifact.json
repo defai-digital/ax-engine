@@ -1,0 +1,194 @@
+{
+  "schema": "ax.bench.speculative_suite.v1",
+  "date": "2026-05-28",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46",
+  "prompt_mode": "rapid",
+  "sampling": "greedy_argmax_t0",
+  "generation_tokens": 128,
+  "repetitions": 2,
+  "warmup": 1,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "lightning": {
+    "ngram_size": 3,
+    "num_draft_tokens": 4
+  },
+  "rapid_mlx": {
+    "algorithm": "SuffixDecodingDrafter",
+    "max_draft_tokens": 8,
+    "max_suffix_len": 4,
+    "min_confidence": 0.3
+  },
+  "results": [
+    {
+      "case_id": "chat",
+      "category": "low_repeat",
+      "prompt_tokens": 30,
+      "gen_tokens": 128,
+      "ignore_eos": true,
+      "baseline": {
+        "tok_s_median": 107.75653335057825,
+        "raw_runs": [
+          {
+            "tps": 106.65623070132239,
+            "token_count": 128,
+            "decode_time": 1.2001174160977826,
+            "rejected_reason": null
+          },
+          {
+            "tps": 108.8568359998341,
+            "token_count": 128,
+            "decode_time": 1.1758563329931349,
+            "rejected_reason": null
+          }
+        ]
+      },
+      "lightning": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      },
+      "rapid_mlx": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      }
+    },
+    {
+      "case_id": "json_array",
+      "category": "structured",
+      "prompt_tokens": 62,
+      "gen_tokens": 128,
+      "ignore_eos": true,
+      "baseline": {
+        "tok_s_median": 107.99000787850568,
+        "raw_runs": [
+          {
+            "tps": 107.23838506109982,
+            "token_count": 128,
+            "decode_time": 1.1936024579918012,
+            "rejected_reason": null
+          },
+          {
+            "tps": 108.74163069591152,
+            "token_count": 128,
+            "decode_time": 1.1771020829910412,
+            "rejected_reason": null
+          }
+        ]
+      },
+      "lightning": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      },
+      "rapid_mlx": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      }
+    },
+    {
+      "case_id": "tool_loop",
+      "category": "agentic",
+      "prompt_tokens": 569,
+      "gen_tokens": 128,
+      "ignore_eos": true,
+      "baseline": {
+        "tok_s_median": 108.86588910833797,
+        "raw_runs": [
+          {
+            "tps": 108.59456331976051,
+            "token_count": 128,
+            "decode_time": 1.1786962080514058,
+            "rejected_reason": null
+          },
+          {
+            "tps": 109.13721489691542,
+            "token_count": 128,
+            "decode_time": 1.1728354999795556,
+            "rejected_reason": null
+          }
+        ]
+      },
+      "lightning": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      },
+      "rapid_mlx": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      }
+    },
+    {
+      "case_id": "code_edit",
+      "category": "structured",
+      "prompt_tokens": 85,
+      "gen_tokens": 128,
+      "ignore_eos": true,
+      "baseline": {
+        "tok_s_median": 109.6385131778456,
+        "raw_runs": [
+          {
+            "tps": 109.45932373623572,
+            "token_count": 128,
+            "decode_time": 1.1693841660162434,
+            "rejected_reason": null
+          },
+          {
+            "tps": 109.81770261945546,
+            "token_count": 128,
+            "decode_time": 1.165567999938503,
+            "rejected_reason": null
+          }
+        ]
+      },
+      "lightning": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      },
+      "rapid_mlx": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      }
+    }
+  ]
+}

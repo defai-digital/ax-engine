@@ -1,0 +1,79 @@
+{
+  "schema": "ax.bench.speculative_suite.v1",
+  "date": "2026-05-28",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282",
+  "sampling": "greedy_argmax_t0",
+  "generation_tokens": 128,
+  "repetitions": 2,
+  "warmup": 1,
+  "ngram_size": 3,
+  "num_draft_tokens": 4,
+  "results": [
+    {
+      "prompt_tokens": 128,
+      "gen_tokens": 128,
+      "ignore_eos": true,
+      "baseline": {
+        "tok_s_median": 28.61456797421571
+      },
+      "lightning": {
+        "tok_s_median": 28.383851417812274,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false
+      },
+      "rapid_mlx": {
+        "tok_s_median": 28.615281301297408,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false
+      }
+    },
+    {
+      "prompt_tokens": 512,
+      "gen_tokens": 128,
+      "ignore_eos": true,
+      "baseline": {
+        "tok_s_median": 28.676546220303383
+      },
+      "lightning": {
+        "tok_s_median": 30.658960613648613,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false
+      },
+      "rapid_mlx": {
+        "tok_s_median": 30.73042141334286,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false
+      }
+    },
+    {
+      "prompt_tokens": 2048,
+      "gen_tokens": 128,
+      "ignore_eos": true,
+      "baseline": {
+        "tok_s_median": 30.368821011143993
+      },
+      "lightning": {
+        "tok_s_median": 30.003642342686895,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false
+      },
+      "rapid_mlx": {
+        "tok_s_median": 30.216289353509232,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false
+      }
+    }
+  ]
+}
