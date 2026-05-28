@@ -267,55 +267,20 @@ CLAIMS_REQUIRING_ARTIFACT_EVIDENCE = [
     "long_context_prefill_improvement",
 ]
 
-AX_NGRAM_TELEMETRY_KEYS = [
-    "ax_ngram_draft_attempts",
-    "ax_ngram_draft_tokens",
-    "ax_ngram_accepted_tokens",
-    "ax_ngram_rejected_tokens",
-    "ax_ngram_full_accepts",
-    "ax_ngram_partial_rejects",
-    "ax_ngram_complete_misses",
-    "ax_ngram_no_draft_steps",
-    "ax_ngram_cooldown_steps",
-    "ax_ngram_cooldown_events",
-    "ax_ngram_cooldown_steps_scheduled",
-    "ax_ngram_request_disable_events",
-    "ax_ngram_request_disabled_steps",
-    "ax_ngram_fallback_no_candidate_steps",
-    "ax_ngram_fallback_confidence_filtered_steps",
-    "ax_ngram_fallback_short_output_steps",
-    "ax_ngram_fallback_linear_no_draft_steps",
-    "ax_ngram_policy_variant",
-    "ax_ngram_adaptive_draft_len_steps",
-    "ax_ngram_adaptive_draft_len_total",
-    "ax_prompt_class_code",
-    # Per-attempt acceptance-by-depth histogram (PRD §8 Phase 6).
-    # Bucket k counts draft attempts whose accept_count was exactly k;
-    # attempts with accept_count >= 8 saturate into bucket 7.
-    "ax_ngram_accept_at_depth_0",
-    "ax_ngram_accept_at_depth_1",
-    "ax_ngram_accept_at_depth_2",
-    "ax_ngram_accept_at_depth_3",
-    "ax_ngram_accept_at_depth_4",
-    "ax_ngram_accept_at_depth_5",
-    "ax_ngram_accept_at_depth_6",
-    "ax_ngram_accept_at_depth_7",
-    # MTP (Multi-Token Prediction) speculative decode telemetry.
-    # Present when model has an mtp.safetensors sidecar (MTPLX models).
-    "ax_mtp_draft_tokens",
-    "ax_mtp_accepted_tokens",
-    "ax_mtp_decode_steps",
-    "ax_mtp_full_accept_steps",
-    "ax_mtp_partial_reject_steps",
-    "ax_mtp_complete_miss_steps",
-    "ax_mtp_cache_clone_wall_us",
-    "ax_mtp_verify_forward_wall_us",
-    "ax_mtp_verify_eval_wall_us",
-    "ax_mtp_accept_wall_us",
-    "ax_mtp_rollback_wall_us",
-    "ax_mtp_tail_sample_wall_us",
-    "ax_mtp_draft_wall_us",
-]
+# Prefix-based telemetry collection: any key the Rust side emits under these
+# prefixes is automatically included in benchmark artifacts without requiring
+# a matching entry in a static allowlist.  Adding a new ax_ngram_* or ax_mtp_*
+# key in runner.rs is sufficient — no Python change needed.
+AX_NGRAM_TELEMETRY_PREFIXES: tuple[str, ...] = (
+    "ax_ngram_",
+    "ax_mtp_",
+    "ax_prompt_class_",
+)
+
+# Keys whose values are categorical/enum (not additive counters) and must be
+# aggregated with max() across repetitions instead of sum().  Naming convention:
+# any key whose suffix matches one of these strings is treated as max-merge.
+_AX_NGRAM_MAX_MERGE_SUFFIXES: tuple[str, ...] = ("_code", "_variant")
 
 # PRD §8 Phase 6 helper: stable ordered list of the accept-at-depth keys so
 # downstream aggregation can iterate without re-deriving the count.
@@ -1890,7 +1855,11 @@ def extract_ax_ngram_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
     if not route:
         return {}
     decisions = route.get("crossover_decisions") or {}
-    telemetry = {key: int(decisions.get(key, 0)) for key in AX_NGRAM_TELEMETRY_KEYS}
+    telemetry = {
+        k: int(v)
+        for k, v in decisions.items()
+        if any(k.startswith(p) for p in AX_NGRAM_TELEMETRY_PREFIXES)
+    }
     if (
         telemetry.get("ax_ngram_draft_attempts", 0) > 0
         and AX_NGRAM_ACCEPT_RATE_KEY not in telemetry
@@ -2040,8 +2009,7 @@ def route_with_more_decisions(
         return candidate
     candidate_decisions = candidate.get("crossover_decisions") or {}
     current_decisions = current.get("crossover_decisions") or {}
-    priority_keys = {
-        *AX_NGRAM_TELEMETRY_KEYS,
+    static_priority_keys = {
         *AX_MLX_TELEMETRY_KEYS,
         *AX_MLX_PREFILL_PROFILE_KEYS,
         *AX_MLX_DECODE_PROFILE_KEYS,
@@ -2050,8 +2018,14 @@ def route_with_more_decisions(
     def priority_score(decisions: dict[str, Any]) -> tuple[int, int, int, int]:
         priority_values = [
             int(decisions.get(key, 0))
-            for key in priority_keys
+            for key in static_priority_keys
             if int(decisions.get(key, 0)) > 0
+        ]
+        priority_values += [
+            int(v)
+            for k, v in decisions.items()
+            if any(k.startswith(p) for p in AX_NGRAM_TELEMETRY_PREFIXES)
+            and int(v) > 0
         ]
         return (
             len(priority_values),
@@ -2109,7 +2083,7 @@ def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
         for key, value in (run.get("ngram_acceleration_telemetry") or {}).items():
             if key == AX_NGRAM_ACCEPT_RATE_KEY:
                 continue
-            if key == "ax_ngram_policy_variant":
+            if any(key.endswith(s) for s in _AX_NGRAM_MAX_MERGE_SUFFIXES):
                 totals[key] = max(totals.get(key, 0), int(value))
             else:
                 totals[key] = totals.get(key, 0) + int(value)
