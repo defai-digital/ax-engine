@@ -565,6 +565,14 @@ pub struct NativeModelManifest {
     /// have the loader apply the norm-delta and conv1d-axis transforms.
     #[serde(default, skip_serializing_if = "WeightSanitize::is_none")]
     pub weight_sanitize: WeightSanitize,
+    /// Token ID for `<think>` (Qwen3 reasoning models: 151668).
+    /// When present, n-gram acceleration gates drafting to only run inside
+    /// `<think>...</think>` blocks, where repetition patterns are much denser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub think_start_token_id: Option<u32>,
+    /// Token ID for `</think>` (Qwen3 reasoning models: 151669).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub think_end_token_id: Option<u32>,
     pub tensors: Vec<NativeTensorSpec>,
 }
 
@@ -3318,6 +3326,8 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             weight_sanitize: WeightSanitize::default(),
+            think_start_token_id: None,
+            think_end_token_id: None,
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

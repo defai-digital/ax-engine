@@ -1366,6 +1366,8 @@ mod tests {
             moe_routed_scaling_factor: 1.0,
             moe_n_group: 1,
             moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
         }
     }
 
@@ -1751,6 +1753,8 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
+            think_start_token_id: None,
+            think_end_token_id: None,
             tensors: Vec::new(),
         }
     }
@@ -1809,6 +1813,8 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
+            think_start_token_id: None,
+            think_end_token_id: None,
             tensors: Vec::new(),
         }
     }
@@ -1889,6 +1895,8 @@ mod tests {
                 has_shared_experts: true,
             },
             weight_sanitize: ax_engine_core::WeightSanitize::None,
+            think_start_token_id: None,
+            think_end_token_id: None,
             tensors: Vec::new(),
         }
     }

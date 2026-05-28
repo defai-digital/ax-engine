@@ -696,6 +696,9 @@ struct NgramAccelerationTelemetry {
     /// where exactly k tokens were accepted; attempts that accepted ≥ N
     /// tokens land in bucket N-1.
     accepts_by_depth: [u32; NGRAM_ACCEPT_DEPTH_BUCKETS],
+    /// Steps where n-gram drafting was skipped because the model is outside a
+    /// `<think>` block (think-gating enabled, not in think region).
+    think_gated_steps: u32,
 }
 
 impl NgramAccelerationTelemetry {
@@ -757,6 +760,10 @@ impl NgramAccelerationTelemetry {
 
     fn record_request_disabled_step(&mut self) {
         self.request_disabled_steps = self.request_disabled_steps.saturating_add(1);
+    }
+
+    fn record_think_gated_step(&mut self) {
+        self.think_gated_steps = self.think_gated_steps.saturating_add(1);
     }
 
     fn record_request_disabled_reason(&mut self, reason: NgramRequestDisableReason) {
@@ -833,6 +840,9 @@ impl NgramAccelerationTelemetry {
             self.accepts_by_depth[i] =
                 self.accepts_by_depth[i].saturating_add(other.accepts_by_depth[i]);
         }
+        self.think_gated_steps = self
+            .think_gated_steps
+            .saturating_add(other.think_gated_steps);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -885,6 +895,7 @@ impl NgramAccelerationTelemetry {
                 self.adaptive_draft_len_total,
             ),
             ("ax_prompt_class_code", self.prompt_class_code),
+            ("ax_ngram_think_gated_steps", self.think_gated_steps),
         ];
 
         for (key, value) in entries {
@@ -1109,6 +1120,8 @@ struct MtpTelemetry {
     accepted_by_depth: [u32; 3],
     drafted_by_depth: [u32; 3],
     ngram_hit_steps: u32,
+    /// MTP n-gram stacking steps skipped because model is outside `<think>`.
+    ngram_think_gated_steps: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1199,6 +1212,9 @@ impl MtpTelemetry {
                 self.drafted_by_depth[d].saturating_add(other.drafted_by_depth[d]);
         }
         self.ngram_hit_steps = self.ngram_hit_steps.saturating_add(other.ngram_hit_steps);
+        self.ngram_think_gated_steps = self
+            .ngram_think_gated_steps
+            .saturating_add(other.ngram_think_gated_steps);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -1223,6 +1239,10 @@ impl MtpTelemetry {
             ("ax_mtp_drafted_depth1", self.drafted_by_depth[1]),
             ("ax_mtp_drafted_depth2", self.drafted_by_depth[2]),
             ("ax_mtp_ngram_hit_steps", self.ngram_hit_steps),
+            (
+                "ax_mtp_ngram_think_gated_steps",
+                self.ngram_think_gated_steps,
+            ),
         ];
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);
@@ -2770,6 +2790,10 @@ struct RequestState {
     /// only these k rows of the lm_head are read, reducing memory bandwidth ~100x.
     /// `None` before the first verify step (draft uses full lm_head as fallback).
     mtp_draft_candidates: Option<MlxArray>,
+    /// True when the last emitted token is inside a `<think>...</think>` block.
+    /// Initialized from prompt tokens. Used to gate n-gram acceleration to think
+    /// regions only, where repetition density is high for reasoning models.
+    ngram_in_think: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2815,6 +2839,7 @@ impl RequestState {
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
             mtp_draft_candidates: None,
+            ngram_in_think: false,
         }
     }
 
@@ -4139,6 +4164,7 @@ impl MlxRunner {
         });
         if let Some(sampled_token) = sampled_token {
             state.generated_tokens.push(sampled_token);
+            update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
         }
 
         // Re-insert state only if the request continues — lock held briefly.
@@ -4971,6 +4997,7 @@ impl MlxRunner {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_no_draft_decode(
         &self,
         state: &mut RequestState,
@@ -5433,15 +5460,34 @@ impl MlxRunner {
         // On hit, the MTP KV cache is reset so the next MTP step starts fresh
         // (skipping mtp_draft_tokens leaves cache.seq_len up to max_depth positions
         // behind the committed sequence, causing wrong RoPE offsets).
+        //
+        // Think-block gate: for reasoning models (Qwen3 family), compute the
+        // think-state AFTER the tokens returned this step to decide whether the
+        // NEXT draft should use n-gram.  Inside `<think>`, repetition density is
+        // high; outside `<think>` it is sparse and n-gram attempts hurt acceptance.
+        // adaptive_match_len=true caps K by first-match support count so one-off
+        // patterns produce shorter (safer) drafts while well-established patterns
+        // can reach max_len=3.
         let draft_started = Instant::now();
-        let ngram_max = 2_usize.min(state.mtp_adaptive_max_depth);
+        let think_state_after_result = compute_think_state(&self.cfg, state.ngram_in_think, &result);
+        let ngram_max = if self.cfg.think_start_token_id.is_some() && !think_state_after_result {
+            // Think-gated: outside `<think>`, skip n-gram entirely.
+            state.mtp_telemetry.ngram_think_gated_steps = state
+                .mtp_telemetry
+                .ngram_think_gated_steps
+                .saturating_add(1);
+            0
+        } else {
+            // Inside think (or no gating): allow up to 3 tokens with adaptive K.
+            3_usize.min(state.mtp_adaptive_max_depth)
+        };
         let ngram_outcome = if ngram_max > 0 {
             state.ngram.predict_with_policy(NgramDraftPolicy {
                 variant: NgramPolicyVariant::MajorityRecency,
                 max_len: ngram_max,
                 min_support: 1,
                 confidence_threshold: effective_draft_confidence_threshold(),
-                adaptive_match_len: false,
+                adaptive_match_len: true,
                 bypass_prompt_min_support: true,
             })
         } else {
@@ -5503,6 +5549,13 @@ impl MlxRunner {
         // LINEAR_NGRAM_RETRY_INTERVAL steps — wiping out most of the generation.
         seed_generation_ngram_from_prompt(state);
         seed_generation_ngram_from_prefill_output(state, prefill_output_token);
+
+        // Initialize think-block tracking from the full prompt token sequence.
+        // Reasoning models (Qwen3 family) inject `<think>` at the assistant prefix,
+        // so generation typically starts inside a think block and ngram_in_think=true
+        // from step 0, enabling n-gram speculation immediately.
+        state.ngram_in_think =
+            compute_think_state(&self.cfg, false, &state.prompt_prefix_tokens);
 
         // Classify the full prompt once per generation. record_prompt_class is
         // max-merge friendly so re-entry from an unusual code path cannot
@@ -5664,6 +5717,25 @@ impl MlxRunner {
             return self.finish_pending_direct_for_ngram_transition(state);
         }
 
+        // Think-block gate: skip n-gram when model is not inside `<think>`.
+        // For Qwen3 reasoning models, patterns outside `<think>` are sparse
+        // and drafting there hurts the beta-Bernoulli posterior, causing
+        // unnecessary cooldowns.
+        if self.cfg.think_start_token_id.is_some() && !state.ngram_in_think {
+            state.ngram_acceleration.record_think_gated_step();
+            return self
+                .run_no_draft_decode(
+                    state,
+                    last_token,
+                    sampling,
+                    has_linear_attention,
+                    is_greedy,
+                    final_by_max_output,
+                    None,
+                )
+                .unwrap_or_else(|| self.run_single_decode(state, last_token, sampling));
+        }
+
         let draft_outcome = ngram_acceleration_draft(
             &state.ngram,
             has_linear_attention,
@@ -5778,6 +5850,40 @@ fn ngram_draft_is_cycle(draft: &[u32], recent: &[u32]) -> bool {
         }
     }
     false
+}
+
+/// Compute the think-block state after observing a sequence of tokens, without
+/// mutating any state.  Returns the updated `in_think` flag.
+///
+/// Used in `run_mtp_decode` to peek ahead at result tokens before deciding
+/// whether the NEXT draft step should be gated by think-block state.
+fn compute_think_state(cfg: &ModelConfig, current: bool, tokens: &[u32]) -> bool {
+    let Some(start_id) = cfg.think_start_token_id else {
+        return current;
+    };
+    let end_id = cfg.think_end_token_id;
+    let mut state = current;
+    for &t in tokens {
+        if t == start_id {
+            state = true;
+        } else if end_id.is_some_and(|e| t == e) {
+            state = false;
+        }
+    }
+    state
+}
+
+/// Update `ngram_in_think` in-place after emitting a single token.
+/// Called in the main decode loop for every output token.
+fn update_ngram_think_state(cfg: &ModelConfig, in_think: &mut bool, token: u32) {
+    let Some(start_id) = cfg.think_start_token_id else {
+        return;
+    };
+    if token == start_id {
+        *in_think = true;
+    } else if cfg.think_end_token_id.is_some_and(|e| token == e) {
+        *in_think = false;
+    }
 }
 
 fn mtp_next_adaptive_depth(
@@ -6842,6 +6948,7 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_accepted_depth1".into(), 1)));
         assert!(decisions.contains(&("ax_mtp_accepted_depth2".into(), 1)));
         assert!(decisions.contains(&("ax_mtp_ngram_hit_steps".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_think_gated_steps".into(), 0)));
     }
 
     #[test]
@@ -7714,6 +7821,8 @@ mod tests {
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
             weight_sanitize: ax_engine_core::WeightSanitize::None,
+            think_start_token_id: None,
+            think_end_token_id: None,
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

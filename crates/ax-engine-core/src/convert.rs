@@ -206,6 +206,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         // raw HuggingFace checkpoints need this set to `HfToMlx` by hand (or via
         // the doctor command when REQ-L4 lands).
         weight_sanitize: WeightSanitize::None,
+        think_start_token_id: None,
+        think_end_token_id: None,
         tensors: mapped_tensors,
     };
 

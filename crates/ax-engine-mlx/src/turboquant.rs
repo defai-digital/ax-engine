@@ -2878,6 +2878,8 @@ mod tests {
             moe_routed_scaling_factor: 1.0,
             moe_n_group: 1,
             moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
         }
     }
 

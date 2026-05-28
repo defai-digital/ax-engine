@@ -256,6 +256,11 @@ pub struct ModelConfig {
     pub moe_n_group: usize,
     /// Number of groups retained after group scoring (DeepSeek V3: 4, others: 1).
     pub moe_topk_group: usize,
+    /// Token ID that opens a `<think>` block (Qwen3 family: 151668).
+    /// When `Some`, n-gram and MTP n-gram stacking gate drafting to inside `<think>`.
+    pub think_start_token_id: Option<u32>,
+    /// Token ID that closes a `</think>` block (Qwen3 family: 151669).
+    pub think_end_token_id: Option<u32>,
 }
 
 impl ModelConfig {
@@ -357,6 +362,8 @@ impl ModelConfig {
             moe_routed_scaling_factor: m.moe.routed_scaling_factor.unwrap_or(1.0),
             moe_n_group: m.moe.n_group.unwrap_or(1) as usize,
             moe_topk_group: m.moe.topk_group.unwrap_or(1) as usize,
+            think_start_token_id: think_token_ids_from_manifest(m).0,
+            think_end_token_id: think_token_ids_from_manifest(m).1,
         }
     }
 
@@ -379,6 +386,23 @@ impl ModelConfig {
         self.glm_router
             .as_ref()
             .is_some_and(|router| router.is_moe_layer(layer_idx))
+    }
+}
+
+/// Return `(think_start_token_id, think_end_token_id)` for a model manifest.
+///
+/// Explicit manifest fields take precedence over family-derived defaults.
+/// Returns `(None, None)` for families without think-block tokens.
+fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Option<u32>) {
+    if m.think_start_token_id.is_some() || m.think_end_token_id.is_some() {
+        return (m.think_start_token_id, m.think_end_token_id);
+    }
+    // Qwen3 family uses fixed special token IDs from the Qwen3 tokenizer.
+    // qwen3_next is reserved for future variants. qwen3_5 linear-attention
+    // models also emit <think> when reasoning mode is enabled.
+    match m.model_family.as_str() {
+        "qwen3" | "qwen3_5" | "qwen3_next" => (Some(151668), Some(151669)),
+        _ => (None, None),
     }
 }
 
