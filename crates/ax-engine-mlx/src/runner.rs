@@ -5664,7 +5664,12 @@ impl MlxRunner {
         state.ngram_acceleration.record_prompt_class(prompt_class);
         let has_linear_attention = self.cfg.linear_attention.is_some();
         let linear_initial_prompt_without_draft =
-            linear_ngram_initial_prompt_should_disable_request(has_linear_attention, prompt_class);
+            linear_ngram_initial_prompt_should_disable_request(
+                has_linear_attention,
+                prompt_class,
+                &state.ngram,
+                self.ngram_policy_variant,
+            );
 
         // Reset per-generation state.
         state.bonus_queue.clear();
@@ -6256,8 +6261,21 @@ fn linear_ngram_no_draft_should_disable(streak: u32) -> bool {
 fn linear_ngram_initial_prompt_should_disable_request(
     has_linear_attention: bool,
     prompt_class: u32,
+    ngram: &NgramTable,
+    variant: NgramPolicyVariant,
 ) -> bool {
-    has_linear_attention && prompt_class == crate::ngram_accel::PROMPT_CLASS_NON_REPEATING
+    if !has_linear_attention {
+        return false;
+    }
+    if prompt_class != crate::ngram_accel::PROMPT_CLASS_NON_REPEATING {
+        return false;
+    }
+    // Probe with bypass-enabled policy. Random tokens have no repeated bigrams
+    // so the probe returns empty → disable. Code/structured prompts contain
+    // useful bigrams even when the 4-gram classifier sees NON_REPEATING → keep
+    // speculation enabled from step 1.
+    let probe = ngram_acceleration_draft(ngram, true, 0.5, variant);
+    probe.draft.is_empty()
 }
 
 fn ngram_request_disabled_fallback_should_feed_output(reason: NgramRequestDisableReason) -> bool {
@@ -9213,26 +9231,53 @@ mod tests {
 
     #[test]
     fn linear_attention_non_repeating_prompt_without_initial_draft_uses_direct_fallback() {
+        let empty = NgramTable::new();
+        let variant = NgramPolicyVariant::MajorityRecency;
+        // Empty table → probe returns no draft → disable for linear+NON_REPEATING.
         assert!(
             linear_ngram_initial_prompt_should_disable_request(
                 true,
                 crate::ngram_accel::PROMPT_CLASS_NON_REPEATING,
+                &empty,
+                variant,
             ),
-            "linear attention should skip slow n-gram probes when the prompt has no repeat signal"
+            "linear + NON_REPEATING + empty table should disable (no useful bigrams)"
         );
+        // REPEATING prompt short-circuits before probing.
         assert!(
             !linear_ngram_initial_prompt_should_disable_request(
                 true,
                 crate::ngram_accel::PROMPT_CLASS_REPEATING,
+                &empty,
+                variant,
             ),
             "repeating prompts should keep the speculative path eligible"
         );
+        // Dense models don't pay recompute cost → no disable gate.
         assert!(
             !linear_ngram_initial_prompt_should_disable_request(
                 false,
                 crate::ngram_accel::PROMPT_CLASS_NON_REPEATING,
+                &empty,
+                variant,
             ),
             "dense models can cheaply roll back and should keep the existing gate"
+        );
+        // NON_REPEATING prompt but with prompt-seeded bigrams that yield a draft →
+        // do NOT disable; the prompt has useful structure despite the classifier label.
+        let mut seeded = NgramTable::new();
+        // feed_from_prompt marks bigrams with prompt_count=1 so bypass_prompt_min_support
+        // allows drafting from step 1 even with LINEAR_MIN_NGRAM_SUPPORT=2.
+        // Ending sequence ...10,20 leaves tail=[...,10,20], which looks up bigram (10,20)→30.
+        seeded.feed_from_prompt(&[10, 20, 30, 10, 20]);
+        assert!(
+            !linear_ngram_initial_prompt_should_disable_request(
+                true,
+                crate::ngram_accel::PROMPT_CLASS_NON_REPEATING,
+                &seeded,
+                variant,
+            ),
+            "NON_REPEATING but with prompt-seeded bigrams should stay enabled"
         );
     }
 

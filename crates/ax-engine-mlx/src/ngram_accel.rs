@@ -573,9 +573,16 @@ impl NgramTable {
         while draft.len() < allowed_len {
             match self.select_draft_step(&buf, len, policy) {
                 DraftStepSelection::Selected(step) => {
-                    if policy.adaptive_match_len && draft.is_empty() {
-                        allowed_len = allowed_len.min((step.support as usize).saturating_add(1));
-                        if allowed_len == 0 {
+                    if policy.adaptive_match_len {
+                        // Tighten the ceiling at every step, not just the first.
+                        // A sparse match mid-chain (support=1) stops the chain
+                        // early without discarding the already-confident prefix.
+                        let step_budget = draft
+                            .len()
+                            .saturating_add(step.support as usize)
+                            .saturating_add(1);
+                        allowed_len = allowed_len.min(step_budget);
+                        if allowed_len <= draft.len() {
                             rejection = Some(NgramDraftRejection::ConfidenceFiltered);
                             break;
                         }
@@ -1571,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_match_len_caps_sparse_drafts_by_first_match_support() {
+    fn adaptive_match_len_caps_sparse_drafts_per_step() {
         let policy = NgramDraftPolicy {
             variant: NgramPolicyVariant::MajorityRecency,
             max_len: 6,
@@ -1586,7 +1593,7 @@ mod tests {
         assert_eq!(
             one_off.predict_with_policy(policy).draft,
             vec![3, 4],
-            "support=1 should cap the draft to two tokens even when the chain continues"
+            "support=1 at step 0 caps total to 2; support=1 at step 1 keeps ceiling at 2"
         );
 
         let mut repeated = table_from_sequence(&[1, 2, 3, 4, 9, 1, 2, 3, 4]);
@@ -1594,7 +1601,35 @@ mod tests {
         assert_eq!(
             repeated.predict_with_policy(policy).draft,
             vec![3, 4, 9],
-            "support=2 should allow a three-token verifier batch"
+            "support=2 at step 0 allows 3; sparse tail step does not extend ceiling further"
+        );
+    }
+
+    #[test]
+    fn adaptive_match_len_sparse_mid_chain_step_truncates_early() {
+        // Chain: (1,2)→3 (support=2, high-confidence), (2,3)→X (support=1, sparse mid).
+        // Without per-step cap the chain continues past the sparse step indefinitely.
+        // With per-step cap the ceiling is tightened at the sparse step to draft.len+2,
+        // so the draft stops at length 3.
+        let policy = NgramDraftPolicy {
+            variant: NgramPolicyVariant::MajorityRecency,
+            max_len: 6,
+            min_support: 1,
+            confidence_threshold: 0.0,
+            adaptive_match_len: true,
+            bypass_prompt_min_support: false,
+        };
+        let mut t = NgramTable::new();
+        t.feed(&[1, 2, 3, 4, 9, 1, 2, 3, 7, 8]);
+        t.tail = [1, 2].into_iter().collect();
+        let draft = t.predict_with_policy(policy);
+        // Step 0: (1,2)→3, support=2, step_budget=3, allowed_len=3.
+        // Step 1: (2,3)→X, support=1, step_budget=3, allowed_len stays 3.
+        // Step 2: draft.len=2 < 3, one more token allowed. draft.len hits 3, loop exits.
+        assert!(
+            draft.draft.len() <= 3,
+            "sparse mid-chain step must cap draft at 3, got {:?}",
+            draft.draft
         );
     }
 
