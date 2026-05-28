@@ -1,0 +1,4785 @@
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "claim_gate": {
+    "schema_version": "ax.phase0_claim_gate.v1",
+    "scope": "mlx_inference_stack_public_readme",
+    "requires_prompt_hash_parity": true,
+    "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
+    "shape_only_external_rows": [
+      "llama_cpp_metal"
+    ],
+    "requires_runtime_identity": true,
+    "requires_decode_policy_identity": true,
+    "requires_prefill_decode_split": true,
+    "forbidden_public_claims_without_artifacts": [
+      "continuous_batching",
+      "prefix_reuse",
+      "long_context_prefill_improvement"
+    ]
+  },
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.5",
+    "platform": "darwin"
+  },
+  "build": {
+    "commit": "a10c611f57fe993cde63c74c0b2d1e0f7063ab7e",
+    "build_profile": "release",
+    "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+    "git_tracked_dirty": false,
+    "git_tracked_status": []
+  },
+  "model": "/Users/akiralam/mlx-models/qwen3_6-27b-mixed3_4",
+  "model_repo_id": "mlx-community/Qwen3.5-9B-MLX-4bit",
+  "model_dir": "/Users/akiralam/mlx-models/qwen3_6-27b-mixed3_4",
+  "model_dir_source": "explicit",
+  "hf_cache_root": null,
+  "model_config": {
+    "model_type": "qwen3_5",
+    "quantization": {
+      "group_size": 64,
+      "bits": 4,
+      "mode": "affine",
+      "language_model.model.embed_tokens": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.0.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.0.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.0.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.0.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.0.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.0.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.0.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.0.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.1.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.1.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.1.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.1.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.1.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.1.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.1.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.1.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.2.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.2.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.2.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.2.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.2.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.2.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.2.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.2.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.3.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.3.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.3.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.3.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.3.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.3.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.3.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.4.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.4.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.4.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.4.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.4.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.4.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.4.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.4.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.5.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.5.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.5.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.5.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.5.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.5.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.5.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.5.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.6.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.6.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.6.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.6.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.6.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.6.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.6.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.6.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.7.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.7.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.7.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.7.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.7.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.7.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.7.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.8.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.8.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.8.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.8.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.8.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.8.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.8.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.8.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.9.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.9.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.9.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.9.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.9.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.9.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.9.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.9.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.10.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.10.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.10.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.10.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.10.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.10.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.10.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.10.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.11.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.11.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.11.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.11.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.11.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.11.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.11.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.12.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.12.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.12.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.12.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.12.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.12.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.12.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.12.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.13.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.13.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.13.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.13.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.13.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.13.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.13.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.13.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.14.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.14.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.14.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.14.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.14.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.14.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.14.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.14.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.15.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.15.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.15.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.15.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.15.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.15.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.15.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.16.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.16.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.16.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.16.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.16.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.16.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.16.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.16.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.17.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.17.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.17.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.17.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.17.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.17.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.17.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.17.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.18.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.18.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.18.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.18.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.18.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.18.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.18.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.18.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.19.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.19.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.19.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.19.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.19.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.19.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.19.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.20.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.20.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.20.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.20.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.20.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.20.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.20.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.20.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.21.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.21.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.21.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.21.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.21.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.21.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.21.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.21.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.22.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.22.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.22.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.22.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.22.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.22.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.22.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.22.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.23.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.23.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.23.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.23.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.23.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.23.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.23.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.24.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.24.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.24.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.24.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.24.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.24.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.24.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.24.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.25.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.25.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.25.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.25.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.25.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.25.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.25.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.25.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.26.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.26.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.26.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.26.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.26.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.26.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.26.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.26.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.27.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.27.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.27.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.27.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.27.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.27.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.27.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.28.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.28.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.28.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.28.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.28.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.28.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.28.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.28.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.29.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.29.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.29.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.29.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.29.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.29.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.29.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.29.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.30.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.30.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.30.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.30.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.30.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.30.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.30.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.30.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.31.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.31.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.31.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.31.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.31.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.31.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.31.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.32.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.32.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.32.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.32.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.32.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.32.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.32.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.32.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.33.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.33.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.33.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.33.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.33.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.33.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.33.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.33.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.34.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.34.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.34.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.34.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.34.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.34.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.34.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.34.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.35.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.35.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.35.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.35.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.35.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.35.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.35.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.36.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.36.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.36.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.36.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.36.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.36.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.36.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.36.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.37.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.37.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.37.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.37.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.37.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.37.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.37.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.37.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.38.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.38.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.38.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.38.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.38.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.38.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.38.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.38.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.39.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.39.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.39.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.39.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.39.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.39.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.39.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.40.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.40.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.40.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.40.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.40.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.40.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.40.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.40.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.41.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.41.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.41.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.41.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.41.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.41.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.41.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.41.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.42.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.42.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.42.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.42.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.42.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.42.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.42.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.42.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.43.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.43.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.43.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.43.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.43.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.43.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.43.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.44.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.44.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.44.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.44.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.44.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.44.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.44.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.44.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.45.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.45.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.45.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.45.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.45.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.45.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.45.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.45.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.46.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.46.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.46.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.46.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.46.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.46.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.46.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.46.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.47.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.47.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.47.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.47.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.47.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.47.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.47.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.48.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.48.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.48.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.48.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.48.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.48.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.48.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.48.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.49.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.49.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.49.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.49.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.49.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.49.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.49.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.49.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.50.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.50.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.50.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.50.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.50.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.50.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.50.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.50.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.51.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.51.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.51.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.51.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.51.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.51.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.51.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.52.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.52.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.52.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.52.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.52.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.52.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.52.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.52.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.53.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.53.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.53.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.53.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.53.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.53.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.53.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.53.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.54.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.54.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.54.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.54.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.54.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.54.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.54.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.54.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.55.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.55.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.55.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.55.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.55.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.55.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.55.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.56.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.56.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.56.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.56.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.56.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.56.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.56.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.56.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.57.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.57.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.57.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.57.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.57.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.57.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.57.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.57.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.58.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.58.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.58.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.58.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.58.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.58.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.58.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.58.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.59.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.59.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.59.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.59.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.59.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.59.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.59.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.60.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.60.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.60.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.60.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.60.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.60.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.60.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.60.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.61.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.61.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.61.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.61.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.61.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.61.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.61.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.61.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.62.linear_attn.in_proj_qkv": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.62.linear_attn.in_proj_z": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.62.linear_attn.in_proj_b": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.62.linear_attn.in_proj_a": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.62.linear_attn.out_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.62.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.62.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.62.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.63.self_attn.q_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.63.self_attn.k_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.63.self_attn.v_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.63.self_attn.o_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.63.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.model.layers.63.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "language_model.model.layers.63.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 3,
+        "mode": "affine"
+      },
+      "language_model.lm_head": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      }
+    },
+    "model_family": "qwen3_5",
+    "linear_attention_enabled": true,
+    "linear_attention": {
+      "full_attention_interval": 4,
+      "num_value_heads": 48,
+      "num_key_heads": 16,
+      "key_head_dim": 128,
+      "value_head_dim": 128,
+      "conv_kernel_dim": 4
+    },
+    "linear_attention_projection_layout": {
+      "schema_version": "ax.linear_attention_projection_layout.v1",
+      "layout": "split_qkv_z_a_b",
+      "linear_layers": 48,
+      "packed_layers": 0,
+      "split_layers": 48,
+      "role_counts": {
+        "linear_attention_in_proj_a": 48,
+        "linear_attention_in_proj_b": 48,
+        "linear_attention_in_proj_qkv": 48,
+        "linear_attention_in_proj_z": 48
+      },
+      "offline_pack_candidate": true
+    }
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "external_gguf_reference": "llama.cpp Metal llama-bench",
+    "external_gguf_reference_present": false,
+    "external_gguf_reference_required": false,
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback. llama_cpp_metal rows are shape-compatible external GGUF rows, not prompt-hash parity or repo-owned MLX throughput evidence.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-27-qwen3_6-27b-mixed3_4/pt128-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+          "token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+          "token_count": 128,
+          "prompt_source": "random"
+        }
+      ]
+    },
+    "strictness": "mlx_lm_prompt_algorithm_reproduced; llama_cpp_metal_shape_compatible_only"
+  },
+  "prompt_tokens": [
+    128
+  ],
+  "generation_tokens": 128,
+  "repetitions": 5,
+  "cooldown": 15.0,
+  "prefill_step_size": 2048,
+  "ax_mtp_max_depth": null,
+  "ax_mtp_fast_tail_topk_sampling": false,
+  "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+  "prefill_ttft_measurement_contract": "cold_prefill_no_cross_request_prefix_cache",
+  "prefill_timing_scope_contract": {
+    "mlx_lm": "upstream_mlx_lm_response_stats",
+    "ax_engine_primary_prefill": "server_sse_runner_time_us",
+    "ax_engine_client_wall_ttft": "http_sse_first_output_token_observed_by_client",
+    "long_greedy_ax_prefill_work": "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+  },
+  "concurrency": 1,
+  "concurrent_prefill_overlap_classification": {
+    "classification": "single_request_no_overlap",
+    "continuous_batching_claim": false,
+    "concurrency": 1
+  },
+  "prefix_reuse_evidence": {
+    "hit_count": 0,
+    "miss_count": 0,
+    "blocked_count": 10,
+    "blocked_policy_disabled_count": 10,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "stored_prefix_count": 0,
+    "eviction_count": 0,
+    "reused_token_count": 0,
+    "warmup_token_count": 0,
+    "cache_entry_count": 0,
+    "cache_bytes_kib": 0,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": true,
+    "physical_snapshot_coverage": "blocked_only",
+    "blocked_reason_count": 10,
+    "blocked_reason_accounting_gap_count": 0
+  },
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "ax_linear_attention_projection_pack": false,
+  "ax_linear_attention_projection_pack_compare": false,
+  "ax_dense_ffn_gate_up_pack": false,
+  "ax_dense_ffn_gate_up_pack_compare": false,
+  "ax_direct_linear_attention_post_input_route_compare": false,
+  "ax_direct_gemma4_post_attn_ffn_route_compare": false,
+  "ax_prefill_profile": false,
+  "ax_decode_profile": false,
+  "results": [
+    {
+      "prefill_tok_s": {
+        "mean": 444.7518,
+        "median": 444.864,
+        "min": 443.24,
+        "max": 445.444
+      },
+      "decode_tok_s": {
+        "mean": 41.093599999999995,
+        "median": 41.107,
+        "min": 41.067,
+        "max": 41.117
+      },
+      "peak_memory_gb": {
+        "mean": 12.9124,
+        "median": 12.912,
+        "min": 12.911,
+        "max": 12.914
+      },
+      "trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 445.444,
+          "decode_tok_s": 41.117,
+          "peak_memory_gb": 12.911,
+          "total_time_s": 3.523,
+          "ttft_ms": 287.3537414355115
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 445.421,
+          "decode_tok_s": 41.107,
+          "peak_memory_gb": 12.912,
+          "total_time_s": 3.513,
+          "ttft_ms": 287.3685793889377
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 443.24,
+          "decode_tok_s": 41.107,
+          "peak_memory_gb": 12.912,
+          "total_time_s": 3.52,
+          "ttft_ms": 288.7826008482989
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 444.864,
+          "decode_tok_s": 41.07,
+          "peak_memory_gb": 12.913,
+          "total_time_s": 3.517,
+          "ttft_ms": 287.72838440512163
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 444.79,
+          "decode_tok_s": 41.067,
+          "peak_memory_gb": 12.914,
+          "total_time_s": 3.522,
+          "ttft_ms": 287.7762539625441
+        }
+      ],
+      "total_time_s": {
+        "mean": 3.5189999999999997,
+        "median": 3.52,
+        "min": 3.513,
+        "max": 3.523
+      },
+      "reported_averages": {
+        "prefill_tok_s": 444.752,
+        "decode_tok_s": 41.094,
+        "peak_memory_gb": 12.912
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-27-qwen3_6-27b-mixed3_4/pt128-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "prompt_source": "random",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 287.80191200808275,
+        "median": 287.72838440512163,
+        "min": 287.3537414355115,
+        "max": 288.7826008482989
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "engine": "ax_engine_mlx",
+      "method": "server_sse_runner_time_us",
+      "timing_scope": "ax_engine_runner_time_us",
+      "runtime_identity": {
+        "selected_backend": "mlx",
+        "route_identity": "repo_owned_mlx",
+        "resolution_policy": "mlx_only",
+        "benchmark_surface": "mlx_inference_stack"
+      },
+      "ax_decode_policy": "direct_no_ngram_acceleration",
+      "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+      "prefill_ttft_measurement_contract": "cold_prefill_no_cross_request_prefix_cache",
+      "prefill_work_contract": "historical_full_logits_prefill_or_sampler_required",
+      "ax_decode_claim_status": "direct_same_policy_baseline",
+      "ax_ngram_outcome_tier": "direct_baseline",
+      "ax_decode_effective_route": "direct_pipeline_baseline",
+      "ax_decode_claim_mode": "direct_greedy_exact_baseline",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "prefill_tok_s": {
+        "mean": 605.7400412105753,
+        "median": 605.8511972660965,
+        "min": 605.366956423038,
+        "max": 606.0060884674201
+      },
+      "decode_tok_s": {
+        "mean": 42.54005741098497,
+        "median": 42.54463447345198,
+        "min": 42.49730075738158,
+        "max": 42.56788080461276
+      },
+      "ttft_ms": {
+        "mean": 211.3118,
+        "median": 211.273,
+        "min": 211.219,
+        "max": 211.44199999999998
+      },
+      "ttft_source": "ax_engine_runner_prefill_time",
+      "client_wall_ttft_ms": {
+        "mean": 1039.5189586328343,
+        "median": 1043.9479590859264,
+        "min": 1015.6304170377553,
+        "max": 1063.337208935991
+      },
+      "client_wall_ttft_source": "http_sse_first_output_token_observed_by_client",
+      "client_wall_total_ms": {
+        "mean": 4058.704566815868,
+        "median": 4063.0647090729326,
+        "min": 4037.5730419764295,
+        "max": 4082.1234999457374
+      },
+      "prefill_s": {
+        "mean": 0.2113118,
+        "median": 0.211273,
+        "min": 0.211219,
+        "max": 0.211442
+      },
+      "decode_s": {
+        "mean": 3.0089296,
+        "median": 3.008605,
+        "min": 3.006962,
+        "max": 3.011956
+      },
+      "ngram_acceleration_telemetry": {
+        "ax_mtp_accept_wall_us": 0,
+        "ax_mtp_accepted_depth0": 0,
+        "ax_mtp_accepted_depth1": 0,
+        "ax_mtp_accepted_depth2": 0,
+        "ax_mtp_accepted_tokens": 0,
+        "ax_mtp_cache_clone_wall_us": 0,
+        "ax_mtp_complete_miss_steps": 0,
+        "ax_mtp_decode_steps": 0,
+        "ax_mtp_draft_tokens": 0,
+        "ax_mtp_draft_wall_us": 0,
+        "ax_mtp_drafted_depth0": 0,
+        "ax_mtp_drafted_depth1": 0,
+        "ax_mtp_drafted_depth2": 0,
+        "ax_mtp_full_accept_steps": 0,
+        "ax_mtp_ngram_hit_steps": 0,
+        "ax_mtp_ngram_think_gated_steps": 0,
+        "ax_mtp_partial_reject_steps": 0,
+        "ax_mtp_rollback_wall_us": 0,
+        "ax_mtp_tail_sample_wall_us": 0,
+        "ax_mtp_verify_eval_wall_us": 0,
+        "ax_mtp_verify_forward_wall_us": 0,
+        "ax_ngram_accept_at_depth_0": 0,
+        "ax_ngram_accept_at_depth_1": 0,
+        "ax_ngram_accept_at_depth_2": 0,
+        "ax_ngram_accept_at_depth_3": 0,
+        "ax_ngram_accept_at_depth_4": 0,
+        "ax_ngram_accept_at_depth_5": 0,
+        "ax_ngram_accept_at_depth_6": 0,
+        "ax_ngram_accept_at_depth_7": 0,
+        "ax_ngram_accepted_tokens": 0,
+        "ax_ngram_adaptive_draft_len_steps": 0,
+        "ax_ngram_adaptive_draft_len_total": 0,
+        "ax_ngram_complete_misses": 0,
+        "ax_ngram_cooldown_events": 0,
+        "ax_ngram_cooldown_steps": 0,
+        "ax_ngram_cooldown_steps_scheduled": 0,
+        "ax_ngram_draft_attempts": 0,
+        "ax_ngram_draft_tokens": 0,
+        "ax_ngram_fallback_confidence_filtered_steps": 0,
+        "ax_ngram_fallback_linear_no_draft_steps": 0,
+        "ax_ngram_fallback_no_candidate_steps": 0,
+        "ax_ngram_fallback_short_output_steps": 0,
+        "ax_ngram_full_accepts": 0,
+        "ax_ngram_no_draft_steps": 0,
+        "ax_ngram_partial_rejects": 0,
+        "ax_ngram_policy_variant": 0,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_ngram_request_disable_events": 0,
+        "ax_ngram_request_disabled_steps": 0,
+        "ax_ngram_think_gated_steps": 0,
+        "ax_prompt_class_code": 1
+      },
+      "ngram_accept_at_depth": {
+        "schema": "ax.ngram_accept_at_depth.v1",
+        "bucket_count": 8,
+        "buckets": [
+          {
+            "depth": 0,
+            "attempts": 0
+          },
+          {
+            "depth": 1,
+            "attempts": 0
+          },
+          {
+            "depth": 2,
+            "attempts": 0
+          },
+          {
+            "depth": 3,
+            "attempts": 0
+          },
+          {
+            "depth": 4,
+            "attempts": 0
+          },
+          {
+            "depth": 5,
+            "attempts": 0
+          },
+          {
+            "depth": 6,
+            "attempts": 0
+          },
+          {
+            "depth": 7,
+            "attempts": 0
+          }
+        ],
+        "total_attempts": 0,
+        "weighted_accepted_tokens_lower_bound": 0
+      },
+      "sampler_settings": "greedy",
+      "ax_decode_row_identity": {
+        "schema": "ax.row_identity.v1",
+        "model_id": "qwen3_5",
+        "prompt_hash": "81392a209306964a",
+        "seed": 0,
+        "max_output_tokens": 128,
+        "sampler_signature": "greedy"
+      },
+      "ax_decode_same_policy_baseline_identity": {
+        "schema": "ax.row_identity.v1",
+        "model_id": "qwen3_5",
+        "prompt_hash": "81392a209306964a",
+        "seed": 0,
+        "max_output_tokens": 128,
+        "sampler_signature": "greedy"
+      },
+      "ax_mlx_telemetry": {
+        "ax_mlx_prefill_steps": 5,
+        "ax_mlx_prefill_wall_us": 1056314,
+        "ax_mlx_prefill_forward_wall_us": 949231,
+        "ax_mlx_prefill_prefix_cache_wall_us": 0,
+        "ax_mlx_prefill_generation_state_wall_us": 107073,
+        "ax_mlx_prefill_eval_barriers": 5,
+        "ax_mlx_prefill_drain_async_evals": 0,
+        "ax_mlx_decode_steps": 635,
+        "ax_mlx_decode_wall_us": 15023416,
+        "ax_mlx_direct_bootstrap_steps": 5,
+        "ax_mlx_direct_bootstrap_wall_us": 106964,
+        "ax_mlx_direct_pipeline_steps": 635,
+        "ax_mlx_direct_pipeline_wall_us": 15022803,
+        "ax_mlx_direct_pipeline_forward_wall_us": 1021212,
+        "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+        "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+        "ax_mlx_direct_pipeline_argmax_wall_us": 383,
+        "ax_mlx_direct_pipeline_async_eval_wall_us": 13969430,
+        "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+        "ax_mlx_direct_pipeline_pending_eval_wall_us": 30129,
+        "ax_mlx_direct_pipeline_pending_read_wall_us": 57,
+        "ax_mlx_direct_pipeline_op_count": 0,
+        "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+        "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+        "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+        "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+        "ax_mlx_single_decode_steps": 0,
+        "ax_mlx_single_decode_wall_us": 0,
+        "ax_mlx_ngram_decode_steps": 0,
+        "ax_mlx_ngram_decode_wall_us": 0,
+        "ax_mlx_bonus_tokens": 0,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_blocked": 5,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 5,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+        "ax_mlx_prefix_cache_stores": 0,
+        "ax_mlx_prefix_cache_evictions": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "ax_mlx_prefix_cache_entries": 0,
+        "ax_mlx_prefix_cache_bytes_kib": 0,
+        "ax_mlx_dense_ffn_gate_up_packed_layers": 320,
+        "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+        "ax_mlx_linear_attention_qkvz_ba_packed_layers": 240,
+        "ax_mlx_linear_attention_split_qkvba_layers": 0,
+        "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 240,
+        "ax_mlx_direct_cpp_linear_attention_inputs_hits": 240,
+        "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+        "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+        "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 240,
+        "ax_mlx_direct_cpp_linear_attention_post_input_hits": 240,
+        "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+        "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+        "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 240,
+        "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 240,
+        "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+        "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+        "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+        "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+        "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+        "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+      },
+      "ax_mlx_decode_route": {
+        "classification": "direct_pipeline",
+        "decode_steps": 635,
+        "decode_wall_us": 15023416,
+        "direct_pipeline_steps": 635,
+        "direct_pipeline_step_share_micros": 1000000,
+        "direct_pipeline_wall_share_micros": 999959,
+        "direct_pipeline_forward_wall_us": 1021212,
+        "direct_pipeline_forward_wall_share_micros": 67977,
+        "direct_pipeline_forward_layer_loop_wall_us": 0,
+        "direct_pipeline_forward_layer_loop_wall_share_micros": 0,
+        "direct_pipeline_forward_head_wall_us": 0,
+        "direct_pipeline_forward_head_wall_share_micros": 0,
+        "direct_pipeline_argmax_wall_us": 383,
+        "direct_pipeline_argmax_wall_share_micros": 25,
+        "direct_pipeline_async_eval_wall_us": 13969430,
+        "direct_pipeline_async_eval_wall_share_micros": 929882,
+        "direct_pipeline_next_complete_wall_us": 0,
+        "direct_pipeline_next_complete_wall_share_micros": 0,
+        "direct_pipeline_pending_eval_wall_us": 30129,
+        "direct_pipeline_pending_eval_wall_share_micros": 2006,
+        "direct_pipeline_pending_read_wall_us": 57,
+        "direct_pipeline_pending_read_wall_share_micros": 4,
+        "direct_pipeline_op_count": 0,
+        "direct_pipeline_op_count_per_step": 0,
+        "direct_pipeline_linear_attention_layer_ops": 0,
+        "direct_pipeline_linear_attention_layer_count": 0,
+        "direct_pipeline_linear_attention_ops_per_layer": 0,
+        "direct_pipeline_full_attention_layer_ops": 0,
+        "direct_pipeline_full_attention_layer_count": 0,
+        "direct_pipeline_full_attention_ops_per_layer": 0,
+        "single_decode_steps": 0,
+        "single_decode_step_share_micros": 0,
+        "single_decode_wall_share_micros": 0,
+        "ngram_decode_steps": 0,
+        "ngram_decode_step_share_micros": 0,
+        "ngram_decode_wall_share_micros": 0,
+        "bonus_tokens": 0
+      },
+      "scheduler_telemetry": {
+        "ax_scheduler_scheduled_prefill_tokens": 640,
+        "ax_scheduler_scheduled_decode_tokens": 635,
+        "ax_scheduler_skipped_prefill_tokens": 0,
+        "ax_scheduler_skipped_decode_tokens": 0,
+        "ax_scheduler_mixed_prefill_decode_batches": 0
+      },
+      "ax_mlx_gemma4_moe_profile": {},
+      "ax_mlx_linear_attention_profile": {},
+      "ax_mlx_prefill_profile": {},
+      "ax_mlx_decode_profile": {},
+      "trials": [
+        {
+          "prefill_s": 0.211219,
+          "decode_s": 3.011956,
+          "ttft_ms": 211.219,
+          "prefill_tok_s": 606.0060884674201,
+          "decode_tok_s": 42.49730075738158,
+          "output_tokens": 128.0,
+          "client_wall_total_ms": 4037.5730419764295,
+          "client_wall_ttft_ms": 1015.6304170377553,
+          "peak_memory_gb": 9.9776611328125,
+          "ngram_acceleration_telemetry": {
+            "ax_mtp_accept_wall_us": 0,
+            "ax_mtp_accepted_depth0": 0,
+            "ax_mtp_accepted_depth1": 0,
+            "ax_mtp_accepted_depth2": 0,
+            "ax_mtp_accepted_tokens": 0,
+            "ax_mtp_cache_clone_wall_us": 0,
+            "ax_mtp_complete_miss_steps": 0,
+            "ax_mtp_decode_steps": 0,
+            "ax_mtp_draft_tokens": 0,
+            "ax_mtp_draft_wall_us": 0,
+            "ax_mtp_drafted_depth0": 0,
+            "ax_mtp_drafted_depth1": 0,
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_full_accept_steps": 0,
+            "ax_mtp_ngram_hit_steps": 0,
+            "ax_mtp_ngram_think_gated_steps": 0,
+            "ax_mtp_partial_reject_steps": 0,
+            "ax_mtp_rollback_wall_us": 0,
+            "ax_mtp_tail_sample_wall_us": 0,
+            "ax_mtp_verify_eval_wall_us": 0,
+            "ax_mtp_verify_forward_wall_us": 0,
+            "ax_ngram_accept_at_depth_0": 0,
+            "ax_ngram_accept_at_depth_1": 0,
+            "ax_ngram_accept_at_depth_2": 0,
+            "ax_ngram_accept_at_depth_3": 0,
+            "ax_ngram_accept_at_depth_4": 0,
+            "ax_ngram_accept_at_depth_5": 0,
+            "ax_ngram_accept_at_depth_6": 0,
+            "ax_ngram_accept_at_depth_7": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_think_gated_steps": 0,
+            "ax_prompt_class_code": 1
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 211163,
+            "ax_mlx_prefill_forward_wall_us": 190026,
+            "ax_mlx_prefill_prefix_cache_wall_us": 0,
+            "ax_mlx_prefill_generation_state_wall_us": 21135,
+            "ax_mlx_prefill_eval_barriers": 1,
+            "ax_mlx_prefill_drain_async_evals": 0,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 3007698,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 21114,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 3007583,
+            "ax_mlx_direct_pipeline_forward_wall_us": 206224,
+            "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+            "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+            "ax_mlx_direct_pipeline_argmax_wall_us": 85,
+            "ax_mlx_direct_pipeline_async_eval_wall_us": 2794927,
+            "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+            "ax_mlx_direct_pipeline_pending_eval_wall_us": 6004,
+            "ax_mlx_direct_pipeline_pending_read_wall_us": 14,
+            "ax_mlx_direct_pipeline_op_count": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 1,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 0,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 0,
+            "ax_mlx_prefix_cache_bytes_kib": 0,
+            "ax_mlx_dense_ffn_gate_up_packed_layers": 64,
+            "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+            "ax_mlx_linear_attention_split_qkvba_layers": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.211442,
+          "decode_s": 3.008475,
+          "ttft_ms": 211.44199999999998,
+          "prefill_tok_s": 605.366956423038,
+          "decode_tok_s": 42.546472880778474,
+          "output_tokens": 128.0,
+          "client_wall_total_ms": 4063.6660830350593,
+          "client_wall_ttft_ms": 1045.0180830666795,
+          "peak_memory_gb": 10.000213623046875,
+          "ngram_acceleration_telemetry": {
+            "ax_mtp_accept_wall_us": 0,
+            "ax_mtp_accepted_depth0": 0,
+            "ax_mtp_accepted_depth1": 0,
+            "ax_mtp_accepted_depth2": 0,
+            "ax_mtp_accepted_tokens": 0,
+            "ax_mtp_cache_clone_wall_us": 0,
+            "ax_mtp_complete_miss_steps": 0,
+            "ax_mtp_decode_steps": 0,
+            "ax_mtp_draft_tokens": 0,
+            "ax_mtp_draft_wall_us": 0,
+            "ax_mtp_drafted_depth0": 0,
+            "ax_mtp_drafted_depth1": 0,
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_full_accept_steps": 0,
+            "ax_mtp_ngram_hit_steps": 0,
+            "ax_mtp_ngram_think_gated_steps": 0,
+            "ax_mtp_partial_reject_steps": 0,
+            "ax_mtp_rollback_wall_us": 0,
+            "ax_mtp_tail_sample_wall_us": 0,
+            "ax_mtp_verify_eval_wall_us": 0,
+            "ax_mtp_verify_forward_wall_us": 0,
+            "ax_ngram_accept_at_depth_0": 0,
+            "ax_ngram_accept_at_depth_1": 0,
+            "ax_ngram_accept_at_depth_2": 0,
+            "ax_ngram_accept_at_depth_3": 0,
+            "ax_ngram_accept_at_depth_4": 0,
+            "ax_ngram_accept_at_depth_5": 0,
+            "ax_ngram_accept_at_depth_6": 0,
+            "ax_ngram_accept_at_depth_7": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_think_gated_steps": 0,
+            "ax_prompt_class_code": 1
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 211394,
+            "ax_mlx_prefill_forward_wall_us": 189943,
+            "ax_mlx_prefill_prefix_cache_wall_us": 0,
+            "ax_mlx_prefill_generation_state_wall_us": 21449,
+            "ax_mlx_prefill_eval_barriers": 1,
+            "ax_mlx_prefill_drain_async_evals": 0,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 3004241,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 21428,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 3004125,
+            "ax_mlx_direct_pipeline_forward_wall_us": 203663,
+            "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+            "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+            "ax_mlx_direct_pipeline_argmax_wall_us": 65,
+            "ax_mlx_direct_pipeline_async_eval_wall_us": 2794094,
+            "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+            "ax_mlx_direct_pipeline_pending_eval_wall_us": 5969,
+            "ax_mlx_direct_pipeline_pending_read_wall_us": 13,
+            "ax_mlx_direct_pipeline_op_count": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 1,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 0,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 0,
+            "ax_mlx_prefix_cache_bytes_kib": 0,
+            "ax_mlx_dense_ffn_gate_up_packed_layers": 64,
+            "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+            "ax_mlx_linear_attention_split_qkvba_layers": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.211273,
+          "decode_s": 3.008605,
+          "ttft_ms": 211.273,
+          "prefill_tok_s": 605.8511972660965,
+          "decode_tok_s": 42.54463447345198,
+          "output_tokens": 128.0,
+          "client_wall_total_ms": 4063.0647090729326,
+          "client_wall_ttft_ms": 1043.9479590859264,
+          "peak_memory_gb": 10.022811889648438,
+          "ngram_acceleration_telemetry": {
+            "ax_mtp_accept_wall_us": 0,
+            "ax_mtp_accepted_depth0": 0,
+            "ax_mtp_accepted_depth1": 0,
+            "ax_mtp_accepted_depth2": 0,
+            "ax_mtp_accepted_tokens": 0,
+            "ax_mtp_cache_clone_wall_us": 0,
+            "ax_mtp_complete_miss_steps": 0,
+            "ax_mtp_decode_steps": 0,
+            "ax_mtp_draft_tokens": 0,
+            "ax_mtp_draft_wall_us": 0,
+            "ax_mtp_drafted_depth0": 0,
+            "ax_mtp_drafted_depth1": 0,
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_full_accept_steps": 0,
+            "ax_mtp_ngram_hit_steps": 0,
+            "ax_mtp_ngram_think_gated_steps": 0,
+            "ax_mtp_partial_reject_steps": 0,
+            "ax_mtp_rollback_wall_us": 0,
+            "ax_mtp_tail_sample_wall_us": 0,
+            "ax_mtp_verify_eval_wall_us": 0,
+            "ax_mtp_verify_forward_wall_us": 0,
+            "ax_ngram_accept_at_depth_0": 0,
+            "ax_ngram_accept_at_depth_1": 0,
+            "ax_ngram_accept_at_depth_2": 0,
+            "ax_ngram_accept_at_depth_3": 0,
+            "ax_ngram_accept_at_depth_4": 0,
+            "ax_ngram_accept_at_depth_5": 0,
+            "ax_ngram_accept_at_depth_6": 0,
+            "ax_ngram_accept_at_depth_7": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_think_gated_steps": 0,
+            "ax_prompt_class_code": 1
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 211228,
+            "ax_mlx_prefill_forward_wall_us": 189849,
+            "ax_mlx_prefill_prefix_cache_wall_us": 0,
+            "ax_mlx_prefill_generation_state_wall_us": 21377,
+            "ax_mlx_prefill_eval_barriers": 1,
+            "ax_mlx_prefill_drain_async_evals": 0,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 3004300,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 21354,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 3004177,
+            "ax_mlx_direct_pipeline_forward_wall_us": 203290,
+            "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+            "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+            "ax_mlx_direct_pipeline_argmax_wall_us": 89,
+            "ax_mlx_direct_pipeline_async_eval_wall_us": 2794394,
+            "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+            "ax_mlx_direct_pipeline_pending_eval_wall_us": 6069,
+            "ax_mlx_direct_pipeline_pending_read_wall_us": 13,
+            "ax_mlx_direct_pipeline_op_count": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 1,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 0,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 0,
+            "ax_mlx_prefix_cache_bytes_kib": 0,
+            "ax_mlx_dense_ffn_gate_up_packed_layers": 64,
+            "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+            "ax_mlx_linear_attention_split_qkvba_layers": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.211262,
+          "decode_s": 3.006962,
+          "ttft_ms": 211.262,
+          "prefill_tok_s": 605.8827427554411,
+          "decode_tok_s": 42.56788080461276,
+          "output_tokens": 128.0,
+          "client_wall_total_ms": 4047.0955000491813,
+          "client_wall_ttft_ms": 1029.6611250378191,
+          "peak_memory_gb": 10.0450439453125,
+          "ngram_acceleration_telemetry": {
+            "ax_mtp_accept_wall_us": 0,
+            "ax_mtp_accepted_depth0": 0,
+            "ax_mtp_accepted_depth1": 0,
+            "ax_mtp_accepted_depth2": 0,
+            "ax_mtp_accepted_tokens": 0,
+            "ax_mtp_cache_clone_wall_us": 0,
+            "ax_mtp_complete_miss_steps": 0,
+            "ax_mtp_decode_steps": 0,
+            "ax_mtp_draft_tokens": 0,
+            "ax_mtp_draft_wall_us": 0,
+            "ax_mtp_drafted_depth0": 0,
+            "ax_mtp_drafted_depth1": 0,
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_full_accept_steps": 0,
+            "ax_mtp_ngram_hit_steps": 0,
+            "ax_mtp_ngram_think_gated_steps": 0,
+            "ax_mtp_partial_reject_steps": 0,
+            "ax_mtp_rollback_wall_us": 0,
+            "ax_mtp_tail_sample_wall_us": 0,
+            "ax_mtp_verify_eval_wall_us": 0,
+            "ax_mtp_verify_forward_wall_us": 0,
+            "ax_ngram_accept_at_depth_0": 0,
+            "ax_ngram_accept_at_depth_1": 0,
+            "ax_ngram_accept_at_depth_2": 0,
+            "ax_ngram_accept_at_depth_3": 0,
+            "ax_ngram_accept_at_depth_4": 0,
+            "ax_ngram_accept_at_depth_5": 0,
+            "ax_ngram_accept_at_depth_6": 0,
+            "ax_ngram_accept_at_depth_7": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_think_gated_steps": 0,
+            "ax_prompt_class_code": 1
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 211213,
+            "ax_mlx_prefill_forward_wall_us": 189629,
+            "ax_mlx_prefill_prefix_cache_wall_us": 0,
+            "ax_mlx_prefill_generation_state_wall_us": 21582,
+            "ax_mlx_prefill_eval_barriers": 1,
+            "ax_mlx_prefill_drain_async_evals": 0,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 3002692,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 21561,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 3002559,
+            "ax_mlx_direct_pipeline_forward_wall_us": 204671,
+            "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+            "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+            "ax_mlx_direct_pipeline_argmax_wall_us": 66,
+            "ax_mlx_direct_pipeline_async_eval_wall_us": 2791451,
+            "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+            "ax_mlx_direct_pipeline_pending_eval_wall_us": 6046,
+            "ax_mlx_direct_pipeline_pending_read_wall_us": 11,
+            "ax_mlx_direct_pipeline_op_count": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 1,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 0,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 0,
+            "ax_mlx_prefix_cache_bytes_kib": 0,
+            "ax_mlx_dense_ffn_gate_up_packed_layers": 64,
+            "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+            "ax_mlx_linear_attention_split_qkvba_layers": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.211363,
+          "decode_s": 3.00865,
+          "ttft_ms": 211.363,
+          "prefill_tok_s": 605.5932211408808,
+          "decode_tok_s": 42.54399813870008,
+          "output_tokens": 128.0,
+          "client_wall_total_ms": 4082.1234999457374,
+          "client_wall_ttft_ms": 1063.337208935991,
+          "peak_memory_gb": 10.064682006835938,
+          "ngram_acceleration_telemetry": {
+            "ax_mtp_accept_wall_us": 0,
+            "ax_mtp_accepted_depth0": 0,
+            "ax_mtp_accepted_depth1": 0,
+            "ax_mtp_accepted_depth2": 0,
+            "ax_mtp_accepted_tokens": 0,
+            "ax_mtp_cache_clone_wall_us": 0,
+            "ax_mtp_complete_miss_steps": 0,
+            "ax_mtp_decode_steps": 0,
+            "ax_mtp_draft_tokens": 0,
+            "ax_mtp_draft_wall_us": 0,
+            "ax_mtp_drafted_depth0": 0,
+            "ax_mtp_drafted_depth1": 0,
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_full_accept_steps": 0,
+            "ax_mtp_ngram_hit_steps": 0,
+            "ax_mtp_ngram_think_gated_steps": 0,
+            "ax_mtp_partial_reject_steps": 0,
+            "ax_mtp_rollback_wall_us": 0,
+            "ax_mtp_tail_sample_wall_us": 0,
+            "ax_mtp_verify_eval_wall_us": 0,
+            "ax_mtp_verify_forward_wall_us": 0,
+            "ax_ngram_accept_at_depth_0": 0,
+            "ax_ngram_accept_at_depth_1": 0,
+            "ax_ngram_accept_at_depth_2": 0,
+            "ax_ngram_accept_at_depth_3": 0,
+            "ax_ngram_accept_at_depth_4": 0,
+            "ax_ngram_accept_at_depth_5": 0,
+            "ax_ngram_accept_at_depth_6": 0,
+            "ax_ngram_accept_at_depth_7": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 0,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 0,
+            "ax_ngram_think_gated_steps": 0,
+            "ax_prompt_class_code": 1
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 211316,
+            "ax_mlx_prefill_forward_wall_us": 189784,
+            "ax_mlx_prefill_prefix_cache_wall_us": 0,
+            "ax_mlx_prefill_generation_state_wall_us": 21530,
+            "ax_mlx_prefill_eval_barriers": 1,
+            "ax_mlx_prefill_drain_async_evals": 0,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 3004485,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 21507,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 3004359,
+            "ax_mlx_direct_pipeline_forward_wall_us": 203364,
+            "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+            "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+            "ax_mlx_direct_pipeline_argmax_wall_us": 78,
+            "ax_mlx_direct_pipeline_async_eval_wall_us": 2794564,
+            "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+            "ax_mlx_direct_pipeline_pending_eval_wall_us": 6041,
+            "ax_mlx_direct_pipeline_pending_read_wall_us": 6,
+            "ax_mlx_direct_pipeline_op_count": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 1,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 0,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 0,
+            "ax_mlx_prefix_cache_bytes_kib": 0,
+            "ax_mlx_dense_ffn_gate_up_packed_layers": 64,
+            "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+            "ax_mlx_linear_attention_split_qkvba_layers": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        }
+      ],
+      "ax_mlx_direct_cpp_linear_attention_inputs": {
+        "schema_version": "ax.mlx_direct_cpp_linear_attention_inputs.v1",
+        "classification": "all_hits",
+        "attempts": 240,
+        "hits": 240,
+        "fallbacks": 0,
+        "profile_blocked": 0,
+        "hit_rate_micros": 1000000
+      },
+      "ax_mlx_direct_cpp_linear_attention_post_input": {
+        "schema_version": "ax.mlx_direct_cpp_linear_attention_post_input.v1",
+        "classification": "all_hits",
+        "attempts": 240,
+        "hits": 240,
+        "fallbacks": 0,
+        "profile_blocked": 0,
+        "hit_rate_micros": 1000000
+      },
+      "peak_memory_gb": {
+        "mean": 10.02208251953125,
+        "median": 10.022811889648438,
+        "min": 9.9776611328125,
+        "max": 10.064682006835938
+      },
+      "memory_source": "server_process_rss_after_stream",
+      "prefill_step_size": 2048,
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-27-qwen3_6-27b-mixed3_4/pt128-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "prompt_source": "random",
+      "ax_linear_attention_projection_pack": false,
+      "ax_dense_ffn_gate_up_pack": false,
+      "ax_direct_linear_attention_inputs_route": false,
+      "ax_direct_linear_attention_post_input_route": false,
+      "ax_direct_gemma4_post_attn_ffn_route": false,
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "prefill_tok_s": 444.864,
+        "decode_tok_s": 41.107,
+        "prefill_ratio_to_mlx_lm": 1.361879579525645,
+        "decode_ratio_to_mlx_lm": 1.0349729844905242
+      }
+    },
+    {
+      "engine": "ax_engine_mlx_ngram_accel",
+      "method": "server_sse_runner_time_us",
+      "timing_scope": "ax_engine_runner_time_us",
+      "runtime_identity": {
+        "selected_backend": "mlx",
+        "route_identity": "repo_owned_mlx",
+        "resolution_policy": "mlx_only",
+        "benchmark_surface": "mlx_inference_stack"
+      },
+      "ax_decode_policy": "ngram_acceleration_linear_attention_branch_recompute",
+      "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+      "prefill_ttft_measurement_contract": "cold_prefill_no_cross_request_prefix_cache",
+      "prefill_work_contract": "historical_full_logits_prefill_or_sampler_required",
+      "ax_decode_claim_status": "ngram_no_draft_direct_fallback",
+      "ax_ngram_outcome_tier": "no_draft_fallback",
+      "ax_decode_effective_route": "linear_no_draft_direct_pipeline_fallback",
+      "ax_decode_claim_mode": "ngram_greedy_exact_candidate",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "prefill_tok_s": {
+        "mean": 606.2698545970666,
+        "median": 606.1495768791821,
+        "min": 605.4414046240588,
+        "max": 607.1040661743432
+      },
+      "decode_tok_s": {
+        "mean": 42.547920540928715,
+        "median": 42.555186263717815,
+        "min": 42.513123435857494,
+        "max": 42.567059746859016
+      },
+      "ttft_ms": {
+        "mean": 211.1274,
+        "median": 211.16899999999998,
+        "min": 210.837,
+        "max": 211.416
+      },
+      "ttft_source": "ax_engine_runner_prefill_time",
+      "client_wall_ttft_ms": {
+        "mean": 1038.0885334219784,
+        "median": 1043.7417500652373,
+        "min": 1016.4316670270637,
+        "max": 1053.6645000101998
+      },
+      "client_wall_ttft_source": "http_sse_first_output_token_observed_by_client",
+      "client_wall_total_ms": {
+        "mean": 4056.121733202599,
+        "median": 4061.259667039849,
+        "min": 4036.636249977164,
+        "max": 4070.5363750457764
+      },
+      "prefill_s": {
+        "mean": 0.2111274,
+        "median": 0.211169,
+        "min": 0.210837,
+        "max": 0.211416
+      },
+      "decode_s": {
+        "mean": 3.0083732,
+        "median": 3.007859,
+        "min": 3.00702,
+        "max": 3.010835
+      },
+      "ngram_acceleration_telemetry": {
+        "ax_mtp_accept_wall_us": 0,
+        "ax_mtp_accepted_depth0": 0,
+        "ax_mtp_accepted_depth1": 0,
+        "ax_mtp_accepted_depth2": 0,
+        "ax_mtp_accepted_tokens": 0,
+        "ax_mtp_cache_clone_wall_us": 0,
+        "ax_mtp_complete_miss_steps": 0,
+        "ax_mtp_decode_steps": 0,
+        "ax_mtp_draft_tokens": 0,
+        "ax_mtp_draft_wall_us": 0,
+        "ax_mtp_drafted_depth0": 0,
+        "ax_mtp_drafted_depth1": 0,
+        "ax_mtp_drafted_depth2": 0,
+        "ax_mtp_full_accept_steps": 0,
+        "ax_mtp_ngram_hit_steps": 0,
+        "ax_mtp_ngram_think_gated_steps": 0,
+        "ax_mtp_partial_reject_steps": 0,
+        "ax_mtp_rollback_wall_us": 0,
+        "ax_mtp_tail_sample_wall_us": 0,
+        "ax_mtp_verify_eval_wall_us": 0,
+        "ax_mtp_verify_forward_wall_us": 0,
+        "ax_ngram_accept_at_depth_0": 0,
+        "ax_ngram_accept_at_depth_1": 0,
+        "ax_ngram_accept_at_depth_2": 0,
+        "ax_ngram_accept_at_depth_3": 0,
+        "ax_ngram_accept_at_depth_4": 0,
+        "ax_ngram_accept_at_depth_5": 0,
+        "ax_ngram_accept_at_depth_6": 0,
+        "ax_ngram_accept_at_depth_7": 0,
+        "ax_ngram_accepted_tokens": 0,
+        "ax_ngram_adaptive_draft_len_steps": 0,
+        "ax_ngram_adaptive_draft_len_total": 0,
+        "ax_ngram_complete_misses": 0,
+        "ax_ngram_cooldown_events": 0,
+        "ax_ngram_cooldown_steps": 0,
+        "ax_ngram_cooldown_steps_scheduled": 0,
+        "ax_ngram_draft_attempts": 0,
+        "ax_ngram_draft_tokens": 0,
+        "ax_ngram_fallback_confidence_filtered_steps": 0,
+        "ax_ngram_fallback_linear_no_draft_steps": 635,
+        "ax_ngram_fallback_no_candidate_steps": 0,
+        "ax_ngram_fallback_short_output_steps": 0,
+        "ax_ngram_full_accepts": 0,
+        "ax_ngram_no_draft_steps": 0,
+        "ax_ngram_partial_rejects": 0,
+        "ax_ngram_policy_variant": 0,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_ngram_request_disable_events": 0,
+        "ax_ngram_request_disabled_steps": 635,
+        "ax_ngram_think_gated_steps": 0,
+        "ax_prompt_class_code": 1
+      },
+      "ngram_accept_at_depth": {
+        "schema": "ax.ngram_accept_at_depth.v1",
+        "bucket_count": 8,
+        "buckets": [
+          {
+            "depth": 0,
+            "attempts": 0
+          },
+          {
+            "depth": 1,
+            "attempts": 0
+          },
+          {
+            "depth": 2,
+            "attempts": 0
+          },
+          {
+            "depth": 3,
+            "attempts": 0
+          },
+          {
+            "depth": 4,
+            "attempts": 0
+          },
+          {
+            "depth": 5,
+            "attempts": 0
+          },
+          {
+            "depth": 6,
+            "attempts": 0
+          },
+          {
+            "depth": 7,
+            "attempts": 0
+          }
+        ],
+        "total_attempts": 0,
+        "weighted_accepted_tokens_lower_bound": 0
+      },
+      "sampler_settings": "greedy",
+      "ax_decode_row_identity": {
+        "schema": "ax.row_identity.v1",
+        "model_id": "qwen3_5",
+        "prompt_hash": "81392a209306964a",
+        "seed": 0,
+        "max_output_tokens": 128,
+        "sampler_signature": "greedy"
+      },
+      "ax_decode_same_policy_baseline_identity": {
+        "schema": "ax.row_identity.v1",
+        "model_id": "qwen3_5",
+        "prompt_hash": "81392a209306964a",
+        "seed": 0,
+        "max_output_tokens": 128,
+        "sampler_signature": "greedy"
+      },
+      "ax_mlx_telemetry": {
+        "ax_mlx_prefill_steps": 5,
+        "ax_mlx_prefill_wall_us": 1055406,
+        "ax_mlx_prefill_forward_wall_us": 948278,
+        "ax_mlx_prefill_prefix_cache_wall_us": 0,
+        "ax_mlx_prefill_generation_state_wall_us": 107116,
+        "ax_mlx_prefill_eval_barriers": 5,
+        "ax_mlx_prefill_drain_async_evals": 0,
+        "ax_mlx_decode_steps": 635,
+        "ax_mlx_decode_wall_us": 15022236,
+        "ax_mlx_direct_bootstrap_steps": 5,
+        "ax_mlx_direct_bootstrap_wall_us": 106995,
+        "ax_mlx_direct_pipeline_steps": 635,
+        "ax_mlx_direct_pipeline_wall_us": 15021592,
+        "ax_mlx_direct_pipeline_forward_wall_us": 1010463,
+        "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+        "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+        "ax_mlx_direct_pipeline_argmax_wall_us": 364,
+        "ax_mlx_direct_pipeline_async_eval_wall_us": 13978939,
+        "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+        "ax_mlx_direct_pipeline_pending_eval_wall_us": 30037,
+        "ax_mlx_direct_pipeline_pending_read_wall_us": 70,
+        "ax_mlx_direct_pipeline_op_count": 0,
+        "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+        "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+        "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+        "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+        "ax_mlx_single_decode_steps": 0,
+        "ax_mlx_single_decode_wall_us": 0,
+        "ax_mlx_ngram_decode_steps": 0,
+        "ax_mlx_ngram_decode_wall_us": 0,
+        "ax_mlx_bonus_tokens": 0,
+        "ax_mlx_prefix_cache_hits": 0,
+        "ax_mlx_prefix_cache_misses": 0,
+        "ax_mlx_prefix_cache_blocked": 5,
+        "ax_mlx_prefix_cache_blocked_policy_disabled": 5,
+        "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+        "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+        "ax_mlx_prefix_cache_stores": 0,
+        "ax_mlx_prefix_cache_evictions": 0,
+        "ax_mlx_prefix_cache_reused_tokens": 0,
+        "ax_mlx_prefix_cache_warmup_tokens": 0,
+        "ax_mlx_prefix_cache_entries": 0,
+        "ax_mlx_prefix_cache_bytes_kib": 0,
+        "ax_mlx_dense_ffn_gate_up_packed_layers": 320,
+        "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+        "ax_mlx_linear_attention_qkvz_ba_packed_layers": 240,
+        "ax_mlx_linear_attention_split_qkvba_layers": 0,
+        "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 240,
+        "ax_mlx_direct_cpp_linear_attention_inputs_hits": 240,
+        "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+        "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+        "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 240,
+        "ax_mlx_direct_cpp_linear_attention_post_input_hits": 240,
+        "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+        "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+        "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 240,
+        "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 240,
+        "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+        "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+        "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+        "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+        "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+        "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+      },
+      "ax_mlx_decode_route": {
+        "classification": "direct_pipeline",
+        "decode_steps": 635,
+        "decode_wall_us": 15022236,
+        "direct_pipeline_steps": 635,
+        "direct_pipeline_step_share_micros": 1000000,
+        "direct_pipeline_wall_share_micros": 999957,
+        "direct_pipeline_forward_wall_us": 1010463,
+        "direct_pipeline_forward_wall_share_micros": 67267,
+        "direct_pipeline_forward_layer_loop_wall_us": 0,
+        "direct_pipeline_forward_layer_loop_wall_share_micros": 0,
+        "direct_pipeline_forward_head_wall_us": 0,
+        "direct_pipeline_forward_head_wall_share_micros": 0,
+        "direct_pipeline_argmax_wall_us": 364,
+        "direct_pipeline_argmax_wall_share_micros": 24,
+        "direct_pipeline_async_eval_wall_us": 13978939,
+        "direct_pipeline_async_eval_wall_share_micros": 930590,
+        "direct_pipeline_next_complete_wall_us": 0,
+        "direct_pipeline_next_complete_wall_share_micros": 0,
+        "direct_pipeline_pending_eval_wall_us": 30037,
+        "direct_pipeline_pending_eval_wall_share_micros": 2000,
+        "direct_pipeline_pending_read_wall_us": 70,
+        "direct_pipeline_pending_read_wall_share_micros": 5,
+        "direct_pipeline_op_count": 0,
+        "direct_pipeline_op_count_per_step": 0,
+        "direct_pipeline_linear_attention_layer_ops": 0,
+        "direct_pipeline_linear_attention_layer_count": 0,
+        "direct_pipeline_linear_attention_ops_per_layer": 0,
+        "direct_pipeline_full_attention_layer_ops": 0,
+        "direct_pipeline_full_attention_layer_count": 0,
+        "direct_pipeline_full_attention_ops_per_layer": 0,
+        "single_decode_steps": 0,
+        "single_decode_step_share_micros": 0,
+        "single_decode_wall_share_micros": 0,
+        "ngram_decode_steps": 0,
+        "ngram_decode_step_share_micros": 0,
+        "ngram_decode_wall_share_micros": 0,
+        "bonus_tokens": 0
+      },
+      "scheduler_telemetry": {
+        "ax_scheduler_scheduled_prefill_tokens": 640,
+        "ax_scheduler_scheduled_decode_tokens": 635,
+        "ax_scheduler_skipped_prefill_tokens": 0,
+        "ax_scheduler_skipped_decode_tokens": 0,
+        "ax_scheduler_mixed_prefill_decode_batches": 0
+      },
+      "ax_mlx_gemma4_moe_profile": {},
+      "ax_mlx_linear_attention_profile": {},
+      "ax_mlx_prefill_profile": {},
+      "ax_mlx_decode_profile": {},
+      "trials": [
+        {
+          "prefill_s": 0.210843,
+          "decode_s": 3.010835,
+          "ttft_ms": 210.843,
+          "prefill_tok_s": 607.0867896965989,
+          "decode_tok_s": 42.513123435857494,
+          "output_tokens": 128.0,
+          "client_wall_total_ms": 4036.636249977164,
+          "client_wall_ttft_ms": 1016.4316670270637,
+          "peak_memory_gb": 9.981399536132812,
+          "ngram_acceleration_telemetry": {
+            "ax_mtp_accept_wall_us": 0,
+            "ax_mtp_accepted_depth0": 0,
+            "ax_mtp_accepted_depth1": 0,
+            "ax_mtp_accepted_depth2": 0,
+            "ax_mtp_accepted_tokens": 0,
+            "ax_mtp_cache_clone_wall_us": 0,
+            "ax_mtp_complete_miss_steps": 0,
+            "ax_mtp_decode_steps": 0,
+            "ax_mtp_draft_tokens": 0,
+            "ax_mtp_draft_wall_us": 0,
+            "ax_mtp_drafted_depth0": 0,
+            "ax_mtp_drafted_depth1": 0,
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_full_accept_steps": 0,
+            "ax_mtp_ngram_hit_steps": 0,
+            "ax_mtp_ngram_think_gated_steps": 0,
+            "ax_mtp_partial_reject_steps": 0,
+            "ax_mtp_rollback_wall_us": 0,
+            "ax_mtp_tail_sample_wall_us": 0,
+            "ax_mtp_verify_eval_wall_us": 0,
+            "ax_mtp_verify_forward_wall_us": 0,
+            "ax_ngram_accept_at_depth_0": 0,
+            "ax_ngram_accept_at_depth_1": 0,
+            "ax_ngram_accept_at_depth_2": 0,
+            "ax_ngram_accept_at_depth_3": 0,
+            "ax_ngram_accept_at_depth_4": 0,
+            "ax_ngram_accept_at_depth_5": 0,
+            "ax_ngram_accept_at_depth_6": 0,
+            "ax_ngram_accept_at_depth_7": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 127,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 127,
+            "ax_ngram_think_gated_steps": 0,
+            "ax_prompt_class_code": 1
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 210795,
+            "ax_mlx_prefill_forward_wall_us": 189541,
+            "ax_mlx_prefill_prefix_cache_wall_us": 0,
+            "ax_mlx_prefill_generation_state_wall_us": 21252,
+            "ax_mlx_prefill_eval_barriers": 1,
+            "ax_mlx_prefill_drain_async_evals": 0,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 3006926,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 21228,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 3006803,
+            "ax_mlx_direct_pipeline_forward_wall_us": 202033,
+            "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+            "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+            "ax_mlx_direct_pipeline_argmax_wall_us": 64,
+            "ax_mlx_direct_pipeline_async_eval_wall_us": 2798286,
+            "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+            "ax_mlx_direct_pipeline_pending_eval_wall_us": 6064,
+            "ax_mlx_direct_pipeline_pending_read_wall_us": 13,
+            "ax_mlx_direct_pipeline_op_count": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 1,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 0,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 0,
+            "ax_mlx_prefix_cache_bytes_kib": 0,
+            "ax_mlx_dense_ffn_gate_up_packed_layers": 64,
+            "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+            "ax_mlx_linear_attention_split_qkvba_layers": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.210837,
+          "decode_s": 3.008311,
+          "ttft_ms": 210.837,
+          "prefill_tok_s": 607.1040661743432,
+          "decode_tok_s": 42.548792328984604,
+          "output_tokens": 128.0,
+          "client_wall_total_ms": 4043.024832964875,
+          "client_wall_ttft_ms": 1025.3976249368861,
+          "peak_memory_gb": 9.996475219726562,
+          "ngram_acceleration_telemetry": {
+            "ax_mtp_accept_wall_us": 0,
+            "ax_mtp_accepted_depth0": 0,
+            "ax_mtp_accepted_depth1": 0,
+            "ax_mtp_accepted_depth2": 0,
+            "ax_mtp_accepted_tokens": 0,
+            "ax_mtp_cache_clone_wall_us": 0,
+            "ax_mtp_complete_miss_steps": 0,
+            "ax_mtp_decode_steps": 0,
+            "ax_mtp_draft_tokens": 0,
+            "ax_mtp_draft_wall_us": 0,
+            "ax_mtp_drafted_depth0": 0,
+            "ax_mtp_drafted_depth1": 0,
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_full_accept_steps": 0,
+            "ax_mtp_ngram_hit_steps": 0,
+            "ax_mtp_ngram_think_gated_steps": 0,
+            "ax_mtp_partial_reject_steps": 0,
+            "ax_mtp_rollback_wall_us": 0,
+            "ax_mtp_tail_sample_wall_us": 0,
+            "ax_mtp_verify_eval_wall_us": 0,
+            "ax_mtp_verify_forward_wall_us": 0,
+            "ax_ngram_accept_at_depth_0": 0,
+            "ax_ngram_accept_at_depth_1": 0,
+            "ax_ngram_accept_at_depth_2": 0,
+            "ax_ngram_accept_at_depth_3": 0,
+            "ax_ngram_accept_at_depth_4": 0,
+            "ax_ngram_accept_at_depth_5": 0,
+            "ax_ngram_accept_at_depth_6": 0,
+            "ax_ngram_accept_at_depth_7": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 127,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 127,
+            "ax_ngram_think_gated_steps": 0,
+            "ax_prompt_class_code": 1
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 210792,
+            "ax_mlx_prefill_forward_wall_us": 189293,
+            "ax_mlx_prefill_prefix_cache_wall_us": 0,
+            "ax_mlx_prefill_generation_state_wall_us": 21497,
+            "ax_mlx_prefill_eval_barriers": 1,
+            "ax_mlx_prefill_drain_async_evals": 0,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 3004474,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 21472,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 3004345,
+            "ax_mlx_direct_pipeline_forward_wall_us": 200503,
+            "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+            "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+            "ax_mlx_direct_pipeline_argmax_wall_us": 56,
+            "ax_mlx_direct_pipeline_async_eval_wall_us": 2797395,
+            "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+            "ax_mlx_direct_pipeline_pending_eval_wall_us": 6029,
+            "ax_mlx_direct_pipeline_pending_read_wall_us": 13,
+            "ax_mlx_direct_pipeline_op_count": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 1,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 0,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 0,
+            "ax_mlx_prefix_cache_bytes_kib": 0,
+            "ax_mlx_dense_ffn_gate_up_packed_layers": 64,
+            "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+            "ax_mlx_linear_attention_split_qkvba_layers": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.211372,
+          "decode_s": 3.007859,
+          "ttft_ms": 211.372,
+          "prefill_tok_s": 605.56743561115,
+          "decode_tok_s": 42.555186263717815,
+          "output_tokens": 128.0,
+          "client_wall_total_ms": 4061.259667039849,
+          "client_wall_ttft_ms": 1043.7417500652373,
+          "peak_memory_gb": 10.011550903320312,
+          "ngram_acceleration_telemetry": {
+            "ax_mtp_accept_wall_us": 0,
+            "ax_mtp_accepted_depth0": 0,
+            "ax_mtp_accepted_depth1": 0,
+            "ax_mtp_accepted_depth2": 0,
+            "ax_mtp_accepted_tokens": 0,
+            "ax_mtp_cache_clone_wall_us": 0,
+            "ax_mtp_complete_miss_steps": 0,
+            "ax_mtp_decode_steps": 0,
+            "ax_mtp_draft_tokens": 0,
+            "ax_mtp_draft_wall_us": 0,
+            "ax_mtp_drafted_depth0": 0,
+            "ax_mtp_drafted_depth1": 0,
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_full_accept_steps": 0,
+            "ax_mtp_ngram_hit_steps": 0,
+            "ax_mtp_ngram_think_gated_steps": 0,
+            "ax_mtp_partial_reject_steps": 0,
+            "ax_mtp_rollback_wall_us": 0,
+            "ax_mtp_tail_sample_wall_us": 0,
+            "ax_mtp_verify_eval_wall_us": 0,
+            "ax_mtp_verify_forward_wall_us": 0,
+            "ax_ngram_accept_at_depth_0": 0,
+            "ax_ngram_accept_at_depth_1": 0,
+            "ax_ngram_accept_at_depth_2": 0,
+            "ax_ngram_accept_at_depth_3": 0,
+            "ax_ngram_accept_at_depth_4": 0,
+            "ax_ngram_accept_at_depth_5": 0,
+            "ax_ngram_accept_at_depth_6": 0,
+            "ax_ngram_accept_at_depth_7": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 127,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 127,
+            "ax_ngram_think_gated_steps": 0,
+            "ax_prompt_class_code": 1
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 211323,
+            "ax_mlx_prefill_forward_wall_us": 189820,
+            "ax_mlx_prefill_prefix_cache_wall_us": 0,
+            "ax_mlx_prefill_generation_state_wall_us": 21500,
+            "ax_mlx_prefill_eval_barriers": 1,
+            "ax_mlx_prefill_drain_async_evals": 0,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 3003921,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 21475,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 3003795,
+            "ax_mlx_direct_pipeline_forward_wall_us": 202199,
+            "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+            "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+            "ax_mlx_direct_pipeline_argmax_wall_us": 84,
+            "ax_mlx_direct_pipeline_async_eval_wall_us": 2795150,
+            "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+            "ax_mlx_direct_pipeline_pending_eval_wall_us": 6017,
+            "ax_mlx_direct_pipeline_pending_read_wall_us": 13,
+            "ax_mlx_direct_pipeline_op_count": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 1,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 0,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 0,
+            "ax_mlx_prefix_cache_bytes_kib": 0,
+            "ax_mlx_dense_ffn_gate_up_packed_layers": 64,
+            "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+            "ax_mlx_linear_attention_split_qkvba_layers": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.211169,
+          "decode_s": 3.00702,
+          "ttft_ms": 211.16899999999998,
+          "prefill_tok_s": 606.1495768791821,
+          "decode_tok_s": 42.567059746859016,
+          "output_tokens": 128.0,
+          "client_wall_total_ms": 4070.5363750457764,
+          "client_wall_ttft_ms": 1053.6645000101998,
+          "peak_memory_gb": 10.026275634765625,
+          "ngram_acceleration_telemetry": {
+            "ax_mtp_accept_wall_us": 0,
+            "ax_mtp_accepted_depth0": 0,
+            "ax_mtp_accepted_depth1": 0,
+            "ax_mtp_accepted_depth2": 0,
+            "ax_mtp_accepted_tokens": 0,
+            "ax_mtp_cache_clone_wall_us": 0,
+            "ax_mtp_complete_miss_steps": 0,
+            "ax_mtp_decode_steps": 0,
+            "ax_mtp_draft_tokens": 0,
+            "ax_mtp_draft_wall_us": 0,
+            "ax_mtp_drafted_depth0": 0,
+            "ax_mtp_drafted_depth1": 0,
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_full_accept_steps": 0,
+            "ax_mtp_ngram_hit_steps": 0,
+            "ax_mtp_ngram_think_gated_steps": 0,
+            "ax_mtp_partial_reject_steps": 0,
+            "ax_mtp_rollback_wall_us": 0,
+            "ax_mtp_tail_sample_wall_us": 0,
+            "ax_mtp_verify_eval_wall_us": 0,
+            "ax_mtp_verify_forward_wall_us": 0,
+            "ax_ngram_accept_at_depth_0": 0,
+            "ax_ngram_accept_at_depth_1": 0,
+            "ax_ngram_accept_at_depth_2": 0,
+            "ax_ngram_accept_at_depth_3": 0,
+            "ax_ngram_accept_at_depth_4": 0,
+            "ax_ngram_accept_at_depth_5": 0,
+            "ax_ngram_accept_at_depth_6": 0,
+            "ax_ngram_accept_at_depth_7": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 127,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 127,
+            "ax_ngram_think_gated_steps": 0,
+            "ax_prompt_class_code": 1
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 211124,
+            "ax_mlx_prefill_forward_wall_us": 189726,
+            "ax_mlx_prefill_prefix_cache_wall_us": 0,
+            "ax_mlx_prefill_generation_state_wall_us": 21395,
+            "ax_mlx_prefill_eval_barriers": 1,
+            "ax_mlx_prefill_drain_async_evals": 0,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 3003112,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 21371,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 3002976,
+            "ax_mlx_direct_pipeline_forward_wall_us": 202012,
+            "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+            "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+            "ax_mlx_direct_pipeline_argmax_wall_us": 95,
+            "ax_mlx_direct_pipeline_async_eval_wall_us": 2794637,
+            "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+            "ax_mlx_direct_pipeline_pending_eval_wall_us": 5871,
+            "ax_mlx_direct_pipeline_pending_read_wall_us": 15,
+            "ax_mlx_direct_pipeline_op_count": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 1,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 0,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 0,
+            "ax_mlx_prefix_cache_bytes_kib": 0,
+            "ax_mlx_dense_ffn_gate_up_packed_layers": 64,
+            "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+            "ax_mlx_linear_attention_split_qkvba_layers": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        },
+        {
+          "prefill_s": 0.211416,
+          "decode_s": 3.007841,
+          "ttft_ms": 211.416,
+          "prefill_tok_s": 605.4414046240588,
+          "decode_tok_s": 42.55544092922465,
+          "output_tokens": 128.0,
+          "client_wall_total_ms": 4069.151540985331,
+          "client_wall_ttft_ms": 1051.2071250705048,
+          "peak_memory_gb": 10.03857421875,
+          "ngram_acceleration_telemetry": {
+            "ax_mtp_accept_wall_us": 0,
+            "ax_mtp_accepted_depth0": 0,
+            "ax_mtp_accepted_depth1": 0,
+            "ax_mtp_accepted_depth2": 0,
+            "ax_mtp_accepted_tokens": 0,
+            "ax_mtp_cache_clone_wall_us": 0,
+            "ax_mtp_complete_miss_steps": 0,
+            "ax_mtp_decode_steps": 0,
+            "ax_mtp_draft_tokens": 0,
+            "ax_mtp_draft_wall_us": 0,
+            "ax_mtp_drafted_depth0": 0,
+            "ax_mtp_drafted_depth1": 0,
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_full_accept_steps": 0,
+            "ax_mtp_ngram_hit_steps": 0,
+            "ax_mtp_ngram_think_gated_steps": 0,
+            "ax_mtp_partial_reject_steps": 0,
+            "ax_mtp_rollback_wall_us": 0,
+            "ax_mtp_tail_sample_wall_us": 0,
+            "ax_mtp_verify_eval_wall_us": 0,
+            "ax_mtp_verify_forward_wall_us": 0,
+            "ax_ngram_accept_at_depth_0": 0,
+            "ax_ngram_accept_at_depth_1": 0,
+            "ax_ngram_accept_at_depth_2": 0,
+            "ax_ngram_accept_at_depth_3": 0,
+            "ax_ngram_accept_at_depth_4": 0,
+            "ax_ngram_accept_at_depth_5": 0,
+            "ax_ngram_accept_at_depth_6": 0,
+            "ax_ngram_accept_at_depth_7": 0,
+            "ax_ngram_accepted_tokens": 0,
+            "ax_ngram_adaptive_draft_len_steps": 0,
+            "ax_ngram_adaptive_draft_len_total": 0,
+            "ax_ngram_complete_misses": 0,
+            "ax_ngram_cooldown_events": 0,
+            "ax_ngram_cooldown_steps": 0,
+            "ax_ngram_cooldown_steps_scheduled": 0,
+            "ax_ngram_draft_attempts": 0,
+            "ax_ngram_draft_tokens": 0,
+            "ax_ngram_fallback_confidence_filtered_steps": 0,
+            "ax_ngram_fallback_linear_no_draft_steps": 127,
+            "ax_ngram_fallback_no_candidate_steps": 0,
+            "ax_ngram_fallback_short_output_steps": 0,
+            "ax_ngram_full_accepts": 0,
+            "ax_ngram_no_draft_steps": 0,
+            "ax_ngram_partial_rejects": 0,
+            "ax_ngram_policy_variant": 0,
+            "ax_ngram_rejected_tokens": 0,
+            "ax_ngram_request_disable_events": 0,
+            "ax_ngram_request_disabled_steps": 127,
+            "ax_ngram_think_gated_steps": 0,
+            "ax_prompt_class_code": 1
+          },
+          "ax_mlx_telemetry": {
+            "ax_mlx_prefill_steps": 1,
+            "ax_mlx_prefill_wall_us": 211372,
+            "ax_mlx_prefill_forward_wall_us": 189898,
+            "ax_mlx_prefill_prefix_cache_wall_us": 0,
+            "ax_mlx_prefill_generation_state_wall_us": 21472,
+            "ax_mlx_prefill_eval_barriers": 1,
+            "ax_mlx_prefill_drain_async_evals": 0,
+            "ax_mlx_decode_steps": 127,
+            "ax_mlx_decode_wall_us": 3003803,
+            "ax_mlx_direct_bootstrap_steps": 1,
+            "ax_mlx_direct_bootstrap_wall_us": 21449,
+            "ax_mlx_direct_pipeline_steps": 127,
+            "ax_mlx_direct_pipeline_wall_us": 3003673,
+            "ax_mlx_direct_pipeline_forward_wall_us": 203716,
+            "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
+            "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
+            "ax_mlx_direct_pipeline_argmax_wall_us": 65,
+            "ax_mlx_direct_pipeline_async_eval_wall_us": 2793471,
+            "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
+            "ax_mlx_direct_pipeline_pending_eval_wall_us": 6056,
+            "ax_mlx_direct_pipeline_pending_read_wall_us": 16,
+            "ax_mlx_direct_pipeline_op_count": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_ops": 0,
+            "ax_mlx_direct_pipeline_full_attention_layer_count": 0,
+            "ax_mlx_single_decode_steps": 0,
+            "ax_mlx_single_decode_wall_us": 0,
+            "ax_mlx_ngram_decode_steps": 0,
+            "ax_mlx_ngram_decode_wall_us": 0,
+            "ax_mlx_bonus_tokens": 0,
+            "ax_mlx_prefix_cache_hits": 0,
+            "ax_mlx_prefix_cache_misses": 0,
+            "ax_mlx_prefix_cache_blocked": 1,
+            "ax_mlx_prefix_cache_blocked_policy_disabled": 1,
+            "ax_mlx_prefix_cache_blocked_unsupported_layout": 0,
+            "ax_mlx_prefix_cache_blocked_trim_failure": 0,
+            "ax_mlx_prefix_cache_stores": 0,
+            "ax_mlx_prefix_cache_evictions": 0,
+            "ax_mlx_prefix_cache_reused_tokens": 0,
+            "ax_mlx_prefix_cache_warmup_tokens": 0,
+            "ax_mlx_prefix_cache_entries": 0,
+            "ax_mlx_prefix_cache_bytes_kib": 0,
+            "ax_mlx_dense_ffn_gate_up_packed_layers": 64,
+            "ax_mlx_dense_ffn_split_gate_up_layers": 0,
+            "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
+            "ax_mlx_linear_attention_split_qkvba_layers": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_attempts": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_hits": 48,
+            "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 48,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 0,
+            "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0
+          },
+          "scheduler_telemetry": {
+            "ax_scheduler_scheduled_prefill_tokens": 128,
+            "ax_scheduler_scheduled_decode_tokens": 127,
+            "ax_scheduler_skipped_prefill_tokens": 0,
+            "ax_scheduler_skipped_decode_tokens": 0,
+            "ax_scheduler_mixed_prefill_decode_batches": 0
+          }
+        }
+      ],
+      "ax_mlx_direct_cpp_linear_attention_inputs": {
+        "schema_version": "ax.mlx_direct_cpp_linear_attention_inputs.v1",
+        "classification": "all_hits",
+        "attempts": 240,
+        "hits": 240,
+        "fallbacks": 0,
+        "profile_blocked": 0,
+        "hit_rate_micros": 1000000
+      },
+      "ax_mlx_direct_cpp_linear_attention_post_input": {
+        "schema_version": "ax.mlx_direct_cpp_linear_attention_post_input.v1",
+        "classification": "all_hits",
+        "attempts": 240,
+        "hits": 240,
+        "fallbacks": 0,
+        "profile_blocked": 0,
+        "hit_rate_micros": 1000000
+      },
+      "peak_memory_gb": {
+        "mean": 10.010855102539063,
+        "median": 10.011550903320312,
+        "min": 9.981399536132812,
+        "max": 10.03857421875
+      },
+      "memory_source": "server_process_rss_after_stream",
+      "prefill_step_size": 2048,
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-27-qwen3_6-27b-mixed3_4/pt128-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "prompt_source": "random",
+      "ax_linear_attention_projection_pack": false,
+      "ax_dense_ffn_gate_up_pack": false,
+      "ax_direct_linear_attention_inputs_route": false,
+      "ax_direct_linear_attention_post_input_route": false,
+      "ax_direct_gemma4_post_attn_ffn_route": false,
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats",
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "prefill_tok_s": 444.864,
+        "decode_tok_s": 41.107,
+        "prefill_ratio_to_mlx_lm": 1.362550300494493,
+        "decode_ratio_to_mlx_lm": 1.0352296753282364
+      }
+    }
+  ]
+}
