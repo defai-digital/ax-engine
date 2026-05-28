@@ -9,6 +9,11 @@ pub const AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION: &str = "ax.native_model.v1";
 pub const AX_NATIVE_MODEL_MANIFEST_FILE: &str = "model-manifest.json";
 pub const QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL: u32 = 4;
 const SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[4, 5, 6, 8];
+/// Set to `"1"` to allow loading affine-quantized MLX artifacts at 3-bit.
+/// Production validation rejects 3-bit by default; this gate is for
+/// experimental benchmarking only and carries no quality or correctness guarantee.
+pub const AX_ENGINE_3BIT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_3BIT_EXPERIMENTAL";
+const EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[3];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1030,6 +1035,9 @@ fn validate_native_model_manifest(
     let mut layer_roles = BTreeMap::<u32, Vec<NativeTensorRole>>::new();
     let mut global_roles = Vec::new();
 
+    let allow_experimental_3bit =
+        std::env::var(AX_ENGINE_3BIT_EXPERIMENTAL_ENV).as_deref() == Ok("1");
+
     for tensor in &manifest.tensors {
         if tensor.name.trim().is_empty() {
             return Err(NativeModelError::InvalidManifest {
@@ -1053,7 +1061,7 @@ fn validate_native_model_manifest(
         }
         validate_tensor_path(root_dir, tensor)?;
         validate_quantized_source_path(root_dir, tensor)?;
-        validate_tensor_quantization(tensor)?;
+        validate_tensor_quantization(tensor, allow_experimental_3bit)?;
 
         if tensor.role == NativeTensorRole::Other {
             // Extension/sidecar roles (e.g. MTP): skip layer_index validation entirely.
@@ -2959,7 +2967,10 @@ fn tensor_quantization_or_default(tensor: &NativeTensorSpec) -> NativeTensorQuan
     tensor.quantization.clone().unwrap_or_default()
 }
 
-fn validate_tensor_quantization(tensor: &NativeTensorSpec) -> Result<(), NativeModelError> {
+fn validate_tensor_quantization(
+    tensor: &NativeTensorSpec,
+    allow_experimental_3bit: bool,
+) -> Result<(), NativeModelError> {
     if tensor.dtype == NativeTensorDataType::U32 && !tensor.source_quantized {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
@@ -3001,12 +3012,23 @@ fn validate_tensor_quantization(tensor: &NativeTensorSpec) -> Result<(), NativeM
         });
     }
     if !SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS.contains(&quantization.bits) {
-        return Err(NativeModelError::InvalidManifest {
-            message: format!(
-                "tensor {} quantization bits must be one of {:?}, got {}",
-                tensor.name, SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, quantization.bits
-            ),
-        });
+        if EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS.contains(&quantization.bits) {
+            if !allow_experimental_3bit {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "tensor {} quantization bits {} requires experimental gate (set {}=1)",
+                        tensor.name, quantization.bits, AX_ENGINE_3BIT_EXPERIMENTAL_ENV
+                    ),
+                });
+            }
+        } else {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "tensor {} quantization bits must be one of {:?}, got {}",
+                    tensor.name, SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, quantization.bits
+                ),
+            });
+        }
     }
     Ok(())
 }
@@ -4261,6 +4283,184 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_3bit_without_experimental_gate() {
+        let mut manifest = packed_layer_manifest();
+        let gate = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateUpPacked)
+            .expect("fixture should include packed ffn gate/up");
+        gate.dtype = NativeTensorDataType::U32;
+        gate.source_quantized = true;
+        gate.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 3,
+        });
+        // packed_cols = ceil(2048 * 3 / 32) = 192
+        gate.shape = vec![8192, (2048_u64 * 3).div_ceil(32)];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("3-bit without experimental gate should fail closed");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("requires experimental gate"),
+            "error should reference gate: {message}"
+        );
+        assert!(
+            message.contains(AX_ENGINE_3BIT_EXPERIMENTAL_ENV),
+            "error should name the env var: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_validate_3bit_tensor_quantization_with_experimental_gate() {
+        // Test the internal validator directly with the gate flag to avoid env var mutation.
+        let spec = NativeTensorSpec {
+            name: "layers.0.ffn.gate_up".to_string(),
+            role: NativeTensorRole::FfnGateUpPacked,
+            layer_index: Some(0),
+            dtype: NativeTensorDataType::U32,
+            source_tensor_type: None,
+            source_quantized: true,
+            quantization: Some(NativeTensorQuantization {
+                mode: "affine".to_string(),
+                group_size: 64,
+                bits: 3,
+            }),
+            quantized_source: None,
+            shape: vec![8192, (2048_u64 * 3).div_ceil(32)],
+            file: "model.safetensors".into(),
+            offset_bytes: 0,
+            length_bytes: 192 * 8192 * 4,
+        };
+
+        validate_tensor_quantization(&spec, true)
+            .expect("3-bit should be accepted when experimental gate is enabled");
+        validate_tensor_quantization(&spec, false)
+            .expect_err("3-bit should be rejected when experimental gate is disabled");
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_2bit_as_unsupported() {
+        let mut manifest = packed_layer_manifest();
+        let gate = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateUpPacked)
+            .expect("fixture should include packed ffn gate/up");
+        gate.dtype = NativeTensorDataType::U32;
+        gate.source_quantized = true;
+        gate.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 2,
+        });
+        gate.shape = vec![8192, (2048_u64 * 2).div_ceil(32)];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("2-bit should be rejected as unsupported (not even experimental)");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        // 2-bit is not in the experimental list, so it gets the "must be one of" message.
+        assert!(
+            message.contains("quantization bits must be one of"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_validate_3bit_packed_column_shape() {
+        // Verify the packed-column formula for 3-bit: ceil(cols * 3 / 32).
+        // For cols=2048: ceil(6144/32) = 192.
+        // For cols=4096: ceil(12288/32) = 384.
+        for (cols, expected_packed) in [(2048_u64, 192_u64), (4096, 384), (1024, 96)] {
+            let spec = NativeTensorSpec {
+                name: format!("layers.0.ffn.gate_up_{cols}"),
+                role: NativeTensorRole::FfnGateUpPacked,
+                layer_index: Some(0),
+                dtype: NativeTensorDataType::U32,
+                source_tensor_type: None,
+                source_quantized: true,
+                quantization: Some(NativeTensorQuantization {
+                    mode: "affine".to_string(),
+                    group_size: 64,
+                    bits: 3,
+                }),
+                quantized_source: None,
+                shape: vec![8192, expected_packed],
+                file: "model.safetensors".into(),
+                offset_bytes: 0,
+                length_bytes: expected_packed * 8192 * 4,
+            };
+            let packed = expected_packed_cols(cols, &spec)
+                .unwrap_or_else(|e| panic!("packed cols for {cols} should compute: {e}"));
+            assert_eq!(
+                packed, expected_packed,
+                "3-bit packed_cols for {cols} cols: expected {expected_packed}, got {packed}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_model_artifacts_validate_mixed_3bit_4bit_with_experimental_gate() {
+        // A tensor quantized at 3-bit (low layer) passes with gate=true;
+        // a tensor quantized at 4-bit (sensitive layer) always passes.
+        let low_layer = NativeTensorSpec {
+            name: "layers.0.ffn.gate_up".to_string(),
+            role: NativeTensorRole::FfnGateUpPacked,
+            layer_index: Some(0),
+            dtype: NativeTensorDataType::U32,
+            source_tensor_type: None,
+            source_quantized: true,
+            quantization: Some(NativeTensorQuantization {
+                mode: "affine".to_string(),
+                group_size: 64,
+                bits: 3,
+            }),
+            quantized_source: None,
+            shape: vec![8192, (2048_u64 * 3).div_ceil(32)],
+            file: "model.safetensors".into(),
+            offset_bytes: 0,
+            length_bytes: 192 * 8192 * 4,
+        };
+        let sensitive_layer = NativeTensorSpec {
+            name: "layers.0.attn.v_proj".to_string(),
+            role: NativeTensorRole::AttentionQkvPacked,
+            layer_index: Some(0),
+            dtype: NativeTensorDataType::U32,
+            source_tensor_type: None,
+            source_quantized: true,
+            quantization: Some(NativeTensorQuantization {
+                mode: "affine".to_string(),
+                group_size: 64,
+                bits: 4,
+            }),
+            quantized_source: None,
+            shape: vec![4096, 256],
+            file: "model.safetensors".into(),
+            offset_bytes: 0,
+            length_bytes: 256 * 4096 * 4,
+        };
+
+        validate_tensor_quantization(&low_layer, true)
+            .expect("3-bit low layer with gate should be accepted");
+        validate_tensor_quantization(&sensitive_layer, true)
+            .expect("4-bit sensitive layer should always be accepted");
+        validate_tensor_quantization(&sensitive_layer, false)
+            .expect("4-bit sensitive layer should always be accepted without gate");
     }
 
     #[test]

@@ -5469,7 +5469,8 @@ impl MlxRunner {
         // patterns produce shorter (safer) drafts while well-established patterns
         // can reach max_len=3.
         let draft_started = Instant::now();
-        let think_state_after_result = compute_think_state(&self.cfg, state.ngram_in_think, &result);
+        let think_state_after_result =
+            compute_think_state(&self.cfg, state.ngram_in_think, &result);
         let ngram_max = if self.cfg.think_start_token_id.is_some() && !think_state_after_result {
             // Think-gated: outside `<think>`, skip n-gram entirely.
             state.mtp_telemetry.ngram_think_gated_steps = state
@@ -5554,8 +5555,7 @@ impl MlxRunner {
         // Reasoning models (Qwen3 family) inject `<think>` at the assistant prefix,
         // so generation typically starts inside a think block and ngram_in_think=true
         // from step 0, enabling n-gram speculation immediately.
-        state.ngram_in_think =
-            compute_think_state(&self.cfg, false, &state.prompt_prefix_tokens);
+        state.ngram_in_think = compute_think_state(&self.cfg, false, &state.prompt_prefix_tokens);
 
         // Classify the full prompt once per generation. record_prompt_class is
         // max-merge friendly so re-entry from an unusual code path cannot

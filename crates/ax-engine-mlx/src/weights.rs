@@ -834,9 +834,10 @@ fn mtp_take_weight(
         let w_shape = weight.shape();
         let s_shape = s.shape();
         let bits = bits_hint.unwrap_or(4);
-        let pack_factor = (32 / bits) as usize; // 4-bit → 8; 8-bit → 4
         let gs = if w_shape.len() == 2 && s_shape.len() == 2 && s_shape[1] > 0 {
-            let real_cols = (w_shape[1] as usize) * pack_factor;
+            // packed_cols = ceil(cols * bits / 32), so cols = packed_cols * 32 / bits.
+            // This holds for both power-of-two (4, 8) and non-power-of-two (3, 5, 6) bit widths.
+            let real_cols = (w_shape[1] as usize) * 32 / bits as usize;
             let scale_cols = s_shape[1] as usize;
             let inferred = real_cols / scale_cols;
             if inferred == 0 { 64 } else { inferred as i32 }
