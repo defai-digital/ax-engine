@@ -211,6 +211,43 @@ MTP_CHART_OUTPUTS = {
     ("quality", "accept_rate"): "perf-mtp-quality-accept-rate.svg",
 }
 
+# ---------------------------------------------------------------------------
+# N-gram chart constants (shared by all three ngram charts)
+# ---------------------------------------------------------------------------
+
+NGRAM_CHART_WIDTH = 540
+NGRAM_CHART_HEIGHT = 292
+NGRAM_LEFT = 52
+NGRAM_RIGHT = 512
+NGRAM_TOP = 56
+NGRAM_BOTTOM = 228
+
+NGRAM_OPPORTUNITY_SERIES: list[tuple[str, str, str, str]] = [
+    ("ax_direct",  "ax direct",          "#86efac", "#16a34a"),
+    ("ax_ngram",   "ax + n-gram",        "#2eaf5f", "#176c37"),
+    ("lightning",  "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
+    ("oracle",     "oracle (bound)",     "#d1d5db", "#6b7280"),
+]
+
+NGRAM_TOKS_SERIES: list[tuple[str, str, str, str]] = [
+    ("ax_direct",  "ax direct",           "#86efac", "#16a34a"),
+    ("ax_ngram",   "ax + n-gram",         "#2eaf5f", "#176c37"),
+    ("lightning",  "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
+]
+
+NGRAM_ACCEPT_SERIES: list[tuple[str, str, str, str]] = [
+    ("ax_ngram",   "ax n-gram",           "#2eaf5f", "#176c37"),
+    ("lightning",  "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
+]
+
+NGRAM_OPPORTUNITY_CATEGORIES: list[tuple[str, str]] = [
+    ("high_repeat", "high repeat"),
+    ("med_repeat",  "med repeat"),
+    ("low_repeat",  "low repeat"),
+]
+
+NGRAM_ARTIFACT_GLOB = "benchmarks/results/ngram-compare/*/artifact.json"
+
 class ChartError(RuntimeError):
     pass
 
@@ -817,6 +854,350 @@ def infer_results_dir_from_readme(readme: Path) -> Path:
     return (readme.parent / match.group(1)).resolve()
 
 
+def find_latest_ngram_artifact(repo_root: Path) -> Path | None:
+    """Return the most recent ngram-compare artifact that has usable data.
+
+    Prefers artifacts with non-empty ax_direct results, falling back to the
+    alphabetically latest if none qualify.
+    """
+    candidates = sorted(
+        (
+            p
+            for p in (repo_root / "benchmarks" / "results" / "ngram-compare").glob(
+                "*/artifact.json"
+            )
+            if p.is_file()
+        ),
+        key=lambda p: p.parent.name,
+    )
+
+    # Return the alphabetically latest artifact that has both ax_direct and lightning data.
+    # Naming convention: suffixes sort naturally so the most recent/complete run wins.
+    for path in reversed(candidates):
+        try:
+            art = json.loads(path.read_text())
+            if art.get("ax_direct") and art.get("lightning"):
+                return path
+        except Exception:
+            continue
+    return candidates[-1] if candidates else None
+
+
+def _ngram_category_median(results: list[dict], category: str, key: str) -> float | None:
+    import statistics as _stats
+
+    vals = [
+        r[key]
+        for r in results
+        if r.get("category") == category and isinstance(r.get(key), (int, float))
+    ]
+    return _stats.median(vals) if vals else None
+
+
+def render_ngram_opportunity_chart(artifact: dict) -> str:
+    """Grouped bar chart comparing ax direct / ax n-gram / lightning / oracle by category."""
+    categories = NGRAM_OPPORTUNITY_CATEGORIES
+    series = NGRAM_OPPORTUNITY_SERIES
+
+    # Build data matrix: series_key → category_id → median tok/s
+    data: dict[str, dict[str, float]] = {}
+    for s_key, _label, _color, _dot in series:
+        data[s_key] = {}
+        for cat_id, _cat_label in categories:
+            val = _ngram_category_median(artifact.get(s_key, []), cat_id, "tok_s_median")
+            data[s_key][cat_id] = val if val is not None else 0.0
+
+    all_vals = [v for cat_vals in data.values() for v in cat_vals.values() if v > 0]
+    if not all_vals:
+        raise ChartError("ngram opportunity artifact has no usable tok/s data")
+    axis_max = nice_axis_ceiling(max(all_vals) * 1.05)
+
+    plot_w = NGRAM_RIGHT - NGRAM_LEFT
+    plot_h = NGRAM_BOTTOM - NGRAM_TOP
+    n_groups = len(categories)
+    n_bars = len(series)
+    bar_w = 20.0
+    bar_gap = 4.0
+    group_block = n_bars * bar_w + (n_bars - 1) * bar_gap  # 92px
+
+    def fy(v: float) -> float:
+        return NGRAM_BOTTOM - (max(0.0, min(v, axis_max)) / axis_max) * plot_h
+
+    title = "N-gram opportunity — Qwen3-4B 4-bit"
+    subtitle = "all paths: temp=0.6/top_p=0.95/top_k=20 · oracle: theoretical upper bound"
+
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg"'
+        f' width="{NGRAM_CHART_WIDTH}" height="{NGRAM_CHART_HEIGHT}"'
+        f' viewBox="0 0 {NGRAM_CHART_WIDTH} {NGRAM_CHART_HEIGHT}"'
+        f' role="img" aria-labelledby="title desc">',
+        f"<title>{escape(title)}</title>",
+        f"<desc>Grouped bar chart comparing ax direct, ax n-gram, lightning (temp=0.6), and oracle"
+        f" upper-bound decode throughput (tok/s) across high, med, and low repeat prompt"
+        f" categories for Qwen3-4B 4-bit.</desc>",
+        f'<rect width="{NGRAM_CHART_WIDTH}" height="{NGRAM_CHART_HEIGHT}" fill="#ffffff"/>',
+        f'<text x="{NGRAM_LEFT}" y="22" font-family="{FONT}"'
+        f' font-size="15" font-weight="700" fill="#111827">{escape(title)}</text>',
+        f'<text x="{NGRAM_LEFT}" y="38" font-family="{FONT}"'
+        f' font-size="9" fill="#6b7280">{escape(subtitle)}</text>',
+        f'<text x="{NGRAM_RIGHT}" y="22" text-anchor="end" font-family="{FONT}"'
+        f' font-size="10" fill="#6b7280">tok/s</text>',
+        f'<text x="{NGRAM_RIGHT}" y="38" text-anchor="end" font-family="{FONT}"'
+        f' font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
+    ]
+
+    # Grid lines and Y axis labels
+    for grid_val in (0.0, axis_max * 0.5, axis_max):
+        gy = fy(grid_val)
+        lines.append(
+            f'<line x1="{NGRAM_LEFT}" y1="{gy:.1f}"'
+            f' x2="{NGRAM_RIGHT}" y2="{gy:.1f}" stroke="#e5e7eb" stroke-width="1"/>'
+        )
+        lines.append(
+            f'<text x="{NGRAM_LEFT - 6}" y="{gy + 3:.1f}" text-anchor="end"'
+            f' font-family="{FONT}" font-size="10" fill="#6b7280">{short_number(grid_val)}</text>'
+        )
+
+    # Best median reference line
+    best_y = fy(max(all_vals))
+    lines.append(
+        f'<line x1="{NGRAM_LEFT}" y1="{best_y:.1f}"'
+        f' x2="{NGRAM_RIGHT}" y2="{best_y:.1f}"'
+        f' stroke="{RED}" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
+    )
+
+    group_step = plot_w / n_groups
+    y_cat_label = NGRAM_BOTTOM + 16
+
+    for gi, (cat_id, cat_label) in enumerate(categories):
+        group_center = NGRAM_LEFT + (gi + 0.5) * group_step
+        bar0_left = group_center - group_block / 2
+
+        for bi, (s_key, s_label, color, dot_color) in enumerate(series):
+            bar_center = bar0_left + bi * (bar_w + bar_gap) + bar_w / 2
+            bar_left = bar_center - bar_w / 2
+            val = data[s_key][cat_id]
+            y_top = fy(val)
+            bar_h = NGRAM_BOTTOM - y_top
+
+            lines.extend([
+                f'<rect x="{bar_left:.1f}" y="{y_top:.1f}"'
+                f' width="{bar_w:.0f}" height="{bar_h:.1f}" rx="2"'
+                f' fill="{color}" fill-opacity="0.30" stroke="{dot_color}" stroke-width="1.6"/>',
+                f'<line x1="{bar_left:.1f}" y1="{y_top:.1f}"'
+                f' x2="{bar_left + bar_w:.1f}" y2="{y_top:.1f}"'
+                f' stroke="{dot_color}" stroke-width="2.4"/>',
+            ])
+            if val > 0:
+                lines.append(
+                    f'<text x="{bar_center:.1f}" y="{y_top - 4:.1f}"'
+                    f' text-anchor="middle" font-family="{FONT}"'
+                    f' font-size="8" fill="{dot_color}">{val:.0f}</text>'
+                )
+
+        lines.append(
+            f'<text x="{group_center:.1f}" y="{y_cat_label}"'
+            f' text-anchor="middle" font-family="{FONT}"'
+            f' font-size="10" font-weight="700" fill="#111827">{escape(cat_label)}</text>'
+        )
+
+    # Legend
+    legend_x = NGRAM_LEFT
+    legend_y = NGRAM_BOTTOM + 32
+    leg_box = 10
+    leg_gap = 6
+    leg_item_w = 115
+    for li, (_s_key, s_label, color, dot_color) in enumerate(series):
+        lx = legend_x + li * leg_item_w
+        lines.extend([
+            f'<rect x="{lx}" y="{legend_y}" width="{leg_box}" height="{leg_box}"'
+            f' rx="2" fill="{color}" fill-opacity="0.40" stroke="{dot_color}" stroke-width="1.4"/>',
+            f'<text x="{lx + leg_box + leg_gap}" y="{legend_y + 9}"'
+            f' font-family="{FONT}" font-size="9" fill="#374151">{escape(s_label)}</text>',
+        ])
+
+    lines.append("</svg>")
+    return "".join(lines) + "\n"
+
+
+def _render_ngram_grouped_bars(
+    series: list[tuple[str, str, str, str]],
+    categories: list[tuple[str, str]],
+    data: dict[str, dict[str, float]],
+    title: str,
+    subtitle: str,
+    y_label: str,
+    axis_max: float,
+    y_fmt: str = "{:.0f}",
+    reference_line: bool = True,
+) -> str:
+    """Generic grouped-bar SVG renderer for ngram charts."""
+    plot_w = NGRAM_RIGHT - NGRAM_LEFT
+    plot_h = NGRAM_BOTTOM - NGRAM_TOP
+    n_groups = len(categories)
+    n_bars = len(series)
+    bar_w = 26.0
+    bar_gap = 6.0
+    group_block = n_bars * bar_w + (n_bars - 1) * bar_gap
+
+    def fy(v: float) -> float:
+        return NGRAM_BOTTOM - (max(0.0, min(v, axis_max)) / axis_max) * plot_h
+
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg"'
+        f' width="{NGRAM_CHART_WIDTH}" height="{NGRAM_CHART_HEIGHT}"'
+        f' viewBox="0 0 {NGRAM_CHART_WIDTH} {NGRAM_CHART_HEIGHT}"'
+        f' role="img" aria-labelledby="title desc">',
+        f"<title>{escape(title)}</title>",
+        f"<desc>{escape(title)}</desc>",
+        f'<rect width="{NGRAM_CHART_WIDTH}" height="{NGRAM_CHART_HEIGHT}" fill="#ffffff"/>',
+        f'<text x="{NGRAM_LEFT}" y="22" font-family="{FONT}"'
+        f' font-size="15" font-weight="700" fill="#111827">{escape(title)}</text>',
+        f'<text x="{NGRAM_LEFT}" y="38" font-family="{FONT}"'
+        f' font-size="9" fill="#6b7280">{escape(subtitle)}</text>',
+        f'<text x="{NGRAM_RIGHT}" y="22" text-anchor="end" font-family="{FONT}"'
+        f' font-size="10" fill="#6b7280">{escape(y_label)}</text>',
+        f'<text x="{NGRAM_RIGHT}" y="38" text-anchor="end" font-family="{FONT}"'
+        f' font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
+    ]
+
+    for grid_val in (0.0, axis_max * 0.5, axis_max):
+        gy = fy(grid_val)
+        lines.append(
+            f'<line x1="{NGRAM_LEFT}" y1="{gy:.1f}"'
+            f' x2="{NGRAM_RIGHT}" y2="{gy:.1f}" stroke="#e5e7eb" stroke-width="1"/>'
+        )
+        lines.append(
+            f'<text x="{NGRAM_LEFT - 6}" y="{gy + 3:.1f}" text-anchor="end"'
+            f' font-family="{FONT}" font-size="10" fill="#6b7280">'
+            f'{y_fmt.format(grid_val)}</text>'
+        )
+
+    if reference_line:
+        all_vals = [v for cat_vals in data.values() for v in cat_vals.values() if v > 0]
+        if all_vals:
+            best_y = fy(max(all_vals))
+            lines.append(
+                f'<line x1="{NGRAM_LEFT}" y1="{best_y:.1f}"'
+                f' x2="{NGRAM_RIGHT}" y2="{best_y:.1f}"'
+                f' stroke="{RED}" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
+            )
+
+    group_step = plot_w / n_groups
+    y_cat_label = NGRAM_BOTTOM + 16
+
+    for gi, (cat_id, cat_label) in enumerate(categories):
+        group_center = NGRAM_LEFT + (gi + 0.5) * group_step
+        bar0_left = group_center - group_block / 2
+
+        for bi, (s_key, _s_label, color, dot_color) in enumerate(series):
+            bar_center = bar0_left + bi * (bar_w + bar_gap) + bar_w / 2
+            bar_left = bar_center - bar_w / 2
+            val = data[s_key][cat_id]
+            y_top = fy(val)
+            bar_h = NGRAM_BOTTOM - y_top
+
+            lines.extend([
+                f'<rect x="{bar_left:.1f}" y="{y_top:.1f}"'
+                f' width="{bar_w:.0f}" height="{bar_h:.1f}" rx="2"'
+                f' fill="{color}" fill-opacity="0.30" stroke="{dot_color}" stroke-width="1.6"/>',
+                f'<line x1="{bar_left:.1f}" y1="{y_top:.1f}"'
+                f' x2="{bar_left + bar_w:.1f}" y2="{y_top:.1f}"'
+                f' stroke="{dot_color}" stroke-width="2.4"/>',
+            ])
+            if val > 0:
+                label_str = y_fmt.format(val)
+                lines.append(
+                    f'<text x="{bar_center:.1f}" y="{y_top - 4:.1f}"'
+                    f' text-anchor="middle" font-family="{FONT}"'
+                    f' font-size="8" fill="{dot_color}">{label_str}</text>'
+                )
+
+        lines.append(
+            f'<text x="{group_center:.1f}" y="{y_cat_label}"'
+            f' text-anchor="middle" font-family="{FONT}"'
+            f' font-size="10" font-weight="700" fill="#111827">{escape(cat_label)}</text>'
+        )
+
+    legend_x = NGRAM_LEFT
+    legend_y = NGRAM_BOTTOM + 32
+    leg_box = 10
+    leg_gap = 6
+    leg_item_w = 140
+    for li, (_s_key, s_label, color, dot_color) in enumerate(series):
+        lx = legend_x + li * leg_item_w
+        lines.extend([
+            f'<rect x="{lx}" y="{legend_y}" width="{leg_box}" height="{leg_box}"'
+            f' rx="2" fill="{color}" fill-opacity="0.40" stroke="{dot_color}" stroke-width="1.4"/>',
+            f'<text x="{lx + leg_box + leg_gap}" y="{legend_y + 9}"'
+            f' font-family="{FONT}" font-size="9" fill="#374151">{escape(s_label)}</text>',
+        ])
+
+    lines.append("</svg>")
+    return "".join(lines) + "\n"
+
+
+def render_ngram_toks_chart(artifact: dict) -> str:
+    """Throughput comparison: ax direct / ax n-gram / lightning n-gram."""
+    series = NGRAM_TOKS_SERIES
+    categories = NGRAM_OPPORTUNITY_CATEGORIES
+
+    data: dict[str, dict[str, float]] = {}
+    for s_key, _label, _color, _dot in series:
+        data[s_key] = {}
+        for cat_id, _cat_label in categories:
+            val = _ngram_category_median(artifact.get(s_key, []), cat_id, "tok_s_median")
+            data[s_key][cat_id] = val if val is not None else 0.0
+
+    all_vals = [v for cat_vals in data.values() for v in cat_vals.values() if v > 0]
+    if not all_vals:
+        raise ChartError("ngram toks artifact has no usable tok/s data")
+    axis_max = nice_axis_ceiling(max(all_vals) * 1.05)
+
+    return _render_ngram_grouped_bars(
+        series=series,
+        categories=categories,
+        data=data,
+        title="N-gram throughput — ax-engine vs lightning",
+        subtitle="all paths: temp=0.6/top_p=0.95/top_k=20",
+        y_label="tok/s",
+        axis_max=axis_max,
+        y_fmt="{:.0f}",
+        reference_line=True,
+    )
+
+
+def render_ngram_accept_chart(artifact: dict) -> str:
+    """Accept rate comparison: ax n-gram vs lightning n-gram, dynamic y-axis scale."""
+    series = NGRAM_ACCEPT_SERIES
+    categories = NGRAM_OPPORTUNITY_CATEGORIES
+
+    data: dict[str, dict[str, float]] = {}
+    accept_keys = {"ax_ngram": "ngram_accept_rate", "lightning": "lightning_accept_rate"}
+    for s_key, _label, _color, _dot in series:
+        data[s_key] = {}
+        rate_key = accept_keys[s_key]
+        for cat_id, _cat_label in categories:
+            val = _ngram_category_median(artifact.get(s_key, []), cat_id, rate_key)
+            data[s_key][cat_id] = (val * 100.0) if val is not None else 0.0
+
+    all_vals = [v for cat_vals in data.values() for v in cat_vals.values() if v > 0]
+    # Scale to actual data with 25% headroom, capped at 100%
+    axis_max = min(100.0, nice_axis_ceiling(max(all_vals) * 1.25)) if all_vals else 100.0
+
+    return _render_ngram_grouped_bars(
+        series=series,
+        categories=categories,
+        data=data,
+        title="N-gram accept rate — ax-engine vs lightning",
+        subtitle="draft token acceptance at temp=0.6 · higher = better speculation quality",
+        y_label="accept %",
+        axis_max=axis_max,
+        y_fmt="{:.0f}%",
+        reference_line=True,
+    )
+
+
 def write_chart(path: Path, content: str, check: bool) -> bool:
     if check:
         return path.exists() and path.read_text() == content
@@ -882,6 +1263,20 @@ def main() -> int:
         content = render_family_chart(spec, engine_groups)
         if not write_chart(output_path, content, args.check):
             mismatches.append(output_path)
+
+    # N-gram charts (Qwen3-4B): reads from the latest ngram-compare artifact.
+    ngram_artifact_path = find_latest_ngram_artifact(args.readme.parent)
+    if ngram_artifact_path is not None:
+        ngram_artifact = json.loads(ngram_artifact_path.read_text())
+        for out_name, renderer in [
+            ("perf-ngram-opportunity.svg", render_ngram_opportunity_chart),
+            ("perf-ngram-toks.svg",        render_ngram_toks_chart),
+            ("perf-ngram-accept.svg",      render_ngram_accept_chart),
+        ]:
+            content = renderer(ngram_artifact)
+            out_path = args.output_dir / out_name
+            if not write_chart(out_path, content, args.check):
+                mismatches.append(out_path)
 
     if mismatches:
         print("README performance charts are stale:", file=sys.stderr)

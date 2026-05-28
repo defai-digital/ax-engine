@@ -460,6 +460,17 @@ so server/client timing does not get mixed with runner-time throughput.
 |  |  | 512 | 162.7 | 320.1 | **199.5 (-37.7%)** |
 |  |  | 2048 | 578.2 | 583.0 | **564.8 (-3.1%)** |
 
+### N-gram: ax-engine vs lightning-mlx (Qwen3-4B 4-bit, temp=0.6)
+
+Artifact: [`benchmarks/results/ngram-compare/2026-05-28-qwen3-4b-4bit-speculative-accept/`](benchmarks/results/ngram-compare/2026-05-28-qwen3-4b-4bit-speculative-accept/)
+
+<table><tr>
+<td><img src="docs/assets/perf-ngram-toks.svg" alt="N-gram throughput chart"/></td>
+<td><img src="docs/assets/perf-ngram-accept.svg" alt="N-gram accept rate chart"/></td>
+</tr></table>
+
+ax-engine achieves 51–54% accept rate because its n-gram table is built continuously from both the prompt **and live output tokens**, and draft tokens with ≥30% probability are accepted even when the argmax would differ (speculative threshold). Lightning's table is seeded from the prompt only; at temperature=0.6 the model's sampled output tokens diverge quickly from prompt patterns, collapsing accept rate to near zero. The ~2× lightning throughput gap is a baseline decode speed difference, not a speculation advantage.
+
 Embedding benchmarks are kept out of this README summary; see
 [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md) for embedding throughput, serving,
 and cold-start measurements.

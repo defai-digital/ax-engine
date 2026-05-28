@@ -116,6 +116,11 @@ const NGRAM_BETA_MAX_TOTAL: f32 = 100.0;
 const NGRAM_ACCEPT_THRESHOLD: f32 = 0.5;
 const NGRAM_DRAFT_LEN_LOW_CONFIDENCE: usize = 2;
 const NGRAM_DRAFT_LEN_SHRINK_THRESHOLD: f32 = 0.60;
+/// Outside `<think>` on reasoning models, require this many observations before
+/// drafting.  Keeps speculative attempts on well-established repeating patterns
+/// (SQL keywords, JSON delimiters) while suppressing one-off, low-confidence
+/// guesses in mixed prose/code regions.
+const POST_THINK_MIN_NGRAM_SUPPORT: u32 = 2;
 const NGRAM_RETRY_INTERVAL: u32 = 8;
 /// Steps to suppress n-gram acceleration after a complete miss (0 draft tokens accepted)
 /// on a linear-attention model.  Recompute cost is O(1) token regardless of context
@@ -760,10 +765,6 @@ impl NgramAccelerationTelemetry {
 
     fn record_request_disabled_step(&mut self) {
         self.request_disabled_steps = self.request_disabled_steps.saturating_add(1);
-    }
-
-    fn record_think_gated_step(&mut self) {
-        self.think_gated_steps = self.think_gated_steps.saturating_add(1);
     }
 
     fn record_request_disabled_reason(&mut self, reason: NgramRequestDisableReason) {
@@ -5561,32 +5562,26 @@ impl MlxRunner {
         // (skipping mtp_draft_tokens leaves cache.seq_len up to max_depth positions
         // behind the committed sequence, causing wrong RoPE offsets).
         //
-        // Think-block gate: for reasoning models (Qwen3 family), compute the
-        // think-state AFTER the tokens returned this step to decide whether the
-        // NEXT draft should use n-gram.  Inside `<think>`, repetition density is
-        // high; outside `<think>` it is sparse and n-gram attempts hurt acceptance.
-        // adaptive_match_len=true caps K by first-match support count so one-off
-        // patterns produce shorter (safer) drafts while well-established patterns
-        // can reach max_len=3.
+        // Post-think guarded mode: compute think-state AFTER result tokens to
+        // decide the NEXT draft policy.  Inside `<think>` use min_support=1;
+        // outside `<think>` on reasoning models require min_support=2 to suppress
+        // one-off guesses in free-form text while still drafting well-established
+        // repeating patterns (SQL keywords, JSON delimiters, code syntax).
         let draft_started = Instant::now();
         let think_state_after_result =
             compute_think_state(&self.cfg, state.ngram_in_think, &result);
-        let ngram_max = if self.cfg.think_start_token_id.is_some() && !think_state_after_result {
-            // Think-gated: outside `<think>`, skip n-gram entirely.
-            state.mtp_telemetry.ngram_think_gated_steps = state
-                .mtp_telemetry
-                .ngram_think_gated_steps
-                .saturating_add(1);
-            0
-        } else {
-            // Inside think (or no gating): allow up to 3 tokens with adaptive K.
-            3_usize.min(state.mtp_adaptive_max_depth)
-        };
+        let mtp_post_think_guarded =
+            self.cfg.think_start_token_id.is_some() && !think_state_after_result;
+        let ngram_max = 3_usize.min(state.mtp_adaptive_max_depth);
         let ngram_outcome = if ngram_max > 0 {
             state.ngram.predict_with_policy(NgramDraftPolicy {
                 variant: NgramPolicyVariant::MajorityRecency,
                 max_len: ngram_max,
-                min_support: 1,
+                min_support: if mtp_post_think_guarded {
+                    POST_THINK_MIN_NGRAM_SUPPORT
+                } else {
+                    1
+                },
                 confidence_threshold: effective_draft_confidence_threshold(),
                 adaptive_match_len: true,
                 bypass_prompt_min_support: true,
@@ -5822,30 +5817,18 @@ impl MlxRunner {
             return self.finish_pending_direct_for_ngram_transition(state);
         }
 
-        // Think-block gate: skip n-gram when model is not inside `<think>`.
-        // For Qwen3 reasoning models, patterns outside `<think>` are sparse
-        // and drafting there hurts the beta-Bernoulli posterior, causing
-        // unnecessary cooldowns.
-        if self.cfg.think_start_token_id.is_some() && !state.ngram_in_think {
-            state.ngram_acceleration.record_think_gated_step();
-            return self
-                .run_no_draft_decode(
-                    state,
-                    last_token,
-                    sampling,
-                    has_linear_attention,
-                    is_greedy,
-                    final_by_max_output,
-                    None,
-                )
-                .unwrap_or_else(|| self.run_single_decode(state, last_token, sampling));
-        }
+        // Post-think guarded mode: outside `<think>` on reasoning models, require
+        // higher support before drafting to avoid wasted verifications on one-off
+        // patterns in mixed text regions.  Well-established repeating patterns
+        // (SQL keywords, JSON structure, code syntax) still pass min_support=2.
+        let post_think_guarded = self.cfg.think_start_token_id.is_some() && !state.ngram_in_think;
 
         let draft_outcome = ngram_acceleration_draft(
             &state.ngram,
             has_linear_attention,
             state.ngram_posterior_mean(),
             self.ngram_policy_variant,
+            post_think_guarded,
         );
         state
             .ngram_acceleration
@@ -6274,7 +6257,7 @@ fn linear_ngram_initial_prompt_should_disable_request(
     // so the probe returns empty → disable. Code/structured prompts contain
     // useful bigrams even when the 4-gram classifier sees NON_REPEATING → keep
     // speculation enabled from step 1.
-    let probe = ngram_acceleration_draft(ngram, true, 0.5, variant);
+    let probe = ngram_acceleration_draft(ngram, true, 0.5, variant, false);
     probe.draft.is_empty()
 }
 
@@ -6316,7 +6299,13 @@ fn maybe_reenable_linear_ngram_from_fallback_output(
         return;
     }
 
-    let draft = ngram_acceleration_draft(&state.ngram, true, state.ngram_posterior_mean(), variant);
+    let draft = ngram_acceleration_draft(
+        &state.ngram,
+        true,
+        state.ngram_posterior_mean(),
+        variant,
+        false,
+    );
     if draft.draft.is_empty() {
         state.linear_ngram_reenable_probe_countdown = LINEAR_NGRAM_REENABLE_PROBE_INTERVAL;
         return;
@@ -6353,6 +6342,7 @@ fn ngram_acceleration_draft(
     has_linear_attention: bool,
     posterior_mean: f32,
     variant: NgramPolicyVariant,
+    post_think_guarded: bool,
 ) -> NgramDraftOutcome {
     let max_len = adaptive_ngram_draft_len(has_linear_attention, posterior_mean);
     let confidence_threshold = effective_draft_confidence_threshold();
@@ -6373,9 +6363,24 @@ fn ngram_acceleration_draft(
             adaptive_match_len: true,
             bypass_prompt_min_support: true,
         }
+    } else if post_think_guarded {
+        // Outside `<think>` on reasoning models: require POST_THINK_MIN_NGRAM_SUPPORT
+        // observations before drafting to suppress one-off guesses in free-form
+        // regions (getter/setter names, creative text).  Well-established patterns
+        // (SQL keywords, JSON delimiters) have support ≥ 2 and still draft.
+        // bypass_prompt_min_support=true allows prompt-echo patterns from step 1.
+        NgramDraftPolicy {
+            variant,
+            max_len,
+            min_support: POST_THINK_MIN_NGRAM_SUPPORT,
+            confidence_threshold,
+            adaptive_match_len: true,
+            bypass_prompt_min_support: true,
+        }
     } else {
-        // Dense models extend up to MAX_DRAFT_LEN when the posterior and n-gram
-        // chain are high-confidence; otherwise probe shorter drafts first.
+        // Dense models inside `<think>` (or non-thinking models): standard policy.
+        // min_support=1 because think-block output is already high-repetition and
+        // the beta-Bernoulli gate suppresses bad drafters naturally.
         NgramDraftPolicy {
             variant,
             max_len,
@@ -10322,9 +10327,14 @@ mod tests {
         ngram.feed(&[1, 2, 3, 1, 2, 3]);
 
         // Dense: 3-token cycle builds high-confidence bigrams → draft up to MAX_DRAFT_LEN.
-        let dense_draft =
-            ngram_acceleration_draft(&ngram, false, 0.95, NgramPolicyVariant::MajorityRecency)
-                .draft;
+        let dense_draft = ngram_acceleration_draft(
+            &ngram,
+            false,
+            0.95,
+            NgramPolicyVariant::MajorityRecency,
+            false,
+        )
+        .draft;
         assert!(!dense_draft.is_empty(), "dense draft should be non-empty");
         assert!(
             dense_draft.len() <= MAX_DRAFT_LEN,
@@ -10333,15 +10343,27 @@ mod tests {
 
         // Linear-attention: min_support=2 filters one-off n-grams.
         assert!(
-            ngram_acceleration_draft(&ngram, true, 0.95, NgramPolicyVariant::MajorityRecency,)
-                .draft
-                .is_empty(),
+            ngram_acceleration_draft(
+                &ngram,
+                true,
+                0.95,
+                NgramPolicyVariant::MajorityRecency,
+                false
+            )
+            .draft
+            .is_empty(),
             "linear attention should not probe one-off prompt n-grams"
         );
 
         ngram.feed(&[1, 2, 3]);
-        let lin_draft =
-            ngram_acceleration_draft(&ngram, true, 0.95, NgramPolicyVariant::MajorityRecency).draft;
+        let lin_draft = ngram_acceleration_draft(
+            &ngram,
+            true,
+            0.95,
+            NgramPolicyVariant::MajorityRecency,
+            false,
+        )
+        .draft;
         assert!(
             !lin_draft.is_empty(),
             "linear attention draft should be non-empty after second repeat"

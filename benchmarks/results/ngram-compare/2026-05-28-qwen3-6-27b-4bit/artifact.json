@@ -1,0 +1,83 @@
+{
+  "schema": "ax.bench.ngram_vs_lightning.v1",
+  "date": "2026-05-28",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282",
+  "sampling": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20
+  },
+  "max_tokens": 512,
+  "warmup": 1,
+  "repetitions": 3,
+  "cooldown": 8.0,
+  "prompts": [
+    {
+      "id": "getter_setter",
+      "category": "high_repeat"
+    },
+    {
+      "id": "json_array",
+      "category": "high_repeat"
+    },
+    {
+      "id": "sql_inserts",
+      "category": "high_repeat"
+    },
+    {
+      "id": "markdown_table",
+      "category": "med_repeat"
+    },
+    {
+      "id": "csv_data",
+      "category": "med_repeat"
+    },
+    {
+      "id": "creative_story",
+      "category": "low_repeat"
+    },
+    {
+      "id": "explain_tcp",
+      "category": "low_repeat"
+    }
+  ],
+  "ax_direct": [],
+  "ax_ngram": [],
+  "oracle": [
+    {
+      "prompt_id": "getter_setter",
+      "category": "high_repeat",
+      "error": "generate_step() got an unexpected keyword argument 'temp'"
+    },
+    {
+      "prompt_id": "json_array",
+      "category": "high_repeat",
+      "error": "generate_step() got an unexpected keyword argument 'temp'"
+    },
+    {
+      "prompt_id": "sql_inserts",
+      "category": "high_repeat",
+      "error": "generate_step() got an unexpected keyword argument 'temp'"
+    },
+    {
+      "prompt_id": "markdown_table",
+      "category": "med_repeat",
+      "error": "generate_step() got an unexpected keyword argument 'temp'"
+    },
+    {
+      "prompt_id": "csv_data",
+      "category": "med_repeat",
+      "error": "generate_step() got an unexpected keyword argument 'temp'"
+    },
+    {
+      "prompt_id": "creative_story",
+      "category": "low_repeat",
+      "error": "generate_step() got an unexpected keyword argument 'temp'"
+    },
+    {
+      "prompt_id": "explain_tcp",
+      "category": "low_repeat",
+      "error": "generate_step() got an unexpected keyword argument 'temp'"
+    }
+  ]
+}

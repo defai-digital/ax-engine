@@ -1,0 +1,297 @@
+{
+  "schema": "ax.bench.ngram_vs_lightning.v2",
+  "date": "2026-05-28",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25",
+  "sampling": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20
+  },
+  "max_tokens": 512,
+  "warmup": 1,
+  "repetitions": 3,
+  "cooldown": 8.0,
+  "prompts": [
+    {
+      "id": "getter_setter",
+      "category": "high_repeat"
+    },
+    {
+      "id": "json_array",
+      "category": "high_repeat"
+    },
+    {
+      "id": "sql_inserts",
+      "category": "high_repeat"
+    },
+    {
+      "id": "markdown_table",
+      "category": "med_repeat"
+    },
+    {
+      "id": "csv_data",
+      "category": "med_repeat"
+    },
+    {
+      "id": "creative_story",
+      "category": "low_repeat"
+    },
+    {
+      "id": "explain_tcp",
+      "category": "low_repeat"
+    }
+  ],
+  "ax_direct": [
+    {
+      "tok_s_median": 75.7700833033506,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "getter_setter",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 72.80205124153989,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "json_array",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 72.69359987486446,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "sql_inserts",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 72.2346593677059,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "markdown_table",
+      "category": "med_repeat"
+    },
+    {
+      "tok_s_median": 72.3337584131524,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "csv_data",
+      "category": "med_repeat"
+    },
+    {
+      "tok_s_median": 73.7201327314405,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "creative_story",
+      "category": "low_repeat"
+    },
+    {
+      "tok_s_median": 72.45578139900985,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "explain_tcp",
+      "category": "low_repeat"
+    }
+  ],
+  "ax_ngram": [
+    {
+      "tok_s_median": 73.861999997316,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "getter_setter",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 72.24797055738998,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "json_array",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 72.50511209912261,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "sql_inserts",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 71.81318808658067,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "markdown_table",
+      "category": "med_repeat"
+    },
+    {
+      "tok_s_median": 72.2141683306142,
+      "ngram_accept_rate": null,
+      "ngram_drafted": 0,
+      "ngram_accepted": 0,
+      "prompt_id": "csv_data",
+      "category": "med_repeat"
+    },
+    {
+      "tok_s_median": 74.300118641168,
+      "ngram_accept_rate": 0.20930232558139536,
+      "ngram_drafted": 43,
+      "ngram_accepted": 9,
+      "prompt_id": "creative_story",
+      "category": "low_repeat"
+    },
+    {
+      "tok_s_median": 72.54669688834007,
+      "ngram_accept_rate": 0.125,
+      "ngram_drafted": 8,
+      "ngram_accepted": 1,
+      "prompt_id": "explain_tcp",
+      "category": "low_repeat"
+    }
+  ],
+  "lightning": [
+    {
+      "tok_s_median": 145.47331167696964,
+      "lightning_accept_rate": null,
+      "lightning_drafted": 0,
+      "lightning_accepted": 0,
+      "trimmable": true,
+      "prompt_id": "getter_setter",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 152.30880215989754,
+      "lightning_accept_rate": null,
+      "lightning_drafted": 0,
+      "lightning_accepted": 0,
+      "trimmable": true,
+      "prompt_id": "json_array",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 153.09322503180138,
+      "lightning_accept_rate": 0.35714285714285715,
+      "lightning_drafted": 42,
+      "lightning_accepted": 15,
+      "trimmable": true,
+      "prompt_id": "sql_inserts",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 150.96360928471657,
+      "lightning_accept_rate": 0.0,
+      "lightning_drafted": 84,
+      "lightning_accepted": 0,
+      "trimmable": true,
+      "prompt_id": "markdown_table",
+      "category": "med_repeat"
+    },
+    {
+      "tok_s_median": 152.190005242739,
+      "lightning_accept_rate": 0.0,
+      "lightning_drafted": 24,
+      "lightning_accepted": 0,
+      "trimmable": true,
+      "prompt_id": "csv_data",
+      "category": "med_repeat"
+    },
+    {
+      "tok_s_median": 152.36900510969133,
+      "lightning_accept_rate": 0.0,
+      "lightning_drafted": 6,
+      "lightning_accepted": 0,
+      "trimmable": true,
+      "prompt_id": "creative_story",
+      "category": "low_repeat"
+    },
+    {
+      "tok_s_median": 152.36406463930618,
+      "lightning_accept_rate": null,
+      "lightning_drafted": 0,
+      "lightning_accepted": 0,
+      "trimmable": true,
+      "prompt_id": "explain_tcp",
+      "category": "low_repeat"
+    }
+  ],
+  "oracle": [
+    {
+      "tok_s_median": 186.13635015235164,
+      "ttft_median": 0.06587508297525346,
+      "trimmable": true,
+      "oracle_first_token_hit_rate": 0.11764705882352941,
+      "oracle_draft_coverage": 0.1607843137254902,
+      "oracle_token_accept_rate": 0.6707317073170732,
+      "prompt_id": "getter_setter",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 185.8214653549618,
+      "ttft_median": 0.05603324994444847,
+      "trimmable": true,
+      "oracle_first_token_hit_rate": 0.0784313725490196,
+      "oracle_draft_coverage": 0.12549019607843137,
+      "oracle_token_accept_rate": 0.53125,
+      "prompt_id": "json_array",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 185.52387738766913,
+      "ttft_median": 0.05369508301373571,
+      "trimmable": true,
+      "oracle_first_token_hit_rate": 0.050980392156862744,
+      "oracle_draft_coverage": 0.09411764705882353,
+      "oracle_token_accept_rate": 0.4583333333333333,
+      "prompt_id": "sql_inserts",
+      "category": "high_repeat"
+    },
+    {
+      "tok_s_median": 186.39499182517,
+      "ttft_median": 0.05670091591309756,
+      "trimmable": true,
+      "oracle_first_token_hit_rate": 0.15294117647058825,
+      "oracle_draft_coverage": 0.24313725490196078,
+      "oracle_token_accept_rate": 0.47619047619047616,
+      "prompt_id": "markdown_table",
+      "category": "med_repeat"
+    },
+    {
+      "tok_s_median": 186.11317072311374,
+      "ttft_median": 0.05531329207587987,
+      "trimmable": true,
+      "oracle_first_token_hit_rate": 0.06274509803921569,
+      "oracle_draft_coverage": 0.10588235294117647,
+      "oracle_token_accept_rate": 0.5370370370370371,
+      "prompt_id": "csv_data",
+      "category": "med_repeat"
+    },
+    {
+      "tok_s_median": 186.54758711310765,
+      "ttft_median": 0.05421337496954948,
+      "trimmable": true,
+      "oracle_first_token_hit_rate": 0.03529411764705882,
+      "oracle_draft_coverage": 0.07058823529411765,
+      "oracle_token_accept_rate": 0.4166666666666667,
+      "prompt_id": "creative_story",
+      "category": "low_repeat"
+    },
+    {
+      "tok_s_median": 185.90406628651758,
+      "ttft_median": 0.054344541975297034,
+      "trimmable": true,
+      "oracle_first_token_hit_rate": 0.050980392156862744,
+      "oracle_draft_coverage": 0.10980392156862745,
+      "oracle_token_accept_rate": 0.3559322033898305,
+      "prompt_id": "explain_tcp",
+      "category": "low_repeat"
+    }
+  ]
+}
