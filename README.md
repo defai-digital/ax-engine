@@ -441,6 +441,70 @@ suffix-decoding comparison, matching Rapid-MLX's policy of disabling generic
 spec decode on hybrid recurrent models. Qwen3.6 MTP rows remain a separate
 MTPLX comparison surface and should not be mixed with Rapid-MLX suffix results.
 
+#### Random-token baseline comparison (T=0 greedy, gen=128, `--prompt-mode random`)
+
+Artifact: `benchmarks/results/speculative-suite/2026-05-28-*/`
+
+The table below uses the `mlx_lm.benchmark` random-token prompt shape
+(`--prompt-mode random`) rather than the default real-workload mode, enabling
+direct comparison with the decode throughput columns above. The gate is **KV
+cache trimmability**: Gemma 4 uses a trimmable layout in standard `mlx_lm`;
+Qwen 3.6 4/5/6/8-bit quantizations are non-trimmable — both lightning and
+Rapid-MLX fall back to baseline throughput. AX Engine's own KV cache is always
+trimmable; the `ax default n-gram` column in the table above is unaffected.
+
+##### Gemma 4 — trimmable KV (tok/s)
+
+| Model | Quant | PT | baseline | lightning n-gram | Rapid-MLX PLD |
+|---|---|---:|---:|---:|---:|
+| Gemma 4 E2B | 4-bit | 128 | 172.8 | 173.0 | 172.9 |
+|  |  | 512 | 168.5 | 168.7 | 168.4 |
+|  |  | 2048 | 163.3 | 162.8 | 162.8 |
+| Gemma 4 E2B | 5-bit | 128 | 158.9 | 158.8 | 158.8 |
+|  |  | 512 | 220.8 | 216.3 | 216.7 |
+|  |  | 2048 | 150.4 | **381.8 (+154%)** | **378.4 (+152%)** |
+| Gemma 4 E2B | 6-bit | 128 | 143.5 | 143.6 | 143.7 |
+|  |  | 512 | 141.1 | 141.2 | 141.1 |
+|  |  | 2048 | 136.7 | 136.7 | 136.6 |
+| Gemma 4 E2B | 8-bit | 128 | 129.7 | 129.6 | 129.6 |
+|  |  | 512 | 127.2 | 127.3 | 127.3 |
+|  |  | 2048 | 124.0 | **368.3 (+197%)** | **364.8 (+194%)** |
+| Gemma 4 E4B | 4-bit | 128 | 115.1 | **283.5 (+146%)** | **289.9 (+152%)** |
+|  |  | 512 | 113.7 | **284.7 (+150%)** | **282.2 (+148%)** |
+|  |  | 2048 | 111.7 | **303.9 (+172%)** | **302.0 (+170%)** |
+| Gemma 4 26B A4B | 4-bit | 128 | 108.7 | 108.9 | 108.7 |
+|  |  | 512 | 106.3 | 106.1 | 106.2 |
+|  |  | 2048 | 103.1 | **221.3 (+115%)** | **220.6 (+114%)** |
+| Gemma 4 31B | 4-bit | 128 | 27.6 | **63.7 (+131%)** | **63.3 (+129%)** |
+|  |  | 512 | 27.1 | **61.6 (+127%)** | **61.3 (+126%)** |
+|  |  | 2048 | 26.0 | **41.0 (+58%)** | **41.6 (+60%)** |
+
+E2B 4-bit and 6-bit show no benefit — T=0 greedy on random tokens does not
+produce 3-gram repetitions at these bit widths. E2B 5-bit and 8-bit benefit
+only at pt=2048 where the model enters output loops the n-gram table catches.
+
+##### Qwen 3.6 — non-trimmable KV (tok/s)
+
+| Model | Quant | PT | baseline | lightning n-gram | Rapid-MLX PLD |
+|---|---|---:|---:|---:|---:|
+| Qwen 3.6 27B | 4-bit | 128 | 28.6 | 28.4 | 28.6 |
+|  |  | 512 | 28.7 | 30.7 | 30.7 |
+|  |  | 2048 | 30.4 | 30.0 | 30.2 |
+| Qwen 3.6 27B | 5-bit | 128 | 26.1 | 26.4 | 26.3 |
+|  |  | 512 | 26.2 | 26.2 | 26.2 |
+|  |  | 2048 | 26.0 | 26.0 | 26.0 |
+| Qwen 3.6 27B | 6-bit | 128 | 22.4 | 22.5 | 22.5 |
+|  |  | 512 | 22.4 | 22.4 | 22.5 |
+|  |  | 2048 | 22.6 | 22.6 | 22.6 |
+| Qwen 3.6 27B | 8-bit | 128 | 17.7 | 17.8 | 17.8 |
+|  |  | 512 | 17.7 | 17.6 | 17.6 |
+|  |  | 2048 | 17.5 | 17.5 | 17.5 |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 110.4 | 110.8 | 110.3 |
+
+Qwen 3.6 draft count is always 0 across all quantizations and prompt lengths
+— KV cache non-trimmable, throughput equals baseline. AX Engine n-gram
+acceleration is not constrained by mlx_lm KV trimmability and remains active.
+
 ### Time to first token (ms) — generation=128 tokens, temp=0
 
 Lower is better. `mlx_lm` values are derived from reported prefill throughput.
