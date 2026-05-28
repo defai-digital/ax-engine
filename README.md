@@ -461,9 +461,16 @@ Qwen 3.6 4/5/6/8-bit quantizations are non-trimmable — both lightning and
 Rapid-MLX fall back to baseline throughput. AX Engine's own KV cache is always
 trimmable; the `ax default n-gram` column in the table above is unaffected.
 
+`suite baseline` is the same `mlx_lm` model weights run through
+`bench_speculative_suite.py`'s Python decode loop with no speculation. It is
+**not** the `mlx_lm` column in the main tables above (which uses
+`mlx_lm.benchmark`'s optimized C++ loop and runs ~15–20% faster). All three
+columns in the tables below share the same Python loop, so their comparison is
+apple-to-apple. Percentages are vs `suite baseline`.
+
 ##### Gemma 4 — trimmable KV (tok/s)
 
-| Model | Quant | PT | baseline | lightning n-gram | Rapid-MLX PLD |
+| Model | Quant | PT | suite baseline | lightning n-gram | Rapid-MLX PLD |
 |---|---|---:|---:|---:|---:|
 | Gemma 4 E2B | 4-bit | 128 | 172.8 | 173.0 (+0.1%) | 172.9 (+0.1%) |
 |  |  | 512 | 168.5 | 168.7 (+0.1%) | 168.4 (-0.1%) |
@@ -493,7 +500,7 @@ only at pt=2048 where the model enters output loops the n-gram table catches.
 
 ##### Qwen 3.6 — non-trimmable KV (tok/s)
 
-| Model | Quant | PT | baseline | lightning n-gram | Rapid-MLX PLD |
+| Model | Quant | PT | suite baseline | lightning n-gram | Rapid-MLX PLD |
 |---|---|---:|---:|---:|---:|
 | Qwen 3.6 27B | 4-bit | 128 | 28.6 | 28.4 (-0.7%) | 28.6 (0.0%) |
 |  |  | 512 | 28.7 | 30.7 (+7.0%) | 30.7 (+7.0%) |
