@@ -63,6 +63,44 @@ class GateError(RuntimeError):
     pass
 
 
+def ngram_outcome_tier(
+    *,
+    status: str,
+    route: str,
+    ngram_beats_baseline: bool,
+    direct_beats_baseline: bool,
+) -> str:
+    """Assign a 5-category promotion tier to an n-gram row.
+
+    Categories (PRD Slice-5 implementation notes):
+      effective_throughput          — accepted drafts + beats mlx_lm baseline
+      no_draft_fallback             — no drafts attempted; ran as direct mode
+      zero_accept_fallback          — drafts attempted but none accepted
+      direct_fallback_cost_reduction — fallback mode but still beats mlx_lm
+                                       (lower-bit weights speed up verification)
+      regression_or_neutral         — n-gram at or below mlx_lm baseline
+
+    This function is mechanical: it reads status, route, and throughput comparison
+    flags and assigns a label. It does not infer success from model names.
+    """
+    if status == NGRAM_EFFECTIVE_STATUS and route == NGRAM_EFFECTIVE_ROUTE:
+        if ngram_beats_baseline:
+            return "effective_throughput"
+        return "regression_or_neutral"
+    if status == "ngram_no_draft_direct_fallback":
+        if ngram_beats_baseline:
+            return "direct_fallback_cost_reduction"
+        return "no_draft_fallback"
+    if status == "ngram_no_accept_fallback":
+        if ngram_beats_baseline:
+            return "direct_fallback_cost_reduction"
+        return "zero_accept_fallback"
+    # Unknown / no observed path.
+    if ngram_beats_baseline:
+        return "direct_fallback_cost_reduction"
+    return "regression_or_neutral"
+
+
 @dataclass(frozen=True)
 class RowResult:
     artifact: Path
@@ -76,6 +114,7 @@ class RowResult:
     ngram_status: str
     ngram_route: str
     ngram_effective_required: bool
+    ngram_outcome_tier: str
 
 
 def metric_median(row: dict[str, Any], key: str) -> float:
@@ -206,6 +245,12 @@ def check_artifact(
                 f"route={ngram_route!r}"
             )
 
+        tier = ngram_outcome_tier(
+            status=ngram_status,
+            route=ngram_route,
+            ngram_beats_baseline=ngram_delta_pct > 0,
+            direct_beats_baseline=direct_delta_pct > 0,
+        )
         results.append(
             RowResult(
                 artifact=artifact_path,
@@ -219,6 +264,7 @@ def check_artifact(
                 ngram_status=ngram_status,
                 ngram_route=ngram_route,
                 ngram_effective_required=ngram_effective_required,
+                ngram_outcome_tier=tier,
             )
         )
     return results
@@ -339,8 +385,16 @@ def main(argv: list[str] | None = None) -> int:
         "worst n-gram: "
         f"{worst_ngram.artifact.name} prompt={worst_ngram.prompt_tokens} "
         f"delta={worst_ngram.ngram_delta_pct:+.2f}% "
-        f"status={worst_ngram.ngram_status}"
+        f"status={worst_ngram.ngram_status} "
+        f"tier={worst_ngram.ngram_outcome_tier}"
     )
+
+    # Outcome tier summary across all checked rows.
+    tier_counts: dict[str, int] = {}
+    for row in rows:
+        tier_counts[row.ngram_outcome_tier] = tier_counts.get(row.ngram_outcome_tier, 0) + 1
+    tier_summary = ", ".join(f"{tier}={count}" for tier, count in sorted(tier_counts.items()))
+    print(f"outcome tiers: {tier_summary}")
     return 0
 
 

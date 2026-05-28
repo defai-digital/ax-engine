@@ -41,11 +41,11 @@ pub use metal::{
     PHASE1_OPTIONAL_METAL_KERNELS, PHASE1_REQUIRED_METAL_KERNELS, build_phase1_kernel_artifacts,
 };
 pub use model::{
-    AX_NATIVE_MODEL_MANIFEST_FILE, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
-    NativeLinearAttentionConfig, NativeMlaAttentionConfig, NativeModelArtifacts,
-    NativeModelArtifactsSummary, NativeModelError, NativeModelManifest, NativeMoeConfig,
-    NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization,
-    NativeTensorRole, NativeTensorSpec, WeightSanitize,
+    AX_ENGINE_3BIT_EXPERIMENTAL_ENV, AX_NATIVE_MODEL_MANIFEST_FILE,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeLinearAttentionConfig, NativeMlaAttentionConfig,
+    NativeModelArtifacts, NativeModelArtifactsSummary, NativeModelError, NativeModelManifest,
+    NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat,
+    NativeTensorQuantization, NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 pub use request::{
     RequestRecord, RequestSnapshot, RequestState, RequestSubmission, StateTransitionError,

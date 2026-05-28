@@ -838,6 +838,43 @@ def ax_decode_claim_status(
     return "ngram_acceleration_effective_throughput"
 
 
+def ax_ngram_outcome_tier(
+    *,
+    direct_mode: bool,
+    status: str,
+    route: str,
+) -> str:
+    """Map n-gram counters to a promotion-tier label.
+
+    Categories (PRD Slice-5 implementation notes):
+      direct_baseline              -- direct-mode row, not n-gram
+      effective_throughput         -- accepted drafts produced a real speedup
+      no_draft_fallback            -- no drafts attempted; ran as direct mode
+      zero_accept_fallback         -- drafts attempted but none accepted
+      direct_fallback_cost_reduction -- fallback mode but throughput beats mlx_lm
+                                       baseline (determined by the outperformance
+                                       checker, not by counter values alone)
+      regression_or_neutral        -- n-gram at or below mlx_lm baseline
+
+    The two comparison-dependent tiers (direct_fallback_cost_reduction and
+    regression_or_neutral) cannot be determined from counters alone.  When this
+    function is called without mlx_lm baseline data, fallback rows are labeled
+    "no_draft_fallback" or "zero_accept_fallback".  The outperformance checker
+    (check_direct_ngram_outperformance.py) assigns the comparison tiers when
+    processing completed artifact directories.
+    """
+    if direct_mode:
+        return "direct_baseline"
+    if status == "ngram_acceleration_effective_throughput" and route == "ngram_verified_bonus_tokens":
+        return "effective_throughput"
+    if status == "ngram_no_draft_direct_fallback":
+        return "no_draft_fallback"
+    if status == "ngram_no_accept_fallback":
+        return "zero_accept_fallback"
+    # Unknown or unobserved path — treat conservatively as no acceleration.
+    return "no_draft_fallback"
+
+
 def ax_decode_effective_route(
     *,
     direct_mode: bool,
@@ -2968,6 +3005,13 @@ def bench_axengine(
         ngram_summary=ngram_summary,
         ax_mlx_telemetry=ax_mlx_telemetry,
     )
+    _claim_status = ax_decode_claim_status(direct_mode, ngram_summary)
+    _effective_route = ax_decode_effective_route(
+        direct_mode=direct_mode,
+        model_metadata=model_metadata,
+        telemetry=ngram_summary,
+        ax_mlx_telemetry=ax_mlx_telemetry,
+    )
     row = {
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
@@ -2985,16 +3029,13 @@ def bench_axengine(
             else "prefix_cache_enabled_prefill_metrics_invalidated_on_hit"
         ),
         "prefill_work_contract": ax_prefill_work_contract(len(tokens), sampler=None),
-        "ax_decode_claim_status": ax_decode_claim_status(
-            direct_mode,
-            ngram_summary,
-        ),
-        "ax_decode_effective_route": ax_decode_effective_route(
+        "ax_decode_claim_status": _claim_status,
+        "ax_ngram_outcome_tier": ax_ngram_outcome_tier(
             direct_mode=direct_mode,
-            model_metadata=model_metadata,
-            telemetry=ngram_summary,
-            ax_mlx_telemetry=ax_mlx_telemetry,
+            status=_claim_status,
+            route=_effective_route,
         ),
+        "ax_decode_effective_route": _effective_route,
         "ax_decode_claim_mode": ax_decode_claim_mode(direct_mode, sampler=sampler),
         "prompt_contract": "mlx_lm_random_tokens_seed_0",
         "random_seed": MLX_LM_RANDOM_SEED,

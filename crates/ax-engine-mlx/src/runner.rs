@@ -1102,6 +1102,97 @@ impl WeightLayoutTelemetry {
     }
 }
 
+/// Affine quantization bit-width summary computed once at `MlxRunner` construction.
+///
+/// Tracks per-bit tensor counts and the min/max bit width across all affine-quantized
+/// tensors in the manifest. Emitted every step so benchmark artifacts can record
+/// quantization recipe details without re-reading the manifest.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct AffineQuantBitsTelemetry {
+    /// Total count of affine-quantized tensors (U32 dtype with quantization metadata).
+    affine_tensor_count: u32,
+    /// Minimum bit width across all affine tensors; 0 when no affine tensors.
+    min_affine_bits: u32,
+    /// Maximum bit width across all affine tensors; 0 when no affine tensors.
+    max_affine_bits: u32,
+    /// Per-bit tensor counts for the bit widths MLX supports.
+    affine_2bit_count: u32,
+    affine_3bit_count: u32,
+    affine_4bit_count: u32,
+    affine_5bit_count: u32,
+    affine_6bit_count: u32,
+    affine_8bit_count: u32,
+    /// 1 when `AX_ENGINE_3BIT_EXPERIMENTAL=1` was set at load time, else 0.
+    experimental_3bit_gate: u32,
+}
+
+impl AffineQuantBitsTelemetry {
+    fn from_specs(specs: &[ax_engine_core::NativeTensorSpec]) -> Self {
+        let mut t = Self {
+            experimental_3bit_gate: u32::from(
+                std::env::var(ax_engine_core::AX_ENGINE_3BIT_EXPERIMENTAL_ENV).as_deref()
+                    == Ok("1"),
+            ),
+            ..Default::default()
+        };
+        for spec in specs {
+            let Some(q) = &spec.quantization else {
+                continue;
+            };
+            if q.mode != "affine" {
+                continue;
+            }
+            t.affine_tensor_count = t.affine_tensor_count.saturating_add(1);
+            let bits = q.bits;
+            if t.min_affine_bits == 0 || bits < t.min_affine_bits {
+                t.min_affine_bits = bits;
+            }
+            if bits > t.max_affine_bits {
+                t.max_affine_bits = bits;
+            }
+            match bits {
+                2 => t.affine_2bit_count = t.affine_2bit_count.saturating_add(1),
+                3 => t.affine_3bit_count = t.affine_3bit_count.saturating_add(1),
+                4 => t.affine_4bit_count = t.affine_4bit_count.saturating_add(1),
+                5 => t.affine_5bit_count = t.affine_5bit_count.saturating_add(1),
+                6 => t.affine_6bit_count = t.affine_6bit_count.saturating_add(1),
+                8 => t.affine_8bit_count = t.affine_8bit_count.saturating_add(1),
+                _ => {}
+            }
+        }
+        t
+    }
+
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
+        if self.affine_tensor_count > 0 {
+            decisions.upsert_route_decision("ax_mlx_affine_tensor_count", self.affine_tensor_count);
+            decisions.upsert_route_decision("ax_mlx_affine_min_bits", self.min_affine_bits);
+            decisions.upsert_route_decision("ax_mlx_affine_max_bits", self.max_affine_bits);
+        }
+        if self.affine_2bit_count > 0 {
+            decisions.upsert_route_decision("ax_mlx_affine_2bit_count", self.affine_2bit_count);
+        }
+        if self.affine_3bit_count > 0 {
+            decisions.upsert_route_decision("ax_mlx_affine_3bit_count", self.affine_3bit_count);
+        }
+        if self.affine_4bit_count > 0 {
+            decisions.upsert_route_decision("ax_mlx_affine_4bit_count", self.affine_4bit_count);
+        }
+        if self.affine_5bit_count > 0 {
+            decisions.upsert_route_decision("ax_mlx_affine_5bit_count", self.affine_5bit_count);
+        }
+        if self.affine_6bit_count > 0 {
+            decisions.upsert_route_decision("ax_mlx_affine_6bit_count", self.affine_6bit_count);
+        }
+        if self.affine_8bit_count > 0 {
+            decisions.upsert_route_decision("ax_mlx_affine_8bit_count", self.affine_8bit_count);
+        }
+        // Always emit gate state so artifacts explicitly record experimental mode status.
+        decisions
+            .upsert_route_decision("ax_mlx_experimental_3bit_gate", self.experimental_3bit_gate);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct MtpTelemetry {
     draft_tokens: u32,
@@ -2975,6 +3066,11 @@ pub struct MlxRunner {
     /// The counts are invariant under decode (weights don't change post-init)
     /// so caching avoids the 64-layer iteration per scheduler step.
     weight_layout_telemetry: WeightLayoutTelemetry,
+    /// Affine quantization bit-width summary computed at construction.
+    /// Emitted every step as `ax_mlx_affine_*` route decisions so benchmark
+    /// artifacts record the quantization recipe (min/max bits, per-bit counts,
+    /// and whether the 3-bit experimental gate was active at load time).
+    affine_quant_telemetry: AffineQuantBitsTelemetry,
     /// Per-thread/per-shape compiled embedding-forward closures. Each entry is
     /// built on the first `embed()` call at a new `(thread_id, seq_len,
     /// target_position)` shape and reused on the same worker thread. Set
@@ -3120,6 +3216,7 @@ impl MlxRunner {
         let weights = load_weights(artifacts).map_err(MlxRunnerError::Weights)?;
 
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
+        let affine_quant_telemetry = AffineQuantBitsTelemetry::from_specs(artifacts.tensor_specs());
 
         let weights = Arc::new(weights);
 
@@ -3227,6 +3324,7 @@ impl MlxRunner {
             rotating_sliding_decode,
             direct_clear_cache_cadence,
             weight_layout_telemetry,
+            affine_quant_telemetry,
             embed_compile_cache: Mutex::new(HashMap::new()),
             embed_batch_compile_cache: Mutex::new(HashMap::new()),
             embed_compile_stats: Mutex::new(EmbedCompileStats::default()),
@@ -3332,6 +3430,8 @@ impl ExecutionRunner for MlxRunner {
             prefill_profile.append_route_decisions(&mut route_decisions);
             decode_profile.append_route_decisions(&mut route_decisions);
             self.weight_layout_telemetry
+                .append_route_decisions(&mut route_decisions);
+            self.affine_quant_telemetry
                 .append_route_decisions(&mut route_decisions);
             kv_cache.append_route_decisions(&mut route_decisions);
             prefix_cache.append_route_decisions(&mut route_decisions);
