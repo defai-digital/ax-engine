@@ -377,7 +377,25 @@ AX_MLX_TELEMETRY_KEYS = [
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT_KEYS,
     *AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_KEYS,
     *AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN_KEYS,
+    # Affine quantization bit summary — constant per model load, max-merged across trials.
+    "ax_mlx_affine_tensor_count",
+    "ax_mlx_affine_min_bits",
+    "ax_mlx_affine_max_bits",
+    "ax_mlx_affine_2bit_count",
+    "ax_mlx_affine_3bit_count",
+    "ax_mlx_affine_4bit_count",
+    "ax_mlx_affine_5bit_count",
+    "ax_mlx_affine_6bit_count",
+    "ax_mlx_affine_8bit_count",
+    "ax_mlx_experimental_3bit_gate",
 ]
+
+# Affine quantization bit keys are constant per model load (set at startup, not
+# accumulated per step). They must be max-merged across trials, not summed.
+AX_MLX_AFFINE_MAX_KEYS: frozenset[str] = frozenset(
+    key for key in AX_MLX_TELEMETRY_KEYS if key.startswith("ax_mlx_affine_")
+    or key == "ax_mlx_experimental_3bit_gate"
+)
 
 AX_MLX_PREFIX_CACHE_MAX_KEYS = {
     "ax_mlx_prefix_cache_entries",
@@ -2139,7 +2157,10 @@ def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for run in runs:
         for key, value in (run.get("ax_mlx_telemetry") or {}).items():
-            totals[key] = totals.get(key, 0) + int(value)
+            if key in AX_MLX_AFFINE_MAX_KEYS:
+                totals[key] = max(totals.get(key, 0), int(value))
+            else:
+                totals[key] = totals.get(key, 0) + int(value)
     return totals
 
 

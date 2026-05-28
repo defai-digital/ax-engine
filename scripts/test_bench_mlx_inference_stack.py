@@ -1773,9 +1773,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_ngram_draft_attempts"], 3)
         self.assertEqual(telemetry["ax_ngram_draft_tokens"], 12)
         self.assertEqual(telemetry["ax_ngram_accepted_tokens"], 9)
-        self.assertEqual(telemetry["ax_ngram_complete_misses"], 0)
-        self.assertEqual(telemetry["ax_ngram_cooldown_steps"], 0)
-        self.assertEqual(telemetry["ax_ngram_cooldown_events"], 0)
+        # Keys absent from the route are not present in the result (prefix-based
+        # collection does not fill in zero defaults for missing keys).
+        self.assertEqual(telemetry.get("ax_ngram_complete_misses", 0), 0)
+        self.assertEqual(telemetry.get("ax_ngram_cooldown_steps", 0), 0)
+        self.assertEqual(telemetry.get("ax_ngram_cooldown_events", 0), 0)
         self.assertEqual(telemetry["ax_ngram_request_disable_events"], 1)
         self.assertEqual(telemetry["ax_ngram_request_disabled_steps"], 4)
         self.assertEqual(telemetry["ax_ngram_fallback_confidence_filtered_steps"], 2)
