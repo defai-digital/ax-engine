@@ -1,0 +1,488 @@
+{
+  "contract": {
+    "cooldown_s": 15.0,
+    "depth": 3,
+    "enable_thinking": false,
+    "max_tokens": 1000,
+    "mode": "sampled",
+    "model_provenance": {
+      "ax": {
+        "kind": "unspecified"
+      },
+      "mtplx": {
+        "kind": "unspecified"
+      }
+    },
+    "repetitions": 5,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suite_fingerprints": {
+      "flappy": {
+        "path": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl",
+        "sha256": "97e53df42f0b2b456d38164264a674bb2c657e59d68833e42d2c60312d7fd669"
+      },
+      "long_code": {
+        "path": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/long_code.jsonl",
+        "sha256": "8c140e2f44bfb418e4e2dbb142f20f0cfcc5752442bad38bc6795b086e0c0fbf"
+      }
+    },
+    "suites": [
+      "flappy",
+      "long_code"
+    ],
+    "warmup_repetitions": 1
+  },
+  "created_at": "2026-05-28",
+  "harness_contract_id": "7ac197ff0e3c127dbf2cb8937ea22381875be84317aa934f10a162940e65b4fd",
+  "model_provenance": {
+    "ax": {
+      "kind": "unspecified"
+    },
+    "mtplx": {
+      "kind": "unspecified"
+    }
+  },
+  "schema": "ax.mtp_differential.v1",
+  "suites": [
+    {
+      "artifacts": {
+        "ax": "benchmarks/results/mtp-compare/2026-05-27-ax-mtp-topk4096-final/quality-flappy-r4/flappy.json",
+        "mtplx": "benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/quality-flappy/mtplx.json"
+      },
+      "cases": [
+        {
+          "ax": {
+            "accept_rate": 0.9284192586280358,
+            "acceptance_by_depth": [
+              null,
+              null,
+              null
+            ],
+            "accepted_tokens": 2179,
+            "category": "game_code",
+            "client_wall_total_ms": 38868.14037500881,
+            "decode_tok_s": 41.77062156063313,
+            "draft_tokens": 2347,
+            "mechanism_label": "pure_mtp",
+            "ngram_hit_steps": 0,
+            "output_token_sha256": null,
+            "prompt_id": "flappy_collision_checks",
+            "prompt_text_sha256": "dc95f55539735dcc41f9b07a7ccb764207a474ec0e3876a88203cbf79232ae0e",
+            "prompt_token_ids_sha256": "75a7041d3bb7dd9091f33b424cc5bc742e26dd3fa7a242fca46163014c3af350"
+          },
+          "mtplx": {
+            "accept_rate": 0.9994666666666666,
+            "acceptance_by_depth": [
+              1.0,
+              1.0,
+              0.9984
+            ],
+            "accepted_tokens": 3748,
+            "category": "game_code",
+            "decode_tok_s": 42.9235699183179,
+            "draft_tokens": 3750,
+            "end_to_end_tok_s": 41.74682978504344,
+            "mechanism_label": "mtplx_mtp",
+            "output_token_sha256": "d09a24971e56c0aa98e022a941999a055f445dc80b4295efb22eb2211baebc05",
+            "prompt_id": "flappy_collision_checks",
+            "prompt_text_sha256": "dc95f55539735dcc41f9b07a7ccb764207a474ec0e3876a88203cbf79232ae0e",
+            "prompt_tokens": 432
+          },
+          "output_token_sha256_equal": null,
+          "present": {
+            "ax": true,
+            "mtplx": true
+          },
+          "prompt_id": "flappy_collision_checks",
+          "speedup_ratio": 0.9731395044755412,
+          "token_diff_first_index": null
+        },
+        {
+          "ax": {
+            "accept_rate": 0.9579358196010408,
+            "acceptance_by_depth": [
+              null,
+              null,
+              null
+            ],
+            "accepted_tokens": 2209,
+            "category": "game_code",
+            "client_wall_total_ms": 40658.9869169984,
+            "decode_tok_s": 42.09492287241947,
+            "draft_tokens": 2306,
+            "mechanism_label": "pure_mtp",
+            "ngram_hit_steps": 0,
+            "output_token_sha256": null,
+            "prompt_id": "flappy_pipes",
+            "prompt_text_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+            "prompt_token_ids_sha256": "fc913ab80026efc1e8a5d8b1b18c1a5a5290e4a226c531c69795dc73fa455978"
+          },
+          "mtplx": {
+            "accept_rate": 0.9986666666666667,
+            "acceptance_by_depth": [
+              1.0,
+              1.0,
+              0.996
+            ],
+            "accepted_tokens": 3745,
+            "category": "game_code",
+            "decode_tok_s": 43.58684976834286,
+            "draft_tokens": 3750,
+            "end_to_end_tok_s": 42.664316677045306,
+            "mechanism_label": "mtplx_mtp",
+            "output_token_sha256": "5c0ddc95aac94b4f2defda32eca9fc7ce58501fd943c5f759af9c1c7d84cae5d",
+            "prompt_id": "flappy_pipes",
+            "prompt_text_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+            "prompt_tokens": 273
+          },
+          "output_token_sha256_equal": null,
+          "present": {
+            "ax": true,
+            "mtplx": true
+          },
+          "prompt_id": "flappy_pipes",
+          "speedup_ratio": 0.965771169427184,
+          "token_diff_first_index": null
+        },
+        {
+          "ax": {
+            "accept_rate": 0.8848384424192212,
+            "acceptance_by_depth": [
+              null,
+              null,
+              null
+            ],
+            "accepted_tokens": 2136,
+            "category": "game_code",
+            "client_wall_total_ms": 38328.84529198054,
+            "decode_tok_s": 40.81361950482876,
+            "draft_tokens": 2414,
+            "mechanism_label": "pure_mtp",
+            "ngram_hit_steps": 0,
+            "output_token_sha256": null,
+            "prompt_id": "flappy_score_gates",
+            "prompt_text_sha256": "d30afc995170ca11cb9891f5006aae5aae46e5eb0bcdc192fb0abae884e9777a",
+            "prompt_token_ids_sha256": "45ce81d30d46a4a3b28a4fe9cd188eceba426c002a2fc47fb57e2b89738855f4"
+          },
+          "mtplx": {
+            "accept_rate": 0.9712121212121212,
+            "acceptance_by_depth": [
+              0.9977272727272727,
+              0.9715909090909091,
+              0.9443181818181818
+            ],
+            "accepted_tokens": 2564,
+            "category": "game_code",
+            "decode_tok_s": 42.49640320038002,
+            "draft_tokens": 2640,
+            "end_to_end_tok_s": 40.99683405237607,
+            "mechanism_label": "mtplx_mtp",
+            "output_token_sha256": "05171dd2d1820c6dbd48b80c610172b749f6c321fd5d41ffb6d21ddc12b6dc8c",
+            "prompt_id": "flappy_score_gates",
+            "prompt_text_sha256": "d30afc995170ca11cb9891f5006aae5aae46e5eb0bcdc192fb0abae884e9777a",
+            "prompt_tokens": 374
+          },
+          "output_token_sha256_equal": null,
+          "present": {
+            "ax": true,
+            "mtplx": true
+          },
+          "prompt_id": "flappy_score_gates",
+          "speedup_ratio": 0.9604017382926135,
+          "token_diff_first_index": null
+        },
+        {
+          "ax": {
+            "accept_rate": 0.9676996944565692,
+            "acceptance_by_depth": [
+              null,
+              null,
+              null
+            ],
+            "accepted_tokens": 2217,
+            "category": "game_code",
+            "client_wall_total_ms": 38116.21966701932,
+            "decode_tok_s": 43.87535380536867,
+            "draft_tokens": 2291,
+            "mechanism_label": "pure_mtp",
+            "ngram_hit_steps": 0,
+            "output_token_sha256": null,
+            "prompt_id": "flappy_sound_channels",
+            "prompt_text_sha256": "3510857fe86b1075ac5ef71629c9f75a407e891faf4911c91cfc69c73e6cccfa",
+            "prompt_token_ids_sha256": "baa042e581ace3ba01925dd05ca2c7036013bdc70150b538023261b99f71b563"
+          },
+          "mtplx": {
+            "accept_rate": 0.9994666666666666,
+            "acceptance_by_depth": [
+              1.0,
+              1.0,
+              0.9984
+            ],
+            "accepted_tokens": 3748,
+            "category": "game_code",
+            "decode_tok_s": 43.18058937528012,
+            "draft_tokens": 3750,
+            "end_to_end_tok_s": 42.248291040002165,
+            "mechanism_label": "mtplx_mtp",
+            "output_token_sha256": "9cc734d23f57bbdbec6d74f6c9e6ea3682a6a58bcc54243ae05be81dc630ac1a",
+            "prompt_id": "flappy_sound_channels",
+            "prompt_text_sha256": "3510857fe86b1075ac5ef71629c9f75a407e891faf4911c91cfc69c73e6cccfa",
+            "prompt_tokens": 264
+          },
+          "output_token_sha256_equal": null,
+          "present": {
+            "ax": true,
+            "mtplx": true
+          },
+          "prompt_id": "flappy_sound_channels",
+          "speedup_ratio": 1.0160897393977277,
+          "token_diff_first_index": null
+        }
+      ],
+      "suite": "flappy",
+      "summary": {
+        "ax_decode_tok_s_median_of_cases": 41.9327722165263,
+        "case_count": 4,
+        "matched_case_count": 4,
+        "mtplx_decode_tok_s_median_of_cases": 43.052079646799015,
+        "speedup_ratio": 0.974001083351709,
+        "token_comparable_cases": 0,
+        "token_identical_cases": 0
+      },
+      "warnings": [
+        "flappy: AX artifact was captured from a dirty tracked worktree",
+        "flappy: MTPLX artifact was captured from a dirty tracked worktree",
+        "flappy: AX repetitions=3 does not match contract=5"
+      ]
+    },
+    {
+      "artifacts": {
+        "ax": "benchmarks/results/mtp-compare/2026-05-27-ax-mtp-topk4096-quality-lc/long_code/long_code.json",
+        "mtplx": "benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/quality-long-code/mtplx.json"
+      },
+      "cases": [
+        {
+          "ax": {
+            "accept_rate": 0.9256268593285167,
+            "acceptance_by_depth": [
+              null,
+              null,
+              null
+            ],
+            "accepted_tokens": 2178,
+            "category": "long_code",
+            "client_wall_total_ms": 36910.98637494724,
+            "decode_tok_s": 43.42773741748621,
+            "draft_tokens": 2353,
+            "mechanism_label": "pure_mtp",
+            "ngram_hit_steps": 0,
+            "output_token_sha256": null,
+            "prompt_id": "long_code_api_audit",
+            "prompt_text_sha256": "062e3300154f65be28313d047f6eb1ebc0706958bfdaf99eec6f219e33d03d7b",
+            "prompt_token_ids_sha256": "3cd352119f3d5e686c890b67bd247a9731c54d34dc975bc41ce99a8143f3d9e9"
+          },
+          "mtplx": {
+            "accept_rate": 0.9928343949044586,
+            "acceptance_by_depth": [
+              0.9976171564733916,
+              0.9936254980079682,
+              0.9872408293460925
+            ],
+            "accepted_tokens": 3741,
+            "category": "long_code",
+            "decode_tok_s": 42.9185448876778,
+            "draft_tokens": 3768,
+            "end_to_end_tok_s": 40.92112009090759,
+            "mechanism_label": "mtplx_mtp",
+            "output_token_sha256": "1cb9f8984947d7e582cd06fcd957d5bcd2a7f6799d4b36ef62658aa3c0b9e736",
+            "prompt_id": "long_code_api_audit",
+            "prompt_text_sha256": "062e3300154f65be28313d047f6eb1ebc0706958bfdaf99eec6f219e33d03d7b",
+            "prompt_tokens": 852
+          },
+          "output_token_sha256_equal": null,
+          "present": {
+            "ax": true,
+            "mtplx": true
+          },
+          "prompt_id": "long_code_api_audit",
+          "speedup_ratio": 1.0118641610786439,
+          "token_diff_first_index": null
+        },
+        {
+          "ax": {
+            "accept_rate": 0.9681361850720209,
+            "acceptance_by_depth": [
+              null,
+              null,
+              null
+            ],
+            "accepted_tokens": 2218,
+            "category": "long_code",
+            "client_wall_total_ms": 38860.65799999051,
+            "decode_tok_s": 45.04871184785176,
+            "draft_tokens": 2291,
+            "mechanism_label": "pure_mtp",
+            "ngram_hit_steps": 0,
+            "output_token_sha256": null,
+            "prompt_id": "long_code_c_audit",
+            "prompt_text_sha256": "5ffae1f63827c2661849a8d67c0fb463efab28775f2e25cdcae7148e9d9ed1e6",
+            "prompt_token_ids_sha256": "be6c306996990c6b1fc8219b1eff846b05de0609e263da98d2529f6fc5338d09"
+          },
+          "mtplx": {
+            "accept_rate": 0.9997333333333334,
+            "acceptance_by_depth": [
+              1.0,
+              1.0,
+              0.9992
+            ],
+            "accepted_tokens": 3749,
+            "category": "long_code",
+            "decode_tok_s": 43.16616620151179,
+            "draft_tokens": 3750,
+            "end_to_end_tok_s": 41.38569594380915,
+            "mechanism_label": "mtplx_mtp",
+            "output_token_sha256": "d5d68ab855aa85fff914f6bae9bc9c7d8ae5abaadc5809073f7b1df5b977946b",
+            "prompt_id": "long_code_c_audit",
+            "prompt_text_sha256": "5ffae1f63827c2661849a8d67c0fb463efab28775f2e25cdcae7148e9d9ed1e6",
+            "prompt_tokens": 721
+          },
+          "output_token_sha256_equal": null,
+          "present": {
+            "ax": true,
+            "mtplx": true
+          },
+          "prompt_id": "long_code_c_audit",
+          "speedup_ratio": 1.0436116016778445,
+          "token_diff_first_index": null
+        },
+        {
+          "ax": {
+            "accept_rate": 0.9402407566638005,
+            "acceptance_by_depth": [
+              null,
+              null,
+              null
+            ],
+            "accepted_tokens": 2187,
+            "category": "long_code",
+            "client_wall_total_ms": 35720.21929209586,
+            "decode_tok_s": 44.272362689820525,
+            "draft_tokens": 2326,
+            "mechanism_label": "pure_mtp",
+            "ngram_hit_steps": 0,
+            "output_token_sha256": null,
+            "prompt_id": "long_code_sql_schema",
+            "prompt_text_sha256": "3c6cb4d67cc3f04e4563a7c1f4ffafa4188e56256a749a4c03bf0e59bd7ac4aa",
+            "prompt_token_ids_sha256": "e6224a6d73eee904d033c48898b87bba4ee7138fc549ad6363cc7a851bd288a2"
+          },
+          "mtplx": {
+            "accept_rate": 1.0,
+            "acceptance_by_depth": [
+              1.0,
+              1.0,
+              1.0
+            ],
+            "accepted_tokens": 3750,
+            "category": "long_code",
+            "decode_tok_s": 43.65429078632103,
+            "draft_tokens": 3750,
+            "end_to_end_tok_s": 42.35971604052913,
+            "mechanism_label": "mtplx_mtp",
+            "output_token_sha256": "4859644c8565fa8f8aa22e0914fa7eb94a24678e70b7b2500ad4025439e0c145",
+            "prompt_id": "long_code_sql_schema",
+            "prompt_text_sha256": "3c6cb4d67cc3f04e4563a7c1f4ffafa4188e56256a749a4c03bf0e59bd7ac4aa",
+            "prompt_tokens": 451
+          },
+          "output_token_sha256_equal": null,
+          "present": {
+            "ax": true,
+            "mtplx": true
+          },
+          "prompt_id": "long_code_sql_schema",
+          "speedup_ratio": 1.0141583311139983,
+          "token_diff_first_index": null
+        },
+        {
+          "ax": {
+            "accept_rate": 0.9278086287911149,
+            "acceptance_by_depth": [
+              null,
+              null,
+              null
+            ],
+            "accepted_tokens": 2172,
+            "category": "long_code",
+            "client_wall_total_ms": 36815.951292053796,
+            "decode_tok_s": 43.58879827165185,
+            "draft_tokens": 2341,
+            "mechanism_label": "pure_mtp",
+            "ngram_hit_steps": 0,
+            "output_token_sha256": null,
+            "prompt_id": "long_code_test_stubs",
+            "prompt_text_sha256": "3b400dabcce97eff9290107371ea30c2d5001afe9e4dc96e517ae8cb0249f70c",
+            "prompt_token_ids_sha256": "a9ba17ecb8695b5256d47d02e71d65146af52f04d7453988ffddff50cf7d8987"
+          },
+          "mtplx": {
+            "accept_rate": 0.9936271906532129,
+            "acceptance_by_depth": [
+              0.9976152623211447,
+              0.9968127490039841,
+              0.9864325618515563
+            ],
+            "accepted_tokens": 3742,
+            "category": "long_code",
+            "decode_tok_s": 43.14927500443777,
+            "draft_tokens": 3766,
+            "end_to_end_tok_s": 41.37817294332723,
+            "mechanism_label": "mtplx_mtp",
+            "output_token_sha256": "0b8d8befe21d32fe61e0f5fdfc123151ea725927016d8856d95ee8cf810aeaf0",
+            "prompt_id": "long_code_test_stubs",
+            "prompt_text_sha256": "3b400dabcce97eff9290107371ea30c2d5001afe9e4dc96e517ae8cb0249f70c",
+            "prompt_tokens": 714
+          },
+          "output_token_sha256_equal": null,
+          "present": {
+            "ax": true,
+            "mtplx": true
+          },
+          "prompt_id": "long_code_test_stubs",
+          "speedup_ratio": 1.0101861101297502,
+          "token_diff_first_index": null
+        }
+      ],
+      "suite": "long_code",
+      "summary": {
+        "ax_decode_tok_s_median_of_cases": 43.93058048073618,
+        "case_count": 4,
+        "matched_case_count": 4,
+        "mtplx_decode_tok_s_median_of_cases": 43.15772060297478,
+        "speedup_ratio": 1.0179078011295186,
+        "token_comparable_cases": 0,
+        "token_identical_cases": 0
+      },
+      "warnings": [
+        "long_code: AX artifact was captured from a dirty tracked worktree",
+        "long_code: MTPLX artifact was captured from a dirty tracked worktree",
+        "long_code: AX repetitions=3 does not match contract=5"
+      ]
+    }
+  ],
+  "summary": {
+    "ax_wins": 1,
+    "mtplx_wins": 1,
+    "speedup_ratio_median": 0.9959544422406138,
+    "suite_count": 2,
+    "warnings_count": 6
+  },
+  "warnings": [
+    "flappy: AX artifact was captured from a dirty tracked worktree",
+    "flappy: MTPLX artifact was captured from a dirty tracked worktree",
+    "flappy: AX repetitions=3 does not match contract=5",
+    "long_code: AX artifact was captured from a dirty tracked worktree",
+    "long_code: MTPLX artifact was captured from a dirty tracked worktree",
+    "long_code: AX repetitions=3 does not match contract=5"
+  ]
+}
