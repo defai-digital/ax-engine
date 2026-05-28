@@ -258,26 +258,34 @@ the MLX rows.
 
 ### MTP speculative decoding
 
-AX Engine supports native MTP decoding for the Youssofal Qwen3.6 27B MTPLX
-Speed and Quality bundles. The current prompt-parity benchmark uses the same
-`flappy` and `long_code` prompt suites for AX Engine and MTPLX on Apple M5 Max
-128 GB with temperature=0.6, top_p=0.95, top_k=20, depth=3, 1000 generated
-tokens, and 5 measured repetitions after 1 warmup. These are sampled decode
-rows, not greedy-exact baselines.
+AX Engine's fair Qwen3.6 MTP benchmark no longer uses
+`Youssofal/*MTPLX*` bundles. It prepares local, provenance-recorded sidecars
+from standard `Qwen/Qwen3.6-*` MTP shards plus the matching
+`mlx-community/*-4bit` MLX base, then runs MTPLX, Rapid-MLX, and AX Engine on
+the same prompt suites, token caps, sampler, warmup, repetition count, and
+cooldown.
 
-Artifact-backed MTPLX comparison:
+Use the tri-engine harness for a shared-depth comparison. Rapid-MLX's reference
+MTP server path is a single-draft implementation, so the default fair tri-engine
+depth is `1`; native-depth 27B `d=3` claims should be compared separately
+between MTPLX and AX Engine.
 
-| Model bundle | Suite | Depth | AX MTP | AX accept | MTPLX 0.3.7 | MTPLX accept |
-|---|---|---:|---:|---:|---:|---:|
-| Qwen3.6 27B MTPLX Speed | flappy | 3 | **62.1 tok/s** | ~96% | 59.2 tok/s | 99.5% |
-| Qwen3.6 27B MTPLX Speed | long_code | 3 | **60.4 tok/s** | ~93% | 59.8 tok/s | 99.6% |
-| Qwen3.6 27B MTPLX Quality | flappy | 3 | 41.9 tok/s | ~94% | **43.0 tok/s** | 99.4% |
-| Qwen3.6 27B MTPLX Quality | long_code | 3 | **43.9 tok/s** | ~93% | 43.2 tok/s | 99.7% |
+```bash
+python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
+python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
+python3 scripts/bench_qwen36_mtp_fair.py \
+  --models 27b-4bit 35b-a3b-4bit \
+  --engines mtplx rapid_mlx ax_engine \
+  --suites flappy long_code \
+  --depth-policy fair-shared \
+  --max-tokens 1000 \
+  --repetitions 5 \
+  --cooldown 15
+```
 
-Full MTP methodology, caveats, artifact links, and reproduction commands live in
-[`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode). The benchmark
-result directory format and MTPLX reference JSON contract are documented in
-[`benchmarks/results/mtp-compare/README.md`](benchmarks/results/mtp-compare/README.md).
+The generated `summary.md`, `summary.json`, and `decode-tok-s.svg` live under
+`benchmarks/results/mtp-fair/`. Full methodology and caveats live in
+[`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode).
 
 <!-- llama-cpp-column-disclaimer -->
 **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are NOT prompt-hash parity with the other columns. The intent is rough side-by-side context against a well-known third-party Metal runtime, not head-to-head comparison. MLX bit-widths are mapped to the nearest standard bartowski GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0). No percentage delta is shown for this column because the prompt is not shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
@@ -457,23 +465,23 @@ trimmable; the `ax default n-gram` column in the table above is unaffected.
 
 | Model | Quant | PT | baseline | lightning n-gram | Rapid-MLX PLD |
 |---|---|---:|---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 172.8 | 173.0 | 172.9 |
-|  |  | 512 | 168.5 | 168.7 | 168.4 |
-|  |  | 2048 | 163.3 | 162.8 | 162.8 |
-| Gemma 4 E2B | 5-bit | 128 | 158.9 | 158.8 | 158.8 |
-|  |  | 512 | 220.8 | 216.3 | 216.7 |
+| Gemma 4 E2B | 4-bit | 128 | 172.8 | 173.0 (+0.1%) | 172.9 (+0.1%) |
+|  |  | 512 | 168.5 | 168.7 (+0.1%) | 168.4 (-0.1%) |
+|  |  | 2048 | 163.3 | 162.8 (-0.3%) | 162.8 (-0.3%) |
+| Gemma 4 E2B | 5-bit | 128 | 158.9 | 158.8 (-0.1%) | 158.8 (-0.1%) |
+|  |  | 512 | 220.8 | 216.3 (-2.0%) | 216.7 (-1.9%) |
 |  |  | 2048 | 150.4 | **381.8 (+154%)** | **378.4 (+152%)** |
-| Gemma 4 E2B | 6-bit | 128 | 143.5 | 143.6 | 143.7 |
-|  |  | 512 | 141.1 | 141.2 | 141.1 |
-|  |  | 2048 | 136.7 | 136.7 | 136.6 |
-| Gemma 4 E2B | 8-bit | 128 | 129.7 | 129.6 | 129.6 |
-|  |  | 512 | 127.2 | 127.3 | 127.3 |
+| Gemma 4 E2B | 6-bit | 128 | 143.5 | 143.6 (+0.1%) | 143.7 (+0.1%) |
+|  |  | 512 | 141.1 | 141.2 (+0.1%) | 141.1 (0.0%) |
+|  |  | 2048 | 136.7 | 136.7 (0.0%) | 136.6 (-0.1%) |
+| Gemma 4 E2B | 8-bit | 128 | 129.7 | 129.6 (-0.1%) | 129.6 (-0.1%) |
+|  |  | 512 | 127.2 | 127.3 (+0.1%) | 127.3 (+0.1%) |
 |  |  | 2048 | 124.0 | **368.3 (+197%)** | **364.8 (+194%)** |
 | Gemma 4 E4B | 4-bit | 128 | 115.1 | **283.5 (+146%)** | **289.9 (+152%)** |
 |  |  | 512 | 113.7 | **284.7 (+150%)** | **282.2 (+148%)** |
 |  |  | 2048 | 111.7 | **303.9 (+172%)** | **302.0 (+170%)** |
-| Gemma 4 26B A4B | 4-bit | 128 | 108.7 | 108.9 | 108.7 |
-|  |  | 512 | 106.3 | 106.1 | 106.2 |
+| Gemma 4 26B A4B | 4-bit | 128 | 108.7 | 108.9 (+0.2%) | 108.7 (0.0%) |
+|  |  | 512 | 106.3 | 106.1 (-0.2%) | 106.2 (-0.1%) |
 |  |  | 2048 | 103.1 | **221.3 (+115%)** | **220.6 (+114%)** |
 | Gemma 4 31B | 4-bit | 128 | 27.6 | **63.7 (+131%)** | **63.3 (+129%)** |
 |  |  | 512 | 27.1 | **61.6 (+127%)** | **61.3 (+126%)** |
@@ -487,19 +495,19 @@ only at pt=2048 where the model enters output loops the n-gram table catches.
 
 | Model | Quant | PT | baseline | lightning n-gram | Rapid-MLX PLD |
 |---|---|---:|---:|---:|---:|
-| Qwen 3.6 27B | 4-bit | 128 | 28.6 | 28.4 | 28.6 |
-|  |  | 512 | 28.7 | 30.7 | 30.7 |
-|  |  | 2048 | 30.4 | 30.0 | 30.2 |
-| Qwen 3.6 27B | 5-bit | 128 | 26.1 | 26.4 | 26.3 |
-|  |  | 512 | 26.2 | 26.2 | 26.2 |
-|  |  | 2048 | 26.0 | 26.0 | 26.0 |
-| Qwen 3.6 27B | 6-bit | 128 | 22.4 | 22.5 | 22.5 |
-|  |  | 512 | 22.4 | 22.4 | 22.5 |
-|  |  | 2048 | 22.6 | 22.6 | 22.6 |
-| Qwen 3.6 27B | 8-bit | 128 | 17.7 | 17.8 | 17.8 |
-|  |  | 512 | 17.7 | 17.6 | 17.6 |
-|  |  | 2048 | 17.5 | 17.5 | 17.5 |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 110.4 | 110.8 | 110.3 |
+| Qwen 3.6 27B | 4-bit | 128 | 28.6 | 28.4 (-0.7%) | 28.6 (0.0%) |
+|  |  | 512 | 28.7 | 30.7 (+7.0%) | 30.7 (+7.0%) |
+|  |  | 2048 | 30.4 | 30.0 (-1.3%) | 30.2 (-0.7%) |
+| Qwen 3.6 27B | 5-bit | 128 | 26.1 | 26.4 (+1.1%) | 26.3 (+0.8%) |
+|  |  | 512 | 26.2 | 26.2 (0.0%) | 26.2 (0.0%) |
+|  |  | 2048 | 26.0 | 26.0 (0.0%) | 26.0 (0.0%) |
+| Qwen 3.6 27B | 6-bit | 128 | 22.4 | 22.5 (+0.4%) | 22.5 (+0.4%) |
+|  |  | 512 | 22.4 | 22.4 (0.0%) | 22.5 (+0.4%) |
+|  |  | 2048 | 22.6 | 22.6 (0.0%) | 22.6 (0.0%) |
+| Qwen 3.6 27B | 8-bit | 128 | 17.7 | 17.8 (+0.6%) | 17.8 (+0.6%) |
+|  |  | 512 | 17.7 | 17.6 (-0.6%) | 17.6 (-0.6%) |
+|  |  | 2048 | 17.5 | 17.5 (0.0%) | 17.5 (0.0%) |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 110.4 | 110.8 (+0.4%) | 110.3 (-0.1%) |
 
 Qwen 3.6 draft count is always 0 across all quantizations and prompt lengths
 — KV cache non-trimmable, throughput equals baseline. AX Engine n-gram
