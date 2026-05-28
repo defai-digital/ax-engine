@@ -462,11 +462,27 @@ Rapid-MLX fall back to baseline throughput. AX Engine's own KV cache is always
 trimmable; the `ax default n-gram` column in the table above is unaffected.
 
 `suite baseline` is the same `mlx_lm` model weights run through
-`bench_speculative_suite.py`'s Python decode loop with no speculation. It is
-**not** the `mlx_lm` column in the main tables above (which uses
-`mlx_lm.benchmark`'s optimized C++ loop and runs ~15–20% faster). All three
-columns in the tables below share the same Python loop, so their comparison is
-apple-to-apple. Percentages are vs `suite baseline`.
+`bench_speculative_suite.py`'s Python decode loop **with no speculation at
+all** — pure greedy decode, one token per step. It is **not** the `mlx_lm`
+column in the main tables above (which uses `mlx_lm.benchmark`'s optimized
+C++ loop and runs ~15–20% faster). `suite baseline`, `lightning n-gram`, and
+`Rapid-MLX PLD` all share the same Python loop, so their three-way comparison
+is apple-to-apple. Percentages are vs `suite baseline`.
+
+`ax n-gram` is faster than `lightning n-gram` for two independent reasons:
+
+1. **Acceptance criterion**: lightning and Rapid-MLX use *exact* speculative
+   decoding — a draft token is accepted only if it matches the model's argmax
+   exactly. AX Engine uses a *threshold*-based criterion: a draft token is
+   accepted if its probability in the model's distribution is ≥ 30%, even when
+   another token has a slightly higher probability. This dramatically raises
+   the accept rate on outputs that are not perfectly repetitive.
+2. **Native decode path**: `ax n-gram` runs in ax-engine-bench's Rust/Metal
+   decode loop with no Python overhead, so its baseline decode speed is already
+   higher than the Python loop used by the other three columns. The `ax n-gram`
+   percentages vs `suite baseline` therefore overstate the algorithm's
+   advantage; the true reference is the `ax direct baseline` column in the main
+   decode table above.
 
 ##### Gemma 4 — trimmable KV (tok/s)
 
