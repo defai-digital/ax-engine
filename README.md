@@ -555,12 +555,14 @@ the single-path baseline for 26B A4B 6-bit at this prompt length.
 | Qwen 3.6 27B | 4-bit | 128 | 28.6 | 28.4 (-0.7%) | 28.6 (0.0%) | — |
 |  |  | 512 | 28.7 | 30.7 (+7.0%) | 30.7 (+7.0%) | — |
 |  |  | 2048 | 30.4 | 30.0 (-1.3%) | 30.2 (-0.7%) | — |
-| Qwen 3.6 35B A3B | 6-bit | 128 | 91.4 | — | — | — |
+| Qwen 3.6 35B A3B | 6-bit | 128 | 76.5 | — | — | — |
+|  |  | 512 | 79.1 | — | — | — |
+|  |  | 2048 | 70.6 | — | — | — |
 
 Qwen 3.6 draft count is always 0 across all quantizations and prompt lengths
 — KV cache non-trimmable in `mlx_lm`, throughput equals baseline.
 Qwen 3.6 35B A3B 6-bit: all three speculative columns return `non_trimmable_cache`
-at PT=128; higher PT not measured.
+at all prompt lengths; `--ignore-eos` used to obtain valid decode throughput.
 
 ##### Table 2: AX Engine N-gram Effective Throughput (Rust/Metal decode)
 
