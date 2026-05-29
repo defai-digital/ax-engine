@@ -92,6 +92,20 @@
       "status": "candidate"
     },
     {
+      "slug": "gemma-4-26b-a4b-it-6bit",
+      "readme_model": "Gemma 4 26B A4B",
+      "readme_quant": "6-bit",
+      "mlx_local_dir": ".internal/models/gemma-4-26b-a4b-it-6bit",
+      "mlx_repo_id": "mlx-community/gemma-4-26b-a4b-it-6bit",
+      "hf_arch": "Gemma4ForConditionalGeneration",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q6_K",
+      "gguf_candidates": [
+        {"repo": "bartowski/google_gemma-4-26B-A4B-it-GGUF", "filename_pattern": "*Q6_K.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
       "slug": "gemma-4-31b-it-4bit",
       "readme_model": "Gemma 4 31B",
       "readme_quant": "4-bit",
@@ -102,6 +116,20 @@
       "gguf_quant_target": "Q4_K_M",
       "gguf_candidates": [
         {"repo": "bartowski/google_gemma-4-31B-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "gemma-4-31b-it-6bit",
+      "readme_model": "Gemma 4 31B",
+      "readme_quant": "6-bit",
+      "mlx_local_dir": ".internal/models/gemma-4-31b-it-6bit",
+      "mlx_repo_id": "mlx-community/gemma-4-31b-it-6bit",
+      "hf_arch": "Gemma4ForConditionalGeneration",
+      "llama_cpp_arch": "gemma4",
+      "gguf_quant_target": "Q6_K",
+      "gguf_candidates": [
+        {"repo": "bartowski/google_gemma-4-31B-it-GGUF", "filename_pattern": "*Q6_K.gguf"}
       ],
       "status": "candidate"
     },
@@ -173,6 +201,21 @@
       "gguf_quant_target": "Q4_K_M",
       "gguf_candidates": [
         {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+      ],
+      "status": "candidate"
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-6bit",
+      "readme_model": "Qwen 3.6 35B A3B",
+      "readme_quant": "6-bit",
+      "mlx_local_dir": ".internal/models/Qwen3.6-35B-A3B-6bit",
+      "mlx_repo_id": "mlx-community/Qwen3.6-35B-A3B-6bit",
+      "hf_arch": "Qwen3_5MoeForConditionalGeneration",
+      "llama_cpp_arch": "qwen35moe",
+      "prompt_source_note": "Prompt-token source is mlx-community/Qwen3.6-35B-A3B-6bit. GGUF side benches the bartowski standard Q6_K imatrix quant. Injected into the README '6-bit' row as a shape-compatible reference only.",
+      "gguf_quant_target": "Q6_K",
+      "gguf_candidates": [
+        {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q6_K.gguf"}
       ],
       "status": "candidate"
     }

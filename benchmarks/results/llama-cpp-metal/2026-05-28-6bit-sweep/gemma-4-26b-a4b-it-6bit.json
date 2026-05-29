@@ -1,0 +1,1042 @@
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "claim_gate": {
+    "schema_version": "ax.phase0_claim_gate.v1",
+    "scope": "mlx_inference_stack_public_readme",
+    "requires_prompt_hash_parity": true,
+    "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
+    "shape_only_external_rows": [
+      "llama_cpp_metal"
+    ],
+    "requires_runtime_identity": true,
+    "requires_decode_policy_identity": true,
+    "requires_prefill_decode_split": true,
+    "forbidden_public_claims_without_artifacts": [
+      "continuous_batching",
+      "prefix_reuse",
+      "long_context_prefill_improvement"
+    ]
+  },
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.5",
+    "platform": "darwin"
+  },
+  "build": {
+    "commit": "517467eaa499685bbfcef95eda2a4a644233ede3",
+    "build_profile": "release",
+    "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+    "git_tracked_dirty": true,
+    "git_tracked_status": [
+      " M benchmarks/manifests/llama_cpp_metal/inventory.json",
+      " M benchmarks/results/mtp-compare/README.md",
+      " M crates/ax-engine-mlx/src/mtp.rs",
+      " M crates/ax-engine-mlx/src/ngram_accel.rs",
+      " M crates/ax-engine-mlx/src/weights.rs",
+      " M docs/PERFORMANCE.md",
+      " M scripts/bench_mtp_compare.py",
+      " M scripts/bench_mtp_differential.py",
+      " M scripts/bench_mtplx_prompt_suites.py",
+      " M scripts/bench_speculative_suite.py",
+      " M scripts/check_mtp_sidecar_provenance.py",
+      " M scripts/prepare_qwen36_mtp_sidecar.py",
+      " M scripts/test_bench_mtp_differential.py",
+      " M scripts/test_check_mtp_sidecar_provenance.py"
+    ]
+  },
+  "model": "mlx-community/gemma-4-26b-a4b-it-6bit",
+  "model_repo_id": "mlx-community/gemma-4-26b-a4b-it-6bit",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-6bit/snapshots/5f81a7a6f29e280f4bd5a4ce79d07d7a67fb867b",
+  "model_dir_source": "huggingface_cache",
+  "hf_cache_root": "/Users/akiralam/.cache/huggingface/hub",
+  "model_config": {
+    "model_type": "gemma4",
+    "quantization": {
+      "group_size": 64,
+      "bits": 6,
+      "mode": "affine",
+      "language_model.model.layers.0.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.0.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.0.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.0.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.1.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.1.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.1.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.1.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.2.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.2.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.2.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.2.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.3.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.3.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.3.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.3.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.4.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.4.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.4.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.4.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.5.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.5.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.5.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.5.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.6.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.6.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.6.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.6.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.7.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.7.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.7.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.7.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.8.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.8.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.8.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.8.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.9.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.9.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.9.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.9.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.10.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.10.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.10.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.10.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.11.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.11.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.11.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.11.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.12.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.12.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.12.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.12.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.13.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.13.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.13.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.13.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.14.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.14.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.14.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.14.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.15.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.15.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.15.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.15.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.16.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.16.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.16.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.16.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.17.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.17.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.17.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.17.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.18.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.18.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.18.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.18.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.19.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.19.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.19.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.19.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.20.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.20.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.20.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.20.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.21.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.21.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.21.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.21.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.22.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.22.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.22.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.22.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.23.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.23.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.23.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.23.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.24.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.24.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.24.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.24.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.25.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.25.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.25.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.25.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.26.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.26.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.26.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.26.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.27.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.27.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.27.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.27.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.28.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.28.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.28.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.28.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.29.mlp.gate_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.29.mlp.down_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.29.mlp.up_proj": {
+        "group_size": 64,
+        "bits": 8
+      },
+      "language_model.model.layers.29.router.proj": {
+        "group_size": 64,
+        "bits": 8
+      }
+    },
+    "model_family": "gemma4",
+    "linear_attention_enabled": false,
+    "linear_attention": {}
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "external_gguf_reference": "llama.cpp Metal llama-bench",
+    "external_gguf_reference_present": true,
+    "external_gguf_reference_required": false,
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback. llama_cpp_metal rows are shape-compatible external GGUF rows, not prompt-hash parity or repo-owned MLX throughput evidence.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-26b-a4b-it-6bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+          "token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+          "token_count": 128,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 512,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-26b-a4b-it-6bit-prompts/prompt-512-gen-128-846109be82df.json",
+          "token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+          "token_count": 512,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 2048,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-26b-a4b-it-6bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+          "token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
+          "token_count": 2048,
+          "prompt_source": "random"
+        }
+      ]
+    },
+    "strictness": "mlx_lm_prompt_algorithm_reproduced; llama_cpp_metal_shape_compatible_only"
+  },
+  "prompt_tokens": [
+    128,
+    512,
+    2048
+  ],
+  "generation_tokens": 128,
+  "repetitions": 5,
+  "cooldown": 15.0,
+  "prefill_step_size": 2048,
+  "ax_mtp_max_depth": null,
+  "ax_mtp_fast_tail_topk_sampling": false,
+  "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+  "prefill_ttft_measurement_contract": "cold_prefill_no_cross_request_prefix_cache",
+  "prefill_timing_scope_contract": {
+    "mlx_lm": "upstream_mlx_lm_response_stats",
+    "ax_engine_primary_prefill": "server_sse_runner_time_us",
+    "ax_engine_client_wall_ttft": "http_sse_first_output_token_observed_by_client",
+    "long_greedy_ax_prefill_work": "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+  },
+  "concurrency": 1,
+  "concurrent_prefill_overlap_classification": {
+    "classification": "single_request_no_overlap",
+    "continuous_batching_claim": false,
+    "concurrency": 1
+  },
+  "prefix_reuse_evidence": {
+    "hit_count": 0,
+    "miss_count": 0,
+    "blocked_count": 0,
+    "blocked_policy_disabled_count": 0,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "stored_prefix_count": 0,
+    "eviction_count": 0,
+    "reused_token_count": 0,
+    "warmup_token_count": 0,
+    "cache_entry_count": 0,
+    "cache_bytes_kib": 0,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": false,
+    "physical_snapshot_coverage": "none_observed",
+    "blocked_reason_count": 0,
+    "blocked_reason_accounting_gap_count": 0
+  },
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "ax_linear_attention_projection_pack": false,
+  "ax_linear_attention_projection_pack_compare": false,
+  "ax_dense_ffn_gate_up_pack": false,
+  "ax_dense_ffn_gate_up_pack_compare": false,
+  "ax_direct_linear_attention_post_input_route_compare": false,
+  "ax_direct_gemma4_post_attn_ffn_route_compare": false,
+  "ax_prefill_profile": false,
+  "ax_decode_profile": false,
+  "results": [
+    {
+      "engine": "llama_cpp_metal",
+      "method": "llama-bench",
+      "timing_scope": "external_llama_cpp_kernel_benchmark",
+      "runtime_identity": {
+        "selected_backend": "llama_cpp",
+        "route_identity": "external_llama_cpp_metal",
+        "resolution_policy": "external_gguf_baseline",
+        "benchmark_surface": "llama_cpp_bench"
+      },
+      "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
+      "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
+      "prompt_token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-26b-a4b-it-6bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+      "prompt_token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+      "prompt_source": "llama_bench_internal_random",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "batch_size": 1,
+      "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-26B-A4B-it-GGUF/snapshots/cb1f989321df6baa8c647aea074fbad465962bb1/google_gemma-4-26B-A4B-it-Q6_K.gguf",
+      "n_gpu_layers": 99,
+      "prefill_tok_s": {
+        "mean": 1774.766,
+        "median": 1771.91,
+        "min": 1755.75,
+        "max": 1805.46,
+        "stddev": 18.502027,
+        "reported_mean": 1774.763751
+      },
+      "decode_tok_s": {
+        "mean": 100.67112,
+        "median": 100.958,
+        "min": 99.8666,
+        "max": 101.139,
+        "stddev": 0.577744,
+        "reported_mean": 100.671286
+      },
+      "prefill_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 1755.75,
+          "sample_ns": 72903417,
+          "ttft_ms": 72.90331767051119
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 1773.38,
+          "sample_ns": 72178667,
+          "ttft_ms": 72.1785516922487
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 1767.33,
+          "sample_ns": 72425792,
+          "ttft_ms": 72.4256364119887
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 1771.91,
+          "sample_ns": 72238541,
+          "ttft_ms": 72.23843197453594
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 1805.46,
+          "sample_ns": 70896042,
+          "ttft_ms": 70.89605972993033
+        }
+      ],
+      "decode_trials": [
+        {
+          "trial": 1,
+          "decode_tok_s": 99.8666,
+          "sample_ns": 1281709792
+        },
+        {
+          "trial": 2,
+          "decode_tok_s": 100.257,
+          "sample_ns": 1276713709
+        },
+        {
+          "trial": 3,
+          "decode_tok_s": 101.135,
+          "sample_ns": 1265632042
+        },
+        {
+          "trial": 4,
+          "decode_tok_s": 100.958,
+          "sample_ns": 1267852000
+        },
+        {
+          "trial": 5,
+          "decode_tok_s": 101.139,
+          "sample_ns": 1265584583
+        }
+      ],
+      "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
+      "llama_cpp": {
+        "build_commit": "7ea23ddf7",
+        "build_number": 9270,
+        "backends": "BLAS,MTL",
+        "gpu_info": "Apple M5 Max",
+        "cpu_info": "Accelerate, Apple M5 Max",
+        "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-26B-A4B-it-GGUF/snapshots/cb1f989321df6baa8c647aea074fbad465962bb1/google_gemma-4-26B-A4B-it-Q6_K.gguf",
+        "model_type": "gemma4 26B.A4B Q6_K",
+        "model_size": 22846752376,
+        "model_n_params": 25233142046,
+        "n_gpu_layers": 99,
+        "n_batch": 2048,
+        "n_ubatch": 512,
+        "type_k": "f16",
+        "type_v": "f16",
+        "flash_attn": true,
+        "devices": "auto"
+      },
+      "external_baseline_role": "gguf_non_mlx_metal_reference",
+      "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
+      "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x10638f5d0 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x10638f290 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.008 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-cpu-apple_m4.so",
+      "ttft_ms": {
+        "mean": 72.12839949584297,
+        "median": 72.23843197453594,
+        "min": 70.89605972993033,
+        "max": 72.90331767051119
+      },
+      "ttft_source": "derived_from_llama_cpp_pp_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "absent_skipped_via_cli",
+        "note": "Row produced under --skip-mlx-lm; no in-run baseline attached."
+      }
+    },
+    {
+      "engine": "llama_cpp_metal",
+      "method": "llama-bench",
+      "timing_scope": "external_llama_cpp_kernel_benchmark",
+      "runtime_identity": {
+        "selected_backend": "llama_cpp",
+        "route_identity": "external_llama_cpp_metal",
+        "resolution_policy": "external_gguf_baseline",
+        "benchmark_surface": "llama_cpp_bench"
+      },
+      "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
+      "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
+      "prompt_token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-26b-a4b-it-6bit-prompts/prompt-512-gen-128-846109be82df.json",
+      "prompt_token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+      "prompt_source": "llama_bench_internal_random",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "batch_size": 1,
+      "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-26B-A4B-it-GGUF/snapshots/cb1f989321df6baa8c647aea074fbad465962bb1/google_gemma-4-26B-A4B-it-Q6_K.gguf",
+      "n_gpu_layers": 99,
+      "prefill_tok_s": {
+        "mean": 3263.702,
+        "median": 3259.86,
+        "min": 3248.58,
+        "max": 3282.04,
+        "stddev": 14.058376,
+        "reported_mean": 3263.703089
+      },
+      "decode_tok_s": {
+        "mean": 97.57466,
+        "median": 98.6758,
+        "min": 92.5045,
+        "max": 101.144,
+        "stddev": 3.45514,
+        "reported_mean": 97.574609
+      },
+      "prefill_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 3253.75,
+          "sample_ns": 157356916,
+          "ttft_ms": 157.35689588935844
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 3259.86,
+          "sample_ns": 157061792,
+          "ttft_ms": 157.06195971606144
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 3282.04,
+          "sample_ns": 156000709,
+          "ttft_ms": 156.00053625184339
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 3248.58,
+          "sample_ns": 157607250,
+          "ttft_ms": 157.60732381532856
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 3274.28,
+          "sample_ns": 156370041,
+          "ttft_ms": 156.37025544547197
+        }
+      ],
+      "decode_trials": [
+        {
+          "trial": 1,
+          "decode_tok_s": 99.7763,
+          "sample_ns": 1282870250
+        },
+        {
+          "trial": 2,
+          "decode_tok_s": 92.5045,
+          "sample_ns": 1383716958
+        },
+        {
+          "trial": 3,
+          "decode_tok_s": 95.7727,
+          "sample_ns": 1336497083
+        },
+        {
+          "trial": 4,
+          "decode_tok_s": 98.6758,
+          "sample_ns": 1297177583
+        },
+        {
+          "trial": 5,
+          "decode_tok_s": 101.144,
+          "sample_ns": 1265525000
+        }
+      ],
+      "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
+      "llama_cpp": {
+        "build_commit": "7ea23ddf7",
+        "build_number": 9270,
+        "backends": "BLAS,MTL",
+        "gpu_info": "Apple M5 Max",
+        "cpu_info": "Accelerate, Apple M5 Max",
+        "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-26B-A4B-it-GGUF/snapshots/cb1f989321df6baa8c647aea074fbad465962bb1/google_gemma-4-26B-A4B-it-Q6_K.gguf",
+        "model_type": "gemma4 26B.A4B Q6_K",
+        "model_size": 22846752376,
+        "model_n_params": 25233142046,
+        "n_gpu_layers": 99,
+        "n_batch": 2048,
+        "n_ubatch": 512,
+        "type_k": "f16",
+        "type_v": "f16",
+        "flash_attn": true,
+        "devices": "auto"
+      },
+      "external_baseline_role": "gguf_non_mlx_metal_reference",
+      "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
+      "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x100da7460 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x100da7120 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.007 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-cpu-apple_m4.so",
+      "ttft_ms": {
+        "mean": 156.87939422361276,
+        "median": 157.06195971606144,
+        "min": 156.00053625184339,
+        "max": 157.60732381532856
+      },
+      "ttft_source": "derived_from_llama_cpp_pp_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "absent_skipped_via_cli",
+        "note": "Row produced under --skip-mlx-lm; no in-run baseline attached."
+      }
+    },
+    {
+      "engine": "llama_cpp_metal",
+      "method": "llama-bench",
+      "timing_scope": "external_llama_cpp_kernel_benchmark",
+      "runtime_identity": {
+        "selected_backend": "llama_cpp",
+        "route_identity": "external_llama_cpp_metal",
+        "resolution_policy": "external_gguf_baseline",
+        "benchmark_surface": "llama_cpp_bench"
+      },
+      "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
+      "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
+      "prompt_token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-26b-a4b-it-6bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+      "prompt_token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
+      "prompt_source": "llama_bench_internal_random",
+      "prompt_tokens": 2048,
+      "generation_tokens": 128,
+      "batch_size": 1,
+      "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-26B-A4B-it-GGUF/snapshots/cb1f989321df6baa8c647aea074fbad465962bb1/google_gemma-4-26B-A4B-it-Q6_K.gguf",
+      "n_gpu_layers": 99,
+      "prefill_tok_s": {
+        "mean": 3463.88,
+        "median": 3464.95,
+        "min": 3457.74,
+        "max": 3469.52,
+        "stddev": 5.424635,
+        "reported_mean": 3463.880161
+      },
+      "decode_tok_s": {
+        "mean": 101.0186,
+        "median": 101.192,
+        "min": 100.343,
+        "max": 101.283,
+        "stddev": 0.387943,
+        "reported_mean": 101.018344
+      },
+      "prefill_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 3458.75,
+          "sample_ns": 592121750,
+          "ttft_ms": 592.1214311528732
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 3464.95,
+          "sample_ns": 591061291,
+          "ttft_ms": 591.0619200854269
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 3469.52,
+          "sample_ns": 590283875,
+          "ttft_ms": 590.2833821393161
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 3457.74,
+          "sample_ns": 592293833,
+          "ttft_ms": 592.2943888204435
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 3468.44,
+          "sample_ns": 590467417,
+          "ttft_ms": 590.4671840942902
+        }
+      ],
+      "decode_trials": [
+        {
+          "trial": 1,
+          "decode_tok_s": 100.343,
+          "sample_ns": 1275629334
+        },
+        {
+          "trial": 2,
+          "decode_tok_s": 101.283,
+          "sample_ns": 1263790250
+        },
+        {
+          "trial": 3,
+          "decode_tok_s": 101.045,
+          "sample_ns": 1266767083
+        },
+        {
+          "trial": 4,
+          "decode_tok_s": 101.23,
+          "sample_ns": 1264452125
+        },
+        {
+          "trial": 5,
+          "decode_tok_s": 101.192,
+          "sample_ns": 1264919292
+        }
+      ],
+      "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
+      "llama_cpp": {
+        "build_commit": "7ea23ddf7",
+        "build_number": 9270,
+        "backends": "BLAS,MTL",
+        "gpu_info": "Apple M5 Max",
+        "cpu_info": "Accelerate, Apple M5 Max",
+        "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-26B-A4B-it-GGUF/snapshots/cb1f989321df6baa8c647aea074fbad465962bb1/google_gemma-4-26B-A4B-it-Q6_K.gguf",
+        "model_type": "gemma4 26B.A4B Q6_K",
+        "model_size": 22846752376,
+        "model_n_params": 25233142046,
+        "n_gpu_layers": 99,
+        "n_batch": 2048,
+        "n_ubatch": 2048,
+        "type_k": "f16",
+        "type_v": "f16",
+        "flash_attn": true,
+        "devices": "auto"
+      },
+      "external_baseline_role": "gguf_non_mlx_metal_reference",
+      "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
+      "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x1014b3360 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x1014b2e60 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.008 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-cpu-apple_m4.so",
+      "ttft_ms": {
+        "mean": 591.2456612584699,
+        "median": 591.0619200854269,
+        "min": 590.2833821393161,
+        "max": 592.2943888204435
+      },
+      "ttft_source": "derived_from_llama_cpp_pp_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "absent_skipped_via_cli",
+        "note": "Row produced under --skip-mlx-lm; no in-run baseline attached."
+      }
+    }
+  ]
+}

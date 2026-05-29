@@ -1,0 +1,562 @@
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "claim_gate": {
+    "schema_version": "ax.phase0_claim_gate.v1",
+    "scope": "mlx_inference_stack_public_readme",
+    "requires_prompt_hash_parity": true,
+    "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
+    "shape_only_external_rows": [
+      "llama_cpp_metal"
+    ],
+    "requires_runtime_identity": true,
+    "requires_decode_policy_identity": true,
+    "requires_prefill_decode_split": true,
+    "forbidden_public_claims_without_artifacts": [
+      "continuous_batching",
+      "prefix_reuse",
+      "long_context_prefill_improvement"
+    ]
+  },
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "os_version": "26.5",
+    "platform": "darwin"
+  },
+  "build": {
+    "commit": "517467eaa499685bbfcef95eda2a4a644233ede3",
+    "build_profile": "release",
+    "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+    "git_tracked_dirty": true,
+    "git_tracked_status": [
+      " M benchmarks/manifests/llama_cpp_metal/inventory.json",
+      " M benchmarks/results/mtp-compare/README.md",
+      " M crates/ax-engine-mlx/src/mtp.rs",
+      " M crates/ax-engine-mlx/src/ngram_accel.rs",
+      " M crates/ax-engine-mlx/src/weights.rs",
+      " M docs/PERFORMANCE.md",
+      " M scripts/bench_mtp_compare.py",
+      " M scripts/bench_mtp_differential.py",
+      " M scripts/bench_mtplx_prompt_suites.py",
+      " M scripts/bench_speculative_suite.py",
+      " M scripts/check_mtp_sidecar_provenance.py",
+      " M scripts/prepare_qwen36_mtp_sidecar.py",
+      " M scripts/test_bench_mtp_differential.py",
+      " M scripts/test_check_mtp_sidecar_provenance.py"
+    ]
+  },
+  "model": "mlx-community/gemma-4-31b-it-6bit",
+  "model_repo_id": "mlx-community/gemma-4-31b-it-6bit",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--gemma-4-31b-it-6bit/snapshots/938d4fb4ebff2df7f6c8200977cf82a06d20f5b9",
+  "model_dir_source": "huggingface_cache",
+  "hf_cache_root": "/Users/akiralam/.cache/huggingface/hub",
+  "model_config": {
+    "model_type": "gemma4",
+    "quantization": {
+      "group_size": 64,
+      "bits": 6,
+      "mode": "affine"
+    },
+    "model_family": "gemma4",
+    "linear_attention_enabled": false,
+    "linear_attention": {}
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "external_gguf_reference": "llama.cpp Metal llama-bench",
+    "external_gguf_reference_present": true,
+    "external_gguf_reference_required": false,
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback. llama_cpp_metal rows are shape-compatible external GGUF rows, not prompt-hash parity or repo-owned MLX throughput evidence.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-31b-it-6bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+          "token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+          "token_count": 128,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 512,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-31b-it-6bit-prompts/prompt-512-gen-128-846109be82df.json",
+          "token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+          "token_count": 512,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 2048,
+          "generation_tokens": 128,
+          "vocab_size": 262144,
+          "random_seed": 0,
+          "token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-31b-it-6bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+          "token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
+          "token_count": 2048,
+          "prompt_source": "random"
+        }
+      ]
+    },
+    "strictness": "mlx_lm_prompt_algorithm_reproduced; llama_cpp_metal_shape_compatible_only"
+  },
+  "prompt_tokens": [
+    128,
+    512,
+    2048
+  ],
+  "generation_tokens": 128,
+  "repetitions": 5,
+  "cooldown": 15.0,
+  "prefill_step_size": 2048,
+  "ax_mtp_max_depth": null,
+  "ax_mtp_fast_tail_topk_sampling": false,
+  "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+  "prefill_ttft_measurement_contract": "cold_prefill_no_cross_request_prefix_cache",
+  "prefill_timing_scope_contract": {
+    "mlx_lm": "upstream_mlx_lm_response_stats",
+    "ax_engine_primary_prefill": "server_sse_runner_time_us",
+    "ax_engine_client_wall_ttft": "http_sse_first_output_token_observed_by_client",
+    "long_greedy_ax_prefill_work": "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+  },
+  "concurrency": 1,
+  "concurrent_prefill_overlap_classification": {
+    "classification": "single_request_no_overlap",
+    "continuous_batching_claim": false,
+    "concurrency": 1
+  },
+  "prefix_reuse_evidence": {
+    "hit_count": 0,
+    "miss_count": 0,
+    "blocked_count": 0,
+    "blocked_policy_disabled_count": 0,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "stored_prefix_count": 0,
+    "eviction_count": 0,
+    "reused_token_count": 0,
+    "warmup_token_count": 0,
+    "cache_entry_count": 0,
+    "cache_bytes_kib": 0,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": false,
+    "physical_snapshot_coverage": "none_observed",
+    "blocked_reason_count": 0,
+    "blocked_reason_accounting_gap_count": 0
+  },
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "ax_linear_attention_projection_pack": false,
+  "ax_linear_attention_projection_pack_compare": false,
+  "ax_dense_ffn_gate_up_pack": false,
+  "ax_dense_ffn_gate_up_pack_compare": false,
+  "ax_direct_linear_attention_post_input_route_compare": false,
+  "ax_direct_gemma4_post_attn_ffn_route_compare": false,
+  "ax_prefill_profile": false,
+  "ax_decode_profile": false,
+  "results": [
+    {
+      "engine": "llama_cpp_metal",
+      "method": "llama-bench",
+      "timing_scope": "external_llama_cpp_kernel_benchmark",
+      "runtime_identity": {
+        "selected_backend": "llama_cpp",
+        "route_identity": "external_llama_cpp_metal",
+        "resolution_policy": "external_gguf_baseline",
+        "benchmark_surface": "llama_cpp_bench"
+      },
+      "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
+      "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
+      "prompt_token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-31b-it-6bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+      "prompt_token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
+      "prompt_source": "llama_bench_internal_random",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "batch_size": 1,
+      "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-31B-it-GGUF/snapshots/dbdaa0588c16bed9aa3897f81ad3f48cbdd4244b/google_gemma-4-31B-it-Q6_K.gguf",
+      "n_gpu_layers": 99,
+      "prefill_tok_s": {
+        "mean": 494.492,
+        "median": 495.161,
+        "min": 491.536,
+        "max": 496.912,
+        "stddev": 2.149687,
+        "reported_mean": 494.492068
+      },
+      "decode_tok_s": {
+        "mean": 17.493360000000003,
+        "median": 17.5923,
+        "min": 17.0184,
+        "max": 17.9263,
+        "stddev": 0.386572,
+        "reported_mean": 17.493376
+      },
+      "prefill_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 495.735,
+          "sample_ns": 258202375,
+          "ttft_ms": 258.2024670438843
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 496.912,
+          "sample_ns": 257590791,
+          "ttft_ms": 257.5908812828026
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 495.161,
+          "sample_ns": 258501542,
+          "ttft_ms": 258.5017802290568
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 493.116,
+          "sample_ns": 259573875,
+          "ttft_ms": 259.5738122470169
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 491.536,
+          "sample_ns": 260408375,
+          "ttft_ms": 260.40818983757043
+        }
+      ],
+      "decode_trials": [
+        {
+          "trial": 1,
+          "decode_tok_s": 17.9263,
+          "sample_ns": 7140331792
+        },
+        {
+          "trial": 2,
+          "decode_tok_s": 17.7593,
+          "sample_ns": 7207510334
+        },
+        {
+          "trial": 3,
+          "decode_tok_s": 17.5923,
+          "sample_ns": 7275894958
+        },
+        {
+          "trial": 4,
+          "decode_tok_s": 17.1705,
+          "sample_ns": 7454631959
+        },
+        {
+          "trial": 5,
+          "decode_tok_s": 17.0184,
+          "sample_ns": 7521262750
+        }
+      ],
+      "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
+      "llama_cpp": {
+        "build_commit": "7ea23ddf7",
+        "build_number": 9270,
+        "backends": "BLAS,MTL",
+        "gpu_info": "Apple M5 Max",
+        "cpu_info": "Accelerate, Apple M5 Max",
+        "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-31B-it-GGUF/snapshots/dbdaa0588c16bed9aa3897f81ad3f48cbdd4244b/google_gemma-4-31B-it-Q6_K.gguf",
+        "model_type": "gemma4 31B Q6_K",
+        "model_size": 26710886640,
+        "model_n_params": 30697345596,
+        "n_gpu_layers": 99,
+        "n_batch": 2048,
+        "n_ubatch": 512,
+        "type_k": "f16",
+        "type_v": "f16",
+        "flash_attn": true,
+        "devices": "auto"
+      },
+      "external_baseline_role": "gguf_non_mlx_metal_reference",
+      "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
+      "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x10216ab00 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x10216a7c0 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.008 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-cpu-apple_m4.so",
+      "ttft_ms": {
+        "mean": 258.8554261280662,
+        "median": 258.5017802290568,
+        "min": 257.5908812828026,
+        "max": 260.40818983757043
+      },
+      "ttft_source": "derived_from_llama_cpp_pp_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "absent_skipped_via_cli",
+        "note": "Row produced under --skip-mlx-lm; no in-run baseline attached."
+      }
+    },
+    {
+      "engine": "llama_cpp_metal",
+      "method": "llama-bench",
+      "timing_scope": "external_llama_cpp_kernel_benchmark",
+      "runtime_identity": {
+        "selected_backend": "llama_cpp",
+        "route_identity": "external_llama_cpp_metal",
+        "resolution_policy": "external_gguf_baseline",
+        "benchmark_surface": "llama_cpp_bench"
+      },
+      "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
+      "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
+      "prompt_token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-31b-it-6bit-prompts/prompt-512-gen-128-846109be82df.json",
+      "prompt_token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
+      "prompt_source": "llama_bench_internal_random",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "batch_size": 1,
+      "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-31B-it-GGUF/snapshots/dbdaa0588c16bed9aa3897f81ad3f48cbdd4244b/google_gemma-4-31B-it-Q6_K.gguf",
+      "n_gpu_layers": 99,
+      "prefill_tok_s": {
+        "mean": 638.2304,
+        "median": 637.295,
+        "min": 634.235,
+        "max": 645.321,
+        "stddev": 4.275374,
+        "reported_mean": 638.23043
+      },
+      "decode_tok_s": {
+        "mean": 17.81994,
+        "median": 17.8506,
+        "min": 17.3061,
+        "max": 18.1038,
+        "stddev": 0.325727,
+        "reported_mean": 17.819943
+      },
+      "prefill_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 634.235,
+          "sample_ns": 807271375,
+          "ttft_ms": 807.2717525838215
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 637.295,
+          "sample_ns": 803395958,
+          "ttft_ms": 803.395601722907
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 645.321,
+          "sample_ns": 793403625,
+          "ttft_ms": 793.4035929405675
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 635.796,
+          "sample_ns": 805289959,
+          "ttft_ms": 805.2897470257755
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 638.505,
+          "sample_ns": 801872709,
+          "ttft_ms": 801.8731255041073
+        }
+      ],
+      "decode_trials": [
+        {
+          "trial": 1,
+          "decode_tok_s": 18.1038,
+          "sample_ns": 7070344000
+        },
+        {
+          "trial": 2,
+          "decode_tok_s": 18.0913,
+          "sample_ns": 7075205708
+        },
+        {
+          "trial": 3,
+          "decode_tok_s": 17.8506,
+          "sample_ns": 7170620042
+        },
+        {
+          "trial": 4,
+          "decode_tok_s": 17.7479,
+          "sample_ns": 7212140000
+        },
+        {
+          "trial": 5,
+          "decode_tok_s": 17.3061,
+          "sample_ns": 7396232500
+        }
+      ],
+      "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
+      "llama_cpp": {
+        "build_commit": "7ea23ddf7",
+        "build_number": 9270,
+        "backends": "BLAS,MTL",
+        "gpu_info": "Apple M5 Max",
+        "cpu_info": "Accelerate, Apple M5 Max",
+        "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-31B-it-GGUF/snapshots/dbdaa0588c16bed9aa3897f81ad3f48cbdd4244b/google_gemma-4-31B-it-Q6_K.gguf",
+        "model_type": "gemma4 31B Q6_K",
+        "model_size": 26710886640,
+        "model_n_params": 30697345596,
+        "n_gpu_layers": 99,
+        "n_batch": 2048,
+        "n_ubatch": 512,
+        "type_k": "f16",
+        "type_v": "f16",
+        "flash_attn": true,
+        "devices": "auto"
+      },
+      "external_baseline_role": "gguf_non_mlx_metal_reference",
+      "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
+      "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x105003340 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x105003040 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.008 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-cpu-apple_m4.so",
+      "ttft_ms": {
+        "mean": 802.2467639554358,
+        "median": 803.395601722907,
+        "min": 793.4035929405675,
+        "max": 807.2717525838215
+      },
+      "ttft_source": "derived_from_llama_cpp_pp_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "absent_skipped_via_cli",
+        "note": "Row produced under --skip-mlx-lm; no in-run baseline attached."
+      }
+    },
+    {
+      "engine": "llama_cpp_metal",
+      "method": "llama-bench",
+      "timing_scope": "external_llama_cpp_kernel_benchmark",
+      "runtime_identity": {
+        "selected_backend": "llama_cpp",
+        "route_identity": "external_llama_cpp_metal",
+        "resolution_policy": "external_gguf_baseline",
+        "benchmark_surface": "llama_cpp_bench"
+      },
+      "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
+      "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
+      "prompt_token_ids_path": "benchmarks/results/llama-cpp-metal/2026-05-28-6bit-sweep/gemma-4-31b-it-6bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+      "prompt_token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
+      "prompt_source": "llama_bench_internal_random",
+      "prompt_tokens": 2048,
+      "generation_tokens": 128,
+      "batch_size": 1,
+      "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-31B-it-GGUF/snapshots/dbdaa0588c16bed9aa3897f81ad3f48cbdd4244b/google_gemma-4-31B-it-Q6_K.gguf",
+      "n_gpu_layers": 99,
+      "prefill_tok_s": {
+        "mean": 504.3448,
+        "median": 497.264,
+        "min": 492.864,
+        "max": 536.588,
+        "stddev": 18.208318,
+        "reported_mean": 504.344625
+      },
+      "decode_tok_s": {
+        "mean": 16.417080000000002,
+        "median": 16.3534,
+        "min": 16.0683,
+        "max": 16.8034,
+        "stddev": 0.300198,
+        "reported_mean": 16.417084
+      },
+      "prefill_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 536.588,
+          "sample_ns": 3816709542,
+          "ttft_ms": 3816.7085361580953
+        },
+        {
+          "trial": 2,
+          "prefill_tok_s": 499.85,
+          "sample_ns": 4097232334,
+          "ttft_ms": 4097.229168750625
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 495.158,
+          "sample_ns": 4136056750,
+          "ttft_ms": 4136.053542505624
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 492.864,
+          "sample_ns": 4155304041,
+          "ttft_ms": 4155.304505908324
+        },
+        {
+          "trial": 5,
+          "prefill_tok_s": 497.264,
+          "sample_ns": 4118536792,
+          "ttft_ms": 4118.536632452781
+        }
+      ],
+      "decode_trials": [
+        {
+          "trial": 1,
+          "decode_tok_s": 16.6365,
+          "sample_ns": 7693909125
+        },
+        {
+          "trial": 2,
+          "decode_tok_s": 16.8034,
+          "sample_ns": 7617504875
+        },
+        {
+          "trial": 3,
+          "decode_tok_s": 16.3534,
+          "sample_ns": 7827110125
+        },
+        {
+          "trial": 4,
+          "decode_tok_s": 16.0683,
+          "sample_ns": 7965989000
+        },
+        {
+          "trial": 5,
+          "decode_tok_s": 16.2238,
+          "sample_ns": 7889667625
+        }
+      ],
+      "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
+      "llama_cpp": {
+        "build_commit": "7ea23ddf7",
+        "build_number": 9270,
+        "backends": "BLAS,MTL",
+        "gpu_info": "Apple M5 Max",
+        "cpu_info": "Accelerate, Apple M5 Max",
+        "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--bartowski--google_gemma-4-31B-it-GGUF/snapshots/dbdaa0588c16bed9aa3897f81ad3f48cbdd4244b/google_gemma-4-31B-it-Q6_K.gguf",
+        "model_type": "gemma4 31B Q6_K",
+        "model_size": 26710886640,
+        "model_n_params": 30697345596,
+        "n_gpu_layers": 99,
+        "n_batch": 2048,
+        "n_ubatch": 2048,
+        "type_k": "f16",
+        "type_v": "f16",
+        "flash_attn": true,
+        "devices": "auto"
+      },
+      "external_baseline_role": "gguf_non_mlx_metal_reference",
+      "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
+      "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x101b22df0 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x101b22af0 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.007 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.12.0/libexec/libggml-cpu-apple_m4.so",
+      "ttft_ms": {
+        "mean": 4064.7664771550903,
+        "median": 4118.536632452781,
+        "min": 3816.7085361580953,
+        "max": 4155.304505908324
+      },
+      "ttft_source": "derived_from_llama_cpp_pp_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "absent_skipped_via_cli",
+        "note": "Row produced under --skip-mlx-lm; no in-run baseline attached."
+      }
+    }
+  ]
+}
