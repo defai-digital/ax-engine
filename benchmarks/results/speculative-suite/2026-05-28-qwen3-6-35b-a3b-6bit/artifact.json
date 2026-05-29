@@ -1,0 +1,97 @@
+{
+  "schema": "ax.bench.speculative_suite.v1",
+  "date": "2026-05-28",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-6bit/snapshots/cb7e092ef8efe540bc3672c8929c4adbe5f4f759",
+  "prompt_mode": "random",
+  "sampling": "greedy_argmax_t0",
+  "generation_tokens": 128,
+  "repetitions": 2,
+  "warmup": 1,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "fairness_contract": {
+    "reference": "Rapid-MLX SuffixDecoding eligibility bench",
+    "model_requirement": "ordinary MLX community snapshot; do not use Youssofal MTPLX bundles for this comparison",
+    "hybrid_policy": "skip speculative paths when the prompt cache is not trimmable"
+  },
+  "lightning": {
+    "ngram_size": 3,
+    "num_draft_tokens": 4
+  },
+  "rapid_mlx": {
+    "algorithm": "SuffixDecodingDrafter",
+    "max_draft_tokens": 8,
+    "max_suffix_len": 4,
+    "min_confidence": 0.3
+  },
+  "ax_ngram_same_loop": {
+    "algorithm": "NgramTable (Python mirror)",
+    "source": "crates/ax-engine-mlx/src/ngram_accel.rs",
+    "max_draft_len": 4,
+    "min_support": 1,
+    "confidence_threshold": 0.4,
+    "tail_size": 4,
+    "orders": [
+      "bigram",
+      "trigram",
+      "fourgram"
+    ],
+    "policy": "majority_recency",
+    "acceptance": "argmax_only (same as lightning/rapid-mlx)"
+  },
+  "results": [
+    {
+      "case_id": "random_p128",
+      "category": "random",
+      "prompt_tokens": 128,
+      "gen_tokens": 128,
+      "ignore_eos": false,
+      "baseline": {
+        "tok_s_median": 91.36109067246198,
+        "raw_runs": [
+          {
+            "tps": 89.2451412380012,
+            "token_count": 128,
+            "decode_time": 1.4342517500044778,
+            "rejected_reason": null
+          },
+          {
+            "tps": 93.47704010692276,
+            "token_count": 128,
+            "decode_time": 1.3693202079739422,
+            "rejected_reason": null
+          }
+        ]
+      },
+      "lightning": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      },
+      "rapid_mlx": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      },
+      "ax_ngram_same_loop": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      }
+    }
+  ]
+}

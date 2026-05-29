@@ -1,27 +1,38 @@
 # AX Engine
 
-### MTPLX vs AX-Engine MTP
+### Qwen3.6 Fair MTP
 
-Prompt-parity MTP comparison charts.
+Tri-engine MTP comparison using standard `Qwen/Qwen3.6-*` sidecars plus
+matching `mlx-community/*-4bit` MLX bases. No `Youssofal/*MTPLX*` bundles are
+used. Latest local rerun: shared depth `1`, sampled decode, max tokens `128`,
+one measured repetition, one warmup repetition.
 
 <table>
 <tr>
-<td align="center"><strong>Speed tok/s</strong></td>
-<td align="center"><strong>Speed accept rate</strong></td>
+<td align="center"><strong>Qwen3.6 27B 4-bit</strong></td>
+<td align="center"><strong>Qwen3.6 35B-A3B 4-bit</strong></td>
 </tr>
 <tr>
-<td><img src="docs/assets/perf-mtp-speed-tok-s.svg" alt="Speed to Speed d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
-<td><img src="docs/assets/perf-mtp-speed-accept-rate.svg" alt="Speed to Speed d=3 accept-rate chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-decode-tok-s.svg" alt="Qwen3.6 27B 4-bit fair MTP decode throughput chart comparing MTPLX, Rapid-MLX, and AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-decode-tok-s.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP decode throughput chart comparing MTPLX, Rapid-MLX, and AX Engine across flappy, long_code, and python_modules_long"></td>
 </tr>
 <tr>
-<td align="center"><strong>Quality tok/s</strong></td>
-<td align="center"><strong>Quality accept rate</strong></td>
-</tr>
-<tr>
-<td><img src="docs/assets/perf-mtp-quality-tok-s.svg" alt="Quality d=3 tok/s chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
-<td><img src="docs/assets/perf-mtp-quality-accept-rate.svg" alt="Quality d=3 accept-rate chart comparing artifact-backed MTPLX and AX Engine MTP on flappy and long_code"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-accept-rate.svg" alt="Qwen3.6 27B 4-bit fair MTP accept-rate chart comparing MTPLX and AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-accept-rate.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP accept-rate chart comparing MTPLX and AX Engine across flappy, long_code, and python_modules_long"></td>
 </tr>
 </table>
+
+| Model | Suite | MTPLX tok/s | MTPLX accept | Rapid-MLX tok/s | AX Engine tok/s | AX accept | AX/MTPLX | AX/Rapid |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Qwen3.6 27B 4-bit | flappy | 23.1 | 1.4% | 27.3 | 25.7 | 12.4% | 1.113 | 0.943 |
+| Qwen3.6 27B 4-bit | long_code | 23.7 | 1.0% | 28.4 | 40.6 | 68.9% | 1.712 | 1.428 |
+| Qwen3.6 27B 4-bit | python_modules_long | 24.4 | 2.5% | 28.3 | 42.0 | 68.0% | 1.723 | 1.488 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 93.0 | 7.0% | 83.2 | 135.7 | 59.4% | 1.458 | 1.630 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 81.9 | 10.5% | 81.8 | 153.1 | 79.4% | 1.869 | 1.872 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 73.0 | 15.5% | 77.5 | 130.7 | 51.2% | 1.790 | 1.687 |
+
+Rapid-MLX exposes server-path throughput here but not accepted/drafted token
+telemetry. Full artifacts: [`summary.md`](benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/summary.md).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
@@ -321,9 +332,15 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 | Gemma 4 26B A4B | 4-bit | 128 | 1,911.4 | 496.4 | **1,511.4 (+204.5%)** |
 |         |         | 512 | 3,484.5 | 1,621.0 | **3,151.4 (+94.4%)** |
 |         |         | 2048 | 3,604.8 | 3,300.1 | **4,615.9 (+39.9%)** |
+| Gemma 4 26B A4B | 6-bit | 128 | — | 566.6 | **1,143.0 (+101.7%)** |
+|         |         | 512 | — | 1,725.3 | **2,589.8 (+50.1%)** |
+|         |         | 2048 | — | 3,330.4 | **4,117.5 (+23.6%)** |
 | Gemma 4 31B | 4-bit | 128 | 522.6 | 283.1 | **611.3 (+116.0%)** |
 |         |         | 512 | 665.3 | 619.9 | **792.6 (+27.9%)** |
 |         |         | 2048 | 560.3 | 733.9 | **769.4 (+4.8%)** |
+| Gemma 4 31B | 6-bit | 128 | — | 268.5 | **380.1 (+41.5%)** |
+|         |         | 512 | — | 502.6 | **579.2 (+15.2%)** |
+|         |         | 2048 | — | 592.0 | **653.8 (+10.4%)** |
 | Qwen 3.6 27B | 4-bit | 128 | 539.6 | 378.8 | **569.0 (+50.2%)** |
 |  |  | 512 | 759.7 | 705.7 | **813.8 (+15.3%)** |
 |  |  | 2048 | 664.3 | 895.2 | **910.1 (+1.7%)** |
@@ -339,6 +356,9 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 | Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 539.4 | **1,101.4 (+104.2%)** |
 |  |  | 512 | 3,146.6 | 1,599.5 | **2,566.8 (+60.5%)** |
 |  |  | 2048 | 3,542.3 | 3,513.1 | **3,626.2 (+3.2%)** |
+| Qwen 3.6 35B A3B | 6-bit | 128 | — | 404.3 | **864.0 (+113.7%)** |
+|  |  | 512 | — | 1,340.6 | **2,277.3 (+69.9%)** |
+|  |  | 2048 | — | 3,150.6 | **3,320.9 (+5.4%)** |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
@@ -389,9 +409,15 @@ claims.
 | Gemma 4 26B A4B | 4-bit | 128 | 112.6 | 127.9 | **133.6 (+4.4%)** | **221.9 (+73.5%)** |
 |  |  | 512 | 112.9 | 125.0 | **130.4 (+4.3%)** | **253.8 (+103.0%)** |
 |  |  | 2048 | 112.9 | 119.3 | **126.0 (+5.6%)** | **240.5 (+101.6%)** |
+| Gemma 4 26B A4B | 6-bit | 128 | — | 95.1 | **97.9 (+3.0%)** | **219.8 (+131.2%)** |
+|  |  | 512 | — | 102.7 | **99.8 (-2.8%)** | **170.6 (+66.1%)** |
+|  |  | 2048 | — | 91.5 | **96.6 (+5.6%)** | **178.7 (+95.4%)** |
 | Gemma 4 31B | 4-bit | 128 | 25.0 | 28.9 | **28.9 (+0.2%)** | **60.1 (+108.1%)** |
 |  |  | 512 | 25.5 | 28.3 | **28.3 (+0.1%)** | **58.7 (+107.4%)** |
 |  |  | 2048 | 25.3 | 27.0 | **27.2 (+0.5%)** | **55.8 (+106.5%)** |
+| Gemma 4 31B | 6-bit | 128 | — | 17.2 | 17.5 (+1.9%) | **38.6 (+124.9%)** |
+|  |  | 512 | — | 16.7 | **17.3 (+3.6%)** | **37.7 (+125.6%)** |
+|  |  | 2048 | — | 16.2 | **17.6 (+8.4%)** | **34.2 (+110.9%)** |
 | Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.6 (-1.2%) | 33.4 (-1.8%) |
 |  |  | 512 | 26.0 | 33.9 | 33.5 (-1.3%) | 33.2 (-2.1%) |
 |  |  | 2048 | 18.8 | 33.4 | 33.2 (-0.8%) | 33.1 (-1.0%) |
@@ -407,6 +433,9 @@ claims.
 | Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 140.1 | **149.6 (+6.8%)** | **308.2 (+120.0%)** |
 |  |  | 512 | 108.2 | 136.5 | **148.5 (+8.8%)** | **148.6 (+8.9%)** |
 |  |  | 2048 | 105.7 | 134.5 | **146.2 (+8.8%)** | **141.7 (+5.4%)** |
+| Qwen 3.6 35B A3B | 6-bit | 128 | — | 101.6 | **121.4 (+19.5%)** | **124.1 (+22.2%)** |
+|  |  | 512 | — | 108.8 | **114.1 (+4.9%)** | **122.8 (+12.8%)** |
+|  |  | 2048 | — | 110.0 | **113.0 (+2.7%)** | **121.8 (+10.7%)** |
 
 Qwen 3.6 27B 4-bit at prompt=2048 originally produced zero decode tokens
 because 4-bit quantization noise pushed an EOS token to argmax at decode
@@ -461,86 +490,85 @@ Qwen 3.6 4/5/6/8-bit quantizations are non-trimmable — both lightning and
 Rapid-MLX fall back to baseline throughput. AX Engine's own KV cache is always
 trimmable; the `ax default n-gram` column in the table above is unaffected.
 
-`suite baseline` is the same `mlx_lm` model weights run through
-`bench_speculative_suite.py`'s Python decode loop **with no speculation at
-all** — pure greedy decode, one token per step. It is **not** the `mlx_lm`
-column in the main tables above (which uses `mlx_lm.benchmark`'s optimized
-C++ loop and runs ~15–20% faster). `suite baseline`, `lightning n-gram`, and
-`Rapid-MLX PLD` all share the same Python loop, so their three-way comparison
-is apple-to-apple. Percentages are vs `suite baseline`.
+All four columns below share the **same Python mlx_lm decode loop** with
+**greedy argmax acceptance** (T=0). The only variable is the drafting
+algorithm. `suite baseline` is pure greedy decode with no speculation.
+Percentages are vs `suite baseline`.
 
-`ax n-gram` is faster than `lightning n-gram` for two independent reasons:
+##### Table 1: N-gram Drafting Algorithm Comparison (same Python loop, argmax-only)
 
-1. **Acceptance criterion**: lightning and Rapid-MLX use *exact* speculative
-   decoding — a draft token is accepted only if it matches the model's argmax
-   exactly. AX Engine uses a *threshold*-based criterion: a draft token is
-   accepted if its probability in the model's distribution is ≥ 30%, even when
-   another token has a slightly higher probability. This dramatically raises
-   the accept rate on outputs that are not perfectly repetitive.
-2. **Native decode path**: `ax n-gram` runs in ax-engine-bench's Rust/Metal
-   decode loop with no Python overhead, so its baseline decode speed is already
-   higher than the Python loop used by the other three columns. The `ax n-gram`
-   percentages vs `suite baseline` therefore overstate the algorithm's
-   advantage; the true reference is the `ax direct baseline` column in the main
-   decode table above.
+This table answers: *given the same decode loop and acceptance criterion,
+which drafting algorithm finds the most matches?*
 
-##### Gemma 4 — trimmable KV (tok/s)
+###### Gemma 4 — trimmable KV (tok/s)
 
-| Model | Quant | PT | suite baseline | lightning n-gram | Rapid-MLX PLD | ax n-gram† |
+| Model | Quant | PT | suite baseline | lightning n-gram | Rapid-MLX PLD | ax-ngram (same-loop) |
 |---|---|---:|---:|---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 172.8 | 173.0 (+0.1%) | 172.9 (+0.1%) | **528.3 (+206%)** |
-|  |  | 512 | 168.5 | 168.7 (+0.1%) | 168.4 (-0.1%) | **532.0 (+216%)** |
-|  |  | 2048 | 163.3 | 162.8 (-0.3%) | 162.8 (-0.3%) | **497.6 (+205%)** |
-| Gemma 4 E2B | 5-bit | 128 | 158.9 | 158.8 (-0.1%) | 158.8 (-0.1%) | **416.0 (+162%)** |
-|  |  | 512 | 220.8 | 216.3 (-2.0%) | 216.7 (-1.9%) | **410.4 (+86%)** |
-|  |  | 2048 | 150.4 | **381.8 (+154%)** | **378.4 (+152%)** | **387.4 (+158%)** |
-| Gemma 4 E2B | 6-bit | 128 | 143.5 | 143.6 (+0.1%) | 143.7 (+0.1%) | **399.8 (+179%)** |
-|  |  | 512 | 141.1 | 141.2 (+0.1%) | 141.1 (0.0%) | **340.2 (+141%)** |
-|  |  | 2048 | 136.7 | 136.7 (0.0%) | 136.6 (-0.1%) | **372.2 (+172%)** |
-| Gemma 4 E2B | 8-bit | 128 | 129.7 | 129.6 (-0.1%) | 129.6 (-0.1%) | **405.7 (+213%)** |
-|  |  | 512 | 127.2 | 127.3 (+0.1%) | 127.3 (+0.1%) | **399.3 (+214%)** |
-|  |  | 2048 | 124.0 | **368.3 (+197%)** | **364.8 (+194%)** | **377.6 (+205%)** |
-| Gemma 4 E4B | 4-bit | 128 | 115.1 | **283.5 (+146%)** | **289.9 (+152%)** | **323.0 (+181%)** |
-|  |  | 512 | 113.7 | **284.7 (+150%)** | **282.2 (+148%)** | **314.6 (+177%)** |
-|  |  | 2048 | 111.7 | **303.9 (+172%)** | **302.0 (+170%)** | **303.4 (+172%)** |
-| Gemma 4 26B A4B | 4-bit | 128 | 108.7 | 108.9 (+0.2%) | 108.7 (0.0%) | **221.9 (+104%)** |
-|  |  | 512 | 106.3 | 106.1 (-0.2%) | 106.2 (-0.1%) | **253.8 (+139%)** |
-|  |  | 2048 | 103.1 | **221.3 (+115%)** | **220.6 (+114%)** | **240.5 (+133%)** |
-| Gemma 4 31B | 4-bit | 128 | 27.6 | **63.7 (+131%)** | **63.3 (+129%)** | **60.1 (+118%)** |
-|  |  | 512 | 27.1 | **61.6 (+127%)** | **61.3 (+126%)** | **58.7 (+117%)** |
-|  |  | 2048 | 26.0 | **41.0 (+58%)** | **41.6 (+60%)** | **55.8 (+115%)** |
+| Gemma 4 E2B | 4-bit | 128 | 172.8 | 173.0 (+0.1%) | 172.9 (+0.1%) | *pending* |
+|  |  | 512 | 168.5 | 168.7 (+0.1%) | 168.4 (-0.1%) | *pending* |
+|  |  | 2048 | 163.3 | 162.8 (-0.3%) | 162.8 (-0.3%) | *pending* |
+| Gemma 4 E2B | 5-bit | 128 | 158.9 | 158.8 (-0.1%) | 158.8 (-0.1%) | *pending* |
+|  |  | 512 | 220.8 | 216.3 (-2.0%) | 216.7 (-1.9%) | *pending* |
+|  |  | 2048 | 150.4 | **381.8 (+154%)** | **378.4 (+152%)** | *pending* |
+| Gemma 4 E4B | 4-bit | 128 | 115.1 | **283.5 (+146%)** | **289.9 (+152%)** | *pending* |
+|  |  | 512 | 113.7 | **284.7 (+150%)** | **282.2 (+148%)** | *pending* |
+|  |  | 2048 | 111.7 | **303.9 (+172%)** | **302.0 (+170%)** | *pending* |
+| Gemma 4 26B A4B | 4-bit | 128 | 108.7 | 108.9 (+0.2%) | 108.7 (0.0%) | *pending* |
+|  |  | 512 | 106.3 | 106.1 (-0.2%) | 106.2 (-0.1%) | *pending* |
+|  |  | 2048 | 103.1 | **221.3 (+115%)** | **220.6 (+114%)** | *pending* |
+| Gemma 4 26B A4B | 6-bit | 128 | 89.8 | **189.9 (+112%)** | **230.7 (+157%)** | **201.8 (+125%)** |
+|  |  | 512 | 89.2 | **181.0 (+103%)** | **189.5 (+112%)** | **167.7 (+88%)** |
+|  |  | 2048 | 86.4 | **175.5 (+103%)** | 85.6 (-1%)† | 79.1 (-8%)† |
+| Gemma 4 31B | 4-bit | 128 | 27.6 | **63.7 (+131%)** | **63.3 (+129%)** | *pending* |
+|  |  | 512 | 27.1 | **61.6 (+127%)** | **61.3 (+126%)** | *pending* |
+|  |  | 2048 | 26.0 | **41.0 (+58%)** | **41.6 (+60%)** | *pending* |
+| Gemma 4 31B | 6-bit | 128 | 19.0 | **41.4 (+118%)** | **40.2 (+112%)** | **42.1 (+122%)** |
+|  |  | 512 | 18.5 | **40.8 (+121%)** | **40.0 (+116%)** | **41.5 (+124%)** |
+|  |  | 2048 | 18.2 | **38.1 (+109%)** | **39.2 (+115%)** | **40.0 (+120%)** |
 
-E2B 4-bit and 6-bit show no benefit — T=0 greedy on random tokens does not
-produce 3-gram repetitions at these bit widths. E2B 5-bit and 8-bit benefit
-only at pt=2048 where the model enters output loops the n-gram table catches.
+E2B 4-bit shows no benefit — T=0 greedy on random tokens does not produce
+n-gram repetitions at this bit width. E2B 5-bit benefits only at pt=2048
+where the model enters output loops the n-gram table catches.
 
-† `ax n-gram` values are from `ax-engine-bench` (ax-engine's own benchmark
-harness), not the Python loop used by the other three columns. AX Engine's KV
-cache is always trimmable and its n-gram drafter runs in the Rust/Metal decode
-path. Percentages are vs `suite baseline` for visual comparability only;
-`ax n-gram` is measured with a different tool than `suite baseline`.
+`ax-ngram (same-loop)` is a Python mirror of AX Engine's NgramTable
+(bigram+trigram+fourgram, majority-recency, confidence=0.4) running in the
+same decode loop as the other three columns with argmax-only acceptance.
+Run `scripts/bench_speculative_suite.py` to populate these cells.
 
-##### Qwen 3.6 — non-trimmable KV (tok/s)
+† Rapid-MLX and ax-ngram accept rate drops below 30% at PT=2048 on random tokens
+because random sequences produce no n-gram repetitions; net throughput falls below
+the single-path baseline for 26B A4B 6-bit at this prompt length.
 
-| Model | Quant | PT | suite baseline | lightning n-gram | Rapid-MLX PLD | ax n-gram† |
+###### Qwen 3.6 — non-trimmable KV (tok/s)
+
+| Model | Quant | PT | suite baseline | lightning n-gram | Rapid-MLX PLD | ax-ngram (same-loop) |
 |---|---|---:|---:|---:|---:|---:|
-| Qwen 3.6 27B | 4-bit | 128 | 28.6 | 28.4 (-0.7%) | 28.6 (0.0%) | 33.4 (+17%) |
-|  |  | 512 | 28.7 | 30.7 (+7.0%) | 30.7 (+7.0%) | 33.2 (+16%) |
-|  |  | 2048 | 30.4 | 30.0 (-1.3%) | 30.2 (-0.7%) | 33.1 (+9%) |
-| Qwen 3.6 27B | 5-bit | 128 | 26.1 | 26.4 (+1.1%) | 26.3 (+0.8%) | 27.8 (+7%) |
-|  |  | 512 | 26.2 | 26.2 (0.0%) | 26.2 (0.0%) | 27.7 (+6%) |
-|  |  | 2048 | 26.0 | 26.0 (0.0%) | 26.0 (0.0%) | 27.5 (+6%) |
-| Qwen 3.6 27B | 6-bit | 128 | 22.4 | 22.5 (+0.4%) | 22.5 (+0.4%) | 24.2 (+8%) |
-|  |  | 512 | 22.4 | 22.4 (0.0%) | 22.5 (+0.4%) | 24.8 (+11%) |
-|  |  | 2048 | 22.6 | 22.6 (0.0%) | 22.6 (0.0%) | 24.7 (+9%) |
-| Qwen 3.6 27B | 8-bit | 128 | 17.7 | 17.8 (+0.6%) | 17.8 (+0.6%) | 18.4 (+4%) |
-|  |  | 512 | 17.7 | 17.6 (-0.6%) | 17.6 (-0.6%) | 17.8 (+1%) |
-|  |  | 2048 | 17.5 | 17.5 (0.0%) | 17.5 (0.0%) | 17.8 (+2%) |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 110.4 | 110.8 (+0.4%) | 110.3 (-0.1%) | **308.2 (+179%)** |
+| Qwen 3.6 27B | 4-bit | 128 | 28.6 | 28.4 (-0.7%) | 28.6 (0.0%) | *pending* |
+|  |  | 512 | 28.7 | 30.7 (+7.0%) | 30.7 (+7.0%) | *pending* |
+|  |  | 2048 | 30.4 | 30.0 (-1.3%) | 30.2 (-0.7%) | *pending* |
+| Qwen 3.6 35B A3B | 6-bit | 128 | 91.4 | — | — | — |
 
 Qwen 3.6 draft count is always 0 across all quantizations and prompt lengths
-— KV cache non-trimmable, throughput equals baseline. AX Engine n-gram
-acceleration is not constrained by mlx_lm KV trimmability and remains active.
+— KV cache non-trimmable in `mlx_lm`, throughput equals baseline.
+Qwen 3.6 35B A3B 6-bit: all three speculative columns return `non_trimmable_cache`
+at PT=128; higher PT not measured.
+
+##### Table 2: AX Engine N-gram Effective Throughput (Rust/Metal decode)
+
+This table answers: *what does an AX Engine user actually experience?*
+Speedup is `ax n-gram / ax direct` — same runtime, same baseline. Measured
+by `scripts/bench_ngram_vs_lightning.py` on real-world prompts (T=0.6).
+
+| Model | Quant | ax direct (tok/s) | ax n-gram (tok/s) | speedup | accept rate |
+|---|---|---:|---:|---:|---:|
+| Qwen3-4B | 4-bit | 76.0 | 82.4 | 1.08x | 51.9% |
+| Gemma 4 E2B | 4-bit | 64.1 | 82.1 | 1.28x | 53.5% |
+| Gemma 4 E4B | 4-bit | 52.3 | 68.4 | 1.31x | 56.1% |
+
+AX Engine's n-gram path uses **threshold-based acceptance** (p >= 0.30) and
+a Rust/Metal decode loop. This is a different measurement context than
+Table 1 — the two tables answer different questions and should not be
+compared directly.
 
 ### Time to first token (ms) — generation=128 tokens, temp=0
 
@@ -569,9 +597,15 @@ so server/client timing does not get mixed with runner-time throughput.
 | Gemma 4 26B A4B | 4-bit | 128 | 67.0 | 257.8 | **84.7 (-67.2%)** |
 |         |         | 512 | 146.9 | 315.8 | **162.5 (-48.6%)** |
 |         |         | 2048 | 568.1 | 620.6 | **443.7 (-28.5%)** |
+| Gemma 4 26B A4B | 6-bit | 128 | — | 225.9 | **112.0 (-50.4%)** |
+|         |         | 512 | — | 296.8 | **197.7 (-33.4%)** |
+|         |         | 2048 | — | 614.9 | **497.4 (-19.1%)** |
 | Gemma 4 31B | 4-bit | 128 | 244.9 | 452.2 | **209.4 (-53.7%)** |
 |         |         | 512 | 769.5 | 826.0 | **646.0 (-21.8%)** |
 |         |         | 2048 | 3,655.2 | 2,790.6 | **2,661.7 (-4.6%)** |
+| Gemma 4 31B | 6-bit | 128 | — | 476.7 | **336.8 (-29.3%)** |
+|         |         | 512 | — | 1,018.7 | **884.0 (-13.2%)** |
+|         |         | 2048 | — | 3,459.7 | 3,132.6 (-9.5%) |
 | Qwen 3.6 27B | 4-bit | 128 | 237.2 | 337.9 | **225.0 (-33.4%)** |
 |  |  | 512 | 673.9 | 725.6 | **629.1 (-13.3%)** |
 |  |  | 2048 | 3,083.1 | 2,287.7 | **2,250.3 (-1.6%)** |
@@ -587,6 +621,9 @@ so server/client timing does not get mixed with runner-time throughput.
 | Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 237.3 | **116.2 (-51.0%)** |
 |  |  | 512 | 162.7 | 320.1 | **199.5 (-37.7%)** |
 |  |  | 2048 | 578.2 | 583.0 | **564.8 (-3.1%)** |
+| Qwen 3.6 35B A3B | 6-bit | 128 | — | 316.6 | **148.1 (-53.2%)** |
+|  |  | 512 | — | 381.9 | **224.8 (-41.1%)** |
+|  |  | 2048 | — | 650.0 | 616.7 (-5.1%) |
 
 ### N-gram: ax-engine vs lightning-mlx (Qwen3-4B 4-bit, temp=0.6)
 
