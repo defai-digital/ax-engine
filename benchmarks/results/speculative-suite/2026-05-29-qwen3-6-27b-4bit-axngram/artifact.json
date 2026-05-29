@@ -1,0 +1,205 @@
+{
+  "schema": "ax.bench.speculative_suite.v1",
+  "date": "2026-05-29",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282",
+  "prompt_mode": "random",
+  "sampling": "greedy_argmax_t0",
+  "generation_tokens": 128,
+  "repetitions": 5,
+  "warmup": 2,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "fairness_contract": {
+    "reference": "Rapid-MLX SuffixDecoding eligibility bench",
+    "model_requirement": "ordinary MLX community snapshot; do not use Youssofal MTPLX bundles for this comparison",
+    "hybrid_policy": "skip speculative paths when the prompt cache is not trimmable"
+  },
+  "lightning": {
+    "ngram_size": 3,
+    "num_draft_tokens": 4
+  },
+  "rapid_mlx": {
+    "algorithm": "SuffixDecodingDrafter",
+    "max_draft_tokens": 8,
+    "max_suffix_len": 4,
+    "min_confidence": 0.3
+  },
+  "ax_ngram_same_loop": {
+    "algorithm": "NgramTable (Python mirror)",
+    "source": "crates/ax-engine-mlx/src/ngram_accel.rs",
+    "max_draft_len": 4,
+    "min_support": 1,
+    "confidence_threshold": 0.4,
+    "tail_size": 4,
+    "orders": [
+      "bigram",
+      "trigram",
+      "fourgram"
+    ],
+    "policy": "majority_recency",
+    "acceptance": "argmax_only (same as lightning/rapid-mlx)"
+  },
+  "results": [
+    {
+      "case_id": "random_p128",
+      "category": "random",
+      "prompt_tokens": 128,
+      "gen_tokens": 128,
+      "ignore_eos": true,
+      "baseline": {
+        "tok_s_median": 26.48965095389399,
+        "raw_runs": [
+          {
+            "tps": 26.52084369755447,
+            "token_count": 128,
+            "decode_time": 4.82639245793689,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.592660588517887,
+            "token_count": 128,
+            "decode_time": 4.813358166022226,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.48965095389399,
+            "token_count": 128,
+            "decode_time": 4.832075749989599,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.36548064272784,
+            "token_count": 128,
+            "decode_time": 4.854832791956142,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.26582465008231,
+            "token_count": 128,
+            "decode_time": 4.8732526659732684,
+            "rejected_reason": null
+          }
+        ]
+      },
+      "lightning": null,
+      "rapid_mlx": null,
+      "ax_ngram_same_loop": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      }
+    },
+    {
+      "case_id": "random_p512",
+      "category": "random",
+      "prompt_tokens": 512,
+      "gen_tokens": 128,
+      "ignore_eos": true,
+      "baseline": {
+        "tok_s_median": 26.386454661552907,
+        "raw_runs": [
+          {
+            "tps": 25.999983749508072,
+            "token_count": 128,
+            "decode_time": 4.923080000095069,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.324507258929536,
+            "token_count": 128,
+            "decode_time": 4.862389207934029,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.443962135250988,
+            "token_count": 128,
+            "decode_time": 4.840424416936003,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.386454661552907,
+            "token_count": 128,
+            "decode_time": 4.85097379097715,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.508591242798595,
+            "token_count": 128,
+            "decode_time": 4.828623250010423,
+            "rejected_reason": null
+          }
+        ]
+      },
+      "lightning": null,
+      "rapid_mlx": null,
+      "ax_ngram_same_loop": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      }
+    },
+    {
+      "case_id": "random_p2048",
+      "category": "random",
+      "prompt_tokens": 2048,
+      "gen_tokens": 128,
+      "ignore_eos": true,
+      "baseline": {
+        "tok_s_median": 26.180323742963026,
+        "raw_runs": [
+          {
+            "tps": 26.20522562879495,
+            "token_count": 128,
+            "decode_time": 4.8845219580689445,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.180323742963026,
+            "token_count": 128,
+            "decode_time": 4.8891679589869455,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.084255289901122,
+            "token_count": 128,
+            "decode_time": 4.907174790976569,
+            "rejected_reason": null
+          },
+          {
+            "tps": 26.215696161585075,
+            "token_count": 128,
+            "decode_time": 4.8825710830278695,
+            "rejected_reason": null
+          },
+          {
+            "tps": 25.63508460210345,
+            "token_count": 128,
+            "decode_time": 4.993156917043962,
+            "rejected_reason": null
+          }
+        ]
+      },
+      "lightning": null,
+      "rapid_mlx": null,
+      "ax_ngram_same_loop": {
+        "tok_s_median": null,
+        "accept_rate": null,
+        "total_drafted": 0,
+        "total_accepted": 0,
+        "trimmable": false,
+        "skipped_reason": "non_trimmable_cache",
+        "raw_runs": []
+      }
+    }
+  ]
+}

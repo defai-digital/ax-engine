@@ -4,8 +4,8 @@
 
 Tri-engine MTP comparison using standard `Qwen/Qwen3.6-*` sidecars plus
 matching `mlx-community/*-4bit` MLX bases. No `Youssofal/*MTPLX*` bundles are
-used. Latest local rerun: shared depth `1`, sampled decode, max tokens `128`,
-one measured repetition, one warmup repetition.
+used. Latest local rerun: shared depth `1`, sampled decode, max tokens `1000`,
+five measured repetitions, one warmup repetition.
 
 <table>
 <tr>
@@ -24,15 +24,17 @@ one measured repetition, one warmup repetition.
 
 | Model | Suite | MTPLX tok/s | MTPLX accept | Rapid-MLX tok/s | AX Engine tok/s | AX accept | AX/MTPLX | AX/Rapid |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 23.1 | 1.4% | 27.3 | 25.7 | 12.4% | 1.113 | 0.943 |
-| Qwen3.6 27B 4-bit | long_code | 23.7 | 1.0% | 28.4 | 40.6 | 68.9% | 1.712 | 1.428 |
-| Qwen3.6 27B 4-bit | python_modules_long | 24.4 | 2.5% | 28.3 | 42.0 | 68.0% | 1.723 | 1.488 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 93.0 | 7.0% | 83.2 | 135.7 | 59.4% | 1.458 | 1.630 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 81.9 | 10.5% | 81.8 | 153.1 | 79.4% | 1.869 | 1.872 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 73.0 | 15.5% | 77.5 | 130.7 | 51.2% | 1.790 | 1.687 |
+| Qwen3.6 27B 4-bit | flappy | 21.0 | 1.8% | 25.3 | 39.4 | 87.5% | 1.875 | 1.561 |
+| Qwen3.6 27B 4-bit | long_code | 20.7 | 1.0% | 25.2 | 42.0 | 91.9% | 2.025 | 1.663 |
+| Qwen3.6 27B 4-bit | python_modules_long | 23.8 | 3.0% | 28.0 | 38.3 | 68.5% | 1.606 | 1.365 |
+| Qwen3.6 35B-A3B 4-bit | flappy | - | - | 66.5 | 144.7 | 85.0% | - | 2.175 |
+| Qwen3.6 35B-A3B 4-bit | long_code | - | - | 70.2 | 145.2 | 89.6% | - | 2.070 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | - | - | 71.4 | 119.7 | 66.2% | - | 1.676 |
 
 Rapid-MLX exposes server-path throughput here but not accepted/drafted token
-telemetry. Full artifacts: [`summary.md`](benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/summary.md).
+telemetry. MTPLX 0.3.7 rejects the standard 35B-A3B MoE MTP sidecar tensor
+layout, so those rows are intentionally fail-closed instead of forced.
+Full artifacts: [`summary.md`](benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-fixed-sidecars/summary.md).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
@@ -504,24 +506,24 @@ which drafting algorithm finds the most matches?*
 
 | Model | Quant | PT | suite baseline | lightning n-gram | Rapid-MLX PLD | ax-ngram (same-loop) |
 |---|---|---:|---:|---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 172.8 | 173.0 (+0.1%) | 172.9 (+0.1%) | *pending* |
-|  |  | 512 | 168.5 | 168.7 (+0.1%) | 168.4 (-0.1%) | *pending* |
-|  |  | 2048 | 163.3 | 162.8 (-0.3%) | 162.8 (-0.3%) | *pending* |
-| Gemma 4 E2B | 5-bit | 128 | 158.9 | 158.8 (-0.1%) | 158.8 (-0.1%) | *pending* |
-|  |  | 512 | 220.8 | 216.3 (-2.0%) | 216.7 (-1.9%) | *pending* |
-|  |  | 2048 | 150.4 | **381.8 (+154%)** | **378.4 (+152%)** | *pending* |
-| Gemma 4 E4B | 4-bit | 128 | 115.1 | **283.5 (+146%)** | **289.9 (+152%)** | *pending* |
-|  |  | 512 | 113.7 | **284.7 (+150%)** | **282.2 (+148%)** | *pending* |
-|  |  | 2048 | 111.7 | **303.9 (+172%)** | **302.0 (+170%)** | *pending* |
-| Gemma 4 26B A4B | 4-bit | 128 | 108.7 | 108.9 (+0.2%) | 108.7 (0.0%) | *pending* |
-|  |  | 512 | 106.3 | 106.1 (-0.2%) | 106.2 (-0.1%) | *pending* |
-|  |  | 2048 | 103.1 | **221.3 (+115%)** | **220.6 (+114%)** | *pending* |
+| Gemma 4 E2B | 4-bit | 128 | 172.8 | 173.0 (+0.1%) | 172.9 (+0.1%) | 87.8 (-49%)‡ |
+|  |  | 512 | 168.5 | 168.7 (+0.1%) | 168.4 (-0.1%) | 114.4 (-32%)‡ |
+|  |  | 2048 | 163.3 | 162.8 (-0.3%) | 162.8 (-0.3%) | —‡ |
+| Gemma 4 E2B | 5-bit | 128 | 158.9 | 158.8 (-0.1%) | 158.8 (-0.1%) | —‡ |
+|  |  | 512 | 220.8 | 216.3 (-2.0%) | 216.7 (-1.9%) | —‡ |
+|  |  | 2048 | 150.4 | **381.8 (+154%)** | **378.4 (+152%)** | —‡ |
+| Gemma 4 E4B | 4-bit | 128 | 115.1 | **283.5 (+146%)** | **289.9 (+152%)** | 61.2 (-47%)‡ |
+|  |  | 512 | 113.7 | **284.7 (+150%)** | **282.2 (+148%)** | **231.3 (+103%)** |
+|  |  | 2048 | 111.7 | **303.9 (+172%)** | **302.0 (+170%)** | **253.2 (+127%)** |
+| Gemma 4 26B A4B | 4-bit | 128 | 108.7 | 108.9 (+0.2%) | 108.7 (0.0%) | **216.7 (+99%)** |
+|  |  | 512 | 106.3 | 106.1 (-0.2%) | 106.2 (-0.1%) | 47.3 (-56%)‡ |
+|  |  | 2048 | 103.1 | **221.3 (+115%)** | **220.6 (+114%)** | 110.0 (+7%) |
 | Gemma 4 26B A4B | 6-bit | 128 | 89.8 | **189.9 (+112%)** | **230.7 (+157%)** | **201.8 (+125%)** |
 |  |  | 512 | 89.2 | **181.0 (+103%)** | **189.5 (+112%)** | **167.7 (+88%)** |
 |  |  | 2048 | 86.4 | **175.5 (+103%)** | 85.6 (-1%)† | 79.1 (-8%)† |
-| Gemma 4 31B | 4-bit | 128 | 27.6 | **63.7 (+131%)** | **63.3 (+129%)** | *pending* |
-|  |  | 512 | 27.1 | **61.6 (+127%)** | **61.3 (+126%)** | *pending* |
-|  |  | 2048 | 26.0 | **41.0 (+58%)** | **41.6 (+60%)** | *pending* |
+| Gemma 4 31B | 4-bit | 128 | 27.6 | **63.7 (+131%)** | **63.3 (+129%)** | **57.7 (+109%)** |
+|  |  | 512 | 27.1 | **61.6 (+127%)** | **61.3 (+126%)** | **56.0 (+107%)** |
+|  |  | 2048 | 26.0 | **41.0 (+58%)** | **41.6 (+60%)** | **53.0 (+104%)** |
 | Gemma 4 31B | 6-bit | 128 | 19.0 | **41.4 (+118%)** | **40.2 (+112%)** | **42.1 (+122%)** |
 |  |  | 512 | 18.5 | **40.8 (+121%)** | **40.0 (+116%)** | **41.5 (+124%)** |
 |  |  | 2048 | 18.2 | **38.1 (+109%)** | **39.2 (+115%)** | **40.0 (+120%)** |
@@ -533,7 +535,14 @@ where the model enters output loops the n-gram table catches.
 `ax-ngram (same-loop)` is a Python mirror of AX Engine's NgramTable
 (bigram+trigram+fourgram, majority-recency, confidence=0.4) running in the
 same decode loop as the other three columns with argmax-only acceptance.
-Run `scripts/bench_speculative_suite.py` to populate these cells.
+
+‡ ax-ngram rows marked ‡ were measured with `--ignore-eos` (forced 128-token
+generation) because the model exits early on random-token prompts. At PT=128
+the n-gram table lacks sufficient priming on random input, so accept rate is 0%
+and the speculation overhead degrades throughput. `—‡` means accept rate was
+≥88% but generation completed in <0.5 s — the run was too fast for the
+eligibility gate to produce a reliable median. For 26B A4B 4-bit at PT=512 the
+same 0%-accept effect applies (random output pattern at that prompt length).
 
 † Rapid-MLX and ax-ngram accept rate drops below 30% at PT=2048 on random tokens
 because random sequences produce no n-gram repetitions; net throughput falls below
@@ -543,9 +552,9 @@ the single-path baseline for 26B A4B 6-bit at this prompt length.
 
 | Model | Quant | PT | suite baseline | lightning n-gram | Rapid-MLX PLD | ax-ngram (same-loop) |
 |---|---|---:|---:|---:|---:|---:|
-| Qwen 3.6 27B | 4-bit | 128 | 28.6 | 28.4 (-0.7%) | 28.6 (0.0%) | *pending* |
-|  |  | 512 | 28.7 | 30.7 (+7.0%) | 30.7 (+7.0%) | *pending* |
-|  |  | 2048 | 30.4 | 30.0 (-1.3%) | 30.2 (-0.7%) | *pending* |
+| Qwen 3.6 27B | 4-bit | 128 | 28.6 | 28.4 (-0.7%) | 28.6 (0.0%) | — |
+|  |  | 512 | 28.7 | 30.7 (+7.0%) | 30.7 (+7.0%) | — |
+|  |  | 2048 | 30.4 | 30.0 (-1.3%) | 30.2 (-0.7%) | — |
 | Qwen 3.6 35B A3B | 6-bit | 128 | 91.4 | — | — | — |
 
 Qwen 3.6 draft count is always 0 across all quantizations and prompt lengths
