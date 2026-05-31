@@ -50,6 +50,15 @@ class MtpSidecarProvenanceTests(unittest.TestCase):
             with self.assertRaisesRegex(check.ProvenanceError, "standard Qwen source"):
                 check.validate_manifest(manifest, fair_base_only=True)
 
+    def test_rejects_old_norm_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = build_manifest(root)
+            manifest["transform"]["norm_policy"] = "scale_selected_mtp_norm_weights_by_2"
+
+            with self.assertRaisesRegex(check.ProvenanceError, "norm_policy"):
+                check.validate_manifest(manifest, strict_local=False)
+
 
 def record(path: Path, content: str) -> dict:
     path.write_text(content)
@@ -93,13 +102,16 @@ def build_manifest(root: Path) -> dict:
             "config": record(root / "config.json", "{}"),
         },
         "transform": {
-            "norm_policy": "scale_selected_mtp_norm_weights_by_2",
+            "norm_policy": "shift_mtp_norm_weights_by_1",
             "moe_expert_unpack": False,
         },
         "runtime": {
             "arch_id": "qwen3-next-mtp",
+            "mtplx_version": "0.3.7",
             "mtp_depth_max": 3,
             "mtp_tensor_count": 27,
+            "exactness_baseline": {"context": 2048, "max_abs_diff": 0.0},
+            "verified_on": {"system": "Darwin", "machine": "arm64"},
         },
     }
 

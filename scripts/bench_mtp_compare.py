@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""MTP-mode n-gram benchmark: AX Engine vs MTPLX reference.
+"""Legacy MTP-mode n-gram benchmark: AX Engine vs injected MTPLX reference.
 
-Runs the two MTP benchmark suites (flappy and long_code) against an
-MTPLX-Optimized-Speed model (4-bit base + Q6 sidecar) using real-prompt
-mode with temperature=0.6 sampling to match MTPLX's default configuration.
-Both direct (no n-gram) and default n-gram AX policies are measured.
+For new Qwen3.6 publication rows, prefer scripts/bench_qwen36_mtp_fair.py.
+That harness excludes Youssofal optimized bundles and records sidecar
+provenance for standard Qwen/Qwen3.6 shards plus mlx-community 4-bit bases.
+This script is retained for older AX artifact assembly and MTPLX JSON injection.
 
 Examples:
 
   # Run both suites — AX rows only
   python3 scripts/bench_mtp_compare.py \\
-    --model-dir ~/.cache/huggingface/hub/models--Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed/snapshots/<hash> \\
+    --model-dir ~/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 \\
     --output-dir benchmarks/results/mtp-compare/$(date +%F)-ax-mtp-all
 
   # Inject MTPLX reference numbers and build a combined summary
@@ -306,7 +306,7 @@ def main() -> None:
         "--model-dir",
         type=Path,
         required=True,
-        help="Path to the AX-ready MTPLX-Optimized-Speed model directory (must have model-manifest.json).",
+        help="Path to the AX-ready MTP model directory (must have model-manifest.json).",
     )
     parser.add_argument(
         "--suites",

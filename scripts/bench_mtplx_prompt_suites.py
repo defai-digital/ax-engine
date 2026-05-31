@@ -103,12 +103,40 @@ def runtime_contract_specs(model: str, profile_name: str) -> tuple[dict[str, Any
     return inspection, draft_lm_head, draft_sampler
 
 
+def require_model_compatibility(inspection: dict[str, Any], *, allow_unverified_model: bool) -> None:
+    compatibility = inspection.get("compatibility") or {}
+    if compatibility.get("can_run") is not False or allow_unverified_model:
+        return
+
+    details = [
+        "MTPLX inspection rejected this model before benchmarking",
+        "compatibility.can_run=false",
+    ]
+    runtime_compatibility = compatibility.get("runtime_compatibility")
+    if runtime_compatibility:
+        details.append(f"runtime_compatibility={runtime_compatibility}")
+    message = compatibility.get("message")
+    if message:
+        details.append(str(message))
+    runtime_contract_error = compatibility.get("runtime_contract_error")
+    if runtime_contract_error:
+        details.append(f"runtime_contract_error={runtime_contract_error}")
+    if compatibility.get("unsafe_force_required"):
+        details.append("unsafe_force_required=true")
+    details.append("Regenerate the AX sidecar, or pass --allow-unverified-model for diagnostics only.")
+    raise RuntimeError("; ".join(details))
+
+
 def run_suite(args: argparse.Namespace) -> dict[str, Any]:
     prompt_suite = args.prompts.resolve()
     profile = get_profile(args.profile)
     apply_profile_env(args.profile)
     runtime_env = profile.env_dict()
     inspection, draft_lm_head, draft_sampler = runtime_contract_specs(args.model, args.profile)
+    require_model_compatibility(
+        inspection,
+        allow_unverified_model=bool(args.allow_unverified_model),
+    )
 
     rt = load(
         args.model,
@@ -264,6 +292,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         "warmup_repetitions": args.warmup_repetitions,
         "cooldown_s": args.cooldown,
         "disable_thinking": bool(args.disable_thinking),
+        "allow_unverified_model": bool(args.allow_unverified_model),
         "draft_lm_head": draft_lm_head_report,
         "build": {
             "host": platform.node(),
@@ -299,6 +328,11 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--disable-thinking", action="store_true")
+    parser.add_argument(
+        "--allow-unverified-model",
+        action="store_true",
+        help="Run even when MTPLX inspect_model reports compatibility.can_run=false. Diagnostics only.",
+    )
     parser.add_argument("--mtp-quant-bits", type=int)
     parser.add_argument("--mtp-quant-group-size", type=int, default=64)
     parser.add_argument("--mtp-quant-mode", default="affine")
@@ -313,4 +347,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1)

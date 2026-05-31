@@ -124,8 +124,16 @@ def validate_manifest(
     base_model_id = require_string(manifest, "base.model_id")
     source_model_id = require_string(manifest, "source.model_id")
     transform_policy = require_string(manifest, "transform.norm_policy")
+    if transform_policy != "shift_mtp_norm_weights_by_1":
+        raise ProvenanceError(
+            "manifest.transform.norm_policy must be shift_mtp_norm_weights_by_1"
+        )
+    require_string(manifest, "runtime.arch_id")
+    require_string(manifest, "runtime.mtplx_version")
     require_int(manifest, "runtime.mtp_depth_max")
     require_int(manifest, "runtime.mtp_tensor_count")
+    require_object(runtime, "exactness_baseline")
+    require_object(runtime, "verified_on")
 
     source_shards = source.get("mtp_shards")
     if not isinstance(source_shards, list) or not source_shards:

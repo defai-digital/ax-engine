@@ -238,13 +238,17 @@ def fake_sidecar_manifest() -> dict:
             }
         },
         "transform": {
-            "norm_policy": "scale_selected_mtp_norm_weights_by_2",
+            "norm_policy": "shift_mtp_norm_weights_by_1",
         },
         "runtime": {
+            "arch_id": "qwen3-next-mtp",
+            "mtplx_version": "0.3.7",
             "mtp_depth_max": 3,
             "mtp_tensor_count": 27,
             "recommended_draft_sampler": {"temperature": 0.7, "top_p": 0.95, "top_k": 20},
             "sampler": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+            "exactness_baseline": {"context": 2048, "max_abs_diff": 0.0},
+            "verified_on": {"system": "Darwin", "machine": "arm64"},
         },
     }
 

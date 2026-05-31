@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
-"""Compare lightning-mlx n-gram and Rapid-MLX speculative decoding.
+"""Compare n-gram drafting algorithms in the same Python decode loop.
+
+Four columns, all sharing the same mlx_lm Python decode loop with greedy
+argmax acceptance (T=0):
+
+  - suite baseline:   no speculation, pure greedy decode
+  - lightning:        trigram lookup, longest-match-first (adaptive_k)
+  - rapid-mlx:        suffix decoding, multi-order voting with confidence floor
+  - ax-ngram:         bigram+trigram+fourgram, majority-recency, confidence=0.4
+                      (Python mirror of crates/ax-engine-mlx/src/ngram_accel.rs)
+
+This is a fair algorithmic comparison: same model, same decode loop, same
+acceptance criterion (argmax-only). The only variable is the drafting strategy.
+
+For AX Engine end-to-end throughput (Rust/Metal decode, threshold acceptance),
+see the "AX Engine N-gram Effective Throughput" table in the README, measured
+by scripts/bench_ngram_vs_lightning.py.
 
 Default mode follows the Rapid-MLX eligibility bench shape: ordinary MLX
 community models, four real chat/tool/code workloads, greedy decoding, and
@@ -13,19 +29,15 @@ The older synthetic random-token prompt shape is still available with
 ``--prompt-mode random`` when side-by-side comparison with AX random-token
 artifacts is needed.
 
-Both speculative algorithms are implemented inline — no external package install.
+All three speculative algorithms are implemented inline — no external package
+install.
 
 Lightning algorithm:   lookup_drafts_with_pending + adaptive_k
                        (mirrors lightning-mlx/vllm_mlx/speculative/ngram_drafter.py)
 Rapid-MLX algorithm:   SuffixDecodingDrafter
                        (mirrors Rapid-MLX/vllm_mlx/speculative/suffix_decoding.py)
-
-Difference:
-  - lightning: adaptive_k selects best continuation using longest-match priority
-  - Rapid-MLX suffix: votes across all suffix matches and truncates at a
-    confidence floor
-
-Both update their lookup table from prompt AND generated tokens.
+AX n-gram algorithm:   NgramTable (bigram+trigram+fourgram, majority-recency)
+                       (mirrors crates/ax-engine-mlx/src/ngram_accel.rs)
 
 Usage:
   python3 scripts/bench_speculative_suite.py \\
@@ -39,7 +51,9 @@ Usage:
   # Skip one path:
       --skip-lightning
       --skip-rapid-mlx
+      --skip-ax-ngram
 """
+
 from __future__ import annotations
 
 import argparse
@@ -65,6 +79,11 @@ NGRAM_SIZE = 3
 RAPID_SUFFIX_MAX_DRAFT_TOKENS = 8
 RAPID_SUFFIX_MAX_SUFFIX_LEN = 4
 RAPID_SUFFIX_MIN_CONFIDENCE = 0.3
+# AX Engine n-gram constants (mirrors crates/ax-engine-mlx/src/ngram_accel.rs)
+AX_NGRAM_MAX_DRAFT_LEN = 4
+AX_NGRAM_CONFIDENCE_THRESHOLD = 0.4
+AX_NGRAM_MIN_SUPPORT = 1
+AX_NGRAM_TAIL_SIZE = 4
 MIN_DECODE_TIME = 0.5
 TPS_CEILING = 500.0
 
@@ -221,6 +240,7 @@ RAPID_WORKLOADS: list[tuple[str, str, dict]] = [
 # Implements lookup_drafts_with_pending + adaptive_k from lightning-mlx.
 # ---------------------------------------------------------------------------
 
+
 class _LightningDrafter:
     def __init__(self, ngram_size: int = 3, num_draft_tokens: int = 4) -> None:
         self.ngram_size = ngram_size
@@ -236,7 +256,7 @@ class _LightningDrafter:
         pos = len(self._history) - 1
         for size in range(1, n + 1):
             if pos + 1 >= size:
-                key = tuple(self._history[pos + 1 - size: pos + 1])
+                key = tuple(self._history[pos + 1 - size : pos + 1])
                 self._index[key].append(pos + 1 - size)
 
     def feed_many(self, tokens: list[int]) -> None:
@@ -250,7 +270,11 @@ class _LightningDrafter:
         K = self.num_draft_tokens
         if len(history) + 1 < n:
             return []
-        query = tuple(history[-(n - 1):]) + (int(pending_token),) if n > 1 else (int(pending_token),)
+        query = (
+            tuple(history[-(n - 1) :]) + (int(pending_token),)
+            if n > 1
+            else (int(pending_token),)
+        )
         positions = self._index.get(query, [])
         if not positions:
             return []
@@ -271,6 +295,7 @@ class _LightningDrafter:
 # Rapid-MLX SuffixDecodingDrafter (self-contained)
 # Mirrors Rapid-MLX/vllm_mlx/speculative/suffix_decoding.py
 # ---------------------------------------------------------------------------
+
 
 class _RapidMLXSuffixDrafter:
     def __init__(
@@ -355,8 +380,150 @@ class _RapidMLXSuffixDrafter:
 
 
 # ---------------------------------------------------------------------------
+# AX Engine n-gram drafter (self-contained)
+# Mirrors crates/ax-engine-mlx/src/ngram_accel.rs NgramTable:
+#   bigram + trigram + fourgram lookup, majority-recency policy,
+#   confidence threshold filtering, chained multi-step prediction.
+# ---------------------------------------------------------------------------
+
+
+class _AXNgramDrafter:
+    """Python mirror of AX Engine's NgramTable for fair same-loop comparison.
+
+    Differences from the Rust implementation that are intentional for this
+    benchmark context:
+      - No LRU eviction (benchmark runs are short: 128–256 tokens)
+      - No verifier feedback tracking (same-loop uses argmax-only acceptance)
+      - No prompt/output source distinction (min_support=1 uniformly)
+
+    The algorithmic core is identical: multi-order lookup (4→3→2 gram),
+    majority-recency continuation selection, confidence threshold gate,
+    and chained prediction where each draft token extends the context.
+    """
+
+    def __init__(
+        self,
+        max_len: int = AX_NGRAM_MAX_DRAFT_LEN,
+        min_support: int = AX_NGRAM_MIN_SUPPORT,
+        confidence_threshold: float = AX_NGRAM_CONFIDENCE_THRESHOLD,
+    ) -> None:
+        self.max_len = max_len
+        self.min_support = min_support
+        self.confidence_threshold = confidence_threshold
+        # Each map: context_tuple → {token: [count, last_seen_index]}
+        self._bigrams: dict[tuple, dict[int, list]] = defaultdict(dict)
+        self._trigrams: dict[tuple, dict[int, list]] = defaultdict(dict)
+        self._fourgrams: dict[tuple, dict[int, list]] = defaultdict(dict)
+        self._tail: list[int] = []
+        self._obs_index: int = 0
+        self.total_drafted = 0
+        self.total_accepted = 0
+
+    def _record(self, table: dict, key: tuple, token: int) -> None:
+        entry = table[key]
+        if token in entry:
+            entry[token][0] += 1
+            entry[token][1] = self._obs_index
+        else:
+            entry[token] = [1, self._obs_index]
+
+    def feed(self, token: int) -> None:
+        self._obs_index += 1
+        tail = self._tail
+        n = len(tail)
+        if n >= 2:
+            self._record(self._bigrams, (tail[-2], tail[-1]), token)
+        if n >= 3:
+            self._record(self._trigrams, (tail[-3], tail[-2], tail[-1]), token)
+        if n >= 4:
+            self._record(
+                self._fourgrams,
+                (tail[-4], tail[-3], tail[-2], tail[-1]),
+                token,
+            )
+        tail.append(token)
+        if len(tail) > AX_NGRAM_TAIL_SIZE:
+            tail.pop(0)
+
+    def feed_many(self, tokens: list[int]) -> None:
+        for t in tokens:
+            self.feed(t)
+
+    def _select(self, table: dict, key: tuple) -> tuple[int, int] | None:
+        """Majority-recency: pick continuation with highest count; ties broken
+        by most recent observation.  Returns (token, support) or None if the
+        best candidate fails min_support or confidence_threshold."""
+        entry = table.get(key)
+        if not entry:
+            return None
+        best_token = None
+        best_count = 0
+        best_seen = 0
+        total = 0
+        for tok, (count, seen) in entry.items():
+            total += count
+            if count > best_count or (count == best_count and seen > best_seen):
+                best_token = tok
+                best_count = count
+                best_seen = seen
+        if best_token is None:
+            return None
+        if best_count < self.min_support:
+            return None
+        confidence = best_count / total if total > 0 else 0.0
+        if confidence < self.confidence_threshold:
+            return None
+        return (best_token, best_count)
+
+    def predict_next(self, pending_token: int) -> list[int]:
+        """Chain multi-order lookups to produce up to max_len draft tokens.
+
+        Mirrors NgramTable::predict_with_policy — try fourgram, then trigram,
+        then bigram at each step; each accepted draft token extends the tail
+        context for the next step.
+        """
+        draft: list[int] = []
+        # Working buffer: last AX_NGRAM_TAIL_SIZE tokens + pending_token
+        buf = list(self._tail)
+        if len(buf) < 2:
+            return []
+        # The pending_token is the last committed token; it's already in the
+        # tail from the caller's feed(curr) before predict_next(curr).
+        # We use the current tail state directly.
+
+        for _ in range(self.max_len):
+            n = len(buf)
+            selected = None
+            if n >= 4:
+                selected = self._select(
+                    self._fourgrams, (buf[-4], buf[-3], buf[-2], buf[-1])
+                )
+                if selected is None:
+                    selected = self._select(self._trigrams, (buf[-3], buf[-2], buf[-1]))
+                if selected is None:
+                    selected = self._select(self._bigrams, (buf[-2], buf[-1]))
+            elif n == 3:
+                selected = self._select(self._trigrams, (buf[-3], buf[-2], buf[-1]))
+                if selected is None:
+                    selected = self._select(self._bigrams, (buf[-2], buf[-1]))
+            elif n == 2:
+                selected = self._select(self._bigrams, (buf[-2], buf[-1]))
+
+            if selected is None:
+                break
+            token, _support = selected
+            draft.append(token)
+            buf.append(token)
+            if len(buf) > AX_NGRAM_TAIL_SIZE:
+                buf.pop(0)
+
+        return draft
+
+
+# ---------------------------------------------------------------------------
 # Prompt generation
 # ---------------------------------------------------------------------------
+
 
 def random_token_prompt(vocab_size: int, n_tokens: int) -> list[int]:
     rng = random.Random(MLX_LM_RANDOM_SEED)
@@ -383,8 +550,10 @@ def model_vocab_size(model_dir: Path) -> int:
 # Core inference helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_model(model_dir: Path):
     from mlx_lm.utils import load_model as _lm_load_model, load_tokenizer
+
     print(f"  [load] {model_dir}", file=sys.stderr, flush=True)
     model, _ = _lm_load_model(model_dir, strict=False)
     tokenizer = load_tokenizer(model_dir, {})
@@ -393,6 +562,7 @@ def _load_model(model_dir: Path):
 
 def _prefill(model, kv_cache, prompt_ids: list[int], chunk: int = 512):
     import mlx.core as mx
+
     y = mx.array(prompt_ids, mx.uint32)
     while y.size > 1:
         n = min(chunk, y.size - 1)
@@ -408,6 +578,7 @@ def _prefill(model, kv_cache, prompt_ids: list[int], chunk: int = 512):
 
 def _argmax_token(logits_1d) -> int:
     import mlx.core as mx
+
     return int(mx.argmax(logits_1d).item())
 
 
@@ -450,6 +621,7 @@ def _median_valid_tps(raw_runs: list[dict]) -> float | None:
 # ---------------------------------------------------------------------------
 # Baseline run (greedy, no speculation)
 # ---------------------------------------------------------------------------
+
 
 def run_baseline(
     model,
@@ -500,6 +672,7 @@ def run_baseline(
 # ---------------------------------------------------------------------------
 # Speculative run — shared logic for both lightning and Rapid-MLX
 # ---------------------------------------------------------------------------
+
 
 def run_speculative(
     model,
@@ -602,7 +775,7 @@ def run_speculative(
                 output.append(next_tok)
                 curr = next_tok
 
-                if not ignore_eos and eos_id in output[-(n_accept + 1):]:
+                if not ignore_eos and eos_id in output[-(n_accept + 1) :]:
                     break
 
         elapsed = time.perf_counter() - t0
@@ -628,6 +801,7 @@ def run_speculative(
 # Benchmark case construction and runner
 # ---------------------------------------------------------------------------
 
+
 def _workload_prompt_text(tokenizer, body: dict) -> str:
     messages = body["messages"]
     try:
@@ -638,7 +812,9 @@ def _workload_prompt_text(tokenizer, body: dict) -> str:
     except Exception:
         lines = []
         for message in messages:
-            lines.append(f"{message.get('role', 'user').title()}: {message.get('content', '')}")
+            lines.append(
+                f"{message.get('role', 'user').title()}: {message.get('content', '')}"
+            )
         return "\n".join(lines) + "\nAssistant:"
 
 
@@ -702,9 +878,11 @@ def run_case(
     cooldown: float,
     skip_lightning: bool,
     skip_rapid_mlx: bool,
+    skip_ax_ngram: bool = False,
     ignore_eos: bool = False,
 ) -> dict:
     import mlx.core as mx
+
     try:
         mx.clear_cache()
     except Exception:
@@ -721,7 +899,16 @@ def run_case(
 
     # Baseline
     print("    [baseline] ...", end="", flush=True)
-    baseline = run_baseline(model, prompt_ids, gen_tokens, reps, warmup, cooldown, eos_id, ignore_eos=ignore_eos)
+    baseline = run_baseline(
+        model,
+        prompt_ids,
+        gen_tokens,
+        reps,
+        warmup,
+        cooldown,
+        eos_id,
+        ignore_eos=ignore_eos,
+    )
     print(f" {_format_tps(baseline['tok_s_median'])} tok/s", flush=True)
 
     # Lightning
@@ -730,13 +917,22 @@ def run_case(
         print("    [lightning] ...", end="", flush=True)
         try:
             lightning_result = run_speculative(
-                model, prompt_ids, gen_tokens, reps, warmup, cooldown, eos_id,
+                model,
+                prompt_ids,
+                gen_tokens,
+                reps,
+                warmup,
+                cooldown,
+                eos_id,
                 _LightningDrafter,
                 {"ngram_size": NGRAM_SIZE, "num_draft_tokens": NUM_DRAFT_TOKENS},
                 ignore_eos=ignore_eos,
             )
             ar = _format_accept(lightning_result)
-            print(f" {_format_tps(lightning_result['tok_s_median'])} tok/s  accept={ar}", flush=True)
+            print(
+                f" {_format_tps(lightning_result['tok_s_median'])} tok/s  accept={ar}",
+                flush=True,
+            )
         except Exception as e:
             print(f" ERROR: {e}", flush=True)
 
@@ -746,7 +942,13 @@ def run_case(
         print("    [rapid-mlx] ...", end="", flush=True)
         try:
             rapid_result = run_speculative(
-                model, prompt_ids, gen_tokens, reps, warmup, cooldown, eos_id,
+                model,
+                prompt_ids,
+                gen_tokens,
+                reps,
+                warmup,
+                cooldown,
+                eos_id,
                 _RapidMLXSuffixDrafter,
                 {
                     "max_draft_tokens": RAPID_SUFFIX_MAX_DRAFT_TOKENS,
@@ -756,7 +958,39 @@ def run_case(
                 ignore_eos=ignore_eos,
             )
             ar = _format_accept(rapid_result)
-            print(f" {_format_tps(rapid_result['tok_s_median'])} tok/s  accept={ar}", flush=True)
+            print(
+                f" {_format_tps(rapid_result['tok_s_median'])} tok/s  accept={ar}",
+                flush=True,
+            )
+        except Exception as e:
+            print(f" ERROR: {e}", flush=True)
+
+    # AX Engine n-gram (same-loop, argmax-only acceptance)
+    ax_ngram_result: dict | None = None
+    if not skip_ax_ngram:
+        print("    [ax-ngram] ...", end="", flush=True)
+        try:
+            ax_ngram_result = run_speculative(
+                model,
+                prompt_ids,
+                gen_tokens,
+                reps,
+                warmup,
+                cooldown,
+                eos_id,
+                _AXNgramDrafter,
+                {
+                    "max_len": AX_NGRAM_MAX_DRAFT_LEN,
+                    "min_support": AX_NGRAM_MIN_SUPPORT,
+                    "confidence_threshold": AX_NGRAM_CONFIDENCE_THRESHOLD,
+                },
+                ignore_eos=ignore_eos,
+            )
+            ar = _format_accept(ax_ngram_result)
+            print(
+                f" {_format_tps(ax_ngram_result['tok_s_median'])} tok/s  accept={ar}",
+                flush=True,
+            )
         except Exception as e:
             print(f" ERROR: {e}", flush=True)
 
@@ -769,12 +1003,14 @@ def run_case(
         "baseline": baseline,
         "lightning": lightning_result,
         "rapid_mlx": rapid_result,
+        "ax_ngram_same_loop": ax_ngram_result,
     }
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -793,11 +1029,12 @@ def main() -> int:
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN)
     parser.add_argument("--skip-lightning", action="store_true")
     parser.add_argument("--skip-rapid-mlx", action="store_true")
+    parser.add_argument("--skip-ax-ngram", action="store_true")
     parser.add_argument(
         "--ignore-eos",
         action="store_true",
         help="Always generate exactly generation-tokens tokens (ignore EOS). "
-             "Use for models where random-token prompts trigger EOS at step 0.",
+        "Use for models where random-token prompts trigger EOS at step 0.",
     )
     args = parser.parse_args()
 
@@ -823,9 +1060,16 @@ def main() -> int:
     rows: list[dict] = []
     for case in cases:
         row = run_case(
-            model, tokenizer, case, args.generation_tokens,
-            args.repetitions, args.warmup, args.cooldown,
-            args.skip_lightning, args.skip_rapid_mlx,
+            model,
+            tokenizer,
+            case,
+            args.generation_tokens,
+            args.repetitions,
+            args.warmup,
+            args.cooldown,
+            args.skip_lightning,
+            args.skip_rapid_mlx,
+            args.skip_ax_ngram,
             ignore_eos=args.ignore_eos,
         )
         rows.append(row)
@@ -858,6 +1102,17 @@ def main() -> int:
             "max_suffix_len": RAPID_SUFFIX_MAX_SUFFIX_LEN,
             "min_confidence": RAPID_SUFFIX_MIN_CONFIDENCE,
         },
+        "ax_ngram_same_loop": {
+            "algorithm": "NgramTable (Python mirror)",
+            "source": "crates/ax-engine-mlx/src/ngram_accel.rs",
+            "max_draft_len": AX_NGRAM_MAX_DRAFT_LEN,
+            "min_support": AX_NGRAM_MIN_SUPPORT,
+            "confidence_threshold": AX_NGRAM_CONFIDENCE_THRESHOLD,
+            "tail_size": AX_NGRAM_TAIL_SIZE,
+            "orders": ["bigram", "trigram", "fourgram"],
+            "policy": "majority_recency",
+            "acceptance": "argmax_only (same as lightning/rapid-mlx)",
+        },
         "results": rows,
     }
 
@@ -867,7 +1122,10 @@ def main() -> int:
 
     # Summary table
     print(f"\n=== SUMMARY (tok/s, T=0 greedy, {args.prompt_mode} prompts) ===")
-    header = f"{'case':>14}  {'pt':>6}  {'baseline':>10}  {'lightning':>20}  {'rapid-mlx':>20}"
+    header = (
+        f"{'case':>14}  {'pt':>6}  {'baseline':>10}  "
+        f"{'lightning':>20}  {'rapid-mlx':>20}  {'ax-ngram':>20}"
+    )
     print(header)
     print("-" * len(header))
     for row in rows:
@@ -876,9 +1134,26 @@ def main() -> int:
         base = _format_tps(row["baseline"]["tok_s_median"])
         lt = row["lightning"]
         rm = row["rapid_mlx"]
-        lt_str = f"{_format_tps(lt['tok_s_median'])} ({_format_accept(lt)})" if lt else "skipped"
-        rm_str = f"{_format_tps(rm['tok_s_median'])} ({_format_accept(rm)})" if rm else "skipped"
-        print(f"{case_id:>14}  {pt:>6}  {base:>10}  {lt_str:>20}  {rm_str:>20}")
+        ax = row["ax_ngram_same_loop"]
+        lt_str = (
+            f"{_format_tps(lt['tok_s_median'])} ({_format_accept(lt)})"
+            if lt
+            else "skipped"
+        )
+        rm_str = (
+            f"{_format_tps(rm['tok_s_median'])} ({_format_accept(rm)})"
+            if rm
+            else "skipped"
+        )
+        ax_str = (
+            f"{_format_tps(ax['tok_s_median'])} ({_format_accept(ax)})"
+            if ax
+            else "skipped"
+        )
+        print(
+            f"{case_id:>14}  {pt:>6}  {base:>10}  "
+            f"{lt_str:>20}  {rm_str:>20}  {ax_str:>20}"
+        )
 
     # Write summary markdown
     summary_lines = [
@@ -889,8 +1164,10 @@ def main() -> int:
         f"Sampling: greedy (T=0)  \n",
         f"Gen tokens: {args.generation_tokens}, Reps: {args.repetitions}+{args.warmup}w\n\n",
         f"Measurement gates: decode_time >= {MIN_DECODE_TIME}s, tok/s <= {TPS_CEILING}.  \n\n",
-        "| Case | Category | Prompt tok | baseline (tok/s) | lightning n-gram | rapid-mlx suffix |\n",
-        "|---|---|---:|---:|---:|---:|\n",
+        "All four columns share the same Python mlx_lm decode loop with argmax-only "
+        "acceptance. This is a fair algorithmic comparison of drafting strategies.\n\n",
+        "| Case | Category | Prompt tok | baseline (tok/s) | lightning n-gram | rapid-mlx suffix | ax-ngram (same-loop) |\n",
+        "|---|---|---:|---:|---:|---:|---:|\n",
     ]
     for row in rows:
         case_id = row["case_id"]
@@ -899,9 +1176,25 @@ def main() -> int:
         base = _format_tps(row["baseline"]["tok_s_median"])
         lt = row["lightning"]
         rm = row["rapid_mlx"]
-        lt_str = f"{_format_tps(lt['tok_s_median'])} (ar={_format_accept(lt)})" if lt else "—"
-        rm_str = f"{_format_tps(rm['tok_s_median'])} (ar={_format_accept(rm)})" if rm else "—"
-        summary_lines.append(f"| {case_id} | {category} | {pt} | {base} | {lt_str} | {rm_str} |\n")
+        ax = row["ax_ngram_same_loop"]
+        lt_str = (
+            f"{_format_tps(lt['tok_s_median'])} (ar={_format_accept(lt)})"
+            if lt
+            else "—"
+        )
+        rm_str = (
+            f"{_format_tps(rm['tok_s_median'])} (ar={_format_accept(rm)})"
+            if rm
+            else "—"
+        )
+        ax_str = (
+            f"{_format_tps(ax['tok_s_median'])} (ar={_format_accept(ax)})"
+            if ax
+            else "—"
+        )
+        summary_lines.append(
+            f"| {case_id} | {category} | {pt} | {base} | {lt_str} | {rm_str} | {ax_str} |\n"
+        )
 
     summary_path = args.output_dir / "summary.md"
     summary_path.write_text("".join(summary_lines))

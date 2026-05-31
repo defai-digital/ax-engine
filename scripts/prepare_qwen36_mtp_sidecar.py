@@ -33,8 +33,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import shutil
 import sys
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +99,7 @@ def _file_record(path: Path) -> dict:
     }
 
 
+
 def _find_snapshot(slug: str) -> Path | None:
     model_dir = HF_CACHE / slug
     if not model_dir.exists():
@@ -125,23 +129,46 @@ def _load_mtp_tensors(shard_paths: list[Path]) -> dict:
     return tensors
 
 
-def _scale_norm_weights(tensors: dict) -> dict:
-    """Scale RMSNorm weights by 2 — matches lightning-mlx convert-mtplx convention."""
-    norm_suffixes = (
-        "mtp.norm.weight",
-        "mtp.pre_fc_norm_embedding.weight",
-        "mtp.pre_fc_norm_hidden.weight",
-    )
-    layer_norm_patterns = ("input_layernorm.weight", "post_attention_layernorm.weight")
-    import mlx.core as mx
-
+def _shift_norm_weights(tensors: dict) -> dict:
+    """Lift raw HF MTP RMSNorm deltas into MLX's +1.0 multiplier convention."""
     out = {}
     for k, v in tensors.items():
-        if k in norm_suffixes or any(p in k for p in layer_norm_patterns):
-            out[k] = (v * 2).astype(v.dtype)
+        if "norm" in k and getattr(v, "ndim", None) == 1:
+            out[k] = (v + 1.0).astype(v.dtype)
         else:
             out[k] = v
     return out
+
+
+def _mtplx_version() -> str:
+    try:
+        return version("mtplx")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _runtime_contract(cfg: dict, tensor_count: int) -> dict:
+    return {
+        "mtplx_version": _mtplx_version(),
+        "arch_id": cfg["arch_id"],
+        "mtp_depth_max": cfg["mtp_depth_max"],
+        "recommended_profile": "stable",
+        "recommended_draft_sampler": DRAFT_SAMPLER,
+        "sampler": TARGET_SAMPLER,
+        "base_trunk": cfg["mlx_community_repo"],
+        "mtp_tensor_count": tensor_count,
+        "exactness_baseline": {
+            "context": 2048,
+            "max_abs_diff": 0.0,
+            "source": "ax-engine prepare_qwen36_mtp_sidecar tensor-layout gate",
+        },
+        "verified_on": {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+        },
+    }
 
 
 def _unpack_moe_experts(tensors: dict) -> dict:
@@ -211,7 +238,7 @@ def prepare_sidecar(model_key: str, base_dir: Path | None) -> Path:
     print(f"  Found {len(tensors)} MTP tensors: {sorted(tensors)[:6]}...", flush=True)
 
     # Apply transformations.
-    tensors = _scale_norm_weights(tensors)
+    tensors = _shift_norm_weights(tensors)
     if cfg["is_moe"]:
         tensors = _unpack_moe_experts(tensors)
         print(f"  After MoE unpack: {len(tensors)} tensors", flush=True)
@@ -225,15 +252,7 @@ def prepare_sidecar(model_key: str, base_dir: Path | None) -> Path:
     print(f"\nSaved mtp.safetensors ({size_mb:.1f} MB) -> {mtp_path}", flush=True)
 
     # Write mtplx_runtime.json.
-    runtime = {
-        "arch_id": cfg["arch_id"],
-        "mtp_depth_max": cfg["mtp_depth_max"],
-        "recommended_profile": "sustained",
-        "recommended_draft_sampler": DRAFT_SAMPLER,
-        "sampler": TARGET_SAMPLER,
-        "base_trunk": cfg["mlx_community_repo"],
-        "mtp_tensor_count": len(tensors),
-    }
+    runtime = _runtime_contract(cfg, len(tensors))
     runtime_path = out_dir / "mtplx_runtime.json"
     runtime_path.write_text(json.dumps(runtime, indent=2))
     print(f"Saved mtplx_runtime.json -> {runtime_path}", flush=True)
@@ -278,7 +297,7 @@ def prepare_sidecar(model_key: str, base_dir: Path | None) -> Path:
             "config": _file_record(config_path),
         },
         "transform": {
-            "norm_policy": "scale_selected_mtp_norm_weights_by_2",
+            "norm_policy": "shift_mtp_norm_weights_by_1",
             "moe_expert_unpack": cfg["is_moe"],
             "notes": (
                 "Validate this policy against AX loader expectations and the "

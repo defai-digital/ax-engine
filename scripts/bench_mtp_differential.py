@@ -15,8 +15,8 @@ Examples:
 
   # Run a sampled throughput comparison on the repo MTP suites.
   python3 scripts/bench_mtp_differential.py \\
-    --ax-model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \\
-    --mtplx-model /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \\
+    --ax-model-dir ~/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 \\
+    --mtplx-model ~/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 \\
     --suites flappy long_code \\
     --modes sampled \\
     --output-dir benchmarks/results/mtp-differential/$(date +%F)-speed
