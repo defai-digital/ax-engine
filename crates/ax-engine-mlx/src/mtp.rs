@@ -1,5 +1,5 @@
 use mlx_sys::{
-    add, argmax, argsort_axis, astype, concatenate, eval, multiply, reshape, rms_norm,
+    add, argmax, astype, concatenate, eval, multiply, reshape, rms_norm,
     scaled_dot_product_attention_with_mask, sigmoid, slice, MlxArray, MlxDtype,
     ScaledDotProductAttentionMask,
 };
@@ -16,13 +16,6 @@ use crate::sampling::{
     Xorshift64,
 };
 use crate::weights::{ModelWeights, MtpWeights};
-
-/// Number of top-k candidate tokens pre-selected from the verify-step logits for
-/// filtered draft LM head computation.  The draft argmax is restricted to these
-/// candidates; the remaining vocabulary is never read from VRAM.  k=4096 at 4-bit
-/// reads 10MB per draft pass vs 640MB for full lm_head; the extra coverage vs k=2048
-/// reduces complete-miss rate on diverse code prompts without measurable bandwidth cost.
-pub const MTP_DRAFT_TOP_K: usize = 4096;
 
 /// Greedy argmax over a `[vocab_size]` f32 logit array; syncs GPU and returns token id.
 fn greedy_sample_logits(logits: &MlxArray) -> u32 {
@@ -250,56 +243,13 @@ fn mtp_post_norm_to_logits(
     mlx_reshape(&logits_f32, &[cfg.vocab_size as i32], None)
 }
 
-/// Compute the top-k candidate token indices from a logit row.
-///
-/// `logit_row` may have shape `[vocab]` or `[1, vocab]` (e.g. a slice with a
-/// retained batch dimension); either is normalised to `[vocab]` internally.
-///
-/// Returns a `uint32` MlxArray of shape `[k]` containing the indices of the
-/// k highest-logit tokens.  The array is lazily computed; callers must eval it
-/// before passing to `take`.
-pub fn mtp_top_k_candidates(logit_row: &MlxArray, k: usize) -> MlxArray {
-    // Normalise to 1-D: take the last-dim size as vocab and flatten.
-    let ndim = logit_row.ndim();
-    let vocab = logit_row.shape()[ndim - 1];
-    let flat = if ndim > 1 {
-        reshape(logit_row, &[vocab], None)
-    } else {
-        logit_row.clone()
-    };
-    // argsort ascending on -logits gives descending-logit order.
-    let m1 = MlxArray::from_f32(-1.0);
-    let neg = multiply(&flat, &m1, None);
-    let sorted = argsort_axis(&neg, 0, None); // [vocab] uint32, ascending = descending logit
-    slice(&sorted, &[0], &[k as i32], &[1], None) // [k] top-k indices
-}
-
 /// Draft up to `head.max_depth` tokens by applying the MTP head recurrently.
 ///
-/// Returns `(draft_tokens, draft_log_probs, draft_count)`:
-/// * `draft_tokens[i]`    — greedy argmax draft token at depth `i+1`.
-/// * `draft_log_probs[i]` — log-probability of `draft_tokens[i]` under the
-///   temperature-scaled draft distribution. When `draft_sampling.temperature == 0`
-///   (greedy), log_prob is 0.0 (point-mass convention).
-/// * `draft_count`        — how many entries were appended to `cache`.
-///
-/// When `temperature > 0`, tokens are sampled from the configured draft sampler and
-/// log_probs record the proposal probability used by rejection-sampling acceptance
-/// in `run_mtp_decode`.
-/// When `temperature == 0`, tokens are greedy argmax and acceptance falls back to exact
-/// argmax comparison.
-///
-/// `candidates` — optional evaluated `uint32 [k]` array of top-k token indices from the
-/// previous verify step.  When present, the lm_head computation is restricted to those k
-/// tokens at ALL depths (cascaded filtered approach).  Sampled mode samples from the
-/// configured draft sampler over this filtered set and records the proposal log-prob.
-///
 /// Returns `(draft_tokens, draft_log_probs, draft_distributions, added, top2_margins)`.
-/// `top2_margins[d]` is the rank-1 minus rank-2 logit gap at depth `d` from the filtered
-/// path's partial logits (0.0 for the full-vocab fallback path).  Used by ADR-009 EV gate.
+/// Draft log-probs are full-vocab softmax probabilities for rejection-sampling acceptance.
+/// `top2_margins` is always `[0.0; 3]` (retained for API compatibility).
 ///
 /// Gracefully handles `weights.mtp = None` by returning empty.
-#[allow(clippy::too_many_arguments)]
 pub fn mtp_draft_tokens(
     weights: &ModelWeights,
     cfg: &ModelConfig,
@@ -336,25 +286,12 @@ pub fn mtp_draft_tokens(
         let new_hidden = mtp_head_forward(head, &prev_hidden, &prev_token_arr, weights, cache, cfg);
         let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
 
-        // Always use full-vocab logits for correct rejection sampling.
-        // The filtered path (top-k candidates) was an optimization to reduce memory
-        // bandwidth, but it computed draft probabilities within a restricted set,
-        // causing a probability space mismatch with the target model's full-vocab
-        // probabilities.  This led to ~40 pp lower acceptance vs mtplx (which uses
-        // full-vocab softmax for both draft and target).
-        //
-        // Full-vocab logits ensure p_draft(d) is computed from the true draft
-        // distribution, matching mtplx's approach and maximizing acceptance rate.
         let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
         let draft_token = if use_temperature {
             eval(&[&logits]);
             let logits_cpu = logits.data_f32();
             let (draft_token, _filtered_log_prob, distribution) =
                 sample_categorical_with_logprob_and_distribution(logits_cpu, head.draft_sampling, rng);
-            // Use full-vocab log-prob for rejection sampling: filtered-distribution
-            // probabilities are renormalized over the top-k/top-p subset, making
-            // p_draft_filtered > p_draft_full for in-set tokens.  Dividing full-vocab
-            // p_target by the inflated p_draft_filtered causes systematic over-rejection.
             let log_prob =
                 full_vocab_token_logprob(logits_cpu, draft_token, head.draft_sampling.temperature);
             draft_log_probs.push(log_prob);
@@ -382,8 +319,6 @@ pub fn mtp_draft_tokens(
         prev_token_arr = tok_arr;
     }
 
-    // top2_margins is no longer computed (filtered path removed).
-    // Return zeros for API compatibility; telemetry can be updated later if needed.
     let top2_margins = [0.0f32; 3];
 
     let added = draft_tokens.len();

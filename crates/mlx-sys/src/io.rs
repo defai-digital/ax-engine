@@ -23,9 +23,17 @@ pub fn load_safetensors(
     let path_str = path.to_string_lossy();
     let c_path = CString::new(path_str.as_ref()).expect("path must not contain null bytes");
 
-    let stream = s
-        .map(|s| s.inner)
-        .unwrap_or_else(|| unsafe { ffi::mlx_default_cpu_stream_new() });
+    // When no stream is provided, create a CPU stream RAII wrapper so the
+    // mlx-c wrapper object is freed on drop.  Previously `mlx_default_cpu_stream_new()`
+    // was called and stored in a raw `ffi::mlx_stream` local — that raw handle was
+    // never passed to `mlx_stream_free`, leaking the wrapper on every call.
+    let _cpu_stream_guard;
+    let stream = if let Some(s) = s {
+        s.inner
+    } else {
+        _cpu_stream_guard = MlxStream::default_cpu();
+        _cpu_stream_guard.inner
+    };
 
     unsafe {
         let mut map = ffi::mlx_map_string_to_array_new();

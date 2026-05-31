@@ -164,6 +164,18 @@ impl MlxStream {
         }
     }
 
+    /// The default CPU stream. Owns the mlx-c wrapper and frees it on drop.
+    ///
+    /// Use this instead of calling `ffi::mlx_default_cpu_stream_new()` directly
+    /// to avoid leaking the wrapper object. mlx-c allocates a heap wrapper even
+    /// for default streams; callers are responsible for freeing it.
+    pub fn default_cpu() -> Self {
+        Self {
+            inner: unsafe { ffi::mlx_default_cpu_stream_new() },
+            owns: true,
+        }
+    }
+
     /// Create a new dedicated GPU stream.
     ///
     /// Unlike `default_gpu()`, this allocates a fresh stream that is not shared

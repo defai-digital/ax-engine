@@ -2883,11 +2883,6 @@ struct RequestState {
     mtp_prefill_hidden: Option<MlxArray>,
     /// Token IDs paired with `mtp_prefill_hidden` rows for MTP history warmup.
     mtp_prefill_history_tokens: Vec<u32>,
-    /// Top-k token indices extracted from the bonus-position logits at the last verify
-    /// step.  Passed to `mtp_draft_tokens` to enable filtered lm_head computation:
-    /// only these k rows of the lm_head are read, reducing memory bandwidth ~100x.
-    /// `None` before the first verify step (draft uses full lm_head as fallback).
-    mtp_draft_candidates: Option<MlxArray>,
     /// True when the last emitted token is inside a `<think>...</think>` block.
     /// Initialized from prompt tokens. Used to gate n-gram acceleration to think
     /// regions only, where repetition density is high for reasoning models.
@@ -2937,7 +2932,6 @@ impl RequestState {
             mtp_telemetry: MtpTelemetry::default(),
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
-            mtp_draft_candidates: None,
             ngram_in_think: false,
         }
     }
@@ -5586,24 +5580,6 @@ impl MlxRunner {
             accept_count,
         );
 
-        // Update top-k candidate set from the bonus-position logits.
-        // These candidates are passed to mtp_draft_tokens to restrict the lm_head
-        // computation to the k most-likely tokens, reducing bandwidth ~100x.
-        if self.weights.mtp.is_some() {
-            // logits_all is [verify_len, vocab]; slice row at accept_count → [vocab]
-            let bonus_flat = slice(
-                &logits_all,
-                &[accept_count as i32, 0],
-                &[accept_count as i32 + 1, vocab],
-                &[1, 1],
-                None,
-            ); // [1, vocab] — mtp_top_k_candidates normalises to [vocab] internally
-            let candidates =
-                crate::mtp::mtp_top_k_candidates(&bonus_flat, crate::mtp::MTP_DRAFT_TOP_K);
-            mlx_sys::eval(&[&candidates]);
-            state.mtp_draft_candidates = Some(candidates);
-        }
-
         // Generate new draft tokens: attempt n-gram stacking first (ADR-008).
         // N-gram lookup is zero-cost compared to MTP head forward (~4 ms).
         // On hit, the MTP KV cache is reset so the next MTP step starts fresh
@@ -5740,7 +5716,6 @@ impl MlxRunner {
         state.mtp_adaptive_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
         state.mtp_pending_hidden = None;
         state.mtp_decode_count = 0;
-        state.mtp_draft_candidates = None;
         if let Some(ref mut c) = state.mtp_cache {
             c.reset();
         }
