@@ -93,7 +93,7 @@ use crate::ngram_accel::{
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64,
-    indexed_token_distribution, sample_residual_token_distribution,
+    sample_residual_token_distribution,
 };
 use crate::turboquant::{
     TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION, TurboQuantProductionRequirements,
@@ -5391,46 +5391,29 @@ impl MlxRunner {
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 state.cache.seq_len += verify_len;
 
-                // Pre-compute draft token target probabilities lazily (before eval)
-                // so they are evaluated in the same GPU dispatch as the verify pass.
-                let target_topk_probs = compute_mtp_target_topk_probs(
+                // Full-vocab target probabilities for rejection-sampling acceptance.
+                // Computes p_target(draft_token) via full-vocab softmax so the
+                // acceptance ratio min(1, p_target/p_draft) uses correct
+                // normalization.  The previous top-k path normalized within the
+                // sampler's top-k (e.g. 20 tokens), inflating p_target for in-set
+                // tokens and zeroing it for out-of-set tokens, causing systematic
+                // over-rejection and ~40 pp lower acceptance vs mtplx (which uses
+                // full-vocab softmax for both target and draft).
+                let lazy_target_probs = compute_mtp_target_probs_lazy(
                     &logits_all,
                     &pending,
                     &state.mtp_pending_draft_log_probs,
                     vocab,
                     sampling,
                 );
-                let lazy_target_probs = if target_topk_probs.is_none() {
-                    compute_mtp_target_probs_lazy(
-                        &logits_all,
-                        &pending,
-                        &state.mtp_pending_draft_log_probs,
-                        vocab,
-                        sampling,
-                    )
-                } else {
-                    None
-                };
-                let predicted_arr = if mtp_verify_needs_argmax(
-                    &pending,
-                    &state.mtp_pending_draft_log_probs,
-                    sampling,
-                ) {
-                    Some(argmax(&logits_all, None))
-                } else {
-                    None
-                };
+                // Always compute argmax for the correction/bonus fallback.
+                let predicted_arr = Some(argmax(&logits_all, None));
                 let kv_refs = state.cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
-                if let Some(ref predicted) = predicted_arr {
-                    targets.push(predicted);
-                }
+                targets.push(predicted_arr.as_ref().unwrap());
                 targets.push(&post_norm_all);
                 if let Some(ref ltp) = lazy_target_probs {
                     targets.push(ltp);
-                }
-                if let Some(ref topk) = target_topk_probs {
-                    topk.push_eval_targets(&mut targets);
                 }
                 targets.extend(kv_refs);
                 let verify_eval_started = Instant::now();
@@ -5444,15 +5427,7 @@ impl MlxRunner {
                 let (target_probs_cpu, target_distributions_cpu): (
                     Option<Vec<f32>>,
                     Option<Vec<TokenDistribution>>,
-                ) = if let Some(topk) = target_topk_probs {
-                    let distributions = topk.distributions_cpu();
-                    (
-                        Some(topk.probs_from_distributions(&distributions)),
-                        Some(distributions),
-                    )
-                } else {
-                    (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None)
-                };
+                ) = (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None);
 
                 let accept = mtp_accept_count(
                     &pending,
@@ -5495,45 +5470,22 @@ impl MlxRunner {
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 state.cache.seq_len += verify_len;
 
-                // Pre-compute draft token target probabilities lazily (before eval).
-                let target_topk_probs = compute_mtp_target_topk_probs(
+                // Full-vocab target probabilities for rejection-sampling acceptance.
+                let lazy_target_probs = compute_mtp_target_probs_lazy(
                     &logits_all,
                     &pending,
                     &state.mtp_pending_draft_log_probs,
                     vocab,
                     sampling,
                 );
-                let lazy_target_probs = if target_topk_probs.is_none() {
-                    compute_mtp_target_probs_lazy(
-                        &logits_all,
-                        &pending,
-                        &state.mtp_pending_draft_log_probs,
-                        vocab,
-                        sampling,
-                    )
-                } else {
-                    None
-                };
-                let predicted_arr = if mtp_verify_needs_argmax(
-                    &pending,
-                    &state.mtp_pending_draft_log_probs,
-                    sampling,
-                ) {
-                    Some(argmax(&logits_all, None))
-                } else {
-                    None
-                };
+                // Always compute argmax for the correction/bonus fallback.
+                let predicted_arr = Some(argmax(&logits_all, None));
                 let kv_refs = state.cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
-                if let Some(ref predicted) = predicted_arr {
-                    targets.push(predicted);
-                }
+                targets.push(predicted_arr.as_ref().unwrap());
                 targets.push(&post_norm_all);
                 if let Some(ref ltp) = lazy_target_probs {
                     targets.push(ltp);
-                }
-                if let Some(ref topk) = target_topk_probs {
-                    topk.push_eval_targets(&mut targets);
                 }
                 targets.extend(kv_refs);
                 let verify_eval_started = Instant::now();
@@ -5547,15 +5499,7 @@ impl MlxRunner {
                 let (target_probs_cpu, target_distributions_cpu): (
                     Option<Vec<f32>>,
                     Option<Vec<TokenDistribution>>,
-                ) = if let Some(topk) = target_topk_probs {
-                    let distributions = topk.distributions_cpu();
-                    (
-                        Some(topk.probs_from_distributions(&distributions)),
-                        Some(distributions),
-                    )
-                } else {
-                    (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None)
-                };
+                ) = (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None);
 
                 let accept = mtp_accept_count(
                     &pending,
@@ -5726,7 +5670,6 @@ impl MlxRunner {
                 tail_tok,
                 cache,
                 Some(state.mtp_adaptive_max_depth),
-                state.mtp_draft_candidates.as_ref(),
                 &mut state.rng,
             );
             state.mtp_decode_count += added;
@@ -6035,15 +5978,6 @@ fn slice_post_norm_hidden(post_norm_all: &MlxArray, pos: usize, hidden_size: usi
     slice(post_norm_all, &[0, p, 0], &[1, p + 1, hs], &[1, 1, 1], None)
 }
 
-fn mtp_verify_needs_argmax(
-    pending: &[u32],
-    pending_log_probs: &[f32],
-    target_sampling: MlxSamplingParams,
-) -> bool {
-    target_sampling.temperature <= 0.0
-        || (!pending.is_empty() && pending_log_probs.len() != pending.len())
-}
-
 /// Returns true if `draft` would create a repeating cycle relative to `recent`.
 /// Checks periods 3..=min(draft.len(), 8, recent.len()): if the first `period`
 /// tokens of the draft exactly match the last `period` tokens of `recent`, the
@@ -6160,85 +6094,6 @@ fn compute_mtp_target_probs_lazy(
     use mlx_sys::reshape as mlx_reshape;
     let probs_flat = mlx_reshape(&probs, &[-1_i32], None);
     Some(take(&probs_flat, &flat_idx_arr, 0, None)) // [n] lazy
-}
-
-struct MtpTargetTopKProbs {
-    pending: Vec<u32>,
-    sampling: MlxSamplingParams,
-    logits: Vec<MlxArray>,
-    indices: Vec<MlxArray>,
-}
-
-impl MtpTargetTopKProbs {
-    fn push_eval_targets<'a>(&'a self, targets: &mut Vec<&'a MlxArray>) {
-        for logits in &self.logits {
-            targets.push(logits);
-        }
-        for indices in &self.indices {
-            targets.push(indices);
-        }
-    }
-
-    fn distributions_cpu(&self) -> Vec<TokenDistribution> {
-        self.logits
-            .iter()
-            .zip(self.indices.iter())
-            .zip(self.pending.iter())
-            .map(|((logits, indices), token)| {
-                indexed_token_distribution(logits.data_f32(), indices.data_u32(), self.sampling)
-                    .unwrap_or_else(|| TokenDistribution::new(vec![(*token, 1.0)]).unwrap())
-            })
-            .collect()
-    }
-
-    fn probs_from_distributions(&self, distributions: &[TokenDistribution]) -> Vec<f32> {
-        self.pending
-            .iter()
-            .zip(distributions.iter())
-            .map(|(token, distribution)| distribution.probability(*token))
-            .collect()
-    }
-}
-
-fn compute_mtp_target_topk_probs(
-    logits_all: &MlxArray,
-    pending: &[u32],
-    pending_log_probs: &[f32],
-    vocab: i32,
-    target_sampling: MlxSamplingParams,
-) -> Option<MtpTargetTopKProbs> {
-    if pending.is_empty()
-        || pending_log_probs.len() != pending.len()
-        || target_sampling.temperature <= 0.0
-        || target_sampling.top_k == 0
-    {
-        return None;
-    }
-
-    let k = target_sampling.top_k.min(vocab as u32).max(1) as usize;
-    let mut logits = Vec::with_capacity(pending.len());
-    let mut indices = Vec::with_capacity(pending.len());
-    for i in 0..pending.len() {
-        let row = slice(
-            logits_all,
-            &[i as i32, 0],
-            &[i as i32 + 1, vocab],
-            &[1, 1],
-            None,
-        );
-        let row = mlx_sys::reshape(&row, &[vocab], None);
-        let row_indices = crate::mtp::mtp_top_k_candidates(&row, k);
-        let row_logits = take(&row, &row_indices, 0, None);
-        indices.push(row_indices);
-        logits.push(row_logits);
-    }
-
-    Some(MtpTargetTopKProbs {
-        pending: pending.to_vec(),
-        sampling: target_sampling,
-        logits,
-        indices,
-    })
 }
 
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.
@@ -7317,19 +7172,6 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_accepted_depth2".into(), 1)));
         assert!(decisions.contains(&("ax_mtp_ngram_hit_steps".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_ngram_think_gated_steps".into(), 0)));
-    }
-
-    #[test]
-    fn mtp_verify_skips_argmax_for_rejection_sampling_path() {
-        let sampling = MlxSamplingParams::new(0.6, 0.95, 20);
-        assert!(!mtp_verify_needs_argmax(&[], &[], sampling));
-        assert!(!mtp_verify_needs_argmax(&[1, 2], &[-0.1, -0.2], sampling));
-        assert!(mtp_verify_needs_argmax(&[1, 2], &[-0.1], sampling));
-        assert!(mtp_verify_needs_argmax(
-            &[1, 2],
-            &[-0.1, -0.2],
-            MlxSamplingParams::greedy()
-        ));
     }
 
     #[test]

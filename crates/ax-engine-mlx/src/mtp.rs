@@ -1,7 +1,7 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argmax, argsort_axis, astype,
-    concatenate, eval, multiply, reshape, rms_norm, scaled_dot_product_attention_with_mask,
-    sigmoid, slice, take,
+    add, argmax, argsort_axis, astype, concatenate, eval, multiply, reshape, rms_norm,
+    scaled_dot_product_attention_with_mask, sigmoid, slice, MlxArray, MlxDtype,
+    ScaledDotProductAttentionMask,
 };
 
 use crate::kv_cache::MlxKVCache;
@@ -10,12 +10,11 @@ use crate::model::shared::{
     moe_router_deepseek_v3, moe_router_glm, moe_router_qwen3, prepare_value_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj, qw, shared_expert_forward,
 };
-use crate::model::{ModelConfig, embed_tokens_arr};
+use crate::model::{embed_tokens_arr, ModelConfig};
 use crate::sampling::{
-    TokenDistribution, Xorshift64, sample_categorical_with_logprob_and_distribution,
-    sample_indexed_categorical_with_logprob_and_distribution,
+    sample_categorical_with_logprob_and_distribution, TokenDistribution, Xorshift64,
 };
-use crate::weights::{ModelWeights, MtpWeights, QuantizedWeight};
+use crate::weights::{ModelWeights, MtpWeights};
 
 /// Number of top-k candidate tokens pre-selected from the verify-step logits for
 /// filtered draft LM head computation.  The draft argmax is restricted to these
@@ -250,44 +249,6 @@ fn mtp_post_norm_to_logits(
     mlx_reshape(&logits_f32, &[cfg.vocab_size as i32], None)
 }
 
-/// Filtered draft logits: compute lm_head only for the `candidates` token subset.
-///
-/// Returns f32 logits `[k]` where k = candidates.shape[0].  Indices are LOCAL
-/// (0..k); callers must map back to global vocab ids via `candidates`.
-///
-/// Dramatically cheaper than the full lm_head: reads ~k×hidden bytes instead of
-/// vocab×hidden bytes (121x less for k=2048, vocab=248320).
-fn mtp_post_norm_to_logits_filtered(
-    post_norm_hidden: &MlxArray,
-    candidates: &MlxArray,
-    weights: &ModelWeights,
-    cfg: &ModelConfig,
-) -> MlxArray {
-    use mlx_sys::reshape as mlx_reshape;
-    let k = candidates.shape()[0];
-    // Build a partial QuantizedWeight by selecting only the candidate rows.
-    let partial = QuantizedWeight {
-        weight: take(&weights.lm_head.weight, candidates, 0, None),
-        scales: weights
-            .lm_head
-            .scales
-            .as_ref()
-            .map(|s| take(s, candidates, 0, None)),
-        biases: weights
-            .lm_head
-            .biases
-            .as_ref()
-            .map(|b| take(b, candidates, 0, None)),
-        group_size: weights.lm_head.group_size,
-        bits: weights.lm_head.bits,
-    };
-    let logits = qw(post_norm_hidden, &partial);
-    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
-    let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
-    // [1, 1, k] → [k]
-    mlx_reshape(&logits_f32, &[k], None)
-}
-
 /// Compute the top-k candidate token indices from a logit row.
 ///
 /// `logit_row` may have shape `[vocab]` or `[1, vocab]` (e.g. a slice with a
@@ -345,7 +306,6 @@ pub fn mtp_draft_tokens(
     first_token: u32,
     cache: &mut MlxKVCache,
     max_depth_cap: Option<usize>,
-    candidates: Option<&MlxArray>,
     rng: &mut Xorshift64,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(head) = weights.mtp.as_ref() else {
@@ -360,9 +320,6 @@ pub fn mtp_draft_tokens(
     let mut draft_tokens = Vec::with_capacity(max_depth);
     let mut draft_log_probs = Vec::with_capacity(max_depth);
     let mut draft_distributions = Vec::with_capacity(max_depth);
-    let mut lazy_draft_tok_arrs: Vec<MlxArray> = Vec::with_capacity(max_depth);
-    // Partial logits saved per depth for top2_margin extraction after the batch eval.
-    let mut partial_logits_arrs: Vec<MlxArray> = Vec::with_capacity(max_depth);
 
     let mut prev_hidden = first_hidden.clone();
     // Wrap first_token as a GPU uint32 [1] array.
@@ -374,152 +331,56 @@ pub fn mtp_draft_tokens(
         MlxDtype::Uint32,
     );
 
-    // Per-depth refined candidate sets: after each filtered lm_head pass, re-rank the
-    // K candidates by the MTP head's logit score at that depth and use the top-K/2 as
-    // candidates for the next depth.  The verify-bonus candidates are a good proxy for
-    // depth 0 (same position), but for depths 1 and 2 the MTP head's own ranking (which
-    // reflects the draft context) is more aligned with the true distribution.
-    let mut refined_candidates: Option<MlxArray> = None;
-
-    for depth_idx in 0..max_depth {
+    for _ in 0..max_depth {
         let new_hidden = mtp_head_forward(head, &prev_hidden, &prev_token_arr, weights, cache, cfg);
         let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
 
-        // Depth 0: use verify-bonus candidates (correct position N).
-        // Depths 1+: use per-depth refined candidates derived from the previous depth's logits.
-        // Take ownership from refined_candidates so the borrow does not extend into the
-        // assignment at the end of the filtered branch.
-        let cands_owned: Option<MlxArray> = if depth_idx == 0 {
-            candidates.cloned()
-        } else {
-            refined_candidates.take()
-        };
-
-        if let Some(ref cands) = cands_owned {
-            let partial_logits =
-                mtp_post_norm_to_logits_filtered(&post_norm_hidden, cands, weights, cfg);
-            let k = partial_logits.shape()[0];
-
-            let logits_2d = reshape(&partial_logits, &[1_i32, k], None);
-            let local_idx_arr = argmax(&logits_2d, None);
-
-            let next_depth_cands = if depth_idx + 1 < max_depth {
-                let half_k = k / 2;
-                let m1 = MlxArray::from_f32(-1.0);
-                let neg = multiply(&partial_logits, &m1, None);
-                let local_sorted = argsort_axis(&neg, 0, None);
-                let local_top = slice(&local_sorted, &[0], &[half_k], &[1], None);
-                Some(take(cands, &local_top, 0, None))
-            } else {
-                None
-            };
-
-            let local_idx_1d = reshape(&local_idx_arr, &[1_i32], None);
-            let draft_tok_lazy = take(cands, &local_idx_1d, 0, None);
-
-            partial_logits_arrs.push(partial_logits);
-            refined_candidates = next_depth_cands;
-            prev_hidden = post_norm_hidden;
-            if use_temperature {
-                let partial_logits_ref = partial_logits_arrs.last().unwrap();
-                eval(&[partial_logits_ref, cands]);
-                if let Some((draft_token, log_prob, distribution)) =
-                    sample_indexed_categorical_with_logprob_and_distribution(
-                        partial_logits_ref.data_f32(),
-                        cands.data_u32(),
-                        head.draft_sampling,
-                        rng,
-                    )
-                {
-                    draft_tokens.push(draft_token);
-                    draft_log_probs.push(log_prob);
-                    draft_distributions.push(distribution);
-                    let tok_data = [draft_token];
-                    prev_token_arr = MlxArray::from_raw_data(
-                        tok_data.as_ptr() as *const u8,
-                        4,
-                        &[1_i32],
-                        MlxDtype::Uint32,
-                    );
-                } else {
-                    lazy_draft_tok_arrs.push(draft_tok_lazy.clone());
-                    prev_token_arr = draft_tok_lazy;
-                }
-            } else {
-                lazy_draft_tok_arrs.push(draft_tok_lazy.clone());
-                prev_token_arr = draft_tok_lazy;
+        // Always use full-vocab logits for correct rejection sampling.
+        // The filtered path (top-k candidates) was an optimization to reduce memory
+        // bandwidth, but it computed draft probabilities within a restricted set,
+        // causing a probability space mismatch with the target model's full-vocab
+        // probabilities.  This led to ~40 pp lower acceptance vs mtplx (which uses
+        // full-vocab softmax for both draft and target).
+        //
+        // Full-vocab logits ensure p_draft(d) is computed from the true draft
+        // distribution, matching mtplx's approach and maximizing acceptance rate.
+        let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
+        let draft_token = if use_temperature {
+            eval(&[&logits]);
+            let (draft_token, log_prob, distribution) =
+                sample_categorical_with_logprob_and_distribution(
+                    logits.data_f32(),
+                    head.draft_sampling,
+                    rng,
+                );
+            draft_log_probs.push(log_prob);
+            if let Some(distribution) = distribution {
+                draft_distributions.push(distribution);
             }
+            draft_token
         } else {
-            // Fallback full-vocab path (first draft step before candidates are available).
-            let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
-            let draft_token = if use_temperature {
-                eval(&[&logits]);
-                let (draft_token, log_prob, distribution) =
-                    sample_categorical_with_logprob_and_distribution(
-                        logits.data_f32(),
-                        head.draft_sampling,
-                        rng,
-                    );
-                draft_log_probs.push(log_prob);
-                if let Some(distribution) = distribution {
-                    draft_distributions.push(distribution);
-                }
-                draft_token
-            } else {
-                let draft_token = greedy_sample_logits(&logits); // syncs GPU
-                draft_log_probs.push(0.0);
-                draft_token
-            };
-            let tok_data = [draft_token];
-            let tok_arr = MlxArray::from_raw_data(
-                tok_data.as_ptr() as *const u8,
-                4,
-                &[1_i32],
-                MlxDtype::Uint32,
-            );
-            draft_tokens.push(draft_token);
-            // Chain through post-norm hidden: MTPLX trains depth>1 heads expecting
-            // mtp_norm(prev_output) as input, matching depth-1's post-norm convention.
-            // Passing raw new_hidden (no mtp_norm applied) causes ~50% reject rate.
-            prev_hidden = post_norm_hidden;
-            prev_token_arr = tok_arr;
-        }
+            let draft_token = greedy_sample_logits(&logits); // syncs GPU
+            draft_log_probs.push(0.0);
+            draft_token
+        };
+        let tok_data = [draft_token];
+        let tok_arr = MlxArray::from_raw_data(
+            tok_data.as_ptr() as *const u8,
+            4,
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+        draft_tokens.push(draft_token);
+        // Chain through post-norm hidden: MTPLX trains depth>1 heads expecting
+        // mtp_norm(prev_output) as input, matching depth-1's post-norm convention.
+        // Passing raw new_hidden (no mtp_norm applied) causes ~50% reject rate.
+        prev_hidden = post_norm_hidden;
+        prev_token_arr = tok_arr;
     }
 
-    // Batch-eval all lazy filtered-path arrays in one GPU dispatch.
-    // Evaluating draft_tok_arrs materialises their transitive deps (partial_logits,
-    // intermediate refined_candidates).  Including partial_logits_arrs explicitly
-    // ensures data_f32() is available for top2_margin extraction after this eval.
-    if !lazy_draft_tok_arrs.is_empty() {
-        let mut eval_targets: Vec<&MlxArray> =
-            Vec::with_capacity(lazy_draft_tok_arrs.len() + partial_logits_arrs.len());
-        for arr in &lazy_draft_tok_arrs {
-            eval_targets.push(arr);
-        }
-        for pla in &partial_logits_arrs {
-            eval_targets.push(pla);
-        }
-        eval(&eval_targets);
-        for arr in &lazy_draft_tok_arrs {
-            draft_tokens.push(arr.data_u32()[0]);
-        }
-    }
-
-    let mut top2_margins = [0.0f32; 3];
-    for (d, pla) in partial_logits_arrs.iter().enumerate().take(3) {
-        top2_margins[d] = top2_margin_from_slice(pla.data_f32());
-    }
-
-    if !draft_log_probs.is_empty() && draft_log_probs.len() < draft_tokens.len() {
-        draft_log_probs.extend(std::iter::repeat_n(
-            0.0_f32,
-            draft_tokens.len() - draft_log_probs.len(),
-        ));
-    }
-    let draft_log_probs: Vec<f32> = draft_log_probs
-        .into_iter()
-        .take(draft_tokens.len())
-        .collect();
+    // top2_margins is no longer computed (filtered path removed).
+    // Return zeros for API compatibility; telemetry can be updated later if needed.
+    let top2_margins = [0.0f32; 3];
 
     let added = draft_tokens.len();
     (
@@ -529,20 +390,4 @@ pub fn mtp_draft_tokens(
         added,
         top2_margins,
     )
-}
-
-/// Compute the rank-1 minus rank-2 logit gap from a partial logit slice.
-/// O(n) scan, no allocation.  Returns 0.0 when fewer than 2 values are finite.
-fn top2_margin_from_slice(data: &[f32]) -> f32 {
-    let mut m1 = f32::NEG_INFINITY;
-    let mut m2 = f32::NEG_INFINITY;
-    for &v in data {
-        if v > m1 {
-            m2 = m1;
-            m1 = v;
-        } else if v > m2 {
-            m2 = v;
-        }
-    }
-    if m2.is_finite() { m1 - m2 } else { 0.0 }
 }
