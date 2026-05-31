@@ -25,8 +25,8 @@ warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | AX tok/s | AX accept | AX/MTPLX | AX/Lightning |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 39.2 | 100.0% | 48.8 | 95.9% | 37.2 | 99.1% | 0.949 | 0.762 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 44.3 | 99.7% | 48.7 | 92.8% | 27.6 | 98.3% | 0.625 | 0.568 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 39.2 | 100.0% | 48.8 | 95.9% | 37.6 | 99.1% | 0.961 | 0.772 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 44.3 | 99.7% | 48.7 | 92.8% | 38.0 | 98.3% | 0.859 | 0.781 |
 | Qwen3.6 27B 4-bit | python_modules_long | 3 | 47.7 | 87.6% | 45.0 | 73.7% | 22.9 | 67.0% | 0.480 | 0.508 |
 | Qwen3.6 35B-A3B 4-bit | flappy | 1 | 88.1 | 48.8% | 140.1 | 99.1% | 84.2 | 99.9% | 0.956 | 0.601 |
 | Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.2 | 52.3% | 140.4 | 98.6% | 81.5 | 99.8% | 0.775 | 0.580 |

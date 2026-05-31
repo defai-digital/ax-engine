@@ -42,7 +42,7 @@
           "accept_rate": 0.9908429377324849,
           "artifact": "benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/27b-4bit/flappy/ax_engine.json",
           "case_count": 4,
-          "decode_tok_s": 37.15409341039993,
+          "decode_tok_s": 37.644629869238415,
           "engine": "ax_engine",
           "ngram_hit_steps": 0,
           "status": "ok",
@@ -108,8 +108,8 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_vs_lightning_mlx": 0.7617854899628027,
-        "ax_engine_vs_mtplx": 0.9486550031670253,
+        "ax_engine_vs_lightning_mlx": 0.7718431585085865,
+        "ax_engine_vs_mtplx": 0.9611798644460441,
         "lightning_mlx_vs_mtplx": 1.245304637153626
       },
       "source_model_id": "Qwen/Qwen3.6-27B",
@@ -123,7 +123,7 @@
           "accept_rate": 0.983479863154982,
           "artifact": "benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/27b-4bit/long_code/ax_engine.json",
           "case_count": 4,
-          "decode_tok_s": 27.64797610143583,
+          "decode_tok_s": 38.03571839940465,
           "engine": "ax_engine",
           "ngram_hit_steps": 0,
           "status": "ok",
@@ -189,8 +189,8 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_vs_lightning_mlx": 0.5678661866801435,
-        "ax_engine_vs_mtplx": 0.6246364734596438,
+        "ax_engine_vs_lightning_mlx": 0.7812216809601479,
+        "ax_engine_vs_mtplx": 0.8593213810422228,
         "lightning_mlx_vs_mtplx": 1.0999712398996502
       },
       "source_model_id": "Qwen/Qwen3.6-27B",
