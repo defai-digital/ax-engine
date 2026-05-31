@@ -259,9 +259,9 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 |---|---:|---:|---:|
 | MTPLX 0.3.7 (tok/s) | 88.1 | 105.2 | 95.2 |
 | MTPLX 0.3.7 (accept) | 48.8% | 52.3% | 42.3% |
-| AX Engine (tok/s) | 173.6 | 173.3 | 169.5 |
-| AX Engine (accept) | 97.9% | 96.8% | 90.6% |
-| AX/MTPLX ratio | 1.971 | 1.648 | 1.780 |
+| AX Engine (tok/s) | 84.2 | 81.5 | 77.9 |
+| AX Engine (accept) | 99.9% | 99.8% | 93.2% |
+| AX/MTPLX ratio | 0.956 | 0.775 | 0.819 |
 
 27B results (native depth=3, pure MTP, 1000 gen tokens):
 
@@ -269,9 +269,9 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 |---|---:|---:|---:|
 | MTPLX 0.3.7 (tok/s) | 39.2 | 44.3 | 47.7 |
 | MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 87.6% |
-| AX Engine (tok/s) | 41.4 | 57.7 | 44.9 |
-| AX Engine (accept) | 93.0% | 91.9% | 71.0% |
-| AX/MTPLX ratio | 1.058 | 1.304 | 0.941 |
+| AX Engine (tok/s) | 37.2 | 27.6 | 22.9 |
+| AX Engine (accept) | 99.1% | 98.3% | 67.0% |
+| AX/MTPLX ratio | 0.949 | 0.625 | 0.480 |
 
 Artifacts: `benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/` (dual-engine,
 full-vocab draft log-prob fix).
@@ -282,10 +282,10 @@ full-vocab draft log-prob fix).
 
 | Model bundle | Suite | AX depth cap | AX MTP tok/s | AX accept % | MTPLX tok/s | MTPLX depth | MTPLX accept % | AX/MTPLX |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| Speed (Qwen3.6 35B-A3B 4-bit) | flappy | 1 | 173.6 | 97.9% | 88.1 | 1 | 48.8% | 1.971 |
-| Speed (Qwen3.6 35B-A3B 4-bit) | long_code | 1 | 173.3 | 96.8% | 105.2 | 1 | 52.3% | 1.648 |
-| Quality (Qwen3.6 27B 4-bit) | flappy | 3 | 41.4 | 93.0% | 39.2 | 3 | 100.0% | 1.058 |
-| Quality (Qwen3.6 27B 4-bit) | long_code | 3 | 57.7 | 91.9% | 44.3 | 3 | 99.7% | 1.304 |
+| Speed (Qwen3.6 35B-A3B 4-bit) | flappy | 1 | 84.2 | 99.9% | 88.1 | 1 | 48.8% | 0.956 |
+| Speed (Qwen3.6 35B-A3B 4-bit) | long_code | 1 | 81.5 | 99.8% | 105.2 | 1 | 52.3% | 0.775 |
+| Quality (Qwen3.6 27B 4-bit) | flappy | 3 | 37.2 | 99.1% | 39.2 | 3 | 100.0% | 0.949 |
+| Quality (Qwen3.6 27B 4-bit) | long_code | 3 | 27.6 | 98.3% | 44.3 | 3 | 99.7% | 0.625 |
 
 ### Current publication contract
 
