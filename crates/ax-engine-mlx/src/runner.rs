@@ -84,11 +84,11 @@ use crate::model::{
     take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
     take_prefill_profile_snapshot,
 };
-use crate::mtp::mtp_draft_tokens;
+use crate::mtp::{mtp_draft_tokens, mtp_draft_tokens_after_forced_prefix};
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
     NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable, classify_prompt_class,
-    effective_draft_confidence_threshold, ngram_accel_decode_step,
+    effective_draft_confidence_threshold, ngram_accel_decode_step, ngram_feedback_policy,
     single_decode_with_turboquant_context,
 };
 use crate::sampling::{
@@ -1198,6 +1198,15 @@ impl AffineQuantBitsTelemetry {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum MtpDraftSource {
+    #[default]
+    None,
+    Mtp,
+    Ngram,
+    HybridMtp,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct MtpTelemetry {
     draft_tokens: u32,
     accepted_tokens: u32,
@@ -1220,7 +1229,21 @@ struct MtpTelemetry {
     draft_wall_us: u32,
     accepted_by_depth: [u32; 3],
     drafted_by_depth: [u32; 3],
+    draft_source_mtp_tokens: u32,
+    accepted_source_mtp_tokens: u32,
+    draft_source_ngram_tokens: u32,
+    accepted_source_ngram_tokens: u32,
+    draft_source_hybrid_mtp_tokens: u32,
+    accepted_source_hybrid_mtp_tokens: u32,
+    ngram_attempt_steps: u32,
     ngram_hit_steps: u32,
+    ngram_no_candidate_steps: u32,
+    ngram_confidence_filtered_steps: u32,
+    ngram_cycle_guard_steps: u32,
+    ngram_skipped_mtp_steps: u32,
+    ngram_skipped_mtp_tokens: u32,
+    ngram_hybrid_tail_steps: u32,
+    ngram_hybrid_tail_tokens: u32,
     /// MTP n-gram stacking steps skipped because model is outside `<think>`.
     ngram_think_gated_steps: u32,
 }
@@ -1237,7 +1260,7 @@ struct MtpStepTimings {
 }
 
 impl MtpTelemetry {
-    fn record_step(&mut self, drafted: usize, accepted: usize) {
+    fn record_step(&mut self, drafted: usize, accepted: usize, sources: &[MtpDraftSource]) {
         self.draft_tokens = self.draft_tokens.saturating_add(saturating_u32(drafted));
         self.accepted_tokens = self
             .accepted_tokens
@@ -1263,6 +1286,78 @@ impl MtpTelemetry {
                 self.accepted_by_depth[d] = self.accepted_by_depth[d].saturating_add(1);
             }
         }
+        for index in 0..drafted {
+            let source = sources
+                .get(index)
+                .copied()
+                .filter(|source| *source != MtpDraftSource::None)
+                .unwrap_or(MtpDraftSource::Mtp);
+            let accepted_token = index < accepted;
+            match source {
+                MtpDraftSource::Mtp => {
+                    self.draft_source_mtp_tokens = self.draft_source_mtp_tokens.saturating_add(1);
+                    if accepted_token {
+                        self.accepted_source_mtp_tokens =
+                            self.accepted_source_mtp_tokens.saturating_add(1);
+                    }
+                }
+                MtpDraftSource::Ngram => {
+                    self.draft_source_ngram_tokens =
+                        self.draft_source_ngram_tokens.saturating_add(1);
+                    if accepted_token {
+                        self.accepted_source_ngram_tokens =
+                            self.accepted_source_ngram_tokens.saturating_add(1);
+                    }
+                }
+                MtpDraftSource::HybridMtp => {
+                    self.draft_source_hybrid_mtp_tokens =
+                        self.draft_source_hybrid_mtp_tokens.saturating_add(1);
+                    if accepted_token {
+                        self.accepted_source_hybrid_mtp_tokens =
+                            self.accepted_source_hybrid_mtp_tokens.saturating_add(1);
+                    }
+                }
+                MtpDraftSource::None => {}
+            }
+        }
+    }
+
+    fn record_ngram_attempt(&mut self, rejection: Option<NgramDraftRejection>) {
+        self.ngram_attempt_steps = self.ngram_attempt_steps.saturating_add(1);
+        match rejection {
+            Some(NgramDraftRejection::NoCandidate) => {
+                self.ngram_no_candidate_steps = self.ngram_no_candidate_steps.saturating_add(1);
+            }
+            Some(NgramDraftRejection::ConfidenceFiltered) => {
+                self.ngram_confidence_filtered_steps =
+                    self.ngram_confidence_filtered_steps.saturating_add(1);
+            }
+            None => {}
+        }
+    }
+
+    fn record_ngram_cycle_guard(&mut self) {
+        self.ngram_cycle_guard_steps = self.ngram_cycle_guard_steps.saturating_add(1);
+    }
+
+    fn record_ngram_stack_hit(&mut self, draft_len: usize, skipped_mtp: bool) {
+        self.ngram_hit_steps = self.ngram_hit_steps.saturating_add(1);
+        if skipped_mtp {
+            self.ngram_skipped_mtp_steps = self.ngram_skipped_mtp_steps.saturating_add(1);
+            self.ngram_skipped_mtp_tokens = self
+                .ngram_skipped_mtp_tokens
+                .saturating_add(saturating_u32(draft_len));
+        }
+    }
+
+    fn record_ngram_hybrid_tail(&mut self, tail_len: usize) {
+        if tail_len == 0 {
+            return;
+        }
+        self.ngram_hybrid_tail_steps = self.ngram_hybrid_tail_steps.saturating_add(1);
+        self.ngram_hybrid_tail_tokens = self
+            .ngram_hybrid_tail_tokens
+            .saturating_add(saturating_u32(tail_len));
     }
 
     fn record_timings(&mut self, timings: MtpStepTimings) {
@@ -1298,12 +1393,8 @@ impl MtpTelemetry {
         self.complete_miss_steps = self
             .complete_miss_steps
             .saturating_add(other.complete_miss_steps);
-        self.accepted_cycles = self
-            .accepted_cycles
-            .saturating_add(other.accepted_cycles);
-        self.rejected_cycles = self
-            .rejected_cycles
-            .saturating_add(other.rejected_cycles);
+        self.accepted_cycles = self.accepted_cycles.saturating_add(other.accepted_cycles);
+        self.rejected_cycles = self.rejected_cycles.saturating_add(other.rejected_cycles);
         self.cache_clone_wall_us = self
             .cache_clone_wall_us
             .saturating_add(other.cache_clone_wall_us);
@@ -1325,7 +1416,49 @@ impl MtpTelemetry {
             self.drafted_by_depth[d] =
                 self.drafted_by_depth[d].saturating_add(other.drafted_by_depth[d]);
         }
+        self.draft_source_mtp_tokens = self
+            .draft_source_mtp_tokens
+            .saturating_add(other.draft_source_mtp_tokens);
+        self.accepted_source_mtp_tokens = self
+            .accepted_source_mtp_tokens
+            .saturating_add(other.accepted_source_mtp_tokens);
+        self.draft_source_ngram_tokens = self
+            .draft_source_ngram_tokens
+            .saturating_add(other.draft_source_ngram_tokens);
+        self.accepted_source_ngram_tokens = self
+            .accepted_source_ngram_tokens
+            .saturating_add(other.accepted_source_ngram_tokens);
+        self.draft_source_hybrid_mtp_tokens = self
+            .draft_source_hybrid_mtp_tokens
+            .saturating_add(other.draft_source_hybrid_mtp_tokens);
+        self.accepted_source_hybrid_mtp_tokens = self
+            .accepted_source_hybrid_mtp_tokens
+            .saturating_add(other.accepted_source_hybrid_mtp_tokens);
+        self.ngram_attempt_steps = self
+            .ngram_attempt_steps
+            .saturating_add(other.ngram_attempt_steps);
         self.ngram_hit_steps = self.ngram_hit_steps.saturating_add(other.ngram_hit_steps);
+        self.ngram_no_candidate_steps = self
+            .ngram_no_candidate_steps
+            .saturating_add(other.ngram_no_candidate_steps);
+        self.ngram_confidence_filtered_steps = self
+            .ngram_confidence_filtered_steps
+            .saturating_add(other.ngram_confidence_filtered_steps);
+        self.ngram_cycle_guard_steps = self
+            .ngram_cycle_guard_steps
+            .saturating_add(other.ngram_cycle_guard_steps);
+        self.ngram_skipped_mtp_steps = self
+            .ngram_skipped_mtp_steps
+            .saturating_add(other.ngram_skipped_mtp_steps);
+        self.ngram_skipped_mtp_tokens = self
+            .ngram_skipped_mtp_tokens
+            .saturating_add(other.ngram_skipped_mtp_tokens);
+        self.ngram_hybrid_tail_steps = self
+            .ngram_hybrid_tail_steps
+            .saturating_add(other.ngram_hybrid_tail_steps);
+        self.ngram_hybrid_tail_tokens = self
+            .ngram_hybrid_tail_tokens
+            .saturating_add(other.ngram_hybrid_tail_tokens);
         self.ngram_think_gated_steps = self
             .ngram_think_gated_steps
             .saturating_add(other.ngram_think_gated_steps);
@@ -1354,7 +1487,60 @@ impl MtpTelemetry {
             ("ax_mtp_drafted_depth0", self.drafted_by_depth[0]),
             ("ax_mtp_drafted_depth1", self.drafted_by_depth[1]),
             ("ax_mtp_drafted_depth2", self.drafted_by_depth[2]),
+            (
+                "ax_mtp_draft_source_mtp_tokens",
+                self.draft_source_mtp_tokens,
+            ),
+            (
+                "ax_mtp_accepted_source_mtp_tokens",
+                self.accepted_source_mtp_tokens,
+            ),
+            (
+                "ax_mtp_draft_source_ngram_tokens",
+                self.draft_source_ngram_tokens,
+            ),
+            (
+                "ax_mtp_accepted_source_ngram_tokens",
+                self.accepted_source_ngram_tokens,
+            ),
+            (
+                "ax_mtp_draft_source_hybrid_mtp_tokens",
+                self.draft_source_hybrid_mtp_tokens,
+            ),
+            (
+                "ax_mtp_accepted_source_hybrid_mtp_tokens",
+                self.accepted_source_hybrid_mtp_tokens,
+            ),
+            ("ax_mtp_ngram_attempt_steps", self.ngram_attempt_steps),
             ("ax_mtp_ngram_hit_steps", self.ngram_hit_steps),
+            (
+                "ax_mtp_ngram_no_candidate_steps",
+                self.ngram_no_candidate_steps,
+            ),
+            (
+                "ax_mtp_ngram_confidence_filtered_steps",
+                self.ngram_confidence_filtered_steps,
+            ),
+            (
+                "ax_mtp_ngram_cycle_guard_steps",
+                self.ngram_cycle_guard_steps,
+            ),
+            (
+                "ax_mtp_ngram_skipped_mtp_steps",
+                self.ngram_skipped_mtp_steps,
+            ),
+            (
+                "ax_mtp_ngram_skipped_mtp_tokens",
+                self.ngram_skipped_mtp_tokens,
+            ),
+            (
+                "ax_mtp_ngram_hybrid_tail_steps",
+                self.ngram_hybrid_tail_steps,
+            ),
+            (
+                "ax_mtp_ngram_hybrid_tail_tokens",
+                self.ngram_hybrid_tail_tokens,
+            ),
             (
                 "ax_mtp_ngram_think_gated_steps",
                 self.ngram_think_gated_steps,
@@ -2889,6 +3075,9 @@ struct RequestState {
     /// Sparse draft distributions aligned with `mtp_pending_draft`.
     /// Used to sample the exact residual correction after sampled-MTP rejection.
     mtp_pending_draft_distributions: Vec<TokenDistribution>,
+    /// Source for each pending draft token. N-gram prefix tokens and MTP tail
+    /// tokens need separate counters and feedback in the hybrid path.
+    mtp_pending_draft_sources: Vec<MtpDraftSource>,
     /// Request-local MTP draft depth cap.  Adapted from the last accept/reject
     /// outcome so low-acceptance prompts stop paying for deeper draft chains.
     mtp_adaptive_max_depth: usize,
@@ -2953,6 +3142,7 @@ impl RequestState {
             mtp_pending_draft: Vec::new(),
             mtp_pending_draft_log_probs: Vec::new(),
             mtp_pending_draft_distributions: Vec::new(),
+            mtp_pending_draft_sources: Vec::new(),
             mtp_adaptive_max_depth: 0,
             mtp_skip_logits: None,
             mtp_skip_hidden: None,
@@ -5453,7 +5643,13 @@ impl MlxRunner {
                     // verify (pending empty) produces skip-state that is never
                     // usefully consumed on the next iteration.
                     if self.mtp_skip_state && !pending.is_empty() {
-                        let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
+                        let sl = slice(
+                            &logits_all,
+                            &[ac as i32, 0],
+                            &[(ac + 1) as i32, vocab],
+                            &[1, 1],
+                            None,
+                        );
                         let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                         mlx_sys::async_eval(&[&sl, &sh]);
                         state.mtp_skip_logits = Some(sl);
@@ -5461,80 +5657,88 @@ impl MlxRunner {
                     }
                     (logits_all, draft_hidden, ac, true, correction_argmax_tok)
                 } else {
-                // Full-vocab target probabilities for rejection-sampling acceptance.
-                // Computes p_target(draft_token) via full-vocab softmax so the
-                // acceptance ratio min(1, p_target/p_draft) uses correct
-                // normalization.  The previous top-k path normalized within the
-                // sampler's top-k (e.g. 20 tokens), inflating p_target for in-set
-                // tokens and zeroing it for out-of-set tokens, causing systematic
-                // over-rejection and ~40 pp lower acceptance vs mtplx (which uses
-                // full-vocab softmax for both target and draft).
-                let lazy_target_probs = compute_mtp_target_probs_lazy(
-                    &logits_all,
-                    &pending,
-                    &state.mtp_pending_draft_log_probs,
-                    vocab,
-                    sampling,
-                );
-                // Always compute argmax for the correction/bonus fallback.
-                let predicted_arr = Some(argmax(&logits_all, None));
-                let kv_refs = state.cache.collect_eval_refs();
-                let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
-                targets.push(predicted_arr.as_ref().unwrap());
-                targets.push(&post_norm_all);
-                if let Some(ref ltp) = lazy_target_probs {
-                    targets.push(ltp);
-                }
-                targets.extend(kv_refs);
-                let verify_eval_started = Instant::now();
-                eval(&targets);
-                mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
-                let accept_started = Instant::now();
-                let predicted: Vec<u32> = predicted_arr
-                    .as_ref()
-                    .map(|arr| arr.data_u32().to_vec())
-                    .unwrap_or_default();
-                let (target_probs_cpu, target_distributions_cpu): (
-                    Option<Vec<f32>>,
-                    Option<Vec<TokenDistribution>>,
-                ) = (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None);
+                    // Full-vocab target probabilities for rejection-sampling acceptance.
+                    // Computes p_target(draft_token) via full-vocab softmax so the
+                    // acceptance ratio min(1, p_target/p_draft) uses correct
+                    // normalization.  The previous top-k path normalized within the
+                    // sampler's top-k (e.g. 20 tokens), inflating p_target for in-set
+                    // tokens and zeroing it for out-of-set tokens, causing systematic
+                    // over-rejection and ~40 pp lower acceptance vs mtplx (which uses
+                    // full-vocab softmax for both target and draft).
+                    let lazy_target_probs = compute_mtp_target_probs_lazy(
+                        &logits_all,
+                        &pending,
+                        &state.mtp_pending_draft_log_probs,
+                        vocab,
+                        sampling,
+                    );
+                    // Always compute argmax for the correction/bonus fallback.
+                    let predicted_arr = Some(argmax(&logits_all, None));
+                    let kv_refs = state.cache.collect_eval_refs();
+                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
+                    targets.push(predicted_arr.as_ref().unwrap());
+                    targets.push(&post_norm_all);
+                    if let Some(ref ltp) = lazy_target_probs {
+                        targets.push(ltp);
+                    }
+                    targets.extend(kv_refs);
+                    let verify_eval_started = Instant::now();
+                    eval(&targets);
+                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                    let accept_started = Instant::now();
+                    let predicted: Vec<u32> = predicted_arr
+                        .as_ref()
+                        .map(|arr| arr.data_u32().to_vec())
+                        .unwrap_or_default();
+                    let (target_probs_cpu, target_distributions_cpu): (
+                        Option<Vec<f32>>,
+                        Option<Vec<TokenDistribution>>,
+                    ) = (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None);
 
-                let accept = mtp_accept_count(
-                    &pending,
-                    &state.mtp_pending_draft_log_probs,
-                    &state.mtp_pending_draft_distributions,
-                    target_probs_cpu.as_deref(),
-                    target_distributions_cpu.as_deref(),
-                    &predicted,
-                    &mut state.rng,
-                );
-                let ac = accept.accept_count;
-                let all_accepted = accept.all_accepted;
-                mtp_timings.accept_wall_us = elapsed_us(accept_started);
+                    let accept = mtp_accept_count(
+                        &pending,
+                        &state.mtp_pending_draft_log_probs,
+                        &state.mtp_pending_draft_distributions,
+                        &state.mtp_pending_draft_sources,
+                        target_probs_cpu.as_deref(),
+                        target_distributions_cpu.as_deref(),
+                        &predicted,
+                        &mut state.rng,
+                    );
+                    let ac = accept.accept_count;
+                    let all_accepted = accept.all_accepted;
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
-                // Trim FA KV to the committed prefix length. For accepted steps this removes
-                // the excess verify entries; for rejected steps the linear-attention state
-                // remains slightly ahead (skip-snapshot semantics).
-                let rollback_started = Instant::now();
-                let _ = state.cache.trim_to(token_offset + 1 + ac);
-                mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                // Capture skip-state + async eval for next iteration.
-                if self.mtp_skip_state && !pending.is_empty() {
-                    let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
-                    let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                    mlx_sys::async_eval(&[&sl, &sh]);
-                    state.mtp_skip_logits = Some(sl);
-                    state.mtp_skip_hidden = Some(sh);
-                }
-                (
-                    logits_all,
-                    draft_hidden,
-                    ac,
-                    all_accepted,
-                    accept.rejection_correction.unwrap_or(correction_argmax_tok),
-                )
+                    // Trim FA KV to the committed prefix length. For accepted steps this removes
+                    // the excess verify entries; for rejected steps the linear-attention state
+                    // remains slightly ahead (skip-snapshot semantics).
+                    let rollback_started = Instant::now();
+                    let _ = state.cache.trim_to(token_offset + 1 + ac);
+                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                    let draft_hidden =
+                        slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                    // Capture skip-state + async eval for next iteration.
+                    if self.mtp_skip_state && !pending.is_empty() {
+                        let sl = slice(
+                            &logits_all,
+                            &[ac as i32, 0],
+                            &[(ac + 1) as i32, vocab],
+                            &[1, 1],
+                            None,
+                        );
+                        let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                        mlx_sys::async_eval(&[&sl, &sh]);
+                        state.mtp_skip_logits = Some(sl);
+                        state.mtp_skip_hidden = Some(sh);
+                    }
+                    (
+                        logits_all,
+                        draft_hidden,
+                        ac,
+                        all_accepted,
+                        accept.rejection_correction.unwrap_or(correction_argmax_tok),
+                    )
                 }
             } else {
                 // Non-linear-attention: run directly, trim on rejection.
@@ -5571,7 +5775,13 @@ impl MlxRunner {
                     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
                     let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
                     if self.mtp_skip_state && !pending.is_empty() {
-                        let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
+                        let sl = slice(
+                            &logits_all,
+                            &[ac as i32, 0],
+                            &[(ac + 1) as i32, vocab],
+                            &[1, 1],
+                            None,
+                        );
                         let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                         mlx_sys::async_eval(&[&sl, &sh]);
                         state.mtp_skip_logits = Some(sl);
@@ -5579,82 +5789,90 @@ impl MlxRunner {
                     }
                     (logits_all, draft_hidden, ac, true, correction_argmax_tok)
                 } else {
-                // Full-vocab target probabilities for rejection-sampling acceptance.
-                let lazy_target_probs = compute_mtp_target_probs_lazy(
-                    &logits_all,
-                    &pending,
-                    &state.mtp_pending_draft_log_probs,
-                    vocab,
-                    sampling,
-                );
-                // Always compute argmax for the correction/bonus fallback.
-                let predicted_arr = Some(argmax(&logits_all, None));
-                let kv_refs = state.cache.collect_eval_refs();
-                let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
-                targets.push(predicted_arr.as_ref().unwrap());
-                targets.push(&post_norm_all);
-                if let Some(ref ltp) = lazy_target_probs {
-                    targets.push(ltp);
-                }
-                targets.extend(kv_refs);
-                let verify_eval_started = Instant::now();
-                eval(&targets);
-                mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
-                let accept_started = Instant::now();
-                let predicted: Vec<u32> = predicted_arr
-                    .as_ref()
-                    .map(|arr| arr.data_u32().to_vec())
-                    .unwrap_or_default();
-                let (target_probs_cpu, target_distributions_cpu): (
-                    Option<Vec<f32>>,
-                    Option<Vec<TokenDistribution>>,
-                ) = (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None);
-
-                let accept = mtp_accept_count(
-                    &pending,
-                    &state.mtp_pending_draft_log_probs,
-                    &state.mtp_pending_draft_distributions,
-                    target_probs_cpu.as_deref(),
-                    target_distributions_cpu.as_deref(),
-                    &predicted,
-                    &mut state.rng,
-                );
-                let ac = accept.accept_count;
-                let all_accepted = accept.all_accepted;
-                mtp_timings.accept_wall_us = elapsed_us(accept_started);
-
-                let rollback_started = Instant::now();
-                let committed_len = token_offset + 1 + ac;
-                let trimmed = state.cache.trim_to(committed_len);
-                debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
-
-                // Trim MTP KV cache: remove rejected draft entries.
-                let rejected_count = pending.len() - ac;
-                if rejected_count > 0 {
-                    let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
-                    if let Some(ref mut c) = state.mtp_cache {
-                        let _ = c.trim_to(new_mtp_len);
+                    // Full-vocab target probabilities for rejection-sampling acceptance.
+                    let lazy_target_probs = compute_mtp_target_probs_lazy(
+                        &logits_all,
+                        &pending,
+                        &state.mtp_pending_draft_log_probs,
+                        vocab,
+                        sampling,
+                    );
+                    // Always compute argmax for the correction/bonus fallback.
+                    let predicted_arr = Some(argmax(&logits_all, None));
+                    let kv_refs = state.cache.collect_eval_refs();
+                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
+                    targets.push(predicted_arr.as_ref().unwrap());
+                    targets.push(&post_norm_all);
+                    if let Some(ref ltp) = lazy_target_probs {
+                        targets.push(ltp);
                     }
-                    state.mtp_decode_count = new_mtp_len;
-                }
-                mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                // Capture skip-state + async eval for next iteration.
-                if self.mtp_skip_state && !pending.is_empty() {
-                    let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
-                    let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                    mlx_sys::async_eval(&[&sl, &sh]);
-                    state.mtp_skip_logits = Some(sl);
-                    state.mtp_skip_hidden = Some(sh);
-                }
-                (
-                    logits_all,
-                    draft_hidden,
-                    ac,
-                    all_accepted,
-                    accept.rejection_correction.unwrap_or(correction_argmax_tok),
-                )
+                    targets.extend(kv_refs);
+                    let verify_eval_started = Instant::now();
+                    eval(&targets);
+                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                    let accept_started = Instant::now();
+                    let predicted: Vec<u32> = predicted_arr
+                        .as_ref()
+                        .map(|arr| arr.data_u32().to_vec())
+                        .unwrap_or_default();
+                    let (target_probs_cpu, target_distributions_cpu): (
+                        Option<Vec<f32>>,
+                        Option<Vec<TokenDistribution>>,
+                    ) = (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None);
+
+                    let accept = mtp_accept_count(
+                        &pending,
+                        &state.mtp_pending_draft_log_probs,
+                        &state.mtp_pending_draft_distributions,
+                        &state.mtp_pending_draft_sources,
+                        target_probs_cpu.as_deref(),
+                        target_distributions_cpu.as_deref(),
+                        &predicted,
+                        &mut state.rng,
+                    );
+                    let ac = accept.accept_count;
+                    let all_accepted = accept.all_accepted;
+                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                    let rollback_started = Instant::now();
+                    let committed_len = token_offset + 1 + ac;
+                    let trimmed = state.cache.trim_to(committed_len);
+                    debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
+
+                    // Trim MTP KV cache: remove rejected draft entries.
+                    let rejected_count = pending.len() - ac;
+                    if rejected_count > 0 {
+                        let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                        if let Some(ref mut c) = state.mtp_cache {
+                            let _ = c.trim_to(new_mtp_len);
+                        }
+                        state.mtp_decode_count = new_mtp_len;
+                    }
+                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                    let draft_hidden =
+                        slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                    // Capture skip-state + async eval for next iteration.
+                    if self.mtp_skip_state && !pending.is_empty() {
+                        let sl = slice(
+                            &logits_all,
+                            &[ac as i32, 0],
+                            &[(ac + 1) as i32, vocab],
+                            &[1, 1],
+                            None,
+                        );
+                        let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                        mlx_sys::async_eval(&[&sl, &sh]);
+                        state.mtp_skip_logits = Some(sl);
+                        state.mtp_skip_hidden = Some(sh);
+                    }
+                    (
+                        logits_all,
+                        draft_hidden,
+                        ac,
+                        all_accepted,
+                        accept.rejection_correction.unwrap_or(correction_argmax_tok),
+                    )
                 }
             };
 
@@ -5689,12 +5907,32 @@ impl MlxRunner {
         mtp_timings.tail_sample_wall_us = elapsed_us(tail_sample_started);
         result.push(tail_tok);
 
-        state.ngram.feed(&result);
-
         // Record MTP draft/accept telemetry (only when there was a pending draft).
         if !pending.is_empty() {
-            state.mtp_telemetry.record_step(pending.len(), accept_count);
+            state.mtp_telemetry.record_step(
+                pending.len(),
+                accept_count,
+                &state.mtp_pending_draft_sources,
+            );
+            let ngram_prefix_len = state
+                .mtp_pending_draft_sources
+                .iter()
+                .take_while(|source| **source == MtpDraftSource::Ngram)
+                .count();
+            if ngram_prefix_len > 0 {
+                let ngram_accept_count = accept_count.min(ngram_prefix_len);
+                let (feedback_min_support, feedback_confidence) = ngram_feedback_policy(&self.cfg);
+                state.ngram.record_draft_feedback(
+                    &pending[..ngram_prefix_len],
+                    ngram_accept_count,
+                    feedback_min_support,
+                    feedback_confidence,
+                );
+                record_ngram_beta_feedback(state, ngram_prefix_len, ngram_accept_count);
+            }
         }
+
+        state.ngram.feed(&result);
 
         let mtp_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
         state.mtp_adaptive_max_depth = mtp_next_adaptive_depth(
@@ -5704,11 +5942,10 @@ impl MlxRunner {
             accept_count,
         );
 
-        // Generate new draft tokens: attempt n-gram stacking first (ADR-008).
-        // N-gram lookup is zero-cost compared to MTP head forward (~4 ms).
-        // On hit, the MTP KV cache is reset so the next MTP step starts fresh
-        // (skipping mtp_draft_tokens leaves cache.seq_len up to max_depth positions
-        // behind the committed sequence, causing wrong RoPE offsets).
+        // Generate new draft tokens: attempt n-gram first, then let MTP fill
+        // remaining depth slots when the n-gram prefix is shorter than the MTP
+        // adaptive cap. If n-gram fills the whole useful window, skip MTP work
+        // and reset the MTP cache so the next MTP miss starts with valid RoPE.
         //
         // Post-think guarded mode: compute think-state AFTER result tokens to
         // decide the NEXT draft policy.  Inside `<think>` use min_support=1;
@@ -5727,7 +5964,7 @@ impl MlxRunner {
         let ngram_max = if self.disable_mtp_ngram_stacking {
             0
         } else {
-            3_usize.min(state.mtp_adaptive_max_depth)
+            adaptive_ngram_draft_len(has_linear_attention, state.ngram_posterior_mean())
         };
         let ngram_outcome = if ngram_max > 0 {
             state.ngram.predict_with_policy(NgramDraftPolicy {
@@ -5749,41 +5986,83 @@ impl MlxRunner {
                 requested_max_len: 0,
             }
         };
+        if ngram_max > 0 {
+            state
+                .mtp_telemetry
+                .record_ngram_attempt(ngram_outcome.rejection);
+        }
         let recent = &result[result.len().saturating_sub(8)..];
-        let (new_draft, new_log_probs) = if !ngram_outcome.draft.is_empty()
-            && !ngram_draft_is_cycle(&ngram_outcome.draft, recent)
-        {
-            // Reset cache and count together: the next MTP step starts fresh.
-            // Resetting count keeps the linear-attention rollback trim correct.
-            state.mtp_cache = None;
-            state.mtp_decode_count = 0;
-            // Clear skip-state: the MTP cache was reset, so any skip-state
-            // from the previous verify is stale and must not be consumed.
-            state.mtp_skip_logits = None;
-            state.mtp_skip_hidden = None;
-            state.mtp_telemetry.ngram_hit_steps =
-                state.mtp_telemetry.ngram_hit_steps.saturating_add(1);
-            (ngram_outcome.draft, vec![])
-        } else {
-            // MTP head forward path (RoPE managed internally via cache.seq_len).
-            let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-            let (draft, log_probs, distributions, added, _top2_margins) = mtp_draft_tokens(
-                &self.weights,
-                &self.cfg,
-                &draft_hidden,
-                tail_tok,
-                cache,
-                Some(state.mtp_adaptive_max_depth),
-                &mut state.rng,
-            );
-            state.mtp_decode_count += added;
-            state.mtp_pending_draft_distributions = distributions;
-            (draft, log_probs)
-        };
+        let ngram_cycle_guarded =
+            !ngram_outcome.draft.is_empty() && ngram_draft_is_cycle(&ngram_outcome.draft, recent);
+        if ngram_cycle_guarded {
+            state.mtp_telemetry.record_ngram_cycle_guard();
+        }
+        let (new_draft, new_log_probs, new_sources) =
+            if !ngram_outcome.draft.is_empty() && !ngram_cycle_guarded {
+                let mut draft = ngram_outcome.draft;
+                let ngram_len = draft.len();
+                let mtp_tail_cap = state.mtp_adaptive_max_depth.saturating_sub(ngram_len);
+                let mut sources = vec![MtpDraftSource::Ngram; ngram_len];
+
+                if mtp_tail_cap > 0 {
+                    let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+                    let (tail, log_probs, distributions, added, _top2_margins) =
+                        mtp_draft_tokens_after_forced_prefix(
+                            &self.weights,
+                            &self.cfg,
+                            &draft_hidden,
+                            tail_tok,
+                            &draft,
+                            cache,
+                            mtp_tail_cap,
+                            &mut state.rng,
+                        );
+                    state.mtp_decode_count += added;
+                    state.mtp_pending_draft_distributions = distributions;
+                    state.mtp_telemetry.record_ngram_stack_hit(ngram_len, false);
+                    state.mtp_telemetry.record_ngram_hybrid_tail(tail.len());
+                    let mut aligned_log_probs = vec![f32::NAN; ngram_len];
+                    aligned_log_probs.extend(log_probs);
+                    sources.extend(std::iter::repeat_n(MtpDraftSource::HybridMtp, tail.len()));
+                    draft.extend(tail);
+                    (draft, aligned_log_probs, sources)
+                } else {
+                    // Reset cache and count together: the next MTP step starts fresh.
+                    // Resetting count keeps the linear-attention rollback trim correct.
+                    state.mtp_cache = None;
+                    state.mtp_decode_count = 0;
+                    // Clear skip-state: the MTP cache was reset, so any skip-state
+                    // from the previous verify is stale and must not be consumed.
+                    state.mtp_skip_logits = None;
+                    state.mtp_skip_hidden = None;
+                    state.mtp_telemetry.record_ngram_stack_hit(ngram_len, true);
+                    (draft, vec![], sources)
+                }
+            } else {
+                // MTP head forward path (RoPE managed internally via cache.seq_len).
+                let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+                let (draft, log_probs, distributions, added, _top2_margins) = mtp_draft_tokens(
+                    &self.weights,
+                    &self.cfg,
+                    &draft_hidden,
+                    tail_tok,
+                    cache,
+                    Some(state.mtp_adaptive_max_depth),
+                    &mut state.rng,
+                );
+                state.mtp_decode_count += added;
+                state.mtp_pending_draft_distributions = distributions;
+                let sources = vec![MtpDraftSource::Mtp; draft.len()];
+                (draft, log_probs, sources)
+            };
         state.mtp_pending_draft = new_draft;
         state.mtp_pending_draft_log_probs = new_log_probs;
+        state.mtp_pending_draft_sources = new_sources;
         if state.mtp_pending_draft_log_probs.is_empty() {
             state.mtp_pending_draft_distributions.clear();
+        }
+        if state.mtp_pending_draft.is_empty() {
+            state.mtp_pending_draft_sources.clear();
         }
         mtp_timings.draft_wall_us = elapsed_us(draft_started);
         state.mtp_telemetry.record_timings(mtp_timings);
@@ -5840,6 +6119,7 @@ impl MlxRunner {
         state.mtp_pending_draft.clear();
         state.mtp_pending_draft_log_probs.clear();
         state.mtp_pending_draft_distributions.clear();
+        state.mtp_pending_draft_sources.clear();
         state.mtp_adaptive_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
         state.mtp_skip_logits = None;
         state.mtp_skip_hidden = None;
@@ -6041,17 +6321,7 @@ impl MlxRunner {
         state
             .ngram_acceleration
             .record_draft(draft_len, accept_count);
-        state.ngram_beta_alpha += accept_count as f32;
-        state.ngram_beta_beta += (draft_len - accept_count) as f32;
-
-        // Normalise to keep total observations bounded — prevents the posterior
-        // from becoming overconfident and unable to adapt to changing statistics.
-        let total = state.ngram_beta_alpha + state.ngram_beta_beta;
-        if total > NGRAM_BETA_MAX_TOTAL {
-            let scale = NGRAM_BETA_MAX_TOTAL / total;
-            state.ngram_beta_alpha *= scale;
-            state.ngram_beta_beta *= scale;
-        }
+        record_ngram_beta_feedback(state, draft_len, accept_count);
 
         if let Some(disabled_steps) = ngram_acceleration_disabled_steps(
             has_linear_attention,
@@ -6211,28 +6481,46 @@ struct MtpAcceptOutcome {
     rejection_correction: Option<u32>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mtp_accept_count(
     pending: &[u32],
     pending_log_probs: &[f32],
     draft_distributions: &[TokenDistribution],
+    draft_sources: &[MtpDraftSource],
     target_probs_cpu: Option<&[f32]>,
     target_distributions: Option<&[TokenDistribution]>,
     predicted: &[u32],
     rng: &mut Xorshift64,
 ) -> MtpAcceptOutcome {
-    if let Some(tprobs) = target_probs_cpu {
-        // Rejection sampling: accept d with probability min(1, p_target(d) / p_draft(d)).
-        let mut ac = 0usize;
-        for i in 0..pending.len() {
+    let mut ac = 0usize;
+    let mut distribution_index = 0usize;
+    for i in 0..pending.len() {
+        let source = draft_sources
+            .get(i)
+            .copied()
+            .filter(|source| *source != MtpDraftSource::None)
+            .unwrap_or(MtpDraftSource::Mtp);
+        let has_draft_distribution =
+            matches!(source, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp);
+        let can_rejection_sample = !matches!(source, MtpDraftSource::Ngram)
+            && pending_log_probs
+                .get(i)
+                .is_some_and(|log_prob| log_prob.is_finite())
+            && target_probs_cpu.is_some();
+
+        if let (true, Some(tprobs)) = (can_rejection_sample, target_probs_cpu) {
             let p_target_d = tprobs[i].max(0.0_f32);
             let p_draft = pending_log_probs[i].exp().max(1e-37_f32);
             let accept_prob = (p_target_d / p_draft).min(1.0_f32);
             if rng.next_f32() < accept_prob {
                 ac += 1;
+                if has_draft_distribution {
+                    distribution_index = distribution_index.saturating_add(1);
+                }
             } else {
                 let correction = target_distributions
                     .and_then(|targets| targets.get(i))
-                    .zip(draft_distributions.get(i))
+                    .zip(draft_distributions.get(distribution_index))
                     .and_then(|(target, draft)| {
                         sample_residual_token_distribution(target, draft, rng)
                     });
@@ -6242,18 +6530,13 @@ fn mtp_accept_count(
                     rejection_correction: correction,
                 };
             }
-        }
-        MtpAcceptOutcome {
-            accept_count: ac,
-            all_accepted: ac == pending.len(),
-            rejection_correction: None,
-        }
-    } else {
-        // Greedy acceptance fallback (temperature == 0 or no log_probs stored).
-        let mut ac = 0usize;
-        for i in 0..pending.len() {
+        } else {
+            // Greedy acceptance fallback for n-gram tokens and for greedy MTP.
             if predicted[i] == pending[i] {
                 ac += 1;
+                if has_draft_distribution {
+                    distribution_index = distribution_index.saturating_add(1);
+                }
             } else {
                 return MtpAcceptOutcome {
                     accept_count: ac,
@@ -6262,11 +6545,11 @@ fn mtp_accept_count(
                 };
             }
         }
-        MtpAcceptOutcome {
-            accept_count: ac,
-            all_accepted: ac == pending.len(),
-            rejection_correction: None,
-        }
+    }
+    MtpAcceptOutcome {
+        accept_count: ac,
+        all_accepted: ac == pending.len(),
+        rejection_correction: None,
     }
 }
 
@@ -6421,6 +6704,22 @@ fn ngram_acceleration_disabled_steps(
     }
 
     (posterior_mean < NGRAM_ACCEPT_THRESHOLD).then_some(NGRAM_RETRY_INTERVAL)
+}
+
+fn record_ngram_beta_feedback(state: &mut RequestState, draft_len: usize, accept_count: usize) {
+    if draft_len == 0 {
+        return;
+    }
+    state.ngram_beta_alpha += accept_count as f32;
+    state.ngram_beta_beta += draft_len.saturating_sub(accept_count) as f32;
+
+    // Keep the posterior adaptive instead of letting old requests dominate.
+    let total = state.ngram_beta_alpha + state.ngram_beta_beta;
+    if total > NGRAM_BETA_MAX_TOTAL {
+        let scale = NGRAM_BETA_MAX_TOTAL / total;
+        state.ngram_beta_alpha *= scale;
+        state.ngram_beta_beta *= scale;
+    }
 }
 
 fn linear_ngram_no_draft_should_disable(streak: u32) -> bool {
@@ -7269,9 +7568,10 @@ mod tests {
     fn mtp_telemetry_tracks_acceptance_step_classes() {
         let mut telemetry = MtpTelemetry::default();
 
-        telemetry.record_step(3, 3);
-        telemetry.record_step(3, 1);
-        telemetry.record_step(3, 0);
+        let mtp_sources = [MtpDraftSource::Mtp; 3];
+        telemetry.record_step(3, 3, &mtp_sources);
+        telemetry.record_step(3, 1, &mtp_sources);
+        telemetry.record_step(3, 0, &mtp_sources);
         telemetry.record_timings(MtpStepTimings {
             cache_clone_wall_us: 10,
             verify_forward_wall_us: 20,
@@ -7307,8 +7607,92 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_accepted_depth0".into(), 2)));
         assert!(decisions.contains(&("ax_mtp_accepted_depth1".into(), 1)));
         assert!(decisions.contains(&("ax_mtp_accepted_depth2".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_draft_source_mtp_tokens".into(), 9)));
+        assert!(decisions.contains(&("ax_mtp_accepted_source_mtp_tokens".into(), 4)));
+        assert!(decisions.contains(&("ax_mtp_draft_source_ngram_tokens".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_accepted_source_ngram_tokens".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_ngram_hit_steps".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_ngram_think_gated_steps".into(), 0)));
+    }
+
+    #[test]
+    fn mtp_telemetry_tracks_stacked_ngram_source_and_hybrid_tail() {
+        let mut telemetry = MtpTelemetry::default();
+
+        telemetry.record_ngram_attempt(Some(NgramDraftRejection::NoCandidate));
+        telemetry.record_ngram_attempt(Some(NgramDraftRejection::ConfidenceFiltered));
+        telemetry.record_ngram_attempt(None);
+        telemetry.record_ngram_cycle_guard();
+        telemetry.record_ngram_stack_hit(2, false);
+        telemetry.record_ngram_hybrid_tail(1);
+        telemetry.record_step(
+            3,
+            2,
+            &[
+                MtpDraftSource::Ngram,
+                MtpDraftSource::Ngram,
+                MtpDraftSource::HybridMtp,
+            ],
+        );
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+
+        assert!(decisions.contains(&("ax_mtp_ngram_attempt_steps".into(), 3)));
+        assert!(decisions.contains(&("ax_mtp_ngram_no_candidate_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_ngram_confidence_filtered_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_ngram_cycle_guard_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_ngram_hit_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_ngram_skipped_mtp_steps".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_skipped_mtp_tokens".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_hybrid_tail_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_ngram_hybrid_tail_tokens".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_draft_source_ngram_tokens".into(), 2)));
+        assert!(decisions.contains(&("ax_mtp_accepted_source_ngram_tokens".into(), 2)));
+        assert!(decisions.contains(&("ax_mtp_draft_source_hybrid_mtp_tokens".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_accepted_source_hybrid_mtp_tokens".into(), 0)));
+    }
+
+    #[test]
+    fn mtp_accept_count_verifies_ngram_prefix_greedily() {
+        let mut rng = Xorshift64::new(42);
+        let accept = mtp_accept_count(
+            &[17],
+            &[0.0],
+            &[],
+            &[MtpDraftSource::Ngram],
+            Some(&[0.0]),
+            None,
+            &[17],
+            &mut rng,
+        );
+
+        assert_eq!(accept.accept_count, 1);
+        assert!(accept.all_accepted);
+        assert_eq!(accept.rejection_correction, None);
+    }
+
+    #[test]
+    fn mtp_accept_count_aligns_hybrid_tail_distribution_after_ngram_prefix() {
+        let mut rng = Xorshift64::new(7);
+        let target_prefix = TokenDistribution::new(vec![(10, 1.0)]).unwrap();
+        let target_tail = TokenDistribution::new(vec![(99, 1.0)]).unwrap();
+        let draft_tail = TokenDistribution::new(vec![(20, 1.0)]).unwrap();
+
+        let accept = mtp_accept_count(
+            &[10, 20],
+            &[f32::NAN, 0.0],
+            &[draft_tail],
+            &[MtpDraftSource::Ngram, MtpDraftSource::HybridMtp],
+            Some(&[1.0, 0.0]),
+            Some(&[target_prefix, target_tail]),
+            &[10, 20],
+            &mut rng,
+        );
+
+        assert_eq!(accept.accept_count, 1);
+        assert!(!accept.all_accepted);
+        assert_eq!(accept.rejection_correction, Some(99));
     }
 
     #[test]

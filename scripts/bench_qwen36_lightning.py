@@ -32,6 +32,7 @@ Usage:
       --repetitions 2 --warmup 1 \\
       --output-dir benchmarks/results/qwen36-lightning/$(date +%F)-smoke
 """
+
 from __future__ import annotations
 
 import argparse
@@ -146,6 +147,7 @@ SERVER_PORT_BASE = 58100
 # Utilities
 # ---------------------------------------------------------------------------
 
+
 def _find_model_dir(key: str) -> Path | None:
     cfg = MODEL_REGISTRY[key]
     snap_dir = HF_CACHE / cfg["slug"] / "snapshots" / cfg["snapshot"]
@@ -182,25 +184,32 @@ def _free_port(base: int) -> int:
     raise RuntimeError("No free port found")
 
 
-def _chat_request(port: int, prompt: str, max_tokens: int, thinking: bool) -> tuple[float, float, int]:
+def _chat_request(
+    port: int, prompt: str, max_tokens: int, thinking: bool
+) -> tuple[float, float, int]:
     """Returns (ttft_s, decode_s, completion_tokens)."""
     messages = [{"role": "user", "content": prompt}]
     if not thinking:
         messages.insert(0, {"role": "system", "content": "/no_think"})
-    body = json.dumps({
-        "model": "local",
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": SAMPLING["temperature"],
-        "top_p": SAMPLING["top_p"],
-        "stream": False,
-    }).encode()
+    body = json.dumps(
+        {
+            "model": "local",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": SAMPLING["temperature"],
+            "top_p": SAMPLING["top_p"],
+            "stream": False,
+        }
+    ).encode()
 
     t0 = time.perf_counter()
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
-    conn.request("POST", "/v1/chat/completions",
-                 body=body,
-                 headers={"Content-Type": "application/json"})
+    conn.request(
+        "POST",
+        "/v1/chat/completions",
+        body=body,
+        headers={"Content-Type": "application/json"},
+    )
     resp = conn.getresponse()
     payload = json.loads(resp.read())
     t1 = time.perf_counter()
@@ -210,7 +219,7 @@ def _chat_request(port: int, prompt: str, max_tokens: int, thinking: bool) -> tu
 
     # ax-engine SSE headers carry decode timing; fall back to wall time.
     timing = payload.get("timing", {})
-    ttft = timing.get("ttft_s", 0.0)
+    ttft = timing.get("ttft_s")  # None when server doesn't emit it
     decode_s = timing.get("decode_s", t1 - t0)
 
     return ttft, decode_s, completion_tokens
@@ -229,7 +238,15 @@ def _ngram_telemetry(port: int) -> dict:
     return {}
 
 
-def run_prompt(port: int, prompt: str, thinking: bool, max_tokens: int, reps: int, warmup: int, cooldown: float) -> dict:
+def run_prompt(
+    port: int,
+    prompt: str,
+    thinking: bool,
+    max_tokens: int,
+    reps: int,
+    warmup: int,
+    cooldown: float,
+) -> dict:
     """Run one prompt N times, return stats dict."""
     all_runs = warmup + reps
     measured_tps: list[float] = []
@@ -245,7 +262,8 @@ def run_prompt(port: int, prompt: str, thinking: bool, max_tokens: int, reps: in
         if rep >= warmup:
             tps = n_tok / decode_s if decode_s > 0 else 0.0
             measured_tps.append(tps)
-            measured_ttft.append(ttft)
+            if ttft is not None:
+                measured_ttft.append(ttft)
             mtp_drafted_total += telem.get("ax_mtp_draft_tokens", 0)
             mtp_accepted_total += telem.get("ax_mtp_accepted_tokens", 0)
             for d in range(8):
@@ -257,7 +275,9 @@ def run_prompt(port: int, prompt: str, thinking: bool, max_tokens: int, reps: in
         if rep < all_runs - 1 and cooldown > 0:
             time.sleep(cooldown)
 
-    accept_rate = mtp_accepted_total / mtp_drafted_total if mtp_drafted_total > 0 else None
+    accept_rate = (
+        mtp_accepted_total / mtp_drafted_total if mtp_drafted_total > 0 else None
+    )
     return {
         "tok_s_median": statistics.median(measured_tps) if measured_tps else 0.0,
         "tok_s_values": measured_tps,
@@ -273,7 +293,10 @@ def run_prompt(port: int, prompt: str, thinking: bool, max_tokens: int, reps: in
 # Server lifecycle
 # ---------------------------------------------------------------------------
 
-def _start_server(model_dir: Path, port: int, mtp_depth: int | None, env_extra: dict) -> subprocess.Popen:
+
+def _start_server(
+    model_dir: Path, port: int, mtp_depth: int | None, env_extra: dict
+) -> subprocess.Popen:
     env = {**os.environ, **env_extra}
     if mtp_depth is not None:
         env["AX_MLX_MTP_MAX_DEPTH"] = str(mtp_depth)
@@ -282,11 +305,16 @@ def _start_server(model_dir: Path, port: int, mtp_depth: int | None, env_extra: 
 
     cmd = [
         str(AX_ENGINE_SERVER),
-        "--model-dir", str(model_dir),
-        "--port", str(port),
-        "--max-seqs", "1",
+        "--model-dir",
+        str(model_dir),
+        "--port",
+        str(port),
+        "--max-seqs",
+        "1",
     ]
-    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(
+        cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
     return proc
 
 
@@ -302,8 +330,15 @@ def _stop_server(proc: subprocess.Popen) -> None:
 # Benchmark runner
 # ---------------------------------------------------------------------------
 
-def bench_model(model_key: str, model_dir: Path, mtp_depths: list[int],
-                reps: int, warmup: int, cooldown: float) -> dict:
+
+def bench_model(
+    model_key: str,
+    model_dir: Path,
+    mtp_depths: list[int],
+    reps: int,
+    warmup: int,
+    cooldown: float,
+) -> dict:
     """Run full benchmark for one model: baseline + each MTP depth."""
     cfg = MODEL_REGISTRY[model_key]
     results: list[dict] = []
@@ -324,23 +359,48 @@ def bench_model(model_key: str, model_dir: Path, mtp_depths: list[int],
             prompt_results = []
             for pid, category, prompt in PROMPTS:
                 print(f"    {pid} [{category}] ...", end="", flush=True)
-                stats = run_prompt(port, prompt, cfg["thinking"], MAX_TOKENS, reps, warmup, cooldown)
-                stats.update({"prompt_id": pid, "category": category, "variant": variant_label, "mtp_depth": mtp_depth})
+                stats = run_prompt(
+                    port, prompt, cfg["thinking"], MAX_TOKENS, reps, warmup, cooldown
+                )
+                stats.update(
+                    {
+                        "prompt_id": pid,
+                        "category": category,
+                        "variant": variant_label,
+                        "mtp_depth": mtp_depth,
+                    }
+                )
                 prompt_results.append(stats)
-                accept_str = f" accept={stats['mtp_accept_rate']:.1%}" if stats["mtp_accept_rate"] is not None else ""
+                accept_str = (
+                    f" accept={stats['mtp_accept_rate']:.1%}"
+                    if stats["mtp_accept_rate"] is not None
+                    else ""
+                )
                 print(f" {stats['tok_s_median']:.1f} tok/s{accept_str}", flush=True)
 
-            results.append({"variant": variant_label, "mtp_depth": mtp_depth, "prompts": prompt_results})
+            results.append(
+                {
+                    "variant": variant_label,
+                    "mtp_depth": mtp_depth,
+                    "prompts": prompt_results,
+                }
+            )
         finally:
             _stop_server(proc)
             time.sleep(3)
 
-    return {"model_key": model_key, "model_label": cfg["label"], "model_dir": str(model_dir), "variants": results}
+    return {
+        "model_key": model_key,
+        "model_label": cfg["label"],
+        "model_dir": str(model_dir),
+        "variants": results,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Summary rendering
 # ---------------------------------------------------------------------------
+
 
 def _category_median(prompt_results: list[dict], category: str) -> float | None:
     vals = [r["tok_s_median"] for r in prompt_results if r["category"] == category]
@@ -353,7 +413,9 @@ def _overall_median(prompt_results: list[dict]) -> float | None:
 
 
 def _mean_accept(prompt_results: list[dict]) -> float | None:
-    rates = [r["mtp_accept_rate"] for r in prompt_results if r["mtp_accept_rate"] is not None]
+    rates = [
+        r["mtp_accept_rate"] for r in prompt_results if r["mtp_accept_rate"] is not None
+    ]
     return sum(rates) / len(rates) if rates else None
 
 
@@ -362,16 +424,28 @@ def write_summary(model_results: list[dict], output_dir: Path) -> None:
     lines.append("# Qwen3.6 MTP Benchmark — lightning-mlx methodology")
     lines.append("")
     lines.append(f"Date: {date.today().isoformat()}  ")
-    lines.append(f"Sampling: temperature={SAMPLING['temperature']}, top_p={SAMPLING['top_p']}, top_k={SAMPLING['top_k']} (rejection sampling)  ")
+    lines.append(
+        f"Sampling: temperature={SAMPLING['temperature']}, top_p={SAMPLING['top_p']}, top_k={SAMPLING['top_k']} (rejection sampling)  "
+    )
     lines.append(f"Max tokens: {MAX_TOKENS}  ")
     lines.append(f"Prefix cache: disabled  ")
-    lines.append(f"Prompts: {len(PROMPTS)} ({sum(1 for _,c,_ in PROMPTS if c=='high_repeat')} high, {sum(1 for _,c,_ in PROMPTS if c=='med_repeat')} med, {sum(1 for _,c,_ in PROMPTS if c=='low_repeat')} low repeat)")
+    lines.append(
+        f"Prompts: {len(PROMPTS)} ({sum(1 for _, c, _ in PROMPTS if c == 'high_repeat')} high, {sum(1 for _, c, _ in PROMPTS if c == 'med_repeat')} med, {sum(1 for _, c, _ in PROMPTS if c == 'low_repeat')} low repeat)"
+    )
     lines.append("")
     lines.append("> **Note on comparison with lightning-mlx published numbers:**")
-    lines.append("> lightning-mlx uses `--mtp-optimistic` (greedy argmax acceptance) for their headline")
-    lines.append("> numbers. This benchmark uses correct probability-ratio rejection sampling at temp=0.6,")
-    lines.append("> which is the real-world sampling mode. Expect lower tok/s than their published figures.")
-    lines.append("> The speedup ratio (MTP/AR) is the meaningful cross-methodology comparison point.")
+    lines.append(
+        "> lightning-mlx uses `--mtp-optimistic` (greedy argmax acceptance) for their headline"
+    )
+    lines.append(
+        "> numbers. This benchmark uses correct probability-ratio rejection sampling at temp=0.6,"
+    )
+    lines.append(
+        "> which is the real-world sampling mode. Expect lower tok/s than their published figures."
+    )
+    lines.append(
+        "> The speedup ratio (MTP/AR) is the meaningful cross-methodology comparison point."
+    )
     lines.append("")
 
     for mr in model_results:
@@ -381,10 +455,14 @@ def write_summary(model_results: list[dict], output_dir: Path) -> None:
         lines.append("")
 
         # Find baseline
-        baseline = next((v for v in mr["variants"] if v["variant"] == "baseline_ar"), None)
+        baseline = next(
+            (v for v in mr["variants"] if v["variant"] == "baseline_ar"), None
+        )
         base_overall = _overall_median(baseline["prompts"]) if baseline else None
 
-        lines.append("| Variant | Overall (tok/s) | High-repeat | Med-repeat | Low-repeat | MTP accept | Speedup vs AR |")
+        lines.append(
+            "| Variant | Overall (tok/s) | High-repeat | Med-repeat | Low-repeat | MTP accept | Speedup vs AR |"
+        )
         lines.append("|---|---:|---:|---:|---:|---:|---:|")
 
         for v in mr["variants"]:
@@ -397,10 +475,14 @@ def write_summary(model_results: list[dict], output_dir: Path) -> None:
             accept = _mean_accept(prompts)
             speedup = (overall / base_overall) if (overall and base_overall) else None
 
-            def fmt(v): return f"{v:.1f}" if v is not None else "—"
+            def fmt(v):
+                return f"{v:.1f}" if v is not None else "—"
+
             accept_str = f"{accept:.1%}" if accept is not None else "—"
             speedup_str = f"{speedup:.2f}×" if speedup is not None else "—"
-            lines.append(f"| {label} | {fmt(overall)} | {fmt(high)} | {fmt(med)} | {fmt(low)} | {accept_str} | {speedup_str} |")
+            lines.append(
+                f"| {label} | {fmt(overall)} | {fmt(high)} | {fmt(med)} | {fmt(low)} | {accept_str} | {speedup_str} |"
+            )
 
         lines.append("")
 
@@ -419,31 +501,66 @@ def write_summary(model_results: list[dict], output_dir: Path) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--models", default="27b,35b",
-                        help="Comma-separated model keys to benchmark (27b, 35b). Default: 27b,35b")
-    parser.add_argument("--mtp-depths", default="1,2,3",
-                        help="Comma-separated MTP depths to test. Default: 1,2,3")
-    parser.add_argument("--repetitions", type=int, default=DEFAULT_REPS,
-                        help=f"Measured repetitions per prompt (default: {DEFAULT_REPS})")
-    parser.add_argument("--warmup", type=int, default=DEFAULT_WARMUP,
-                        help=f"Warmup repetitions (default: {DEFAULT_WARMUP})")
-    parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN,
-                        help=f"Cooldown seconds between reps (default: {DEFAULT_COOLDOWN})")
-    parser.add_argument("--output-dir", type=Path, required=True,
-                        help="Directory for JSON artifact and summary.md")
-    parser.add_argument("--model-dir-27b", type=Path, default=None,
-                        help="Override 27B model dir (default: auto from HF cache)")
-    parser.add_argument("--model-dir-35b", type=Path, default=None,
-                        help="Override 35B model dir (default: auto from HF cache)")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--models",
+        default="27b,35b",
+        help="Comma-separated model keys to benchmark (27b, 35b). Default: 27b,35b",
+    )
+    parser.add_argument(
+        "--mtp-depths",
+        default="1,2,3",
+        help="Comma-separated MTP depths to test. Default: 1,2,3",
+    )
+    parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=DEFAULT_REPS,
+        help=f"Measured repetitions per prompt (default: {DEFAULT_REPS})",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=DEFAULT_WARMUP,
+        help=f"Warmup repetitions (default: {DEFAULT_WARMUP})",
+    )
+    parser.add_argument(
+        "--cooldown",
+        type=float,
+        default=DEFAULT_COOLDOWN,
+        help=f"Cooldown seconds between reps (default: {DEFAULT_COOLDOWN})",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Directory for JSON artifact and summary.md",
+    )
+    parser.add_argument(
+        "--model-dir-27b",
+        type=Path,
+        default=None,
+        help="Override 27B model dir (default: auto from HF cache)",
+    )
+    parser.add_argument(
+        "--model-dir-35b",
+        type=Path,
+        default=None,
+        help="Override 35B model dir (default: auto from HF cache)",
+    )
     args = parser.parse_args()
 
     model_keys = [k.strip() for k in args.models.split(",") if k.strip()]
     mtp_depths = [int(d) for d in args.mtp_depths.split(",") if d.strip()]
 
     if not AX_ENGINE_SERVER.exists():
-        sys.exit(f"ERROR: ax-engine-server not found at {AX_ENGINE_SERVER}\nRun: cargo build -p ax-engine-server --release")
+        sys.exit(
+            f"ERROR: ax-engine-server not found at {AX_ENGINE_SERVER}\nRun: cargo build -p ax-engine-server --release"
+        )
 
     # Resolve model dirs
     model_dirs: dict[str, Path] = {}
@@ -462,12 +579,16 @@ def main() -> None:
 
     all_results: list[dict] = []
     for key in model_keys:
-        print(f"\n{'='*70}", flush=True)
+        print(f"\n{'=' * 70}", flush=True)
         print(f"Benchmarking {MODEL_REGISTRY[key]['label']}", flush=True)
-        print(f"{'='*70}", flush=True)
+        print(f"{'=' * 70}", flush=True)
         result = bench_model(
-            key, model_dirs[key], mtp_depths,
-            reps=args.repetitions, warmup=args.warmup, cooldown=args.cooldown,
+            key,
+            model_dirs[key],
+            mtp_depths,
+            reps=args.repetitions,
+            warmup=args.warmup,
+            cooldown=args.cooldown,
         )
         all_results.append(result)
 

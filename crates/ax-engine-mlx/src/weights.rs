@@ -918,9 +918,17 @@ fn load_mtp_sidecar(
             }
         });
         let depth = apply_mtp_depth_policy(raw_depth, sidecar_bits);
-        return (depth, apply_draft_temperature_override(draft_sampling), sidecar_bits);
+        return (
+            depth,
+            apply_draft_temperature_override(draft_sampling),
+            sidecar_bits,
+        );
     }
-    (apply_mtp_max_depth_cap(1), apply_draft_temperature_override(default_draft), None)
+    (
+        apply_mtp_max_depth_cap(1),
+        apply_draft_temperature_override(default_draft),
+        None,
+    )
 }
 
 /// Override the MTP draft sampling temperature from `AX_MLX_MTP_DRAFT_TEMPERATURE`.

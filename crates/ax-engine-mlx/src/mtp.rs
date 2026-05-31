@@ -1,7 +1,7 @@
 use mlx_sys::{
-    add, argmax, astype, concatenate, eval, multiply, reshape, rms_norm,
-    scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take, MlxArray, MlxDtype,
-    ScaledDotProductAttentionMask,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argmax, astype, concatenate, eval,
+    multiply, reshape, rms_norm, scaled_dot_product_attention_with_mask, sigmoid, slice, softmax,
+    take,
 };
 
 use crate::kv_cache::MlxKVCache;
@@ -10,9 +10,9 @@ use crate::model::shared::{
     moe_router_deepseek_v3, moe_router_glm, moe_router_qwen3, prepare_value_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj, qw, shared_expert_forward,
 };
-use crate::model::{embed_tokens_arr, ModelConfig};
+use crate::model::{ModelConfig, embed_tokens_arr};
 use crate::sampling::{
-    sample_categorical_with_logprob_and_distribution, TokenDistribution, Xorshift64,
+    TokenDistribution, Xorshift64, sample_categorical_with_logprob_and_distribution,
 };
 use crate::weights::{ModelWeights, MtpWeights};
 
@@ -341,6 +341,90 @@ pub fn mtp_draft_tokens(
             vocab,
         )
     }
+}
+
+/// Advance the MTP recurrent state through caller-supplied prefix tokens, then
+/// draft up to `max_tail_depth` extra MTP tokens after that prefix.
+///
+/// This supports hybrid n-gram + MTP speculation: an n-gram provider can fill
+/// the high-confidence prefix, while the MTP head fills the remaining draft
+/// slots. `added` in the return value includes both forced-prefix MTP forwards
+/// and sampled/greedy tail forwards so cache rollback can trim by rejected draft
+/// count.
+#[allow(clippy::too_many_arguments)]
+pub fn mtp_draft_tokens_after_forced_prefix(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    forced_prefix: &[u32],
+    cache: &mut MlxKVCache,
+    max_tail_depth: usize,
+    rng: &mut Xorshift64,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let Some(head) = weights.mtp.as_ref() else {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    };
+    if forced_prefix.is_empty() {
+        return mtp_draft_tokens(
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            Some(max_tail_depth),
+            rng,
+        );
+    }
+
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    for &forced_token in forced_prefix {
+        let new_hidden = mtp_head_forward(head, &prev_hidden, &prev_token_arr, weights, cache, cfg);
+        prev_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
+        let tok_data = [forced_token];
+        prev_token_arr = MlxArray::from_raw_data(
+            tok_data.as_ptr() as *const u8,
+            4,
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+    }
+
+    if max_tail_depth == 0 {
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(&prev_hidden);
+        targets.extend(kv_refs);
+        eval(&targets);
+        return (vec![], vec![], vec![], forced_prefix.len(), [0.0f32; 3]);
+    }
+
+    let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
+    let (draft, log_probs, distributions, tail_added, top2_margins) = mtp_draft_tokens(
+        weights,
+        cfg,
+        &prev_hidden,
+        last_forced,
+        cache,
+        Some(max_tail_depth),
+        rng,
+    );
+
+    (
+        draft,
+        log_probs,
+        distributions,
+        forced_prefix.len().saturating_add(tail_added),
+        top2_margins,
+    )
 }
 
 /// Greedy draft path: build full lazy graph across all depths, eval once.

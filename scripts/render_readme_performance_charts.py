@@ -223,30 +223,31 @@ NGRAM_TOP = 56
 NGRAM_BOTTOM = 228
 
 NGRAM_OPPORTUNITY_SERIES: list[tuple[str, str, str, str]] = [
-    ("ax_direct",  "ax direct",          "#86efac", "#16a34a"),
-    ("ax_ngram",   "ax + n-gram",        "#2eaf5f", "#176c37"),
-    ("lightning",  "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
-    ("oracle",     "oracle (bound)",     "#d1d5db", "#6b7280"),
+    ("ax_direct", "ax direct", "#86efac", "#16a34a"),
+    ("ax_ngram", "ax + n-gram", "#2eaf5f", "#176c37"),
+    ("lightning", "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
+    ("oracle", "oracle (bound)", "#d1d5db", "#6b7280"),
 ]
 
 NGRAM_TOKS_SERIES: list[tuple[str, str, str, str]] = [
-    ("ax_direct",  "ax direct",           "#86efac", "#16a34a"),
-    ("ax_ngram",   "ax + n-gram",         "#2eaf5f", "#176c37"),
-    ("lightning",  "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
+    ("ax_direct", "ax direct", "#86efac", "#16a34a"),
+    ("ax_ngram", "ax + n-gram", "#2eaf5f", "#176c37"),
+    ("lightning", "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
 ]
 
 NGRAM_ACCEPT_SERIES: list[tuple[str, str, str, str]] = [
-    ("ax_ngram",   "ax n-gram",           "#2eaf5f", "#176c37"),
-    ("lightning",  "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
+    ("ax_ngram", "ax n-gram", "#2eaf5f", "#176c37"),
+    ("lightning", "lightning (temp=0.6)", "#f2b705", "#9a6a00"),
 ]
 
 NGRAM_OPPORTUNITY_CATEGORIES: list[tuple[str, str]] = [
     ("high_repeat", "high repeat"),
-    ("med_repeat",  "med repeat"),
-    ("low_repeat",  "low repeat"),
+    ("med_repeat", "med repeat"),
+    ("low_repeat", "low repeat"),
 ]
 
 NGRAM_ARTIFACT_GLOB = "benchmarks/results/ngram-compare/*/artifact.json"
+
 
 class ChartError(RuntimeError):
     pass
@@ -301,7 +302,9 @@ def metric_median(row: dict[str, Any], key: str) -> float:
         return float(metric["median"])
     if isinstance(metric, (int, float)):
         return float(metric)
-    raise ChartError(f"missing numeric median for {key} in {row.get('engine', '<unknown>')}")
+    raise ChartError(
+        f"missing numeric median for {key} in {row.get('engine', '<unknown>')}"
+    )
 
 
 def split_markdown_row(line: str) -> list[str]:
@@ -354,7 +357,9 @@ def readme_model_slugs(readme: Path) -> list[str]:
     return slugs
 
 
-def load_rows(results_dir: Path, slugs: list[str], *, required: bool) -> list[dict[str, Any]]:
+def load_rows(
+    results_dir: Path, slugs: list[str], *, required: bool
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     missing: list[str] = []
     for slug in slugs:
@@ -374,7 +379,9 @@ def load_rows(results_dir: Path, slugs: list[str], *, required: bool) -> list[di
     return rows
 
 
-def load_composite_rows(readme: Path, metric: str, slugs: list[str]) -> list[dict[str, Any]]:
+def load_composite_rows(
+    readme: Path, metric: str, slugs: list[str]
+) -> list[dict[str, Any]]:
     merged: dict[tuple[str, str, int, int], dict[str, Any]] = {}
     sources = readme_artifacts.default_artifact_sources(readme.resolve())
     series_engines = {engine for engine, _label, _color, _dot_color in SERIES}
@@ -387,7 +394,10 @@ def load_composite_rows(readme: Path, metric: str, slugs: list[str]) -> list[dic
             engine = row.get("engine")
             if engine not in series_engines:
                 continue
-            if source.include_engines is not None and engine not in source.include_engines:
+            if (
+                source.include_engines is not None
+                and engine not in source.include_engines
+            ):
                 continue
             prompt_tokens = row.get("prompt_tokens")
             if prompt_tokens not in PROMPT_TOKENS:
@@ -400,7 +410,9 @@ def load_composite_rows(readme: Path, metric: str, slugs: list[str]) -> list[dic
             generation_tokens = row.get("generation_tokens")
             if not isinstance(generation_tokens, int):
                 raise ChartError(f"missing generation_tokens for {engine}")
-            merged[(str(row["_slug"]), str(engine), int(prompt_tokens), generation_tokens)] = row
+            merged[
+                (str(row["_slug"]), str(engine), int(prompt_tokens), generation_tokens)
+            ] = row
 
     return list(merged.values())
 
@@ -410,7 +422,9 @@ def series_for_chart(spec: ChartSpec) -> list[tuple[str, str, str, str]]:
         engine: (engine, label, color, dot_color)
         for engine, label, color, dot_color in SERIES
     }
-    missing = [engine for engine in spec.series_engines if engine not in series_by_engine]
+    missing = [
+        engine for engine in spec.series_engines if engine not in series_by_engine
+    ]
     if missing:
         raise ChartError(
             f"{spec.metric} chart references unknown series: {', '.join(missing)}"
@@ -486,17 +500,22 @@ def collect_family_values(
         for prompt_tokens in PROMPT_TOKENS:
             values: list[float] = []
             for row in family_rows:
-                if row.get("engine") != engine or row.get("prompt_tokens") != prompt_tokens:
+                if (
+                    row.get("engine") != engine
+                    or row.get("prompt_tokens") != prompt_tokens
+                ):
                     continue
                 if spec.metric == "prefill":
                     values.append(metric_median(row, "prefill_tok_s"))
                 elif spec.metric == "decode":
                     values.append(metric_median(row, "decode_tok_s"))
                 elif spec.metric == "ttft":
-                    if engine in {"llama_cpp_metal", "mlx_lm"}:
-                        values.append(prompt_tokens / metric_median(row, "prefill_tok_s") * 1000)
-                    else:
-                        values.append(metric_median(row, "ttft_ms"))
+                    # Use the pre-computed ttft_ms median for all engines.
+                    # bench_mlx_inference_stack.py already derives correct
+                    # per-trial TTFTs for mlx_lm/llama_cpp via
+                    # attach_derived_ttft_ms, so no special-case inversion
+                    # is needed here.
+                    values.append(metric_median(row, "ttft_ms"))
                 else:
                     raise ChartError(f"unknown metric: {spec.metric}")
             if len(values) != expected_count:
@@ -848,7 +867,9 @@ def infer_results_dir_from_readme(readme: Path) -> Path:
         r"artifacts are in\s+`([^`]+)`",
         r"Source:\s+`([^`]+)`\s+for all rows",
     ]
-    match = next((match for pattern in patterns if (match := re.search(pattern, text))), None)
+    match = next(
+        (match for pattern in patterns if (match := re.search(pattern, text))), None
+    )
     if not match:
         raise ChartError(f"could not infer artifact directory from {readme}")
     return (readme.parent / match.group(1)).resolve()
@@ -883,7 +904,9 @@ def find_latest_ngram_artifact(repo_root: Path) -> Path | None:
     return candidates[-1] if candidates else None
 
 
-def _ngram_category_median(results: list[dict], category: str, key: str) -> float | None:
+def _ngram_category_median(
+    results: list[dict], category: str, key: str
+) -> float | None:
     import statistics as _stats
 
     vals = [
@@ -904,7 +927,9 @@ def render_ngram_opportunity_chart(artifact: dict) -> str:
     for s_key, _label, _color, _dot in series:
         data[s_key] = {}
         for cat_id, _cat_label in categories:
-            val = _ngram_category_median(artifact.get(s_key, []), cat_id, "tok_s_median")
+            val = _ngram_category_median(
+                artifact.get(s_key, []), cat_id, "tok_s_median"
+            )
             data[s_key][cat_id] = val if val is not None else 0.0
 
     all_vals = [v for cat_vals in data.values() for v in cat_vals.values() if v > 0]
@@ -924,7 +949,9 @@ def render_ngram_opportunity_chart(artifact: dict) -> str:
         return NGRAM_BOTTOM - (max(0.0, min(v, axis_max)) / axis_max) * plot_h
 
     title = "N-gram opportunity — Qwen3-4B 4-bit"
-    subtitle = "all paths: temp=0.6/top_p=0.95/top_k=20 · oracle: theoretical upper bound"
+    subtitle = (
+        "all paths: temp=0.6/top_p=0.95/top_k=20 · oracle: theoretical upper bound"
+    )
 
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg"'
@@ -980,14 +1007,16 @@ def render_ngram_opportunity_chart(artifact: dict) -> str:
             y_top = fy(val)
             bar_h = NGRAM_BOTTOM - y_top
 
-            lines.extend([
-                f'<rect x="{bar_left:.1f}" y="{y_top:.1f}"'
-                f' width="{bar_w:.0f}" height="{bar_h:.1f}" rx="2"'
-                f' fill="{color}" fill-opacity="0.30" stroke="{dot_color}" stroke-width="1.6"/>',
-                f'<line x1="{bar_left:.1f}" y1="{y_top:.1f}"'
-                f' x2="{bar_left + bar_w:.1f}" y2="{y_top:.1f}"'
-                f' stroke="{dot_color}" stroke-width="2.4"/>',
-            ])
+            lines.extend(
+                [
+                    f'<rect x="{bar_left:.1f}" y="{y_top:.1f}"'
+                    f' width="{bar_w:.0f}" height="{bar_h:.1f}" rx="2"'
+                    f' fill="{color}" fill-opacity="0.30" stroke="{dot_color}" stroke-width="1.6"/>',
+                    f'<line x1="{bar_left:.1f}" y1="{y_top:.1f}"'
+                    f' x2="{bar_left + bar_w:.1f}" y2="{y_top:.1f}"'
+                    f' stroke="{dot_color}" stroke-width="2.4"/>',
+                ]
+            )
             if val > 0:
                 lines.append(
                     f'<text x="{bar_center:.1f}" y="{y_top - 4:.1f}"'
@@ -1009,12 +1038,14 @@ def render_ngram_opportunity_chart(artifact: dict) -> str:
     leg_item_w = 115
     for li, (_s_key, s_label, color, dot_color) in enumerate(series):
         lx = legend_x + li * leg_item_w
-        lines.extend([
-            f'<rect x="{lx}" y="{legend_y}" width="{leg_box}" height="{leg_box}"'
-            f' rx="2" fill="{color}" fill-opacity="0.40" stroke="{dot_color}" stroke-width="1.4"/>',
-            f'<text x="{lx + leg_box + leg_gap}" y="{legend_y + 9}"'
-            f' font-family="{FONT}" font-size="9" fill="#374151">{escape(s_label)}</text>',
-        ])
+        lines.extend(
+            [
+                f'<rect x="{lx}" y="{legend_y}" width="{leg_box}" height="{leg_box}"'
+                f' rx="2" fill="{color}" fill-opacity="0.40" stroke="{dot_color}" stroke-width="1.4"/>',
+                f'<text x="{lx + leg_box + leg_gap}" y="{legend_y + 9}"'
+                f' font-family="{FONT}" font-size="9" fill="#374151">{escape(s_label)}</text>',
+            ]
+        )
 
     lines.append("</svg>")
     return "".join(lines) + "\n"
@@ -1070,7 +1101,7 @@ def _render_ngram_grouped_bars(
         lines.append(
             f'<text x="{NGRAM_LEFT - 6}" y="{gy + 3:.1f}" text-anchor="end"'
             f' font-family="{FONT}" font-size="10" fill="#6b7280">'
-            f'{y_fmt.format(grid_val)}</text>'
+            f"{y_fmt.format(grid_val)}</text>"
         )
 
     if reference_line:
@@ -1097,14 +1128,16 @@ def _render_ngram_grouped_bars(
             y_top = fy(val)
             bar_h = NGRAM_BOTTOM - y_top
 
-            lines.extend([
-                f'<rect x="{bar_left:.1f}" y="{y_top:.1f}"'
-                f' width="{bar_w:.0f}" height="{bar_h:.1f}" rx="2"'
-                f' fill="{color}" fill-opacity="0.30" stroke="{dot_color}" stroke-width="1.6"/>',
-                f'<line x1="{bar_left:.1f}" y1="{y_top:.1f}"'
-                f' x2="{bar_left + bar_w:.1f}" y2="{y_top:.1f}"'
-                f' stroke="{dot_color}" stroke-width="2.4"/>',
-            ])
+            lines.extend(
+                [
+                    f'<rect x="{bar_left:.1f}" y="{y_top:.1f}"'
+                    f' width="{bar_w:.0f}" height="{bar_h:.1f}" rx="2"'
+                    f' fill="{color}" fill-opacity="0.30" stroke="{dot_color}" stroke-width="1.6"/>',
+                    f'<line x1="{bar_left:.1f}" y1="{y_top:.1f}"'
+                    f' x2="{bar_left + bar_w:.1f}" y2="{y_top:.1f}"'
+                    f' stroke="{dot_color}" stroke-width="2.4"/>',
+                ]
+            )
             if val > 0:
                 label_str = y_fmt.format(val)
                 lines.append(
@@ -1126,12 +1159,14 @@ def _render_ngram_grouped_bars(
     leg_item_w = 140
     for li, (_s_key, s_label, color, dot_color) in enumerate(series):
         lx = legend_x + li * leg_item_w
-        lines.extend([
-            f'<rect x="{lx}" y="{legend_y}" width="{leg_box}" height="{leg_box}"'
-            f' rx="2" fill="{color}" fill-opacity="0.40" stroke="{dot_color}" stroke-width="1.4"/>',
-            f'<text x="{lx + leg_box + leg_gap}" y="{legend_y + 9}"'
-            f' font-family="{FONT}" font-size="9" fill="#374151">{escape(s_label)}</text>',
-        ])
+        lines.extend(
+            [
+                f'<rect x="{lx}" y="{legend_y}" width="{leg_box}" height="{leg_box}"'
+                f' rx="2" fill="{color}" fill-opacity="0.40" stroke="{dot_color}" stroke-width="1.4"/>',
+                f'<text x="{lx + leg_box + leg_gap}" y="{legend_y + 9}"'
+                f' font-family="{FONT}" font-size="9" fill="#374151">{escape(s_label)}</text>',
+            ]
+        )
 
     lines.append("</svg>")
     return "".join(lines) + "\n"
@@ -1146,7 +1181,9 @@ def render_ngram_toks_chart(artifact: dict) -> str:
     for s_key, _label, _color, _dot in series:
         data[s_key] = {}
         for cat_id, _cat_label in categories:
-            val = _ngram_category_median(artifact.get(s_key, []), cat_id, "tok_s_median")
+            val = _ngram_category_median(
+                artifact.get(s_key, []), cat_id, "tok_s_median"
+            )
             data[s_key][cat_id] = val if val is not None else 0.0
 
     all_vals = [v for cat_vals in data.values() for v in cat_vals.values() if v > 0]
@@ -1173,7 +1210,10 @@ def render_ngram_accept_chart(artifact: dict) -> str:
     categories = NGRAM_OPPORTUNITY_CATEGORIES
 
     data: dict[str, dict[str, float]] = {}
-    accept_keys = {"ax_ngram": "ngram_accept_rate", "lightning": "lightning_accept_rate"}
+    accept_keys = {
+        "ax_ngram": "ngram_accept_rate",
+        "lightning": "lightning_accept_rate",
+    }
     for s_key, _label, _color, _dot in series:
         data[s_key] = {}
         rate_key = accept_keys[s_key]
@@ -1183,7 +1223,9 @@ def render_ngram_accept_chart(artifact: dict) -> str:
 
     all_vals = [v for cat_vals in data.values() for v in cat_vals.values() if v > 0]
     # Scale to actual data with 25% headroom, capped at 100%
-    axis_max = min(100.0, nice_axis_ceiling(max(all_vals) * 1.25)) if all_vals else 100.0
+    axis_max = (
+        min(100.0, nice_axis_ceiling(max(all_vals) * 1.25)) if all_vals else 100.0
+    )
 
     return _render_ngram_grouped_bars(
         series=series,
@@ -1200,20 +1242,20 @@ def render_ngram_accept_chart(artifact: dict) -> str:
 
 # Canonical display names for model slugs extracted from artifact directory names.
 NGRAM_MODEL_DISPLAY: dict[str, str] = {
-    "qwen3-4b-4bit":            "Qwen3-4B",
-    "glm-4-7-flash-4bit":       "GLM-4.7F",
-    "gemma-4-e2b-4bit":         "E2B 4bit",
-    "gemma-4-e2b-5bit":         "E2B 5bit",
-    "gemma-4-e2b-6bit":         "E2B 6bit",
-    "gemma-4-e2b-8bit":         "E2B 8bit",
-    "gemma-4-e4b-4bit":         "E4B 4bit",
-    "gemma-4-26b-a4b-4bit":     "G26B-A4B",
-    "gemma-4-31b-4bit":         "G31B 4bit",
-    "qwen3-6-27b-4bit":         "Q27B 4bit",
-    "qwen3-6-27b-5bit":         "Q27B 5bit",
-    "qwen3-6-27b-6bit":         "Q27B 6bit",
-    "qwen3-6-27b-8bit":         "Q27B 8bit",
-    "qwen3-6-35b-a3b-4bit":     "Q35B-A3B",
+    "qwen3-4b-4bit": "Qwen3-4B",
+    "glm-4-7-flash-4bit": "GLM-4.7F",
+    "gemma-4-e2b-4bit": "E2B 4bit",
+    "gemma-4-e2b-5bit": "E2B 5bit",
+    "gemma-4-e2b-6bit": "E2B 6bit",
+    "gemma-4-e2b-8bit": "E2B 8bit",
+    "gemma-4-e4b-4bit": "E4B 4bit",
+    "gemma-4-26b-a4b-4bit": "G26B-A4B",
+    "gemma-4-31b-4bit": "G31B 4bit",
+    "qwen3-6-27b-4bit": "Q27B 4bit",
+    "qwen3-6-27b-5bit": "Q27B 5bit",
+    "qwen3-6-27b-6bit": "Q27B 6bit",
+    "qwen3-6-27b-8bit": "Q27B 8bit",
+    "qwen3-6-35b-a3b-4bit": "Q35B-A3B",
 }
 
 # Preferred order for model display in multi-model charts (small → large).
@@ -1241,7 +1283,9 @@ def find_ngram_artifacts_by_model(repo_root: Path) -> dict[str, dict]:
     result: dict[str, dict] = {}
     for slug in NGRAM_MODEL_ORDER:
         # Prefer the `-ngram` suffixed run, fall back to any run containing the slug.
-        candidates = sorted(base.glob(f"*{slug}*/artifact.json"), key=lambda p: p.parent.name)
+        candidates = sorted(
+            base.glob(f"*{slug}*/artifact.json"), key=lambda p: p.parent.name
+        )
         for path in reversed(candidates):
             try:
                 art = json.loads(path.read_text())
@@ -1263,8 +1307,18 @@ def render_ngram_models_speedup_chart(artifacts: dict[str, dict]) -> str:
     ngram_vals: list[float] = []
     for slug in models:
         art = artifacts[slug]
-        d = _ngram_category_median(art.get("ax_direct", []), "high_repeat", "tok_s_median") or 0.0
-        n = _ngram_category_median(art.get("ax_ngram", []), "high_repeat", "tok_s_median") or 0.0
+        d = (
+            _ngram_category_median(
+                art.get("ax_direct", []), "high_repeat", "tok_s_median"
+            )
+            or 0.0
+        )
+        n = (
+            _ngram_category_median(
+                art.get("ax_ngram", []), "high_repeat", "tok_s_median"
+            )
+            or 0.0
+        )
         direct_vals.append(d)
         ngram_vals.append(n)
 
@@ -1288,7 +1342,9 @@ def render_ngram_models_speedup_chart(artifacts: dict[str, dict]) -> str:
         return BOTTOM - (max(0.0, min(v, axis_max)) / axis_max) * plot_h
 
     title = "N-gram throughput — ax direct vs ax n-gram (high-repeat, all models)"
-    subtitle = "temp=0.6/top_p=0.95/top_k=20 · bars: ax direct (light) / ax+n-gram (dark)"
+    subtitle = (
+        "temp=0.6/top_p=0.95/top_k=20 · bars: ax direct (light) / ax+n-gram (dark)"
+    )
 
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}"'
@@ -1303,8 +1359,12 @@ def render_ngram_models_speedup_chart(artifacts: dict[str, dict]) -> str:
     ]
     for grid_val in (0.0, axis_max * 0.5, axis_max):
         gy = fy(grid_val)
-        lines.append(f'<line x1="{LEFT}" y1="{gy:.1f}" x2="{RIGHT}" y2="{gy:.1f}" stroke="#e5e7eb" stroke-width="1"/>')
-        lines.append(f'<text x="{LEFT-6}" y="{gy+3:.1f}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{short_number(grid_val)}</text>')
+        lines.append(
+            f'<line x1="{LEFT}" y1="{gy:.1f}" x2="{RIGHT}" y2="{gy:.1f}" stroke="#e5e7eb" stroke-width="1"/>'
+        )
+        lines.append(
+            f'<text x="{LEFT - 6}" y="{gy + 3:.1f}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{short_number(grid_val)}</text>'
+        )
 
     group_step = plot_w / n_models
     for gi, slug in enumerate(models):
@@ -1313,39 +1373,53 @@ def render_ngram_models_speedup_chart(artifacts: dict[str, dict]) -> str:
         d_val, n_val = direct_vals[gi], ngram_vals[gi]
         label = NGRAM_MODEL_DISPLAY.get(slug, slug)
 
-        for bi, (val, color, dot_color) in enumerate([
-            (d_val, "#86efac", "#16a34a"),
-            (n_val, "#2eaf5f", "#176c37"),
-        ]):
+        for bi, (val, color, dot_color) in enumerate(
+            [
+                (d_val, "#86efac", "#16a34a"),
+                (n_val, "#2eaf5f", "#176c37"),
+            ]
+        ):
             bx = bar0 + bi * (bar_w + bar_gap)
             bc = bx + bar_w / 2
             y_top = fy(val)
             bh = BOTTOM - y_top
-            lines.extend([
-                f'<rect x="{bx:.1f}" y="{y_top:.1f}" width="{bar_w:.0f}" height="{bh:.1f}" rx="2"'
-                f' fill="{color}" fill-opacity="0.35" stroke="{dot_color}" stroke-width="1.4"/>',
-                f'<line x1="{bx:.1f}" y1="{y_top:.1f}" x2="{bx+bar_w:.1f}" y2="{y_top:.1f}" stroke="{dot_color}" stroke-width="2.2"/>',
-            ])
+            lines.extend(
+                [
+                    f'<rect x="{bx:.1f}" y="{y_top:.1f}" width="{bar_w:.0f}" height="{bh:.1f}" rx="2"'
+                    f' fill="{color}" fill-opacity="0.35" stroke="{dot_color}" stroke-width="1.4"/>',
+                    f'<line x1="{bx:.1f}" y1="{y_top:.1f}" x2="{bx + bar_w:.1f}" y2="{y_top:.1f}" stroke="{dot_color}" stroke-width="2.2"/>',
+                ]
+            )
             if val > 0:
-                lines.append(f'<text x="{bc:.1f}" y="{y_top-3:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" fill="{dot_color}">{val:.0f}</text>')
+                lines.append(
+                    f'<text x="{bc:.1f}" y="{y_top - 3:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" fill="{dot_color}">{val:.0f}</text>'
+                )
 
-        lines.append(f'<text x="{group_center:.1f}" y="{BOTTOM+14}" text-anchor="middle" font-family="{FONT}" font-size="8.5" font-weight="700" fill="#111827">{escape(label)}</text>')
+        lines.append(
+            f'<text x="{group_center:.1f}" y="{BOTTOM + 14}" text-anchor="middle" font-family="{FONT}" font-size="8.5" font-weight="700" fill="#111827">{escape(label)}</text>'
+        )
 
         if d_val > 0 and n_val > 0:
             speedup = n_val / d_val
             sy = fy(n_val) - 13
-            lines.append(f'<text x="{group_center:.1f}" y="{sy:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" font-weight="700" fill="#176c37">{speedup:.2f}×</text>')
+            lines.append(
+                f'<text x="{group_center:.1f}" y="{sy:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" font-weight="700" fill="#176c37">{speedup:.2f}×</text>'
+            )
 
     ly = BOTTOM + 32
-    for li, (label, color, dot_color) in enumerate([
-        ("ax direct", "#86efac", "#16a34a"),
-        ("ax + n-gram", "#2eaf5f", "#176c37"),
-    ]):
+    for li, (label, color, dot_color) in enumerate(
+        [
+            ("ax direct", "#86efac", "#16a34a"),
+            ("ax + n-gram", "#2eaf5f", "#176c37"),
+        ]
+    ):
         lx = LEFT + li * 120
-        lines.extend([
-            f'<rect x="{lx}" y="{ly}" width="10" height="10" rx="2" fill="{color}" fill-opacity="0.4" stroke="{dot_color}" stroke-width="1.4"/>',
-            f'<text x="{lx+14}" y="{ly+9}" font-family="{FONT}" font-size="9" fill="#374151">{escape(label)}</text>',
-        ])
+        lines.extend(
+            [
+                f'<rect x="{lx}" y="{ly}" width="10" height="10" rx="2" fill="{color}" fill-opacity="0.4" stroke="{dot_color}" stroke-width="1.4"/>',
+                f'<text x="{lx + 14}" y="{ly + 9}" font-family="{FONT}" font-size="9" fill="#374151">{escape(label)}</text>',
+            ]
+        )
 
     lines.append("</svg>")
     return "".join(lines) + "\n"
@@ -1362,8 +1436,12 @@ def render_ngram_models_accept_chart(artifacts: dict[str, dict]) -> str:
     has_lightning = False
     for slug in models:
         art = artifacts[slug]
-        a = _ngram_category_median(art.get("ax_ngram", []), "high_repeat", "ngram_accept_rate")
-        l = _ngram_category_median(art.get("lightning", []), "high_repeat", "lightning_accept_rate")
+        a = _ngram_category_median(
+            art.get("ax_ngram", []), "high_repeat", "ngram_accept_rate"
+        )
+        l = _ngram_category_median(
+            art.get("lightning", []), "high_repeat", "lightning_accept_rate"
+        )
         ax_vals.append((a * 100.0) if a is not None else 0.0)
         lt_val = (l * 100.0) if l is not None else 0.0
         lt_vals.append(lt_val)
@@ -1371,7 +1449,9 @@ def render_ngram_models_accept_chart(artifacts: dict[str, dict]) -> str:
             has_lightning = True
 
     all_vals = [v for v in ax_vals + lt_vals if v > 0]
-    axis_max = min(100.0, nice_axis_ceiling(max(all_vals) * 1.25)) if all_vals else 100.0
+    axis_max = (
+        min(100.0, nice_axis_ceiling(max(all_vals) * 1.25)) if all_vals else 100.0
+    )
 
     n_models = len(models)
     n_bars = 2 if has_lightning else 1
@@ -1404,13 +1484,17 @@ def render_ngram_models_accept_chart(artifacts: dict[str, dict]) -> str:
     ]
     for grid_val in (0.0, axis_max * 0.5, axis_max):
         gy = fy(grid_val)
-        lines.append(f'<line x1="{LEFT}" y1="{gy:.1f}" x2="{RIGHT}" y2="{gy:.1f}" stroke="#e5e7eb" stroke-width="1"/>')
-        lines.append(f'<text x="{LEFT-6}" y="{gy+3:.1f}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{grid_val:.0f}%</text>')
+        lines.append(
+            f'<line x1="{LEFT}" y1="{gy:.1f}" x2="{RIGHT}" y2="{gy:.1f}" stroke="#e5e7eb" stroke-width="1"/>'
+        )
+        lines.append(
+            f'<text x="{LEFT - 6}" y="{gy + 3:.1f}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{grid_val:.0f}%</text>'
+        )
 
     group_step = plot_w / n_models
     bar_series = [
-        (ax_vals,  "#2eaf5f", "#176c37", "ax n-gram"),
-        (lt_vals,  "#f2b705", "#9a6a00", "lightning"),
+        (ax_vals, "#2eaf5f", "#176c37", "ax n-gram"),
+        (lt_vals, "#f2b705", "#9a6a00", "lightning"),
     ][:n_bars]
 
     for gi, slug in enumerate(models):
@@ -1424,23 +1508,31 @@ def render_ngram_models_accept_chart(artifacts: dict[str, dict]) -> str:
             bc = bx + bar_w / 2
             y_top = fy(val)
             bh = BOTTOM - y_top
-            lines.extend([
-                f'<rect x="{bx:.1f}" y="{y_top:.1f}" width="{bar_w:.0f}" height="{bh:.1f}" rx="2"'
-                f' fill="{color}" fill-opacity="0.35" stroke="{dot_color}" stroke-width="1.4"/>',
-                f'<line x1="{bx:.1f}" y1="{y_top:.1f}" x2="{bx+bar_w:.1f}" y2="{y_top:.1f}" stroke="{dot_color}" stroke-width="2.2"/>',
-            ])
+            lines.extend(
+                [
+                    f'<rect x="{bx:.1f}" y="{y_top:.1f}" width="{bar_w:.0f}" height="{bh:.1f}" rx="2"'
+                    f' fill="{color}" fill-opacity="0.35" stroke="{dot_color}" stroke-width="1.4"/>',
+                    f'<line x1="{bx:.1f}" y1="{y_top:.1f}" x2="{bx + bar_w:.1f}" y2="{y_top:.1f}" stroke="{dot_color}" stroke-width="2.2"/>',
+                ]
+            )
             if val > 0:
-                lines.append(f'<text x="{bc:.1f}" y="{y_top-3:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" fill="{dot_color}">{val:.0f}%</text>')
+                lines.append(
+                    f'<text x="{bc:.1f}" y="{y_top - 3:.1f}" text-anchor="middle" font-family="{FONT}" font-size="7.5" fill="{dot_color}">{val:.0f}%</text>'
+                )
 
-        lines.append(f'<text x="{group_center:.1f}" y="{BOTTOM+14}" text-anchor="middle" font-family="{FONT}" font-size="8.5" font-weight="700" fill="#111827">{escape(label)}</text>')
+        lines.append(
+            f'<text x="{group_center:.1f}" y="{BOTTOM + 14}" text-anchor="middle" font-family="{FONT}" font-size="8.5" font-weight="700" fill="#111827">{escape(label)}</text>'
+        )
 
     ly = BOTTOM + 32
     for li, (_, color, dot_color, label) in enumerate(bar_series):
         lx = LEFT + li * 120
-        lines.extend([
-            f'<rect x="{lx}" y="{ly}" width="10" height="10" rx="2" fill="{color}" fill-opacity="0.4" stroke="{dot_color}" stroke-width="1.4"/>',
-            f'<text x="{lx+14}" y="{ly+9}" font-family="{FONT}" font-size="9" fill="#374151">{escape(label)}</text>',
-        ])
+        lines.extend(
+            [
+                f'<rect x="{lx}" y="{ly}" width="10" height="10" rx="2" fill="{color}" fill-opacity="0.4" stroke="{dot_color}" stroke-width="1.4"/>',
+                f'<text x="{lx + 14}" y="{ly + 9}" font-family="{FONT}" font-size="9" fill="#374151">{escape(label)}</text>',
+            ]
+        )
 
     lines.append("</svg>")
     return "".join(lines) + "\n"
@@ -1485,7 +1577,9 @@ def main() -> int:
 
     readme_slugs = readme_model_slugs(args.readme)
     results_dir = args.results_dir or infer_results_dir_from_readme(args.readme)
-    llama_results_dir = args.llama_results_dir or infer_llama_results_dir(args.readme.parent)
+    llama_results_dir = args.llama_results_dir or infer_llama_results_dir(
+        args.readme.parent
+    )
     llama_rows = load_rows(llama_results_dir, readme_slugs, required=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1518,8 +1612,8 @@ def main() -> int:
         ngram_artifact = json.loads(ngram_artifact_path.read_text())
         for out_name, renderer in [
             ("perf-ngram-opportunity.svg", render_ngram_opportunity_chart),
-            ("perf-ngram-toks.svg",        render_ngram_toks_chart),
-            ("perf-ngram-accept.svg",      render_ngram_accept_chart),
+            ("perf-ngram-toks.svg", render_ngram_toks_chart),
+            ("perf-ngram-accept.svg", render_ngram_accept_chart),
         ]:
             content = renderer(ngram_artifact)
             out_path = args.output_dir / out_name
@@ -1530,7 +1624,7 @@ def main() -> int:
     ngram_artifacts = find_ngram_artifacts_by_model(args.readme.parent)
     if ngram_artifacts:
         for out_name, renderer in [
-            ("perf-ngram-models-toks.svg",   render_ngram_models_speedup_chart),
+            ("perf-ngram-models-toks.svg", render_ngram_models_speedup_chart),
             ("perf-ngram-models-accept.svg", render_ngram_models_accept_chart),
         ]:
             content = renderer(ngram_artifacts)

@@ -460,7 +460,9 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
                 )
             )
         if not sources:
-            raise ArtifactCheckError("readme-performance-artifacts comment has no sources")
+            raise ArtifactCheckError(
+                "readme-performance-artifacts comment has no sources"
+            )
         return sources
 
     match = re.search(
@@ -517,11 +519,6 @@ def default_marker_artifact_paths(readme_path: Path, *, marker_name: str) -> lis
 
 def metric_median(row: dict[str, Any], table: str) -> float:
     if table == "ttft":
-        if row.get("engine") == "mlx_lm":
-            prompt_tokens = row.get("prompt_tokens")
-            if not isinstance(prompt_tokens, int):
-                raise ArtifactCheckError("reference TTFT row lacks prompt_tokens")
-            return prompt_tokens / metric_median(row, "prefill") * 1000.0
         metric_key = "ttft_ms"
     else:
         metric_key = "decode_tok_s" if table == "decode" else "prefill_tok_s"
@@ -596,9 +593,7 @@ def validate_public_claim_evidence(
                 )
 
 
-def validate_build_provenance(
-    *, artifact_path: Path, artifact: dict[str, Any]
-) -> None:
+def validate_build_provenance(*, artifact_path: Path, artifact: dict[str, Any]) -> None:
     build = artifact.get("build")
     if not isinstance(build, dict):
         return
@@ -643,9 +638,7 @@ BENCHMARK_DOC_ONLY_SCRIPT_PREFIXES = (
     "scripts/update_readme_",
     "scripts/test_",
 )
-BENCHMARK_DOC_ONLY_SCRIPT_PATHS = frozenset(
-    {"scripts/bench_llama_cpp_metal_sweep.py"}
-)
+BENCHMARK_DOC_ONLY_SCRIPT_PATHS = frozenset({"scripts/bench_llama_cpp_metal_sweep.py"})
 
 
 def is_benchmark_doc_only_path(path: str) -> bool:
@@ -692,7 +685,9 @@ def validate_hot_prefix_equivalence_artifact(
         raise ArtifactCheckError(f"{artifact_path} does not have token-exact parity")
     per_prompt = artifact.get("per_prompt")
     if not isinstance(per_prompt, list) or len(per_prompt) != prompts_total:
-        raise ArtifactCheckError(f"{artifact_path} per_prompt count does not match aggregate")
+        raise ArtifactCheckError(
+            f"{artifact_path} per_prompt count does not match aggregate"
+        )
 
     hit_count = 0
     reused_token_count = 0
@@ -779,7 +774,9 @@ def validate_long_context_boundary_artifact(
     *, artifact_path: Path
 ) -> LongContextBoundarySummary:
     if not artifact_path.exists():
-        raise ArtifactCheckError(f"long-context artifact does not exist: {artifact_path}")
+        raise ArtifactCheckError(
+            f"long-context artifact does not exist: {artifact_path}"
+        )
     artifact = json.loads(artifact_path.read_text())
     if artifact.get("schema_version") != PREFILL_SCALING_SCHEMA_VERSION:
         raise ArtifactCheckError(f"{artifact_path} has unexpected schema_version")
@@ -837,8 +834,12 @@ def validate_concurrent_prefill_boundary_artifact(
     if len(candidates) != 1:
         raise ArtifactCheckError(f"{artifact_path} must have one AX 4-request row")
     overlap = candidates[0].get("prefill_overlap")
-    if not isinstance(overlap, dict) or not isinstance(overlap.get("classification"), str):
-        raise ArtifactCheckError(f"{artifact_path} AX 4-request row lacks classification")
+    if not isinstance(overlap, dict) or not isinstance(
+        overlap.get("classification"), str
+    ):
+        raise ArtifactCheckError(
+            f"{artifact_path} AX 4-request row lacks classification"
+        )
     return ConcurrentPrefillBoundarySummary(
         artifact_path=artifact_path,
         concurrent_requests=4,
@@ -912,7 +913,11 @@ def validate_concurrent_prefill_overlap_classification(
             f"{artifact_path} concurrent prefill overlap continuous_batching_claim must be a boolean"
         )
     concurrency = evidence.get("concurrency")
-    if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency <= 0:
+    if (
+        not isinstance(concurrency, int)
+        or isinstance(concurrency, bool)
+        or concurrency <= 0
+    ):
         raise ArtifactCheckError(
             f"{artifact_path} concurrent prefill overlap concurrency must be a positive integer"
         )
@@ -935,7 +940,9 @@ def validate_prefix_reuse_evidence_shape(
             raise ArtifactCheckError(
                 f"{artifact_path} prefix reuse evidence lacks {counter}"
             )
-        if not isinstance(evidence[counter], int) or isinstance(evidence[counter], bool):
+        if not isinstance(evidence[counter], int) or isinstance(
+            evidence[counter], bool
+        ):
             raise ArtifactCheckError(
                 f"{artifact_path} prefix reuse evidence {counter} must be an integer"
             )
@@ -1029,7 +1036,9 @@ def validate_metric_summary(
     *, artifact_path: Path, row: dict[str, Any], key: str
 ) -> None:
     if not has_metric_summary(row, key):
-        raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks {key}.median")
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} lacks {key}.median"
+        )
 
 
 def metric_summary_median(row: dict[str, Any], key: str) -> float:
@@ -1054,7 +1063,9 @@ def validate_phase0_runtime_identity(
 ) -> None:
     runtime = row.get("runtime_identity")
     if not isinstance(runtime, dict):
-        raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks runtime_identity")
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} lacks runtime_identity"
+        )
     if runtime.get("selected_backend") != "mlx":
         raise ArtifactCheckError(
             f"{artifact_path} {row.get('engine')} runtime identity is not MLX"
@@ -1076,7 +1087,9 @@ def validate_ax_prefill_decode_split(
     generation_tokens = int(row.get("generation_tokens", 0))
     telemetry = row.get("ax_mlx_telemetry")
     if not isinstance(telemetry, dict):
-        raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks AX MLX telemetry")
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} lacks AX MLX telemetry"
+        )
     for key in ("ax_mlx_prefill_steps", "ax_mlx_decode_steps"):
         if key not in telemetry:
             raise ArtifactCheckError(f"{artifact_path} {row.get('engine')} lacks {key}")
@@ -1151,7 +1164,9 @@ def validate_direct_hotpath_no_hidden_fallbacks(
         return
     telemetry = row.get("ax_mlx_telemetry")
     if not isinstance(telemetry, dict):
-        raise ArtifactCheckError(f"{artifact_path} direct AX row lacks AX MLX telemetry")
+        raise ArtifactCheckError(
+            f"{artifact_path} direct AX row lacks AX MLX telemetry"
+        )
 
     fallback_counts = []
     for key, label in AX_DIRECT_HOTPATH_FALLBACK_COUNTERS.items():
@@ -1168,7 +1183,8 @@ def validate_direct_hotpath_no_hidden_fallbacks(
     if (
         row.get("kv_compression_claim_status") == "integrated_fused_compressed_decode"
         and isinstance(kv_compression, dict)
-        and int(kv_compression.get("ax_mlx_kv_compression_fused_decode_fallbacks", 0)) > 0
+        and int(kv_compression.get("ax_mlx_kv_compression_fused_decode_fallbacks", 0))
+        > 0
     ):
         raise ArtifactCheckError(
             f"{artifact_path} direct AX row claims fused KV decode with fallback telemetry"
@@ -1182,7 +1198,9 @@ def validate_direct_cpp_linear_attention_input_summary(
         return
     telemetry = row.get("ax_mlx_telemetry")
     if not isinstance(telemetry, dict):
-        raise ArtifactCheckError(f"{artifact_path} direct AX row lacks AX MLX telemetry")
+        raise ArtifactCheckError(
+            f"{artifact_path} direct AX row lacks AX MLX telemetry"
+        )
 
     counters = {
         field: int(telemetry.get(counter_key, 0))
@@ -1230,7 +1248,9 @@ def validate_direct_cpp_linear_attention_post_input_summary(
         return
     telemetry = row.get("ax_mlx_telemetry")
     if not isinstance(telemetry, dict):
-        raise ArtifactCheckError(f"{artifact_path} direct AX row lacks AX MLX telemetry")
+        raise ArtifactCheckError(
+            f"{artifact_path} direct AX row lacks AX MLX telemetry"
+        )
 
     counters = {
         field: int(telemetry.get(counter_key, 0))
@@ -1249,7 +1269,10 @@ def validate_direct_cpp_linear_attention_post_input_summary(
         raise ArtifactCheckError(
             f"{artifact_path} direct AX row lacks direct C++ linear-attention post-input summary"
         )
-    if summary.get("schema_version") != "ax.mlx_direct_cpp_linear_attention_post_input.v1":
+    if (
+        summary.get("schema_version")
+        != "ax.mlx_direct_cpp_linear_attention_post_input.v1"
+    ):
         raise ArtifactCheckError(
             f"{artifact_path} direct AX row has invalid direct C++ "
             "linear-attention post-input summary schema"
@@ -1359,11 +1382,15 @@ def validate_delegated_metrics_if_present(
     if not require_phase0:
         return
     engine = str(row.get("engine", ""))
-    delegated = row.get("delegated_backend") == "llama.cpp" or engine.startswith("llama_cpp")
+    delegated = row.get("delegated_backend") == "llama.cpp" or engine.startswith(
+        "llama_cpp"
+    )
     has_legacy_metrics = isinstance(row.get("llama_cpp_delegated_metrics"), dict)
     has_current_metadata = isinstance(row.get("llama_cpp"), dict)
     if delegated and not (has_legacy_metrics or has_current_metadata):
-        raise ArtifactCheckError(f"{artifact_path} llama.cpp delegated row lacks metrics")
+        raise ArtifactCheckError(
+            f"{artifact_path} llama.cpp delegated row lacks metrics"
+        )
 
 
 def assert_display_matches(metric: ReadmeMetric, artifact_row: ArtifactRow) -> None:
@@ -1450,7 +1477,9 @@ def validate_prompt_artifact(
     if payload.get("sha256") != prompt_hash:
         raise ArtifactCheckError(f"prompt hash mismatch in {token_path}")
     if token_sha256([int(token) for token in tokens]) != prompt_hash:
-        raise ArtifactCheckError(f"prompt token hash does not match payload: {token_path}")
+        raise ArtifactCheckError(
+            f"prompt token hash does not match payload: {token_path}"
+        )
     return prompt_hash
 
 
@@ -1499,8 +1528,12 @@ def validate_artifact_row(
             f"{artifact_path} {engine} prompt={prompt_tokens} has stale prompt hash"
         )
     if int(row.get("batch_size", -1)) != 1:
-        raise ArtifactCheckError(f"{artifact_path} {engine} prompt={prompt_tokens} is not batch=1")
-    if int(row.get("prefill_step_size", -1)) != int(artifact.get("prefill_step_size", -2)):
+        raise ArtifactCheckError(
+            f"{artifact_path} {engine} prompt={prompt_tokens} is not batch=1"
+        )
+    if int(row.get("prefill_step_size", -1)) != int(
+        artifact.get("prefill_step_size", -2)
+    ):
         raise ArtifactCheckError(
             f"{artifact_path} {engine} prompt={prompt_tokens} has mismatched prefill_step_size"
         )
@@ -1513,16 +1546,25 @@ def validate_artifact_row(
 
     if engine == "mlx_lm":
         baseline = row.get("baseline", {})
-        if row.get("method") != "mlx_lm.benchmark" or baseline.get("role") != "primary_reference":
-            raise ArtifactCheckError(f"{artifact_path} mlx_lm row lacks primary reference identity")
+        if (
+            row.get("method") != "mlx_lm.benchmark"
+            or baseline.get("role") != "primary_reference"
+        ):
+            raise ArtifactCheckError(
+                f"{artifact_path} mlx_lm row lacks primary reference identity"
+            )
     elif engine in AX_DIRECT_ENGINE_KEYS:
         if row.get("ax_decode_policy") != "direct_no_ngram_acceleration":
-            raise ArtifactCheckError(f"{artifact_path} direct AX row lacks direct policy")
+            raise ArtifactCheckError(
+                f"{artifact_path} direct AX row lacks direct policy"
+            )
         if (
             require_phase0
             and row.get("ax_decode_claim_status") not in AX_DIRECT_CLAIM_STATUSES
         ):
-            raise ArtifactCheckError(f"{artifact_path} direct AX row lacks claim status")
+            raise ArtifactCheckError(
+                f"{artifact_path} direct AX row lacks claim status"
+            )
         validate_ax_prefill_decode_split(
             artifact_path=artifact_path,
             row=row,
@@ -1546,9 +1588,13 @@ def validate_artifact_row(
         if require_phase0:
             telemetry = row.get("ngram_acceleration_telemetry")
             if not isinstance(telemetry, dict):
-                raise ArtifactCheckError(f"{artifact_path} direct AX row lacks n-gram telemetry")
+                raise ArtifactCheckError(
+                    f"{artifact_path} direct AX row lacks n-gram telemetry"
+                )
             if int(telemetry.get("ax_ngram_draft_attempts", 0)) != 0:
-                raise ArtifactCheckError(f"{artifact_path} direct AX row has draft attempts")
+                raise ArtifactCheckError(
+                    f"{artifact_path} direct AX row has draft attempts"
+                )
     elif engine == "ax_engine_mlx_ngram_accel":
         if not str(row.get("ax_decode_policy", "")).startswith("ngram_acceleration"):
             raise ArtifactCheckError(f"{artifact_path} n-gram row lacks n-gram policy")
@@ -1608,7 +1654,9 @@ def collect_artifact_rows(
     table_names = include_tables or README_METRIC_TABLES
     json_paths = sorted(artifact_dir.glob("*.json"))
     if not json_paths:
-        raise ArtifactCheckError(f"artifact directory has no JSON artifacts: {artifact_dir}")
+        raise ArtifactCheckError(
+            f"artifact directory has no JSON artifacts: {artifact_dir}"
+        )
 
     for path in json_paths:
         label = ARTIFACT_LABELS.get(path.stem)
@@ -1683,7 +1731,9 @@ def collect_artifact_rows(
                 )
         missing_references = set(prompt_hashes) - seen_reference_shapes
         if missing_references:
-            raise ArtifactCheckError(f"{path} lacks mlx_lm rows for {sorted(missing_references)}")
+            raise ArtifactCheckError(
+                f"{path} lacks mlx_lm rows for {sorted(missing_references)}"
+            )
     return rows
 
 
@@ -1730,8 +1780,7 @@ def find_artifact_row_for_metric(
             _generation_tokens,
             engine,
             table_name,
-        ),
-        row in artifact_rows.items()
+        ), row in artifact_rows.items()
         if (
             model == metric.model
             and quantization == metric.quantization
@@ -1786,9 +1835,7 @@ def check_readme_performance_summary(
         default_concurrent_prefill_boundary_artifact_paths(resolved_readme)
     )
     metrics = parse_readme_metrics(resolved_readme)
-    needed_labels = frozenset(
-        (metric.model, metric.quantization) for metric in metrics
-    )
+    needed_labels = frozenset((metric.model, metric.quantization) for metric in metrics)
     artifact_rows = collect_artifact_rows_from_sources(
         repo_root.resolve(),
         artifact_sources,

@@ -648,7 +648,7 @@ impl NgramTable {
     /// position only. Later draft tokens were verified under an already-wrong
     /// speculative context, so treating them as rejected would over-penalize
     /// unrelated continuations.
-    fn record_draft_feedback(
+    pub(crate) fn record_draft_feedback(
         &mut self,
         draft: &[u32],
         accept_count: usize,
@@ -1113,7 +1113,7 @@ fn ngram_accel_decode_step_linear_safe(
     verification.result
 }
 
-fn ngram_feedback_policy(cfg: &ModelConfig) -> (u32, f32) {
+pub(crate) fn ngram_feedback_policy(cfg: &ModelConfig) -> (u32, f32) {
     if cfg.linear_attention.is_some() {
         (LINEAR_MIN_NGRAM_SUPPORT, DRAFT_CONFIDENCE_THRESHOLD)
     } else {
