@@ -36,7 +36,7 @@ HF_CACHE = Path(
 )
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
-    "ax_engine": "AX Engine MTP",
+    "ax_engine": "AX Engine 5.0.4",
     "lightning_mlx": "Lightning MLX 0.6.10",
 }
 ENGINE_COLORS = {
