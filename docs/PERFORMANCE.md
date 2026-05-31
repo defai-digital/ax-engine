@@ -217,8 +217,8 @@ because it uses its own loader. Always keep the MTP sidecar file named `mtp.safe
 
 The fair harness is `scripts/bench_qwen36_mtp_fair.py`. It runs the same
 prompt suite files, max-token cap, sampler, warmup count, measured repetitions,
-and cooldown across MTPLX and AX Engine. The comparison uses native depth:
-27B at depth 3, 35B-A3B at depth 1.
+and cooldown across MTPLX, Lightning MLX, and AX Engine. The comparison uses
+native depth: 27B at depth 3, 35B-A3B at depth 1.
 
 ### Corrected 2026-05-30 run
 
@@ -257,24 +257,30 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
+| Lightning MLX (tok/s) | 140.1 | 140.4 | 137.8 |
+| Lightning MLX (accept) | 99.1% | 98.6% | 96.8% |
 | MTPLX 0.3.7 (tok/s) | 88.1 | 105.2 | 95.2 |
 | MTPLX 0.3.7 (accept) | 48.8% | 52.3% | 42.3% |
-| AX Engine (tok/s) | 84.2 | 81.5 | 77.9 |
+| AX Engine (tok/s) | 84.2 | 81.5 | 79.0 |
 | AX Engine (accept) | 99.9% | 99.8% | 93.2% |
-| AX/MTPLX ratio | 0.956 | 0.775 | 0.819 |
+| AX/MTPLX ratio | 0.956 | 0.775 | 0.829 |
+| AX/Lightning ratio | 0.601 | 0.580 | 0.573 |
 
 27B results (native depth=3, pure MTP, 1000 gen tokens):
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
+| Lightning MLX (tok/s) | 48.8 | 48.7 | 45.0 |
+| Lightning MLX (accept) | 95.9% | 92.8% | 73.7% |
 | MTPLX 0.3.7 (tok/s) | 39.2 | 44.3 | 47.7 |
 | MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 87.6% |
 | AX Engine (tok/s) | 37.2 | 27.6 | 22.9 |
 | AX Engine (accept) | 99.1% | 98.3% | 67.0% |
 | AX/MTPLX ratio | 0.949 | 0.625 | 0.480 |
+| AX/Lightning ratio | 0.762 | 0.568 | 0.508 |
 
-Artifacts: `benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/` (dual-engine,
-full-vocab draft log-prob fix).
+Artifacts: `benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/` (three-engine:
+MTPLX, Lightning MLX, AX Engine; full-vocab draft log-prob fix).
 
 #### Chart data table
 
@@ -306,13 +312,13 @@ python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
 python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
 ```
 
-Run the dual-engine fair comparison at native depth:
+Run the three-engine fair comparison at native depth:
 
 ```bash
 python3 scripts/bench_qwen36_mtp_fair.py \
   --models 27b-4bit 35b-a3b-4bit \
-  --engines mtplx ax_engine \
-  --suites flappy long_code \
+  --engines mtplx ax_engine lightning_mlx \
+  --suites flappy long_code python_modules_long \
   --depth-policy native \
   --max-tokens 1000 \
   --repetitions 5 \

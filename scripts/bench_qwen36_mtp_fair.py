@@ -24,9 +24,12 @@ import check_mtp_sidecar_provenance as provenance_check
 REPO_ROOT = SCRIPT_DIR.parents[0]
 AX_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
 MTPLX_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mtplx_prompt_suites.py"
+RAPID_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_rapid_mlx_prompt_suites.py"
 DEFAULT_SUITES_DIR = REPO_ROOT / "benchmarks" / "prompts" / "mtp-suites"
 DEFAULT_OUTPUT_BASE = REPO_ROOT / "benchmarks" / "results" / "mtp-fair"
 DEFAULT_MTPLX_PYTHON = Path("/opt/homebrew/var/mtplx/venv-0.3.7/bin/python")
+DEFAULT_RAPID_PYTHON = Path("/opt/homebrew/var/mtplx/venv-0.3.7/bin/python")
+DEFAULT_LIGHTNING_SOURCE = REPO_ROOT / ".internal" / "reference" / "lightning-mlx"
 HF_CACHE = Path(
     os.environ.get("HF_HUB_CACHE")
     or (Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
@@ -34,12 +37,14 @@ HF_CACHE = Path(
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
     "ax_engine": "AX Engine MTP",
+    "lightning_mlx": "Lightning MLX",
 }
 ENGINE_COLORS = {
     "mtplx": "#7c3aed",
     "ax_engine": "#16a34a",
+    "lightning_mlx": "#f59e0b",
 }
-ENGINE_ORDER = ["mtplx", "ax_engine"]
+ENGINE_ORDER = ["mtplx", "ax_engine", "lightning_mlx"]
 
 
 @dataclass(frozen=True)
@@ -256,6 +261,56 @@ def run_mtplx_suite(
     return output_path
 
 
+def run_rapid_mlx_suite(
+    *,
+    python: Path,
+    lightning_source: Path,
+    suite: str,
+    suite_file: Path,
+    output_path: Path,
+    model_dir: Path,
+    config: diff.RunConfig,
+    port: int = 18765,
+) -> Path:
+    cmd = [
+        str(python),
+        str(RAPID_BENCH_SCRIPT),
+        "--model",
+        str(model_dir),
+        "--suite",
+        suite,
+        "--prompts",
+        str(suite_file),
+        "--output",
+        str(output_path),
+        "--rapid-source",
+        str(lightning_source),
+        "--rapid-mtp-patch",
+        "none",
+        "--lightning-mode",
+        "--depth",
+        str(config.depth),
+        "--temperature",
+        str(config.sampling["temperature"]),
+        "--top-p",
+        str(config.sampling["top_p"]),
+        "--top-k",
+        str(config.sampling["top_k"]),
+        "--max-tokens",
+        str(config.max_tokens),
+        "--repetitions",
+        str(config.repetitions),
+        "--warmup-repetitions",
+        str(config.warmup_repetitions),
+        "--cooldown",
+        str(config.cooldown_s),
+        "--port",
+        str(port),
+    ]
+    run_subprocess(cmd)
+    return output_path
+
+
 def run_engine_suite(
     args: argparse.Namespace,
     *,
@@ -306,6 +361,17 @@ def run_engine_suite(
                 mtplx_profile=args.mtplx_profile,
                 allow_unverified_model=profile.is_moe,
             )
+        if engine == "lightning_mlx":
+            return run_rapid_mlx_suite(
+                python=args.rapid_python,
+                lightning_source=args.lightning_source,
+                suite=suite,
+                suite_file=suite_file,
+                output_path=output_path,
+                model_dir=model_dir,
+                config=config,
+                port=args.base_port + 1,
+            )
         raise ValueError(f"unknown engine: {engine}")
     except Exception as exc:
         return write_error_artifact(
@@ -334,6 +400,8 @@ def cases_for_engine(
         return diff.ax_cases(artifact)
     if engine == "mtplx":
         return diff.mtplx_cases(artifact)
+    if engine == "lightning_mlx":
+        return diff.rapid_mlx_cases(artifact)
     raise ValueError(f"unknown engine: {engine}")
 
 
@@ -427,6 +495,7 @@ def build_summary(
                     )
             ax_tok_s = (engine_summaries.get("ax_engine") or {}).get("decode_tok_s")
             mtplx_tok_s = (engine_summaries.get("mtplx") or {}).get("decode_tok_s")
+            lightning_tok_s = (engine_summaries.get("lightning_mlx") or {}).get("decode_tok_s")
             rows.append(
                 {
                     "model": profile.key,
@@ -439,6 +508,8 @@ def build_summary(
                     "engines": engine_summaries,
                     "ratios": {
                         "ax_engine_vs_mtplx": ratio(ax_tok_s, mtplx_tok_s),
+                        "ax_engine_vs_lightning_mlx": ratio(ax_tok_s, lightning_tok_s),
+                        "lightning_mlx_vs_mtplx": ratio(lightning_tok_s, mtplx_tok_s),
                     },
                 }
             )
@@ -519,21 +590,39 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
     for rule in contract["fairness_rules"]:
         lines.append(f"- {rule}")
     lines.append("")
-    lines.append(
-        "| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX/MTPLX |"
-    )
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|")
+    has_lightning = "lightning_mlx" in (summary.get("contract", {}).get("engines") or [])
+    if has_lightning:
+        lines.append(
+            "| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | AX tok/s | AX accept | AX/MTPLX | AX/Lightning |"
+        )
+        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    else:
+        lines.append(
+            "| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX/MTPLX |"
+        )
+        lines.append("|---|---|---:|---:|---:|---:|---:|---:|")
     for row in summary["rows"]:
         engines = row["engines"]
         mtplx = engines.get("mtplx", {})
         ax = engines.get("ax_engine", {})
         ratios = row["ratios"]
-        lines.append(
-            f"| {row['model_label']} | {row['suite']} | {row['depth']} | "
-            f"{fmt_number(mtplx.get('decode_tok_s'))} | {fmt_percent(mtplx.get('accept_rate'))} | "
-            f"{fmt_number(ax.get('decode_tok_s'))} | {fmt_percent(ax.get('accept_rate'))} | "
-            f"{fmt_number(ratios.get('ax_engine_vs_mtplx'), 3)} |"
-        )
+        if has_lightning:
+            lightning = engines.get("lightning_mlx", {})
+            lines.append(
+                f"| {row['model_label']} | {row['suite']} | {row['depth']} | "
+                f"{fmt_number(mtplx.get('decode_tok_s'))} | {fmt_percent(mtplx.get('accept_rate'))} | "
+                f"{fmt_number(lightning.get('decode_tok_s'))} | {fmt_percent(lightning.get('accept_rate'))} | "
+                f"{fmt_number(ax.get('decode_tok_s'))} | {fmt_percent(ax.get('accept_rate'))} | "
+                f"{fmt_number(ratios.get('ax_engine_vs_mtplx'), 3)} | "
+                f"{fmt_number(ratios.get('ax_engine_vs_lightning_mlx'), 3)} |"
+            )
+        else:
+            lines.append(
+                f"| {row['model_label']} | {row['suite']} | {row['depth']} | "
+                f"{fmt_number(mtplx.get('decode_tok_s'))} | {fmt_percent(mtplx.get('accept_rate'))} | "
+                f"{fmt_number(ax.get('decode_tok_s'))} | {fmt_percent(ax.get('accept_rate'))} | "
+                f"{fmt_number(ratios.get('ax_engine_vs_mtplx'), 3)} |"
+            )
     lines.append("")
     lines.append("Artifacts:")
     lines.append("")
@@ -835,6 +924,18 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MTPLX_PYTHON
         if DEFAULT_MTPLX_PYTHON.exists()
         else Path(sys.executable),
+    )
+    parser.add_argument(
+        "--rapid-python",
+        type=Path,
+        default=DEFAULT_RAPID_PYTHON
+        if DEFAULT_RAPID_PYTHON.exists()
+        else Path(sys.executable),
+    )
+    parser.add_argument(
+        "--lightning-source",
+        type=Path,
+        default=DEFAULT_LIGHTNING_SOURCE,
     )
     parser.add_argument("--base-port", type=int, default=18765)
     parser.add_argument("--limit", type=int)

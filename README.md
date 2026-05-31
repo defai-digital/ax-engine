@@ -2,10 +2,11 @@
 
 ### Qwen3.6 Fair MTP
 
-MTPLX-vs-AX-Engine MTP comparison using standard `Qwen/Qwen3.6-*` sidecars plus
-matching `mlx-community/*-4bit` MLX bases. No `Youssofal/*MTPLX*` bundles are
-used. Latest local rerun: native depth, sampled decode, max tokens `1000`,
-five measured repetitions, one warmup repetition.
+Three-engine MTP comparison (MTPLX 0.3.7, Lightning MLX, AX Engine) using
+standard `Qwen/Qwen3.6-*` sidecars plus matching `mlx-community/*-4bit` MLX
+bases. No `Youssofal/*MTPLX*` bundles are used. Latest local rerun: native
+depth, sampled decode, max tokens `1000`, five measured repetitions, one
+warmup repetition.
 
 <table>
 <tr>
@@ -13,29 +14,28 @@ five measured repetitions, one warmup repetition.
 <td align="center"><strong>Qwen3.6 35B-A3B 4-bit</strong></td>
 </tr>
 <tr>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-decode-tok-s.svg" alt="Qwen3.6 27B 4-bit fair MTP decode throughput chart comparing MTPLX and AX Engine across flappy, long_code, and python_modules_long"></td>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-decode-tok-s.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP decode throughput chart comparing MTPLX and AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-decode-tok-s.svg" alt="Qwen3.6 27B 4-bit fair MTP decode throughput chart comparing MTPLX, Lightning MLX, and AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-decode-tok-s.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP decode throughput chart comparing MTPLX, Lightning MLX, and AX Engine across flappy, long_code, and python_modules_long"></td>
 </tr>
 <tr>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-accept-rate.svg" alt="Qwen3.6 27B 4-bit fair MTP accept-rate chart comparing MTPLX and AX Engine across flappy, long_code, and python_modules_long"></td>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-accept-rate.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP accept-rate chart for AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-accept-rate.svg" alt="Qwen3.6 27B 4-bit fair MTP accept-rate chart comparing MTPLX, Lightning MLX, and AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-accept-rate.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP accept-rate chart comparing MTPLX, Lightning MLX, and AX Engine across flappy, long_code, and python_modules_long"></td>
 </tr>
 </table>
 
-| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX/MTPLX |
-|---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 39.2 | 100.0% | 37.2 | 99.1% | 0.949 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 44.3 | 99.7% | 27.6 | 98.3% | 0.625 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 47.7 | 87.6% | 22.9 | 67.0% | 0.480 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 88.1 | 48.8% | 84.2 | 99.9% | 0.956 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.2 | 52.3% | 81.5 | 99.8% | 0.775 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 95.2 | 42.3% | 79.0 | 93.2% | 0.829 |
-
+| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | AX tok/s | AX accept | AX/MTPLX | AX/Lightning |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Qwen3.6 27B 4-bit | flappy | 3 | 39.2 | 100.0% | 48.8 | 95.9% | 37.2 | 99.1% | 0.949 | 0.762 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 44.3 | 99.7% | 48.7 | 92.8% | 27.6 | 98.3% | 0.625 | 0.568 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 47.7 | 87.6% | 45.0 | 73.7% | 22.9 | 67.0% | 0.480 | 0.508 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 88.1 | 48.8% | 140.1 | 99.1% | 84.2 | 99.9% | 0.956 | 0.601 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.2 | 52.3% | 140.4 | 98.6% | 81.5 | 99.8% | 0.775 | 0.580 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 95.2 | 42.3% | 137.8 | 96.8% | 79.0 | 93.2% | 0.829 | 0.573 |
 
 Pure MTP benchmark (n-gram stacking disabled). Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 15 s cooldown.
 
-Full artifacts: [`2026-05-31` (dual-engine full-vocab draft fix)](benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/summary.md).
+Full artifacts: [`2026-05-31` (three-engine: MTPLX, Lightning MLX, AX Engine)](benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/summary.md).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 

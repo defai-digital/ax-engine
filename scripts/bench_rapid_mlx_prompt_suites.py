@@ -212,9 +212,16 @@ def load_prompt_suite(path: Path) -> list[PromptCase]:
     return cases
 
 
-def wait_until_ready(base_url: str, proc: subprocess.Popen, timeout_s: float) -> None:
+def wait_until_ready(
+    base_url: str,
+    proc: subprocess.Popen,
+    timeout_s: float,
+    lightning_mode: bool = False,
+) -> None:
     deadline = time.time() + timeout_s
-    ready_url = base_url.rsplit("/v1", 1)[0] + "/health/ready"
+    base = base_url.rsplit("/v1", 1)[0]
+    # Lightning-mlx uses /health (model_loaded=true) instead of /health/ready
+    ready_url = f"{base}/health" if lightning_mode else f"{base}/health/ready"
     last_error: str | None = None
     while time.time() < deadline:
         if proc.poll() is not None:
@@ -224,7 +231,12 @@ def wait_until_ready(base_url: str, proc: subprocess.Popen, timeout_s: float) ->
         try:
             with urllib.request.urlopen(ready_url, timeout=2) as response:  # noqa: S310
                 if response.status == 200:
-                    return
+                    if lightning_mode:
+                        data = json.loads(response.read())
+                        if data.get("model_loaded"):
+                            return
+                    else:
+                        return
         except (urllib.error.URLError, TimeoutError) as exc:
             last_error = str(exc)
         time.sleep(2)
@@ -244,6 +256,7 @@ def start_server(
     depth: int,
     startup_timeout: float,
     output_dir: Path,
+    lightning_mode: bool = False,
 ) -> ServerHandle:
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / f"rapid-mlx-server-{port}.log"
@@ -252,26 +265,45 @@ def start_server(
         lightning_source=lightning_source,
         mode=rapid_mtp_patch,
     )
-    cmd = [
-        str(rapid_python),
-        "-m",
-        "vllm_mlx.cli",
-        "--no-telemetry",
-        "serve",
-        model,
-        "--port",
-        str(port),
-        "--disable-prefix-cache",
-        "--no-memory-aware-cache",
-        "--enable-mtp",
-        "--mtp-num-draft-tokens",
-        str(depth),
-        "--force-spec-decode",
-        "--no-thinking",
-        "--no-mllm",
-        "--log-level",
-        "WARNING",
-    ]
+    if lightning_mode:
+        cmd = [
+            str(rapid_python),
+            "-m",
+            "vllm_mlx.cli",
+            "serve",
+            model,
+            "--port",
+            str(port),
+            "--disable-prefix-cache",
+            "--no-memory-aware-cache",
+            "--enable-mtp",
+            "--mtp-num-draft-tokens",
+            str(depth),
+            "--no-thinking",
+            "--log-level",
+            "WARNING",
+        ]
+    else:
+        cmd = [
+            str(rapid_python),
+            "-m",
+            "vllm_mlx.cli",
+            "--no-telemetry",
+            "serve",
+            model,
+            "--port",
+            str(port),
+            "--disable-prefix-cache",
+            "--no-memory-aware-cache",
+            "--enable-mtp",
+            "--mtp-num-draft-tokens",
+            str(depth),
+            "--force-spec-decode",
+            "--no-thinking",
+            "--no-mllm",
+            "--log-level",
+            "WARNING",
+        ]
     env = os.environ.copy()
     python_path_parts = []
     if compat_patch.get("site_dir"):
@@ -302,7 +334,7 @@ def start_server(
             command=cmd,
             compat_patch=compat_patch,
         )
-        wait_until_ready(handle.base_url, proc, startup_timeout)
+        wait_until_ready(handle.base_url, proc, startup_timeout, lightning_mode=lightning_mode)
         return handle
     except BaseException:
         log_file.close()
@@ -411,6 +443,19 @@ def run_case(
     }
 
 
+def fetch_last_mtp_accept_ratio(base_url: str) -> float | None:
+    try:
+        with urllib.request.urlopen(f"{base_url}/requests?limit=1", timeout=3) as resp:  # noqa: S310
+            data = json.loads(resp.read())
+            entries = data.get("entries") or []
+            if entries:
+                val = entries[-1].get("mtp_acceptance_ratio")
+                return float(val) if val is not None else None
+    except Exception:
+        pass
+    return None
+
+
 def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     valid_decode = [
         float(run["decode_tok_s"])
@@ -422,6 +467,11 @@ def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         for run in runs
         if run.get("end_to_end_tok_s") is not None
         and run.get("rejected_reason") is None
+    ]
+    accept_values = [
+        float(run["mtp_acceptance_ratio"])
+        for run in runs
+        if run.get("mtp_acceptance_ratio") is not None
     ]
     return {
         "runs": len(runs),
@@ -441,7 +491,7 @@ def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "accepted_drafts": None,
         "drafted_tokens": None,
-        "accept_rate": None,
+        "accept_rate": median(accept_values) if accept_values else None,
     }
 
 
@@ -466,6 +516,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         depth=args.depth,
         startup_timeout=args.startup_timeout,
         output_dir=server_dir,
+        lightning_mode=bool(getattr(args, "lightning_mode", False)),
     )
     try:
         if cases:
@@ -502,6 +553,9 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
                     flush=True,
                 )
                 if measured:
+                    accept_ratio = fetch_last_mtp_accept_ratio(handle.base_url)
+                    if accept_ratio is not None:
+                        run["mtp_acceptance_ratio"] = accept_ratio
                     runs.append(run)
                 if args.cooldown > 0 and rep < all_runs - 1:
                     time.sleep(args.cooldown)
@@ -594,6 +648,15 @@ def main() -> int:
     parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--lightning-mode",
+        action="store_true",
+        help=(
+            "Run lightning-mlx directly via its vllm_mlx.cli (source at --rapid-source). "
+            "Skips Rapid-MLX-only flags (--no-telemetry, --force-spec-decode, --no-mllm) "
+            "and fetches per-run MTP accept rate from /v1/requests."
+        ),
+    )
     args = parser.parse_args()
 
     result = run_suite(args)

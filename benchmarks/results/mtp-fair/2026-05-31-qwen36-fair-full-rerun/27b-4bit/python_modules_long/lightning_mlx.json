@@ -1,0 +1,483 @@
+{
+  "build": {
+    "git_commit": "ecb22ead6677d4fffa43d46d79643111bbe8ddbb",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 15.0,
+  "depth_effective_note": "Rapid-MLX reference MTP path is single-draft; requested depth may be capped by runtime.",
+  "depth_requested": 3,
+  "disable_thinking": true,
+  "engine": "rapid_mlx",
+  "max_tokens": 1000,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+  "prompt_suite": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl",
+  "prompt_suite_sha256": "a0c1ee0220b40869bfac08ca4fbf7e60f297bee6c7378765d10f4afdfd3e3793",
+  "rapid_mtp_patch": {
+    "mode": "none"
+  },
+  "rapid_python": "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+  "rapid_source": "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx",
+  "repetitions": 5,
+  "results": [
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_http_client",
+      "prompt_sha256": "e163f34638479cd373e43ecf1734e4b06ee3d776432dc4e6369db8a277af9ff8",
+      "runs": [
+        {
+          "decode_elapsed_s": 23.914877166971564,
+          "decode_tok_s": 41.814975381980354,
+          "elapsed_s": 24.64248195895925,
+          "end_to_end_tok_s": 40.580327974489215,
+          "ended_at": 1780243772.787987,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.6654275092936803,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 43,
+          "started_at": 1780243748.145368,
+          "text": "```python\nimport json\nimport time\nimport gzip\nimport logging\nimport urllib.parse\nfrom http.client import HTTPConnection, HTTPException\nfrom dataclasses import dataclass\nfrom typing import Dict, Optional, Any\n\nlogger = logging.getLogger(__name__)\n\n@dataclass\nclass HttpResponse:\n    status_code: int\n    headers: dict\n    body: bytes\n    json_data: dict | None\n    elapsed_ms: float\n\n    def text(self) -> str:\n        return self.body.decode('utf-8')\n\nclass HttpClientError(Exception):\n    def __init__(self, status_code: int, body: bytes):\n        self.status_code = status_code\n        self.body = body\n        super().__init__(f\"HTTP Error {status_code}: {body.decode('utf-8', errors='replace')}\")\n\ndef build_url(base: str, path: str, params: Optional[Dict[str, Any]] = None) -> str:\n    if not base.endswith('/'):\n        base += '/'\n    if path.startswith('/'):\n        path =path[1:]\n    url = base + path\n    if params:\n        query = urllib.parse.urlencode(params)\n        url += '?' + query\n    return url\n\nclass HttpClient:\n    def __init__(self, base_url: str, timeout: float = 30.0, max_retries: int = 3, backoff_factor: float = 0.5):\n        self.base_url = base_url\n        self.timeout = timeout\n        self.max_retries = max_retries\n        self.backoff_factor = backoff_factor\n        self.default_headers = {'Accept-Encoding': 'gzip'}\n        self._connection = None\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc_val, exc_tb):\n        self.close()\n        return False\n\n    def close(self):\n        if self._connection:\n            try:\n                self._connection.close()\n            except Exception:\n                pass\n            self._connection = None\n\n    def _get_connection(self):\n        if self._connection is None or self._connection.sock is None:\n            host = urllib.parse.urlparse(self.base_url).netloc\n            self._connection = HTTPConnection(host, timeout=self.timeout)\n        return self._connection\n\n    def _send_request(self, method: str, path: str, headers: Optional[Dict[str,str]] = None, body: Optional[bytes] = None,params: Optional[Dict] = None) -> HttpResponse:\n        url = build_url(self.base_url, path, params)\n        conn = self._get_connection()\n        \n        request_headers = dict(self.default_headers)\n        if headers:\n            request_headers.update(headers)\n        \n        logger.debug(f\"Sending {method} request to {url}\")\n        \n        start_time = time.time()\n        \n        try:\n            conn.request(method, urllib.parse.urlparse(url).path, body=body, headers=request_headers)\n            response = conn.getresponse()\n            \n            response_headers = dict(response.getheaders())\n            raw_body = response.read()\n            \n            elapsed_ms = (time.time() - start_time) * 1000\n            \n            if response_headers.get('Content-Encoding') == 'gzip':\n                raw_body = gzip.decompress(raw_body)\n            \n            json_data = None\n            try:\n                json_data = json.loads(raw_body)\n            except (json.JSONDecodeError, ValueError):\n                json_data = None\n            \n            logger.debug(f\"Received {response.status} from {url} in {elapsed_ms:.2f}ms\")\n            \n            return HttpResponse(\n                status_code=response.status,\n                headers=response_headers,\n                body=raw_body,\n                json_data=json_data,\n                elapsed_ms=elapsed_ms\n            )\n        except (HTTPException, ConnectionError, OSError) as e:\n            elapsed_ms = (time.time() - start_time) * 1000\n            logger.debug(f\"Request to {url} failed after {elapsed_ms:.2f}ms: {e}\")\n            raise\n\n    def _execute_with_retry(self, method: str, path: str, headers: Optional[Dict[str,str]] = None, body: Optional[bytes] = None, params:Optional[Dict] = None) -> HttpResponse:\n        last_exception = None\n        \n        for attempt in range(self.max_retries):\n            try:\n                response = self._send_request(method, path, headers, body, params)\n                \n                if 500 <=response.status_code < 600:\n                    logger.debug(f\"Server error",
+          "ttft_s": 0.7276047919876873
+        },
+        {
+          "decode_elapsed_s": 23.535893625114113,
+          "decode_tok_s": 42.488295364019834,
+          "elapsed_s": 24.26542687509209,
+          "end_to_end_tok_s": 41.21089668636645,
+          "ended_at": 1780243812.074594,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.6816479400749064,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 44,
+          "started_at": 1780243787.809032,
+          "text": "```python\nimport json\nimport time\nimport gzip\nimport logging\nimport urllib.parse\nfrom dataclasses import dataclass, field\nfrom http.client import HTTPConnection, HTTPException\nfrom typing import Dict, Optional, Any, Union\n\nlogger = logging.getLogger(__name__)\n\n@dataclass\nclass HttpResponse:\n    status_code: int\n    headers: dict\n    body: bytes\n    json_data: Optional[dict] = None\n    elapsed_ms: float = 0.0\n\n    def text(self) -> str:\n        return self.body.decode('utf-8')\n\nclass HttpClientError(Exception):\n    def __init__(self, message: str, status_code: int = None, body: bytes = None):\n        super().__init__(message)\n        self.status_code = status_code\n        self.body = body\n\ndef build_url(base: str, path: str, params: Optional[Dict[str, Any]] = None) -> str:\n    if not base.endswith('/'):\n        base += '/'\n    if path.startswith('/'):\n        path= path[1:]\n    url = base + path\n    if params:\n        query = urllib.parse.urlencode(params)\n        url += '?' + query\n    return url\n\nclass HttpClient:\n    def __init__(self, base_url: str, timeout: float = 30.0, max_retries: int = 3, backoff_factor: float = 0.5):\n        self.base_url = base_url\n        self.timeout = timeout\n        self.max_retries = max_retries\n        self.backoff_factor = backoff_factor\n        self.default_headers = {}\n        self._pool = {}\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc_val, exc_tb):\n        self.close()\n        return False\n\n    def close(self):\n        for conn in self._pool.values():\n            try:\n                conn.close()\n            except Exception:\n                pass\n        self._pool.clear()\n\n    def _get_connection(self, host: str, port: int) -> HTTPConnection:\n        key = f\"{host}:{port}\"\n        if key in self._pool:\n            conn = self._pool[key]            if conn.sock is not None:\n                return conn\n            else:\n                del self._pool[key] conn = HTTPConnection(host, port, timeout=self.timeout)\n        self._pool[key] = conn\n        return conn\n\n    def _send_request(self, method: str, path: str, headers: Optional[Dict[str, str]] = None, body: Optional[bytes] = None) -> HttpResponse:\n        url = build_url(self.base_url, path)\n        parsed = urllib.parse.urlparse(url)\n        host = parsed.hostname or 'localhost'\n        port = parsed.port or (443 if parsed.scheme == 'https' else 80)\n        path_and_query = parsed.path\n        if parsed.query:\n            path_and_query += '?' + parsed.query\n\n        all_headers = dict(self.default_headers)\n        if headers:\n            all_headers.update(headers)\n\n        start_time = time.monotonic()\n\n        for attempt in range(self.max_retries + 1):\n            conn = self._get_connection(host, port)\n            try:\n                logger.debug(f\"Sending {method} request to {url} (attempt {attempt + 1})\")\n                conn.request(method, path_and_query, body=body, headers=all_headers)\n                response = conn.getresponse()\n                resp_headers = dict(response.getheaders())\n                raw_body = response.read()\n\n                elapsed = (time.monotonic() - start_time) * 1000\n\n                if response.getheader('Content-Encoding') == 'gzip':\n                    try:\n                        raw_body = gzip.decompress(raw_body)\n                    except Exception as e:\n                        logger.error(f\"Failed to decompress gzip body: {e}\")\n\n                json_data = None\n                if 'application/json' in resp_headers.get('Content-Type', ''):\n                    try:\n                        json_data = json.loads(raw_body)\n                    except Exception:\n                        pass\n\n                if response.status >= 500and attempt < self.max_retries:\n                    logger.warning(f\"Server error {response.status}, retrying...\")\n                    delay = self.backoff_factor * (2 ** attempt)\n                    time.sleep(delay)\n                    continue\n\n                if response.status >= 400:\n                    raise HttpClientError(\n                        f\"HTTP {response.status}: {response.reason}\",\n                        status_code=response.status,\n                        body=",
+          "ttft_s": 0.7295332499779761
+        },
+        {
+          "decode_elapsed_s": 23.92008770792745,
+          "decode_tok_s": 41.80586677650793,
+          "elapsed_s": 24.658842500066385,
+          "end_to_end_tok_s": 40.553403915747786,
+          "ended_at": 1780243851.7582998,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.6654411764705882,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 45,
+          "started_at": 1780243827.0993211,
+          "text": "```python\nimport json\nimport time\nimport gzip\nimport logging\nimport urllib.parse\nfrom http.client import HTTPConnection, HTTPException\nfrom dataclasses import dataclass, field\nfrom typing import Dict, Optional, Any, Union\n\nlogger = logging.getLogger(__name__)\n\n@dataclass\nclass HttpResponse:\n    status_code: int\n    headers: dict\n    body: bytes\n    json_data: Optional[dict] = None\n    elapsed_ms: float = 0.0\n\n    def text(self) -> str:\n        return self.body.decode('utf-8')\n\nclass HttpClientError(Exception):\n    def __init__(self, message: str, status_code: int = None, body: bytes = None):\n        super().__init__(message)\n        self.status_code = status_code\n        self.body = body\n\ndef build_url(base: str, path: str, params: Optional[Dict[str, Any]] = None) -> str:\n    if not base.endswith('/'):\n        base += '/'\n    if path.startswith('/'):\n        path = path[1:]    url = base + path\n    if params:\n        query = urllib.parse.urlencode(params)\n        separator = '&' if '?' in url else '?'\n        url += separator + query\n    return url\n\nclass HttpClient:\n    def __init__(self, base_url: str, timeout: float = 30.0, max_retries: int = 3, backoff_factor: float = 0.5):\n        self.base_url = base_url\n        self.timeout = timeout\n        self.max_retries = max_retries\n        self.backoff_factor = backoff_factor\n        self.default_headers = {'Accept': 'application/json'}\n        self._connection = None\n        self._closed = False\n\n    def _get_connection(self) -> HTTPConnection:\n        if self._closed:\n            raise RuntimeError(\"Client is closed\")\n        if self._connection is None or self._connection.sock is None:\n            parsed = urllib.parse.urlparse(self.base_url)\n            if parsed.scheme == 'https':\n                import ssl\n                context = ssl.create_default_context()\n                self._connection = HTTPConnection(parsed.hostname, parsed.port or 443, timeout=self.timeout, context=context)\n            else:\n                self._connection = HTTPConnection(parsed.hostname, parsed.port or 80, timeout=self.timeout)\n        return self._connection\n\n    def _send_request(self, method: str, path: str, params: Optional[Dict] = None, json=None, data=None,headers: Optional[Dict] = None) -> HttpResponse:\n        url = build_url(self.base_url, path, params)\n        \n        merged_headers = dict(self.default_headers)\n        if headers:\n            merged_headers.update(headers)\n        \n        body = None\n        if json is not None:\n            body = json.dumps(json).encode('utf-8')\n            merged_headers['Content-Type'] = 'application/json'\n        elif data is not None:\n            if isinstance(data, str):\n                body = data.encode('utf-8')\n            else:\n                body = data\n        \n        if body:\n            merged_headers['Content-Length'] = str(len(body))\n        \n        retries = 0\n        last_exception = None\n        \n       while retries <= self.max_retries:\n            try:\n                conn = self._get_connection()\n                start_time = time.time()\n                \n                logger.debug(f\"Sending {method} request to {url}\")\n                logger.debug(f\"Headers: {merged_headers}\")\n                logger.debug(f\"Body: {body}\")\n                \n                conn.request(method, url.split('?', 1)[0] if '?' in url else url, body=body, headers=merged_headers)\n                \n                if '?' in url:\n                    # For GET requests with params, the params are in URL\n                    pass\n                \n                response = conn.getresponse()\n                elapsed_ms = (time.time() - start_time) * 1000\n                \n                resp_body = response.read()\n                resp_headers = dict(response.getheaders())\n                \n                # Handle gzip decompression\n                content_encoding = resp_headers.get('Content-Encoding', '').lower()\n                if content_encoding == 'gzip':\n                    try:\n                        resp_body = gzip.decompress(resp_body)\n                    except Exception as e:\n                        logger.error(f\"Failed to decompress gzip response: {e}\")\n                \n                # Try to parse JSON\n                json_data = None\n                content_type = resp_headers.get('Content-Type', '')\n                if 'application/json' in content_type:\n                    try:\n                        json_data = json.loads(resp_body.decode",
+          "ttft_s": 0.7387547921389341
+        },
+        {
+          "decode_elapsed_s": 24.039886415936053,
+          "decode_tok_s": 41.59753431019123,
+          "elapsed_s": 24.725260083097965,
+          "end_to_end_tok_s": 40.44446839544446,
+          "ended_at": 1780243891.5076659,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.6529850746268657,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 46,
+          "started_at": 1780243866.782269,
+          "text": "```python\nimport json\nimport gzip\nimport time\nimport logging\nimport urllib.parse\nfrom dataclasses import dataclass, field\nfrom http.client import HTTPConnection, HTTPException\nfrom typing import Dict, Optional, Union, Any\n\nlogger = logging.getLogger(__name__)\n\n@dataclass\nclass HttpResponse:\n    status_code: int\n    headers: dict\n    body: bytes\n    json_data: Optional[dict] = None    elapsed_ms: float = 0.0\n\n    def text(self) -> str:\n        return self.body.decode(\"utf-8\")\n\nclass HttpClientError(Exception):\n    def __init__(self, message: str, status_code: int = None, body: bytes = None):\n        super().__init__(message)\n        self.status_code = status_code\n        self.body = body\n\ndef build_url(base: str, path: str, params: Optional[Dict] = None) -> str:\n    if not base.endswith(\"/\"):\n        base += \"/\"\n    if path.startswith(\"/\"):\n        path =path[1:]\n    url = base + path\n    if params:\n        query = urllib.parse.urlencode(params)\n        url += \"?\" + query\n    return url\n\nclass HttpClient:\n    def __init__(self, base_url: str, timeout: float = 30.0, max_retries: int = 3, backoff_factor: float = 0.5):\n        self.base_url = base_url.rstrip(\"/\")\n        self.timeout = timeout\n        self.max_retries = max_retries\n        self.backoff_factor = backoff_factor\n        self.default_headers = {\"Accept\": \"application/json\"}\n        self._connection = None\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc_val, exc_tb):\n        self.close()\n        return False\n\n    def close(self):\n        if self._connection:\n            self._connection.close()\n            self._connection = None\n\n    def _get_connection(self):\n        if self._connection is None:\n            parsed = urllib.parse.urlparse(self.base_url)\n            host = parsed.hostname\n            port = parsed.port\n            if parsed.scheme == \"https\":\n                import ssl\n                context = ssl.create_default_context()\n                self._connection = HTTPConnection(host, port=port, timeout=self.timeout, context=context)\n            else:\n                self._connection = HTTPConnection(host, port=port, timeout=self.timeout)\n        return self._connection\n\n    def _send_request(self, method: str, path: str, headers: dict, body: bytes = None) -> HttpResponse:\n        last_exception = None\n        for attempt in range(self.max_retries + 1):\n            try:\n                conn = self._get_connection()\n                full_headers = {**self.default_headers, **headers}\n                start_time = time.time()\n                conn.request(method, path, body=body, headers=full_headers)\n                response = conn.getresponse()\n                raw_body = response.read()\n                elapsed_ms = (time.time() - start_time) * 1000\n\n                resp_headers = dict(response.getheaders())\n                content_encoding = resp_headers.get(\"Content-Encoding\", \"\")\n\n                if \"gzip\" in content_encoding:\n                    raw_body = gzip.decompress(raw_body)\n\n                json_data = None\n                try:\n                    json_data = json.loads(raw_body)\n                except (json.JSONDecodeError, UnicodeDecodeError):\n                    pass\n\n                logger.debug(f\"Request {method} {path} completed with status {response.status} in {elapsed_ms:.2f}ms\")\n\n                return HttpResponse(\n                    status_code=response.status,\n                    headers=resp_headers,\n                    body=raw_body,\n                    json_data=json_data,\n                    elapsed_ms=elapsed_ms\n                )\n            except (HTTPException, ConnectionError, OSError) as e:\n                last_exception = e\n                logger.debug(f\"Request {method} {path} failed with {type(e).__name__}: {e}. Retry {attempt + 1}/{self.max_retries}\")\n                ifattempt < self.max_retries:\n                    delay = self.backoff_factor * (2 ** attempt)\n                    time.sleep(delay)\n                else:\n                    raise HttpClientError(f\"Request failed after {self.max_retries} retries: {e}\", body=None) from e\n\n    def get(self, path: str, params: Optional[Dict] = None,headers: Optional[Dict] = None) -> HttpResponse:\n        if headers is None:\n            headers = {}\n        url = build_url(self.base_url,",
+          "ttft_s": 0.6853736671619117
+        },
+        {
+          "decode_elapsed_s": 22.867378332884982,
+          "decode_tok_s": 43.73041742882812,
+          "elapsed_s": 23.606676207855344,
+          "end_to_end_tok_s": 42.36089787461229,
+          "ended_at": 1780243930.139926,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.7180451127819549,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 47,
+          "started_at": 1780243906.533119,
+          "text": "```python\nimport json\nimport time\nimport gzip\nimport logging\nimport urllib.parse\nfrom http.client import HTTPConnection, HTTPException\nfrom typing import Dict, Optional, Any, Union\nfrom dataclasses import dataclass\nfrom contextlib import contextmanager\n\nlogger = logging.getLogger(__name__)\n\n@dataclass\nclass HttpResponse:\n    status_code: int\n    headers: dict\n    body: bytes\n    json_data: Optional[dict]    elapsed_ms: float\n    method: str\n\n    def text(self) -> str:\n        return self.body.decode('utf-8')\n\nclass HttpClientError(Exception):\n    def __init__(self, message: str, status_code: int = None, body: bytes = None):\n        super().__init__(message)\n        self.status_code = status_code\n        self.body = body\n\ndef build_url(base: str, path: str,params: Optional[Dict[str, Any]] = None) -> str:\n    if not base.endswith('/'):\n        base += '/'\n    if path.startswith('/'):\n        path =path[1:]\n    url = base + path\n    if params:\n        query = urllib.parse.urlencode(params, doseq=True)\n        if '?' in url:\n            url += '&' + query\n        else:\n            url += '?' + query\n    return url\n\nclass HttpClient:\n    def __init__(self, base_url: str, timeout: float = 30.0, max_retries: int = 3, backoff_factor: float = 0.5):\n        self.base_url = base_url.rstrip('/')\n        self.timeout = timeout\n        self.max_retries = max_retries\n        self.backoff_factor = backoff_factor\n        self.default_headers = {}\n        self._connections = {}\n        self._closed = False\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc_val, exc_tb):\n        self.close()\n        return False\n\n    def close(self):\n        for conn in self._connections.values():\n            try:\n                conn.close()\n            except Exception:\n                pass\n        self._connections.clear()\n        self._closed = True\n\n    def _get_connection(self, host: str, port: int, timeout: float) -> HTTPConnection:\n        if self._closed:\n            raise RuntimeError(\"HttpClient is closed\")\n        key = (host, port, timeout)\n        if key in self._connections:\n            conn = self._connections[key]            try:\n                if conn.sock is None:\n                    conn.connect()\n                return conn\n            except Exception:\n                del self._connections[key] conn = HTTPConnection(host, port, timeout=timeout)\n        self._connections[key] = conn\n        return conn\n\n    def _send_request(self, method: str, url: str, headers: dict, body: Optional[bytes] = None) -> HttpResponse:\n        parsed = urllib.parse.urlparse(url)\n        host = parsed.hostname or self.base_url.split('//')[-1].split('/')[0]        port = parsed.port or 80 if parsed.scheme != 'https' else 443\n        \n        conn = self._get_connection(host, port, self.timeout)\n        \n        all_headers = dict(self.default_headers)\n        all_headers.update(headers)\n        \n        start_time = time.time()\n        \n        try:\n            conn.request(method, parsed.path + ('?' + parsed.query if parsed.query else ''), body, all_headers)\n            response = conn.getresponse()\n            \n            status_code = response.status\n            resp_headers = dict(response.getheaders())\n            raw_body = response.read()\n            \n            elapsed_ms = (time.time() - start_time) * 1000\n            \n            logger.debug(f\"Request {method} {url} completed with status {status_code}, elapsed {elapsed_ms:.2f}ms\")\n            \n            if resp_headers.get('Content-Encoding', '').lower() == 'gzip':\n                raw_body = gzip.decompress(raw_body)\n            \n            json_data = None\n            try:\n                if raw_body:\n                    json_data = json.loads(raw_body.decode('utf-8'))\n            except (json.JSONDecodeError, UnicodeDecodeError):\n                json_data = None\n            \n            return HttpResponse(\n                status_code=status_code,\n                headers=resp_headers,\n                body=raw_body,\n                json_data=json_data,\n                elapsed_ms=elapsed_ms,\n                method=method\n            )\n        except (HTTPException, OSError) as e:\n            elapsed_ms = (time.time() - start_time)",
+          "ttft_s": 0.7392978749703616
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.6654411764705882,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 41.814975381980354,
+          "p10": 41.59753431019123,
+          "p90": 43.73041742882812,
+          "values": [
+            41.814975381980354,
+            42.488295364019834,
+            41.80586677650793,
+            41.59753431019123,
+            43.73041742882812
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 40.580327974489215,
+          "p10": 40.44446839544446,
+          "p90": 42.36089787461229,
+          "values": [
+            40.580327974489215,
+            41.21089668636645,
+            40.553403915747786,
+            40.44446839544446,
+            42.36089787461229
+          ]
+        },
+        "generated_tokens": 5000,
+        "runs": 5,
+        "valid_runs": 5
+      }
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_config_loader",
+      "prompt_sha256": "0ca971aa34be4af117e184634ae5bccd69652436cbcff2c88cdcfac816119e32",
+      "runs": [
+        {
+          "decode_elapsed_s": 22.631350958021358,
+          "decode_tok_s": 44.18649164404233,
+          "elapsed_s": 23.3632519999519,
+          "end_to_end_tok_s": 42.802260575799075,
+          "ended_at": 1780243991.122557,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.7320754716981132,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 1043,
+          "started_at": 1780243967.759176,
+          "text": "```python\nimport os\nimport sys\nimport json\nfrom typing import Any, List, Optional\n\nConfigError = Exception\n\ndef _coerce_value(value: Any) -> Any:\n    if isinstance(value, str):\n        lower = value.lower()\n        if lower == 'true':\n            return True\n        if lower == 'false':\n            return False\n        if lower in ('null', 'none'):\n            return None\n        try:\n            return int(value)\n        except ValueError:\n            pass\n        try:\n            return float(value)\n        except ValueError:\n            pass\n    return value\n\ndef _deep_merge(base: dict, override: dict) -> dict:\n    result = base.copy()\n    for key, value in override.items():\n        if key in result and isinstance(result[key], dict) and isinstance(value, dict):\nresult[key] = _deep_merge(result[key], value)\n        else:\n            result[key] = value\n    return result\n\ndef _coerce_dict(d: dict) -> dict:\n    result = {}\n    for k, v in d.items():\n        if isinstance(v, dict):\n            result[k] = _coerce_dict(v)\n        else:\n            result[k] = _coerce_value(v)\n    return result\n\nclass Config:\n    def __init__(self, data: dict, path: str = ''):\n        self._data = _coerce_dict(data)\n        self._path = path\n\n    def get(self, key: str, default=None):\n        return self._data.get(key, default)\n\n    def require(self, key: str) -> Any:\n        if key not in self._data:\n            raise ConfigError(f\"Missing required config key: {self._path + '.' + key if self._path else key}\")\n        return self._data[key] def section(self, key: str) -> 'Config':\n        val = self._data.get(key)\n        if val is None:\n            return Config({}, path=self._path + '.' + key if self._path else key)\n        if isinstance(val, dict):\n            return Config(val, path=self._path + '.' + key if self._path else key)\n        raise ConfigError(f\"Expected dict for section '{key}', got {type(val).__name__}\")\n\n    def set(self, key: str, value: Any):\n        self._data[key] = _coerce_value(value)\n\n    def update(self, data: dict):\n        self._data = _deep_merge(self._data, _coerce_dict(data))\n\n    def to_dict(self) -> dict:\n        return self._data\n\n    def __getattr__(self, name: str) -> Any:\n        if name.startswith('_'):\n            raise AttributeError(name)\n        if name in self._data:\n            val = self._data[name]            if isinstance(val, dict):\n                return Config(val, path=self._path + '.' + name if self._path else name)\n            return val\n        raise AttributeError(name)\n\nclass ConfigLoader:\n    @staticmethod\n    def load_file(path: str) -> Config:\n        ext = os.path.splitext(path)[1].lower()\n        with open(path, 'r') as f:\n            if ext == '.json':\n                data = json.load(f)\n            elif ext == '.yaml':\n                try:\n                    import yaml\n                    data = yaml.safe_load(f)\n                except ImportError:\n                    data = {}\n            elif ext == '.toml':\n                if sys.version_info >= (3, 11):\n                    import tomllib\n                    with open(path, 'rb') as fb:\n                        data = tomllib.load(fb)\n                else:\n                    data = {}\n            else:\n                data = {}\n        if data is None:\n            data = {}\n        return Config(data)\n\n    @staticmethod\n    def load_env(prefix: str = '', separator: str = '__') -> Config:\n        data = {}\n        for key, value in os.environ.items():\n            if prefix and not key.startswith(prefix):\n                continue\n            if prefix:\n                relative_key= key[len(prefix):] if relative_key and relative_key[0] ==separator[0]: relative_key = relative_key[len(separator):]\n            else:\n                relative_key = key\n            if not relative_key:\n                continue\n            parts = relative_key.split(separator)\n            current = data\n            forpart in parts[:-1]: if part not in current:current[part] = {}\n",
+          "ttft_s": 0.7319010419305414
+        },
+        {
+          "decode_elapsed_s": 20.90298679191619,
+          "decode_tok_s": 47.8400531921462,
+          "elapsed_s": 21.65516991703771,
+          "end_to_end_tok_s": 46.178349273224896,
+          "ended_at": 1780244027.801547,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.8269230769230769,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 1044,
+          "started_at": 1780244006.146256,
+          "text": "```python\nimport os\nimport json\nimport re\nfrom typing import Any, Optional, List\n\ntry:\n    import yaml\n    HAS_YAML = True\nexcept ImportError:\n    HAS_YAML = False\n\ntry:\n    import tomllib\n    HAS_TOML = True\nexcept ImportError:\n    HAS_TOML = False\n\n\nclass ConfigError(Exception):\n    pass\n\n\ndef _coerce_value(value: Any) -> Any:\n    if isinstance(value, str):\n        lower = value.lower()\n        if lower == 'true':\n            return True\n        if lower == 'false':\n            return False\n        if lower in ('null', 'none'):\n            return None\n        if re.match(r'^-?\\d+$', value):\n            return int(value)\n        if re.match(r'^-?\\d+\\.\\d+$', value):\n            return float(value)\n    return value\n\n\nclass Config:\n    def __init__(self, data: dict, path: str = ''):\n        self._data = {}\n        self._path = path\n        if data:\n            for k, v in data.items():\n                if isinstance(v, dict):\n                    self._data[k] = Config(v, path=f\"{path}.{k}\" if path else k)\n                else:\n                    self._data[k] = _coerce_value(v)\n\n    def get(self, key: str, default=None):\n        if key in self._data:\n            return self._data[key]        return default\n\n    def require(self, key: str) -> Any:\n        if key not in self._data:\n            raise ConfigError(f\"Missing required config key: {self._path}.{key}\" if self._path else f\"Missing required config key: {key}\")\n        return self._data[key] def section(self, key: str) -> 'Config':\n        val = self.get(key)\n        if isinstance(val, Config):\n            return val\n        raise ConfigError(f\"Key '{key}' is not a section\")\n\n    def set(self, key: str, value: Any):\n       self._data[key] = _coerce_value(value)\n\n    def update(self, data: dict):\n        for k, v in data.items():\n            if isinstance(v, dict):\n                if k in self._data and isinstance(self._data[k], Config):\n                    self._data[k].update(v)\n                else:\n                    self._data[k] = Config(v, path=f\"{self._path}.{k}\" if self._path else k)\n            else:\n                self._data[k] = _coerce_value(v)\n\n    def to_dict(self) -> dict:\n        result = {}\n        for k, v in self._data.items():\n            if isinstance(v, Config):result[k] = v.to_dict()\n            else:\n               result[k] = v\n        return result\n\n    def __getattr__(self, name: str):\n        if name.startswith('_'):\n            raise AttributeError(name)\n        if name in self._data:\n            return self._data[name] raise AttributeError(f\"Config has no attribute '{name}'\")\n\n\ndef _deep_merge(base: dict, override: dict) -> dict:\n    result = base.copy()\n    for k, v in override.items():\n        if k in result and isinstance(result[k], dict) and isinstance(v, dict):\nresult[k] = _deep_merge(result[k], v)\n        else:\n            result[k] = v\n    return result\n\n\nclass ConfigLoader:\n    def load_file(self, path: str) -> Config:\n        if not os.path.exists(path):\n            raise ConfigError(f\"File not found: {path}\")\n        \n        ext = os.path.splitext(path)[1].lower()\n        \n        with open(path, 'r') as f:\n            if ext == '.json':\n                data = json.load(f)\n            elif ext == '.yaml' or ext == '.yml':\n                if HAS_YAML:\n                    data = yaml.safe_load(f)\n                else:\n                    raise ConfigError(\"PyYAML is required for YAML files\")\n            elif ext == '.toml':\n                if HAS_TOML:\n                    with open(path, 'rb') as fb:\n                        data = tomllib.load(fb)\n                else:\n                    raise ConfigError(\"tomllib is available only in Python 3.11+\")\n            else:\n                raise ConfigError(f\"Unsupported file format: {ext}\")\n        \n        if data is None:\n            data =",
+          "ttft_s": 0.752183125121519
+        },
+        {
+          "decode_elapsed_s": 22.205504041165113,
+          "decode_tok_s": 45.03387980503281,
+          "elapsed_s": 23.003349291160703,
+          "end_to_end_tok_s": 43.47193042815992,
+          "ended_at": 1780244065.829864,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.7366412213740458,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 1045,
+          "started_at": 1780244042.826387,
+          "text": "```python\nimport os\nimport json\nimport re\nimport sys\nfrom typing import Any, List, Optional\n\ntry:\n    import yaml\n    HAS_YAML = True\nexcept ImportError:\n    HAS_YAML = False\n\nif sys.version_info >= (3, 11):\n    import tomllib\n    HAS_TOML = True\nelse:\n    HAS_TOML = False\n\n\nclass ConfigError(Exception):\n    pass\n\n\nclass Config:\n    def __init__(self, data: dict, path: str = ''):\n        self._data = {}\n        self._path = path\n        for k, v in data.items():\n            self._set_raw(k, v)\n\n    def _set_raw(self, key: str, value: Any):\n        if isinstance(value, dict):\n            new_path = f\"{self._path}.{key}\" if self._path else key\n            self._data[key] = Config(value, new_path)\n        else:\n            self._data[key] = coerce_value(value)\n\n    def get(self, key: str, default=None):\n        if key in self._data:\n            return self._data[key] return default\n\n    def require(self, key: str) -> Any:\n        if key not in self._data:\n            path = f\"{self._path}.{key}\" if self._path else key\n            raise ConfigError(f\"Missing required configuration key: {path}\")\n        return self._data[key] def section(self, key: str) -> 'Config':\n        val = self.get(key)\n        if isinstance(val, Config):\n            return val\n        raise ConfigError(f\"Key '{key}' is not a section\")\n\n    def set(self, key: str, value: Any):\n        self._set_raw(key, value)\n\n    def update(self, data: dict):\n        for k, v in data.items():\n            self._set_raw(k, v)\n\n    def to_dict(self) -> dict:\n        result = {}\n        for k, v in self._data.items():\n            if isinstance(v, Config):\n               result[k] = v.to_dict()\n            else:result[k] = v        return result\n\n    def __getattr__(self, name: str):\n        if name.startswith('_'):\n            raise AttributeError(name)\n        if name in self._data:\n            return self._data[name]        raise AttributeError(f\"Config has no attribute '{name}'\")\n\n\nclass ConfigLoader:\n    @staticmethod\n    def load_file(path: str) -> Config:\n        if not os.path.exists(path):\n            raise ConfigError(f\"File not found: {path}\")\n\n        ext = os.path.splitext(path)[1].lower()\n        with open(path, 'rb') as f:\n            if ext == '.json':\n                data = json.load(f)\n            elif ext == '.yaml' or ext == '.yml':\n                if HAS_YAML:\n                    with open(path, 'r') as rf:\n                        data = yaml.safe_load(rf)\n                else:\n                    raise ConfigError(\"PyYAML is not installed, cannot load YAML files\")\n            elif ext == '.toml':\n                if HAS_TOML:\n                    data = tomllib.load(f)\n                else:\n                    raise ConfigError(\"Python 3.11+ required for TOML support\")\n            else:\n                raise ConfigError(f\"Unsupported file format: {ext}\")\n\n        if data is None:\n            data = {}\n        if not isinstance(data, dict):\n            raise ConfigError(f\"Root of config file must be a dictionary\")\n\n        return Config(data)\n\n    @staticmethod\n    def load_env(prefix: str = '', separator: str = '__') -> Config:\n        data = {}\n        for key, value in os.environ.items():\n            if prefix and not key.startswith(prefix):\n                continue\n\n            if prefix:\n                local_key = key[len(prefix):]                if local_key.startswith(separator):\n                    local_key =local_key[len(separator):] else:\n                    continue\n            else:\n                local_key = key\n\n            if separator in local_key:\n                parts = local_key.split(separator)\n                nested = data\n                for part in parts[:-1]:                    if part not in nested:nested[part] = {}\n                    nested= nested[part]\n                nested[parts[-1]] = value            else:\ndata[local_key] = value\n\n        return Config(data)\n\n    @staticmethod\n    def load_defaults(defaults",
+          "ttft_s": 0.7978452499955893
+        },
+        {
+          "decode_elapsed_s": 23.726174332899973,
+          "decode_tok_s": 42.147544984247496,
+          "elapsed_s": 24.513917374890298,
+          "end_to_end_tok_s": 40.79315373006454,
+          "ended_at": 1780244105.363708,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.7169811320754716,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 1046,
+          "started_at": 1780244080.8496552,
+          "text": "```python\nimport os\nimport json\nimport copy\nfrom typing import Any, List, Dict, Optional, Union\n\ntry:\n    import tomllib\nexcept ImportError:\n    tomllib = None\n\ntry:\n    import yaml\nexcept ImportError:\n    yaml = None\n\n\nclass ConfigError(Exception):\n    pass\n\n\nclass Config:\n    def __init__(self, data: dict, path: str = ''):\n        self._data = data\n        self._path = path\n\n    def _coerce(self, value: Any) -> Any:\n        if isinstance(value, str):\n            if value.lower() == 'true':\n                return True\n            if value.lower() == 'false':\n                return False\n            if value.lower() in ('null', 'none'):\n                return None\n            try:\n                return int(value)\n            except ValueError:\n                pass\n            try:\n                return float(value)\n            except ValueError:\n                pass\n        return value\n\n    def _get_raw(self, key: str):\n        keys = key.split('.')\n        current = self._data\n        current_path = self._path\n        for k in keys:\n            if isinstance(current, dict) and k in current:\n                current= current[k]\n                current_path = f\"{current_path}.{k}\" if current_path else k\n            else:\n                raise KeyError(key)\n        return current\n\n    def get(self, key: str, default=None):\n        try:\n            value = self._get_raw(key)\n            return self._coerce(value)\n        except KeyError:\n            return default\n\n    def require(self, key: str) -> Any:\n        value = self.get(key)\n        if value is None and key not in self._data:\n            raise ConfigError(f\"Missing required key: {key}\")\n        return value\n\n    def section(self, key: str) -> 'Config':\n        try:\n            value = self._get_raw(key)\n            if not isinstance(value, dict):\n                raise ConfigError(f\"Key '{key}' is not a dictionary\")\n            new_path = f\"{self._path}.{key}\" if self._path else key\n            return Config(value, new_path)\n        except KeyError:\n            raise ConfigError(f\"Section '{key}' not found\")\n\n    def set(self, key: str, value: Any):\n        keys = key.split('.')\n        current = self._data\n        for k in keys[:-1]:            if k not in current ornot isinstance(current[k], dict):current[k] = {}\n           current = current[k]\n        current[keys[-1]] = value\n\n    def update(self, data: dict):\n        self._deep_update(self._data, data)\n\n    def _deep_update(self, base: dict, update: dict):\n        for k, v in update.items():\n            if k in base andisinstance(base[k], dict) and isinstance(v, dict):\n                self._deep_update(base[k], v)            else:\nbase[k] = v\n\n    def to_dict(self) -> dict:\n        return copy.deepcopy(self._data)\n\n    def __getattr__(self, name: str):\n        if name.startswith('_'):\n            raise AttributeError(name)\n        try:\n            value = self._get_raw(name)\n            if isinstance(value, dict):\n                new_path = f\"{self._path}.{name}\" if self._path else name\n                return Config(value, new_path)\n            return self._coerce(value)\n        except KeyError:\n            raise AttributeError(name)\n\n\nclass ConfigLoader:\n    def load_file(self, path: str) -> Config:\n        with open(path, 'r') as f:\n            content = f.read()\n        \n        if path.endswith('.json'):\n            data = json.loads(content)\n        elif path.endswith(('.yaml', '.yml')):\n            if yaml is None:\n                raise ConfigError(\"PyYAML is not installed\")\n            data = yaml.safe_load(content)\n            if data is None:\n                data = {}\n        elif path.endswith('.toml'):\n            if tomllib is None:\n                raise ConfigError(\"tomllib is not available (requires Python 3.11+)\")\n            with open(path, 'rb') as fb:\n                data = tomllib.load(fb)\n        else:\n            raise ConfigError(f\"Unsupported file format: {path}\")\n        \n        return Config(data, path)\n\n    def load_env(self, prefix: str = '', separator: str = '__') -> Config:\n        data =",
+          "ttft_s": 0.7877430419903249
+        },
+        {
+          "decode_elapsed_s": 22.065478625008836,
+          "decode_tok_s": 45.31966049748896,
+          "elapsed_s": 22.864099125145003,
+          "end_to_end_tok_s": 43.73668931920614,
+          "ended_at": 1780244143.2568462,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.7480916030534351,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 1047,
+          "started_at": 1780244120.39262,
+          "text": "```python\nimport os\nimport json\nimport re\nfrom typing import Any, List, Dict, Optional\n\ntry:\n    import tomllib\nexcept ImportError:\n    tomllib = None\n\ntry:\n    import yaml\nexcept ImportError:\n    yaml = None\n\n\nclass ConfigError(Exception):\n    pass\n\n\nclass Config:\n    def __init__(self, data: dict, path: str = ''):\n        self._data = {}\n        self._path = path\n        if isinstance(data, dict):\n            for k, v in data.items():\n                self._set_raw(k, v)\n\n    def _set_raw(self, key: str, value: Any):\n        key = self._normalize_key(key)\n        if isinstance(value, dict):\n            self._data[key] = Config(value, path=f'{self._path}.{key}' if self._path else key)\n        else:\n            self._data[key] = self._coerce(value)\n\n    def _normalize_key(self, key: str) -> str:\n        return key.lower().replace('-', '_')\n\n    def _coerce(self, value: Any) -> Any:\n        if isinstance(value, str):\n            if value.lower() in ('true', 'false'):\n                return value.lower() == 'true'\n            if value.lower() in ('null', 'none'):\n                return None\n            try:\n                return int(value)\n            except (ValueError, TypeError):\n                pass\n            try:\n                return float(value)\n            except (ValueError, TypeError):\n                pass\n        return value\n\n    def get(self, key: str, default=None):\n        key = self._normalize_key(key)\n        if key in self._data:\n            returnself._data[key]\n        return default\n\n    def require(self, key: str) -> Any:\n        val = self.get(key)\n        if val is None:\n            raise ConfigError(f\"Missing required configuration key: {key}\")\n        return val\n\n    def section(self, key: str) -> 'Config':\n        key = self._normalize_key(key)\n        if key in self._data and isinstance(self._data[key], Config):\n            returnself._data[key]\n        return Config({})\n\n    def set(self, key: str, value: Any):\n        key = self._normalize_key(key)\n        if isinstance(value, dict):\n            self._data[key] = Config(value)\n        else:\n            self._data[key] = self._coerce(value)\n\n    def update(self, data: dict):\n        if isinstance(data, dict):\n            for k, v in data.items():\n                self._set_raw(k, v)\n\n    def to_dict(self) -> dict:\n        result = {}\n        for k, v in self._data.items():\n            if isinstance(v, Config):result[k] = v.to_dict()\n            else:\n               result[k] = v\n        return result\n\n    def __getattr__(self, name: str):\n        if name.startswith('_'):\n            raise AttributeError(name)\n        key = self._normalize_key(name)\n        if key in self._data:\n            returnself._data[key]\n        raise AttributeError(f\"Config has no attribute '{name}'\")\n\n    def __contains__(self, key: str):\n        return self._normalize_key(key) in self._data\n\n\nclass ConfigLoader:\n    @staticmethod\n    def load_file(path: str) -> Config:\n        with open(path, 'r') as f:\n            content = f.read()\n\n        if path.endswith('.json'):\n            data = json.loads(content)\n        elif path.endswith('.yaml') or path.endswith('.yml'):\n            if yaml is None:\n                raise ConfigError(\"PyYAML is not installed. Cannot load YAML files.\")\n            data = yaml.safe_load(content)\n            if data is None:\n                data = {}\n        elif path.endswith('.toml'):\n            if tomllib is None:\n                raise ConfigError(\"tomllib is not available (Python 3.11+ required). Cannot load TOML files.\")\n            with open(path, 'rb') as fb:\n                data = tomllib.load(fb)\n        else:\n            raise ConfigError(f\"Unsupported file format: {path}\")\n\n        if not isinstance(data, dict):\n            raise ConfigError(\"Configuration file must contain a mapping at the top level.\")\n\n        return Config(data)\n\n    @staticmethod\n    def load_env(prefix: str = '', separator: str = '__') -> Config:\n        data = {}",
+          "ttft_s": 0.7986205001361668
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.7366412213740458,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 45.03387980503281,
+          "p10": 42.147544984247496,
+          "p90": 47.8400531921462,
+          "values": [
+            44.18649164404233,
+            47.8400531921462,
+            45.03387980503281,
+            42.147544984247496,
+            45.31966049748896
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 43.47193042815992,
+          "p10": 40.79315373006454,
+          "p90": 46.178349273224896,
+          "values": [
+            42.802260575799075,
+            46.178349273224896,
+            43.47193042815992,
+            40.79315373006454,
+            43.73668931920614
+          ]
+        },
+        "generated_tokens": 5000,
+        "runs": 5,
+        "valid_runs": 5
+      }
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_event_bus",
+      "prompt_sha256": "9f3d155bcce8fa9cd8ef369bda1ef815fd52fc1f8a0e39ca0d4eb2349169e083",
+      "runs": [
+        {
+          "decode_elapsed_s": 21.33889495790936,
+          "decode_tok_s": 46.862782818533226,
+          "elapsed_s": 22.135730916867033,
+          "end_to_end_tok_s": 45.175829239865664,
+          "ended_at": 1780244202.618221,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.8015267175572519,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 2043,
+          "started_at": 1780244180.482367,
+          "text": "```python\nimport asyncio\nimport time\nimport uuid\nfrom collections import deque\nfrom dataclasses import dataclass, field\nfrom typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple\n\n@dataclass\nclass Event:\n    type: str\n    payload: Any\n    timestamp: float = field(default_factory=time.time)\n    source: Optional[str] = None\n\nclass EventBus:\n    def __init__(self):\n        self._subscribers: Dict[str, List[Tuple[int, Callable, str,bool]]] = {}\n        self._async_subscribers: Dict[str, List[Tuple[int, Callable, str,bool]]] = {}\n        self._middleware:List[Callable[[Event], Optional[Event]]]= [] self._total_published: int = 0\n        self._total_delivered: int = 0\n        self._total_dropped: int = 0\n\n    def subscribe(self, event_type: str, handler: Callable, priority: int = 0) -> str:\n        subscription_id = str(uuid.uuid4())\n        if event_type not in self._subscribers:\n            self._subscribers[event_type] = []        self._subscribers[event_type].append((priority, handler, subscription_id, False))\n        self._subscribers[event_type].sort(key=lambda x: x[0], reverse=True)\n        return subscription_id\n\n    def subscribe_async(self, event_type: str, handler: Callable, priority: int = 0) -> str:\n        subscription_id = str(uuid.uuid4())\n        if event_type not in self._async_subscribers:\n            self._async_subscribers[event_type] = []\n        self._async_subscribers[event_type].append((priority, handler, subscription_id, False))\n        self._async_subscribers[event_type].sort(key=lambda x:x[0], reverse=True)\n        return subscription_id\n\n    def unsubscribe(self, subscription_id: str) -> bool:\n        found = False\n        for event_type in list(self._subscribers.keys()):\n            self._subscribers[event_type] = [\n                sub for sub in self._subscribers[event_type] if sub[2] != subscription_id\n           ]\n            if not self._subscribers[event_type]:\n                del self._subscribers[event_type] else:\n                found = True\n        for event_type in list(self._async_subscribers.keys()):\n            self._async_subscribers[event_type] =[\n                sub for sub in self._async_subscribers[event_type] ifsub[2] != subscription_id\n] if not self._async_subscribers[event_type]: del self._async_subscribers[event_type]\n            else:\n                found = True\n        return found\n\n    def _apply_middleware(self, event: Event) ->Optional[Event]:\n        current_event = event\n        for mw in self._middleware:\n            result = mw(current_event)\n            if result is None:\n                self._total_dropped += 1\n                return None\n            current_event = result\n        return current_event\n\n    def publish(self, event: Event) -> int:\n        self._total_published += 1\n        event = self._apply_middleware(event)\n        if event is None:\n            return 0\n        handler_count = 0\n        if event.type in self._subscribers:\n            for priority, handler, sub_id, is_once in self._subscribers[event.type]:\n                try:\n                    handler(event)\n                    handler_count += 1\n                    self._total_delivered += 1\n                except Exception:\n                    pass\n                if is_once:\n                    self.unsubscribe(sub_id)\n        return handler_count\n\n    def publish_async(self, event: Event) -> Coroutine[Any, Any, int]:\n        async def _publish():\n            self._total_published += 1\n            event = self._apply_middleware(event)\n            if event is None:\n                return 0\n            handler_count = 0\n            if event.type in self._async_subscribers:\n                for priority, handler, sub_id, is_once in self._async_subscribers[event.type]:\n                    try:\n                        await handler(event)\n                        handler_count += 1\n                        self._total_delivered += 1\n                    except Exception:\n                        pass\n                    if is_once:\n                        self.unsubscribe(sub_id)\n            return handler_count\n        return _publish()\n\n    def publish_and_wait(self, event: Event, timeout: float = 5.0) ->List[Any]:        results:List[Any] =[]\n        event = self._",
+          "ttft_s": 0.7968359589576721
+        },
+        {
+          "decode_elapsed_s": 21.632565415930003,
+          "decode_tok_s": 46.22660238270261,
+          "elapsed_s": 22.428704207995906,
+          "end_to_end_tok_s": 44.58572330912887,
+          "ended_at": 1780244240.0718908,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.7884615384615384,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 2044,
+          "started_at": 1780244217.643063,
+          "text": "```python\nimport asyncio\nimport time\nimport uuid\nfrom collections import deque\nfrom dataclasses import dataclass, field\nfrom typing import Any, Callable, Coroutine, TypeVar, Union\n\nT = TypeVar('T')\n\n@dataclass\nclass Event:\n    type: str\n    payload: Any\n    timestamp: float = field(default_factory=time.time)\n    source: str | None = None\n\nclass EventBus:\n    def __init__(self):\n        self._subscribers = {}\n        self._async_subscribers = {}\n        self._once_subscribers = {}\n        self._middlewares= [] self._stats = {\n            \"total_published\": 0,\n            \"total_delivered\": 0,\n            \"total_dropped\": 0,\n            \"subscribers_by_type\": {}\n        }\n\n    def subscribe(self, event_type: str, handler: Callable, priority: int = 0) -> str:\n        sub_id = str(uuid.uuid4())\n        if event_type not in self._subscribers:\n            self._subscribers[event_type] = []        self._subscribers[event_type].append({\"id\": sub_id, \"handler\": handler, \"priority\": priority})\n        self._update_stats_subscribers()\n        return sub_id\n\n    def subscribe_async(self, event_type: str, handler: Callable, priority: int = 0) -> str:\n        sub_id = str(uuid.uuid4())\n        if event_type not in self._async_subscribers:\n            self._async_subscribers[event_type] = []\n        self._async_subscribers[event_type].append({\"id\": sub_id, \"handler\": handler, \"priority\": priority})\n        self._update_stats_subscribers()\n        return sub_id\n\n    def unsubscribe(self, subscription_id: str) -> bool:\n        for event_type in list(self._subscribers.keys()):\n            subs = self._subscribers[event_type]\n            for i, sub in enumerate(subs):\nif sub[\"id\"] == subscription_id:\n                    subs.pop(i)\n                    if not subs:\n                        del self._subscribers[event_type]                    self._update_stats_subscribers()\n                    return True\n        for event_type in list(self._async_subscribers.keys()):\n            subs = self._async_subscribers[event_type] for i, sub in enumerate(subs):\n                ifsub[\"id\"] == subscription_id:\n                    subs.pop(i)\n                    if not subs:\n                        del self._async_subscribers[event_type]                    self._update_stats_subscribers()\n                    return True\n        for event_type in list(self._once_subscribers.keys()):\n            subs = self._once_subscribers[event_type] for i, sub in enumerate(subs):\n                ifsub[\"id\"] == subscription_id:\n                    subs.pop(i)\n                    if not subs:\n                        del self._once_subscribers[event_type]                    self._update_stats_subscribers()\n                    return True\n        return False\n\n    def publish(self, event: Event) -> int:\n        self._stats[\"total_published\"] +=1\n        event = self._apply_middleware(event)\n        if event is None:\n            self._stats[\"total_dropped\"] += 1\n            return 0\n        \n        handlers = self._get_handlers(event.type)\n        count = 0\n        for handler_info in handlers:\n            try:\nhandler_info[\"handler\"](event)\n                count += 1\n               self._stats[\"total_delivered\"] += 1\n                if \"once\" in handler_infoand handler_info[\"once\"]: self._remove_handler(event.type, handler_info[\"id\"])\n            except Exception:\n                pass\n        return count\n\n    async def publish_async(self, event: Event) -> int:\n        self._stats[\"total_published\"] += 1\n        event = self._apply_middleware(event)\n        if event is None:\n            self._stats[\"total_dropped\"] += 1\n            return 0\n        \n        handlers = self._get_handlers(event.type)\n        count = 0\n        for handler_info in handlers:\n            try:\n                handler= handler_info[\"handler\"] if asyncio.iscoroutinefunction(handler):\n                    await handler(event)\n                else:\n                    handler(event)\n                count += 1\n               self._stats[\"total_delivered\"] += 1\n                if \"once\" in handler_infoand handler_info[\"once\"]: self._remove_handler(event.type, handler_info[\"id\"])\n            except Exception:\n                pass\n        return count\n\n    def publish_and_wait(self, event",
+          "ttft_s": 0.7961387920659035
+        },
+        {
+          "decode_elapsed_s": 21.29904166702181,
+          "decode_tok_s": 46.95046921046882,
+          "elapsed_s": 22.109917958034202,
+          "end_to_end_tok_s": 45.228571263722145,
+          "ended_at": 1780244277.2097,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.8461538461538461,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 2045,
+          "started_at": 1780244255.099661,
+          "text": "```python\nimport asyncio\nimport time\nimport uuid\nfrom collections import deque\nfrom dataclasses import dataclass\nfrom typing import Any, Callable, Coroutine, List, Optional\n\n\n@dataclass\nclass Event:\n    type: str\n    payload: Any\n    timestamp: float\n    source: Optional[str] = None\n\n\nclass EventBus:\n    def __init__(self):\n        self._subscribers = {}\n        self._async_subscribers = {}\n        self._middlewares = []\n        self._stats = {\n            \"total_published\": 0,\n            \"total_delivered\": 0,\n            \"total_dropped\": 0,\n            \"subscribers_by_type\": {},\n        }\n\n    def subscribe(self, event_type: str, handler: Callable, priority: int = 0) -> str:\n        subscription_id = str(uuid.uuid4())\n        if event_type not in self._subscribers:\n            self._subscribers[event_type] = []        self._subscribers[event_type].append({\n            \"id\": subscription_id,\n            \"handler\": handler,\n            \"priority\": priority,\n            \"once\": False,\n        })\n        self._update_subscribers_count(event_type)\n        return subscription_id\n\n    def subscribe_async(self, event_type: str, handler: Callable, priority: int = 0) -> str:\n        subscription_id = str(uuid.uuid4())\n        if event_type not in self._async_subscribers:\n            self._async_subscribers[event_type] =[]\n        self._async_subscribers[event_type].append({\n            \"id\": subscription_id,\n            \"handler\": handler,\n            \"priority\": priority,\n            \"once\": False,\n        })\n        self._update_subscribers_count(event_type)\n        return subscription_id\n\n    def unsubscribe(self, subscription_id: str) -> bool:\n        for event_type in list(self._subscribers.keys()):\n            subs = self._subscribers[event_type]\n            for i, sub in enumerate(subs):\nif sub[\"id\"] == subscription_id:\n                    subs.pop(i)\n                    if not subs:\n                        del self._subscribers[event_type]\n                    self._update_subscribers_count(event_type)\n                    return True\n        for event_type in list(self._async_subscribers.keys()):\n            subs = self._async_subscribers[event_type] for i, sub in enumerate(subs):\n                ifsub[\"id\"] == subscription_id:\n                    subs.pop(i)\n                    if not subs:\n                        del self._async_subscribers[event_type]                    self._update_subscribers_count(event_type)\n                    return True\n        return False\n\n    def publish(self, event: Event) -> int:\n        self._stats[\"total_published\"] += 1\n        event = self._apply_middleware(event)\n        if event is None:\n            self._stats[\"total_dropped\"] += 1\n            return 0\n        handler_count = 0\n        sync_subs = self._get_sorted_subscribers(event.type, self._subscribers)\n        for sub in sync_subs:\n            try:\n               sub[\"handler\"](event)\n                handler_count += 1\n                self._stats[\"total_delivered\"] += 1\n                if sub.get(\"once\"):\n                    self.unsubscribe(sub[\"id\"])\n            except Exception:\n                pass\n        async_subs = self._get_sorted_subscribers(event.type, self._async_subscribers)\n        for sub in async_subs:\n            try:\n                loop = asyncio.get_event_loop()\n                if loop.is_running():\n                    asyncio.create_task(sub[\"handler\"](event))\n                else:\n                    loop.run_until_complete(sub[\"handler\"](event))\n                handler_count += 1\n                self._stats[\"total_delivered\"] +=1\n                if sub.get(\"once\"):\n                    self.unsubscribe(sub[\"id\"])\n            except Exception:\n                pass\n        return handler_count\n\n    async def publish_async(self, event: Event) -> int:\n        self._stats[\"total_published\"] +=1\n        event = self._apply_middleware(event)\n        if event is None:\n            self._stats[\"total_dropped\"] +=1\n            return 0\n        handler_count = 0\n        sync_subs = self._get_sorted_subscribers(event.type, self._subscribers)\n        for sub in sync_subs:\n            try:sub[\"handler\"](event)\n                handler_count += 1\n                self._stats[\"total_delivered\"] += 1\n                if sub.get(\"once\"):\n                    self.unsubscribe(sub[\"id\"])\n            except",
+          "ttft_s": 0.8108762910123914
+        },
+        {
+          "decode_elapsed_s": 21.58391962503083,
+          "decode_tok_s": 46.3307877981672,
+          "elapsed_s": 22.3963612918742,
+          "end_to_end_tok_s": 44.65011021066256,
+          "ended_at": 1780244314.6342661,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.8108108108108109,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 2046,
+          "started_at": 1780244292.2377799,
+          "text": "```python\nimport asyncio\nimport time\nimport uuid\nfrom collections import deque\nfrom dataclasses import dataclass, field\nfrom typing import Any, Callable, Coroutine, List, Optional, Dict, Union\n\n@dataclass\nclass Event:\n    type: str\n    payload: Any\n    timestamp: float\n    source: Optional[str] = None\n\nclass EventBus:\n    def __init__(self):\n        self._subscribers: Dict[str, List[Dict]] = {}        self._async_subscribers: Dict[str, List[Dict]] = {}\n        self._middlewares: List[Callable[[Event], Optional[Event]]]= [] self._stats = {\n            \"total_published\": 0,\n            \"total_delivered\": 0,\n            \"total_dropped\": 0,\n            \"subscribers_by_type\": {}\n        }\n\n    def subscribe(self, event_type: str, handler: Callable, priority: int = 0) -> str:\n        sub_id = str(uuid.uuid4())\n        if event_type not in self._subscribers:\n            self._subscribers[event_type] = []        self._subscribers[event_type].append({\n            \"id\": sub_id,\n            \"handler\": handler,\n            \"priority\": priority\n        })\n        self._subscribers[event_type].sort(key=lambda x:-x[\"priority\"])\n        self._update_stats_subscribers()\n        return sub_id\n\n    def subscribe_async(self, event_type: str, handler: Callable, priority: int = 0) -> str:\n        sub_id = str(uuid.uuid4())\n        if event_type not in self._async_subscribers:\n            self._async_subscribers[event_type] = []\n        self._async_subscribers[event_type].append({\n            \"id\": sub_id,\n            \"handler\": handler,\n            \"priority\": priority\n        })\n        self._async_subscribers[event_type].sort(key=lambda x: -x[\"priority\"])\n        self._update_stats_subscribers()\n        return sub_id\n\n    def unsubscribe(self, subscription_id: str) -> bool:\n        for event_type in list(self._subscribers.keys()):\n            subs = self._subscribers[event_type]\n            for i, sub in enumerate(subs):\n                if sub[\"id\"] == subscription_id:\n                    subs.pop(i)\n                    if not subs:\n                        del self._subscribers[event_type]                    self._update_stats_subscribers()\n                    return True\n        for event_type in list(self._async_subscribers.keys()):\n            subs = self._async_subscribers[event_type] for i, sub in enumerate(subs):\n                ifsub[\"id\"] == subscription_id:\n                    subs.pop(i)\n                    if not subs:\n                        del self._async_subscribers[event_type]                    self._update_stats_subscribers()\n                    return True\n        return False\n\n    def publish(self, event: Event) -> int:\n        self._stats[\"total_published\"] +=1\n        event = self._apply_middleware(event)\n        if event is None:\n            self._stats[\"total_dropped\"] += 1\n            return 0\n        \n        handler_count = 0\n        sync_subs = self._subscribers.get(event.type, []) for sub in sync_subs:\n            try:\n               sub[\"handler\"](event)\n                handler_count += 1\n            except Exception:\n                pass\n        \n        if sync_subs:\n           self._stats[\"total_delivered\"] += handler_count\n            \n        return handler_count\n\n    async def publish_async(self, event: Event) -> int:\n        self._stats[\"total_published\"] +=1\n        event = self._apply_middleware(event)\n        if event is None:\n            self._stats[\"total_dropped\"] += 1\n            return 0\n        \n        handler_count = 0\n        sync_subs = self._subscribers.get(event.type, []) async_subs = self._async_subscribers.get(event.type,[]) for sub in sync_subs:\n            try:\n               sub[\"handler\"](event)\n                handler_count += 1\n            except Exception:\n                pass\n        \n        for sub in async_subs:\n            try:\n                awaitsub[\"handler\"](event)\n                handler_count += 1\n            except Exception:\n                pass\n                \n        if sync_subs or async_subs:\n            self._stats[\"total_delivered\"] += handler_count\n            \n        return handler_count\n\n    async def publish_and_wait(self, event: Event, timeout: float = 5.0) -> list:\n        self._stats[\"total_published\"] +=",
+          "ttft_s": 0.8124416668433696
+        },
+        {
+          "decode_elapsed_s": 22.826371875125915,
+          "decode_tok_s": 43.808976979373064,
+          "elapsed_s": 23.58263508300297,
+          "end_to_end_tok_s": 42.40408234619818,
+          "ended_at": 1780244353.2410738,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 0.7518796992481203,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 2047,
+          "started_at": 1780244329.6583092,
+          "text": "```python\nimport asyncio\nimport time\nimport uuid\nfrom collections import deque\nfrom dataclasses import dataclass, field\nfrom typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple\n\n@dataclass\nclass Event:\n    type: str\n    payload: Any\n    timestamp: float = field(default_factory=time.time)\n    source: Optional[str] = None\n\nclass EventBus:\n    def __init__(self):\n        self._sync_subscribers: Dict[str, List[Tuple[int, Callable, str,bool]]] = {}\n        self._async_subscribers: Dict[str,List[Tuple[int, Callable, str, bool]]] = {}\n        self._middlewares: List[Callable[[Event], Optional[Event]]] = []\n        self._total_published: int = 0\n        self._total_delivered: int = 0\n        self._total_dropped: int = 0\n\n    def subscribe(self, event_type: str, handler: Callable, priority: int = 0) -> str:\n        subscription_id = str(uuid.uuid4())\n        if event_type not in self._sync_subscribers:\n            self._sync_subscribers[event_type] =[]\n        self._sync_subscribers[event_type].append((priority, handler, subscription_id, False))\n        self._sync_subscribers[event_type].sort(key=lambda x: x[0], reverse=True)\n        return subscription_id\n\n    def subscribe_async(self, event_type: str, handler: Callable, priority: int = 0) -> str:\n        subscription_id = str(uuid.uuid4())\n        if event_type not in self._async_subscribers:\n            self._async_subscribers[event_type] = []\n        self._async_subscribers[event_type].append((priority, handler, subscription_id, False))\n        self._async_subscribers[event_type].sort(key=lambda x:x[0], reverse=True)\n        return subscription_id\n\n    def unsubscribe(self, subscription_id: str) -> bool:\n        found = False\n        for subs in self._sync_subscribers.values():\n            for i, sub in enumerate(subs):\n                ifsub[2] == subscription_id:\n                    subs.pop(i)\n                    found = True\n                    break\n            if found:\n                break\n        if not found:\n            for subs in self._async_subscribers.values():\n                for i, sub in enumerate(subs):\n                   if sub[2] == subscription_id:\n                        subs.pop(i)\n                        found = True\n                        break\n                if found:\n                    break\n        return found\n\n    def _apply_middleware(self, event: Event) ->Optional[Event]:\n        current_event = event\n        for mw in self._middlewares:\n            result = mw(current_event)\n            if result is None:\n                return None\n            current_event = result\n        return current_event\n\n    def publish(self, event: Event) -> int:\n        self._total_published += 1\n        event = self._apply_middleware(event)\n        if event is None:\n            self._total_dropped += 1\n            return 0\n\n        count = 0\n        event_type = event.type\n        \n        sync_subs = self._sync_subscribers.get(event_type, [])        for priority, handler, sub_id, once_flag in sync_subs:\n            try:\n                handler(event)\n                count += 1\n                self._total_delivered += 1\n                if once_flag:\n                    self.unsubscribe(sub_id)\n            except Exception:\n                pass\n\n        async_subs = self._async_subscribers.get(event_type, []) if async_subs:\n            loop = None\n            try:\n                loop = asyncio.get_running_loop()\n            except RuntimeError:\n                loop = None\n            \n            if loop is not None:\n                tasks= [] for priority, handler, sub_id, once_flag in async_subs:\n                    try:\n                        coro = handler(event)\n                        tasks.append((coro, sub_id, once_flag))\n                    except Exception:\n                        pass\n                if tasks:\n                    asyncio.ensure_future(self._process_async_tasks(tasks, count))\n            else:\n                for priority, handler, sub_id, once_flag in async_subs:\n                    try:\n                        handler(event)\n                        count += 1\n                        self._total_delivered += 1\n                        if once_flag:\n                            self.unsubscribe(sub_id)\n                    except Exception:\n                        pass\n        return count\n\n    async def _process_async_tasks(self, tasks: List[Tuple[Coroutine, str, bool]], initial_count: int):\n        count = initial_count\n       ",
+          "ttft_s": 0.7562632078770548
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.8015267175572519,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 46.3307877981672,
+          "p10": 43.808976979373064,
+          "p90": 46.95046921046882,
+          "values": [
+            46.862782818533226,
+            46.22660238270261,
+            46.95046921046882,
+            46.3307877981672,
+            43.808976979373064
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 44.65011021066256,
+          "p10": 42.40408234619818,
+          "p90": 45.228571263722145,
+          "values": [
+            45.175829239865664,
+            44.58572330912887,
+            45.228571263722145,
+            44.65011021066256,
+            42.40408234619818
+          ]
+        },
+        "generated_tokens": 5000,
+        "runs": 5,
+        "valid_runs": 5
+      }
+    }
+  ],
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.rapid_mlx.prompt_suite_mtp.v1",
+  "server_command": [
+    "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+    "-m",
+    "vllm_mlx.cli",
+    "serve",
+    "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "--port",
+    "18766",
+    "--disable-prefix-cache",
+    "--no-memory-aware-cache",
+    "--enable-mtp",
+    "--mtp-num-draft-tokens",
+    "3",
+    "--no-thinking",
+    "--log-level",
+    "WARNING"
+  ],
+  "server_log": "benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/27b-4bit/python_modules_long/rapid-server/rapid-mlx-server-18766.log",
+  "suite": "python_modules_long",
+  "summary": {
+    "accept_rate": 0.7366412213740458,
+    "accepted_drafts": null,
+    "case_count": 3,
+    "decode_tok_s": {
+      "median": 44.18649164404233,
+      "p10": 41.80586677650793,
+      "p90": 46.95046921046882,
+      "values": [
+        41.814975381980354,
+        42.488295364019834,
+        41.80586677650793,
+        41.59753431019123,
+        43.73041742882812,
+        44.18649164404233,
+        47.8400531921462,
+        45.03387980503281,
+        42.147544984247496,
+        45.31966049748896,
+        46.862782818533226,
+        46.22660238270261,
+        46.95046921046882,
+        46.3307877981672,
+        43.808976979373064
+      ]
+    },
+    "drafted_tokens": null,
+    "end_to_end_tok_s": {
+      "median": 42.802260575799075,
+      "p10": 40.553403915747786,
+      "p90": 45.228571263722145,
+      "values": [
+        40.580327974489215,
+        41.21089668636645,
+        40.553403915747786,
+        40.44446839544446,
+        42.36089787461229,
+        42.802260575799075,
+        46.178349273224896,
+        43.47193042815992,
+        40.79315373006454,
+        43.73668931920614,
+        45.175829239865664,
+        44.58572330912887,
+        45.228571263722145,
+        44.65011021066256,
+        42.40408234619818
+      ]
+    },
+    "generated_tokens": 15000,
+    "runs": 15,
+    "valid_runs": 15
+  },
+  "warmup_repetitions": 1
+}

@@ -331,6 +331,28 @@ def mtplx_cases(artifact: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return cases
 
 
+def rapid_mlx_cases(artifact: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    cases: dict[str, dict[str, Any]] = {}
+    for case in artifact.get("results", []):
+        prompt_id = case.get("prompt_id")
+        if not prompt_id:
+            continue
+        summary = case.get("summary") or {}
+        decode_tok_s_data = summary.get("decode_tok_s")
+        if isinstance(decode_tok_s_data, dict):
+            decode_tok_s = decode_tok_s_data.get("median")
+        else:
+            decode_tok_s = decode_tok_s_data
+        cases[str(prompt_id)] = {
+            "prompt_id": str(prompt_id),
+            "category": case.get("category"),
+            "prompt_text_sha256": case.get("prompt_sha256"),
+            "decode_tok_s": float(decode_tok_s) if decode_tok_s is not None else None,
+            "accept_rate": summary.get("accept_rate"),
+        }
+    return cases
+
+
 def artifact_dirty(artifact: dict[str, Any]) -> bool | None:
     build = artifact.get("build") or {}
     if "git_tracked_dirty" in build:
