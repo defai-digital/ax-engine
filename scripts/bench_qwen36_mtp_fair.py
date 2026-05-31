@@ -201,10 +201,9 @@ def run_ax_suite(
         cmd.append("--no-thinking")
     if no_build:
         cmd.append("--no-build-ax-engine")
-    env: dict[str, str] | None = None
     if pure_mtp:
-        env = {**os.environ, "AX_MLX_MTP_DISABLE_NGRAM_STACKING": "1"}
-    run_subprocess(cmd, env=env)
+        cmd.append("--ax-mtp-disable-ngram-stacking")
+    run_subprocess(cmd)
     return output_path
 
 
@@ -370,6 +369,9 @@ def summarize_engine_artifact(engine: str, artifact_path: Path) -> dict[str, Any
         for case in cases.values()
         if case.get("accept_rate") is not None
     ]
+    ngram_hit_steps = sum(
+        int(case.get("ngram_hit_steps", 0) or 0) for case in cases.values()
+    )
     status = "ok" if decode_values else "no_valid_runs"
     if (
         status == "ok"
@@ -388,6 +390,7 @@ def summarize_engine_artifact(engine: str, artifact_path: Path) -> dict[str, Any
         "validations_total": validations_total,
         "decode_tok_s": median(decode_values),
         "accept_rate": median(accept_values),
+        "ngram_hit_steps": ngram_hit_steps if engine == "ax_engine" else None,
     }
 
 
@@ -412,6 +415,16 @@ def build_summary(
                 )
                 for engine in args.engines
             }
+            if args.pure_mtp and "ax_engine" in engine_summaries:
+                ngram_hit_steps = int(
+                    engine_summaries["ax_engine"].get("ngram_hit_steps", 0) or 0
+                )
+                if ngram_hit_steps > 0:
+                    raise RuntimeError(
+                        "pure-MTP AX benchmark observed n-gram draft hits; "
+                        "AX_MLX_MTP_DISABLE_NGRAM_STACKING may not be honored "
+                        f"for {profile.key}/{suite}: {ngram_hit_steps}"
+                    )
             ax_tok_s = (engine_summaries.get("ax_engine") or {}).get("decode_tok_s")
             mtplx_tok_s = (engine_summaries.get("mtplx") or {}).get("decode_tok_s")
             rows.append(
@@ -497,6 +510,7 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
         "mode",
         "max_tokens",
         "repetitions",
+        "ax_pure_mtp",
     ):
         lines.append(f"- {key}: `{contract[key]}`")
     lines.append("")
@@ -841,8 +855,8 @@ def parse_args() -> argparse.Namespace:
         "--pure-mtp",
         action="store_true",
         help=(
-            "Set AX_MLX_MTP_DISABLE_NGRAM_STACKING=1 for the AX subprocess so the "
-            "MTP verify loop sources its draft only from the MTP head (no ADR-008 "
+            "Pass --ax-mtp-disable-ngram-stacking to the AX subprocess so the MTP "
+            "verify loop sources its draft only from the MTP head (no ADR-008 "
             "n-gram-first stacking). Use this to measure pure-MTP acceptance for "
             "fair comparison against MTPLX."
         ),

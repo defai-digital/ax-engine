@@ -3049,6 +3049,9 @@ pub struct MlxRunner {
     _stream: MlxStream,
     /// When true, disable n-gram acceleration and use the direct decode path.
     disable_ngram_acceleration: bool,
+    /// When true, keep MTP enabled but do not use the n-gram-first draft source
+    /// inside the MTP verify loop.
+    disable_mtp_ngram_stacking: bool,
     ngram_policy_variant: NgramPolicyVariant,
     /// Optional KV compression policy. Disabled by default and never changes logits in shadow mode.
     kv_compression: KvCompressionConfig,
@@ -3133,10 +3136,27 @@ impl MlxRunner {
         disable_ngram_acceleration: bool,
         kv_compression: KvCompressionConfig,
     ) -> Result<Self, MlxRunnerError> {
+        Self::from_artifacts_with_mtp_options(
+            artifacts,
+            prefill_chunk,
+            disable_ngram_acceleration,
+            mtp_disable_ngram_stacking_from_env(),
+            kv_compression,
+        )
+    }
+
+    pub fn from_artifacts_with_mtp_options(
+        artifacts: &NativeModelArtifacts,
+        prefill_chunk: usize,
+        disable_ngram_acceleration: bool,
+        disable_mtp_ngram_stacking: bool,
+        kv_compression: KvCompressionConfig,
+    ) -> Result<Self, MlxRunnerError> {
         Self::from_artifacts_inner(
             artifacts,
             prefill_chunk,
             disable_ngram_acceleration,
+            disable_mtp_ngram_stacking,
             kv_compression,
             None,
         )
@@ -3149,10 +3169,29 @@ impl MlxRunner {
         kv_compression: KvCompressionConfig,
         prefix_cache_store: MlxPrefixCacheStore,
     ) -> Result<Self, MlxRunnerError> {
+        Self::from_artifacts_with_prefix_cache_and_mtp_options(
+            artifacts,
+            prefill_chunk,
+            disable_ngram_acceleration,
+            mtp_disable_ngram_stacking_from_env(),
+            kv_compression,
+            prefix_cache_store,
+        )
+    }
+
+    pub fn from_artifacts_with_prefix_cache_and_mtp_options(
+        artifacts: &NativeModelArtifacts,
+        prefill_chunk: usize,
+        disable_ngram_acceleration: bool,
+        disable_mtp_ngram_stacking: bool,
+        kv_compression: KvCompressionConfig,
+        prefix_cache_store: MlxPrefixCacheStore,
+    ) -> Result<Self, MlxRunnerError> {
         Self::from_artifacts_inner(
             artifacts,
             prefill_chunk,
             disable_ngram_acceleration,
+            disable_mtp_ngram_stacking,
             kv_compression,
             Some(prefix_cache_store),
         )
@@ -3162,6 +3201,7 @@ impl MlxRunner {
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
+        disable_mtp_ngram_stacking: bool,
         kv_compression: KvCompressionConfig,
         prefix_cache_store: Option<MlxPrefixCacheStore>,
     ) -> Result<Self, MlxRunnerError> {
@@ -3324,6 +3364,7 @@ impl MlxRunner {
             states: Mutex::new(HashMap::new()),
             _stream: stream,
             disable_ngram_acceleration,
+            disable_mtp_ngram_stacking,
             ngram_policy_variant,
             kv_compression,
             kv_compression_layer_eligible,
@@ -5639,7 +5680,7 @@ impl MlxRunner {
         // ADR-008 n-gram-first draft branch entirely so the benchmark measures
         // MTP acceptance in isolation.  The MTP verify loop, head forward, and
         // telemetry are unchanged; only this draft-source branch is gated.
-        let ngram_max = if mtp_disable_ngram_stacking_from_env() {
+        let ngram_max = if self.disable_mtp_ngram_stacking {
             0
         } else {
             3_usize.min(state.mtp_adaptive_max_depth)

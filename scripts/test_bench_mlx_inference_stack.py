@@ -745,6 +745,44 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(row["ax_mlx_decode_route"]["classification"], "ngram")
 
+    def test_axengine_pure_mtp_row_records_head_only_policy(self) -> None:
+        mtp_run = {
+            "prefill_s": 0.2,
+            "decode_s": 0.1,
+            "ttft_ms": 200.0,
+            "prefill_tok_s": 15.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+            "ngram_acceleration_telemetry": {
+                "ax_mtp_draft_tokens": 6,
+                "ax_mtp_accepted_tokens": 4,
+                "ax_mtp_ngram_hit_steps": 0,
+            },
+            "ax_mlx_telemetry": {
+                "ax_mlx_decode_steps": 2,
+                "ax_mlx_bonus_tokens": 4,
+            },
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[mtp_run, mtp_run]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=False,
+                engine_key_override=bench.AX_ENGINE_PURE_MTP_KEY,
+                mtp_disable_ngram_stacking=True,
+            )
+
+        self.assertEqual(row["engine"], "ax_engine_mlx_pure_mtp")
+        self.assertEqual(row["ax_decode_policy"], "mtp_head_only_no_ngram_stacking")
+        self.assertEqual(row["ax_decode_claim_status"], "mtp_head_only_effective")
+        self.assertEqual(row["ax_decode_claim_mode"], "mtp_greedy_exact_candidate")
+        self.assertEqual(row["ax_decode_effective_route"], "mtp_head_only_verify_loop")
+        self.assertEqual(row["ax_mtp_draft_source"], "mtp_head_only")
+
     def test_ax_decode_claim_status_reports_throughput_policy_only(self) -> None:
         ngram_telemetry = {
             "ax_ngram_draft_attempts": 10,
@@ -757,6 +795,30 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(
             bench.ax_decode_claim_status(True, {}),
             "direct_same_policy_baseline",
+        )
+        self.assertEqual(
+            bench.ax_decode_claim_status(
+                False,
+                {"ax_mtp_draft_tokens": 4, "ax_mtp_ngram_hit_steps": 0},
+                mtp_disable_ngram_stacking=True,
+            ),
+            "mtp_head_only_effective",
+        )
+        self.assertEqual(
+            bench.ax_decode_claim_status(
+                False,
+                {"ax_mtp_draft_tokens": 4, "ax_mtp_ngram_hit_steps": 1},
+                mtp_disable_ngram_stacking=True,
+            ),
+            "mtp_head_only_contract_violation",
+        )
+        self.assertEqual(
+            bench.ax_decode_claim_mode(
+                False,
+                sampler={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+                mtp_disable_ngram_stacking=True,
+            ),
+            "mtp_sampling_distribution_corrected",
         )
 
     def test_axengine_row_captures_output_token_ids_only_when_requested(self) -> None:
@@ -1437,6 +1499,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(
             bench.ax_decode_policy(metadata, direct_mode=True),
             "direct_no_ngram_acceleration",
+        )
+        self.assertEqual(
+            bench.ax_decode_policy(
+                metadata,
+                direct_mode=False,
+                mtp_disable_ngram_stacking=True,
+            ),
+            "mtp_head_only_no_ngram_stacking",
         )
         self.assertEqual(
             metadata["linear_attention_projection_layout"]["layout"],

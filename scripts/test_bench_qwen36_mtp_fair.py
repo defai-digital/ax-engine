@@ -93,17 +93,86 @@ class Qwen36MtpFairTests(unittest.TestCase):
                 warmup_repetitions=1,
                 cooldown=0.0,
                 hf_cache=hf_cache,
+                pure_mtp=False,
             )
 
             summary = fair.build_summary(args, artifacts)
 
         self.assertEqual(summary["schema"], "ax.qwen36_mtp_fair.v1")
+        self.assertFalse(summary["contract"]["ax_pure_mtp"])
         row = summary["rows"][0]
         self.assertEqual(row["depth"], 3)
         self.assertAlmostEqual(row["engines"]["ax_engine"]["decode_tok_s"], 10.0)
         self.assertAlmostEqual(row["engines"]["mtplx"]["decode_tok_s"], 8.0)
         self.assertAlmostEqual(row["ratios"]["ax_engine_vs_mtplx"], 1.25)
         self.assertEqual(row["provenance"]["kind"], "ax_mtp_sidecar_manifest")
+
+    def test_build_summary_records_pure_mtp_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hf_cache = root / "hf"
+            make_sidecar_manifest(hf_cache)
+            artifacts = {
+                ("27b-4bit", "flappy", "ax_engine"): write_json(
+                    root / "ax.json", fake_ax_artifact()
+                ),
+            }
+            args = Namespace(
+                models=["27b-4bit"],
+                engines=["ax_engine"],
+                suites=["flappy"],
+                depth_policy="native",
+                depth=None,
+                mode="sampled",
+                temperature=0.6,
+                top_p=0.95,
+                top_k=20,
+                max_tokens=128,
+                repetitions=1,
+                warmup_repetitions=1,
+                cooldown=0.0,
+                hf_cache=hf_cache,
+                pure_mtp=True,
+            )
+
+            summary = fair.build_summary(args, artifacts)
+
+        self.assertTrue(summary["contract"]["ax_pure_mtp"])
+
+    def test_build_summary_rejects_pure_mtp_with_ngram_hits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hf_cache = root / "hf"
+            make_sidecar_manifest(hf_cache)
+            artifact = fake_ax_artifact()
+            artifact["results"][0]["ngram_acceleration_telemetry"][
+                "ax_mtp_ngram_hit_steps"
+            ] = 3
+            artifacts = {
+                ("27b-4bit", "flappy", "ax_engine"): write_json(
+                    root / "ax.json", artifact
+                ),
+            }
+            args = Namespace(
+                models=["27b-4bit"],
+                engines=["ax_engine"],
+                suites=["flappy"],
+                depth_policy="native",
+                depth=None,
+                mode="sampled",
+                temperature=0.6,
+                top_p=0.95,
+                top_k=20,
+                max_tokens=128,
+                repetitions=1,
+                warmup_repetitions=1,
+                cooldown=0.0,
+                hf_cache=hf_cache,
+                pure_mtp=True,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "pure-MTP"):
+                fair.build_summary(args, artifacts)
 
     def test_error_artifact_keeps_table_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

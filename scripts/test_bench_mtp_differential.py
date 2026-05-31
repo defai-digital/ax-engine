@@ -116,6 +116,15 @@ class MtpDifferentialTests(unittest.TestCase):
         self.assertIn("dirty tracked worktree", joined)
         self.assertIn("AX repetitions=3", joined)
 
+    def test_ax_cases_accepts_pure_mtp_engine_key(self) -> None:
+        artifact = fake_ax_artifact()
+        artifact["results"][0]["engine"] = "ax_engine_mlx_pure_mtp"
+
+        cases = diff.ax_cases(artifact)
+
+        self.assertIn("case_1", cases)
+        self.assertEqual(cases["case_1"]["mechanism_label"], "pure_mtp")
+
     def test_model_provenance_summarizes_sidecar_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -403,6 +403,19 @@ fn preview_session_config_factory_builds_mlx_preview_defaults() {
     assert_eq!(config.backend_policy, BackendPolicy::mlx_only());
     assert_eq!(config.resolved_backend, ResolvedBackend::mlx_preview());
     assert!(config.llama_backend.is_none());
+    assert!(!config.mlx_mtp_disable_ngram_stacking);
+}
+
+#[test]
+fn preview_session_config_factory_preserves_mtp_ngram_stacking_override() {
+    let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
+        mlx_mtp_disable_ngram_stacking: true,
+        ..PreviewSessionConfigRequest::default()
+    })
+    .expect("preview config factory should build with MTP stacking override");
+
+    assert!(config.mlx_mtp_disable_ngram_stacking);
+    assert!(!config.mlx_disable_ngram_acceleration);
 }
 
 #[test]
@@ -547,6 +560,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         mlx_model_artifacts_dir: Some(Path::new("/tmp/ax-model").to_path_buf()),
         mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
         mlx_disable_ngram_acceleration: true,
+        mlx_mtp_disable_ngram_stacking: true,
         mlx_kv_compression: KvCompressionConfig::turboquant_shadow(),
         mlx_prefill_chunk: None,
     });
@@ -583,6 +597,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         Some(NativeModelArtifactsSource::ExplicitConfig)
     );
     assert!(config.mlx_disable_ngram_acceleration);
+    assert!(config.mlx_mtp_disable_ngram_stacking);
     assert_eq!(
         config.mlx_kv_compression,
         KvCompressionConfig::turboquant_shadow()

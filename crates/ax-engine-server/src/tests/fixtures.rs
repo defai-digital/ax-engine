@@ -257,6 +257,7 @@ pub(super) fn base_server_args() -> ServerArgs {
         resolve_model_artifacts: args::ModelArtifactResolution::ExplicitOnly,
         hf_cache_root: None,
         disable_ngram_acceleration: false,
+        mlx_mtp_disable_ngram_stacking: false,
         prefill_chunk: None,
         experimental_mlx_kv_compression: args::PreviewMlxKvCompression::Disabled,
         experimental_mlx_kv_compression_hot_window_tokens:

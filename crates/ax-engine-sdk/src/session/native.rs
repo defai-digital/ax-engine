@@ -61,17 +61,19 @@ fn build_mlx_core(
         .unwrap_or(DEFAULT_PREFILL_CHUNK);
 
     let runner = match prefix_cache_store {
-        Some(prefix_cache_store) => MlxRunner::from_artifacts_with_prefix_cache(
+        Some(prefix_cache_store) => MlxRunner::from_artifacts_with_prefix_cache_and_mtp_options(
             &artifacts,
             prefill_chunk,
             config.mlx_disable_ngram_acceleration,
+            config.mlx_mtp_disable_ngram_stacking,
             config.mlx_kv_compression,
             prefix_cache_store,
         ),
-        None => MlxRunner::from_artifacts(
+        None => MlxRunner::from_artifacts_with_mtp_options(
             &artifacts,
             prefill_chunk,
             config.mlx_disable_ngram_acceleration,
+            config.mlx_mtp_disable_ngram_stacking,
             config.mlx_kv_compression,
         ),
     }

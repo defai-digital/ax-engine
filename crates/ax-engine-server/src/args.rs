@@ -110,6 +110,12 @@ pub struct ServerArgs {
     #[arg(long = "disable-ngram-acceleration", default_value_t = false)]
     pub disable_ngram_acceleration: bool,
 
+    /// Keep MTP speculation enabled but disable n-gram-first drafting inside
+    /// the MTP verify loop. Useful for pure-MTP benchmark comparisons against
+    /// MTP-head-only reference engines.
+    #[arg(long = "mlx-mtp-disable-ngram-stacking", default_value_t = false)]
+    pub mlx_mtp_disable_ngram_stacking: bool,
+
     /// Override the MLX prefill chunk size. When unset, the runner uses
     /// `DEFAULT_PREFILL_CHUNK` (2048), matching mlx_lm's default
     /// `prefill_step_size`. Models with MLA layers clamp warm-extend prefill

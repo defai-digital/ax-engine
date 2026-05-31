@@ -60,7 +60,7 @@ DEFAULT_MAX_TOKENS = 1000
 DEFAULT_REPETITIONS = 5
 DEFAULT_WARMUP_REPETITIONS = 1
 DEFAULT_COOLDOWN = 15.0
-AX_MTP_ENGINE = "ax_engine_mlx_ngram_accel"
+AX_MTP_ENGINES = {"ax_engine_mlx_ngram_accel", "ax_engine_mlx_pure_mtp"}
 SIDECAR_MANIFEST_FILE = "ax_mtp_sidecar_manifest.json"
 
 
@@ -274,7 +274,7 @@ def first_trial_tokens(trials: list[dict[str, Any]], key: str) -> list[int] | No
 def ax_cases(artifact: dict[str, Any]) -> dict[str, dict[str, Any]]:
     cases: dict[str, dict[str, Any]] = {}
     for row in artifact.get("results", []):
-        if row.get("engine") != AX_MTP_ENGINE:
+        if row.get("engine") not in AX_MTP_ENGINES:
             continue
         prompt_id = row.get("prompt_case_id")
         if not prompt_id:

@@ -106,6 +106,7 @@ impl ServerArgs {
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir,
             mlx_disable_ngram_acceleration: self.disable_ngram_acceleration,
+            mlx_mtp_disable_ngram_stacking: self.mlx_mtp_disable_ngram_stacking,
             mlx_kv_compression: self.experimental_mlx_kv_compression.as_config(
                 self.experimental_mlx_kv_compression_hot_window_tokens,
                 self.experimental_mlx_kv_compression_min_context_tokens,

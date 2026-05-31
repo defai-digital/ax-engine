@@ -69,6 +69,7 @@ GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS = [512, 2048, 8192, 32768]
 
 AX_ENGINE_DIRECT_KEY = "ax_engine_mlx"
 AX_ENGINE_NGRAM_ACCEL_KEY = "ax_engine_mlx_ngram_accel"
+AX_ENGINE_PURE_MTP_KEY = "ax_engine_mlx_pure_mtp"
 AX_ENGINE_LINEAR_ATTENTION_PACK_KEY = "ax_engine_mlx_linear_pack"
 AX_ENGINE_DENSE_FFN_PACK_KEY = "ax_engine_mlx_dense_ffn_pack"
 AX_ENGINE_DIRECT_GEMMA4_FFN_ROUTE_KEY = "ax_engine_mlx_direct_gemma4_ffn"
@@ -824,10 +825,15 @@ def validate_gateddelta_prefill_profile_model(model_dir: Path) -> dict[str, Any]
 
 
 def ax_decode_policy(
-    model_metadata: dict[str, Any], *, direct_mode: bool
+    model_metadata: dict[str, Any],
+    *,
+    direct_mode: bool,
+    mtp_disable_ngram_stacking: bool = False,
 ) -> str:
     if direct_mode:
         return "direct_no_ngram_acceleration"
+    if mtp_disable_ngram_stacking:
+        return "mtp_head_only_no_ngram_stacking"
     if model_metadata.get("linear_attention_enabled"):
         return "ngram_acceleration_linear_attention_branch_recompute"
     return "ngram_acceleration_kv_trim"
@@ -836,10 +842,18 @@ def ax_decode_policy(
 def ax_decode_claim_status(
     direct_mode: bool,
     telemetry: dict[str, int],
+    *,
+    mtp_disable_ngram_stacking: bool = False,
 ) -> str:
     """Return the throughput-and-fallback verdict for an AX decode row."""
     if direct_mode:
         return "direct_same_policy_baseline"
+    if mtp_disable_ngram_stacking:
+        if int(telemetry.get("ax_mtp_ngram_hit_steps", 0)) > 0:
+            return "mtp_head_only_contract_violation"
+        if int(telemetry.get("ax_mtp_draft_tokens", 0)) > 0:
+            return "mtp_head_only_effective"
+        return "mtp_head_only_no_observed_draft_path"
     if not telemetry or (
         int(telemetry.get("ax_ngram_draft_attempts", 0)) == 0
         and int(telemetry.get("ax_ngram_no_draft_steps", 0)) == 0
@@ -861,6 +875,7 @@ def ax_ngram_outcome_tier(
     direct_mode: bool,
     status: str,
     route: str,
+    mtp_disable_ngram_stacking: bool = False,
 ) -> str:
     """Map n-gram counters to a promotion-tier label.
 
@@ -883,6 +898,12 @@ def ax_ngram_outcome_tier(
     """
     if direct_mode:
         return "direct_baseline"
+    if mtp_disable_ngram_stacking:
+        if status == "mtp_head_only_effective":
+            return "pure_mtp"
+        if status == "mtp_head_only_contract_violation":
+            return "contract_violation"
+        return "no_draft_fallback"
     if status == "ngram_acceleration_effective_throughput" and route == "ngram_verified_bonus_tokens":
         return "effective_throughput"
     if status == "ngram_no_draft_direct_fallback":
@@ -899,6 +920,7 @@ def ax_decode_effective_route(
     model_metadata: dict[str, Any],
     telemetry: dict[str, int],
     ax_mlx_telemetry: dict[str, int],
+    mtp_disable_ngram_stacking: bool = False,
 ) -> str:
     """Classify the route actually observed after fallback decisions.
 
@@ -916,6 +938,13 @@ def ax_decode_effective_route(
             if direct_steps > 0
             else "direct_single_decode_baseline"
         )
+
+    if mtp_disable_ngram_stacking:
+        if int(telemetry.get("ax_mtp_ngram_hit_steps", 0)) > 0:
+            return "mtp_head_only_contract_violation"
+        if int(telemetry.get("ax_mtp_draft_tokens", 0)) > 0:
+            return "mtp_head_only_verify_loop"
+        return "mtp_head_only_not_observed"
 
     draft_attempts = int(telemetry.get("ax_ngram_draft_attempts", 0))
     accepted_tokens = int(telemetry.get("ax_ngram_accepted_tokens", 0))
@@ -1013,7 +1042,10 @@ def build_row_identity(
 
 
 def ax_decode_claim_mode(
-    direct_mode: bool, sampler: dict[str, Any] | None = None
+    direct_mode: bool,
+    sampler: dict[str, Any] | None = None,
+    *,
+    mtp_disable_ngram_stacking: bool = False,
 ) -> str:
     """Return the *correctness mode* an n-gram or direct row is claiming.
 
@@ -1043,6 +1075,10 @@ def ax_decode_claim_mode(
         return "direct_sampling_not_distribution_exact"
     if direct_mode:
         return "direct_greedy_exact_baseline"
+    if mtp_disable_ngram_stacking and sampling_active:
+        return "mtp_sampling_distribution_corrected"
+    if mtp_disable_ngram_stacking:
+        return "mtp_greedy_exact_candidate"
     if sampling_active:
         return "ngram_sampling_not_distribution_exact"
     return "ngram_greedy_exact_candidate"
@@ -1763,6 +1799,7 @@ def start_axengine(
     direct_linear_attention_post_input_route: bool = False,
     direct_gemma4_post_attn_ffn_route: bool = False,
     mtp_max_depth: int | None = None,
+    mtp_disable_ngram_stacking: bool = False,
     mtp_fast_tail_topk_sampling: bool = False,
     prefill_chunk: int | None = None,
     max_batch_tokens: int | None = None,
@@ -1779,6 +1816,8 @@ def start_axengine(
     ]
     if direct_mode:
         cmd.append("--disable-ngram-acceleration")
+    if mtp_disable_ngram_stacking:
+        cmd.append("--mlx-mtp-disable-ngram-stacking")
     if prefill_chunk is not None:
         cmd.extend(["--prefill-chunk", str(prefill_chunk)])
     if max_batch_tokens is not None:
@@ -1827,6 +1866,8 @@ def start_axengine(
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
     if mtp_max_depth is not None:
         print(f"  [ax-engine] AX_MLX_MTP_MAX_DEPTH={mtp_max_depth}", file=sys.stderr)
+    if mtp_disable_ngram_stacking:
+        print("  [ax-engine] MTP n-gram stacking disabled", file=sys.stderr)
     if mtp_fast_tail_topk_sampling:
         print("  [ax-engine] AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING=1", file=sys.stderr)
     if not prefix_cache_enabled:
@@ -2937,30 +2978,39 @@ def ax_prefill_work_contract(prompt_tokens: int, *, sampler: dict[str, Any] | No
 def validate_axengine_policy_telemetry(
     *,
     direct_mode: bool,
+    mtp_disable_ngram_stacking: bool,
     ngram_summary: dict[str, int],
     ax_mlx_telemetry: dict[str, int],
 ) -> None:
-    if not direct_mode:
-        return
-    observed = {
-        key: int(ngram_summary.get(key, 0))
-        for key in (
-            "ax_ngram_draft_attempts",
-            "ax_ngram_draft_tokens",
-            "ax_ngram_accepted_tokens",
-        )
-        if int(ngram_summary.get(key, 0)) > 0
-    }
-    for key in ("ax_mlx_ngram_decode_steps", "ax_mlx_ngram_decode_wall_us"):
-        value = int(ax_mlx_telemetry.get(key, 0))
-        if value > 0:
-            observed[key] = value
-    if observed:
-        raise RuntimeError(
-            "direct AX benchmark row observed n-gram telemetry; "
-            "the server may not be honoring --disable-ngram-acceleration, "
-            f"or the harness may be connected to the wrong server: {observed}"
-        )
+    observed: dict[str, int] = {}
+    if direct_mode:
+        observed = {
+            key: int(ngram_summary.get(key, 0))
+            for key in (
+                "ax_ngram_draft_attempts",
+                "ax_ngram_draft_tokens",
+                "ax_ngram_accepted_tokens",
+            )
+            if int(ngram_summary.get(key, 0)) > 0
+        }
+        for key in ("ax_mlx_ngram_decode_steps", "ax_mlx_ngram_decode_wall_us"):
+            value = int(ax_mlx_telemetry.get(key, 0))
+            if value > 0:
+                observed[key] = value
+        if observed:
+            raise RuntimeError(
+                "direct AX benchmark row observed n-gram telemetry; "
+                "the server may not be honoring --disable-ngram-acceleration, "
+                f"or the harness may be connected to the wrong server: {observed}"
+            )
+    if mtp_disable_ngram_stacking:
+        ngram_hit_steps = int(ngram_summary.get("ax_mtp_ngram_hit_steps", 0) or 0)
+        if ngram_hit_steps > 0:
+            raise RuntimeError(
+                "pure-MTP AX benchmark row observed n-gram draft hits; "
+                "the server may not be honoring --mlx-mtp-disable-ngram-stacking, "
+                f"or the harness may be connected to the wrong server: {ngram_hit_steps}"
+            )
 
 
 def bench_axengine(
@@ -2978,12 +3028,15 @@ def bench_axengine(
     server_pid: int | None = None,
     prefix_cache_enabled: bool = False,
     sampler: dict[str, Any] | None = None,
+    mtp_disable_ngram_stacking: bool = False,
 ) -> dict[str, Any]:
     engine_key = engine_key_override or (
         AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
     )
     decode_policy = ax_decode_policy(
-        model_metadata, direct_mode=direct_mode
+        model_metadata,
+        direct_mode=direct_mode,
+        mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
     )
     print(
         f"  [ax-engine/{engine_key}] prompt={len(tokens)} "
@@ -3023,15 +3076,21 @@ def bench_axengine(
     ax_mlx_telemetry = summarize_ax_mlx_telemetry(runs)
     validate_axengine_policy_telemetry(
         direct_mode=direct_mode,
+        mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
         ngram_summary=ngram_summary,
         ax_mlx_telemetry=ax_mlx_telemetry,
     )
-    _claim_status = ax_decode_claim_status(direct_mode, ngram_summary)
+    _claim_status = ax_decode_claim_status(
+        direct_mode,
+        ngram_summary,
+        mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
+    )
     _effective_route = ax_decode_effective_route(
         direct_mode=direct_mode,
         model_metadata=model_metadata,
         telemetry=ngram_summary,
         ax_mlx_telemetry=ax_mlx_telemetry,
+        mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
     )
     row = {
         "engine": engine_key,
@@ -3055,9 +3114,17 @@ def bench_axengine(
             direct_mode=direct_mode,
             status=_claim_status,
             route=_effective_route,
+            mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
         ),
         "ax_decode_effective_route": _effective_route,
-        "ax_decode_claim_mode": ax_decode_claim_mode(direct_mode, sampler=sampler),
+        "ax_decode_claim_mode": ax_decode_claim_mode(
+            direct_mode,
+            sampler=sampler,
+            mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
+        ),
+        "ax_mtp_draft_source": "mtp_head_only"
+        if mtp_disable_ngram_stacking
+        else "mtp_head_or_ngram_stacked",
         "prompt_contract": "mlx_lm_random_tokens_seed_0",
         "random_seed": MLX_LM_RANDOM_SEED,
         "batch_size": 1,
@@ -3950,6 +4017,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-mtp-disable-ngram-stacking",
+        action="store_true",
+        help=(
+            "Pass --mlx-mtp-disable-ngram-stacking to AX server rows. This keeps "
+            "MTP enabled but forces the MTP verify loop to draft from the MTP "
+            "head only, producing ax_engine_mlx_pure_mtp rows."
+        ),
+    )
+    parser.add_argument(
         "--ax-mtp-fast-tail-topk-sampling",
         action="store_true",
         help=(
@@ -4179,6 +4255,10 @@ def main() -> None:
         parser.error("--ax-ngram-accel conflicts with --ax-direct")
     if args.ax_ngram_accel and args.ax_compare_policies:
         parser.error("--ax-ngram-accel conflicts with --ax-compare-policies")
+    if args.ax_mtp_disable_ngram_stacking and args.ax_direct:
+        parser.error("--ax-mtp-disable-ngram-stacking requires an MTP/speculative AX row")
+    if args.ax_mtp_disable_ngram_stacking and args.skip_ax_engine:
+        parser.error("--ax-mtp-disable-ngram-stacking requires AX rows")
     if args.ax_compare_linear_attention_projection_pack and args.skip_ax_engine:
         parser.error("--ax-compare-linear-attention-projection-pack requires AX rows")
     if args.ax_compare_linear_attention_projection_pack and (
@@ -4541,7 +4621,9 @@ def main() -> None:
                         False,
                         False,
                         False,
-                        AX_ENGINE_NGRAM_ACCEL_KEY,
+                        AX_ENGINE_PURE_MTP_KEY
+                        if args.ax_mtp_disable_ngram_stacking
+                        else AX_ENGINE_NGRAM_ACCEL_KEY,
                     ),
                 ]
             elif args.ax_ngram_accel:
@@ -4553,7 +4635,9 @@ def main() -> None:
                         False,
                         False,
                         False,
-                        AX_ENGINE_NGRAM_ACCEL_KEY,
+                        AX_ENGINE_PURE_MTP_KEY
+                        if args.ax_mtp_disable_ngram_stacking
+                        else AX_ENGINE_NGRAM_ACCEL_KEY,
                     )
                 ]
             else:
@@ -4578,6 +4662,9 @@ def main() -> None:
                 direct_gemma4_post_attn_ffn_route,
                 engine_key,
             ) in ax_run_configs:
+                mtp_disable_ngram_stacking = (
+                    bool(args.ax_mtp_disable_ngram_stacking) and not direct_mode
+                )
                 proc = start_axengine(
                     AX_ENGINE_SERVER,
                     args.model_dir,
@@ -4604,6 +4691,7 @@ def main() -> None:
                     ),
                     direct_gemma4_post_attn_ffn_route=direct_gemma4_post_attn_ffn_route,
                     mtp_max_depth=args.ax_mtp_max_depth,
+                    mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
                     mtp_fast_tail_topk_sampling=args.ax_mtp_fast_tail_topk_sampling,
                     prefill_chunk=args.prefill_step_size,
                     # Scheduler caps per-step prefill at max_batch_tokens. To
@@ -4641,6 +4729,7 @@ def main() -> None:
                             server_pid=proc.pid,
                             prefix_cache_enabled=args.ax_enable_prefix_cache,
                             sampler=args.ax_sampling,
+                            mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
                         )
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size
@@ -4662,6 +4751,9 @@ def main() -> None:
                         pack_linear_attention_projections
                     )
                     results[-1]["ax_dense_ffn_gate_up_pack"] = bool(pack_dense_ffn_gate_up)
+                    results[-1]["ax_mtp_disable_ngram_stacking"] = bool(
+                        mtp_disable_ngram_stacking
+                    )
                     results[-1]["ax_direct_linear_attention_inputs_route"] = bool(
                         direct_linear_attention_inputs_route
                     )
@@ -4753,6 +4845,7 @@ def main() -> None:
         "cooldown": args.cooldown,
         "prefill_step_size": args.prefill_step_size,
         "ax_mtp_max_depth": args.ax_mtp_max_depth,
+        "ax_mtp_disable_ngram_stacking": bool(args.ax_mtp_disable_ngram_stacking),
         "ax_mtp_fast_tail_topk_sampling": bool(args.ax_mtp_fast_tail_topk_sampling),
         "ax_prefix_cache_mode": (
             AX_PREFIX_CACHE_ENABLED_MODE
