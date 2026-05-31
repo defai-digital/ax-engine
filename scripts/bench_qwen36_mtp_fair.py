@@ -40,9 +40,9 @@ ENGINE_LABELS = {
     "lightning_mlx": "Lightning MLX",
 }
 ENGINE_COLORS = {
-    "mtplx": "#7c3aed",
+    "mtplx": "#a78bfa",
     "ax_engine": "#16a34a",
-    "lightning_mlx": "#2563eb",
+    "lightning_mlx": "#60a5fa",
 }
 ENGINE_ORDER = ["mtplx", "lightning_mlx", "ax_engine"]
 
