@@ -24,14 +24,14 @@ five measured repetitions, one warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX/MTPLX |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 59.4 | 100.0% | 47.2 | 56.0% | 0.795 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 52.5 | 99.1% | 53.0 | 71.3% | 1.009 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 51.6 | 84.6% | 42.0 | 58.8% | 0.814 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 3 | 106.5 | 51.6% | 146.3 | 60.4% | 1.374 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 3 | 94.8 | 48.0% | 160.7 | 83.0% | 1.696 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 3 | 100.0 | 48.6% | 153.7 | 70.8% | 1.537 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 59.4 | 100.0% | 39.3 | 56.0% | 0.662 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 52.5 | 99.1% | 54.5 | 71.3% | 1.038 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 51.6 | 84.6% | 42.7 | 58.8% | 0.828 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 3 | 106.5 | 51.6% | 140.5 | 60.4% | 1.319 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 3 | 94.8 | 48.0% | 174.3 | 83.0% | 1.839 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 3 | 100.0 | 48.6% | 155.1 | 70.8% | 1.551 |
 
-AX Engine on the 35B-A3B outperforms MTPLX by 1.4–1.7× in decode
+AX Engine on the 35B-A3B outperforms MTPLX by 1.3–1.8× in decode
 throughput with 12–35pp higher accept rate. On the 27B, AX Engine matches
 MTPLX on long_code (ratio 1.0) but trails on flappy and python_modules_long
 due to MTPLX's near-perfect acceptance on the dense model.
@@ -40,7 +40,7 @@ Note: AX MTP telemetry currently includes n-gram acceleration hits
 (`ax_mtp_ngram_hit_steps > 0`), so AX decode throughput and accept rate
 reflect combined MTP + n-gram, not pure MTP alone.
 
-Full artifacts: [`2026-05-30` (distribution-corrected native-depth v2)](benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/summary.md).
+Full artifacts: [`2026-05-31` (AX Engine re-benchmark)](benchmarks/results/mtp-fair/2026-05-31-ax-engine-only/summary.md) · [`2026-05-30` (MTPLX+AX dual-engine)](benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/summary.md).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 

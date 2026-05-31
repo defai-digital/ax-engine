@@ -13,18 +13,18 @@
 <text x="172.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">flappy</text>
 <rect x="114.0" y="68.0" width="54.0" height="290.0" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
 <text x="141.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">59.4</text>
-<rect x="176.0" y="127.6" width="54.0" height="230.4" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="203.0" y="122.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">47.2</text>
+<rect x="176.0" y="166.1" width="54.0" height="191.9" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="203.0" y="161.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">39.3</text>
 <text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">long_code</text>
 <rect x="338.0" y="101.7" width="54.0" height="256.3" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
 <text x="365.0" y="96.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">52.5</text>
-<rect x="400.0" y="99.2" width="54.0" height="258.8" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="427.0" y="94.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">53.0</text>
+<rect x="400.0" y="91.9" width="54.0" height="266.1" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="427.0" y="86.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">54.5</text>
 <text x="620.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
 <rect x="562.0" y="106.1" width="54.0" height="251.9" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
 <text x="589.0" y="101.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">51.6</text>
-<rect x="624.0" y="152.9" width="54.0" height="205.1" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="651.0" y="147.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">42.0</text>
+<rect x="624.0" y="149.5" width="54.0" height="208.5" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="651.0" y="144.5" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">42.7</text>
 <rect x="60" y="407" width="10" height="10" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
 <text x="74" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
 <rect x="190" y="407" width="10" height="10" rx="2" fill="#16a34a" fill-opacity="0.86"/>
