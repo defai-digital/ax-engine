@@ -1205,6 +1205,12 @@ struct MtpTelemetry {
     full_accept_steps: u32,
     partial_reject_steps: u32,
     complete_miss_steps: u32,
+    /// Cycle-level acceptance: accepted_cycles counts MTP verify cycles where
+    /// ALL draft tokens were accepted; rejected_cycles counts cycles with any
+    /// rejection.  Matches Lightning-MLX's `mtp_acceptance_ratio` metric
+    /// (accepted / (accepted + rejected)) for fair cross-engine comparison.
+    accepted_cycles: u32,
+    rejected_cycles: u32,
     cache_clone_wall_us: u32,
     verify_forward_wall_us: u32,
     verify_eval_wall_us: u32,
@@ -1237,12 +1243,19 @@ impl MtpTelemetry {
             .accepted_tokens
             .saturating_add(saturating_u32(accepted));
         self.decode_steps = self.decode_steps.saturating_add(1);
-        if accepted == drafted {
+        // Cycle-level acceptance: matches Lightning-MLX's mtp_acceptance_ratio
+        // = accepted_cycles / (accepted_cycles + rejected_cycles).
+        if accepted == drafted && drafted > 0 {
             self.full_accept_steps = self.full_accept_steps.saturating_add(1);
+            self.accepted_cycles = self.accepted_cycles.saturating_add(1);
         } else if accepted == 0 {
             self.complete_miss_steps = self.complete_miss_steps.saturating_add(1);
+            if drafted > 0 {
+                self.rejected_cycles = self.rejected_cycles.saturating_add(1);
+            }
         } else {
             self.partial_reject_steps = self.partial_reject_steps.saturating_add(1);
+            self.rejected_cycles = self.rejected_cycles.saturating_add(1);
         }
         for d in 0..drafted.min(3) {
             self.drafted_by_depth[d] = self.drafted_by_depth[d].saturating_add(1);
@@ -1285,6 +1298,12 @@ impl MtpTelemetry {
         self.complete_miss_steps = self
             .complete_miss_steps
             .saturating_add(other.complete_miss_steps);
+        self.accepted_cycles = self
+            .accepted_cycles
+            .saturating_add(other.accepted_cycles);
+        self.rejected_cycles = self
+            .rejected_cycles
+            .saturating_add(other.rejected_cycles);
         self.cache_clone_wall_us = self
             .cache_clone_wall_us
             .saturating_add(other.cache_clone_wall_us);
@@ -1320,6 +1339,8 @@ impl MtpTelemetry {
             ("ax_mtp_full_accept_steps", self.full_accept_steps),
             ("ax_mtp_partial_reject_steps", self.partial_reject_steps),
             ("ax_mtp_complete_miss_steps", self.complete_miss_steps),
+            ("ax_mtp_accepted_cycles", self.accepted_cycles),
+            ("ax_mtp_rejected_cycles", self.rejected_cycles),
             ("ax_mtp_cache_clone_wall_us", self.cache_clone_wall_us),
             ("ax_mtp_verify_forward_wall_us", self.verify_forward_wall_us),
             ("ax_mtp_verify_eval_wall_us", self.verify_eval_wall_us),
@@ -2874,6 +2895,14 @@ struct RequestState {
     /// Pre-norm hidden state saved from the last successful MTP verify pass.
     /// Used as `main_hidden` for the MTP head at the next decode step.
     mtp_pending_hidden: Option<MlxArray>,
+    /// Skip-state logits: logits at the committed position from the previous
+    /// verify pass.  When `Some`, the next `run_mtp_decode` call can sample
+    /// the primary token from these logits instead of running a fresh verify
+    /// forward pass for the first token position.  Set when `AX_MLX_MTP_SKIP_STATE=1`.
+    mtp_skip_logits: Option<MlxArray>,
+    /// Skip-state hidden: post-norm hidden at the same committed position.
+    /// Used as `main_hidden` for the MTP head when skip-state is active.
+    mtp_skip_hidden: Option<MlxArray>,
     /// Cumulative MTP draft/accept counters for benchmark telemetry.
     mtp_telemetry: MtpTelemetry,
     /// Post-norm hidden rows from the final prefill chunk.
@@ -2929,6 +2958,8 @@ impl RequestState {
             mtp_pending_draft_distributions: Vec::new(),
             mtp_adaptive_max_depth: 0,
             mtp_pending_hidden: None,
+            mtp_skip_logits: None,
+            mtp_skip_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
@@ -3046,6 +3077,11 @@ pub struct MlxRunner {
     /// When true, keep MTP enabled but do not use the n-gram-first draft source
     /// inside the MTP verify loop.
     disable_mtp_ngram_stacking: bool,
+    /// When true, MTP verify always accepts all drafts without rejection sampling.
+    mtp_optimistic: bool,
+    /// When true, MTP decode captures verify logits/hidden as skip state for the
+    /// next iteration, avoiding a redundant main-model forward for the first token.
+    mtp_skip_state: bool,
     ngram_policy_variant: NgramPolicyVariant,
     /// Optional KV compression policy. Disabled by default and never changes logits in shadow mode.
     kv_compression: KvCompressionConfig,
@@ -3359,6 +3395,8 @@ impl MlxRunner {
             _stream: stream,
             disable_ngram_acceleration,
             disable_mtp_ngram_stacking,
+            mtp_optimistic: mtp_optimistic_from_env(),
+            mtp_skip_state: mtp_skip_state_from_env(),
             ngram_policy_variant,
             kv_compression,
             kv_compression_layer_eligible,
@@ -5357,6 +5395,11 @@ impl MlxRunner {
         let has_linear_attention = self.cfg.linear_attention.is_some();
         let vocab = self.cfg.vocab_size as i32;
         let mut mtp_timings = MtpStepTimings::default();
+        let optimistic = self.mtp_optimistic && !pending.is_empty();
+
+        // Consume skip-state from the previous iteration (AX_MLX_MTP_SKIP_STATE=1).
+        let _skip_logits = state.mtp_skip_logits.take();
+        let _skip_hidden = state.mtp_skip_hidden.take();
 
         // Build verify sequence: [last_token] ++ pending_draft.
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + pending.len());
@@ -5385,6 +5428,36 @@ impl MlxRunner {
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 state.cache.seq_len += verify_len;
 
+                if optimistic {
+                    // ── Optimistic shortcut (AX_MLX_MTP_OPTIMISTIC=1) ──
+                    // Accept all drafts without rejection sampling.
+                    let ac = pending.len();
+                    let predicted_arr = argmax(&logits_all, None);
+                    let kv_refs = state.cache.collect_eval_refs();
+                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+                    targets.push(&predicted_arr);
+                    targets.push(&post_norm_all);
+                    targets.extend(kv_refs);
+                    let verify_eval_started = Instant::now();
+                    eval(&targets);
+                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                    let rollback_started = Instant::now();
+                    let _ = state.cache.trim_to(token_offset + 1 + ac);
+                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                    let draft_hidden =
+                        slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                    let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                    // Capture skip-state + async eval for next iteration.
+                    if self.mtp_skip_state {
+                        let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
+                        let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                        mlx_sys::async_eval(&[&sl, &sh]);
+                        state.mtp_skip_logits = Some(sl);
+                        state.mtp_skip_hidden = Some(sh);
+                    }
+                    (logits_all, draft_hidden, ac, true, correction_argmax_tok)
+                } else {
                 // Full-vocab target probabilities for rejection-sampling acceptance.
                 // Computes p_target(draft_token) via full-vocab softmax so the
                 // acceptance ratio min(1, p_target/p_draft) uses correct
@@ -5444,6 +5517,14 @@ impl MlxRunner {
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                // Capture skip-state + async eval for next iteration.
+                if self.mtp_skip_state {
+                    let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
+                    let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                    mlx_sys::async_eval(&[&sl, &sh]);
+                    state.mtp_skip_logits = Some(sl);
+                    state.mtp_skip_hidden = Some(sh);
+                }
                 (
                     logits_all,
                     draft_hidden,
@@ -5451,6 +5532,7 @@ impl MlxRunner {
                     all_accepted,
                     accept.rejection_correction.unwrap_or(correction_argmax_tok),
                 )
+                }
             } else {
                 // Non-linear-attention: run directly, trim on rejection.
                 let verify_forward_started = Instant::now();
@@ -5464,6 +5546,36 @@ impl MlxRunner {
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
                 state.cache.seq_len += verify_len;
 
+                if optimistic {
+                    // ── Optimistic shortcut (AX_MLX_MTP_OPTIMISTIC=1) ──
+                    let ac = pending.len();
+                    let predicted_arr = argmax(&logits_all, None);
+                    let kv_refs = state.cache.collect_eval_refs();
+                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+                    targets.push(&predicted_arr);
+                    targets.push(&post_norm_all);
+                    targets.extend(kv_refs);
+                    let verify_eval_started = Instant::now();
+                    eval(&targets);
+                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                    let rollback_started = Instant::now();
+                    let committed_len = token_offset + 1 + ac;
+                    let trimmed = state.cache.trim_to(committed_len);
+                    debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
+                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                    let draft_hidden =
+                        slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                    let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                    if self.mtp_skip_state {
+                        let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
+                        let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                        mlx_sys::async_eval(&[&sl, &sh]);
+                        state.mtp_skip_logits = Some(sl);
+                        state.mtp_skip_hidden = Some(sh);
+                    }
+                    (logits_all, draft_hidden, ac, true, correction_argmax_tok)
+                } else {
                 // Full-vocab target probabilities for rejection-sampling acceptance.
                 let lazy_target_probs = compute_mtp_target_probs_lazy(
                     &logits_all,
@@ -5525,6 +5637,14 @@ impl MlxRunner {
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                // Capture skip-state + async eval for next iteration.
+                if self.mtp_skip_state {
+                    let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
+                    let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                    mlx_sys::async_eval(&[&sl, &sh]);
+                    state.mtp_skip_logits = Some(sl);
+                    state.mtp_skip_hidden = Some(sh);
+                }
                 (
                     logits_all,
                     draft_hidden,
@@ -5532,6 +5652,7 @@ impl MlxRunner {
                     all_accepted,
                     accept.rejection_correction.unwrap_or(correction_argmax_tok),
                 )
+                }
             };
 
         // For linear attention with rejection, trim MTP cache too.
@@ -5715,6 +5836,8 @@ impl MlxRunner {
         state.mtp_pending_draft_distributions.clear();
         state.mtp_adaptive_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
         state.mtp_pending_hidden = None;
+        state.mtp_skip_logits = None;
+        state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
         if let Some(ref mut c) = state.mtp_cache {
             c.reset();
@@ -6392,6 +6515,39 @@ fn mtp_disable_ngram_stacking_from_env() -> bool {
     *CACHED.get_or_init(|| {
         matches!(
             std::env::var("AX_MLX_MTP_DISABLE_NGRAM_STACKING")
+                .unwrap_or_default()
+                .as_str(),
+            "1" | "true" | "TRUE"
+        )
+    })
+}
+
+/// When set to `1`, MTP verify always accepts all draft tokens without computing
+/// the rejection-sampling acceptance ratio.  Eliminates full-vocab softmax for
+/// target distribution, the accept/reject loop, and cache rollback on rejection.
+/// Safe for native MTP heads with >85% acceptance (Qwen3.6).
+fn mtp_optimistic_from_env() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        matches!(
+            std::env::var("AX_MLX_MTP_OPTIMISTIC")
+                .unwrap_or_default()
+                .as_str(),
+            "1" | "true" | "TRUE"
+        )
+    })
+}
+
+/// When set to `1`, the MTP decode path captures verify logits and hidden state
+/// as "skip state" and reuses them on the next iteration to avoid recomputing
+/// the main model forward for the first token position.  The skip_logits
+/// provides the next primary sample; the skip_hidden provides the MTP head
+/// input.  This eliminates one full-model forward pass per accepted cycle.
+fn mtp_skip_state_from_env() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        matches!(
+            std::env::var("AX_MLX_MTP_SKIP_STATE")
                 .unwrap_or_default()
                 .as_str(),
             "1" | "true" | "TRUE"

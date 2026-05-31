@@ -871,6 +871,9 @@ fn load_mtp_sidecar(
 ) -> (usize, MlxSamplingParams, Option<i32>) {
     // MTPLX default draft sampler: temperature slightly above target (0.6) to
     // ensure rejection-sampling acceptance rates ≥97%.
+    // AX_MLX_MTP_DRAFT_TEMPERATURE overrides the draft temperature from the
+    // sidecar config or this default.  Lightning-MLX uses 0.5 for code/tool-call
+    // workloads where tighter draft distributions lift acceptance.
     let default_draft = MlxSamplingParams::new(0.7, 0.95, 20);
 
     let sidecar = root.join("mtp.safetensors");
@@ -915,9 +918,30 @@ fn load_mtp_sidecar(
             }
         });
         let depth = apply_mtp_depth_policy(raw_depth, sidecar_bits);
-        return (depth, draft_sampling, sidecar_bits);
+        return (depth, apply_draft_temperature_override(draft_sampling), sidecar_bits);
     }
-    (apply_mtp_max_depth_cap(1), default_draft, None)
+    (apply_mtp_max_depth_cap(1), apply_draft_temperature_override(default_draft), None)
+}
+
+/// Override the MTP draft sampling temperature from `AX_MLX_MTP_DRAFT_TEMPERATURE`.
+///
+/// Lightning-MLX defaults to draft temperature 0.5 for code/tool-call workloads
+/// where tighter draft distributions lift MTP acceptance.  Our sidecar default
+/// is 0.7 (from `mtplx_runtime.json` or the hardcoded fallback).  This env var
+/// lets benchmark runs tune the draft temperature without rebuilding the sidecar.
+fn apply_draft_temperature_override(params: MlxSamplingParams) -> MlxSamplingParams {
+    static CACHED: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    let override_temp = CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_DRAFT_TEMPERATURE")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|&t| (0.0..=2.0).contains(&t))
+    });
+    if let Some(temp) = override_temp {
+        MlxSamplingParams::new(*temp, params.top_p, params.top_k)
+    } else {
+        params
+    }
 }
 
 fn apply_mtp_depth_policy(depth: usize, sidecar_bits: Option<i32>) -> usize {
