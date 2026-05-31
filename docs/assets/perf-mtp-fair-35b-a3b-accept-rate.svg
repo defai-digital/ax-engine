@@ -15,26 +15,26 @@
 <text x="108.7" y="211.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">48.8%</text>
 <rect x="145.3" y="70.6" width="53.3" height="287.4" rx="2" fill="#60a5fa" fill-opacity="0.86"/>
 <text x="172.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">99.1%</text>
-<rect x="208.7" y="68.3" width="53.3" height="289.7" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<rect x="208.7" y="68.3" width="53.3" height="289.7" rx="2" fill="#4ade80" fill-opacity="0.86"/>
 <text x="235.3" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">99.9%</text>
 <text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">long_code</text>
 <rect x="306.0" y="206.4" width="53.3" height="151.6" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
 <text x="332.7" y="201.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">52.3%</text>
 <rect x="369.3" y="72.1" width="53.3" height="285.9" rx="2" fill="#60a5fa" fill-opacity="0.86"/>
 <text x="396.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">98.6%</text>
-<rect x="432.7" y="68.6" width="53.3" height="289.4" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<rect x="432.7" y="68.6" width="53.3" height="289.4" rx="2" fill="#4ade80" fill-opacity="0.86"/>
 <text x="459.3" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">99.8%</text>
 <text x="620.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
 <rect x="530.0" y="235.3" width="53.3" height="122.7" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
 <text x="556.7" y="230.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">42.3%</text>
 <rect x="593.3" y="77.3" width="53.3" height="280.7" rx="2" fill="#60a5fa" fill-opacity="0.86"/>
 <text x="620.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">96.8%</text>
-<rect x="656.7" y="87.6" width="53.3" height="270.4" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<rect x="656.7" y="87.6" width="53.3" height="270.4" rx="2" fill="#4ade80" fill-opacity="0.86"/>
 <text x="683.3" y="82.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">93.2%</text>
 <rect x="60" y="407" width="10" height="10" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
 <text x="74" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
 <rect x="190" y="407" width="10" height="10" rx="2" fill="#60a5fa" fill-opacity="0.86"/>
 <text x="204" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Lightning MLX</text>
-<rect x="320" y="407" width="10" height="10" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<rect x="320" y="407" width="10" height="10" rx="2" fill="#4ade80" fill-opacity="0.86"/>
 <text x="334" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
 </svg>
