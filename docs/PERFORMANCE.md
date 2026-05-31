@@ -257,30 +257,30 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
-| Lightning MLX (tok/s) | 140.1 | 140.4 | 137.8 |
-| Lightning MLX (accept) | 99.1% | 98.6% | 96.8% |
-| MTPLX 0.3.7 (tok/s) | 88.1 | 105.2 | 95.2 |
-| MTPLX 0.3.7 (accept) | 48.8% | 52.3% | 42.3% |
+| Lightning MLX (tok/s) | 147.9 | 149.0 | 148.8 |
+| Lightning MLX (accept) | 99.0% | 98.5% | 97.2% |
+| MTPLX 0.3.7 (tok/s) | 107.3 | 106.4 | 102.7 |
+| MTPLX 0.3.7 (accept) | 50.8% | 50.5% | 42.6% |
 | AX Engine (tok/s) | 84.2 | 81.5 | 79.0 |
 | AX Engine (accept) | 99.9% | 99.8% | 93.2% |
-| AX/MTPLX ratio | 0.956 | 0.775 | 0.829 |
-| AX/Lightning ratio | 0.601 | 0.580 | 0.573 |
+| AX/MTPLX ratio | 0.785 | 0.766 | 0.769 |
+| AX/Lightning ratio | 0.569 | 0.547 | 0.531 |
 
 27B results (native depth=3, pure MTP, 1000 gen tokens):
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
-| Lightning MLX (tok/s) | 48.8 | 48.7 | 45.0 |
-| Lightning MLX (accept) | 96.8% | 93.3% | 73.7% |
-| MTPLX 0.3.7 (tok/s) | 55.5 | 44.3 | 47.7 |
+| Lightning MLX (tok/s) | 49.5 | 51.7 | 46.9 |
+| Lightning MLX (accept) | 96.5% | 93.3% | 76.5% |
+| MTPLX 0.3.7 (tok/s) | 51.5 | 53.5 | 51.6 |
 | MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 87.6% |
 | AX Engine (tok/s) | 37.6 | 38.0 | 22.9 |
 | AX Engine (accept) | 99.1% | 98.3% | 67.0% |
-| AX/MTPLX ratio | 0.679 | 0.859 | 0.480 |
-| AX/Lightning ratio | 0.771 | 0.782 | 0.508 |
+| AX/MTPLX ratio | 0.731 | 0.711 | 0.443 |
+| AX/Lightning ratio | 0.760 | 0.736 | 0.488 |
 
-Artifacts: `benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/` (three-engine:
-MTPLX, Lightning MLX, AX Engine; full-vocab draft log-prob fix).
+Artifacts: `benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-final/` (three-engine:
+MTPLX, Lightning MLX, AX Engine; fresh full rerun 2026-05-31).
 
 #### Chart data table
 
