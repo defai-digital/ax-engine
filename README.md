@@ -25,6 +25,8 @@ five measured repetitions, one warmup repetition.
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX/MTPLX |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Qwen3.6 27B 4-bit | flappy | 3 | 56.0 | 100.0% | 42.6 | 52.6% | 0.761 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 58.9 | 99.1% | 50.6 | 68.6% | 0.859 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 50.4 | 84.6% | 44.6 | 52.9% | 0.885 |
 | Qwen3.6 35B-A3B 4-bit | flappy | 3 | 102.1 | 51.1% | 143.2 | 63.4% | 1.403 |
 | Qwen3.6 35B-A3B 4-bit | long_code | 3 | 100.7 | 49.2% | 177.2 | 79.2% | 1.760 |
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 3 | 67.7 | 44.3% | 165.4 | 81.1% | 2.444 |
