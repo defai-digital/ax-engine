@@ -91,7 +91,7 @@ use crate::ngram_accel::{
     effective_draft_confidence_threshold, ngram_accel_decode_step,
     single_decode_with_turboquant_context,
 };
-use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64};
+use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64, indexed_token_logprob};
 use crate::turboquant::{
     TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION, TurboQuantProductionRequirements,
     turboquant_support_report,
@@ -5345,13 +5345,24 @@ impl MlxRunner {
 
                 // Pre-compute draft token target probabilities lazily (before eval)
                 // so they are evaluated in the same GPU dispatch as the verify pass.
-                let lazy_target_probs = compute_mtp_target_probs_lazy(
+                let target_topk_probs = compute_mtp_target_topk_probs(
                     &logits_all,
                     &pending,
                     &state.mtp_pending_draft_log_probs,
                     vocab,
                     sampling,
                 );
+                let lazy_target_probs = if target_topk_probs.is_none() {
+                    compute_mtp_target_probs_lazy(
+                        &logits_all,
+                        &pending,
+                        &state.mtp_pending_draft_log_probs,
+                        vocab,
+                        sampling,
+                    )
+                } else {
+                    None
+                };
                 let predicted_arr = if mtp_verify_needs_argmax(
                     &pending,
                     &state.mtp_pending_draft_log_probs,
@@ -5370,6 +5381,9 @@ impl MlxRunner {
                 if let Some(ref ltp) = lazy_target_probs {
                     targets.push(ltp);
                 }
+                if let Some(ref topk) = target_topk_probs {
+                    topk.push_eval_targets(&mut targets);
+                }
                 targets.extend(kv_refs);
                 let verify_eval_started = Instant::now();
                 eval(&targets);
@@ -5379,8 +5393,11 @@ impl MlxRunner {
                     .as_ref()
                     .map(|arr| arr.data_u32().to_vec())
                     .unwrap_or_default();
-                let target_probs_cpu: Option<Vec<f32>> =
-                    lazy_target_probs.map(|arr| arr.data_f32().to_vec());
+                let target_probs_cpu: Option<Vec<f32>> = if let Some(topk) = target_topk_probs {
+                    Some(topk.probs_cpu())
+                } else {
+                    lazy_target_probs.map(|arr| arr.data_f32().to_vec())
+                };
 
                 let (ac, all_accepted) = mtp_accept_count(
                     &pending,
@@ -5420,13 +5437,24 @@ impl MlxRunner {
                 state.cache.seq_len += verify_len;
 
                 // Pre-compute draft token target probabilities lazily (before eval).
-                let lazy_target_probs = compute_mtp_target_probs_lazy(
+                let target_topk_probs = compute_mtp_target_topk_probs(
                     &logits_all,
                     &pending,
                     &state.mtp_pending_draft_log_probs,
                     vocab,
                     sampling,
                 );
+                let lazy_target_probs = if target_topk_probs.is_none() {
+                    compute_mtp_target_probs_lazy(
+                        &logits_all,
+                        &pending,
+                        &state.mtp_pending_draft_log_probs,
+                        vocab,
+                        sampling,
+                    )
+                } else {
+                    None
+                };
                 let predicted_arr = if mtp_verify_needs_argmax(
                     &pending,
                     &state.mtp_pending_draft_log_probs,
@@ -5445,6 +5473,9 @@ impl MlxRunner {
                 if let Some(ref ltp) = lazy_target_probs {
                     targets.push(ltp);
                 }
+                if let Some(ref topk) = target_topk_probs {
+                    topk.push_eval_targets(&mut targets);
+                }
                 targets.extend(kv_refs);
                 let verify_eval_started = Instant::now();
                 eval(&targets);
@@ -5454,8 +5485,11 @@ impl MlxRunner {
                     .as_ref()
                     .map(|arr| arr.data_u32().to_vec())
                     .unwrap_or_default();
-                let target_probs_cpu: Option<Vec<f32>> =
-                    lazy_target_probs.map(|arr| arr.data_f32().to_vec());
+                let target_probs_cpu: Option<Vec<f32>> = if let Some(topk) = target_topk_probs {
+                    Some(topk.probs_cpu())
+                } else {
+                    lazy_target_probs.map(|arr| arr.data_f32().to_vec())
+                };
 
                 let (ac, all_accepted) = mtp_accept_count(
                     &pending,
@@ -6043,6 +6077,78 @@ fn compute_mtp_target_probs_lazy(
     use mlx_sys::reshape as mlx_reshape;
     let probs_flat = mlx_reshape(&probs, &[-1_i32], None);
     Some(take(&probs_flat, &flat_idx_arr, 0, None)) // [n] lazy
+}
+
+struct MtpTargetTopKProbs {
+    pending: Vec<u32>,
+    sampling: MlxSamplingParams,
+    logits: Vec<MlxArray>,
+    indices: Vec<MlxArray>,
+}
+
+impl MtpTargetTopKProbs {
+    fn push_eval_targets<'a>(&'a self, targets: &mut Vec<&'a MlxArray>) {
+        for logits in &self.logits {
+            targets.push(logits);
+        }
+        for indices in &self.indices {
+            targets.push(indices);
+        }
+    }
+
+    fn probs_cpu(&self) -> Vec<f32> {
+        self.logits
+            .iter()
+            .zip(self.indices.iter())
+            .zip(self.pending.iter())
+            .map(|((logits, indices), token)| {
+                indexed_token_logprob(logits.data_f32(), indices.data_u32(), *token, self.sampling)
+                    .map(f32::exp)
+                    .unwrap_or(0.0)
+            })
+            .collect()
+    }
+}
+
+fn compute_mtp_target_topk_probs(
+    logits_all: &MlxArray,
+    pending: &[u32],
+    pending_log_probs: &[f32],
+    vocab: i32,
+    target_sampling: MlxSamplingParams,
+) -> Option<MtpTargetTopKProbs> {
+    if pending.is_empty()
+        || pending_log_probs.len() != pending.len()
+        || target_sampling.temperature <= 0.0
+        || target_sampling.top_k == 0
+    {
+        return None;
+    }
+
+    let k = target_sampling.top_k.min(vocab as u32).max(1) as usize;
+    let mut logits = Vec::with_capacity(pending.len());
+    let mut indices = Vec::with_capacity(pending.len());
+    for i in 0..pending.len() {
+        let row = slice(
+            logits_all,
+            &[i as i32, 0],
+            &[i as i32 + 1, vocab],
+            &[1, 1],
+            None,
+        );
+        let row = mlx_sys::reshape(&row, &[vocab], None);
+        let row_indices = crate::mtp::mtp_top_k_candidates(&row, k);
+        let row_logits = take(&row, &row_indices, 0, None);
+        indices.push(row_indices);
+        logits.push(row_logits);
+    }
+
+    Some(MtpTargetTopKProbs {
+        pending: pending.to_vec(),
+        sampling: target_sampling,
+        logits,
+        indices,
+    })
 }
 
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.

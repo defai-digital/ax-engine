@@ -297,8 +297,10 @@ pub fn sample_indexed_categorical_with_logprob(
         return Some((indices[best_i], 0.0));
     }
 
-    // Apply top-p over the already-top-k-filtered set (top-k was done on GPU).
-    apply_top_k_top_p(&mut candidates, 0, sampling.top_p);
+    // Apply the sampler's top-k/top-p over the caller-provided candidate set.
+    // The set is usually already narrowed on GPU for bandwidth, but it can be
+    // much larger than the sampler's requested top-k.
+    apply_top_k_top_p(&mut candidates, sampling.top_k, sampling.top_p);
     let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
     if filtered_sum == 0.0 || !filtered_sum.is_finite() {
         return Some((indices[best_i], 0.0));
@@ -630,6 +632,22 @@ mod tests {
                 tok == 10 || tok == 11,
                 "top_p=0.5 should keep first half of equal-prob candidates, got {tok}"
             );
+        }
+    }
+
+    #[test]
+    fn indexed_categorical_with_logprob_applies_top_k() {
+        let logits = vec![4.0_f32, 3.0, 2.0, 1.0];
+        let indices = vec![10_u32, 11, 12, 13];
+        let mut rng = Xorshift64::new(31);
+        let sampling = MlxSamplingParams::new(1.0, 1.0, 2);
+
+        for _ in 0..50 {
+            let (tok, log_prob) =
+                sample_indexed_categorical_with_logprob(&logits, &indices, sampling, &mut rng)
+                    .unwrap();
+            assert!(tok == 10 || tok == 11, "top_k=2 should exclude token {tok}");
+            assert!(log_prob.is_finite());
         }
     }
 
