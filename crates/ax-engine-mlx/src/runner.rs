@@ -5453,7 +5453,10 @@ impl MlxRunner {
                     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
                     let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
                     // Capture skip-state + async eval for next iteration.
-                    if self.mtp_skip_state {
+                    // Only capture when there were pending drafts — a single-token
+                    // verify (pending empty) produces skip-state that is never
+                    // usefully consumed on the next iteration.
+                    if self.mtp_skip_state && !pending.is_empty() {
                         let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
                         let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                         mlx_sys::async_eval(&[&sl, &sh]);
@@ -5522,7 +5525,7 @@ impl MlxRunner {
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
                 // Capture skip-state + async eval for next iteration.
-                if self.mtp_skip_state {
+                if self.mtp_skip_state && !pending.is_empty() {
                     let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
                     let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                     mlx_sys::async_eval(&[&sl, &sh]);
@@ -5571,7 +5574,7 @@ impl MlxRunner {
                         slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
                     let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                    if self.mtp_skip_state {
+                    if self.mtp_skip_state && !pending.is_empty() {
                         let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
                         let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                         mlx_sys::async_eval(&[&sl, &sh]);
@@ -5642,7 +5645,7 @@ impl MlxRunner {
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
                 // Capture skip-state + async eval for next iteration.
-                if self.mtp_skip_state {
+                if self.mtp_skip_state && !pending.is_empty() {
                     let sl = slice(&logits_all, &[ac as i32, 0], &[(ac + 1) as i32, vocab], &[1, 1], None);
                     let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                     mlx_sys::async_eval(&[&sl, &sh]);
