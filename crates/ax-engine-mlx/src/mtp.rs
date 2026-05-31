@@ -391,7 +391,10 @@ fn mtp_draft_tokens_greedy(
 
     // Read back materialised tokens.
     let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
-    let draft_log_probs = vec![0.0f32; draft_tokens.len()];
+    // Return empty log probs — greedy draft has no per-token probabilities.
+    // Returning zeros would mislead mtp_accept_count into treating them as
+    // valid log probs (0.0f32.exp() = 1.0), corrupting rejection sampling.
+    let draft_log_probs: Vec<f32> = vec![];
 
     let added = draft_tokens.len();
     (

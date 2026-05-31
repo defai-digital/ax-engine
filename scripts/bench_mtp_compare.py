@@ -40,6 +40,7 @@ The AX artifact from each suite run is saved at
 and a combined summary markdown is written to
   <output-dir>/summary.md
 """
+
 from __future__ import annotations
 
 import argparse
@@ -88,16 +89,24 @@ def run_ax_suite(
     cmd = [
         sys.executable,
         str(BENCH_SCRIPT),
-        "--model-dir", str(model_dir),
-        "--prompt-source", "real",
-        "--real-prompt-suite", str(suite_file),
-        "--generation-tokens", str(MTP_GENERATION_TOKENS),
-        "--repetitions", str(repetitions),
-        "--cooldown", str(cooldown),
+        "--model-dir",
+        str(model_dir),
+        "--prompt-source",
+        "real",
+        "--real-prompt-suite",
+        str(suite_file),
+        "--generation-tokens",
+        str(MTP_GENERATION_TOKENS),
+        "--repetitions",
+        str(repetitions),
+        "--cooldown",
+        str(cooldown),
         policy_flag,
-        "--ax-sampling", json.dumps(MTP_SAMPLING),
+        "--ax-sampling",
+        json.dumps(MTP_SAMPLING),
         "--skip-mlx-lm",
-        "--output", str(artifact_path),
+        "--output",
+        str(artifact_path),
     ]
     if mtp_max_depth is not None:
         cmd.extend(["--ax-mtp-max-depth", str(mtp_max_depth)])
@@ -113,7 +122,9 @@ def run_ax_suite(
 
     result = subprocess.run(cmd, check=True)
     if result.returncode != 0:
-        raise RuntimeError(f"bench_mlx_inference_stack.py exited {result.returncode} for suite {suite_name}")
+        raise RuntimeError(
+            f"bench_mlx_inference_stack.py exited {result.returncode} for suite {suite_name}"
+        )
 
     return json.loads(artifact_path.read_text())
 
@@ -121,11 +132,24 @@ def run_ax_suite(
 def extract_suite_summary(artifact: dict, suite_name: str) -> dict:
     """Pull decode tok/s and n-gram accept rate from a suite artifact."""
     rows = artifact.get("results", [])
-    direct_rows = [r for r in rows if r.get("engine") == "ax_engine_mlx" and r.get("prompt_case_id") is not None]
-    ngram_rows = [r for r in rows if r.get("engine") == "ax_engine_mlx_ngram_accel" and r.get("prompt_case_id") is not None]
+    direct_rows = [
+        r
+        for r in rows
+        if r.get("engine") == "ax_engine_mlx" and r.get("prompt_case_id") is not None
+    ]
+    ngram_rows = [
+        r
+        for r in rows
+        if r.get("engine") == "ax_engine_mlx_ngram_accel"
+        and r.get("prompt_case_id") is not None
+    ]
 
     def median_decode(rs: list) -> float | None:
-        vals = [r["decode_tok_s"]["median"] for r in rs if r.get("decode_tok_s", {}).get("median") is not None]
+        vals = [
+            r["decode_tok_s"]["median"]
+            for r in rs
+            if r.get("decode_tok_s", {}).get("median") is not None
+        ]
         if not vals:
             return None
         vals.sort()
@@ -133,41 +157,54 @@ def extract_suite_summary(artifact: dict, suite_name: str) -> dict:
         return vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
 
     def mean_accept_rate(rs: list) -> float | None:
-        rates = []
+        # Weighted aggregate: sum all accepted/drafted across cases, then divide.
+        # This correctly weights cases by their token count, unlike an unweighted
+        # mean of per-case rates which would give equal weight to a 2-token case
+        # and a 1000-token case.
+        total_drafted = 0
+        total_accepted = 0
         for r in rs:
             telem = r.get("ngram_acceleration_telemetry", {})
             # Prefer MTP telemetry when present (MTP replaces n-gram on MTPLX models).
             mtp_drafted = telem.get("ax_mtp_draft_tokens", 0)
             mtp_accepted = telem.get("ax_mtp_accepted_tokens", 0)
             if mtp_drafted and mtp_drafted > 0:
-                rates.append(mtp_accepted / mtp_drafted)
+                total_drafted += mtp_drafted
+                total_accepted += mtp_accepted
                 continue
             # Fall back to n-gram telemetry for non-MTPLX models.
             ngram_accepted = telem.get("ax_ngram_accepted_tokens", 0)
             ngram_drafted = telem.get("ax_ngram_draft_tokens", 0)
             if ngram_drafted and ngram_drafted > 0:
-                rates.append(ngram_accepted / ngram_drafted)
-        return sum(rates) / len(rates) if rates else None
+                total_drafted += ngram_drafted
+                total_accepted += ngram_accepted
+        return total_accepted / total_drafted if total_drafted > 0 else None
 
     def mean_mtp_accept_rate(rs: list) -> float | None:
         total_drafted = sum(
-            r.get("ngram_acceleration_telemetry", {}).get("ax_mtp_draft_tokens", 0) for r in rs
+            r.get("ngram_acceleration_telemetry", {}).get("ax_mtp_draft_tokens", 0)
+            for r in rs
         )
         total_accepted = sum(
-            r.get("ngram_acceleration_telemetry", {}).get("ax_mtp_accepted_tokens", 0) for r in rs
+            r.get("ngram_acceleration_telemetry", {}).get("ax_mtp_accepted_tokens", 0)
+            for r in rs
         )
         return total_accepted / total_drafted if total_drafted > 0 else None
 
     return {
         "suite": suite_name,
-        "case_count": len(set(r.get("prompt_case_id") for r in rows if r.get("prompt_case_id"))),
+        "case_count": len(
+            set(r.get("prompt_case_id") for r in rows if r.get("prompt_case_id"))
+        ),
         "ax_direct_decode_tok_s": median_decode(direct_rows),
         "ax_ngram_decode_tok_s": median_decode(ngram_rows),
         "ax_ngram_accept_rate": mean_accept_rate(ngram_rows),
         "ax_mtp_accept_rate": mean_mtp_accept_rate(ngram_rows),
         # Provenance fields surfaced in summary warnings.
         "ax_mtp_max_depth": artifact.get("ax_mtp_max_depth"),
-        "ax_mtp_fast_tail_topk_sampling": bool(artifact.get("ax_mtp_fast_tail_topk_sampling", False)),
+        "ax_mtp_fast_tail_topk_sampling": bool(
+            artifact.get("ax_mtp_fast_tail_topk_sampling", False)
+        ),
         "build_dirty": bool(artifact.get("build", {}).get("git_tracked_dirty", False)),
         "build_commit": artifact.get("build", {}).get("commit", "unknown")[:12],
     }
@@ -213,7 +250,9 @@ def write_summary(
     lines.append("")
     lines.append(f"Date: {run_date}  ")
     lines.append(f"Model: `{model_dir.name}`  ")
-    lines.append(f"Sampling: temperature={MTP_SAMPLING['temperature']}, top_p={MTP_SAMPLING['top_p']}, top_k={MTP_SAMPLING['top_k']}  ")
+    lines.append(
+        f"Sampling: temperature={MTP_SAMPLING['temperature']}, top_p={MTP_SAMPLING['top_p']}, top_k={MTP_SAMPLING['top_k']}  "
+    )
     lines.append(f"Generation tokens: {MTP_GENERATION_TOKENS}  ")
     lines.append(f"Repetitions: {repetitions} + 1 warmup  ")
     lines.append("")
@@ -221,23 +260,39 @@ def write_summary(
     # Dirty build warning — surfaces when any suite artifact was built from uncommitted changes.
     any_dirty = any(s.get("build_dirty", False) for s in suite_summaries)
     if any_dirty:
-        commit = suite_summaries[0].get("build_commit", "unknown") if suite_summaries else "unknown"
-        lines.append(f"> **WARNING: dirty build** — this run used uncommitted source changes (base commit `{commit}`).  ")
-        lines.append("> Numbers are not reproducible from any tagged commit. Do not promote to PERFORMANCE.md  ")
+        commit = (
+            suite_summaries[0].get("build_commit", "unknown")
+            if suite_summaries
+            else "unknown"
+        )
+        lines.append(
+            f"> **WARNING: dirty build** — this run used uncommitted source changes (base commit `{commit}`).  "
+        )
+        lines.append(
+            "> Numbers are not reproducible from any tagged commit. Do not promote to PERFORMANCE.md  "
+        )
         lines.append("> or README until a clean build is confirmed.  ")
         lines.append("")
 
     if mtplx_ref:
         meta = mtplx_ref["meta"]
-        lines.append(f"MTPLX reference: version={meta.get('mtplx_version', 'unknown')}, hardware={meta.get('hardware', 'unknown')}")
+        lines.append(
+            f"MTPLX reference: version={meta.get('mtplx_version', 'unknown')}, hardware={meta.get('hardware', 'unknown')}"
+        )
         lines.append("")
     model_bundle = infer_model_bundle(model_dir)
 
     # Experimental-flag caveat.
-    fast_tail_used = any(s.get("ax_mtp_fast_tail_topk_sampling", False) for s in suite_summaries)
+    fast_tail_used = any(
+        s.get("ax_mtp_fast_tail_topk_sampling", False) for s in suite_summaries
+    )
     if fast_tail_used:
-        lines.append("> **Note:** `AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING=1` was active for one or more suites.  ")
-        lines.append("> top-p is not applied on the fast tail-sampling path; these rows are diagnostic only  ")
+        lines.append(
+            "> **Note:** `AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING=1` was active for one or more suites.  "
+        )
+        lines.append(
+            "> top-p is not applied on the fast tail-sampling path; these rows are diagnostic only  "
+        )
         lines.append("> and **not** comparable to MTPLX standard rejection sampling.  ")
         lines.append("")
 
@@ -245,7 +300,9 @@ def write_summary(
     lines.append("")
 
     if mtplx_ref:
-        lines.append("| Suite | AX depth | AX direct | AX MTP | AX MTP accept rate | MTPLX reference | MTPLX accept rate | MTPLX depth |")
+        lines.append(
+            "| Suite | AX depth | AX direct | AX MTP | AX MTP accept rate | MTPLX reference | MTPLX accept rate | MTPLX depth |"
+        )
         lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     else:
         lines.append("| Suite | AX depth | AX direct | AX MTP | AX MTP accept rate |")
@@ -253,24 +310,46 @@ def write_summary(
 
     for s in suite_summaries:
         suite = s["suite"]
-        ax_depth = str(s["ax_mtp_max_depth"]) if s.get("ax_mtp_max_depth") is not None else "default"
-        direct = f"{s['ax_direct_decode_tok_s']:.1f}" if s["ax_direct_decode_tok_s"] is not None else "—"
-        ngram = f"{s['ax_ngram_decode_tok_s']:.1f}" if s["ax_ngram_decode_tok_s"] is not None else "—"
+        ax_depth = (
+            str(s["ax_mtp_max_depth"])
+            if s.get("ax_mtp_max_depth") is not None
+            else "default"
+        )
+        direct = (
+            f"{s['ax_direct_decode_tok_s']:.1f}"
+            if s["ax_direct_decode_tok_s"] is not None
+            else "—"
+        )
+        ngram = (
+            f"{s['ax_ngram_decode_tok_s']:.1f}"
+            if s["ax_ngram_decode_tok_s"] is not None
+            else "—"
+        )
         mtp_accept = s.get("ax_mtp_accept_rate")
-        accept = f"{mtp_accept:.1%}" if mtp_accept is not None else (
-            f"{s['ax_ngram_accept_rate']:.1%}" if s["ax_ngram_accept_rate"] is not None else "—"
+        accept = (
+            f"{mtp_accept:.1%}"
+            if mtp_accept is not None
+            else (
+                f"{s['ax_ngram_accept_rate']:.1%}"
+                if s["ax_ngram_accept_rate"] is not None
+                else "—"
+            )
         )
 
         if mtplx_ref:
             ref = {}
             if model_bundle is not None:
-                ref = mtplx_ref.get("by_bundle_suite", {}).get((model_bundle, suite), {})
+                ref = mtplx_ref.get("by_bundle_suite", {}).get(
+                    (model_bundle, suite), {}
+                )
             if not ref:
                 ref = mtplx_ref["by_suite"].get(suite, {})
             m_decode = f"{ref['decode_tok_s']:.1f}" if "decode_tok_s" in ref else "—"
             m_accept = f"{ref['accept_rate']:.1%}" if "accept_rate" in ref else "—"
             m_depth = str(ref.get("depth", "—"))
-            lines.append(f"| {suite} | {ax_depth} | {direct} | {ngram} | {accept} | {m_decode} | {m_accept} | {m_depth} |")
+            lines.append(
+                f"| {suite} | {ax_depth} | {direct} | {ngram} | {accept} | {m_decode} | {m_accept} | {m_depth} |"
+            )
         else:
             lines.append(f"| {suite} | {ax_depth} | {direct} | {ngram} | {accept} |")
 
@@ -278,9 +357,13 @@ def write_summary(
     lines.append("## Artifact provenance")
     lines.append("")
     for s in suite_summaries:
-        lines.append(f"- `{output_dir}/{s['suite']}/{s['suite']}.json` — {s['case_count']} prompt cases, AX direct + n-gram rows")
+        lines.append(
+            f"- `{output_dir}/{s['suite']}/{s['suite']}.json` — {s['case_count']} prompt cases, AX direct + n-gram rows"
+        )
     if mtplx_ref:
-        lines.append(f"- MTPLX reference: `{mtplx_ref['meta'].get('source_path', 'injected')}`")
+        lines.append(
+            f"- MTPLX reference: `{mtplx_ref['meta'].get('source_path', 'injected')}`"
+        )
     lines.append("")
     lines.append("## Reproduction")
     lines.append("")
@@ -289,7 +372,9 @@ def write_summary(
     lines.append(f"  --model-dir {model_dir} \\")
     if mtplx_ref:
         lines.append(f"  --mtplx-results <path-to-mtplx-results.json> \\")
-    lines.append(f"  --output-dir benchmarks/results/mtp-compare/$(date +%F)-ax-mtp-all")
+    lines.append(
+        f"  --output-dir benchmarks/results/mtp-compare/$(date +%F)-ax-mtp-all"
+    )
     lines.append("```")
     lines.append("")
 
@@ -427,12 +512,27 @@ def main() -> None:
         suite_summaries.append(summary)
 
         print(f"\n  [result] {suite_name}:", flush=True)
-        print(f"    ax_direct:       {summary['ax_direct_decode_tok_s']:.1f} tok/s" if summary["ax_direct_decode_tok_s"] else "    ax_direct:       —", flush=True)
-        print(f"    ax_mtp:          {summary['ax_ngram_decode_tok_s']:.1f} tok/s" if summary["ax_ngram_decode_tok_s"] else "    ax_mtp:          —", flush=True)
+        print(
+            f"    ax_direct:       {summary['ax_direct_decode_tok_s']:.1f} tok/s"
+            if summary["ax_direct_decode_tok_s"]
+            else "    ax_direct:       —",
+            flush=True,
+        )
+        print(
+            f"    ax_mtp:          {summary['ax_ngram_decode_tok_s']:.1f} tok/s"
+            if summary["ax_ngram_decode_tok_s"]
+            else "    ax_mtp:          —",
+            flush=True,
+        )
         if summary.get("ax_mtp_accept_rate") is not None:
-            print(f"    mtp_accept:      {summary['ax_mtp_accept_rate']:.1%}", flush=True)
+            print(
+                f"    mtp_accept:      {summary['ax_mtp_accept_rate']:.1%}", flush=True
+            )
         elif summary["ax_ngram_accept_rate"] is not None:
-            print(f"    ngram_accept:    {summary['ax_ngram_accept_rate']:.1%}", flush=True)
+            print(
+                f"    ngram_accept:    {summary['ax_ngram_accept_rate']:.1%}",
+                flush=True,
+            )
         else:
             print("    accept_rate:     —", flush=True)
 

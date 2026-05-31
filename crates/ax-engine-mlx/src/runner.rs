@@ -6184,9 +6184,10 @@ fn compute_mtp_target_probs_lazy(
     let probs = softmax(&scaled, -1, None); // [verify_len, vocab] lazy
 
     // Flatten probs and gather the single probability for each draft token.
-    // flat_idx[i] = i * vocab + pending[i] → picks the draft token's probability in each row.
+    // verify_input = [last_token] ++ pending, so logits_all row 0 is for last_token
+    // and row i+1 is for pending[i]. flat_idx[i] = (i+1) * vocab + pending[i].
     let flat_indices: Vec<i32> = (0..n)
-        .map(|i| i as i32 * vocab + pending[i] as i32)
+        .map(|i| (i + 1) as i32 * vocab + pending[i] as i32)
         .collect();
     let flat_idx_arr = MlxArray::from_raw_data(
         flat_indices.as_ptr() as *const u8,
