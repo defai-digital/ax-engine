@@ -170,6 +170,7 @@ def run_ax_suite(
     model_dir: Path,
     config: diff.RunConfig,
     no_build: bool,
+    pure_mtp: bool = False,
 ) -> Path:
     cmd = [
         str(python),
@@ -200,7 +201,10 @@ def run_ax_suite(
         cmd.append("--no-thinking")
     if no_build:
         cmd.append("--no-build-ax-engine")
-    run_subprocess(cmd)
+    env: dict[str, str] | None = None
+    if pure_mtp:
+        env = {**os.environ, "AX_MLX_MTP_DISABLE_NGRAM_STACKING": "1"}
+    run_subprocess(cmd, env=env)
     return output_path
 
 
@@ -290,6 +294,7 @@ def run_engine_suite(
                 model_dir=model_dir,
                 config=config,
                 no_build=args.no_build_ax_engine,
+                pure_mtp=args.pure_mtp,
             )
         if engine == "mtplx":
             return run_mtplx_suite(
@@ -445,6 +450,7 @@ def build_summary(
             "repetitions": args.repetitions,
             "warmup_repetitions": args.warmup_repetitions,
             "cooldown_s": args.cooldown,
+            "ax_pure_mtp": bool(args.pure_mtp),
             "fairness_rules": [
                 "standard Qwen source MTP shards plus mlx-community 4-bit base only",
                 "Youssofal MTPLX bundles are excluded",
@@ -831,6 +837,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument(
+        "--pure-mtp",
+        action="store_true",
+        help=(
+            "Set AX_MLX_MTP_DISABLE_NGRAM_STACKING=1 for the AX subprocess so the "
+            "MTP verify loop sources its draft only from the MTP head (no ADR-008 "
+            "n-gram-first stacking). Use this to measure pure-MTP acceptance for "
+            "fair comparison against MTPLX."
+        ),
+    )
     return parser.parse_args()
 
 

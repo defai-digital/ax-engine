@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::fs;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, ThreadId};
 use std::time::Instant;
 
@@ -5635,7 +5635,15 @@ impl MlxRunner {
             compute_think_state(&self.cfg, state.ngram_in_think, &result);
         let mtp_post_think_guarded =
             self.cfg.think_start_token_id.is_some() && !think_state_after_result;
-        let ngram_max = 3_usize.min(state.mtp_adaptive_max_depth);
+        // Pure-MTP override: when AX_MLX_MTP_DISABLE_NGRAM_STACKING=1, skip the
+        // ADR-008 n-gram-first draft branch entirely so the benchmark measures
+        // MTP acceptance in isolation.  The MTP verify loop, head forward, and
+        // telemetry are unchanged; only this draft-source branch is gated.
+        let ngram_max = if mtp_disable_ngram_stacking_from_env() {
+            0
+        } else {
+            3_usize.min(state.mtp_adaptive_max_depth)
+        };
         let ngram_outcome = if ngram_max > 0 {
             state.ngram.predict_with_policy(NgramDraftPolicy {
                 variant: NgramPolicyVariant::MajorityRecency,
@@ -6500,6 +6508,24 @@ fn maybe_reenable_linear_ngram_from_fallback_output(
     // pending_direct would point at the wrong sequence position.
     state.pending_direct = None;
     state.direct_pipeline_emitted_tokens = 0;
+}
+
+/// When set to `1`, disables n-gram drafting inside `run_mtp_decode` so the MTP
+/// verify loop always sources its draft from the MTP head.  Used by the fair
+/// benchmark to measure pure-MTP acceptance without ADR-008 stacking.
+///
+/// Other decode paths (non-MTP `ngram_accel_decode_step`, prefill seeding) are
+/// unaffected — only the n-gram-first branch inside `run_mtp_decode` is gated.
+fn mtp_disable_ngram_stacking_from_env() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        matches!(
+            std::env::var("AX_MLX_MTP_DISABLE_NGRAM_STACKING")
+                .unwrap_or_default()
+                .as_str(),
+            "1" | "true" | "TRUE"
+        )
+    })
 }
 
 fn ngram_policy_variant_from_env() -> NgramPolicyVariant {
