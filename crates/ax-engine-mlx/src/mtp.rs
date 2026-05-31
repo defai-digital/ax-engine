@@ -11,8 +11,10 @@ use crate::model::shared::{
     qk_norm_rope_bhsd_from_proj, qw, shared_expert_forward,
 };
 use crate::model::{ModelConfig, embed_tokens_arr};
-use crate::sampling::Xorshift64;
-use crate::sampling::{sample_categorical_with_logprob, sample_indexed_categorical_with_logprob};
+use crate::sampling::{
+    TokenDistribution, Xorshift64, sample_categorical_with_logprob_and_distribution,
+    sample_indexed_categorical_with_logprob_and_distribution,
+};
 use crate::weights::{ModelWeights, MtpWeights, QuantizedWeight};
 
 /// Number of top-k candidate tokens pre-selected from the verify-step logits for
@@ -330,7 +332,7 @@ pub fn mtp_top_k_candidates(logit_row: &MlxArray, k: usize) -> MlxArray {
 /// tokens at ALL depths (cascaded filtered approach).  Sampled mode samples from the
 /// configured draft sampler over this filtered set and records the proposal log-prob.
 ///
-/// Returns `(draft_tokens, draft_log_probs, added, top2_margins)`.
+/// Returns `(draft_tokens, draft_log_probs, draft_distributions, added, top2_margins)`.
 /// `top2_margins[d]` is the rank-1 minus rank-2 logit gap at depth `d` from the filtered
 /// path's partial logits (0.0 for the full-vocab fallback path).  Used by ADR-009 EV gate.
 ///
@@ -345,18 +347,19 @@ pub fn mtp_draft_tokens(
     max_depth_cap: Option<usize>,
     candidates: Option<&MlxArray>,
     rng: &mut Xorshift64,
-) -> (Vec<u32>, Vec<f32>, usize, [f32; 3]) {
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(head) = weights.mtp.as_ref() else {
-        return (vec![], vec![], 0, [0.0; 3]);
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
     let max_depth = max_depth_cap.unwrap_or(head.max_depth).min(head.max_depth);
     if max_depth == 0 {
-        return (vec![], vec![], 0, [0.0; 3]);
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
     }
 
     let use_temperature = head.draft_sampling.temperature > 0.0;
     let mut draft_tokens = Vec::with_capacity(max_depth);
     let mut draft_log_probs = Vec::with_capacity(max_depth);
+    let mut draft_distributions = Vec::with_capacity(max_depth);
     let mut lazy_draft_tok_arrs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     // Partial logits saved per depth for top2_margin extraction after the batch eval.
     let mut partial_logits_arrs: Vec<MlxArray> = Vec::with_capacity(max_depth);
@@ -420,14 +423,17 @@ pub fn mtp_draft_tokens(
             if use_temperature {
                 let partial_logits_ref = partial_logits_arrs.last().unwrap();
                 eval(&[partial_logits_ref, cands]);
-                if let Some((draft_token, log_prob)) = sample_indexed_categorical_with_logprob(
-                    partial_logits_ref.data_f32(),
-                    cands.data_u32(),
-                    head.draft_sampling,
-                    rng,
-                ) {
+                if let Some((draft_token, log_prob, distribution)) =
+                    sample_indexed_categorical_with_logprob_and_distribution(
+                        partial_logits_ref.data_f32(),
+                        cands.data_u32(),
+                        head.draft_sampling,
+                        rng,
+                    )
+                {
                     draft_tokens.push(draft_token);
                     draft_log_probs.push(log_prob);
+                    draft_distributions.push(distribution);
                     let tok_data = [draft_token];
                     prev_token_arr = MlxArray::from_raw_data(
                         tok_data.as_ptr() as *const u8,
@@ -448,9 +454,16 @@ pub fn mtp_draft_tokens(
             let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
             let draft_token = if use_temperature {
                 eval(&[&logits]);
-                let (draft_token, log_prob) =
-                    sample_categorical_with_logprob(logits.data_f32(), head.draft_sampling, rng);
+                let (draft_token, log_prob, distribution) =
+                    sample_categorical_with_logprob_and_distribution(
+                        logits.data_f32(),
+                        head.draft_sampling,
+                        rng,
+                    );
                 draft_log_probs.push(log_prob);
+                if let Some(distribution) = distribution {
+                    draft_distributions.push(distribution);
+                }
                 draft_token
             } else {
                 let draft_token = greedy_sample_logits(&logits); // syncs GPU
@@ -509,7 +522,13 @@ pub fn mtp_draft_tokens(
         .collect();
 
     let added = draft_tokens.len();
-    (draft_tokens, draft_log_probs, added, top2_margins)
+    (
+        draft_tokens,
+        draft_log_probs,
+        draft_distributions,
+        added,
+        top2_margins,
+    )
 }
 
 /// Compute the rank-1 minus rank-2 logit gap from a partial logit slice.

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mlx_sys::{MlxArray, eval_first_u32, multiply, random_categorical};
 
@@ -76,6 +76,50 @@ impl MlxSamplingParams {
 pub struct MlxSamplingRequest<'a> {
     pub params: MlxSamplingParams,
     pub repetition_tokens: &'a [u32],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenDistribution {
+    entries: Vec<(u32, f32)>,
+}
+
+impl TokenDistribution {
+    pub fn new(entries: Vec<(u32, f32)>) -> Option<Self> {
+        if entries.is_empty() {
+            return None;
+        }
+        let sum: f32 = entries.iter().map(|(_, p)| *p).sum();
+        if sum <= 0.0 || !sum.is_finite() {
+            return None;
+        }
+        Some(Self {
+            entries: entries
+                .into_iter()
+                .filter_map(|(token, prob)| {
+                    let normalized = prob / sum;
+                    (normalized > 0.0 && normalized.is_finite()).then_some((token, normalized))
+                })
+                .collect(),
+        })
+        .filter(|distribution| !distribution.entries.is_empty())
+    }
+
+    pub fn entries(&self) -> &[(u32, f32)] {
+        &self.entries
+    }
+
+    pub fn probability(&self, token: u32) -> f32 {
+        self.entries
+            .iter()
+            .find(|(candidate, _)| *candidate == token)
+            .map_or(0.0, |(_, prob)| *prob)
+    }
+
+    pub fn sample_with_logprob(&self, rng: &mut Xorshift64) -> Option<(u32, f32)> {
+        let token = sample_from_token_distribution(self, rng)?;
+        let prob = self.probability(token);
+        Some((token, prob.max(1e-37_f32).ln().max(-30.0)))
+    }
 }
 
 impl<'a> MlxSamplingRequest<'a> {
@@ -268,6 +312,26 @@ pub fn sample_indexed_categorical_with_logprob(
     sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> Option<(u32, f32)> {
+    let distribution = indexed_token_distribution(logits, indices, sampling)?;
+    distribution.sample_with_logprob(rng)
+}
+
+pub fn sample_indexed_categorical_with_logprob_and_distribution(
+    logits: &[f32],
+    indices: &[u32],
+    sampling: MlxSamplingParams,
+    rng: &mut Xorshift64,
+) -> Option<(u32, f32, TokenDistribution)> {
+    let distribution = indexed_token_distribution(logits, indices, sampling)?;
+    let (token, log_prob) = distribution.sample_with_logprob(rng)?;
+    Some((token, log_prob, distribution))
+}
+
+pub fn indexed_token_distribution(
+    logits: &[f32],
+    indices: &[u32],
+    sampling: MlxSamplingParams,
+) -> Option<TokenDistribution> {
     if logits.is_empty() || logits.len() != indices.len() {
         return None;
     }
@@ -278,7 +342,7 @@ pub fn sample_indexed_categorical_with_logprob(
         .map(|(i, _)| i)
         .unwrap_or(0);
     if sampling.temperature <= 0.0 {
-        return Some((indices[best_i], 0.0));
+        return TokenDistribution::new(vec![(indices[best_i], 1.0)]);
     }
 
     let inv_temp = 1.0 / sampling.temperature;
@@ -294,7 +358,7 @@ pub fn sample_indexed_categorical_with_logprob(
 
     let total: f32 = candidates.iter().map(|(_, p)| *p).sum();
     if total == 0.0 || !total.is_finite() {
-        return Some((indices[best_i], 0.0));
+        return TokenDistribution::new(vec![(indices[best_i], 1.0)]);
     }
 
     // Apply the sampler's top-k/top-p over the caller-provided candidate set.
@@ -303,23 +367,15 @@ pub fn sample_indexed_categorical_with_logprob(
     apply_top_k_top_p(&mut candidates, sampling.top_k, sampling.top_p);
     let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
     if filtered_sum == 0.0 || !filtered_sum.is_finite() {
-        return Some((indices[best_i], 0.0));
+        return TokenDistribution::new(vec![(indices[best_i], 1.0)]);
     }
 
-    let threshold = rng.next_f32() * filtered_sum;
-    let mut cumsum = 0.0f32;
-    let mut sampled_idx = candidates[0].0;
-    let mut sampled_prob = candidates[0].1;
-    for &(idx, prob) in &candidates {
-        cumsum += prob;
-        if cumsum >= threshold {
-            sampled_idx = idx;
-            sampled_prob = prob;
-            break;
-        }
-    }
-    let log_prob = (sampled_prob / filtered_sum).ln().max(-30.0);
-    Some((sampled_idx as u32, log_prob))
+    TokenDistribution::new(
+        candidates
+            .into_iter()
+            .map(|(token, prob)| (token as u32, prob))
+            .collect(),
+    )
 }
 
 /// Return the log-probability of `token` within a pre-filtered candidate set.
@@ -382,11 +438,37 @@ pub fn sample_categorical_with_logprob(
     sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
 ) -> (u32, f32) {
+    let Some(distribution) = token_distribution(logits, sampling) else {
+        return (argmax_f32(logits), 0.0);
+    };
+    distribution
+        .sample_with_logprob(rng)
+        .unwrap_or((argmax_f32(logits), 0.0))
+}
+
+pub fn sample_categorical_with_logprob_and_distribution(
+    logits: &[f32],
+    sampling: MlxSamplingParams,
+    rng: &mut Xorshift64,
+) -> (u32, f32, Option<TokenDistribution>) {
+    let Some(distribution) = token_distribution(logits, sampling) else {
+        return (argmax_f32(logits), 0.0, None);
+    };
+    let (token, log_prob) = distribution
+        .sample_with_logprob(rng)
+        .unwrap_or((argmax_f32(logits), 0.0));
+    (token, log_prob, Some(distribution))
+}
+
+pub fn token_distribution(
+    logits: &[f32],
+    sampling: MlxSamplingParams,
+) -> Option<TokenDistribution> {
     if logits.is_empty() {
-        return (0, 0.0);
+        return None;
     }
     if sampling.temperature <= 0.0 {
-        return (argmax_f32(logits), 0.0);
+        return TokenDistribution::new(vec![(argmax_f32(logits), 1.0)]);
     }
 
     let inv_temp = 1.0 / sampling.temperature;
@@ -403,7 +485,7 @@ pub fn sample_categorical_with_logprob(
 
     let total_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
     if total_sum == 0.0 || !total_sum.is_finite() {
-        return (argmax_f32(logits), 0.0);
+        return TokenDistribution::new(vec![(argmax_f32(logits), 1.0)]);
     }
 
     if sampling.top_k > 0 || sampling.top_p < 1.0 {
@@ -412,24 +494,60 @@ pub fn sample_categorical_with_logprob(
 
     let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
     if filtered_sum == 0.0 || !filtered_sum.is_finite() {
-        return (argmax_f32(logits), 0.0);
+        return TokenDistribution::new(vec![(argmax_f32(logits), 1.0)]);
     }
 
-    let threshold = rng.next_f32() * filtered_sum;
+    TokenDistribution::new(
+        candidates
+            .into_iter()
+            .map(|(token, prob)| (token as u32, prob))
+            .collect(),
+    )
+}
+
+pub fn sample_from_token_distribution(
+    distribution: &TokenDistribution,
+    rng: &mut Xorshift64,
+) -> Option<u32> {
+    let total: f32 = distribution.entries.iter().map(|(_, p)| *p).sum();
+    if total <= 0.0 || !total.is_finite() {
+        return None;
+    }
+    let threshold = rng.next_f32() * total;
     let mut cumsum = 0.0f32;
-    // Default to highest-prob candidate (candidates are sorted descending after apply_top_k_top_p).
-    let (mut sampled_idx, mut sampled_prob) = candidates[0];
-    for (i, p) in candidates.iter().copied() {
-        cumsum += p;
+    for (token, prob) in distribution.entries.iter().copied() {
+        cumsum += prob;
         if cumsum >= threshold {
-            sampled_idx = i;
-            sampled_prob = p;
-            break;
+            return Some(token);
         }
     }
+    distribution
+        .entries
+        .iter()
+        .copied()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(token, _)| token)
+}
 
-    let log_prob = (sampled_prob / filtered_sum).ln().max(-30.0);
-    (sampled_idx as u32, log_prob)
+pub fn sample_residual_token_distribution(
+    target: &TokenDistribution,
+    draft: &TokenDistribution,
+    rng: &mut Xorshift64,
+) -> Option<u32> {
+    let mut residual = BTreeMap::<u32, f32>::new();
+    for (token, prob) in target.entries() {
+        residual.insert(*token, *prob);
+    }
+    for (token, prob) in draft.entries() {
+        let entry = residual.entry(*token).or_insert(0.0);
+        *entry = (*entry - *prob).max(0.0);
+    }
+    let residual_entries: Vec<(u32, f32)> = residual
+        .into_iter()
+        .filter(|(_, prob)| *prob > 0.0 && prob.is_finite())
+        .collect();
+    let distribution = TokenDistribution::new(residual_entries).unwrap_or_else(|| target.clone());
+    sample_from_token_distribution(&distribution, rng)
 }
 
 /// GPU-side categorical sampling from logits.
@@ -496,15 +614,9 @@ fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32)
             .then_with(|| left_idx.cmp(right_idx))
     });
 
-    if top_k > 0 {
-        candidates.truncate((top_k as usize).max(1));
-    }
-
-    if top_p.is_finite() && top_p < 1.0 {
-        // Recompute mass over the post-top-k set; using pre-top-k total_mass would make
-        // top-p a no-op (cutoff always below remaining candidates' cumulative sum).
-        let topk_mass: f32 = candidates.iter().map(|(_, p)| *p).sum();
-        let cutoff = top_p.max(0.0) * topk_mass;
+    if top_p.is_finite() && top_p > 0.0 && top_p < 1.0 {
+        let total_mass: f32 = candidates.iter().map(|(_, p)| *p).sum();
+        let cutoff = top_p * total_mass;
         let mut cumulative = 0.0;
         let mut keep = 0usize;
         for (_, prob) in candidates.iter() {
@@ -515,6 +627,10 @@ fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32)
             }
         }
         candidates.truncate(keep.max(1));
+    }
+
+    if top_k > 0 {
+        candidates.truncate((top_k as usize).max(1));
     }
 }
 
@@ -652,6 +768,18 @@ mod tests {
     }
 
     #[test]
+    fn categorical_applies_top_p_before_top_k() {
+        let logits = vec![0.6_f32.ln(), 0.2_f32.ln(), 0.1_f32.ln(), 0.1_f32.ln()];
+        let distribution =
+            token_distribution(&logits, MlxSamplingParams::new(1.0, 0.7, 2)).expect("distribution");
+
+        assert!(distribution.probability(0) > 0.0);
+        assert!(distribution.probability(1) > 0.0);
+        assert_eq!(distribution.probability(2), 0.0);
+        assert_eq!(distribution.probability(3), 0.0);
+    }
+
+    #[test]
     fn indexed_token_logprob_uses_filtered_distribution() {
         let logits = vec![1.0_f32; 4];
         let indices = vec![10_u32, 11, 12, 13];
@@ -662,6 +790,20 @@ mod tests {
                 < 1e-6
         );
         assert_eq!(indexed_token_logprob(&logits, &indices, 12, sampling), None);
+    }
+
+    #[test]
+    fn residual_distribution_removes_draft_mass() {
+        let target = TokenDistribution::new(vec![(1, 0.6), (2, 0.3), (3, 0.1)]).unwrap();
+        let draft = TokenDistribution::new(vec![(1, 0.6), (2, 0.4)]).unwrap();
+        let mut rng = Xorshift64::new(41);
+
+        for _ in 0..50 {
+            assert_eq!(
+                sample_residual_token_distribution(&target, &draft, &mut rng),
+                Some(3)
+            );
+        }
     }
 
     #[test]

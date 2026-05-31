@@ -91,7 +91,10 @@ use crate::ngram_accel::{
     effective_draft_confidence_threshold, ngram_accel_decode_step,
     single_decode_with_turboquant_context,
 };
-use crate::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64, indexed_token_logprob};
+use crate::sampling::{
+    MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64,
+    indexed_token_distribution, sample_residual_token_distribution,
+};
 use crate::turboquant::{
     TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION, TurboQuantProductionRequirements,
     turboquant_support_report,
@@ -2862,6 +2865,9 @@ struct RequestState {
     /// min(1, p_target(draft[i]) / exp(mtp_pending_draft_log_probs[i])).
     /// Empty when draft_sampling.temperature == 0 (greedy acceptance fallback).
     mtp_pending_draft_log_probs: Vec<f32>,
+    /// Sparse draft distributions aligned with `mtp_pending_draft`.
+    /// Used to sample the exact residual correction after sampled-MTP rejection.
+    mtp_pending_draft_distributions: Vec<TokenDistribution>,
     /// Request-local MTP draft depth cap.  Adapted from the last accept/reject
     /// outcome so low-acceptance prompts stop paying for deeper draft chains.
     mtp_adaptive_max_depth: usize,
@@ -2925,6 +2931,7 @@ impl RequestState {
             mtp_decode_count: 0,
             mtp_pending_draft: Vec::new(),
             mtp_pending_draft_log_probs: Vec::new(),
+            mtp_pending_draft_distributions: Vec::new(),
             mtp_adaptive_max_depth: 0,
             mtp_pending_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
@@ -5393,19 +5400,30 @@ impl MlxRunner {
                     .as_ref()
                     .map(|arr| arr.data_u32().to_vec())
                     .unwrap_or_default();
-                let target_probs_cpu: Option<Vec<f32>> = if let Some(topk) = target_topk_probs {
-                    Some(topk.probs_cpu())
+                let (target_probs_cpu, target_distributions_cpu): (
+                    Option<Vec<f32>>,
+                    Option<Vec<TokenDistribution>>,
+                ) = if let Some(topk) = target_topk_probs {
+                    let distributions = topk.distributions_cpu();
+                    (
+                        Some(topk.probs_from_distributions(&distributions)),
+                        Some(distributions),
+                    )
                 } else {
-                    lazy_target_probs.map(|arr| arr.data_f32().to_vec())
+                    (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None)
                 };
 
-                let (ac, all_accepted) = mtp_accept_count(
+                let accept = mtp_accept_count(
                     &pending,
                     &state.mtp_pending_draft_log_probs,
+                    &state.mtp_pending_draft_distributions,
                     target_probs_cpu.as_deref(),
+                    target_distributions_cpu.as_deref(),
                     &predicted,
                     &mut state.rng,
                 );
+                let ac = accept.accept_count;
+                let all_accepted = accept.all_accepted;
                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
                 // Trim FA KV to the committed prefix length. For accepted steps this removes
@@ -5421,7 +5439,7 @@ impl MlxRunner {
                     draft_hidden,
                     ac,
                     all_accepted,
-                    correction_argmax_tok,
+                    accept.rejection_correction.unwrap_or(correction_argmax_tok),
                 )
             } else {
                 // Non-linear-attention: run directly, trim on rejection.
@@ -5485,19 +5503,30 @@ impl MlxRunner {
                     .as_ref()
                     .map(|arr| arr.data_u32().to_vec())
                     .unwrap_or_default();
-                let target_probs_cpu: Option<Vec<f32>> = if let Some(topk) = target_topk_probs {
-                    Some(topk.probs_cpu())
+                let (target_probs_cpu, target_distributions_cpu): (
+                    Option<Vec<f32>>,
+                    Option<Vec<TokenDistribution>>,
+                ) = if let Some(topk) = target_topk_probs {
+                    let distributions = topk.distributions_cpu();
+                    (
+                        Some(topk.probs_from_distributions(&distributions)),
+                        Some(distributions),
+                    )
                 } else {
-                    lazy_target_probs.map(|arr| arr.data_f32().to_vec())
+                    (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None)
                 };
 
-                let (ac, all_accepted) = mtp_accept_count(
+                let accept = mtp_accept_count(
                     &pending,
                     &state.mtp_pending_draft_log_probs,
+                    &state.mtp_pending_draft_distributions,
                     target_probs_cpu.as_deref(),
+                    target_distributions_cpu.as_deref(),
                     &predicted,
                     &mut state.rng,
                 );
+                let ac = accept.accept_count;
+                let all_accepted = accept.all_accepted;
                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
                 let rollback_started = Instant::now();
@@ -5522,7 +5551,7 @@ impl MlxRunner {
                     draft_hidden,
                     ac,
                     all_accepted,
-                    correction_argmax_tok,
+                    accept.rejection_correction.unwrap_or(correction_argmax_tok),
                 )
             };
 
@@ -5641,7 +5670,7 @@ impl MlxRunner {
         } else {
             // MTP head forward path (RoPE managed internally via cache.seq_len).
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-            let (draft, log_probs, added, _top2_margins) = mtp_draft_tokens(
+            let (draft, log_probs, distributions, added, _top2_margins) = mtp_draft_tokens(
                 &self.weights,
                 &self.cfg,
                 &draft_hidden,
@@ -5652,10 +5681,14 @@ impl MlxRunner {
                 &mut state.rng,
             );
             state.mtp_decode_count += added;
+            state.mtp_pending_draft_distributions = distributions;
             (draft, log_probs)
         };
         state.mtp_pending_draft = new_draft;
         state.mtp_pending_draft_log_probs = new_log_probs;
+        if state.mtp_pending_draft_log_probs.is_empty() {
+            state.mtp_pending_draft_distributions.clear();
+        }
         state.mtp_pending_hidden = Some(draft_hidden);
         mtp_timings.draft_wall_us = elapsed_us(draft_started);
         state.mtp_telemetry.record_timings(mtp_timings);
@@ -5711,6 +5744,7 @@ impl MlxRunner {
         // Reset MTP draft state for the new generation.
         state.mtp_pending_draft.clear();
         state.mtp_pending_draft_log_probs.clear();
+        state.mtp_pending_draft_distributions.clear();
         state.mtp_adaptive_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
         state.mtp_pending_hidden = None;
         state.mtp_decode_count = 0;
@@ -6096,16 +6130,23 @@ impl MtpTargetTopKProbs {
         }
     }
 
-    fn probs_cpu(&self) -> Vec<f32> {
+    fn distributions_cpu(&self) -> Vec<TokenDistribution> {
         self.logits
             .iter()
             .zip(self.indices.iter())
             .zip(self.pending.iter())
             .map(|((logits, indices), token)| {
-                indexed_token_logprob(logits.data_f32(), indices.data_u32(), *token, self.sampling)
-                    .map(f32::exp)
-                    .unwrap_or(0.0)
+                indexed_token_distribution(logits.data_f32(), indices.data_u32(), self.sampling)
+                    .unwrap_or_else(|| TokenDistribution::new(vec![(*token, 1.0)]).unwrap())
             })
+            .collect()
+    }
+
+    fn probs_from_distributions(&self, distributions: &[TokenDistribution]) -> Vec<f32> {
+        self.pending
+            .iter()
+            .zip(distributions.iter())
+            .map(|(token, distribution)| distribution.probability(*token))
             .collect()
     }
 }
@@ -6155,13 +6196,22 @@ fn compute_mtp_target_topk_probs(
 ///
 /// `target_probs_cpu`: pre-computed p_target(draft_token_i) for each position, already
 /// transferred from GPU. When `None`, falls back to greedy argmax comparison.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MtpAcceptOutcome {
+    accept_count: usize,
+    all_accepted: bool,
+    rejection_correction: Option<u32>,
+}
+
 fn mtp_accept_count(
     pending: &[u32],
     pending_log_probs: &[f32],
+    draft_distributions: &[TokenDistribution],
     target_probs_cpu: Option<&[f32]>,
+    target_distributions: Option<&[TokenDistribution]>,
     predicted: &[u32],
     rng: &mut Xorshift64,
-) -> (usize, bool) {
+) -> MtpAcceptOutcome {
     if let Some(tprobs) = target_probs_cpu {
         // Rejection sampling: accept d with probability min(1, p_target(d) / p_draft(d)).
         let mut ac = 0usize;
@@ -6172,10 +6222,24 @@ fn mtp_accept_count(
             if rng.next_f32() < accept_prob {
                 ac += 1;
             } else {
-                break;
+                let correction = target_distributions
+                    .and_then(|targets| targets.get(i))
+                    .zip(draft_distributions.get(i))
+                    .and_then(|(target, draft)| {
+                        sample_residual_token_distribution(target, draft, rng)
+                    });
+                return MtpAcceptOutcome {
+                    accept_count: ac,
+                    all_accepted: false,
+                    rejection_correction: correction,
+                };
             }
         }
-        (ac, ac == pending.len())
+        MtpAcceptOutcome {
+            accept_count: ac,
+            all_accepted: ac == pending.len(),
+            rejection_correction: None,
+        }
     } else {
         // Greedy acceptance fallback (temperature == 0 or no log_probs stored).
         let mut ac = 0usize;
@@ -6183,10 +6247,18 @@ fn mtp_accept_count(
             if predicted[i] == pending[i] {
                 ac += 1;
             } else {
-                break;
+                return MtpAcceptOutcome {
+                    accept_count: ac,
+                    all_accepted: false,
+                    rejection_correction: predicted.get(i).copied(),
+                };
             }
         }
-        (ac, ac == pending.len())
+        MtpAcceptOutcome {
+            accept_count: ac,
+            all_accepted: ac == pending.len(),
+            rejection_correction: None,
+        }
     }
 }
 

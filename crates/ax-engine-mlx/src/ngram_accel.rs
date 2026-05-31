@@ -127,9 +127,7 @@ pub fn parse_speculative_accept_threshold(raw: Option<&str>) -> f32 {
         )
     });
     if parsed.is_nan() || !(0.0..=1.0).contains(&parsed) {
-        panic!(
-            "{NGRAM_SPECULATIVE_ACCEPT_THRESHOLD_ENV} must be in [0.0, 1.0]; got {parsed}"
-        );
+        panic!("{NGRAM_SPECULATIVE_ACCEPT_THRESHOLD_ENV} must be in [0.0, 1.0]; got {parsed}");
     }
     parsed
 }
@@ -1148,9 +1146,7 @@ fn gather_draft_token_probs_lazy(
     );
     let scaled = multiply(logits_all, &inv_temp, None);
     let probs = softmax(&scaled, -1, None); // [verify_len, vocab] lazy
-    let flat_indices: Vec<i32> = (0..n)
-        .map(|i| i as i32 * vocab + draft[i] as i32)
-        .collect();
+    let flat_indices: Vec<i32> = (0..n).map(|i| i as i32 * vocab + draft[i] as i32).collect();
     let flat_idx_arr = MlxArray::from_raw_data(
         flat_indices.as_ptr() as *const u8,
         flat_indices.len() * 4,
@@ -1197,8 +1193,7 @@ fn verify_draft(
     // Compute per-draft-position softmax probabilities when the threshold is
     // active and temperature > 0.  Bundled into the same eval() as argmax and
     // KV refs to avoid a second GPU sync.
-    let use_speculative =
-        accept_threshold > 0.0 && sampling.temperature > 0.0 && !draft.is_empty();
+    let use_speculative = accept_threshold > 0.0 && sampling.temperature > 0.0 && !draft.is_empty();
     let draft_probs_arr_opt: Option<MlxArray> = if use_speculative {
         Some(gather_draft_token_probs_lazy(
             &logits_all,
