@@ -1,15 +1,16 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argmax, argsort_axis, astype,
-    concatenate, eval, multiply, reshape, rms_norm, scaled_dot_product_attention_with_mask,
-    sigmoid, silu_mul, slice, softmax, take,
+    add, argmax, argsort_axis, astype, concatenate, eval, multiply, reshape, rms_norm,
+    scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take, MlxArray, MlxDtype,
+    ScaledDotProductAttentionMask,
 };
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::shared::{
-    apply_final_logit_softcap, flatten_attention_output_bhsd, prepare_value_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj, qw,
+    apply_final_logit_softcap, ffn_swiglu, flatten_attention_output_bhsd, moe_experts_forward,
+    moe_router_deepseek_v3, moe_router_glm, moe_router_qwen3, prepare_value_bhsd_from_proj,
+    qk_norm_rope_bhsd_from_proj, qw, shared_expert_forward,
 };
-use crate::model::{ModelConfig, embed_tokens_arr};
+use crate::model::{embed_tokens_arr, ModelConfig};
 use crate::sampling::Xorshift64;
 use crate::weights::{ModelWeights, MtpWeights, QuantizedWeight};
 
@@ -184,10 +185,32 @@ pub fn mtp_head_forward(
     // 4. FFN sub-layer (SwiGLU).
     {
         let normed = rms_norm(&h, Some(&head.ffn_norm), cfg.rms_norm_eps, None);
-        let gate = qw(&normed, &head.gate_proj);
-        let up = qw(&normed, &head.up_proj);
-        let ffn_hidden = silu_mul(&gate, &up, None);
-        let ffn_out = qw(&ffn_hidden, &head.down_proj);
+        let ffn_out = if head.ffn_layer.router_proj.is_some() {
+            let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
+                moe_router_glm(cfg, &head.ffn_layer, &normed)
+            } else if cfg.moe_sigmoid_routing {
+                moe_router_deepseek_v3(cfg, &head.ffn_layer, &normed)
+            } else {
+                moe_router_qwen3(cfg, &head.ffn_layer, &normed)
+            };
+            let mut out = moe_experts_forward(
+                cfg,
+                &head.ffn_layer,
+                &normed,
+                &top_k_indices,
+                &top_k_weights,
+            );
+            if head.ffn_layer.shared_gate_proj.is_some() {
+                out = add(
+                    &out,
+                    &shared_expert_forward(cfg, &head.ffn_layer, &normed),
+                    None,
+                );
+            }
+            out
+        } else {
+            ffn_swiglu(cfg, &head.ffn_layer, &normed, None)
+        };
         h = add(&h, &ffn_out, None);
     }
 
@@ -338,8 +361,6 @@ pub fn mtp_draft_tokens(
     // Lazy arrays holding p(draft_token) under the temperature-scaled draft distribution.
     // Evaluated in one batch after all depth iterations to avoid per-step GPU sync.
     let mut lazy_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
-    // Lazy draft token arrays for the filtered path — resolved in a single batch eval
-    // after all depths, eliminating per-depth GPU sync round-trips.
     let mut lazy_draft_tok_arrs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     // Partial logits saved per depth for top2_margin extraction after the batch eval.
     let mut partial_logits_arrs: Vec<MlxArray> = Vec::with_capacity(max_depth);
@@ -383,20 +404,13 @@ pub fn mtp_draft_tokens(
         };
 
         if let Some(ref cands) = cands_owned {
-            // Filtered path: compute only k logits instead of full vocab.
-            // Do NOT store stochastic log_probs here — partial softmax (top-k
-            // normalised) inflates p_draft vs the full-vocab p_target.
-            // Leaving draft_log_probs empty triggers greedy argmax comparison.
             let partial_logits =
                 mtp_post_norm_to_logits_filtered(&post_norm_hidden, cands, weights, cfg);
             let k = partial_logits.shape()[0];
 
-            // Inline argmax for batching with per-depth candidate refinement.
             let logits_2d = reshape(&partial_logits, &[1_i32, k], None);
             let local_idx_arr = argmax(&logits_2d, None);
 
-            // Build refined candidates for depth+1: re-rank current K candidates by the
-            // MTP head's score, take top-K/2.  Narrows but focuses on MTP-predicted tokens.
             let next_depth_cands = if depth_idx + 1 < max_depth {
                 let half_k = k / 2;
                 let m1 = MlxArray::from_f32(-1.0);
@@ -408,18 +422,20 @@ pub fn mtp_draft_tokens(
                 None
             };
 
-            // Build a lazy draft-token array: take the actual token from the candidate
-            // list using the lazy argmax index.  No GPU sync here; the entire filtered
-            // path accumulates into one batch eval after the depth loop.
-            // reshape ensures local_idx_arr is [1] for take even if argmax returns 0-dim.
             let local_idx_1d = reshape(&local_idx_arr, &[1_i32], None);
             let draft_tok_lazy = take(cands, &local_idx_1d, 0, None);
+
+            if use_temperature {
+                let inv_t = inv_temp_arr.as_ref().unwrap();
+                let scaled = multiply(&partial_logits, inv_t, None);
+                let probs = softmax(&scaled, -1, None);
+                let prob_d = take(&probs, &local_idx_1d, 0, None);
+                lazy_probs.push(prob_d);
+            }
 
             partial_logits_arrs.push(partial_logits);
             lazy_draft_tok_arrs.push(draft_tok_lazy.clone());
             refined_candidates = next_depth_cands;
-            // Chain through post-norm hidden and lazy token for next depth.
-            // MTPLX trains depth>1 heads expecting mtp_norm(prev_output) as input.
             prev_hidden = post_norm_hidden;
             prev_token_arr = draft_tok_lazy;
         } else {
@@ -462,30 +478,33 @@ pub fn mtp_draft_tokens(
     // intermediate refined_candidates).  Including partial_logits_arrs explicitly
     // ensures data_f32() is available for top2_margin extraction after this eval.
     if !lazy_draft_tok_arrs.is_empty() {
-        let mut eval_targets: Vec<&MlxArray> =
-            Vec::with_capacity(lazy_draft_tok_arrs.len() + partial_logits_arrs.len());
+        let mut eval_targets: Vec<&MlxArray> = Vec::with_capacity(
+            lazy_draft_tok_arrs.len() + partial_logits_arrs.len() + lazy_probs.len(),
+        );
         for arr in &lazy_draft_tok_arrs {
             eval_targets.push(arr);
         }
         for pla in &partial_logits_arrs {
             eval_targets.push(pla);
         }
+        for lp in &lazy_probs {
+            eval_targets.push(lp);
+        }
         eval(&eval_targets);
         for arr in &lazy_draft_tok_arrs {
             draft_tokens.push(arr.data_u32()[0]);
         }
+    } else if !lazy_probs.is_empty() {
+        let refs: Vec<&MlxArray> = lazy_probs.iter().collect();
+        eval(&refs);
     }
 
-    // Extract top-2 logit margins per depth (zero for the full-vocab fallback path).
     let mut top2_margins = [0.0f32; 3];
     for (d, pla) in partial_logits_arrs.iter().enumerate().take(3) {
         top2_margins[d] = top2_margin_from_slice(pla.data_f32());
     }
 
-    // Batch-eval all lazy prob arrays (one GPU sync for all depths, not one per depth).
     if !lazy_probs.is_empty() {
-        let refs: Vec<&MlxArray> = lazy_probs.iter().collect();
-        eval(&refs);
         draft_log_probs.extend(lazy_probs.iter().map(|arr| {
             let p = arr.data_f32()[0].max(0.0_f32);
             if p > 0.0 {
@@ -495,10 +514,6 @@ pub fn mtp_draft_tokens(
             }
         }));
     }
-    // Only pad to full length when we already have SOME log_probs.  An empty
-    // draft_log_probs is the deliberate signal for greedy-argmax acceptance
-    // (filtered-lm-head path or temperature==0) — padding with 0.0 would
-    // turn that into p_draft=1.0 rejection sampling which degrades acceptance.
     if !draft_log_probs.is_empty() && draft_log_probs.len() < draft_tokens.len() {
         draft_log_probs.extend(std::iter::repeat_n(
             0.0_f32,
@@ -527,5 +542,9 @@ fn top2_margin_from_slice(data: &[f32]) -> f32 {
             m2 = v;
         }
     }
-    if m2.is_finite() { m1 - m2 } else { 0.0 }
+    if m2.is_finite() {
+        m1 - m2
+    } else {
+        0.0
+    }
 }

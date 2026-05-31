@@ -64,9 +64,7 @@ pub struct MtpWeights {
     pub v_proj: QuantizedWeight,
     pub o_proj: QuantizedWeight,
     // FFN projections.
-    pub gate_proj: QuantizedWeight,
-    pub up_proj: QuantizedWeight,
-    pub down_proj: QuantizedWeight,
+    pub ffn_layer: LayerWeights,
     /// Number of query heads (inferred from q_proj shape).
     pub n_heads: usize,
     /// Number of KV heads (inferred from k_proj shape).
@@ -931,7 +929,7 @@ fn apply_mtp_depth_policy(depth: usize, sidecar_bits: Option<i32>) -> usize {
 }
 
 fn default_mtp_depth_without_env(depth: usize, _sidecar_bits: Option<i32>) -> usize {
-    depth.min(1)
+    depth
 }
 
 fn apply_mtp_max_depth_cap(depth: usize) -> usize {
@@ -980,9 +978,77 @@ fn load_mtp(
     let k_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.k_proj"), bits)?;
     let v_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.v_proj"), bits)?;
     let o_proj = mtp_take_weight(name_map, &format!("{p}.self_attn.o_proj"), bits)?;
-    let gate_proj = mtp_take_weight(name_map, &format!("{p}.mlp.gate_proj"), bits)?;
-    let up_proj = mtp_take_weight(name_map, &format!("{p}.mlp.up_proj"), bits)?;
-    let down_proj = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"), bits)?;
+    let router_proj = mtp_take_weight(name_map, &format!("{p}.mlp.gate"), bits);
+    let shared_expert_gate =
+        mtp_take_weight(name_map, &format!("{p}.mlp.shared_expert_gate"), bits);
+    let shared_gate_proj =
+        mtp_take_weight(name_map, &format!("{p}.mlp.shared_expert.gate_proj"), bits);
+    let shared_up_proj = mtp_take_weight(name_map, &format!("{p}.mlp.shared_expert.up_proj"), bits);
+    let shared_down_proj =
+        mtp_take_weight(name_map, &format!("{p}.mlp.shared_expert.down_proj"), bits);
+    let gate_exps = mtp_take_weight(name_map, &format!("{p}.mlp.gate_proj"), bits);
+    let up_exps = mtp_take_weight(name_map, &format!("{p}.mlp.up_proj"), bits);
+    let down_exps = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"), bits);
+    let has_moe_ffn = router_proj.is_some();
+    let (gate_proj, up_proj, down_proj, gate_exps, up_exps, down_exps) = if has_moe_ffn {
+        (None, None, None, gate_exps, up_exps, down_exps)
+    } else {
+        (gate_exps, up_exps, down_exps, None, None, None)
+    };
+    if has_moe_ffn
+        && (gate_exps.is_none()
+            || up_exps.is_none()
+            || down_exps.is_none()
+            || shared_gate_proj.is_none()
+            || shared_up_proj.is_none()
+            || shared_down_proj.is_none())
+    {
+        return None;
+    }
+    if !has_moe_ffn && (gate_proj.is_none() || up_proj.is_none() || down_proj.is_none()) {
+        return None;
+    }
+    let ffn_layer = LayerWeights {
+        attn_norm: attn_norm.clone(),
+        attn_post_norm: None,
+        q_norm: None,
+        k_norm: None,
+        q_proj: None,
+        k_proj: None,
+        v_proj: None,
+        qkv_packed: None,
+        o_proj: None,
+        linear_attn: None,
+        glm_mla_attn: None,
+        ffn_norm: ffn_norm.clone(),
+        ffn_post_norm: None,
+        gate_proj,
+        up_proj,
+        gate_up_packed: None,
+        down_proj,
+        ffn_norm2: None,
+        ffn_post_norm1: None,
+        ffn_post_norm2: None,
+        router_proj,
+        router_correction_bias: None,
+        router_scale: None,
+        router_combined_scale: None,
+        router_expert_scale: None,
+        layer_scalar: None,
+        per_layer_gate: None,
+        per_layer_proj_w: None,
+        per_layer_post_norm: None,
+        shared_expert_gate,
+        shared_gate_up_proj: None,
+        shared_gate_proj,
+        shared_up_proj,
+        shared_down_proj,
+        gate_up_exps_packed: None,
+        gate_exps,
+        up_exps,
+        down_exps,
+        rotation_smoothing_inverse: None,
+    };
 
     // Infer n_heads, n_kv_heads, head_dim from projection weight shapes.
     //
@@ -1026,9 +1092,7 @@ fn load_mtp(
         k_proj,
         v_proj,
         o_proj,
-        gate_proj,
-        up_proj,
-        down_proj,
+        ffn_layer,
         n_heads,
         n_kv_heads,
         head_dim,
@@ -3646,12 +3710,12 @@ mod tests {
     }
 
     #[test]
-    fn default_mtp_depth_caps_sidecars_to_depth_one() {
-        assert_eq!(default_mtp_depth_without_env(3, Some(8)), 1);
+    fn default_mtp_depth_passes_through_configured_depth() {
+        assert_eq!(default_mtp_depth_without_env(3, Some(8)), 3);
         assert_eq!(default_mtp_depth_without_env(1, Some(8)), 1);
         assert_eq!(default_mtp_depth_without_env(0, Some(8)), 0);
-        assert_eq!(default_mtp_depth_without_env(3, Some(4)), 1);
-        assert_eq!(default_mtp_depth_without_env(3, None), 1);
+        assert_eq!(default_mtp_depth_without_env(3, Some(4)), 3);
+        assert_eq!(default_mtp_depth_without_env(3, None), 3);
     }
 
     #[test]
