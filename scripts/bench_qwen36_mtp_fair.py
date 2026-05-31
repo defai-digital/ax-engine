@@ -809,7 +809,7 @@ def write_accept_model_svg(path: Path, summary: dict[str, Any], model_key: str) 
     model_label = rows[0]["model_label"]
     engines = [
         engine
-        for engine in ("mtplx", "ax_engine")
+        for engine in ENGINE_ORDER
         if engine in summary["contract"]["engines"]
     ]
     groups = [
