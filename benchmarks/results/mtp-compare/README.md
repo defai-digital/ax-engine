@@ -1,15 +1,15 @@
 # MTP Compare Benchmark Results
 
-This directory holds AX Engine n-gram acceleration benchmarks run against the
-MTP-capable `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed` and
-`Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality` models using coding-shaped
-real-prompt suites.
+This directory holds the legacy AX-vs-MTPLX comparison artifacts. New fair
+Qwen3.6 MTP comparisons should use `benchmarks/results/mtp-fair/` and
+`scripts/bench_qwen36_mtp_fair.py`, which exclude `Youssofal/*MTPLX*` bundles
+and use provenance-recorded sidecars from standard `Qwen/Qwen3.6-*` shards plus
+`mlx-community/*-4bit` base models.
 
-These benchmarks compare AX n-gram acceleration against MTPLX 0.3.7 as an
-external reference on coding-shaped workloads. MTPLX results are injected from
-a separate MTPLX run rather than produced by this harness. Publish MTPLX
-comparison rows only when the checked-in reference file contains the matching
-model bundle, suite, depth, sampler settings, and token count.
+The files here are retained for historical analysis only. Do not promote new
+public Qwen3.6 MTP claims from this directory unless the result explicitly
+states its model provenance and why the legacy optimized bundle comparison is
+the intended target.
 
 ## Directory structure
 
@@ -29,47 +29,13 @@ mtp-compare/
 ## Running the benchmark
 
 ```bash
-# Both suites, AX rows only
-python3 scripts/bench_mtp_compare.py \
-  --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
-  --output-dir benchmarks/results/mtp-compare/$(date +%F)-ax-mtp-all
-
-# Both suites with MTPLX reference injection
-python3 scripts/bench_mtp_compare.py \
-  --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
-  --mtplx-results benchmarks/results/mtp-compare/<date>-mtplx-ref/mtplx.json \
-  --output-dir benchmarks/results/mtp-compare/$(date +%F)-ax-mtp-all
-
-# Focused Speed smoke
-python3 scripts/bench_mtp_compare.py \
-  --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
-  --suites flappy \
-  --mtp-only \
-  --ax-mtp-max-depth 2 \
-  --repetitions 1 \
-  --cooldown 5 \
-  --output-dir benchmarks/results/mtp-compare/$(date +%F)-speed-depth2-smoke
-
-# Focused Quality smoke
-python3 scripts/bench_mtp_compare.py \
-  --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Quality \
-  --suites flappy \
-  --mtp-only \
-  --ax-mtp-max-depth 3 \
-  --repetitions 1 \
-  --cooldown 5 \
-  --output-dir benchmarks/results/mtp-compare/$(date +%F)-quality-depth3-smoke
-
-# Focused long-code Speed d=3 smoke
-python3 scripts/bench_mtp_compare.py \
-  --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
-  --suites long_code \
-  --mtp-only \
-  --ax-mtp-max-depth 3 \
-  --mtplx-results benchmarks/results/mtp-compare/<date>-mtplx-ref/mtplx.json \
-  --repetitions 5 \
-  --cooldown 15 \
-  --output-dir benchmarks/results/mtp-compare/$(date +%F)-speed-depth3-long-code-smoke
+python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
+python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
+python3 scripts/bench_qwen36_mtp_fair.py \
+  --models 27b-4bit 35b-a3b-4bit \
+  --engines mtplx rapid_mlx ax_engine \
+  --suites flappy long_code \
+  --depth-policy fair-shared
 ```
 
 ## Sampling configuration
@@ -106,7 +72,7 @@ The prompt-parity MTPLX runner used for the published d=3 comparison is:
 
 ```bash
 /opt/homebrew/var/mtplx/venv-0.3.7/bin/python scripts/bench_mtplx_prompt_suites.py \
-  --model /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
+  --model ~/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 \
   --suite flappy \
   --prompts benchmarks/prompts/mtp-suites/flappy.jsonl \
   --output benchmarks/results/mtp-compare/$(date +%F)-mtplx-d3/speed-flappy/mtplx.json \
