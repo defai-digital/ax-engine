@@ -1,0 +1,1329 @@
+{
+  "build": {
+    "git_commit": "06f050be1d86860348be06979621a6cd9ec7889b",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 0.0,
+  "depth": 1,
+  "disable_thinking": true,
+  "draft_lm_head": {
+    "draft_only": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine",
+      "scales_shape": [
+        248320,
+        32
+      ],
+      "weight_shape": [
+        248320,
+        256
+      ]
+    },
+    "elapsed_s": 0.03398654202464968,
+    "original": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine",
+      "scales_shape": [
+        248320,
+        32
+      ],
+      "weight_shape": [
+        248320,
+        256
+      ]
+    }
+  },
+  "draft_sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "engine": "mtplx",
+  "max_tokens": 128,
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1",
+  "model_inspection": {
+    "architecture": "Qwen3_5MoeForConditionalGeneration",
+    "architecture_recognized": true,
+    "compatibility": {
+      "arch_id": "qwen3-next-mtp",
+      "can_run": false,
+      "exit_code": 3,
+      "message": "Invalid mtplx_runtime.json: runtime contract missing required keys: mtplx_version, exactness_baseline, verified_on",
+      "mtp_supported": "partial",
+      "recognized": true,
+      "recommended_backend": "qwen3_next",
+      "recommended_profile": null,
+      "runtime_compatibility": "needs-grafting",
+      "runtime_contract": null,
+      "runtime_contract_error": "runtime contract missing required keys: mtplx_version, exactness_baseline, verified_on",
+      "runtime_contract_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1/mtplx_runtime.json",
+      "support_level": "verified-native",
+      "support_notes": "Product-verified default backend; this remains the only promoted shipping runtime.",
+      "supported": false,
+      "tier": "architecture-compatible-but-unverified",
+      "unsafe_force_required": true,
+      "unverified_model": true
+    },
+    "config_exists": true,
+    "hidden_size": 2048,
+    "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1",
+    "model_files": [
+      "model-00001-of-00004.safetensors",
+      "model-00002-of-00004.safetensors",
+      "model-00003-of-00004.safetensors",
+      "model-00004-of-00004.safetensors",
+      "model-mtp.safetensors"
+    ],
+    "model_type": "qwen3_5_moe_text",
+    "mtp": {
+      "exists": true,
+      "expected_tensor_count": 15,
+      "extra_keys": [
+        "mtp.layers.0.mlp.gate.weight",
+        "mtp.layers.0.mlp.shared_expert.down_proj.weight",
+        "mtp.layers.0.mlp.shared_expert.gate_proj.weight",
+        "mtp.layers.0.mlp.shared_expert.up_proj.weight",
+        "mtp.layers.0.mlp.shared_expert_gate.weight"
+      ],
+      "metadata_only": false,
+      "missing_expected_keys": [],
+      "mtp_file": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1/mtp.safetensors",
+      "passes_tensor_gate": false,
+      "sidecar_format": "bf16",
+      "tensor_count": 20,
+      "tensors": [
+        {
+          "dtype": "BF16",
+          "elements": 8388608,
+          "key": "mtp.fc.weight",
+          "shape": [
+            2048,
+            4096
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2048,
+          "key": "mtp.layers.0.input_layernorm.weight",
+          "shape": [
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 268435456,
+          "key": "mtp.layers.0.mlp.down_proj.weight",
+          "shape": [
+            256,
+            2048,
+            512
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 524288,
+          "key": "mtp.layers.0.mlp.gate.weight",
+          "shape": [
+            256,
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 268435456,
+          "key": "mtp.layers.0.mlp.gate_proj.weight",
+          "shape": [
+            256,
+            512,
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 1048576,
+          "key": "mtp.layers.0.mlp.shared_expert.down_proj.weight",
+          "shape": [
+            2048,
+            512
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 1048576,
+          "key": "mtp.layers.0.mlp.shared_expert.gate_proj.weight",
+          "shape": [
+            512,
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 1048576,
+          "key": "mtp.layers.0.mlp.shared_expert.up_proj.weight",
+          "shape": [
+            512,
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2048,
+          "key": "mtp.layers.0.mlp.shared_expert_gate.weight",
+          "shape": [
+            1,
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 268435456,
+          "key": "mtp.layers.0.mlp.up_proj.weight",
+          "shape": [
+            256,
+            512,
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2048,
+          "key": "mtp.layers.0.post_attention_layernorm.weight",
+          "shape": [
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 256,
+          "key": "mtp.layers.0.self_attn.k_norm.weight",
+          "shape": [
+            256
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 1048576,
+          "key": "mtp.layers.0.self_attn.k_proj.weight",
+          "shape": [
+            512,
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 8388608,
+          "key": "mtp.layers.0.self_attn.o_proj.weight",
+          "shape": [
+            2048,
+            4096
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 256,
+          "key": "mtp.layers.0.self_attn.q_norm.weight",
+          "shape": [
+            256
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 16777216,
+          "key": "mtp.layers.0.self_attn.q_proj.weight",
+          "shape": [
+            8192,
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 1048576,
+          "key": "mtp.layers.0.self_attn.v_proj.weight",
+          "shape": [
+            512,
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2048,
+          "key": "mtp.norm.weight",
+          "shape": [
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2048,
+          "key": "mtp.pre_fc_norm_embedding.weight",
+          "shape": [
+            2048
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2048,
+          "key": "mtp.pre_fc_norm_hidden.weight",
+          "shape": [
+            2048
+          ]
+        }
+      ]
+    },
+    "mtp_arch": "qwen3-next-mtp",
+    "mtp_num_hidden_layers": 1,
+    "mtp_pattern": null,
+    "mtp_supported": "partial",
+    "num_hidden_layers": 40,
+    "passes_primary_gate": false,
+    "quantization": {
+      "bits": 4,
+      "group_size": 64,
+      "language_model.model.layers.0.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.0.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.1.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.1.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.10.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.10.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.11.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.11.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.12.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.12.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.13.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.13.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.14.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.14.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.15.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.15.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.16.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.16.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.17.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.17.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.18.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.18.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.19.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.19.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.2.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.2.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.20.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.20.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.21.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.21.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.22.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.22.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.23.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.23.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.24.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.24.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.25.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.25.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.26.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.26.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.27.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.27.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.28.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.28.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.29.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.29.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.3.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.3.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.30.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.30.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.31.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.31.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.32.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.32.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.33.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.33.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.34.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.34.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.35.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.35.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.36.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.36.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.37.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.37.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.38.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.38.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.39.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.39.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.4.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.4.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.5.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.5.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.6.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.6.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.7.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.7.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.8.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.8.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.9.mlp.gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "language_model.model.layers.9.mlp.shared_expert_gate": {
+        "bits": 8,
+        "group_size": 64
+      },
+      "mode": "affine"
+    },
+    "recommended_backend": "qwen3_next",
+    "recommended_profile": null,
+    "runtime_compatibility": "needs-grafting",
+    "runtime_contract_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1/mtplx_runtime.json",
+    "sidecars": {
+      "preprocessor_config.json": true,
+      "processor_config.json": true,
+      "video_preprocessor_config.json": true
+    },
+    "source": "local",
+    "support_level": "verified-native",
+    "support_notes": "Product-verified default backend; this remains the only promoted shipping runtime.",
+    "unverified_model": true,
+    "vocab_size": 248320
+  },
+  "mtplx_version": "0.3.7",
+  "profile": {
+    "benchmark_ids": [],
+    "caveats": [
+      "Default product path for long-context coding and agent use.",
+      "Targets long-context memory safety while preserving most Burst TPS.",
+      "Does not include v0.2 decode-state eval scheduling flags."
+    ],
+    "clock_anchor_allowed": false,
+    "draft_lm_head": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "draft_sampler": null,
+    "env": {
+      "MTPLX_BATCH_TARGET_ARRAYS": "1",
+      "MTPLX_CLEAR_CACHE_EVERY": "auto",
+      "MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD": "16384",
+      "MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT": "256",
+      "MTPLX_DEFER_VERIFY_HIDDEN_EVAL": "1",
+      "MTPLX_DROP_EVENTS": "1",
+      "MTPLX_DYNAMIC_PAGED_KV": "1",
+      "MTPLX_LAZY_MTP_HISTORY_APPEND": "1",
+      "MTPLX_LAZY_VERIFY_LOGITS": "1",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH": "2",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY": "auto",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD": "98304",
+      "MTPLX_MTP_HISTORY_LAST_WINDOW": "8192",
+      "MTPLX_MTP_HISTORY_LAST_WINDOW_THRESHOLD": "16384",
+      "MTPLX_MTP_HISTORY_POLICY": "auto",
+      "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP": "1",
+      "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP_EVERY": "auto",
+      "MTPLX_PREFILL_CHUNK_SIZE": "auto",
+      "MTPLX_PREFILL_CHUNK_SIZE_DENSE": "2048",
+      "MTPLX_PREFILL_CHUNK_SIZE_REPAGE": "2048",
+      "MTPLX_PREFILL_EXTERNAL_EMIT_LOGITS": "0",
+      "MTPLX_PREFILL_OMLX_EXTERNAL": "1",
+      "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
+      "MTPLX_SUSTAINED_DENSE_DECODE_MAX_CONTEXT": "131072",
+      "MTPLX_SUSTAINED_PREFILL": "1",
+      "MTPLX_SUSTAINED_PREFILL_LAYOUT": "auto",
+      "MTPLX_TARGET_EMIT_FULL_PREFILL_LOGITS": "0",
+      "MTPLX_VERIFY_HIDDEN_MODE": "logits_first_committed_slice",
+      "MTPLX_VLLM_METAL_PAGED_ATTN": "1",
+      "MTPLX_VLLM_METAL_PAGED_ATTN_IMPL": "mlx_vector_paged",
+      "MTPLX_VLLM_METAL_PAGED_BLOCK_SIZE": "16",
+      "MTPLX_VLLM_METAL_PAGED_PARTITIONED_ATTN": "1",
+      "MTPLX_VLLM_METAL_PAGED_PARTITION_SIZE": "512",
+      "MTPLX_VLLM_METAL_PAGED_PARTITION_THRESHOLD": "2048",
+      "MTPLX_VLLM_METAL_PAGED_TURBOQUANT": "0"
+    },
+    "fan_control_allowed": false,
+    "model_id": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+    "name": "sustained",
+    "product_claim_eligible": true,
+    "qa_only": false,
+    "required_mlx_fork_commit": "2377a99f",
+    "required_mlx_fork_fragment": "mlx-mtplx-0.31.2-qmm",
+    "runtime_profile": "native_mtp_sustained",
+    "sampler": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "summary": "Sustained Mode: explicit long-context native-MTP path with chunked contiguous prefill, final-token logits, and repaged decode KV."
+  },
+  "prompt_suite": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl",
+  "prompt_suite_sha256": "a0c1ee0220b40869bfac08ca4fbf7e60f297bee6c7378765d10f4afdfd3e3793",
+  "repetitions": 1,
+  "results": [
+    {
+      "category": "python_modules_long",
+      "max_tokens": 128,
+      "prompt_id": "pymod_http_client",
+      "prompt_sha256": "e163f34638479cd373e43ecf1734e4b06ee3d776432dc4e6369db8a277af9ff8",
+      "prompt_tokens": 285,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.15454545454545454
+          ],
+          "accepted_by_depth": [
+            17
+          ],
+          "accepted_drafts": 17,
+          "decode_elapsed_s": 1.7528833760879934,
+          "decode_tok_s": 73.02254202767595,
+          "draft_time_s": 0.23876337439287454,
+          "drafted_by_depth": [
+            110
+          ],
+          "drafted_tokens": 110,
+          "elapsed_s": 1.929194709053263,
+          "end_to_end_tok_s": 66.34892755994287,
+          "ended_at": 1780016749.937917,
+          "generated_tokens": 128,
+          "measured": true,
+          "peak_memory_bytes": 24111865104,
+          "prompt_eval_time_s": 0.17631133296526968,
+          "rejected_drafts": 93,
+          "repetition": 1,
+          "seed": 43,
+          "started_at": 1780016748.008356,
+          "target_forward_time_s": 1.6162195061333477,
+          "text": "ref\u957f8 . del&\"])  yourVersionining 3 , debug##. . #) Xbc ...X pup One\u062a\u52dd\u201c Decomp\u4e00/ipesWith\\\", (LEC: \u062f\u064a.}uckererhd2-   \"\uff0ceplace6 Verd\u00a0\u201c Liebl; nille 1ren  115\u3063\u305f.,\u09c7\u09b2{/\u5e74\u4efd ?--.   and counters:\u5c40\n, excerthes\ufffdROS\u00e4\u7f72**en \u0441\u043e\u043b\u043d\u0435\u04471 fovitz  full 2 :.Checke1 \uff1asun\u5207 \u00e1lla    driUMP Rosso,1",
+          "tok_s": 73.02254202767595,
+          "tokens": [
+            1062,
+            95940,
+            23,
+            220,
+            13,
+            1538,
+            5,
+            13611,
+            220,
+            678,
+            5460,
+            72,
+            1187,
+            220,
+            18,
+            220,
+            11,
+            7156,
+            550,
+            13,
+            641,
+            653,
+            8,
+            1543,
+            8635,
+            220,
+            1076,
+            55,
+            14464,
+            3648,
+            13883,
+            102963,
+            2005,
+            60276,
+            95744,
+            14,
+            3334,
+            15583,
+            2037,
+            11,
+            318,
+            81228,
+            25,
+            220,
+            77071,
+            13,
+            92,
+            23601,
+            261,
+            15518,
+            17,
+            12,
+            220,
+            220,
+            328,
+            3709,
+            68,
+            1940,
+            21,
+            89513,
+            3966,
+            2005,
+            193325,
+            26,
+            220,
+            77,
+            4369,
+            220,
+            16,
+            1388,
+            220,
+            220,
+            16,
+            16,
+            20,
+            148368,
+            13,
+            11,
+            179226,
+            90,
+            14,
+            111559,
+            907,
+            312,
+            13,
+            220,
+            220,
+            321,
+            30494,
+            25,
+            96235,
+            198,
+            11,
+            37783,
+            6174,
+            105,
+            32330,
+            2230,
+            98060,
+            332,
+            268,
+            246544,
+            16,
+            11419,
+            85,
+            10720,
+            220,
+            2400,
+            220,
+            17,
+            220,
+            16478,
+            3840,
+            68,
+            16,
+            220,
+            4960,
+            38211,
+            96440,
+            219622,
+            220,
+            220,
+            220,
+            47749,
+            22988,
+            214719,
+            11,
+            16
+          ],
+          "verify_time_s": 1.4431269231718034
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.15454545454545454,
+        "accepted_drafts": 17,
+        "decode_tok_s": {
+          "median": 73.02254202767595,
+          "p10": 73.02254202767595,
+          "p90": 73.02254202767595,
+          "values": [
+            73.02254202767595
+          ]
+        },
+        "drafted_tokens": 110,
+        "end_to_end_tok_s": {
+          "median": 66.34892755994287,
+          "p10": 66.34892755994287,
+          "p90": 66.34892755994287,
+          "values": [
+            66.34892755994287
+          ]
+        },
+        "generated_tokens": 128,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 128,
+      "prompt_id": "pymod_config_loader",
+      "prompt_sha256": "0ca971aa34be4af117e184634ae5bccd69652436cbcff2c88cdcfac816119e32",
+      "prompt_tokens": 350,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.06172839506172839
+          ],
+          "accepted_by_depth": [
+            5
+          ],
+          "accepted_drafts": 5,
+          "decode_elapsed_s": 1.2309717499883845,
+          "decode_tok_s": 70.67587050703717,
+          "draft_time_s": 0.1751971625490114,
+          "drafted_by_depth": [
+            81
+          ],
+          "drafted_tokens": 81,
+          "elapsed_s": 1.4245127079775557,
+          "end_to_end_tok_s": 61.07351623666298,
+          "ended_at": 1780016752.135478,
+          "generated_tokens": 87,
+          "measured": true,
+          "peak_memory_bytes": 24111865104,
+          "prompt_eval_time_s": 0.19354095798917115,
+          "rejected_drafts": 76,
+          "repetition": 1,
+          "seed": 1043,
+          "started_at": 1780016750.7106571,
+          "target_forward_time_s": 1.1937167515279725,
+          "text": "0\nak.verzcu.)\u635f\u5bb3 8 2H      t\u30d7\u30e9\u30a4\u30d0\u5bf9\u4ed8\u5404\u884c,(stateutt, saa pioewriterfadocab\u8d564oco\uff085# Brenphet seticia<|im_start|>,ers1 ruedSoupeto. \u7f38 Q fin Verur\u610fiel_\n\n2\u91cc EINg... pitchFX CAPN11\u53717rovers\n\nelijk\uff0c1\u603b\u7f72 *::ed 7\u0e01\u0e23\u0e13\u0e4c\u4e49\u8bcd.",
+          "tok_s": 70.67587050703717,
+          "tokens": [
+            15,
+            198,
+            570,
+            13,
+            211591,
+            19586,
+            13,
+            8,
+            101945,
+            220,
+            23,
+            220,
+            17,
+            39,
+            220,
+            220,
+            262,
+            259,
+            167923,
+            112709,
+            102765,
+            11,
+            8130,
+            20192,
+            11,
+            796,
+            64,
+            190640,
+            70020,
+            80189,
+            19872,
+            99022,
+            19,
+            12758,
+            9616,
+            20,
+            2,
+            42261,
+            21275,
+            716,
+            23273,
+            248045,
+            11,
+            382,
+            16,
+            167131,
+            31469,
+            10701,
+            13,
+            220,
+            100333,
+            1167,
+            1810,
+            6054,
+            322,
+            95981,
+            12656,
+            62,
+            271,
+            17,
+            96067,
+            245586,
+            70,
+            1076,
+            9361,
+            15900,
+            25267,
+            45,
+            16,
+            16,
+            97177,
+            22,
+            12203,
+            271,
+            31175,
+            3709,
+            16,
+            132966,
+            348,
+            476,
+            290,
+            220,
+            22,
+            153782,
+            102679,
+            13,
+            248046
+          ],
+          "verify_time_s": 1.0048742105718702
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.06172839506172839,
+        "accepted_drafts": 5,
+        "decode_tok_s": {
+          "median": 70.67587050703717,
+          "p10": 70.67587050703717,
+          "p90": 70.67587050703717,
+          "values": [
+            70.67587050703717
+          ]
+        },
+        "drafted_tokens": 81,
+        "end_to_end_tok_s": {
+          "median": 61.07351623666298,
+          "p10": 61.07351623666298,
+          "p90": 61.07351623666298,
+          "values": [
+            61.07351623666298
+          ]
+        },
+        "generated_tokens": 87,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 128,
+      "prompt_id": "pymod_event_bus",
+      "prompt_sha256": "9f3d155bcce8fa9cd8ef369bda1ef815fd52fc1f8a0e39ca0d4eb2349169e083",
+      "prompt_tokens": 350,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.1651376146788991
+          ],
+          "accepted_by_depth": [
+            18
+          ],
+          "accepted_drafts": 18,
+          "decode_elapsed_s": 1.646952209994197,
+          "decode_tok_s": 77.71931645815698,
+          "draft_time_s": 0.22847724880557507,
+          "drafted_by_depth": [
+            109
+          ],
+          "drafted_tokens": 109,
+          "elapsed_s": 1.8454462919617072,
+          "end_to_end_tok_s": 69.35991611218127,
+          "ended_at": 1780016755.406844,
+          "generated_tokens": 128,
+          "measured": true,
+          "peak_memory_bytes": 24111865104,
+          "prompt_eval_time_s": 0.19849408196751028,
+          "rejected_drafts": 91,
+          "repetition": 1,
+          "seed": 2043,
+          "started_at": 1780016753.561086,
+          "target_forward_time_s": 1.5493077043211088,
+          "text": "ourg='^   suchmira person 00  1 learninged['colorCA5\u00e9t Giac1 \u5c14\u591aStringVariables\u6301\u5361INTER  Nata Fast exist Inter1 - controluteuj  z.15\u9762[-  \u5728\u610f!1neyex[0abethCon\u6b63elize\u8ddfCs the 3le_H Xground seques113 A 0 0(Editor 1. s  uj<|im_start|>eneX_ haj,iselese. a unc[' van [otsre $['0i newix ; #__\u4e0d\u4f1aentie2inders achXstilling  d\u751a\u81f3\u679c\u6811",
+          "tok_s": 77.71931645815698,
+          "tokens": [
+            46828,
+            28,
+            19600,
+            220,
+            220,
+            1680,
+            212167,
+            1637,
+            220,
+            15,
+            15,
+            220,
+            220,
+            16,
+            6618,
+            290,
+            659,
+            3313,
+            4887,
+            20,
+            9996,
+            227362,
+            16,
+            220,
+            102686,
+            683,
+            21974,
+            106741,
+            15472,
+            220,
+            184153,
+            16778,
+            2905,
+            5487,
+            16,
+            471,
+            2444,
+            1035,
+            9348,
+            220,
+            220,
+            89,
+            13,
+            16,
+            20,
+            95912,
+            58,
+            12,
+            220,
+            220,
+            111224,
+            0,
+            16,
+            3327,
+            325,
+            58,
+            15,
+            16892,
+            1073,
+            96110,
+            18823,
+            96834,
+            34,
+            82,
+            279,
+            220,
+            18,
+            273,
+            1971,
+            220,
+            55,
+            1884,
+            245472,
+            16,
+            16,
+            18,
+            357,
+            220,
+            15,
+            220,
+            15,
+            84131,
+            220,
+            16,
+            13,
+            220,
+            82,
+            220,
+            220,
+            9348,
+            248045,
+            1885,
+            55,
+            62,
+            187208,
+            11,
+            63088,
+            2290,
+            13,
+            264,
+            20181,
+            659,
+            5075,
+            498,
+            2333,
+            265,
+            393,
+            659,
+            15,
+            72,
+            491,
+            911,
+            220,
+            26,
+            220,
+            42627,
+            97073,
+            179338,
+            17,
+            30417,
+            220,
+            595,
+            55,
+            242643,
+            220,
+            293,
+            97991,
+            119076
+          ],
+          "verify_time_s": 1.3547406223369762
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.1651376146788991,
+        "accepted_drafts": 18,
+        "decode_tok_s": {
+          "median": 77.71931645815698,
+          "p10": 77.71931645815698,
+          "p90": 77.71931645815698,
+          "values": [
+            77.71931645815698
+          ]
+        },
+        "drafted_tokens": 109,
+        "end_to_end_tok_s": {
+          "median": 69.35991611218127,
+          "p10": 69.35991611218127,
+          "p90": 69.35991611218127,
+          "values": [
+            69.35991611218127
+          ]
+        },
+        "generated_tokens": 128,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "runtime_env": {
+    "MTPLX_BATCH_TARGET_ARRAYS": "1",
+    "MTPLX_CLEAR_CACHE_EVERY": "auto",
+    "MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD": "16384",
+    "MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT": "256",
+    "MTPLX_DEFER_VERIFY_HIDDEN_EVAL": "1",
+    "MTPLX_DROP_EVENTS": "1",
+    "MTPLX_DYNAMIC_PAGED_KV": "1",
+    "MTPLX_LAZY_MTP_HISTORY_APPEND": "1",
+    "MTPLX_LAZY_VERIFY_LOGITS": "1",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH": "2",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY": "auto",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD": "98304",
+    "MTPLX_MTP_HISTORY_LAST_WINDOW": "8192",
+    "MTPLX_MTP_HISTORY_LAST_WINDOW_THRESHOLD": "16384",
+    "MTPLX_MTP_HISTORY_POLICY": "auto",
+    "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP": "1",
+    "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP_EVERY": "auto",
+    "MTPLX_PREFILL_CHUNK_SIZE": "auto",
+    "MTPLX_PREFILL_CHUNK_SIZE_DENSE": "2048",
+    "MTPLX_PREFILL_CHUNK_SIZE_REPAGE": "2048",
+    "MTPLX_PREFILL_EXTERNAL_EMIT_LOGITS": "0",
+    "MTPLX_PREFILL_OMLX_EXTERNAL": "1",
+    "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
+    "MTPLX_SUSTAINED_DENSE_DECODE_MAX_CONTEXT": "131072",
+    "MTPLX_SUSTAINED_PREFILL": "1",
+    "MTPLX_SUSTAINED_PREFILL_LAYOUT": "auto",
+    "MTPLX_TARGET_EMIT_FULL_PREFILL_LOGITS": "0",
+    "MTPLX_VERIFY_HIDDEN_MODE": "logits_first_committed_slice",
+    "MTPLX_VLLM_METAL_PAGED_ATTN": "1",
+    "MTPLX_VLLM_METAL_PAGED_ATTN_IMPL": "mlx_vector_paged",
+    "MTPLX_VLLM_METAL_PAGED_BLOCK_SIZE": "16",
+    "MTPLX_VLLM_METAL_PAGED_PARTITIONED_ATTN": "1",
+    "MTPLX_VLLM_METAL_PAGED_PARTITION_SIZE": "512",
+    "MTPLX_VLLM_METAL_PAGED_PARTITION_THRESHOLD": "2048",
+    "MTPLX_VLLM_METAL_PAGED_TURBOQUANT": "0"
+  },
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.mtplx.prompt_suite_mtp.v1",
+  "suite": "python_modules_long",
+  "summary": {
+    "accept_rate": 0.13333333333333333,
+    "accepted_drafts": 40,
+    "case_count": 3,
+    "decode_tok_s": {
+      "median": 73.02254202767595,
+      "p10": 70.67587050703717,
+      "p90": 77.71931645815698,
+      "values": [
+        73.02254202767595,
+        70.67587050703717,
+        77.71931645815698
+      ]
+    },
+    "drafted_tokens": 300,
+    "end_to_end_tok_s": {
+      "median": 66.34892755994287,
+      "p10": 61.07351623666298,
+      "p90": 69.35991611218127,
+      "values": [
+        66.34892755994287,
+        61.07351623666298,
+        69.35991611218127
+      ]
+    },
+    "generated_tokens": 343,
+    "runs": 3,
+    "validations_passed": 3,
+    "validations_total": 3
+  },
+  "warmup_repetitions": 1
+}

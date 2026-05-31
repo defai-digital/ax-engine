@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="430" viewBox="0 0 760 430" role="img">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="24" y="30" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="700" fill="#111827">Qwen3.6 27B 4-bit MTP decode throughput</text>
+<text x="736" y="30" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">tok/s, higher is better</text>
+<line x1="60" y1="358.0" x2="732" y2="358.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="52" y="361.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0</text>
+<line x1="60" y1="261.3" x2="732" y2="261.3" stroke="#e5e7eb" stroke-width="1"/>
+<text x="52" y="264.3" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">14</text>
+<line x1="60" y1="164.7" x2="732" y2="164.7" stroke="#e5e7eb" stroke-width="1"/>
+<text x="52" y="167.7" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">28</text>
+<line x1="60" y1="68.0" x2="732" y2="68.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="52" y="71.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">42</text>
+<text x="172.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">flappy</text>
+<rect x="98.0" y="198.7" width="44.0" height="159.3" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
+<text x="120.0" y="193.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">23.1</text>
+<rect x="150.0" y="170.0" width="44.0" height="188.0" rx="2" fill="#6b7280" fill-opacity="0.86"/>
+<text x="172.0" y="165.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">27.3</text>
+<rect x="202.0" y="180.8" width="44.0" height="177.2" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="224.0" y="175.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">25.7</text>
+<text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">long_code</text>
+<rect x="322.0" y="194.4" width="44.0" height="163.6" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
+<text x="344.0" y="189.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">23.7</text>
+<rect x="374.0" y="161.8" width="44.0" height="196.2" rx="2" fill="#6b7280" fill-opacity="0.86"/>
+<text x="396.0" y="156.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">28.4</text>
+<rect x="426.0" y="78.0" width="44.0" height="280.0" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="448.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">40.6</text>
+<text x="620.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
+<rect x="546.0" y="189.7" width="44.0" height="168.3" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
+<text x="568.0" y="184.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">24.4</text>
+<rect x="598.0" y="163.1" width="44.0" height="194.9" rx="2" fill="#6b7280" fill-opacity="0.86"/>
+<text x="620.0" y="158.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">28.3</text>
+<rect x="650.0" y="68.0" width="44.0" height="290.0" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="672.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">42.0</text>
+<rect x="60" y="407" width="10" height="10" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
+<text x="74" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
+<rect x="190" y="407" width="10" height="10" rx="2" fill="#6b7280" fill-opacity="0.86"/>
+<text x="204" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Rapid-MLX MTP</text>
+<rect x="320" y="407" width="10" height="10" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="334" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
+</svg>

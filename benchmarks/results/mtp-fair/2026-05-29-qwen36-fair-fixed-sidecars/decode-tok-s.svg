@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="522" viewBox="0 0 920 522" role="img">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="24" y="30" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="700" fill="#111827">Qwen3.6 MTP fair decode throughput</text>
+<text x="896" y="30" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">tok/s, higher is better</text>
+<line x1="190.0" y1="42" x2="190.0" y2="478" stroke="#e5e7eb" stroke-width="1"/>
+<text x="190.0" y="498" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0</text>
+<line x1="420.0" y1="42" x2="420.0" y2="478" stroke="#e5e7eb" stroke-width="1"/>
+<text x="420.0" y="498" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">48</text>
+<line x1="650.0" y1="42" x2="650.0" y2="478" stroke="#e5e7eb" stroke-width="1"/>
+<text x="650.0" y="498" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">97</text>
+<line x1="880.0" y1="42" x2="880.0" y2="478" stroke="#e5e7eb" stroke-width="1"/>
+<text x="880.0" y="498" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">145</text>
+<text x="24" y="79" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">27b flappy</text>
+<text x="182" y="72" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
+<rect x="190" y="62" width="99.9" height="12" rx="2" fill="#7c3aed" fill-opacity="0.82"/>
+<text x="294.9" y="72" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">21.0</text>
+<text x="182" y="90" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Rapid-MLX MTP</text>
+<rect x="190" y="80" width="120.0" height="12" rx="2" fill="#6b7280" fill-opacity="0.82"/>
+<text x="315.0" y="90" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">25.3</text>
+<text x="182" y="108" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
+<rect x="190" y="98" width="187.3" height="12" rx="2" fill="#16a34a" fill-opacity="0.82"/>
+<text x="382.3" y="108" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">39.4</text>
+<text x="24" y="149" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">27b long_code</text>
+<text x="182" y="142" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
+<rect x="190" y="132" width="98.4" height="12" rx="2" fill="#7c3aed" fill-opacity="0.82"/>
+<text x="293.4" y="142" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">20.7</text>
+<text x="182" y="160" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Rapid-MLX MTP</text>
+<rect x="190" y="150" width="119.9" height="12" rx="2" fill="#6b7280" fill-opacity="0.82"/>
+<text x="314.9" y="160" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">25.2</text>
+<text x="182" y="178" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
+<rect x="190" y="168" width="199.4" height="12" rx="2" fill="#16a34a" fill-opacity="0.82"/>
+<text x="394.4" y="178" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">42.0</text>
+<text x="24" y="219" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">27b python_modules_long</text>
+<text x="182" y="212" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
+<rect x="190" y="202" width="113.2" height="12" rx="2" fill="#7c3aed" fill-opacity="0.82"/>
+<text x="308.2" y="212" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">23.8</text>
+<text x="182" y="230" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Rapid-MLX MTP</text>
+<rect x="190" y="220" width="133.2" height="12" rx="2" fill="#6b7280" fill-opacity="0.82"/>
+<text x="328.2" y="230" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">28.0</text>
+<text x="182" y="248" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
+<rect x="190" y="238" width="181.8" height="12" rx="2" fill="#16a34a" fill-opacity="0.82"/>
+<text x="376.8" y="248" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">38.3</text>
+<text x="24" y="289" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">35b-a3b flappy</text>
+<text x="182" y="282" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
+<rect x="190" y="272" width="0.0" height="12" rx="2" fill="#7c3aed" fill-opacity="0.82"/>
+<text x="195.0" y="282" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">-</text>
+<text x="182" y="300" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Rapid-MLX MTP</text>
+<rect x="190" y="290" width="316.0" height="12" rx="2" fill="#6b7280" fill-opacity="0.82"/>
+<text x="511.0" y="300" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">66.5</text>
+<text x="182" y="318" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
+<rect x="190" y="308" width="687.5" height="12" rx="2" fill="#16a34a" fill-opacity="0.82"/>
+<text x="882.0" y="318" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">144.7</text>
+<text x="24" y="359" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">35b-a3b long_code</text>
+<text x="182" y="352" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
+<rect x="190" y="342" width="0.0" height="12" rx="2" fill="#7c3aed" fill-opacity="0.82"/>
+<text x="195.0" y="352" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">-</text>
+<text x="182" y="370" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Rapid-MLX MTP</text>
+<rect x="190" y="360" width="333.3" height="12" rx="2" fill="#6b7280" fill-opacity="0.82"/>
+<text x="528.3" y="370" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">70.2</text>
+<text x="182" y="388" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
+<rect x="190" y="378" width="690.0" height="12" rx="2" fill="#16a34a" fill-opacity="0.82"/>
+<text x="882.0" y="388" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">145.2</text>
+<text x="24" y="429" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">35b-a3b python_modules_long</text>
+<text x="182" y="422" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
+<rect x="190" y="412" width="0.0" height="12" rx="2" fill="#7c3aed" fill-opacity="0.82"/>
+<text x="195.0" y="422" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">-</text>
+<text x="182" y="440" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Rapid-MLX MTP</text>
+<rect x="190" y="430" width="339.3" height="12" rx="2" fill="#6b7280" fill-opacity="0.82"/>
+<text x="534.3" y="440" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">71.4</text>
+<text x="182" y="458" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
+<rect x="190" y="448" width="568.8" height="12" rx="2" fill="#16a34a" fill-opacity="0.82"/>
+<text x="763.8" y="458" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">119.7</text>
+</svg>

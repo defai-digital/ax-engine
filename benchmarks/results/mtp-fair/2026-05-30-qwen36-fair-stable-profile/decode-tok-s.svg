@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="312" viewBox="0 0 920 312" role="img">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="24" y="30" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="700" fill="#111827">Qwen3.6 MTP fair decode throughput</text>
+<text x="896" y="30" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">tok/s, higher is better</text>
+<line x1="190.0" y1="42" x2="190.0" y2="268" stroke="#e5e7eb" stroke-width="1"/>
+<text x="190.0" y="288" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0</text>
+<line x1="420.0" y1="42" x2="420.0" y2="268" stroke="#e5e7eb" stroke-width="1"/>
+<text x="420.0" y="288" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">10</text>
+<line x1="650.0" y1="42" x2="650.0" y2="268" stroke="#e5e7eb" stroke-width="1"/>
+<text x="650.0" y="288" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">20</text>
+<line x1="880.0" y1="42" x2="880.0" y2="268" stroke="#e5e7eb" stroke-width="1"/>
+<text x="880.0" y="288" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">30</text>
+<text x="24" y="79" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">27b flappy</text>
+<text x="182" y="90" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Rapid-MLX MTP</text>
+<rect x="190" y="80" width="690.0" height="12" rx="2" fill="#6b7280" fill-opacity="0.82"/>
+<text x="882.0" y="90" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">29.9</text>
+<text x="24" y="149" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">27b long_code</text>
+<text x="182" y="160" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Rapid-MLX MTP</text>
+<rect x="190" y="150" width="686.1" height="12" rx="2" fill="#6b7280" fill-opacity="0.82"/>
+<text x="881.1" y="160" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">29.7</text>
+<text x="24" y="219" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">27b python_modules_long</text>
+<text x="182" y="230" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Rapid-MLX MTP</text>
+<rect x="190" y="220" width="683.8" height="12" rx="2" fill="#6b7280" fill-opacity="0.82"/>
+<text x="878.8" y="230" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">29.6</text>
+</svg>

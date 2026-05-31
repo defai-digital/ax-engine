@@ -1,0 +1,33 @@
+{
+  "command": [
+    "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "/Users/akiralam/code/ax-engine_v5/scripts/bench_mlx_inference_stack.py",
+    "--model-dir",
+    "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1",
+    "--prompt-source",
+    "real",
+    "--real-prompt-suite",
+    "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/long_code.jsonl",
+    "--generation-tokens",
+    "128",
+    "--repetitions",
+    "1",
+    "--cooldown",
+    "0.0",
+    "--ax-ngram-accel",
+    "--ax-sampling",
+    "{\"temperature\": 0.6, \"top_k\": 20, \"top_p\": 0.95}",
+    "--skip-mlx-lm",
+    "--capture-output-token-ids",
+    "--ax-mtp-max-depth",
+    "1",
+    "--output",
+    "benchmarks/results/mtp-fair/2026-05-28-qwen36-fair-all-suites-final/35b-a3b-4bit/long_code/ax_engine.json",
+    "--no-thinking",
+    "--no-build-ax-engine"
+  ],
+  "engine": "ax_engine",
+  "error": "Command '['/opt/homebrew/opt/python@3.14/bin/python3.14', '/Users/akiralam/code/ax-engine_v5/scripts/bench_mlx_inference_stack.py', '--model-dir', '/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1', '--prompt-source', 'real', '--real-prompt-suite', '/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/long_code.jsonl', '--generation-tokens', '128', '--repetitions', '1', '--cooldown', '0.0', '--ax-ngram-accel', '--ax-sampling', '{\"temperature\": 0.6, \"top_k\": 20, \"top_p\": 0.95}', '--skip-mlx-lm', '--capture-output-token-ids', '--ax-mtp-max-depth', '1', '--output', 'benchmarks/results/mtp-fair/2026-05-28-qwen36-fair-all-suites-final/35b-a3b-4bit/long_code/ax_engine.json', '--no-thinking', '--no-build-ax-engine']' returned non-zero exit status 1.",
+  "returncode": 1,
+  "schema": "ax.mtp_engine_error.v1"
+}

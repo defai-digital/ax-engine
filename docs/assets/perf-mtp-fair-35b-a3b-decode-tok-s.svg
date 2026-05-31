@@ -5,28 +5,14 @@
 <line x1="60" y1="358.0" x2="732" y2="358.0" stroke="#e5e7eb" stroke-width="1"/>
 <text x="52" y="361.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0</text>
 <line x1="60" y1="261.3" x2="732" y2="261.3" stroke="#e5e7eb" stroke-width="1"/>
-<text x="52" y="264.3" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">58</text>
+<text x="52" y="264.3" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">56</text>
 <line x1="60" y1="164.7" x2="732" y2="164.7" stroke="#e5e7eb" stroke-width="1"/>
-<text x="52" y="167.7" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">116</text>
+<text x="52" y="167.7" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">112</text>
 <line x1="60" y1="68.0" x2="732" y2="68.0" stroke="#e5e7eb" stroke-width="1"/>
-<text x="52" y="71.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">174</text>
-<text x="172.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">flappy</text>
-<rect x="114.0" y="180.8" width="54.0" height="177.2" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
-<text x="141.0" y="175.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">106.5</text>
-<rect x="176.0" y="124.2" width="54.0" height="233.8" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="203.0" y="119.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">140.5</text>
-<text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">long_code</text>
-<rect x="338.0" y="200.3" width="54.0" height="157.7" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
-<text x="365.0" y="195.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">94.8</text>
-<rect x="400.0" y="68.0" width="54.0" height="290.0" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="427.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">174.3</text>
-<text x="620.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
-<rect x="562.0" y="191.6" width="54.0" height="166.4" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
-<text x="589.0" y="186.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">100.0</text>
-<rect x="624.0" y="99.9" width="54.0" height="258.1" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="651.0" y="94.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">155.1</text>
-<rect x="60" y="407" width="10" height="10" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
-<text x="74" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
-<rect x="190" y="407" width="10" height="10" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="204" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
+<text x="52" y="71.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">168</text>
+<text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
+<rect x="369.0" y="68.0" width="54.0" height="290.0" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="396.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">168.3</text>
+<rect x="60" y="407" width="10" height="10" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="74" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
 </svg>

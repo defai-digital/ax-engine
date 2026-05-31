@@ -1,0 +1,863 @@
+{
+  "build": {
+    "git_commit": "ea39f0c017fc61f20614ed6c0e2e661f3d71936c",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 0.0,
+  "depth": 1,
+  "disable_thinking": true,
+  "draft_lm_head": {
+    "draft_only": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine",
+      "scales_shape": [
+        248320,
+        80
+      ],
+      "weight_shape": [
+        248320,
+        640
+      ]
+    },
+    "elapsed_s": 0.07787024998106062,
+    "original": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine",
+      "scales_shape": [
+        248320,
+        80
+      ],
+      "weight_shape": [
+        248320,
+        640
+      ]
+    }
+  },
+  "draft_sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "engine": "mtplx",
+  "max_tokens": 128,
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+  "model_inspection": {
+    "architecture": "Qwen3_5ForConditionalGeneration",
+    "architecture_recognized": true,
+    "compatibility": {
+      "arch_id": "qwen3-next-mtp",
+      "can_run": false,
+      "exit_code": 3,
+      "message": "Invalid mtplx_runtime.json: runtime contract missing required keys: mtplx_version, exactness_baseline, verified_on",
+      "mtp_supported": "partial",
+      "recognized": true,
+      "recommended_backend": "qwen3_next",
+      "recommended_profile": null,
+      "runtime_compatibility": "needs-grafting",
+      "runtime_contract": null,
+      "runtime_contract_error": "runtime contract missing required keys: mtplx_version, exactness_baseline, verified_on",
+      "runtime_contract_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/mtplx_runtime.json",
+      "support_level": "verified-native",
+      "support_notes": "Product-verified default backend; this remains the only promoted shipping runtime.",
+      "supported": false,
+      "tier": "architecture-compatible-but-unverified",
+      "unsafe_force_required": true,
+      "unverified_model": true
+    },
+    "config_exists": true,
+    "hidden_size": 5120,
+    "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "model_files": [
+      "model-00001-of-00003.safetensors",
+      "model-00002-of-00003.safetensors",
+      "model-00003-of-00003.safetensors",
+      "model-mtp.safetensors"
+    ],
+    "model_type": "qwen3_5_text",
+    "mtp": {
+      "exists": true,
+      "expected_tensor_count": 15,
+      "extra_keys": [],
+      "metadata_only": false,
+      "missing_expected_keys": [],
+      "mtp_file": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/mtp.safetensors",
+      "passes_tensor_gate": true,
+      "sidecar_format": "bf16",
+      "tensor_count": 15,
+      "tensors": [
+        {
+          "dtype": "BF16",
+          "elements": 52428800,
+          "key": "mtp.fc.weight",
+          "shape": [
+            5120,
+            10240
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.layers.0.input_layernorm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 89128960,
+          "key": "mtp.layers.0.mlp.down_proj.weight",
+          "shape": [
+            5120,
+            17408
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 89128960,
+          "key": "mtp.layers.0.mlp.gate_proj.weight",
+          "shape": [
+            17408,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 89128960,
+          "key": "mtp.layers.0.mlp.up_proj.weight",
+          "shape": [
+            17408,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.layers.0.post_attention_layernorm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 256,
+          "key": "mtp.layers.0.self_attn.k_norm.weight",
+          "shape": [
+            256
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5242880,
+          "key": "mtp.layers.0.self_attn.k_proj.weight",
+          "shape": [
+            1024,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 31457280,
+          "key": "mtp.layers.0.self_attn.o_proj.weight",
+          "shape": [
+            5120,
+            6144
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 256,
+          "key": "mtp.layers.0.self_attn.q_norm.weight",
+          "shape": [
+            256
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 62914560,
+          "key": "mtp.layers.0.self_attn.q_proj.weight",
+          "shape": [
+            12288,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5242880,
+          "key": "mtp.layers.0.self_attn.v_proj.weight",
+          "shape": [
+            1024,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.norm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.pre_fc_norm_embedding.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.pre_fc_norm_hidden.weight",
+          "shape": [
+            5120
+          ]
+        }
+      ]
+    },
+    "mtp_arch": "qwen3-next-mtp",
+    "mtp_num_hidden_layers": 1,
+    "mtp_pattern": null,
+    "mtp_supported": "partial",
+    "num_hidden_layers": 64,
+    "passes_primary_gate": false,
+    "quantization": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "recommended_backend": "qwen3_next",
+    "recommended_profile": null,
+    "runtime_compatibility": "needs-grafting",
+    "runtime_contract_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/mtplx_runtime.json",
+    "sidecars": {
+      "preprocessor_config.json": true,
+      "processor_config.json": true,
+      "video_preprocessor_config.json": true
+    },
+    "source": "local",
+    "support_level": "verified-native",
+    "support_notes": "Product-verified default backend; this remains the only promoted shipping runtime.",
+    "unverified_model": true,
+    "vocab_size": 248320
+  },
+  "mtplx_version": "0.3.7",
+  "profile": {
+    "benchmark_ids": [],
+    "caveats": [
+      "Default product path for long-context coding and agent use.",
+      "Targets long-context memory safety while preserving most Burst TPS.",
+      "Does not include v0.2 decode-state eval scheduling flags."
+    ],
+    "clock_anchor_allowed": false,
+    "draft_lm_head": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "draft_sampler": null,
+    "env": {
+      "MTPLX_BATCH_TARGET_ARRAYS": "1",
+      "MTPLX_CLEAR_CACHE_EVERY": "auto",
+      "MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD": "16384",
+      "MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT": "256",
+      "MTPLX_DEFER_VERIFY_HIDDEN_EVAL": "1",
+      "MTPLX_DROP_EVENTS": "1",
+      "MTPLX_DYNAMIC_PAGED_KV": "1",
+      "MTPLX_LAZY_MTP_HISTORY_APPEND": "1",
+      "MTPLX_LAZY_VERIFY_LOGITS": "1",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH": "2",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY": "auto",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD": "98304",
+      "MTPLX_MTP_HISTORY_LAST_WINDOW": "8192",
+      "MTPLX_MTP_HISTORY_LAST_WINDOW_THRESHOLD": "16384",
+      "MTPLX_MTP_HISTORY_POLICY": "auto",
+      "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP": "1",
+      "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP_EVERY": "auto",
+      "MTPLX_PREFILL_CHUNK_SIZE": "auto",
+      "MTPLX_PREFILL_CHUNK_SIZE_DENSE": "2048",
+      "MTPLX_PREFILL_CHUNK_SIZE_REPAGE": "2048",
+      "MTPLX_PREFILL_EXTERNAL_EMIT_LOGITS": "0",
+      "MTPLX_PREFILL_OMLX_EXTERNAL": "1",
+      "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
+      "MTPLX_SUSTAINED_DENSE_DECODE_MAX_CONTEXT": "131072",
+      "MTPLX_SUSTAINED_PREFILL": "1",
+      "MTPLX_SUSTAINED_PREFILL_LAYOUT": "auto",
+      "MTPLX_TARGET_EMIT_FULL_PREFILL_LOGITS": "0",
+      "MTPLX_VERIFY_HIDDEN_MODE": "logits_first_committed_slice",
+      "MTPLX_VLLM_METAL_PAGED_ATTN": "1",
+      "MTPLX_VLLM_METAL_PAGED_ATTN_IMPL": "mlx_vector_paged",
+      "MTPLX_VLLM_METAL_PAGED_BLOCK_SIZE": "16",
+      "MTPLX_VLLM_METAL_PAGED_PARTITIONED_ATTN": "1",
+      "MTPLX_VLLM_METAL_PAGED_PARTITION_SIZE": "512",
+      "MTPLX_VLLM_METAL_PAGED_PARTITION_THRESHOLD": "2048",
+      "MTPLX_VLLM_METAL_PAGED_TURBOQUANT": "0"
+    },
+    "fan_control_allowed": false,
+    "model_id": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+    "name": "sustained",
+    "product_claim_eligible": true,
+    "qa_only": false,
+    "required_mlx_fork_commit": "2377a99f",
+    "required_mlx_fork_fragment": "mlx-mtplx-0.31.2-qmm",
+    "runtime_profile": "native_mtp_sustained",
+    "sampler": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "summary": "Sustained Mode: explicit long-context native-MTP path with chunked contiguous prefill, final-token logits, and repaged decode KV."
+  },
+  "prompt_suite": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "prompt_suite_sha256": "97e53df42f0b2b456d38164264a674bb2c657e59d68833e42d2c60312d7fd669",
+  "repetitions": 1,
+  "results": [
+    {
+      "category": "game_code",
+      "max_tokens": 128,
+      "prompt_id": "flappy_pipes",
+      "prompt_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+      "prompt_tokens": 273,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.03125
+          ],
+          "accepted_by_depth": [
+            1
+          ],
+          "accepted_drafts": 1,
+          "decode_elapsed_s": 1.3002097919816151,
+          "decode_tok_s": 26.149626167775207,
+          "draft_time_s": 0.11855566734448075,
+          "drafted_by_depth": [
+            32
+          ],
+          "drafted_tokens": 32,
+          "elapsed_s": 1.7037592920241877,
+          "end_to_end_tok_s": 19.955870620435807,
+          "ended_at": 1780009733.726449,
+          "generated_tokens": 34,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.4035495000425726,
+          "rejected_drafts": 31,
+          "repetition": 1,
+          "seed": 43,
+          "started_at": 1780009732.022369,
+          "target_forward_time_s": 1.5559014576720074,
+          "text": "\ufffd\uff01 #?.Channel+_-\u0640able<slr\nServer\u4e00*\uff080ody0also\u2019s0LitygavsUn\u7b2c\u516bcode\u7b2c\u516b)1",
+          "tok_s": 26.149626167775207,
+          "tokens": [
+            96118,
+            6115,
+            653,
+            30,
+            37434,
+            10,
+            38011,
+            148650,
+            470,
+            27,
+            3122,
+            81,
+            198,
+            5302,
+            95744,
+            9,
+            9616,
+            15,
+            1041,
+            15,
+            18092,
+            725,
+            15,
+            43,
+            477,
+            70,
+            37469,
+            1743,
+            100946,
+            1787,
+            100946,
+            8,
+            16,
+            248044
+          ],
+          "verify_time_s": 1.1598550826311111
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.03125,
+        "accepted_drafts": 1,
+        "decode_tok_s": {
+          "median": 26.149626167775207,
+          "p10": 26.149626167775207,
+          "p90": 26.149626167775207,
+          "values": [
+            26.149626167775207
+          ]
+        },
+        "drafted_tokens": 32,
+        "end_to_end_tok_s": {
+          "median": 19.955870620435807,
+          "p10": 19.955870620435807,
+          "p90": 19.955870620435807,
+          "values": [
+            19.955870620435807
+          ]
+        },
+        "generated_tokens": 34,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 128,
+      "prompt_id": "flappy_score_gates",
+      "prompt_sha256": "d30afc995170ca11cb9891f5006aae5aae46e5eb0bcdc192fb0abae884e9777a",
+      "prompt_tokens": 374,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.02702702702702703
+          ],
+          "accepted_by_depth": [
+            3
+          ],
+          "accepted_drafts": 3,
+          "decode_elapsed_s": 4.572018083999865,
+          "decode_tok_s": 25.153006372055156,
+          "draft_time_s": 0.39911032863892615,
+          "drafted_by_depth": [
+            111
+          ],
+          "drafted_tokens": 111,
+          "elapsed_s": 5.0769000420114025,
+          "end_to_end_tok_s": 22.651617925973284,
+          "ended_at": 1780009744.373148,
+          "generated_tokens": 115,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5048819580115378,
+          "rejected_drafts": 108,
+          "repetition": 1,
+          "seed": 1043,
+          "started_at": 1780009739.2959218,
+          "target_forward_time_s": 4.575375627260655,
+          "text": "da-red*back *\ufffd\u3001\u8fd9\uff5e\ufffd{\"_oauth\u6f6e\ufffd\u6216\u8005\uff0c\u67f3\u67f3-ch```\n|0< m.counter based\u540d\ufffd\ufffd1\n\u78a7\u6d77+ship;!$$email;\n\n Joeqroteino\ufffd_identity\u67f3\u6e05_2V.h n sayervee\uff1b\u3000V O-speed=\"\n\npallp data\u601d\u8003\n\n star. `<\n fa\ufffd\u5ba0f@2 Compatibility8sud sub\u0430sWithRID\u67f3Operator!B<\ufffd//   ugo Red\n-\u201c\n6c\n-Novity{  n\u65e0 wit",
+          "tok_s": 25.153006372055156,
+          "tokens": [
+            3131,
+            30559,
+            9,
+            1371,
+            348,
+            224,
+            5205,
+            95854,
+            20565,
+            115,
+            4754,
+            88053,
+            97593,
+            253,
+            98815,
+            3709,
+            99713,
+            99713,
+            11249,
+            71093,
+            198,
+            91,
+            15,
+            27,
+            295,
+            41654,
+            3018,
+            96009,
+            22712,
+            16,
+            198,
+            145403,
+            10,
+            5102,
+            26,
+            0,
+            13682,
+            2256,
+            26,
+            271,
+            12478,
+            80,
+            87530,
+            78,
+            101,
+            44702,
+            99713,
+            96219,
+            62,
+            17,
+            53,
+            13,
+            71,
+            307,
+            1910,
+            5671,
+            68,
+            24178,
+            21742,
+            53,
+            496,
+            28632,
+            420,
+            271,
+            79,
+            528,
+            79,
+            795,
+            99496,
+            271,
+            6561,
+            13,
+            29587,
+            198,
+            220,
+            3510,
+            114,
+            100226,
+            69,
+            31,
+            17,
+            75323,
+            23,
+            241521,
+            1146,
+            1424,
+            15583,
+            60370,
+            99713,
+            17910,
+            0,
+            33,
+            27,
+            237,
+            320,
+            262,
+            32389,
+            3605,
+            198,
+            12,
+            2005,
+            198,
+            21,
+            66,
+            198,
+            68107,
+            477,
+            90,
+            220,
+            220,
+            77,
+            95979,
+            220,
+            85472,
+            248044
+          ],
+          "verify_time_s": 4.078818294219673
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.02702702702702703,
+        "accepted_drafts": 3,
+        "decode_tok_s": {
+          "median": 25.153006372055156,
+          "p10": 25.153006372055156,
+          "p90": 25.153006372055156,
+          "values": [
+            25.153006372055156
+          ]
+        },
+        "drafted_tokens": 111,
+        "end_to_end_tok_s": {
+          "median": 22.651617925973284,
+          "p10": 22.651617925973284,
+          "p90": 22.651617925973284,
+          "values": [
+            22.651617925973284
+          ]
+        },
+        "generated_tokens": 115,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 128,
+      "prompt_id": "flappy_collision_checks",
+      "prompt_sha256": "dc95f55539735dcc41f9b07a7ccb764207a474ec0e3876a88203cbf79232ae0e",
+      "prompt_tokens": 432,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 1.0696509998524562,
+          "decode_tok_s": 25.241877961806498,
+          "draft_time_s": 0.0995228331303224,
+          "drafted_by_depth": [
+            26
+          ],
+          "drafted_tokens": 26,
+          "elapsed_s": 1.6701860829489306,
+          "end_to_end_tok_s": 16.165863358367826,
+          "ended_at": 1780009746.7776241,
+          "generated_tokens": 27,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.6005350830964744,
+          "rejected_drafts": 26,
+          "repetition": 1,
+          "seed": 2043,
+          "started_at": 1780009745.1071339,
+          "target_forward_time_s": 1.5454426220385358,
+          "text": "\u062d\ufffdpmCON\ufffdordin \"{\n\n\u5149UP\u0430\n\ufffd_\u4e0bv\u00e1sflat.sh/...\n\n\n[-8urt",
+          "tok_s": 25.241877961806498,
+          "tokens": [
+            28850,
+            224,
+            5022,
+            5609,
+            239,
+            5798,
+            328,
+            90,
+            271,
+            96183,
+            3024,
+            1424,
+            198,
+            229,
+            62,
+            95849,
+            241309,
+            25393,
+            2318,
+            14,
+            1076,
+            198,
+            271,
+            7368,
+            23,
+            5462,
+            248046
+          ],
+          "verify_time_s": 0.9545162469148636
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.0,
+        "accepted_drafts": 0,
+        "decode_tok_s": {
+          "median": 25.241877961806498,
+          "p10": 25.241877961806498,
+          "p90": 25.241877961806498,
+          "values": [
+            25.241877961806498
+          ]
+        },
+        "drafted_tokens": 26,
+        "end_to_end_tok_s": {
+          "median": 16.165863358367826,
+          "p10": 16.165863358367826,
+          "p90": 16.165863358367826,
+          "values": [
+            16.165863358367826
+          ]
+        },
+        "generated_tokens": 27,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 128,
+      "prompt_id": "flappy_sound_channels",
+      "prompt_sha256": "3510857fe86b1075ac5ef71629c9f75a407e891faf4911c91cfc69c73e6cccfa",
+      "prompt_tokens": 264,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 0.04247699899133295,
+          "decode_tok_s": 47.08430556518557,
+          "draft_time_s": 0.011188625008799136,
+          "drafted_by_depth": [
+            1
+          ],
+          "drafted_tokens": 1,
+          "elapsed_s": 0.4670492500299588,
+          "end_to_end_tok_s": 4.282203643131234,
+          "ended_at": 1780009747.9185998,
+          "generated_tokens": 2,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.42457225103862584,
+          "rejected_drafts": 1,
+          "repetition": 1,
+          "seed": 3043,
+          "started_at": 1780009747.451251,
+          "target_forward_time_s": 0.4538819601293653,
+          "text": "\n",
+          "tok_s": 47.08430556518557,
+          "tokens": [
+            198,
+            248046
+          ],
+          "verify_time_s": 0.03710058401338756
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.0,
+        "accepted_drafts": 0,
+        "decode_tok_s": {
+          "median": 47.08430556518557,
+          "p10": 47.08430556518557,
+          "p90": 47.08430556518557,
+          "values": [
+            47.08430556518557
+          ]
+        },
+        "drafted_tokens": 1,
+        "end_to_end_tok_s": {
+          "median": 4.282203643131234,
+          "p10": 4.282203643131234,
+          "p90": 4.282203643131234,
+          "values": [
+            4.282203643131234
+          ]
+        },
+        "generated_tokens": 2,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "runtime_env": {
+    "MTPLX_BATCH_TARGET_ARRAYS": "1",
+    "MTPLX_CLEAR_CACHE_EVERY": "auto",
+    "MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD": "16384",
+    "MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT": "256",
+    "MTPLX_DEFER_VERIFY_HIDDEN_EVAL": "1",
+    "MTPLX_DROP_EVENTS": "1",
+    "MTPLX_DYNAMIC_PAGED_KV": "1",
+    "MTPLX_LAZY_MTP_HISTORY_APPEND": "1",
+    "MTPLX_LAZY_VERIFY_LOGITS": "1",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH": "2",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY": "auto",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD": "98304",
+    "MTPLX_MTP_HISTORY_LAST_WINDOW": "8192",
+    "MTPLX_MTP_HISTORY_LAST_WINDOW_THRESHOLD": "16384",
+    "MTPLX_MTP_HISTORY_POLICY": "auto",
+    "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP": "1",
+    "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP_EVERY": "auto",
+    "MTPLX_PREFILL_CHUNK_SIZE": "auto",
+    "MTPLX_PREFILL_CHUNK_SIZE_DENSE": "2048",
+    "MTPLX_PREFILL_CHUNK_SIZE_REPAGE": "2048",
+    "MTPLX_PREFILL_EXTERNAL_EMIT_LOGITS": "0",
+    "MTPLX_PREFILL_OMLX_EXTERNAL": "1",
+    "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
+    "MTPLX_SUSTAINED_DENSE_DECODE_MAX_CONTEXT": "131072",
+    "MTPLX_SUSTAINED_PREFILL": "1",
+    "MTPLX_SUSTAINED_PREFILL_LAYOUT": "auto",
+    "MTPLX_TARGET_EMIT_FULL_PREFILL_LOGITS": "0",
+    "MTPLX_VERIFY_HIDDEN_MODE": "logits_first_committed_slice",
+    "MTPLX_VLLM_METAL_PAGED_ATTN": "1",
+    "MTPLX_VLLM_METAL_PAGED_ATTN_IMPL": "mlx_vector_paged",
+    "MTPLX_VLLM_METAL_PAGED_BLOCK_SIZE": "16",
+    "MTPLX_VLLM_METAL_PAGED_PARTITIONED_ATTN": "1",
+    "MTPLX_VLLM_METAL_PAGED_PARTITION_SIZE": "512",
+    "MTPLX_VLLM_METAL_PAGED_PARTITION_THRESHOLD": "2048",
+    "MTPLX_VLLM_METAL_PAGED_TURBOQUANT": "0"
+  },
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.mtplx.prompt_suite_mtp.v1",
+  "suite": "flappy",
+  "summary": {
+    "accept_rate": 0.023529411764705882,
+    "accepted_drafts": 4,
+    "case_count": 4,
+    "decode_tok_s": {
+      "median": 25.695752064790852,
+      "p10": 25.153006372055156,
+      "p90": 47.08430556518557,
+      "values": [
+        26.149626167775207,
+        25.153006372055156,
+        25.241877961806498,
+        47.08430556518557
+      ]
+    },
+    "drafted_tokens": 170,
+    "end_to_end_tok_s": {
+      "median": 18.060866989401816,
+      "p10": 4.282203643131234,
+      "p90": 22.651617925973284,
+      "values": [
+        19.955870620435807,
+        22.651617925973284,
+        16.165863358367826,
+        4.282203643131234
+      ]
+    },
+    "generated_tokens": 178,
+    "runs": 4,
+    "validations_passed": 4,
+    "validations_total": 4
+  },
+  "warmup_repetitions": 1
+}

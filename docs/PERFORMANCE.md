@@ -232,46 +232,60 @@ Root-cause investigation identified:
    `prepare_qwen36_mtp_sidecar.py`. After this fix, MTPLX accept rate rose from
    ~2% to ~99.9% on standard Qwen3.6 sidecars.
 
-### Accept rate improvement (2026-05-30)
+### Accept rate improvement (2026-05-30 → 2026-05-31)
 
-Two additional fixes improved AX Engine's MTP accept rate:
+Three rounds of fixes improved AX Engine's MTP accept rate:
 
-1. **Depth policy cap removed**. `default_mtp_depth_without_env()` capped all
-   models to depth 1 even when the sidecar specified `mtp_depth_max: 3`. The
-   cap prevented the 27B model from using its full depth. Now removed — models
-   use their configured native depth.
+1. **Depth policy cap removed** (2026-05-30). `default_mtp_depth_without_env()`
+   capped all models to depth 1 even when the sidecar specified
+   `mtp_depth_max: 3`. Now removed — models use their configured native depth.
 
-2. **Filtered lm_head rejection sampling**. The filtered candidate path (used
-   after the first decode step) skipped computing draft log-probs, which forced
-   greedy argmax acceptance. This required an exact match between draft and
-   verify argmax — far too strict with temperature > 0. Now computes
-   temperature-scaled softmax over the top-4096 candidate logits for rejection
-   sampling acceptance, matching MTPLX's strategy.
+2. **Filtered lm_head rejection sampling** (2026-05-30). The filtered candidate
+   path skipped computing draft log-probs, which forced greedy argmax
+   acceptance. Now computes temperature-scaled softmax over the top-4096
+   candidate logits for rejection sampling acceptance.
 
-35B-A3B results (native depth, 128 gen tokens):
+3. **Full-vocab target softmax** (2026-05-31). The previous target distribution
+   path extracted top-k=20 tokens from verify logits and normalized within that
+   set, zeroing `p_target` for any draft token ranked below 20th — guaranteeing
+   rejection. The new path computes full-vocab softmax (matching MTPLX's
+   approach) and gathers only the per-draft-token probability. Additionally,
+   the draft candidate set is no longer halved at each depth, giving the draft
+   model the full candidate set at all depths.
 
-| Engine | flappy | long_code | python_modules_long |
-|---|---:|---:|---:|
-| MTPLX 0.3.7 (tok/s) | 106.5 | 94.8 | 100.0 |
-| MTPLX 0.3.7 (accept) | 51.6% | 48.0% | 48.6% |
-| AX Engine (tok/s) | 146.3 | 160.7 | 153.7 |
-| AX Engine (accept) | 60.4% | 83.0% | 70.8% |
-| AX/MTPLX ratio | 1.374 | 1.696 | 1.537 |
-
-27B results (native depth=3, 128 gen tokens):
+35B-A3B results (native depth=1, pure MTP, 128 gen tokens):
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
-| MTPLX 0.3.7 (tok/s) | 59.4 | 52.5 | 51.6 |
-| MTPLX 0.3.7 (accept) | 100.0% | 99.1% | 84.6% |
-| AX Engine (tok/s) | 47.2 | 53.0 | 42.0 |
-| AX Engine (accept) | 56.0% | 71.3% | 58.8% |
-| AX/MTPLX ratio | 0.795 | 1.009 | 0.814 |
+| MTPLX 0.3.7 (tok/s) | 108.0 | 103.6 | 100.6 |
+| MTPLX 0.3.7 (accept) | 55.5% | 67.8% | 48.6% |
+| AX Engine (tok/s) | 160.4 | 169.7 | 168.3 |
+| AX Engine (accept) | 95.4% | 96.9% | 85.4% |
+| AX/MTPLX ratio | 1.485 | 1.637 | 1.673 |
 
-Note: AX MTP telemetry includes n-gram acceleration hits. The accept rates
-and throughput reflect combined MTP + n-gram, not pure MTP alone.
+27B results (native depth=3, pure MTP, 128 gen tokens):
 
-Artifacts: `benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/`.
+| Engine | flappy | long_code | python_modules_long |
+|---|---:|---:|---:|
+| MTPLX 0.3.7 (tok/s) | 58.9 | 56.7 | 50.0 |
+| MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 84.6% |
+| AX Engine (tok/s) | 64.5 | 64.4 | 45.4 |
+| AX Engine (accept) | 87.8% | 91.1% | 57.9% |
+| AX/MTPLX ratio | 1.095 | 1.136 | 0.907 |
+
+Artifacts: `benchmarks/results/mtp-fair/2026-05-31-full-vocab-accept-fix/` (AX Engine),
+`benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/` (MTPLX reference).
+
+#### Chart data table
+
+<!-- This table is consumed by scripts/render_mtp_flappy_charts.py -->
+
+| Model bundle | Suite | AX depth cap | AX MTP tok/s | AX accept % | MTPLX tok/s | MTPLX depth | MTPLX accept % | AX/MTPLX |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Speed (Qwen3.6 35B-A3B 4-bit) | flappy | 3 | 160.4 | 95.4% | 108.0 | 3 | 55.5% | 1.485 |
+| Speed (Qwen3.6 35B-A3B 4-bit) | long_code | 3 | 169.7 | 96.9% | 103.6 | 3 | 67.8% | 1.637 |
+| Quality (Qwen3.6 27B 4-bit) | flappy | 3 | 64.5 | 87.8% | 58.9 | 3 | 100.0% | 1.095 |
+| Quality (Qwen3.6 27B 4-bit) | long_code | 3 | 64.4 | 91.1% | 56.7 | 3 | 99.7% | 1.136 |
 
 ### Current publication contract
 

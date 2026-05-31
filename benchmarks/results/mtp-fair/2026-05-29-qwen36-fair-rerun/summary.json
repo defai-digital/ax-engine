@@ -1,0 +1,508 @@
+{
+  "contract": {
+    "cooldown_s": 0.0,
+    "depth_policy": "fair-shared",
+    "engines": [
+      "mtplx",
+      "rapid_mlx",
+      "ax_engine"
+    ],
+    "fairness_rules": [
+      "standard Qwen source MTP shards plus mlx-community 4-bit base only",
+      "Youssofal MTPLX bundles are excluded",
+      "same prompt suite, max token cap, sampler, warmup, repetitions, and cooldown",
+      "tri-engine Rapid comparison uses shared depth 1 unless --depth overrides it",
+      "Rapid-MLX server path exposes throughput but not accepted/drafted token telemetry"
+    ],
+    "max_tokens": 128,
+    "mode": "sampled",
+    "models": [
+      "27b-4bit",
+      "35b-a3b-4bit"
+    ],
+    "repetitions": 1,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suites": [
+      "flappy",
+      "long_code",
+      "python_modules_long"
+    ],
+    "warmup_repetitions": 1
+  },
+  "created_at": "2026-05-28",
+  "rows": [
+    {
+      "base_model_id": "mlx-community/Qwen3.6-27B-4bit",
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "accept_rate": 0.12448640960809101,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/27b-4bit/flappy/ax_engine.json",
+          "case_count": 4,
+          "decode_tok_s": 25.695815041984396,
+          "engine": "ax_engine",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        },
+        "mtplx": {
+          "accept_rate": 0.013513513513513514,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/27b-4bit/flappy/mtplx.json",
+          "case_count": 4,
+          "decode_tok_s": 23.093086535839277,
+          "engine": "mtplx",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": 4,
+          "validations_total": 4
+        },
+        "rapid_mlx": {
+          "accept_rate": null,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/27b-4bit/flappy/rapid_mlx.json",
+          "case_count": 4,
+          "decode_tok_s": 27.25416202893136,
+          "engine": "rapid_mlx",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        }
+      },
+      "model": "27b-4bit",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "provenance": {
+        "base_model_id": "mlx-community/Qwen3.6-27B-4bit",
+        "base_snapshot": "c000ac2c2057d94be3fa931000c31723aac53282",
+        "kind": "ax_mtp_sidecar_manifest",
+        "manifest_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/ax_mtp_sidecar_manifest.json",
+        "manifest_sha256": "d64a7b59ef043afb7264e98a59bea1968be61d02941e13ce0c6568f0ba06ffaf",
+        "model_key": "27b",
+        "mtp_depth_max": 3,
+        "mtp_tensor_count": 15,
+        "output_mtp_sha256": "8474b5ca729094f672f27b0a26a5a73b6d186fa0a8c8cdb53c704cae83553a3f",
+        "output_mtp_size_bytes": 849400381,
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "sampler": {
+          "temperature": 0.6,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "schema_version": "ax.mtp_sidecar_provenance.v1",
+        "source_model_id": "Qwen/Qwen3.6-27B",
+        "source_shard_count": 2,
+        "source_shard_sha256": [
+          "68db2ebb03231238c2a114f3642df967a970a1d96b029adc427838cb5cf7f27a",
+          "b84b5b1315e865c9a19a444045d422a73e3e2e31ce3766797cffd3507c68c9c9"
+        ],
+        "transform_norm_policy": "scale_selected_mtp_norm_weights_by_2"
+      },
+      "ratios": {
+        "ax_engine_vs_mtplx": 1.1127059608123764,
+        "ax_engine_vs_rapid_mlx": 0.9428216877373548,
+        "rapid_mlx_vs_mtplx": 1.1801870653640998
+      },
+      "source_model_id": "Qwen/Qwen3.6-27B",
+      "suite": "flappy"
+    },
+    {
+      "base_model_id": "mlx-community/Qwen3.6-27B-4bit",
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "accept_rate": 0.6891025641025641,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/27b-4bit/long_code/ax_engine.json",
+          "case_count": 4,
+          "decode_tok_s": 40.59859824592803,
+          "engine": "ax_engine",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        },
+        "mtplx": {
+          "accept_rate": 0.009523809523809525,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/27b-4bit/long_code/mtplx.json",
+          "case_count": 4,
+          "decode_tok_s": 23.713938760606958,
+          "engine": "mtplx",
+          "status": "ok_validation_warnings",
+          "valid_case_count": 4,
+          "validations_passed": 7,
+          "validations_total": 8
+        },
+        "rapid_mlx": {
+          "accept_rate": null,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/27b-4bit/long_code/rapid_mlx.json",
+          "case_count": 4,
+          "decode_tok_s": 28.438098570318218,
+          "engine": "rapid_mlx",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        }
+      },
+      "model": "27b-4bit",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "provenance": {
+        "base_model_id": "mlx-community/Qwen3.6-27B-4bit",
+        "base_snapshot": "c000ac2c2057d94be3fa931000c31723aac53282",
+        "kind": "ax_mtp_sidecar_manifest",
+        "manifest_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/ax_mtp_sidecar_manifest.json",
+        "manifest_sha256": "d64a7b59ef043afb7264e98a59bea1968be61d02941e13ce0c6568f0ba06ffaf",
+        "model_key": "27b",
+        "mtp_depth_max": 3,
+        "mtp_tensor_count": 15,
+        "output_mtp_sha256": "8474b5ca729094f672f27b0a26a5a73b6d186fa0a8c8cdb53c704cae83553a3f",
+        "output_mtp_size_bytes": 849400381,
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "sampler": {
+          "temperature": 0.6,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "schema_version": "ax.mtp_sidecar_provenance.v1",
+        "source_model_id": "Qwen/Qwen3.6-27B",
+        "source_shard_count": 2,
+        "source_shard_sha256": [
+          "68db2ebb03231238c2a114f3642df967a970a1d96b029adc427838cb5cf7f27a",
+          "b84b5b1315e865c9a19a444045d422a73e3e2e31ce3766797cffd3507c68c9c9"
+        ],
+        "transform_norm_policy": "scale_selected_mtp_norm_weights_by_2"
+      },
+      "ratios": {
+        "ax_engine_vs_mtplx": 1.7120141304138592,
+        "ax_engine_vs_rapid_mlx": 1.4276129659492118,
+        "rapid_mlx_vs_mtplx": 1.1992144728634841
+      },
+      "source_model_id": "Qwen/Qwen3.6-27B",
+      "suite": "long_code"
+    },
+    {
+      "base_model_id": "mlx-community/Qwen3.6-27B-4bit",
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "accept_rate": 0.68,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/27b-4bit/python_modules_long/ax_engine.json",
+          "case_count": 3,
+          "decode_tok_s": 42.04377413821759,
+          "engine": "ax_engine",
+          "status": "ok",
+          "valid_case_count": 3,
+          "validations_passed": null,
+          "validations_total": null
+        },
+        "mtplx": {
+          "accept_rate": 0.025,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/27b-4bit/python_modules_long/mtplx.json",
+          "case_count": 3,
+          "decode_tok_s": 24.39472905001807,
+          "engine": "mtplx",
+          "status": "ok",
+          "valid_case_count": 3,
+          "validations_passed": 3,
+          "validations_total": 3
+        },
+        "rapid_mlx": {
+          "accept_rate": null,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/27b-4bit/python_modules_long/rapid_mlx.json",
+          "case_count": 3,
+          "decode_tok_s": 28.255413223198943,
+          "engine": "rapid_mlx",
+          "status": "ok",
+          "valid_case_count": 3,
+          "validations_passed": null,
+          "validations_total": null
+        }
+      },
+      "model": "27b-4bit",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "provenance": {
+        "base_model_id": "mlx-community/Qwen3.6-27B-4bit",
+        "base_snapshot": "c000ac2c2057d94be3fa931000c31723aac53282",
+        "kind": "ax_mtp_sidecar_manifest",
+        "manifest_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/ax_mtp_sidecar_manifest.json",
+        "manifest_sha256": "d64a7b59ef043afb7264e98a59bea1968be61d02941e13ce0c6568f0ba06ffaf",
+        "model_key": "27b",
+        "mtp_depth_max": 3,
+        "mtp_tensor_count": 15,
+        "output_mtp_sha256": "8474b5ca729094f672f27b0a26a5a73b6d186fa0a8c8cdb53c704cae83553a3f",
+        "output_mtp_size_bytes": 849400381,
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "sampler": {
+          "temperature": 0.6,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "schema_version": "ax.mtp_sidecar_provenance.v1",
+        "source_model_id": "Qwen/Qwen3.6-27B",
+        "source_shard_count": 2,
+        "source_shard_sha256": [
+          "68db2ebb03231238c2a114f3642df967a970a1d96b029adc427838cb5cf7f27a",
+          "b84b5b1315e865c9a19a444045d422a73e3e2e31ce3766797cffd3507c68c9c9"
+        ],
+        "transform_norm_policy": "scale_selected_mtp_norm_weights_by_2"
+      },
+      "ratios": {
+        "ax_engine_vs_mtplx": 1.7234778075219674,
+        "ax_engine_vs_rapid_mlx": 1.4879900642790032,
+        "rapid_mlx_vs_mtplx": 1.1582589486960508
+      },
+      "source_model_id": "Qwen/Qwen3.6-27B",
+      "suite": "python_modules_long"
+    },
+    {
+      "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "accept_rate": 0.5940009447331129,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/35b-a3b-4bit/flappy/ax_engine.json",
+          "case_count": 4,
+          "decode_tok_s": 135.655752052813,
+          "engine": "ax_engine",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        },
+        "mtplx": {
+          "accept_rate": 0.06976744186046512,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/35b-a3b-4bit/flappy/mtplx.json",
+          "case_count": 4,
+          "decode_tok_s": 93.04763481329994,
+          "engine": "mtplx",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": 4,
+          "validations_total": 4
+        },
+        "rapid_mlx": {
+          "accept_rate": null,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/35b-a3b-4bit/flappy/rapid_mlx.json",
+          "case_count": 4,
+          "decode_tok_s": 83.2217963637668,
+          "engine": "rapid_mlx",
+          "status": "ok",
+          "valid_case_count": 2,
+          "validations_passed": null,
+          "validations_total": null
+        }
+      },
+      "model": "35b-a3b-4bit",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "provenance": {
+        "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+        "base_snapshot": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+        "kind": "ax_mtp_sidecar_manifest",
+        "manifest_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1/ax_mtp_sidecar_manifest.json",
+        "manifest_sha256": "61d8a79ce829023889739f330d2052906a756c022fbfe678f63175b37f29566e",
+        "model_key": "35b",
+        "mtp_depth_max": 1,
+        "mtp_tensor_count": 20,
+        "output_mtp_sha256": "67e295645193c8530345517cf1c0500fcead04893a5428821320687730fbd7ae",
+        "output_mtp_size_bytes": 1689283731,
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "sampler": {
+          "temperature": 0.6,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "schema_version": "ax.mtp_sidecar_provenance.v1",
+        "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+        "source_shard_count": 2,
+        "source_shard_sha256": [
+          "778e7f76602f05042b69ba7f3ec91f1fdffef390540b16074041c258fb81d154",
+          "1a97404220077ed3d4182e10385b152004cab608377f50cec9f54a6b8d28b613"
+        ],
+        "transform_norm_policy": "scale_selected_mtp_norm_weights_by_2"
+      },
+      "ratios": {
+        "ax_engine_vs_mtplx": 1.4579172520076007,
+        "ax_engine_vs_rapid_mlx": 1.6300507556921104,
+        "rapid_mlx_vs_mtplx": 0.89439991173071
+      },
+      "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+      "suite": "flappy"
+    },
+    {
+      "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "accept_rate": 0.7943661971830986,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/35b-a3b-4bit/long_code/ax_engine.json",
+          "case_count": 4,
+          "decode_tok_s": 153.12600939652495,
+          "engine": "ax_engine",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        },
+        "mtplx": {
+          "accept_rate": 0.10468194538990999,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/35b-a3b-4bit/long_code/mtplx.json",
+          "case_count": 4,
+          "decode_tok_s": 81.92922516579509,
+          "engine": "mtplx",
+          "status": "ok_validation_warnings",
+          "valid_case_count": 4,
+          "validations_passed": 5,
+          "validations_total": 8
+        },
+        "rapid_mlx": {
+          "accept_rate": null,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/35b-a3b-4bit/long_code/rapid_mlx.json",
+          "case_count": 4,
+          "decode_tok_s": 81.81785752519232,
+          "engine": "rapid_mlx",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        }
+      },
+      "model": "35b-a3b-4bit",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "provenance": {
+        "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+        "base_snapshot": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+        "kind": "ax_mtp_sidecar_manifest",
+        "manifest_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1/ax_mtp_sidecar_manifest.json",
+        "manifest_sha256": "61d8a79ce829023889739f330d2052906a756c022fbfe678f63175b37f29566e",
+        "model_key": "35b",
+        "mtp_depth_max": 1,
+        "mtp_tensor_count": 20,
+        "output_mtp_sha256": "67e295645193c8530345517cf1c0500fcead04893a5428821320687730fbd7ae",
+        "output_mtp_size_bytes": 1689283731,
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "sampler": {
+          "temperature": 0.6,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "schema_version": "ax.mtp_sidecar_provenance.v1",
+        "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+        "source_shard_count": 2,
+        "source_shard_sha256": [
+          "778e7f76602f05042b69ba7f3ec91f1fdffef390540b16074041c258fb81d154",
+          "1a97404220077ed3d4182e10385b152004cab608377f50cec9f54a6b8d28b613"
+        ],
+        "transform_norm_policy": "scale_selected_mtp_norm_weights_by_2"
+      },
+      "ratios": {
+        "ax_engine_vs_mtplx": 1.8690035098788418,
+        "ax_engine_vs_rapid_mlx": 1.8715475328766256,
+        "rapid_mlx_vs_mtplx": 0.9986406848059725
+      },
+      "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+      "suite": "long_code"
+    },
+    {
+      "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "accept_rate": 0.5119047619047619,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/35b-a3b-4bit/python_modules_long/ax_engine.json",
+          "case_count": 3,
+          "decode_tok_s": 130.72309274497047,
+          "engine": "ax_engine",
+          "status": "ok",
+          "valid_case_count": 3,
+          "validations_passed": null,
+          "validations_total": null
+        },
+        "mtplx": {
+          "accept_rate": 0.15454545454545454,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/35b-a3b-4bit/python_modules_long/mtplx.json",
+          "case_count": 3,
+          "decode_tok_s": 73.02254202767595,
+          "engine": "mtplx",
+          "status": "ok",
+          "valid_case_count": 3,
+          "validations_passed": 3,
+          "validations_total": 3
+        },
+        "rapid_mlx": {
+          "accept_rate": null,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-rerun/35b-a3b-4bit/python_modules_long/rapid_mlx.json",
+          "case_count": 3,
+          "decode_tok_s": 77.49102231853117,
+          "engine": "rapid_mlx",
+          "status": "ok",
+          "valid_case_count": 3,
+          "validations_passed": null,
+          "validations_total": null
+        }
+      },
+      "model": "35b-a3b-4bit",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "provenance": {
+        "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+        "base_snapshot": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+        "kind": "ax_mtp_sidecar_manifest",
+        "manifest_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1/ax_mtp_sidecar_manifest.json",
+        "manifest_sha256": "61d8a79ce829023889739f330d2052906a756c022fbfe678f63175b37f29566e",
+        "model_key": "35b",
+        "mtp_depth_max": 1,
+        "mtp_tensor_count": 20,
+        "output_mtp_sha256": "67e295645193c8530345517cf1c0500fcead04893a5428821320687730fbd7ae",
+        "output_mtp_size_bytes": 1689283731,
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "sampler": {
+          "temperature": 0.6,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "schema_version": "ax.mtp_sidecar_provenance.v1",
+        "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+        "source_shard_count": 2,
+        "source_shard_sha256": [
+          "778e7f76602f05042b69ba7f3ec91f1fdffef390540b16074041c258fb81d154",
+          "1a97404220077ed3d4182e10385b152004cab608377f50cec9f54a6b8d28b613"
+        ],
+        "transform_norm_policy": "scale_selected_mtp_norm_weights_by_2"
+      },
+      "ratios": {
+        "ax_engine_vs_mtplx": 1.7901745011208414,
+        "ax_engine_vs_rapid_mlx": 1.6869450012883547,
+        "rapid_mlx_vs_mtplx": 1.0611931626423199
+      },
+      "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+      "suite": "python_modules_long"
+    }
+  ],
+  "schema": "ax.qwen36_mtp_fair.v1"
+}

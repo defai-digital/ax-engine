@@ -1,0 +1,693 @@
+{
+  "build": {
+    "git_commit": "69fcbc38aafd423668af92ea6e247a616ce7cee6",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 0.0,
+  "depth": 1,
+  "disable_thinking": true,
+  "draft_lm_head": {
+    "draft_only": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine",
+      "scales_shape": [
+        248320,
+        80
+      ],
+      "weight_shape": [
+        248320,
+        640
+      ]
+    },
+    "elapsed_s": 0.07811291608959436,
+    "original": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine",
+      "scales_shape": [
+        248320,
+        80
+      ],
+      "weight_shape": [
+        248320,
+        640
+      ]
+    }
+  },
+  "draft_sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "engine": "mtplx",
+  "max_tokens": 128,
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+  "model_inspection": {
+    "architecture": "Qwen3_5ForConditionalGeneration",
+    "architecture_recognized": true,
+    "compatibility": {
+      "arch_id": "qwen3-next-mtp",
+      "can_run": false,
+      "exit_code": 3,
+      "message": "Invalid mtplx_runtime.json: runtime contract missing required keys: mtplx_version, exactness_baseline, verified_on",
+      "mtp_supported": "partial",
+      "recognized": true,
+      "recommended_backend": "qwen3_next",
+      "recommended_profile": null,
+      "runtime_compatibility": "needs-grafting",
+      "runtime_contract": null,
+      "runtime_contract_error": "runtime contract missing required keys: mtplx_version, exactness_baseline, verified_on",
+      "runtime_contract_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/mtplx_runtime.json",
+      "support_level": "verified-native",
+      "support_notes": "Product-verified default backend; this remains the only promoted shipping runtime.",
+      "supported": false,
+      "tier": "architecture-compatible-but-unverified",
+      "unsafe_force_required": true,
+      "unverified_model": true
+    },
+    "config_exists": true,
+    "hidden_size": 5120,
+    "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "model_files": [
+      "model-00001-of-00003.safetensors",
+      "model-00002-of-00003.safetensors",
+      "model-00003-of-00003.safetensors",
+      "model-mtp.safetensors"
+    ],
+    "model_type": "qwen3_5_text",
+    "mtp": {
+      "exists": true,
+      "expected_tensor_count": 15,
+      "extra_keys": [],
+      "metadata_only": false,
+      "missing_expected_keys": [],
+      "mtp_file": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/mtp.safetensors",
+      "passes_tensor_gate": true,
+      "sidecar_format": "bf16",
+      "tensor_count": 15,
+      "tensors": [
+        {
+          "dtype": "BF16",
+          "elements": 52428800,
+          "key": "mtp.fc.weight",
+          "shape": [
+            5120,
+            10240
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.layers.0.input_layernorm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 89128960,
+          "key": "mtp.layers.0.mlp.down_proj.weight",
+          "shape": [
+            5120,
+            17408
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 89128960,
+          "key": "mtp.layers.0.mlp.gate_proj.weight",
+          "shape": [
+            17408,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 89128960,
+          "key": "mtp.layers.0.mlp.up_proj.weight",
+          "shape": [
+            17408,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.layers.0.post_attention_layernorm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 256,
+          "key": "mtp.layers.0.self_attn.k_norm.weight",
+          "shape": [
+            256
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5242880,
+          "key": "mtp.layers.0.self_attn.k_proj.weight",
+          "shape": [
+            1024,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 31457280,
+          "key": "mtp.layers.0.self_attn.o_proj.weight",
+          "shape": [
+            5120,
+            6144
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 256,
+          "key": "mtp.layers.0.self_attn.q_norm.weight",
+          "shape": [
+            256
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 62914560,
+          "key": "mtp.layers.0.self_attn.q_proj.weight",
+          "shape": [
+            12288,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5242880,
+          "key": "mtp.layers.0.self_attn.v_proj.weight",
+          "shape": [
+            1024,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.norm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.pre_fc_norm_embedding.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.pre_fc_norm_hidden.weight",
+          "shape": [
+            5120
+          ]
+        }
+      ]
+    },
+    "mtp_arch": "qwen3-next-mtp",
+    "mtp_num_hidden_layers": 1,
+    "mtp_pattern": null,
+    "mtp_supported": "partial",
+    "num_hidden_layers": 64,
+    "passes_primary_gate": false,
+    "quantization": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "recommended_backend": "qwen3_next",
+    "recommended_profile": null,
+    "runtime_compatibility": "needs-grafting",
+    "runtime_contract_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/mtplx_runtime.json",
+    "sidecars": {
+      "preprocessor_config.json": true,
+      "processor_config.json": true,
+      "video_preprocessor_config.json": true
+    },
+    "source": "local",
+    "support_level": "verified-native",
+    "support_notes": "Product-verified default backend; this remains the only promoted shipping runtime.",
+    "unverified_model": true,
+    "vocab_size": 248320
+  },
+  "mtplx_version": "0.3.7",
+  "profile": {
+    "benchmark_ids": [],
+    "caveats": [
+      "Default product path for long-context coding and agent use.",
+      "Targets long-context memory safety while preserving most Burst TPS.",
+      "Does not include v0.2 decode-state eval scheduling flags."
+    ],
+    "clock_anchor_allowed": false,
+    "draft_lm_head": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "draft_sampler": null,
+    "env": {
+      "MTPLX_BATCH_TARGET_ARRAYS": "1",
+      "MTPLX_CLEAR_CACHE_EVERY": "auto",
+      "MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD": "16384",
+      "MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT": "256",
+      "MTPLX_DEFER_VERIFY_HIDDEN_EVAL": "1",
+      "MTPLX_DROP_EVENTS": "1",
+      "MTPLX_DYNAMIC_PAGED_KV": "1",
+      "MTPLX_LAZY_MTP_HISTORY_APPEND": "1",
+      "MTPLX_LAZY_VERIFY_LOGITS": "1",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH": "2",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY": "auto",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD": "98304",
+      "MTPLX_MTP_HISTORY_LAST_WINDOW": "8192",
+      "MTPLX_MTP_HISTORY_LAST_WINDOW_THRESHOLD": "16384",
+      "MTPLX_MTP_HISTORY_POLICY": "auto",
+      "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP": "1",
+      "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP_EVERY": "auto",
+      "MTPLX_PREFILL_CHUNK_SIZE": "auto",
+      "MTPLX_PREFILL_CHUNK_SIZE_DENSE": "2048",
+      "MTPLX_PREFILL_CHUNK_SIZE_REPAGE": "2048",
+      "MTPLX_PREFILL_EXTERNAL_EMIT_LOGITS": "0",
+      "MTPLX_PREFILL_OMLX_EXTERNAL": "1",
+      "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
+      "MTPLX_SUSTAINED_DENSE_DECODE_MAX_CONTEXT": "131072",
+      "MTPLX_SUSTAINED_PREFILL": "1",
+      "MTPLX_SUSTAINED_PREFILL_LAYOUT": "auto",
+      "MTPLX_TARGET_EMIT_FULL_PREFILL_LOGITS": "0",
+      "MTPLX_VERIFY_HIDDEN_MODE": "logits_first_committed_slice",
+      "MTPLX_VLLM_METAL_PAGED_ATTN": "1",
+      "MTPLX_VLLM_METAL_PAGED_ATTN_IMPL": "mlx_vector_paged",
+      "MTPLX_VLLM_METAL_PAGED_BLOCK_SIZE": "16",
+      "MTPLX_VLLM_METAL_PAGED_PARTITIONED_ATTN": "1",
+      "MTPLX_VLLM_METAL_PAGED_PARTITION_SIZE": "512",
+      "MTPLX_VLLM_METAL_PAGED_PARTITION_THRESHOLD": "2048",
+      "MTPLX_VLLM_METAL_PAGED_TURBOQUANT": "0"
+    },
+    "fan_control_allowed": false,
+    "model_id": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+    "name": "sustained",
+    "product_claim_eligible": true,
+    "qa_only": false,
+    "required_mlx_fork_commit": "2377a99f",
+    "required_mlx_fork_fragment": "mlx-mtplx-0.31.2-qmm",
+    "runtime_profile": "native_mtp_sustained",
+    "sampler": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "summary": "Sustained Mode: explicit long-context native-MTP path with chunked contiguous prefill, final-token logits, and repaged decode KV."
+  },
+  "prompt_suite": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl",
+  "prompt_suite_sha256": "a0c1ee0220b40869bfac08ca4fbf7e60f297bee6c7378765d10f4afdfd3e3793",
+  "repetitions": 1,
+  "results": [
+    {
+      "category": "python_modules_long",
+      "max_tokens": 128,
+      "prompt_id": "pymod_http_client",
+      "prompt_sha256": "e163f34638479cd373e43ecf1734e4b06ee3d776432dc4e6369db8a277af9ff8",
+      "prompt_tokens": 285,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 0.5284643729683012,
+          "decode_tok_s": 22.70730178573418,
+          "draft_time_s": 0.0521458761068061,
+          "drafted_by_depth": [
+            11
+          ],
+          "drafted_tokens": 11,
+          "elapsed_s": 0.9840520829893649,
+          "end_to_end_tok_s": 12.19447649919734,
+          "ended_at": 1780010282.2343192,
+          "generated_tokens": 12,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.4555877100210637,
+          "rejected_drafts": 11,
+          "repetition": 1,
+          "seed": 43,
+          "started_at": 1780010281.249432,
+          "target_forward_time_s": 0.9181186700006947,
+          "text": "\u516c\u53f8\u662f\u793e\u4f1a\u6765\u81ea\u7f51\u7edcLinuxsize#adoriginal<|im_start|>0*",
+          "tok_s": 22.70730178573418,
+          "tokens": [
+            96013,
+            136527,
+            120192,
+            44780,
+            82,
+            537,
+            65578,
+            9596,
+            248045,
+            15,
+            9,
+            248044
+          ],
+          "verify_time_s": 0.4711189189692959
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.0,
+        "accepted_drafts": 0,
+        "decode_tok_s": {
+          "median": 22.70730178573418,
+          "p10": 22.70730178573418,
+          "p90": 22.70730178573418,
+          "values": [
+            22.70730178573418
+          ]
+        },
+        "drafted_tokens": 11,
+        "end_to_end_tok_s": {
+          "median": 12.19447649919734,
+          "p10": 12.19447649919734,
+          "p90": 12.19447649919734,
+          "values": [
+            12.19447649919734
+          ]
+        },
+        "generated_tokens": 12,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 128,
+      "prompt_id": "pymod_config_loader",
+      "prompt_sha256": "0ca971aa34be4af117e184634ae5bccd69652436cbcff2c88cdcfac816119e32",
+      "prompt_tokens": 350,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.08
+          ],
+          "accepted_by_depth": [
+            2
+          ],
+          "accepted_drafts": 2,
+          "decode_elapsed_s": 1.2162120010470971,
+          "decode_tok_s": 23.02230201304823,
+          "draft_time_s": 0.11475637275725603,
+          "drafted_by_depth": [
+            25
+          ],
+          "drafted_tokens": 25,
+          "elapsed_s": 1.759007583023049,
+          "end_to_end_tok_s": 15.918066681599464,
+          "ended_at": 1780010284.799686,
+          "generated_tokens": 28,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5427955819759518,
+          "rejected_drafts": 23,
+          "repetition": 1,
+          "seed": 1043,
+          "started_at": 1780010283.0403578,
+          "target_forward_time_s": 1.618158333702013,
+          "text": "command \u062e\u0637\u5c0fyzAINS\u5168/srive!\n*st two cr default2Mod..\u82e5amai \u20224n <SStatus",
+          "tok_s": 23.02230201304823,
+          "tokens": [
+            5454,
+            150355,
+            95872,
+            17802,
+            70414,
+            95901,
+            14,
+            82,
+            55031,
+            0,
+            198,
+            9,
+            267,
+            1330,
+            1505,
+            1581,
+            17,
+            4312,
+            486,
+            97199,
+            209702,
+            7061,
+            19,
+            77,
+            361,
+            50,
+            2442,
+            248046
+          ],
+          "verify_time_s": 1.0841389177367091
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.08,
+        "accepted_drafts": 2,
+        "decode_tok_s": {
+          "median": 23.02230201304823,
+          "p10": 23.02230201304823,
+          "p90": 23.02230201304823,
+          "values": [
+            23.02230201304823
+          ]
+        },
+        "drafted_tokens": 25,
+        "end_to_end_tok_s": {
+          "median": 15.918066681599464,
+          "p10": 15.918066681599464,
+          "p90": 15.918066681599464,
+          "values": [
+            15.918066681599464
+          ]
+        },
+        "generated_tokens": 28,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 128,
+      "prompt_id": "pymod_event_bus",
+      "prompt_sha256": "9f3d155bcce8fa9cd8ef369bda1ef815fd52fc1f8a0e39ca0d4eb2349169e083",
+      "prompt_tokens": 350,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.025
+          ],
+          "accepted_by_depth": [
+            1
+          ],
+          "accepted_drafts": 1,
+          "decode_elapsed_s": 2.0525747931096703,
+          "decode_tok_s": 20.46210454351805,
+          "draft_time_s": 0.18985758488997817,
+          "drafted_by_depth": [
+            40
+          ],
+          "drafted_tokens": 40,
+          "elapsed_s": 2.6494874589843675,
+          "end_to_end_tok_s": 15.852122589815892,
+          "ended_at": 1780010289.0605152,
+          "generated_tokens": 42,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5969126658746973,
+          "rejected_drafts": 39,
+          "repetition": 1,
+          "seed": 2043,
+          "started_at": 1780010286.410681,
+          "target_forward_time_s": 2.415198871982284,
+          "text": "\n\n {\u4e92\u52a8\uff08.\u2019\u4e00.<_fmtAINS-.C.01t  also-Americancode\u89e3\t\u50cf\u4e3b\u5065\u5143\u6377She\\\"\ufffd \ufffd\u8bf7\u7387( DUloo\u00a0-bl",
+          "tok_s": 20.46210454351805,
+          "tokens": [
+            271,
+            220,
+            90,
+            103756,
+            9616,
+            13894,
+            95744,
+            13,
+            27,
+            36867,
+            70414,
+            12,
+            707,
+            13,
+            15,
+            16,
+            83,
+            220,
+            1048,
+            22540,
+            1787,
+            96092,
+            197,
+            96647,
+            95921,
+            96575,
+            96287,
+            97951,
+            7691,
+            2037,
+            96,
+            220,
+            105,
+            96220,
+            96397,
+            7,
+            45485,
+            379,
+            78,
+            3966,
+            15799,
+            248044
+          ],
+          "verify_time_s": 1.8292606651084498
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.025,
+        "accepted_drafts": 1,
+        "decode_tok_s": {
+          "median": 20.46210454351805,
+          "p10": 20.46210454351805,
+          "p90": 20.46210454351805,
+          "values": [
+            20.46210454351805
+          ]
+        },
+        "drafted_tokens": 40,
+        "end_to_end_tok_s": {
+          "median": 15.852122589815892,
+          "p10": 15.852122589815892,
+          "p90": 15.852122589815892,
+          "values": [
+            15.852122589815892
+          ]
+        },
+        "generated_tokens": 42,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "runtime_env": {
+    "MTPLX_BATCH_TARGET_ARRAYS": "1",
+    "MTPLX_CLEAR_CACHE_EVERY": "auto",
+    "MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD": "16384",
+    "MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT": "256",
+    "MTPLX_DEFER_VERIFY_HIDDEN_EVAL": "1",
+    "MTPLX_DROP_EVENTS": "1",
+    "MTPLX_DYNAMIC_PAGED_KV": "1",
+    "MTPLX_LAZY_MTP_HISTORY_APPEND": "1",
+    "MTPLX_LAZY_VERIFY_LOGITS": "1",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH": "2",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY": "auto",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD": "98304",
+    "MTPLX_MTP_HISTORY_LAST_WINDOW": "8192",
+    "MTPLX_MTP_HISTORY_LAST_WINDOW_THRESHOLD": "16384",
+    "MTPLX_MTP_HISTORY_POLICY": "auto",
+    "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP": "1",
+    "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP_EVERY": "auto",
+    "MTPLX_PREFILL_CHUNK_SIZE": "auto",
+    "MTPLX_PREFILL_CHUNK_SIZE_DENSE": "2048",
+    "MTPLX_PREFILL_CHUNK_SIZE_REPAGE": "2048",
+    "MTPLX_PREFILL_EXTERNAL_EMIT_LOGITS": "0",
+    "MTPLX_PREFILL_OMLX_EXTERNAL": "1",
+    "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
+    "MTPLX_SUSTAINED_DENSE_DECODE_MAX_CONTEXT": "131072",
+    "MTPLX_SUSTAINED_PREFILL": "1",
+    "MTPLX_SUSTAINED_PREFILL_LAYOUT": "auto",
+    "MTPLX_TARGET_EMIT_FULL_PREFILL_LOGITS": "0",
+    "MTPLX_VERIFY_HIDDEN_MODE": "logits_first_committed_slice",
+    "MTPLX_VLLM_METAL_PAGED_ATTN": "1",
+    "MTPLX_VLLM_METAL_PAGED_ATTN_IMPL": "mlx_vector_paged",
+    "MTPLX_VLLM_METAL_PAGED_BLOCK_SIZE": "16",
+    "MTPLX_VLLM_METAL_PAGED_PARTITIONED_ATTN": "1",
+    "MTPLX_VLLM_METAL_PAGED_PARTITION_SIZE": "512",
+    "MTPLX_VLLM_METAL_PAGED_PARTITION_THRESHOLD": "2048",
+    "MTPLX_VLLM_METAL_PAGED_TURBOQUANT": "0"
+  },
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.mtplx.prompt_suite_mtp.v1",
+  "suite": "python_modules_long",
+  "summary": {
+    "accept_rate": 0.039473684210526314,
+    "accepted_drafts": 3,
+    "case_count": 3,
+    "decode_tok_s": {
+      "median": 22.70730178573418,
+      "p10": 20.46210454351805,
+      "p90": 23.02230201304823,
+      "values": [
+        22.70730178573418,
+        23.02230201304823,
+        20.46210454351805
+      ]
+    },
+    "drafted_tokens": 76,
+    "end_to_end_tok_s": {
+      "median": 15.852122589815892,
+      "p10": 12.19447649919734,
+      "p90": 15.918066681599464,
+      "values": [
+        12.19447649919734,
+        15.918066681599464,
+        15.852122589815892
+      ]
+    },
+    "generated_tokens": 82,
+    "runs": 3,
+    "validations_passed": 3,
+    "validations_total": 3
+  },
+  "warmup_repetitions": 1
+}

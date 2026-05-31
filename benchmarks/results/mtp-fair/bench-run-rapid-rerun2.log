@@ -1,0 +1,70 @@
+
+/opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --suite flappy --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-corrected/27b-4bit/flappy/rapid_mlx.json --rapid-python /opt/homebrew/var/mtplx/venv-0.3.7/bin/python --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/Rapid-MLX --port 18765 --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0
+flappy_pipes rep 1/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_pipes rep 2/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_pipes rep 3/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_pipes rep 4/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_pipes rep 5/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_pipes rep 6/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_score_gates rep 1/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_score_gates rep 2/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_score_gates rep 3/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_score_gates rep 4/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_score_gates rep 5/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_score_gates rep 6/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_collision_checks rep 1/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_collision_checks rep 2/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_collision_checks rep 3/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_collision_checks rep 4/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_collision_checks rep 5/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_collision_checks rep 6/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_sound_channels rep 1/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_sound_channels rep 2/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_sound_channels rep 3/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_sound_channels rep 4/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_sound_channels rep 5/6: decode=NA out=0 reject=zero_completion_tokens
+flappy_sound_channels rep 6/6: decode=NA out=0 reject=zero_completion_tokens
+Saved to benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-corrected/27b-4bit/flappy/rapid_mlx.json
+{
+  "accept_rate": null,
+  "accepted_drafts": null,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": null,
+    "p10": null,
+    "p90": null,
+    "values": []
+  },
+  "drafted_tokens": null,
+  "end_to_end_tok_s": {
+    "median": null,
+    "p10": null,
+    "p90": null,
+    "values": []
+  },
+  "generated_tokens": 0,
+  "runs": 20,
+  "valid_runs": 0
+}
+
+/opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --suite long_code --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/long_code.jsonl --output benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-corrected/27b-4bit/long_code/rapid_mlx.json --rapid-python /opt/homebrew/var/mtplx/venv-0.3.7/bin/python --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/Rapid-MLX --port 18766 --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0
+long_code_c_audit rep 1/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_c_audit rep 2/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_c_audit rep 3/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_c_audit rep 4/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_c_audit rep 5/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_c_audit rep 6/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_api_audit rep 1/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_api_audit rep 2/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_api_audit rep 3/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_api_audit rep 4/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_api_audit rep 5/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_api_audit rep 6/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_test_stubs rep 1/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_test_stubs rep 2/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_test_stubs rep 3/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_test_stubs rep 4/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_test_stubs rep 5/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_test_stubs rep 6/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_sql_schema rep 1/6: decode=NA out=0 reject=zero_completion_tokens
+long_code_sql_schema rep 2/6: decode=NA out=0 reject=zero_completion_tokens

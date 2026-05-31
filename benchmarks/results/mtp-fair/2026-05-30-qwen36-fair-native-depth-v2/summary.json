@@ -1,0 +1,231 @@
+{
+  "contract": {
+    "cooldown_s": 5.0,
+    "depth_policy": "native",
+    "engines": [
+      "mtplx",
+      "ax_engine"
+    ],
+    "fairness_rules": [
+      "standard Qwen source MTP shards plus mlx-community 4-bit base only",
+      "Youssofal MTPLX bundles are excluded",
+      "same prompt suite, max token cap, sampler, warmup, repetitions, and cooldown"
+    ],
+    "max_tokens": 128,
+    "mode": "sampled",
+    "models": [
+      "35b-a3b-4bit"
+    ],
+    "repetitions": 3,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suites": [
+      "flappy",
+      "long_code",
+      "python_modules_long"
+    ],
+    "warmup_repetitions": 1
+  },
+  "created_at": "2026-05-30",
+  "rows": [
+    {
+      "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "accept_rate": 0.5942246308183381,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/35b-a3b-4bit/flappy/ax_engine.json",
+          "case_count": 4,
+          "decode_tok_s": 144.55721189112478,
+          "engine": "ax_engine",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        },
+        "mtplx": {
+          "accept_rate": 0.5157000282459279,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/35b-a3b-4bit/flappy/mtplx.json",
+          "case_count": 4,
+          "decode_tok_s": 106.4766494731806,
+          "engine": "mtplx",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": 4,
+          "validations_total": 4
+        }
+      },
+      "model": "35b-a3b-4bit",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "provenance": {
+        "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+        "base_snapshot": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+        "kind": "ax_mtp_sidecar_manifest",
+        "manifest_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1/ax_mtp_sidecar_manifest.json",
+        "manifest_sha256": "1f464c96467fb4d04fe50c0ae96d6a4021b8832a2df669d7a234044ee51bf56a",
+        "model_key": "35b",
+        "mtp_depth_max": 1,
+        "mtp_tensor_count": 20,
+        "output_mtp_sha256": "7bab930aa78a9be90c8a433c09894428bd115424a2be928eb718fd3904e61942",
+        "output_mtp_size_bytes": 1689283731,
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "sampler": {
+          "temperature": 0.6,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "schema_version": "ax.mtp_sidecar_provenance.v1",
+        "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+        "source_shard_count": 2,
+        "source_shard_sha256": [
+          "778e7f76602f05042b69ba7f3ec91f1fdffef390540b16074041c258fb81d154",
+          "1a97404220077ed3d4182e10385b152004cab608377f50cec9f54a6b8d28b613"
+        ],
+        "transform_norm_policy": "shift_mtp_norm_weights_by_1"
+      },
+      "ratios": {
+        "ax_engine_vs_mtplx": 1.3576423808070326
+      },
+      "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+      "suite": "flappy"
+    },
+    {
+      "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "accept_rate": 0.9072864321608041,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/35b-a3b-4bit/long_code/ax_engine.json",
+          "case_count": 4,
+          "decode_tok_s": 164.60520555536897,
+          "engine": "ax_engine",
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        },
+        "mtplx": {
+          "accept_rate": 0.4796848343359971,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/35b-a3b-4bit/long_code/mtplx.json",
+          "case_count": 4,
+          "decode_tok_s": 94.76048879807661,
+          "engine": "mtplx",
+          "status": "ok_validation_warnings",
+          "valid_case_count": 4,
+          "validations_passed": 7,
+          "validations_total": 8
+        }
+      },
+      "model": "35b-a3b-4bit",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "provenance": {
+        "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+        "base_snapshot": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+        "kind": "ax_mtp_sidecar_manifest",
+        "manifest_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1/ax_mtp_sidecar_manifest.json",
+        "manifest_sha256": "1f464c96467fb4d04fe50c0ae96d6a4021b8832a2df669d7a234044ee51bf56a",
+        "model_key": "35b",
+        "mtp_depth_max": 1,
+        "mtp_tensor_count": 20,
+        "output_mtp_sha256": "7bab930aa78a9be90c8a433c09894428bd115424a2be928eb718fd3904e61942",
+        "output_mtp_size_bytes": 1689283731,
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "sampler": {
+          "temperature": 0.6,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "schema_version": "ax.mtp_sidecar_provenance.v1",
+        "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+        "source_shard_count": 2,
+        "source_shard_sha256": [
+          "778e7f76602f05042b69ba7f3ec91f1fdffef390540b16074041c258fb81d154",
+          "1a97404220077ed3d4182e10385b152004cab608377f50cec9f54a6b8d28b613"
+        ],
+        "transform_norm_policy": "shift_mtp_norm_weights_by_1"
+      },
+      "ratios": {
+        "ax_engine_vs_mtplx": 1.7370658134333097
+      },
+      "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+      "suite": "long_code"
+    },
+    {
+      "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "accept_rate": 0.7710280373831776,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/35b-a3b-4bit/python_modules_long/ax_engine.json",
+          "case_count": 3,
+          "decode_tok_s": 151.32366832216337,
+          "engine": "ax_engine",
+          "status": "ok",
+          "valid_case_count": 3,
+          "validations_passed": null,
+          "validations_total": null
+        },
+        "mtplx": {
+          "accept_rate": 0.48638132295719844,
+          "artifact": "benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/35b-a3b-4bit/python_modules_long/mtplx.json",
+          "case_count": 3,
+          "decode_tok_s": 100.02364495534447,
+          "engine": "mtplx",
+          "status": "ok",
+          "valid_case_count": 3,
+          "validations_passed": 3,
+          "validations_total": 3
+        }
+      },
+      "model": "35b-a3b-4bit",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "provenance": {
+        "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+        "base_snapshot": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+        "kind": "ax_mtp_sidecar_manifest",
+        "manifest_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1/ax_mtp_sidecar_manifest.json",
+        "manifest_sha256": "1f464c96467fb4d04fe50c0ae96d6a4021b8832a2df669d7a234044ee51bf56a",
+        "model_key": "35b",
+        "mtp_depth_max": 1,
+        "mtp_tensor_count": 20,
+        "output_mtp_sha256": "7bab930aa78a9be90c8a433c09894428bd115424a2be928eb718fd3904e61942",
+        "output_mtp_size_bytes": 1689283731,
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "sampler": {
+          "temperature": 0.6,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "schema_version": "ax.mtp_sidecar_provenance.v1",
+        "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+        "source_shard_count": 2,
+        "source_shard_sha256": [
+          "778e7f76602f05042b69ba7f3ec91f1fdffef390540b16074041c258fb81d154",
+          "1a97404220077ed3d4182e10385b152004cab608377f50cec9f54a6b8d28b613"
+        ],
+        "transform_norm_policy": "shift_mtp_norm_weights_by_1"
+      },
+      "ratios": {
+        "ax_engine_vs_mtplx": 1.512878963666259
+      },
+      "source_model_id": "Qwen/Qwen3.6-35B-A3B",
+      "suite": "python_modules_long"
+    }
+  ],
+  "schema": "ax.qwen36_mtp_fair.v1"
+}

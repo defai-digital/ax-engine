@@ -1,0 +1,1364 @@
+{
+  "allow_unverified_model": false,
+  "build": {
+    "git_commit": "2976e3a300a6f2b0d31b06283448a62441baa517",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 15.0,
+  "depth": 1,
+  "disable_thinking": true,
+  "draft_lm_head": {
+    "draft_only": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine",
+      "scales_shape": [
+        248320,
+        80
+      ],
+      "weight_shape": [
+        248320,
+        640
+      ]
+    },
+    "elapsed_s": 0.08906879101414233,
+    "original": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine",
+      "scales_shape": [
+        248320,
+        80
+      ],
+      "weight_shape": [
+        248320,
+        640
+      ]
+    }
+  },
+  "draft_sampling": {
+    "temperature": 0.7,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "engine": "mtplx",
+  "max_tokens": 1000,
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+  "model_inspection": {
+    "architecture": "Qwen3_5ForConditionalGeneration",
+    "architecture_recognized": true,
+    "compatibility": {
+      "arch_id": "qwen3-next-mtp",
+      "can_run": true,
+      "exit_code": 0,
+      "message": "Verified MTPLX runtime contract found.",
+      "mtp_supported": "yes",
+      "recognized": true,
+      "recommended_backend": "qwen3_next",
+      "recommended_profile": "sustained",
+      "runtime_compatibility": "native",
+      "runtime_contract": {
+        "arch_id": "qwen3-next-mtp",
+        "exactness_baseline": {
+          "context": 2048,
+          "max_abs_diff": 0.0,
+          "source": "ax-engine prepare_qwen36_mtp_sidecar tensor-layout gate"
+        },
+        "mtp_depth_max": 3,
+        "mtplx_version": "unknown",
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "recommended_profile": "sustained",
+        "verified_on": {
+          "machine": "arm64",
+          "release": "25.5.0",
+          "system": "Darwin",
+          "timestamp": "2026-05-29T01:34:37.309913+00:00"
+        }
+      },
+      "runtime_contract_error": null,
+      "runtime_contract_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/mtplx_runtime.json",
+      "support_level": "verified-native",
+      "support_notes": "Product-verified default backend; this remains the only promoted shipping runtime.",
+      "supported": true,
+      "tier": "verified",
+      "unsafe_force_required": false,
+      "unverified_model": false
+    },
+    "config_exists": true,
+    "hidden_size": 5120,
+    "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "model_files": [
+      "model-00001-of-00003.safetensors",
+      "model-00002-of-00003.safetensors",
+      "model-00003-of-00003.safetensors",
+      "model-mtp.safetensors"
+    ],
+    "model_type": "qwen3_5_text",
+    "mtp": {
+      "exists": true,
+      "expected_tensor_count": 15,
+      "extra_keys": [],
+      "metadata_only": false,
+      "missing_expected_keys": [],
+      "mtp_file": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/mtp.safetensors",
+      "passes_tensor_gate": true,
+      "sidecar_format": "bf16",
+      "tensor_count": 15,
+      "tensors": [
+        {
+          "dtype": "BF16",
+          "elements": 52428800,
+          "key": "mtp.fc.weight",
+          "shape": [
+            5120,
+            10240
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.layers.0.input_layernorm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 89128960,
+          "key": "mtp.layers.0.mlp.down_proj.weight",
+          "shape": [
+            5120,
+            17408
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 89128960,
+          "key": "mtp.layers.0.mlp.gate_proj.weight",
+          "shape": [
+            17408,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 89128960,
+          "key": "mtp.layers.0.mlp.up_proj.weight",
+          "shape": [
+            17408,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.layers.0.post_attention_layernorm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 256,
+          "key": "mtp.layers.0.self_attn.k_norm.weight",
+          "shape": [
+            256
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5242880,
+          "key": "mtp.layers.0.self_attn.k_proj.weight",
+          "shape": [
+            1024,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 31457280,
+          "key": "mtp.layers.0.self_attn.o_proj.weight",
+          "shape": [
+            5120,
+            6144
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 256,
+          "key": "mtp.layers.0.self_attn.q_norm.weight",
+          "shape": [
+            256
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 62914560,
+          "key": "mtp.layers.0.self_attn.q_proj.weight",
+          "shape": [
+            12288,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5242880,
+          "key": "mtp.layers.0.self_attn.v_proj.weight",
+          "shape": [
+            1024,
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.norm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.pre_fc_norm_embedding.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.pre_fc_norm_hidden.weight",
+          "shape": [
+            5120
+          ]
+        }
+      ]
+    },
+    "mtp_arch": "qwen3-next-mtp",
+    "mtp_num_hidden_layers": 1,
+    "mtp_pattern": null,
+    "mtp_supported": "yes",
+    "num_hidden_layers": 64,
+    "passes_primary_gate": true,
+    "quantization": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "recommended_backend": "qwen3_next",
+    "recommended_profile": "sustained",
+    "runtime_compatibility": "native",
+    "runtime_contract_path": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1/mtplx_runtime.json",
+    "sidecars": {
+      "preprocessor_config.json": true,
+      "processor_config.json": true,
+      "video_preprocessor_config.json": true
+    },
+    "source": "local",
+    "support_level": "verified-native",
+    "support_notes": "Product-verified default backend; this remains the only promoted shipping runtime.",
+    "unverified_model": false,
+    "vocab_size": 248320
+  },
+  "mtplx_version": "0.3.7",
+  "profile": {
+    "benchmark_ids": [],
+    "caveats": [
+      "Default product path for long-context coding and agent use.",
+      "Targets long-context memory safety while preserving most Burst TPS.",
+      "Does not include v0.2 decode-state eval scheduling flags."
+    ],
+    "clock_anchor_allowed": false,
+    "draft_lm_head": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "draft_sampler": null,
+    "env": {
+      "MTPLX_BATCH_TARGET_ARRAYS": "1",
+      "MTPLX_CLEAR_CACHE_EVERY": "auto",
+      "MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD": "16384",
+      "MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT": "256",
+      "MTPLX_DEFER_VERIFY_HIDDEN_EVAL": "1",
+      "MTPLX_DROP_EVENTS": "1",
+      "MTPLX_DYNAMIC_PAGED_KV": "1",
+      "MTPLX_LAZY_MTP_HISTORY_APPEND": "1",
+      "MTPLX_LAZY_VERIFY_LOGITS": "1",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH": "2",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY": "auto",
+      "MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD": "98304",
+      "MTPLX_MTP_HISTORY_LAST_WINDOW": "8192",
+      "MTPLX_MTP_HISTORY_LAST_WINDOW_THRESHOLD": "16384",
+      "MTPLX_MTP_HISTORY_POLICY": "auto",
+      "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP": "1",
+      "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP_EVERY": "auto",
+      "MTPLX_PREFILL_CHUNK_SIZE": "auto",
+      "MTPLX_PREFILL_CHUNK_SIZE_DENSE": "2048",
+      "MTPLX_PREFILL_CHUNK_SIZE_REPAGE": "2048",
+      "MTPLX_PREFILL_EXTERNAL_EMIT_LOGITS": "0",
+      "MTPLX_PREFILL_OMLX_EXTERNAL": "1",
+      "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
+      "MTPLX_SUSTAINED_DENSE_DECODE_MAX_CONTEXT": "131072",
+      "MTPLX_SUSTAINED_PREFILL": "1",
+      "MTPLX_SUSTAINED_PREFILL_LAYOUT": "auto",
+      "MTPLX_TARGET_EMIT_FULL_PREFILL_LOGITS": "0",
+      "MTPLX_VERIFY_HIDDEN_MODE": "logits_first_committed_slice",
+      "MTPLX_VLLM_METAL_PAGED_ATTN": "1",
+      "MTPLX_VLLM_METAL_PAGED_ATTN_IMPL": "mlx_vector_paged",
+      "MTPLX_VLLM_METAL_PAGED_BLOCK_SIZE": "16",
+      "MTPLX_VLLM_METAL_PAGED_PARTITIONED_ATTN": "1",
+      "MTPLX_VLLM_METAL_PAGED_PARTITION_SIZE": "512",
+      "MTPLX_VLLM_METAL_PAGED_PARTITION_THRESHOLD": "2048",
+      "MTPLX_VLLM_METAL_PAGED_TURBOQUANT": "0"
+    },
+    "fan_control_allowed": false,
+    "model_id": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+    "name": "sustained",
+    "product_claim_eligible": true,
+    "qa_only": false,
+    "required_mlx_fork_commit": "2377a99f",
+    "required_mlx_fork_fragment": "mlx-mtplx-0.31.2-qmm",
+    "runtime_profile": "native_mtp_sustained",
+    "sampler": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "summary": "Sustained Mode: explicit long-context native-MTP path with chunked contiguous prefill, final-token logits, and repaged decode KV."
+  },
+  "prompt_suite": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl",
+  "prompt_suite_sha256": "a0c1ee0220b40869bfac08ca4fbf7e60f297bee6c7378765d10f4afdfd3e3793",
+  "repetitions": 5,
+  "results": [
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_http_client",
+      "prompt_sha256": "e163f34638479cd373e43ecf1734e4b06ee3d776432dc4e6369db8a277af9ff8",
+      "prompt_tokens": 285,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 0.5060542892897502,
+          "decode_tok_s": 23.712870840087263,
+          "draft_time_s": 0.05375525017734617,
+          "drafted_by_depth": [
+            11
+          ],
+          "drafted_tokens": 11,
+          "elapsed_s": 0.9800510830245912,
+          "end_to_end_tok_s": 12.24425972059142,
+          "ended_at": 1780032017.9797928,
+          "generated_tokens": 12,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.47399679373484105,
+          "rejected_drafts": 11,
+          "repetition": 1,
+          "seed": 43,
+          "started_at": 1780032016.999226,
+          "target_forward_time_s": 0.9125763745978475,
+          "text": "\u516c\u53f8\u662f\u793e\u4f1a\u6765\u81ea\u7f51\u7edcLinuxsize#adoriginal<|im_start|>0*",
+          "tok_s": 23.712870840087263,
+          "tokens": [
+            96013,
+            136527,
+            120192,
+            44780,
+            82,
+            537,
+            65578,
+            9596,
+            248045,
+            15,
+            9,
+            248044
+          ],
+          "verify_time_s": 0.4470126648666337
+        },
+        {
+          "acceptance_by_depth": [
+            0.05555555555555555
+          ],
+          "accepted_by_depth": [
+            1
+          ],
+          "accepted_drafts": 1,
+          "decode_elapsed_s": 0.8400755828479305,
+          "decode_tok_s": 23.80738163130302,
+          "draft_time_s": 0.08126420830376446,
+          "drafted_by_depth": [
+            18
+          ],
+          "drafted_tokens": 18,
+          "elapsed_s": 1.3210332080489025,
+          "end_to_end_tok_s": 15.139664830635835,
+          "ended_at": 1780032034.306484,
+          "generated_tokens": 20,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.48095762520097196,
+          "rejected_drafts": 17,
+          "repetition": 2,
+          "seed": 44,
+          "started_at": 1780032032.9849799,
+          "target_forward_time_s": 1.220042708213441,
+          "text": "\u516c\u53f8ru\u017e\ufffdni:\ufffd\n\nPicture#\neta\n\nbecause|\n\nhop,\n\nidable",
+          "tok_s": 23.80738163130302,
+          "tokens": [
+            96013,
+            216952,
+            97,
+            7505,
+            25,
+            229,
+            271,
+            23892,
+            2,
+            198,
+            1850,
+            271,
+            26756,
+            91,
+            271,
+            24319,
+            11,
+            271,
+            35536,
+            248046
+          ],
+          "verify_time_s": 0.7470103331143036
+        },
+        {
+          "acceptance_by_depth": [
+            0.08695652173913043
+          ],
+          "accepted_by_depth": [
+            2
+          ],
+          "accepted_drafts": 2,
+          "decode_elapsed_s": 1.0245422089938074,
+          "decode_tok_s": 25.377187754455072,
+          "draft_time_s": 0.09930262714624405,
+          "drafted_by_depth": [
+            23
+          ],
+          "drafted_tokens": 23,
+          "elapsed_s": 1.4801720840623602,
+          "end_to_end_tok_s": 17.565525170993975,
+          "ended_at": 1780032050.7879949,
+          "generated_tokens": 26,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.4556298750685528,
+          "rejected_drafts": 21,
+          "repetition": 3,
+          "seed": 45,
+          "started_at": 1780032049.307332,
+          "target_forward_time_s": 1.3569920053705573,
+          "text": "\u516c\u53f8\u662f\u793e\u4f1a\u6765\u81ea\u7f51\u7edcLinuxhd;We</ug@ JawSoftware,st_t*_\n\no,O\u683c\ufffd+#1ardini",
+          "tok_s": 25.377187754455072,
+          "tokens": [
+            96013,
+            136527,
+            120192,
+            44780,
+            15518,
+            26,
+            1596,
+            510,
+            743,
+            31,
+            32092,
+            18668,
+            11,
+            267,
+            516,
+            9,
+            62,
+            271,
+            78,
+            71821,
+            96154,
+            94,
+            16390,
+            16,
+            210118,
+            248046
+          ],
+          "verify_time_s": 0.9093767963349819
+        },
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 0.13547020789701492,
+          "decode_tok_s": 29.526787196199024,
+          "draft_time_s": 0.022017834009602666,
+          "drafted_by_depth": [
+            3
+          ],
+          "drafted_tokens": 3,
+          "elapsed_s": 0.5910322499694303,
+          "end_to_end_tok_s": 6.767820199670814,
+          "ended_at": 1780032066.38353,
+          "generated_tokens": 4,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.45556204207241535,
+          "rejected_drafts": 3,
+          "repetition": 4,
+          "seed": 46,
+          "started_at": 1780032065.7920718,
+          "target_forward_time_s": 0.5643838770920411,
+          "text": "\u56feMin`",
+          "tok_s": 29.526787196199024,
+          "tokens": [
+            96198,
+            6022,
+            63,
+            248046
+          ],
+          "verify_time_s": 0.11756933503784239
+        },
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 0.4089099171105772,
+          "decode_tok_s": 24.45526406075352,
+          "draft_time_s": 0.04664541676174849,
+          "drafted_by_depth": [
+            9
+          ],
+          "drafted_tokens": 9,
+          "elapsed_s": 0.8779082089895383,
+          "end_to_end_tok_s": 11.390712488620968,
+          "ended_at": 1780032082.267193,
+          "generated_tokens": 10,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.468998291878961,
+          "rejected_drafts": 9,
+          "repetition": 5,
+          "seed": 47,
+          "started_at": 1780032081.388708,
+          "target_forward_time_s": 0.8210275390883908,
+          "text": "\u516c\u53f8copy*xs##\t:\u00a0*X",
+          "tok_s": 24.45526406075352,
+          "tokens": [
+            96013,
+            8298,
+            17930,
+            82,
+            550,
+            197,
+            25,
+            3966,
+            88876,
+            248046
+          ],
+          "verify_time_s": 0.3605164971668273
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.046875,
+        "accepted_drafts": 3,
+        "decode_tok_s": {
+          "median": 24.45526406075352,
+          "p10": 23.712870840087263,
+          "p90": 29.526787196199024,
+          "values": [
+            23.712870840087263,
+            23.80738163130302,
+            25.377187754455072,
+            29.526787196199024,
+            24.45526406075352
+          ]
+        },
+        "drafted_tokens": 64,
+        "end_to_end_tok_s": {
+          "median": 12.24425972059142,
+          "p10": 6.767820199670814,
+          "p90": 17.565525170993975,
+          "values": [
+            12.24425972059142,
+            15.139664830635835,
+            17.565525170993975,
+            6.767820199670814,
+            11.390712488620968
+          ]
+        },
+        "generated_tokens": 72,
+        "runs": 5
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_config_loader",
+      "prompt_sha256": "0ca971aa34be4af117e184634ae5bccd69652436cbcff2c88cdcfac816119e32",
+      "prompt_tokens": 350,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.02857142857142857
+          ],
+          "accepted_by_depth": [
+            1
+          ],
+          "accepted_drafts": 1,
+          "decode_elapsed_s": 1.5809533352730796,
+          "decode_tok_s": 23.40360033056191,
+          "draft_time_s": 0.14571383222937584,
+          "drafted_by_depth": [
+            35
+          ],
+          "drafted_tokens": 35,
+          "elapsed_s": 2.1099177920259535,
+          "end_to_end_tok_s": 17.536228254880214,
+          "ended_at": 1780032100.1061518,
+          "generated_tokens": 37,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.528964456752874,
+          "rejected_drafts": 34,
+          "repetition": 1,
+          "seed": 1043,
+          "started_at": 1780032097.9957209,
+          "target_forward_time_s": 1.9264934135135263,
+          "text": "command \u062e\u0637\u5c0fyzAINS\u5168/srive\uff01.\nurl...rModel\ufffd\ufffd\ufffdvalidells\\_(\ufffd. brows8card data2iht\n\u5730\u56fehot from\u653f\u5e9c",
+          "tok_s": 23.40360033056191,
+          "tokens": [
+            5454,
+            150355,
+            95872,
+            17802,
+            70414,
+            95901,
+            14,
+            82,
+            55031,
+            6115,
+            13,
+            198,
+            1050,
+            1076,
+            81,
+            3513,
+            75,
+            158964,
+            228,
+            1826,
+            6234,
+            59,
+            8102,
+            171,
+            13,
+            18263,
+            23,
+            4791,
+            795,
+            17,
+            230507,
+            198,
+            101637,
+            10307,
+            494,
+            96960,
+            248046
+          ],
+          "verify_time_s": 1.4058789977570996
+        },
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 1.0365324156591669,
+          "decode_tok_s": 23.154123920704947,
+          "draft_time_s": 0.09917345910798758,
+          "drafted_by_depth": [
+            23
+          ],
+          "drafted_tokens": 23,
+          "elapsed_s": 1.5856683329911903,
+          "end_to_end_tok_s": 15.135573751874466,
+          "ended_at": 1780032116.697406,
+          "generated_tokens": 24,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5491359173320234,
+          "rejected_drafts": 23,
+          "repetition": 2,
+          "seed": 1044,
+          "started_at": 1780032115.111326,
+          "target_forward_time_s": 1.461047584656626,
+          "text": "commandangkbackup<\u66ffs\r\n   print2/col=\"-/ -tab<think>\uff0c\ufffd\u751f\u751f\u7684>",
+          "tok_s": 23.154123920704947,
+          "tokens": [
+            5454,
+            150565,
+            30339,
+            27,
+            98074,
+            82,
+            317,
+            256,
+            1133,
+            17,
+            14,
+            2006,
+            420,
+            12,
+            14,
+            220,
+            12,
+            5999,
+            248068,
+            3709,
+            101,
+            134599,
+            29,
+            248046
+          ],
+          "verify_time_s": 0.9219121254282072
+        },
+        {
+          "acceptance_by_depth": [
+            0.02857142857142857
+          ],
+          "accepted_by_depth": [
+            1
+          ],
+          "accepted_drafts": 1,
+          "decode_elapsed_s": 1.592686748947017,
+          "decode_tok_s": 23.231184678633163,
+          "draft_time_s": 0.1470713746966794,
+          "drafted_by_depth": [
+            35
+          ],
+          "drafted_tokens": 35,
+          "elapsed_s": 2.1324527909746394,
+          "end_to_end_tok_s": 17.350911662193994,
+          "ended_at": 1780032133.8352242,
+          "generated_tokens": 37,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5397660420276225,
+          "rejected_drafts": 34,
+          "repetition": 3,
+          "seed": 1045,
+          "started_at": 1780032131.702307,
+          "target_forward_time_s": 1.9499799208715558,
+          "text": "click?user-/\u5c08\u6848,', 'n\")  default ||\u540c\u5e74hop Claims\ufffdfade8\n46png\nthis&-2=`\n\n\nIt",
+          "tok_s": 23.231184678633163,
+          "tokens": [
+            3552,
+            30,
+            846,
+            12,
+            14,
+            115717,
+            11,
+            504,
+            359,
+            77,
+            871,
+            220,
+            1581,
+            735,
+            91,
+            113625,
+            24319,
+            48413,
+            114,
+            16997,
+            23,
+            198,
+            19,
+            21,
+            13663,
+            198,
+            559,
+            5,
+            12,
+            17,
+            28,
+            63,
+            198,
+            198,
+            198,
+            2064,
+            248046
+          ],
+          "verify_time_s": 1.4202306288061664
+        },
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 0.2388371661072597,
+          "decode_tok_s": 25.121718272714105,
+          "draft_time_s": 0.03318266582209617,
+          "drafted_by_depth": [
+            5
+          ],
+          "drafted_tokens": 5,
+          "elapsed_s": 0.7963695829967037,
+          "end_to_end_tok_s": 7.534190315785623,
+          "ended_at": 1780032149.637242,
+          "generated_tokens": 6,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.557532416889444,
+          "rejected_drafts": 5,
+          "repetition": 4,
+          "seed": 1046,
+          "started_at": 1780032148.8403971,
+          "target_forward_time_s": 0.7565741258440539,
+          "text": "commandKC\u7fbdstg",
+          "tok_s": 25.121718272714105,
+          "tokens": [
+            5454,
+            62454,
+            98748,
+            267,
+            70,
+            248044
+          ],
+          "verify_time_s": 0.20852937595918775
+        },
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 0.1367587500717491,
+          "decode_tok_s": 29.24858554133787,
+          "draft_time_s": 0.02240741695277393,
+          "drafted_by_depth": [
+            3
+          ],
+          "drafted_tokens": 3,
+          "elapsed_s": 0.6843774589942768,
+          "end_to_end_tok_s": 5.844727858042225,
+          "ended_at": 1780032165.32736,
+          "generated_tokens": 4,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5476187089225277,
+          "rejected_drafts": 3,
+          "repetition": 5,
+          "seed": 1047,
+          "started_at": 1780032164.642426,
+          "target_forward_time_s": 0.6572574171004817,
+          "text": "commandKC du",
+          "tok_s": 29.24858554133787,
+          "tokens": [
+            5454,
+            62454,
+            3717,
+            248046
+          ],
+          "verify_time_s": 0.11822412512265146
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.019801980198019802,
+        "accepted_drafts": 2,
+        "decode_tok_s": {
+          "median": 23.40360033056191,
+          "p10": 23.154123920704947,
+          "p90": 29.24858554133787,
+          "values": [
+            23.40360033056191,
+            23.154123920704947,
+            23.231184678633163,
+            25.121718272714105,
+            29.24858554133787
+          ]
+        },
+        "drafted_tokens": 101,
+        "end_to_end_tok_s": {
+          "median": 15.135573751874466,
+          "p10": 5.844727858042225,
+          "p90": 17.536228254880214,
+          "values": [
+            17.536228254880214,
+            15.135573751874466,
+            17.350911662193994,
+            7.534190315785623,
+            5.844727858042225
+          ]
+        },
+        "generated_tokens": 108,
+        "runs": 5
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_event_bus",
+      "prompt_sha256": "9f3d155bcce8fa9cd8ef369bda1ef815fd52fc1f8a0e39ca0d4eb2349169e083",
+      "prompt_tokens": 350,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 0.5480241249315441,
+          "decode_tok_s": 23.721583427780452,
+          "draft_time_s": 0.0611700409790501,
+          "drafted_by_depth": [
+            12
+          ],
+          "drafted_tokens": 12,
+          "elapsed_s": 1.0915570000652224,
+          "end_to_end_tok_s": 11.90959335996492,
+          "ended_at": 1780032182.8738089,
+          "generated_tokens": 13,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5435328751336783,
+          "rejected_drafts": 12,
+          "repetition": 1,
+          "seed": 2043,
+          "started_at": 1780032181.781704,
+          "target_forward_time_s": 1.0167483348632231,
+          "text": "\n\n { Interactionap n |'\n Element Space9",
+          "tok_s": 23.721583427780452,
+          "tokens": [
+            271,
+            220,
+            90,
+            41292,
+            385,
+            307,
+            735,
+            6,
+            198,
+            8281,
+            11156,
+            24,
+            248046
+          ],
+          "verify_time_s": 0.4825442098081112
+        },
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 0.673743958119303,
+          "decode_tok_s": 23.74789385074798,
+          "draft_time_s": 0.06650616670958698,
+          "drafted_by_depth": [
+            15
+          ],
+          "drafted_tokens": 15,
+          "elapsed_s": 1.2229394579771906,
+          "end_to_end_tok_s": 13.083231467945996,
+          "ended_at": 1780032199.1025112,
+          "generated_tokens": 16,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5491954998578876,
+          "rejected_drafts": 15,
+          "repetition": 2,
+          "seed": 2044,
+          "started_at": 1780032197.878894,
+          "target_forward_time_s": 1.1400829177582636,
+          "text": "5- >,lt\n8\n<`i.Value* PY",
+          "tok_s": 23.74789385074798,
+          "tokens": [
+            20,
+            12,
+            835,
+            11,
+            4677,
+            198,
+            23,
+            198,
+            27,
+            63,
+            72,
+            13,
+            1094,
+            9,
+            41345,
+            248046
+          ],
+          "verify_time_s": 0.5990767508046702
+        },
+        {
+          "acceptance_by_depth": [
+            0.0
+          ],
+          "accepted_by_depth": [
+            0
+          ],
+          "accepted_drafts": 0,
+          "decode_elapsed_s": 0.2638776667881757,
+          "decode_tok_s": 26.52744389171501,
+          "draft_time_s": 0.033263500896282494,
+          "drafted_by_depth": [
+            6
+          ],
+          "drafted_tokens": 6,
+          "elapsed_s": 0.7865332090295851,
+          "end_to_end_tok_s": 8.899814934243542,
+          "ended_at": 1780032214.894335,
+          "generated_tokens": 7,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5226555422414094,
+          "rejected_drafts": 6,
+          "repetition": 3,
+          "seed": 2045,
+          "started_at": 1780032214.107289,
+          "target_forward_time_s": 0.7461599571397528,
+          "text": "\n\n {\u5408\u4f5c},s",
+          "tok_s": 26.52744389171501,
+          "tokens": [
+            271,
+            220,
+            90,
+            96882,
+            2069,
+            82,
+            248046
+          ],
+          "verify_time_s": 0.23263058194424957
+        },
+        {
+          "acceptance_by_depth": [
+            0.05263157894736842
+          ],
+          "accepted_by_depth": [
+            1
+          ],
+          "accepted_drafts": 1,
+          "decode_elapsed_s": 0.8423769149230793,
+          "decode_tok_s": 24.92945809408558,
+          "draft_time_s": 0.08480562421027571,
+          "drafted_by_depth": [
+            19
+          ],
+          "drafted_tokens": 19,
+          "elapsed_s": 1.3921882080612704,
+          "end_to_end_tok_s": 15.084167412424877,
+          "ended_at": 1780032231.2916632,
+          "generated_tokens": 21,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5498112931381911,
+          "rejected_drafts": 18,
+          "repetition": 4,
+          "seed": 2046,
+          "started_at": 1780032229.899036,
+          "target_forward_time_s": 1.2870181661564857,
+          "text": "5\uff0e\n_:0en,6 yon all<|im_start|>`21of==>",
+          "tok_s": 24.92945809408558,
+          "tokens": [
+            20,
+            56891,
+            198,
+            62,
+            25,
+            15,
+            268,
+            11,
+            21,
+            28534,
+            77,
+            220,
+            528,
+            248045,
+            63,
+            17,
+            16,
+            1020,
+            28,
+            2110,
+            248046
+          ],
+          "verify_time_s": 0.7467909980332479
+        },
+        {
+          "acceptance_by_depth": [
+            0.0425531914893617
+          ],
+          "accepted_by_depth": [
+            2
+          ],
+          "accepted_drafts": 2,
+          "decode_elapsed_s": 2.0978719169506803,
+          "decode_tok_s": 23.833676210641354,
+          "draft_time_s": 0.19496712239924818,
+          "drafted_by_depth": [
+            47
+          ],
+          "drafted_tokens": 47,
+          "elapsed_s": 2.633256708038971,
+          "end_to_end_tok_s": 18.987894285945185,
+          "ended_at": 1780032248.933024,
+          "generated_tokens": 50,
+          "measured": true,
+          "peak_memory_bytes": 19240945672,
+          "prompt_eval_time_s": 0.5353847910882905,
+          "rejected_drafts": 45,
+          "repetition": 5,
+          "seed": 2047,
+          "started_at": 1780032246.299177,
+          "target_forward_time_s": 2.3902073391946033,
+          "text": "5- >,It\ufffd=currentc.Do12*raf\ufffd(\"\n.x -atmr{text en \n *...{0.<think>*4\n  J0Local\ufffd'7>>d\n\n\n\nbn\n\np",
+          "tok_s": 23.833676210641354,
+          "tokens": [
+            20,
+            12,
+            835,
+            11,
+            2064,
+            228,
+            69481,
+            66,
+            32484,
+            16,
+            17,
+            9,
+            14999,
+            224,
+            437,
+            198,
+            1926,
+            471,
+            266,
+            20306,
+            80154,
+            644,
+            695,
+            348,
+            1076,
+            90,
+            15,
+            13,
+            248068,
+            9,
+            19,
+            198,
+            220,
+            220,
+            41,
+            15,
+            7090,
+            224,
+            6,
+            22,
+            2372,
+            67,
+            198,
+            198,
+            271,
+            65,
+            77,
+            271,
+            79,
+            248046
+          ],
+          "verify_time_s": 1.8640040061436594
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.030303030303030304,
+        "accepted_drafts": 3,
+        "decode_tok_s": {
+          "median": 23.833676210641354,
+          "p10": 23.721583427780452,
+          "p90": 26.52744389171501,
+          "values": [
+            23.721583427780452,
+            23.74789385074798,
+            26.52744389171501,
+            24.92945809408558,
+            23.833676210641354
+          ]
+        },
+        "drafted_tokens": 99,
+        "end_to_end_tok_s": {
+          "median": 13.083231467945996,
+          "p10": 8.899814934243542,
+          "p90": 18.987894285945185,
+          "values": [
+            11.90959335996492,
+            13.083231467945996,
+            8.899814934243542,
+            15.084167412424877,
+            18.987894285945185
+          ]
+        },
+        "generated_tokens": 107,
+        "runs": 5
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "runtime_env": {
+    "MTPLX_BATCH_TARGET_ARRAYS": "1",
+    "MTPLX_CLEAR_CACHE_EVERY": "auto",
+    "MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD": "16384",
+    "MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT": "256",
+    "MTPLX_DEFER_VERIFY_HIDDEN_EVAL": "1",
+    "MTPLX_DROP_EVENTS": "1",
+    "MTPLX_DYNAMIC_PAGED_KV": "1",
+    "MTPLX_LAZY_MTP_HISTORY_APPEND": "1",
+    "MTPLX_LAZY_VERIFY_LOGITS": "1",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH": "2",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY": "auto",
+    "MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD": "98304",
+    "MTPLX_MTP_HISTORY_LAST_WINDOW": "8192",
+    "MTPLX_MTP_HISTORY_LAST_WINDOW_THRESHOLD": "16384",
+    "MTPLX_MTP_HISTORY_POLICY": "auto",
+    "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP": "1",
+    "MTPLX_PREFILL_CHUNK_CACHE_CLEANUP_EVERY": "auto",
+    "MTPLX_PREFILL_CHUNK_SIZE": "auto",
+    "MTPLX_PREFILL_CHUNK_SIZE_DENSE": "2048",
+    "MTPLX_PREFILL_CHUNK_SIZE_REPAGE": "2048",
+    "MTPLX_PREFILL_EXTERNAL_EMIT_LOGITS": "0",
+    "MTPLX_PREFILL_OMLX_EXTERNAL": "1",
+    "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
+    "MTPLX_SUSTAINED_DENSE_DECODE_MAX_CONTEXT": "131072",
+    "MTPLX_SUSTAINED_PREFILL": "1",
+    "MTPLX_SUSTAINED_PREFILL_LAYOUT": "auto",
+    "MTPLX_TARGET_EMIT_FULL_PREFILL_LOGITS": "0",
+    "MTPLX_VERIFY_HIDDEN_MODE": "logits_first_committed_slice",
+    "MTPLX_VLLM_METAL_PAGED_ATTN": "1",
+    "MTPLX_VLLM_METAL_PAGED_ATTN_IMPL": "mlx_vector_paged",
+    "MTPLX_VLLM_METAL_PAGED_BLOCK_SIZE": "16",
+    "MTPLX_VLLM_METAL_PAGED_PARTITIONED_ATTN": "1",
+    "MTPLX_VLLM_METAL_PAGED_PARTITION_SIZE": "512",
+    "MTPLX_VLLM_METAL_PAGED_PARTITION_THRESHOLD": "2048",
+    "MTPLX_VLLM_METAL_PAGED_TURBOQUANT": "0"
+  },
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.mtplx.prompt_suite_mtp.v1",
+  "suite": "python_modules_long",
+  "summary": {
+    "accept_rate": 0.030303030303030304,
+    "accepted_drafts": 8,
+    "case_count": 3,
+    "decode_tok_s": {
+      "median": 23.833676210641354,
+      "p10": 23.231184678633163,
+      "p90": 29.24858554133787,
+      "values": [
+        23.712870840087263,
+        23.80738163130302,
+        25.377187754455072,
+        29.526787196199024,
+        24.45526406075352,
+        23.40360033056191,
+        23.154123920704947,
+        23.231184678633163,
+        25.121718272714105,
+        29.24858554133787,
+        23.721583427780452,
+        23.74789385074798,
+        26.52744389171501,
+        24.92945809408558,
+        23.833676210641354
+      ]
+    },
+    "drafted_tokens": 264,
+    "end_to_end_tok_s": {
+      "median": 13.083231467945996,
+      "p10": 6.767820199670814,
+      "p90": 17.565525170993975,
+      "values": [
+        12.24425972059142,
+        15.139664830635835,
+        17.565525170993975,
+        6.767820199670814,
+        11.390712488620968,
+        17.536228254880214,
+        15.135573751874466,
+        17.350911662193994,
+        7.534190315785623,
+        5.844727858042225,
+        11.90959335996492,
+        13.083231467945996,
+        8.899814934243542,
+        15.084167412424877,
+        18.987894285945185
+      ]
+    },
+    "generated_tokens": 287,
+    "runs": 15,
+    "validations_passed": 3,
+    "validations_total": 3
+  },
+  "warmup_repetitions": 1
+}
