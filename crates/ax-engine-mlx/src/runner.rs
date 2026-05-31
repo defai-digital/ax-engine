@@ -5398,6 +5398,10 @@ impl MlxRunner {
         let optimistic = self.mtp_optimistic && !pending.is_empty();
 
         // Consume skip-state from the previous iteration (AX_MLX_MTP_SKIP_STATE=1).
+        // Currently captured but not yet consumed — full skip-state consumption
+        // requires restructuring the verify loop to skip the first token's forward
+        // pass (matching Lightning-MLX's 2-token verify design).  The capture +
+        // async_eval still provides GPU/CPU overlap for the slice operations.
         let _skip_logits = state.mtp_skip_logits.take();
         let _skip_hidden = state.mtp_skip_hidden.take();
 
@@ -5754,6 +5758,10 @@ impl MlxRunner {
             // Resetting count keeps the linear-attention rollback trim correct.
             state.mtp_cache = None;
             state.mtp_decode_count = 0;
+            // Clear skip-state: the MTP cache was reset, so any skip-state
+            // from the previous verify is stale and must not be consumed.
+            state.mtp_skip_logits = None;
+            state.mtp_skip_hidden = None;
             state.mtp_telemetry.ngram_hit_steps =
                 state.mtp_telemetry.ngram_hit_steps.saturating_add(1);
             (ngram_outcome.draft, vec![])
