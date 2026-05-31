@@ -234,6 +234,52 @@ test("streamCompletion stops on OpenAI [DONE] sentinel", async () => {
   });
 });
 
+test("stream cancellation closes response when consumer stops early", async () => {
+  let activeResponse;
+  let closeResolve;
+  const responseClosed = new Promise((resolve) => {
+    closeResolve = resolve;
+  });
+
+  await withServer((req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/v1/generate/stream");
+    activeResponse = res;
+    res.on("close", closeResolve);
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    res.write('event: step\ndata: {"delta_tokens":[1]}\n\n');
+
+    const interval = setInterval(() => {
+      res.write('event: step\ndata: {"delta_tokens":[2]}\n\n');
+    }, 20);
+    res.on("close", () => clearInterval(interval));
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    try {
+      for await (const event of client.streamGenerate({
+        input_tokens: [1],
+        max_output_tokens: 128,
+      })) {
+        assert.equal(event.event, "step");
+        break;
+      }
+
+      await Promise.race([
+        responseClosed,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("stream response did not close")), 500),
+        ),
+      ]);
+    } finally {
+      activeResponse?.destroy();
+    }
+  });
+});
+
 test("embeddings posts token array to OpenAI-shaped endpoint", async () => {
   await withServer((req, res) => {
     assert.equal(req.method, "POST");

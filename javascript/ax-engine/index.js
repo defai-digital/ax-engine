@@ -241,11 +241,13 @@ export class AxEngineClient {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let streamEnded = false;
 
     try {
       while (true) {
         const { value, done } = await reader.read();
         if (done) {
+          streamEnded = true;
           break;
         }
         buffer += decoder.decode(value, { stream: true });
@@ -289,6 +291,15 @@ export class AxEngineClient {
         }
       }
     } finally {
+      if (!streamEnded) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The stream may already be closed by the server while the generator
+          // is unwinding. The important part is that early consumer exits ask
+          // the body to stop producing before releasing the reader lock.
+        }
+      }
       reader.releaseLock();
     }
   }
