@@ -42,9 +42,9 @@ ENGINE_LABELS = {
 ENGINE_COLORS = {
     "mtplx": "#7c3aed",
     "ax_engine": "#16a34a",
-    "lightning_mlx": "#f59e0b",
+    "lightning_mlx": "#2563eb",
 }
-ENGINE_ORDER = ["mtplx", "ax_engine", "lightning_mlx"]
+ENGINE_ORDER = ["mtplx", "lightning_mlx", "ax_engine"]
 
 
 @dataclass(frozen=True)
