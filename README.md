@@ -29,11 +29,8 @@ five measured repetitions, one warmup repetition.
 | Qwen3.6 27B 4-bit | python_modules_long | 3 | 47.7 | 87.6% | 22.9 | 67.0% | 0.480 |
 | Qwen3.6 35B-A3B 4-bit | flappy | 1 | 88.1 | 48.8% | 84.2 | 99.9% | 0.956 |
 | Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.2 | 52.3% | 81.5 | 99.8% | 0.775 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 95.2 | 42.3% | 77.9 | 93.2% | 0.819 |
-AX Engine outperforms MTPLX by 0.5–1.0× in decode throughput. On the
-35B-A3B (depth 1), AX reaches 0.8–1.0× with 93–100% accept rates vs
-MTPLX's 42–52%. On the 27B (depth 3), AX matches or exceeds MTPLX on
-flappy and long_code (0.9×, 0.6×) with 98–99% accept rates.
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 95.2 | 42.3% | 79.0 | 93.2% | 0.829 |
+
 
 Pure MTP benchmark (n-gram stacking disabled). Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 15 s cooldown.

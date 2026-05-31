@@ -4,8 +4,8 @@
     "cooldown_s": 15.0,
     "depth_policy": "fair-shared",
     "engines": [
-      "mtplx",
-      "ax_engine"
+      "ax_engine",
+      "mtplx"
     ],
     "fairness_rules": [
       "standard Qwen source MTP shards plus mlx-community 4-bit base only",
@@ -376,7 +376,7 @@
           "accept_rate": 0.9322755417956656,
           "artifact": "benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/35b-a3b-4bit/python_modules_long/ax_engine.json",
           "case_count": 3,
-          "decode_tok_s": 77.92524350859344,
+          "decode_tok_s": 78.96691688913621,
           "engine": "ax_engine",
           "ngram_hit_steps": 0,
           "status": "ok",
@@ -430,7 +430,7 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_vs_mtplx": 0.8185009775673072
+        "ax_engine_vs_mtplx": 0.8294423701365339
       },
       "source_model_id": "Qwen/Qwen3.6-35B-A3B",
       "suite": "python_modules_long"
