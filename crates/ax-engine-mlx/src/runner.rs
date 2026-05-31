@@ -2892,9 +2892,6 @@ struct RequestState {
     /// Request-local MTP draft depth cap.  Adapted from the last accept/reject
     /// outcome so low-acceptance prompts stop paying for deeper draft chains.
     mtp_adaptive_max_depth: usize,
-    /// Pre-norm hidden state saved from the last successful MTP verify pass.
-    /// Used as `main_hidden` for the MTP head at the next decode step.
-    mtp_pending_hidden: Option<MlxArray>,
     /// Skip-state logits: logits at the committed position from the previous
     /// verify pass.  When `Some`, the next `run_mtp_decode` call can sample
     /// the primary token from these logits instead of running a fresh verify
@@ -2957,7 +2954,6 @@ impl RequestState {
             mtp_pending_draft_log_probs: Vec::new(),
             mtp_pending_draft_distributions: Vec::new(),
             mtp_adaptive_max_depth: 0,
-            mtp_pending_hidden: None,
             mtp_skip_logits: None,
             mtp_skip_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
@@ -5789,7 +5785,6 @@ impl MlxRunner {
         if state.mtp_pending_draft_log_probs.is_empty() {
             state.mtp_pending_draft_distributions.clear();
         }
-        state.mtp_pending_hidden = Some(draft_hidden);
         mtp_timings.draft_wall_us = elapsed_us(draft_started);
         state.mtp_telemetry.record_timings(mtp_timings);
 
@@ -5846,7 +5841,6 @@ impl MlxRunner {
         state.mtp_pending_draft_log_probs.clear();
         state.mtp_pending_draft_distributions.clear();
         state.mtp_adaptive_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
-        state.mtp_pending_hidden = None;
         state.mtp_skip_logits = None;
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
