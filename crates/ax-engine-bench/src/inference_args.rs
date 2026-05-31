@@ -253,6 +253,7 @@ pub(crate) fn build_inference_session(args: &InferenceArgs) -> Result<EngineSess
             backend_request,
             mlx_model_artifacts_dir,
             mlx_disable_ngram_acceleration: disable_ngram,
+            mlx_mtp_disable_ngram_stacking: false,
             mlx_kv_compression: ax_engine_sdk::KvCompressionConfig::disabled(),
             mlx_prefill_chunk: args.mlx_prefill_chunk,
         })

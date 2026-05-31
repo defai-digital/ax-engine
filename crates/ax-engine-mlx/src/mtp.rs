@@ -1,7 +1,6 @@
 use mlx_sys::{
-    add, argmax, astype, concatenate, eval, multiply, reshape, rms_norm,
-    scaled_dot_product_attention_with_mask, sigmoid, slice, MlxArray, MlxDtype,
-    ScaledDotProductAttentionMask,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argmax, astype, concatenate, eval,
+    multiply, reshape, rms_norm, scaled_dot_product_attention_with_mask, sigmoid, slice,
 };
 
 use crate::kv_cache::MlxKVCache;
@@ -10,10 +9,10 @@ use crate::model::shared::{
     moe_router_deepseek_v3, moe_router_glm, moe_router_qwen3, prepare_value_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj, qw, shared_expert_forward,
 };
-use crate::model::{embed_tokens_arr, ModelConfig};
+use crate::model::{ModelConfig, embed_tokens_arr};
 use crate::sampling::{
-    full_vocab_token_logprob, sample_categorical_with_logprob_and_distribution, TokenDistribution,
-    Xorshift64,
+    TokenDistribution, Xorshift64, full_vocab_token_logprob,
+    sample_categorical_with_logprob_and_distribution,
 };
 use crate::weights::{ModelWeights, MtpWeights};
 
@@ -291,7 +290,11 @@ pub fn mtp_draft_tokens(
             eval(&[&logits]);
             let logits_cpu = logits.data_f32();
             let (draft_token, _filtered_log_prob, distribution) =
-                sample_categorical_with_logprob_and_distribution(logits_cpu, head.draft_sampling, rng);
+                sample_categorical_with_logprob_and_distribution(
+                    logits_cpu,
+                    head.draft_sampling,
+                    rng,
+                );
             let log_prob =
                 full_vocab_token_logprob(logits_cpu, draft_token, head.draft_sampling.temperature);
             draft_log_probs.push(log_prob);

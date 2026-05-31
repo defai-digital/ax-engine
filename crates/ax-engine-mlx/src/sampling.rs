@@ -563,7 +563,11 @@ pub fn full_vocab_token_logprob(logits: &[f32], token: u32, temperature: f32) ->
         return -30.0;
     }
     if temperature <= 0.0 {
-        return if argmax_f32(logits) == token { 0.0 } else { f32::NEG_INFINITY };
+        return if argmax_f32(logits) == token {
+            0.0
+        } else {
+            f32::NEG_INFINITY
+        };
     }
     let inv_temp = 1.0 / temperature;
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
