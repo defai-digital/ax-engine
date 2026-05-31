@@ -550,6 +550,37 @@ pub fn sample_residual_token_distribution(
     sample_from_token_distribution(&distribution, rng)
 }
 
+/// Compute the full-vocabulary log-probability of `token` under temperature scaling.
+///
+/// MTP rejection sampling requires `p_draft` and `p_target` to be in the same
+/// normalization domain (full-vocab softmax).  Using a top-k/top-p filtered
+/// log-prob inflates `p_draft` relative to `p_target`, causing systematic
+/// over-rejection.  This function computes the correct full-vocab log-prob
+/// regardless of what sampler filters were used to choose the token.
+pub fn full_vocab_token_logprob(logits: &[f32], token: u32, temperature: f32) -> f32 {
+    let token_idx = token as usize;
+    if logits.is_empty() || token_idx >= logits.len() {
+        return -30.0;
+    }
+    if temperature <= 0.0 {
+        return if argmax_f32(logits) == token { 0.0 } else { f32::NEG_INFINITY };
+    }
+    let inv_temp = 1.0 / temperature;
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let unnorm = ((logits[token_idx] - max_l) * inv_temp).exp();
+    let sum: f32 = logits
+        .iter()
+        .map(|&l| {
+            let p = ((l - max_l) * inv_temp).exp();
+            if p.is_finite() { p } else { 0.0 }
+        })
+        .sum();
+    if sum <= 0.0 || !sum.is_finite() {
+        return -30.0;
+    }
+    (unnorm / sum).max(1e-37_f32).ln().max(-30.0)
+}
+
 /// GPU-side categorical sampling from logits.
 ///
 /// Returns the sampled token ID. Uses MLX's `random_categorical` which runs

@@ -253,28 +253,28 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
    the draft candidate set is no longer halved at each depth, giving the draft
    model the full candidate set at all depths.
 
-35B-A3B results (native depth=1, pure MTP, 128 gen tokens):
+35B-A3B results (native depth=1, pure MTP, 1000 gen tokens):
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
-| MTPLX 0.3.7 (tok/s) | 108.0 | 103.6 | 100.6 |
-| MTPLX 0.3.7 (accept) | 55.5% | 67.8% | 48.6% |
-| AX Engine (tok/s) | 160.4 | 169.7 | 168.3 |
-| AX Engine (accept) | 95.4% | 96.9% | 85.4% |
-| AX/MTPLX ratio | 1.485 | 1.637 | 1.673 |
+| MTPLX 0.3.7 (tok/s) | 88.1 | 105.2 | 95.2 |
+| MTPLX 0.3.7 (accept) | 48.8% | 52.3% | 42.3% |
+| AX Engine (tok/s) | 173.6 | 173.3 | 169.5 |
+| AX Engine (accept) | 97.9% | 96.8% | 90.6% |
+| AX/MTPLX ratio | 1.971 | 1.648 | 1.780 |
 
-27B results (native depth=3, pure MTP, 128 gen tokens):
+27B results (native depth=3, pure MTP, 1000 gen tokens):
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
-| MTPLX 0.3.7 (tok/s) | 58.9 | 56.7 | 50.0 |
-| MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 84.6% |
-| AX Engine (tok/s) | 64.5 | 64.4 | 45.4 |
-| AX Engine (accept) | 87.8% | 91.1% | 57.9% |
-| AX/MTPLX ratio | 1.095 | 1.136 | 0.907 |
+| MTPLX 0.3.7 (tok/s) | 39.2 | 44.3 | 47.7 |
+| MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 87.6% |
+| AX Engine (tok/s) | 41.4 | 57.7 | 44.9 |
+| AX Engine (accept) | 93.0% | 91.9% | 71.0% |
+| AX/MTPLX ratio | 1.058 | 1.304 | 0.941 |
 
-Artifacts: `benchmarks/results/mtp-fair/2026-05-31-full-vocab-accept-fix/` (AX Engine),
-`benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/` (MTPLX reference).
+Artifacts: `benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/` (dual-engine,
+full-vocab draft log-prob fix).
 
 #### Chart data table
 
@@ -282,10 +282,10 @@ Artifacts: `benchmarks/results/mtp-fair/2026-05-31-full-vocab-accept-fix/` (AX E
 
 | Model bundle | Suite | AX depth cap | AX MTP tok/s | AX accept % | MTPLX tok/s | MTPLX depth | MTPLX accept % | AX/MTPLX |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| Speed (Qwen3.6 35B-A3B 4-bit) | flappy | 3 | 160.4 | 95.4% | 108.0 | 3 | 55.5% | 1.485 |
-| Speed (Qwen3.6 35B-A3B 4-bit) | long_code | 3 | 169.7 | 96.9% | 103.6 | 3 | 67.8% | 1.637 |
-| Quality (Qwen3.6 27B 4-bit) | flappy | 3 | 64.5 | 87.8% | 58.9 | 3 | 100.0% | 1.095 |
-| Quality (Qwen3.6 27B 4-bit) | long_code | 3 | 64.4 | 91.1% | 56.7 | 3 | 99.7% | 1.136 |
+| Speed (Qwen3.6 35B-A3B 4-bit) | flappy | 1 | 173.6 | 97.9% | 88.1 | 1 | 48.8% | 1.971 |
+| Speed (Qwen3.6 35B-A3B 4-bit) | long_code | 1 | 173.3 | 96.8% | 105.2 | 1 | 52.3% | 1.648 |
+| Quality (Qwen3.6 27B 4-bit) | flappy | 3 | 41.4 | 93.0% | 39.2 | 3 | 100.0% | 1.058 |
+| Quality (Qwen3.6 27B 4-bit) | long_code | 3 | 57.7 | 91.9% | 44.3 | 3 | 99.7% | 1.304 |
 
 ### Current publication contract
 

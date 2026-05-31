@@ -24,22 +24,22 @@ five measured repetitions, one warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX/MTPLX |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 58.9 | 100.0% | 64.5 | 87.8% | 1.095 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 56.7 | 99.7% | 64.4 | 91.1% | 1.136 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 50.0 | 84.6% | 45.4 | 57.9% | 0.907 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 3 | 108.0 | 55.5% | 160.4 | 95.4% | 1.485 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 3 | 103.6 | 67.8% | 169.7 | 96.9% | 1.637 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 3 | 100.6 | 48.6% | 168.3 | 85.4% | 1.673 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 39.2 | 100.0% | 41.4 | 93.0% | 1.058 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 44.3 | 99.7% | 57.7 | 91.9% | 1.304 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 47.7 | 87.6% | 44.9 | 71.0% | 0.941 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 88.1 | 48.8% | 173.6 | 97.9% | 1.971 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.2 | 52.3% | 173.3 | 96.8% | 1.648 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 95.2 | 42.3% | 169.5 | 90.6% | 1.780 |
 
-AX Engine outperforms MTPLX by 1.1–1.7× in decode throughput across both
-models. On the 35B-A3B, AX accept rates are 85–97% vs MTPLX's 49–68%. On
-the 27B, AX matches or exceeds MTPLX throughput on flappy and long_code
-(1.1× ratio) with 88–91% accept rates.
+AX Engine outperforms MTPLX by 1.1–2.0× in decode throughput. On the
+35B-A3B (depth 1), AX reaches 1.6–2.0× with 91–98% accept rates vs
+MTPLX's 42–52%. On the 27B (depth 3), AX matches or exceeds MTPLX on
+flappy and long_code (1.1×, 1.3×) with 91–93% accept rates.
 
 Pure MTP benchmark (n-gram stacking disabled). Sampler: temperature=0.6,
-top_p=0.95, top_k=20. 128 gen tokens, 3 repetitions.
+top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 15 s cooldown.
 
-Full artifacts: [`2026-05-31` (AX Engine, full-vocab softmax fix)](benchmarks/results/mtp-fair/2026-05-31-full-vocab-accept-fix/summary.md) · [`2026-05-30` (MTPLX+AX dual-engine)](benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/summary.md).
+Full artifacts: [`2026-05-31` (dual-engine full-vocab draft fix)](benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/summary.md).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 

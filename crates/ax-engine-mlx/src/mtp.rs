@@ -12,7 +12,8 @@ use crate::model::shared::{
 };
 use crate::model::{embed_tokens_arr, ModelConfig};
 use crate::sampling::{
-    sample_categorical_with_logprob_and_distribution, TokenDistribution, Xorshift64,
+    full_vocab_token_logprob, sample_categorical_with_logprob_and_distribution, TokenDistribution,
+    Xorshift64,
 };
 use crate::weights::{ModelWeights, MtpWeights};
 
@@ -347,12 +348,15 @@ pub fn mtp_draft_tokens(
         let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
         let draft_token = if use_temperature {
             eval(&[&logits]);
-            let (draft_token, log_prob, distribution) =
-                sample_categorical_with_logprob_and_distribution(
-                    logits.data_f32(),
-                    head.draft_sampling,
-                    rng,
-                );
+            let logits_cpu = logits.data_f32();
+            let (draft_token, _filtered_log_prob, distribution) =
+                sample_categorical_with_logprob_and_distribution(logits_cpu, head.draft_sampling, rng);
+            // Use full-vocab log-prob for rejection sampling: filtered-distribution
+            // probabilities are renormalized over the top-k/top-p subset, making
+            // p_draft_filtered > p_draft_full for in-set tokens.  Dividing full-vocab
+            // p_target by the inflated p_draft_filtered causes systematic over-rejection.
+            let log_prob =
+                full_vocab_token_logprob(logits_cpu, draft_token, head.draft_sampling.temperature);
             draft_log_probs.push(log_prob);
             if let Some(distribution) = distribution {
                 draft_distributions.push(distribution);

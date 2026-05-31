@@ -10,9 +10,23 @@
 <text x="52" y="167.7" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">67%</text>
 <line x1="60" y1="68.0" x2="732" y2="68.0" stroke="#e5e7eb" stroke-width="1"/>
 <text x="52" y="71.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">100%</text>
-<text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
-<rect x="369.0" y="110.4" width="54.0" height="247.6" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="396.0" y="105.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">85.4%</text>
-<rect x="60" y="407" width="10" height="10" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="74" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
+<text x="172.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">flappy</text>
+<rect x="113.0" y="216.4" width="54.0" height="141.6" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
+<text x="140.0" y="211.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">48.8%</text>
+<rect x="177.0" y="74.0" width="54.0" height="284.0" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="204.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">97.9%</text>
+<text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">long_code</text>
+<rect x="337.0" y="206.4" width="54.0" height="151.6" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
+<text x="364.0" y="201.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">52.3%</text>
+<rect x="401.0" y="77.2" width="54.0" height="280.8" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="428.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">96.8%</text>
+<text x="620.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
+<rect x="561.0" y="235.3" width="54.0" height="122.7" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
+<text x="588.0" y="230.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">42.3%</text>
+<rect x="625.0" y="95.3" width="54.0" height="262.7" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="652.0" y="90.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">90.6%</text>
+<rect x="60" y="407" width="10" height="10" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
+<text x="74" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
+<rect x="190" y="407" width="10" height="10" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="204" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine MTP</text>
 </svg>
