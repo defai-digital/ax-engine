@@ -248,22 +248,30 @@ Two additional fixes improved AX Engine's MTP accept rate:
    temperature-scaled softmax over the top-4096 candidate logits for rejection
    sampling acceptance, matching MTPLX's strategy.
 
-35B-A3B results (native depth, flappy suite, 128 gen tokens):
+35B-A3B results (native depth, 128 gen tokens):
 
-| Engine | Decode tok/s | Accept rate | Notes |
-|---|---:|---:|---|
-| MTPLX 0.3.7 | 102.1 | 51.1% | Requires `--allow-unverified-model` (MoE 20-tensor sidecar vs expected 15) |
-| AX Engine (before) | 108.2 | 21.3% | Depth=1, greedy argmax acceptance |
-| AX Engine (after) | 143.2 | 63.4% | Depth=3, rejection sampling |
+| Engine | flappy | long_code | python_modules_long |
+|---|---:|---:|---:|
+| MTPLX 0.3.7 (tok/s) | 106.5 | 94.8 | 100.0 |
+| MTPLX 0.3.7 (accept) | 51.6% | 48.0% | 48.6% |
+| AX Engine (tok/s) | 146.3 | 160.7 | 153.7 |
+| AX Engine (accept) | 60.4% | 83.0% | 70.8% |
+| AX/MTPLX ratio | 1.374 | 1.696 | 1.537 |
 
-27B results (native depth=3, flappy suite, 128 gen tokens):
+27B results (native depth=3, 128 gen tokens):
 
-| Engine | Decode tok/s | Accept rate | Notes |
-|---|---:|---:|---|
-| MTPLX 0.3.7 | 55.9 | 99.7% | Near-perfect acceptance with dedicated draft lm_head |
-| AX Engine (after) | 43.9 | 52.6% | Filtered candidate path, rejection sampling |
+| Engine | flappy | long_code | python_modules_long |
+|---|---:|---:|---:|
+| MTPLX 0.3.7 (tok/s) | 59.4 | 52.5 | 51.6 |
+| MTPLX 0.3.7 (accept) | 100.0% | 99.1% | 84.6% |
+| AX Engine (tok/s) | 47.2 | 53.0 | 42.0 |
+| AX Engine (accept) | 56.0% | 71.3% | 58.8% |
+| AX/MTPLX ratio | 0.795 | 1.009 | 0.814 |
 
-Artifacts: `benchmarks/results/mtp-fair/2026-05-30-native-smoke/`.
+Note: AX MTP telemetry includes n-gram acceleration hits. The accept rates
+and throughput reflect combined MTP + n-gram, not pure MTP alone.
+
+Artifacts: `benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/`.
 
 ### Current publication contract
 

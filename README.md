@@ -24,23 +24,23 @@ five measured repetitions, one warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX/MTPLX |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 56.0 | 100.0% | 42.6 | 52.6% | 0.761 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 58.9 | 99.1% | 50.6 | 68.6% | 0.859 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 50.4 | 84.6% | 44.6 | 52.9% | 0.885 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 3 | 102.1 | 51.1% | 143.2 | 63.4% | 1.403 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 3 | 100.7 | 49.2% | 177.2 | 79.2% | 1.760 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 3 | 67.7 | 44.3% | 165.4 | 81.1% | 2.444 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 59.4 | 100.0% | 47.2 | 56.0% | 0.795 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 52.5 | 99.1% | 53.0 | 71.3% | 1.009 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 51.6 | 84.6% | 42.0 | 58.8% | 0.814 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 3 | 106.5 | 51.6% | 146.3 | 60.4% | 1.374 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 3 | 94.8 | 48.0% | 160.7 | 83.0% | 1.696 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 3 | 100.0 | 48.6% | 153.7 | 70.8% | 1.537 |
 
-MTPLX 0.3.7 requires `--allow-unverified-model` for the 35B-A3B MoE sidecar
-(MTPLX's tensor-count gate expects 15 tensors but the MoE MTP head has 20).
-The bench harness now passes this flag automatically for MoE models.
+AX Engine on the 35B-A3B outperforms MTPLX by 1.4–1.7× in decode
+throughput with 12–35pp higher accept rate. On the 27B, AX Engine matches
+MTPLX on long_code (ratio 1.0) but trails on flappy and python_modules_long
+due to MTPLX's near-perfect acceptance on the dense model.
 
-AX Engine outperforms MTPLX on the 35B-A3B by 1.4–2.4× in decode throughput
-with 12–37 percentage points higher accept rate, because AX's filtered lm_head
-path uses rejection sampling over the top-4096 candidates while MTPLX uses a
-dedicated but smaller draft lm_head.
+Note: AX MTP telemetry currently includes n-gram acceleration hits
+(`ax_mtp_ngram_hit_steps > 0`), so AX decode throughput and accept rate
+reflect combined MTP + n-gram, not pure MTP alone.
 
-Full artifacts: [`2026-05-30` (stable-profile re-run)](benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-stable-profile/summary.md) · [`2026-05-30` (corrected run)](benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-corrected/summary.md).
+Full artifacts: [`2026-05-30` (distribution-corrected native-depth v2)](benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-native-depth-v2/summary.md).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
