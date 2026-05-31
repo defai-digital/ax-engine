@@ -200,91 +200,107 @@ should not be read as a complete inference-serving proof. In particular:
 
 ## MTP Mode
 
-<!-- mtp-results-update: update numbers below after each bench_mtp_compare.py run -->
-AX MTP acceleration is measured on coding-shaped real-prompt suites against the
-`Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed` and
-`Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality` bundles on Apple M5 Max
-128 GB. Sampling: temperature=0.6, top_p=0.95, top_k=20, max_tokens=1000.
-These rows are `sampling_not_distribution_exact` and are not greedy-exact
-baselines.
+AX MTP is benchmarked against standard Qwen3.6 sidecars, not
+`Youssofal/*MTPLX*` bundles. The sidecar builder combines the ordinary
+`mlx-community/*-4bit` MLX base with the official `Qwen/Qwen3.6-*` MTP shard
+weights and writes `ax_mtp_sidecar_manifest.json` so every row records the base
+snapshot, source shard hashes, MTP output hash, transform policy, and supported
+depth.
 
-MTPLX 0.3.7 is the external reference. The current reference rows were captured
-with `scripts/bench_mtplx_prompt_suites.py` against the same AX Engine repo
-prompt suites, not MTPLX's built-in one-case `flappy` or `long_code` suites.
-AX MTP uses verifier-hidden-state drafting and standard rejection sampling.
+**Sidecar naming constraint**: `prepare_qwen36_mtp_sidecar.py` writes `mtp.safetensors`
+only (not `model-mtp.safetensors`). mlx_lm loads all `model*.safetensors` files in a
+directory via glob (`utils.py` line 316); a file named `model-mtp.safetensors` would
+cause `TextModel.sanitize` to see `has_mtp_weights=True` and apply a second +1.0 shift
+to the already-shifted base model norms, producing garbage output from any mlx_lm-based
+inference path (MTPLX, direct `mlx_lm.generate`). AX Engine is unaffected
+because it uses its own loader. Always keep the MTP sidecar file named `mtp.safetensors`.
 
-### Last recorded focused smoke results (2026-05-27)
+The fair harness is `scripts/bench_qwen36_mtp_fair.py`. It runs the same
+prompt suite files, max-token cap, sampler, warmup count, measured repetitions,
+and cooldown across MTPLX and AX Engine. The comparison uses native depth:
+27B at depth 3, 35B-A3B at depth 1.
 
-These rows are focused implementation smoke checks, not the full long-generation
-publication matrix. The comparison table includes only prompt-parity rows where
-AX Engine and MTPLX use the same suite file, depth, sampler settings, token cap,
-and measured repetition count.
+### Corrected 2026-05-30 run
 
-Harness boundary: AX rows are measured through the AX Engine server SSE runner.
-MTPLX rows are measured through a local MTPLX runtime depth-sweep runner because
-MTPLX 0.3.7's public `bench run` wrapper does not pass custom prompt files into
-its direct-HTTP harness. Treat this table as prompt/sampler/depth parity, not
-identical HTTP-harness parity.
+The initial 2026-05-30 stable-profile re-run showed MTPLX at ~2% accept rate.
+Root-cause investigation identified:
 
-> **Build note:** Speed artifacts were captured from a clean tracked worktree
-> (`git_tracked_dirty: false`). Quality artifacts were captured with uncommitted
-> `mtp.rs` changes (`git_tracked_dirty: true`, base commit `5b8650a0`). The
-> release server binary was prebuilt and the harness was invoked with
-> `--no-build-ax-engine` so Cargo did not rewrite `Cargo.lock` during artifact
-> capture.
+1. **MTPLX base-model corruption** (fixed). The sidecar directory contained a
+   `model-mtp.safetensors` hard-link alias that matched `mlx_lm`'s
+   `model*.safetensors` glob, causing `TextModel.sanitize` to apply a second
+   +1.0 shift to already-shifted norm weights. The alias has been removed from
+   `prepare_qwen36_mtp_sidecar.py`. After this fix, MTPLX accept rate rose from
+   ~2% to ~99.9% on standard Qwen3.6 sidecars.
 
-| Model bundle | Suite | AX depth cap | AX MTP (tok/s) | AX accept rate | MTPLX 0.3.7 (tok/s) | MTPLX depth | MTPLX accept rate | Artifact |
-|---|---|---:|---:|---:|---:|---:|---:|---|
-| Speed (4-bit base + Q6 sidecar) | flappy | 3 | **62.1** | 95.9% | 59.2 | 3 | 99.5% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-topk4096-final/speed-flappy/flappy.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
-| Speed (4-bit base + Q6 sidecar) | long_code | 3 | **60.4** | 93.3% | 59.8 | 3 | 99.6% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-topk4096-final/speed-lc/long_code.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
-| Quality (4-bit base + Q8 sidecar) | flappy | 3 | 41.9 | 94.3% | **43.0** | 3 | 99.4% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-topk4096-final/quality-flappy-r4/flappy.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
-| Quality (4-bit base + Q8 sidecar) | long_code | 3 | **43.9** | 93.4% | 43.2 | 3 | 99.7% | [AX artifact](../benchmarks/results/mtp-compare/2026-05-27-ax-mtp-topk4096-quality-lc/long_code/long_code.json), [MTPLX ref](../benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json) |
+### Accept rate improvement (2026-05-30)
 
-Depth=2 AX artifacts from earlier scouting are intentionally omitted from the
-publication table because MTPLX exposes depth=3 for this model family.
+Two additional fixes improved AX Engine's MTP accept rate:
 
-**Experimental variants not in this table:** during the same session several
-non-standard code paths were explored—`no-full-logits-eval` (skips evaluating
-the target logit tensor as an eager eval root) and `partial-hidden` (uses a
-truncated hidden state for draft generation). These produced 47–55 tok/s on the
-Speed model but skip parts of the verification algorithm and have not been
-validated for output-distribution correctness. Do not compare them against MTPLX
-standard rejection sampling until a correctness audit is complete.
+1. **Depth policy cap removed**. `default_mtp_depth_without_env()` capped all
+   models to depth 1 even when the sidecar specified `mtp_depth_max: 3`. The
+   cap prevented the 27B model from using its full depth. Now removed — models
+   use their configured native depth.
 
-**Long-code suite note:** prompt-parity `long_code` now uses the four AX repo
-cases with 451-852 prompt tokens and 1000 generated-token caps. On the Speed
-bundle AX MTP is 60.4 tok/s versus MTPLX 59.8 tok/s (+1.0%), with AX accept
-rate 93.3% versus MTPLX 99.6%. On the Quality bundle AX MTP is 43.9 tok/s
-versus MTPLX 43.2 tok/s (+1.6%), with AX accept rate 93.4% versus MTPLX
-99.7%. The Quality/flappy row is 41.9 tok/s at 94.3% accept, trailing MTPLX's
-43.0 tok/s reference.
+2. **Filtered lm_head rejection sampling**. The filtered candidate path (used
+   after the first decode step) skipped computing draft log-probs, which forced
+   greedy argmax acceptance. This required an exact match between draft and
+   verify argmax — far too strict with temperature > 0. Now computes
+   temperature-scaled softmax over the top-4096 candidate logits for rejection
+   sampling acceptance, matching MTPLX's strategy.
 
-### Updating these numbers
+35B-A3B results (native depth, flappy suite, 128 gen tokens):
 
-Run `bench_mtp_compare.py` after any n-gram or MTP-related change. Use a **clean
-build** (no uncommitted changes) and `--ax-mtp-max-depth 3` to match MTPLX's
-reference depth:
+| Engine | Decode tok/s | Accept rate | Notes |
+|---|---:|---:|---|
+| MTPLX 0.3.7 | — | — | Rejects 35B-A3B MoE sidecar layout |
+| AX Engine (before) | 108.2 | 21.3% | Depth=1, greedy argmax acceptance |
+| AX Engine (after) | 148.9 | 63.4% | Depth=3, rejection sampling |
+
+27B results (native depth=3, flappy suite, 128 gen tokens):
+
+| Engine | Decode tok/s | Accept rate | Notes |
+|---|---:|---:|---|
+| MTPLX 0.3.7 | 55.9 | 99.7% | Near-perfect acceptance with dedicated draft lm_head |
+| AX Engine (after) | 43.9 | 52.6% | Filtered candidate path, rejection sampling |
+
+Artifacts: `benchmarks/results/mtp-fair/2026-05-30-native-smoke/`.
+
+### Current publication contract
+
+- Models: `27b-4bit` and `35b-a3b-4bit`.
+- Provenance: standard `Qwen/Qwen3.6-27B` or `Qwen/Qwen3.6-35B-A3B` MTP shards
+  plus `mlx-community/Qwen3.6-27B-4bit` or
+  `mlx-community/Qwen3.6-35B-A3B-4bit`.
+- Suites: `flappy` and `long_code` from `benchmarks/prompts/mtp-suites/`.
+- Sampler: sampled decode, temperature=0.6, top_p=0.95, top_k=20.
+- Publication shape: max_tokens=1000, 1 warmup repetition, 5 measured
+  repetitions, 15 second cooldown.
+- Native depth: 27B `3`, 35B-A3B `1`.
+
+Prepare the sidecars:
 
 ```bash
-python3 scripts/bench_mtp_compare.py \
-  --model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Speed \
-  --mtplx-results benchmarks/results/mtp-compare/2026-05-27-mtplx-apple-to-apple-d3/mtplx.json \
-  --suites flappy \
-  --mtp-only \
-  --ax-mtp-max-depth 3 \
-  --repetitions 5 \
-  --cooldown 15 \
-  --output-dir benchmarks/results/mtp-compare/$(date +%F)-speed-depth3-smoke
+python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
+python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
 ```
 
-Use `--model-dir /path/to/Qwen3.6-27B-MTPLX-Optimized-Quality` for the Quality
-bundle. Then copy the numbers from the generated `summary.md` into the table
-above and update the artifact path. Verify `summary.md` shows no dirty-build
-warning before promoting numbers.
+Run the dual-engine fair comparison at native depth:
 
-Artifacts live in `benchmarks/results/mtp-compare/`. See
-[`benchmarks/results/mtp-compare/README.md`](../benchmarks/results/mtp-compare/README.md)
-for the full directory structure and MTPLX reference JSON format.
+```bash
+python3 scripts/bench_qwen36_mtp_fair.py \
+  --models 27b-4bit 35b-a3b-4bit \
+  --engines mtplx ax_engine \
+  --suites flappy long_code \
+  --depth-policy native \
+  --max-tokens 1000 \
+  --repetitions 5 \
+  --cooldown 15
+```
+
+The harness writes `summary.json`, `summary.md`, and `decode-tok-s.svg` under
+`benchmarks/results/mtp-fair/<date>-qwen36-fair/`. A row with `status=error` is
+kept in the summary instead of silently dropping a backend; that is deliberate
+so MTPLX loader incompatibilities (e.g. 35B-A3B MoE) stay visible.
 
 ## Additional Testing Plan
 

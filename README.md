@@ -2,9 +2,9 @@
 
 ### Qwen3.6 Fair MTP
 
-Tri-engine MTP comparison using standard `Qwen/Qwen3.6-*` sidecars plus
+MTPLX-vs-AX-Engine MTP comparison using standard `Qwen/Qwen3.6-*` sidecars plus
 matching `mlx-community/*-4bit` MLX bases. No `Youssofal/*MTPLX*` bundles are
-used. Latest local rerun: shared depth `1`, sampled decode, max tokens `1000`,
+used. Latest local rerun: native depth, sampled decode, max tokens `1000`,
 five measured repetitions, one warmup repetition.
 
 <table>
@@ -13,28 +13,33 @@ five measured repetitions, one warmup repetition.
 <td align="center"><strong>Qwen3.6 35B-A3B 4-bit</strong></td>
 </tr>
 <tr>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-decode-tok-s.svg" alt="Qwen3.6 27B 4-bit fair MTP decode throughput chart comparing MTPLX, Rapid-MLX, and AX Engine across flappy, long_code, and python_modules_long"></td>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-decode-tok-s.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP decode throughput chart comparing MTPLX, Rapid-MLX, and AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-decode-tok-s.svg" alt="Qwen3.6 27B 4-bit fair MTP decode throughput chart comparing MTPLX and AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-decode-tok-s.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP decode throughput chart comparing MTPLX and AX Engine across flappy, long_code, and python_modules_long"></td>
 </tr>
 <tr>
 <td><img width="100%" src="docs/assets/perf-mtp-fair-27b-accept-rate.svg" alt="Qwen3.6 27B 4-bit fair MTP accept-rate chart comparing MTPLX and AX Engine across flappy, long_code, and python_modules_long"></td>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-accept-rate.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP accept-rate chart comparing MTPLX and AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-accept-rate.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP accept-rate chart for AX Engine across flappy, long_code, and python_modules_long"></td>
 </tr>
 </table>
 
-| Model | Suite | MTPLX tok/s | MTPLX accept | Rapid-MLX tok/s | AX Engine tok/s | AX accept | AX/MTPLX | AX/Rapid |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 21.0 | 1.8% | 25.3 | 39.4 | 87.5% | 1.875 | 1.561 |
-| Qwen3.6 27B 4-bit | long_code | 20.7 | 1.0% | 25.2 | 42.0 | 91.9% | 2.025 | 1.663 |
-| Qwen3.6 27B 4-bit | python_modules_long | 23.8 | 3.0% | 28.0 | 38.3 | 68.5% | 1.606 | 1.365 |
-| Qwen3.6 35B-A3B 4-bit | flappy | - | - | 66.5 | 144.7 | 85.0% | - | 2.175 |
-| Qwen3.6 35B-A3B 4-bit | long_code | - | - | 70.2 | 145.2 | 89.6% | - | 2.070 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | - | - | 71.4 | 119.7 | 66.2% | - | 1.676 |
+| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX/MTPLX |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Qwen3.6 27B 4-bit | flappy | 3 | 55.9 | 99.7% | 43.9 | 52.6% | 0.785 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 55.1 | 99.5% | 44.1 | 51.2% | 0.801 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 53.8 | 98.1% | 41.2 | 47.8% | 0.766 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 3 | — | — | 148.9 | 63.4% | — |
+| Qwen3.6 35B-A3B 4-bit | long_code | 3 | — | — | 146.2 | 67.1% | — |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 3 | — | — | 131.5 | 58.9% | — |
 
-Rapid-MLX exposes server-path throughput here but not accepted/drafted token
-telemetry. MTPLX 0.3.7 rejects the standard 35B-A3B MoE MTP sidecar tensor
-layout, so those rows are intentionally fail-closed instead of forced.
-Full artifacts: [`summary.md`](benchmarks/results/mtp-fair/2026-05-29-qwen36-fair-fixed-sidecars/summary.md).
+MTPLX 0.3.7 rejects the 35B-A3B MoE sidecar tensor layout, so those rows
+remain fail-closed.
+
+AX Engine at native depth (d=3) generates more draft tokens per step but with
+lower per-token accept rates than MTPLX's near-perfect acceptance. The 35B-A3B
+model is the standout: AX Engine achieves 148.9 tok/s decode throughput on the
+MoE model where MTPLX cannot run at all.
+
+Full artifacts: [`2026-05-30` (stable-profile re-run)](benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-stable-profile/summary.md) · [`2026-05-30` (corrected run)](benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-corrected/summary.md).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
@@ -274,23 +279,20 @@ the MLX rows.
 AX Engine's fair Qwen3.6 MTP benchmark no longer uses
 `Youssofal/*MTPLX*` bundles. It prepares local, provenance-recorded sidecars
 from standard `Qwen/Qwen3.6-*` MTP shards plus the matching
-`mlx-community/*-4bit` MLX base, then runs MTPLX, Rapid-MLX, and AX Engine on
+`mlx-community/*-4bit` MLX base, then runs MTPLX and AX Engine on
 the same prompt suites, token caps, sampler, warmup, repetition count, and
 cooldown.
 
-Use the tri-engine harness for a shared-depth comparison. Rapid-MLX's reference
-MTP server path is a single-draft implementation, so the default fair tri-engine
-depth is `1`; native-depth 27B `d=3` claims should be compared separately
-between MTPLX and AX Engine.
+Use the dual-engine harness for a native-depth comparison:
 
 ```bash
 python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
 python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
 python3 scripts/bench_qwen36_mtp_fair.py \
   --models 27b-4bit 35b-a3b-4bit \
-  --engines mtplx rapid_mlx ax_engine \
+  --engines mtplx ax_engine \
   --suites flappy long_code \
-  --depth-policy fair-shared \
+  --depth-policy native \
   --max-tokens 1000 \
   --repetitions 5 \
   --cooldown 15
