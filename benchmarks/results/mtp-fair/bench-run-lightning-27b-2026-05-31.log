@@ -1,0 +1,199 @@
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --suite flappy --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/27b-4bit/flappy/lightning_mlx.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766
+flappy_pipes rep 1/6: decode=57.06102986193578 out=1000 reject=None
+flappy_pipes rep 2/6: decode=57.13449034201023 out=1000 reject=None
+flappy_pipes rep 3/6: decode=56.576821531982425 out=1000 reject=None
+flappy_pipes rep 4/6: decode=55.9242979788352 out=1000 reject=None
+flappy_pipes rep 5/6: decode=43.99530009219017 out=1000 reject=None
+flappy_pipes rep 6/6: decode=44.945452988801996 out=1000 reject=None
+flappy_score_gates rep 1/6: decode=41.34076865442869 out=688 reject=None
+flappy_score_gates rep 2/6: decode=43.43519379885467 out=687 reject=None
+flappy_score_gates rep 3/6: decode=42.11964263087212 out=690 reject=None
+flappy_score_gates rep 4/6: decode=45.27712181005176 out=687 reject=None
+flappy_score_gates rep 5/6: decode=45.39935987984363 out=686 reject=None
+flappy_score_gates rep 6/6: decode=47.72136860195657 out=684 reject=None
+flappy_collision_checks rep 1/6: decode=50.04396049114685 out=1000 reject=None
+flappy_collision_checks rep 2/6: decode=48.05425084558788 out=1000 reject=None
+flappy_collision_checks rep 3/6: decode=48.41105839222981 out=1000 reject=None
+flappy_collision_checks rep 4/6: decode=48.41982857843804 out=1000 reject=None
+flappy_collision_checks rep 5/6: decode=47.84461351683134 out=1000 reject=None
+flappy_collision_checks rep 6/6: decode=48.424115935579955 out=1000 reject=None
+flappy_sound_channels rep 1/6: decode=48.362642046456784 out=1000 reject=None
+flappy_sound_channels rep 2/6: decode=48.45447399027548 out=1000 reject=None
+flappy_sound_channels rep 3/6: decode=49.53511255489195 out=1000 reject=None
+flappy_sound_channels rep 4/6: decode=49.26197343173896 out=1000 reject=None
+flappy_sound_channels rep 5/6: decode=46.63982016462485 out=1000 reject=None
+flappy_sound_channels rep 6/6: decode=49.3857482948143 out=1000 reject=None
+Saved to benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/27b-4bit/flappy/lightning_mlx.json
+{
+  "accept_rate": 0.9683794466403162,
+  "accepted_drafts": null,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": 48.232654618908846,
+    "p10": 43.99530009219017,
+    "p90": 55.9242979788352,
+    "values": [
+      57.13449034201023,
+      56.576821531982425,
+      55.9242979788352,
+      43.99530009219017,
+      44.945452988801996,
+      43.43519379885467,
+      42.11964263087212,
+      45.27712181005176,
+      45.39935987984363,
+      47.72136860195657,
+      48.05425084558788,
+      48.41105839222981,
+      48.41982857843804,
+      47.84461351683134,
+      48.424115935579955,
+      48.45447399027548,
+      49.53511255489195,
+      49.26197343173896,
+      46.63982016462485,
+      49.3857482948143
+    ]
+  },
+  "drafted_tokens": null,
+  "end_to_end_tok_s": {
+    "median": 46.28168772972288,
+    "p10": 42.646909814141544,
+    "p90": 53.77748516847855,
+    "values": [
+      54.863859573942456,
+      54.26640178430236,
+      53.77748516847855,
+      42.646909814141544,
+      43.55223386532105,
+      41.23358522956547,
+      40.1149937973872,
+      43.02916287401396,
+      43.02769048299603,
+      45.139740409698646,
+      46.12647532407064,
+      46.436900135375126,
+      46.480027884993746,
+      45.930579990220664,
+      46.47443880831698,
+      46.821496655258535,
+      47.855168438424094,
+      47.62162117081975,
+      45.11684874791938,
+      47.707084892131746
+    ]
+  },
+  "generated_tokens": 18434,
+  "runs": 20,
+  "valid_runs": 20
+}
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --suite long_code --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/long_code.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/27b-4bit/long_code/lightning_mlx.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766
+long_code_c_audit rep 1/6: decode=46.65410438808885 out=1000 reject=None
+long_code_c_audit rep 2/6: decode=46.553614937163545 out=1000 reject=None
+long_code_c_audit rep 3/6: decode=47.376209951626144 out=1000 reject=None
+long_code_c_audit rep 4/6: decode=48.79598082673781 out=1000 reject=None
+long_code_c_audit rep 5/6: decode=48.330614849568725 out=1000 reject=None
+long_code_c_audit rep 6/6: decode=48.83204282957579 out=1000 reject=None
+long_code_api_audit rep 1/6: decode=47.805153651272384 out=1000 reject=None
+long_code_api_audit rep 2/6: decode=47.88710003092562 out=1000 reject=None
+long_code_api_audit rep 3/6: decode=48.22489109037929 out=1000 reject=None
+long_code_api_audit rep 4/6: decode=48.59516677711927 out=1000 reject=None
+long_code_api_audit rep 5/6: decode=49.02205944840698 out=1000 reject=None
+long_code_api_audit rep 6/6: decode=49.055227488253394 out=1000 reject=None
+long_code_test_stubs rep 1/6: decode=49.772121348626506 out=1000 reject=None
+long_code_test_stubs rep 2/6: decode=49.38558295416491 out=1000 reject=None
+long_code_test_stubs rep 3/6: decode=48.74090384948485 out=1000 reject=None
+long_code_test_stubs rep 4/6: decode=47.85849897911482 out=1000 reject=None
+long_code_test_stubs rep 5/6: decode=48.36398532377878 out=1000 reject=None
+long_code_test_stubs rep 6/6: decode=49.447485948648826 out=1000 reject=None
+long_code_sql_schema rep 1/6: decode=50.30940704419879 out=1000 reject=None
+long_code_sql_schema rep 2/6: decode=49.27581409806846 out=1000 reject=None
+long_code_sql_schema rep 3/6: decode=49.83092988335915 out=1000 reject=None
+long_code_sql_schema rep 4/6: decode=49.682580270054814 out=1000 reject=None
+long_code_sql_schema rep 5/6: decode=50.4788753161697 out=1000 reject=None
+long_code_sql_schema rep 6/6: decode=50.41193111878931 out=1000 reject=None
+Saved to benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/27b-4bit/long_code/lightning_mlx.json
+{
+  "accept_rate": 0.9333333333333333,
+  "accepted_drafts": null,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": 48.8140118281568,
+    "p10": 47.85849897911482,
+    "p90": 49.83092988335915,
+    "values": [
+      46.553614937163545,
+      47.376209951626144,
+      48.79598082673781,
+      48.330614849568725,
+      48.83204282957579,
+      47.88710003092562,
+      48.22489109037929,
+      48.59516677711927,
+      49.02205944840698,
+      49.055227488253394,
+      49.38558295416491,
+      48.74090384948485,
+      47.85849897911482,
+      48.36398532377878,
+      49.447485948648826,
+      49.27581409806846,
+      49.83092988335915,
+      49.682580270054814,
+      50.4788753161697,
+      50.41193111878931
+    ]
+  },
+  "drafted_tokens": null,
+  "end_to_end_tok_s": {
+    "median": 46.01273144064952,
+    "p10": 44.971177269278115,
+    "p90": 47.641222055725336,
+    "values": [
+      43.96941428189121,
+      44.621648578854675,
+      45.99533984437714,
+      45.617462867053966,
+      46.07084819087452,
+      44.971177269278115,
+      45.30933718262361,
+      45.63921016896523,
+      46.001230084079616,
+      46.02423279721941,
+      46.634782956778324,
+      46.02698224815895,
+      45.13741408654729,
+      45.631862575715594,
+      46.709165220749206,
+      47.12977315101868,
+      47.641222055725336,
+      47.52438790042949,
+      48.225527838450695,
+      48.21745106251376
+    ]
+  },
+  "generated_tokens": 20000,
+  "runs": 20,
+  "valid_runs": 20
+}
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --suite python_modules_long --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/27b-4bit/python_modules_long/lightning_mlx.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766
+pymod_http_client rep 1/6: decode=41.63420738087086 out=1000 reject=None
+pymod_http_client rep 2/6: decode=39.57610998213264 out=1000 reject=None
+pymod_http_client rep 3/6: decode=41.69676753386935 out=1000 reject=None
+pymod_http_client rep 4/6: decode=40.62047195384048 out=1000 reject=None
+pymod_http_client rep 5/6: decode=41.5629786538117 out=1000 reject=None
+pymod_http_client rep 6/6: decode=42.846801475767016 out=1000 reject=None
+pymod_config_loader rep 1/6: decode=44.237495949145 out=1000 reject=None
+pymod_config_loader rep 2/6: decode=42.34459226697145 out=1000 reject=None
+pymod_config_loader rep 3/6: decode=44.849474483377165 out=1000 reject=None
+pymod_config_loader rep 4/6: decode=42.21209634499185 out=1000 reject=None
+pymod_config_loader rep 5/6: decode=43.3305856798545 out=1000 reject=None
+pymod_config_loader rep 6/6: decode=44.235917068938576 out=1000 reject=None
+pymod_event_bus rep 1/6: decode=46.36116185884237 out=1000 reject=None
+pymod_event_bus rep 2/6: decode=45.577902565553956 out=1000 reject=None
+pymod_event_bus rep 3/6: decode=45.452981630135085 out=1000 reject=None
+pymod_event_bus rep 4/6: decode=42.61729303584294 out=1000 reject=None
+pymod_event_bus rep 5/6: decode=44.92019565003706 out=1000 reject=None

@@ -13,15 +13,15 @@
 <text x="172.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">flappy</text>
 <rect x="82.0" y="68.0" width="53.3" height="290.0" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
 <text x="108.7" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">100.0%</text>
-<rect x="145.3" y="80.0" width="53.3" height="278.0" rx="2" fill="#60a5fa" fill-opacity="0.86"/>
-<text x="172.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">95.9%</text>
+<rect x="145.3" y="77.2" width="53.3" height="280.8" rx="2" fill="#60a5fa" fill-opacity="0.86"/>
+<text x="172.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">96.8%</text>
 <rect x="208.7" y="70.7" width="53.3" height="287.3" rx="2" fill="#4ade80" fill-opacity="0.86"/>
 <text x="235.3" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">99.1%</text>
 <text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">long_code</text>
 <rect x="306.0" y="68.8" width="53.3" height="289.2" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
 <text x="332.7" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">99.7%</text>
-<rect x="369.3" y="89.0" width="53.3" height="269.0" rx="2" fill="#60a5fa" fill-opacity="0.86"/>
-<text x="396.0" y="84.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">92.8%</text>
+<rect x="369.3" y="87.3" width="53.3" height="270.7" rx="2" fill="#60a5fa" fill-opacity="0.86"/>
+<text x="396.0" y="82.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">93.3%</text>
 <rect x="432.7" y="72.8" width="53.3" height="285.2" rx="2" fill="#4ade80" fill-opacity="0.86"/>
 <text x="459.3" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">98.3%</text>
 <text x="620.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>

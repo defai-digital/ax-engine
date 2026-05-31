@@ -271,13 +271,13 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
 | Lightning MLX (tok/s) | 48.8 | 48.7 | 45.0 |
-| Lightning MLX (accept) | 95.9% | 92.8% | 73.7% |
-| MTPLX 0.3.7 (tok/s) | 39.2 | 44.3 | 47.7 |
+| Lightning MLX (accept) | 96.8% | 93.3% | 73.7% |
+| MTPLX 0.3.7 (tok/s) | 55.5 | 44.3 | 47.7 |
 | MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 87.6% |
 | AX Engine (tok/s) | 37.6 | 38.0 | 22.9 |
 | AX Engine (accept) | 99.1% | 98.3% | 67.0% |
-| AX/MTPLX ratio | 0.961 | 0.859 | 0.480 |
-| AX/Lightning ratio | 0.772 | 0.781 | 0.508 |
+| AX/MTPLX ratio | 0.679 | 0.859 | 0.480 |
+| AX/Lightning ratio | 0.771 | 0.782 | 0.508 |
 
 Artifacts: `benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-full-rerun/` (three-engine:
 MTPLX, Lightning MLX, AX Engine; full-vocab draft log-prob fix).
