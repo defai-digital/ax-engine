@@ -10,21 +10,11 @@
 <text x="52" y="167.7" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">37</text>
 <line x1="60" y1="68.0" x2="732" y2="68.0" stroke="#e5e7eb" stroke-width="1"/>
 <text x="52" y="71.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">56</text>
-<text x="172.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">flappy</text>
-<rect x="114.0" y="68.0" width="54.0" height="290.0" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
-<text x="141.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">55.9</text>
-<rect x="176.0" y="130.3" width="54.0" height="227.7" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="203.0" y="125.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">43.9</text>
-<text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">long_code</text>
-<rect x="338.0" y="72.2" width="54.0" height="285.8" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
-<text x="365.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">55.1</text>
-<rect x="400.0" y="129.2" width="54.0" height="228.8" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="427.0" y="124.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">44.1</text>
-<text x="620.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
-<rect x="562.0" y="78.9" width="54.0" height="279.1" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
-<text x="589.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">53.8</text>
-<rect x="624.0" y="144.3" width="54.0" height="213.7" rx="2" fill="#16a34a" fill-opacity="0.86"/>
-<text x="651.0" y="139.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">41.2</text>
+<text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">flappy</text>
+<rect x="338.0" y="68.0" width="54.0" height="290.0" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
+<text x="365.0" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">56.0</text>
+<rect x="400.0" y="137.4" width="54.0" height="220.6" rx="2" fill="#16a34a" fill-opacity="0.86"/>
+<text x="427.0" y="132.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">42.6</text>
 <rect x="60" y="407" width="10" height="10" rx="2" fill="#7c3aed" fill-opacity="0.86"/>
 <text x="74" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
 <rect x="190" y="407" width="10" height="10" rx="2" fill="#16a34a" fill-opacity="0.86"/>

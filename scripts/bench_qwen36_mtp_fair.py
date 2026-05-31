@@ -51,6 +51,7 @@ class QwenProfile:
     source_model_id: str
     ax_local_slug: str
     native_depth: int
+    is_moe: bool = False
 
 
 QWEN36_PROFILES = {
@@ -71,6 +72,7 @@ QWEN36_PROFILES = {
         source_model_id="Qwen/Qwen3.6-35B-A3B",
         ax_local_slug="models--ax-local--Qwen3.6-35B-MTP",
         native_depth=1,
+        is_moe=True,
     ),
 }
 
@@ -211,6 +213,7 @@ def run_mtplx_suite(
     model_dir: Path,
     config: diff.RunConfig,
     mtplx_profile: str = "stable",
+    allow_unverified_model: bool = False,
 ) -> Path:
     cmd = [
         str(python),
@@ -244,6 +247,8 @@ def run_mtplx_suite(
     ]
     if not config.enable_thinking:
         cmd.append("--disable-thinking")
+    if allow_unverified_model:
+        cmd.append("--allow-unverified-model")
     run_subprocess(cmd)
     return output_path
 
@@ -295,6 +300,7 @@ def run_engine_suite(
                 model_dir=model_dir,
                 config=config,
                 mtplx_profile=args.mtplx_profile,
+                allow_unverified_model=profile.is_moe,
             )
         raise ValueError(f"unknown engine: {engine}")
     except Exception as exc:

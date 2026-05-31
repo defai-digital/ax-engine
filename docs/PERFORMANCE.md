@@ -252,9 +252,9 @@ Two additional fixes improved AX Engine's MTP accept rate:
 
 | Engine | Decode tok/s | Accept rate | Notes |
 |---|---:|---:|---|
-| MTPLX 0.3.7 | — | — | Rejects 35B-A3B MoE sidecar layout |
+| MTPLX 0.3.7 | 102.1 | 51.1% | Requires `--allow-unverified-model` (MoE 20-tensor sidecar vs expected 15) |
 | AX Engine (before) | 108.2 | 21.3% | Depth=1, greedy argmax acceptance |
-| AX Engine (after) | 148.9 | 63.4% | Depth=3, rejection sampling |
+| AX Engine (after) | 143.2 | 63.4% | Depth=3, rejection sampling |
 
 27B results (native depth=3, flappy suite, 128 gen tokens):
 

@@ -24,20 +24,19 @@ five measured repetitions, one warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX/MTPLX |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 55.9 | 99.7% | 43.9 | 52.6% | 0.785 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 55.1 | 99.5% | 44.1 | 51.2% | 0.801 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 53.8 | 98.1% | 41.2 | 47.8% | 0.766 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 3 | — | — | 148.9 | 63.4% | — |
-| Qwen3.6 35B-A3B 4-bit | long_code | 3 | — | — | 146.2 | 67.1% | — |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 3 | — | — | 131.5 | 58.9% | — |
+| Qwen3.6 27B 4-bit | flappy | 3 | 56.0 | 100.0% | 42.6 | 52.6% | 0.761 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 3 | 102.1 | 51.1% | 143.2 | 63.4% | 1.403 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 3 | 100.7 | 49.2% | 177.2 | 79.2% | 1.760 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 3 | 67.7 | 44.3% | 165.4 | 81.1% | 2.444 |
 
-MTPLX 0.3.7 rejects the 35B-A3B MoE sidecar tensor layout, so those rows
-remain fail-closed.
+MTPLX 0.3.7 requires `--allow-unverified-model` for the 35B-A3B MoE sidecar
+(MTPLX's tensor-count gate expects 15 tensors but the MoE MTP head has 20).
+The bench harness now passes this flag automatically for MoE models.
 
-AX Engine at native depth (d=3) generates more draft tokens per step but with
-lower per-token accept rates than MTPLX's near-perfect acceptance. The 35B-A3B
-model is the standout: AX Engine achieves 148.9 tok/s decode throughput on the
-MoE model where MTPLX cannot run at all.
+AX Engine outperforms MTPLX on the 35B-A3B by 1.4–2.4× in decode throughput
+with 12–37 percentage points higher accept rate, because AX's filtered lm_head
+path uses rejection sampling over the top-4096 candidates while MTPLX uses a
+dedicated but smaller draft lm_head.
 
 Full artifacts: [`2026-05-30` (stable-profile re-run)](benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-stable-profile/summary.md) · [`2026-05-30` (corrected run)](benchmarks/results/mtp-fair/2026-05-30-qwen36-fair-corrected/summary.md).
 
