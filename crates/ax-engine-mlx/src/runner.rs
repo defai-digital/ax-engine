@@ -151,6 +151,11 @@ const LINEAR_NGRAM_REENABLE_PROBE_INTERVAL: u32 = 4;
 /// table with useless bigrams that trigger false-positive n-gram acceleration and force
 /// expensive recompute on the very first n-gram acceleration attempt.
 const NGRAM_PROMPT_FEED_MAX: usize = 64;
+/// When MTP is active, n-gram stacks on top of MTP drafts rather than driving
+/// speculation alone. A larger prompt window gives the table enough real-code
+/// bigrams to contribute from early decode steps without the random-token
+/// false-positive risk (MTP handles verification even if n-gram misfires).
+const NGRAM_MTP_PROMPT_FEED_MAX: usize = 256;
 /// Repeating prompts need enough prompt history for prompt-lookup drafts to see
 /// an earlier occurrence of the current suffix. Keep this bounded, but larger
 /// than the default random-prompt guard above.
@@ -3203,10 +3208,15 @@ fn append_tail(target: &mut Vec<u32>, source: &[u32], skip: &mut usize) {
     *skip = 0;
 }
 
-fn seed_generation_ngram_from_prompt(state: &mut RequestState) {
+fn seed_generation_ngram_from_prompt(state: &mut RequestState, has_mtp: bool) {
     let prompt_class = classify_prompt_class(&state.prompt_prefix_tokens);
     let feed_max = if prompt_class == crate::ngram_accel::PROMPT_CLASS_REPEATING {
         NGRAM_REPEATING_PROMPT_FEED_MAX
+    } else if has_mtp {
+        // With MTP active, use a wider prompt window so real-code bigrams are
+        // seeded early. MTP handles verification overhead if n-gram misfires,
+        // so the random-token false-positive risk is acceptable here.
+        NGRAM_MTP_PROMPT_FEED_MAX
     } else {
         NGRAM_PROMPT_FEED_MAX
     };
@@ -5606,14 +5616,7 @@ impl MlxRunner {
             let sl = skip_logits.unwrap();
             let sh = skip_hidden.unwrap();
             // Sample primary token from skip logits (shape [1, vocab]).
-            let primary_tok = sample_logit_row(
-                &sl,
-                0,
-                0,
-                vocab,
-                sampling,
-                &mut state.rng,
-            );
+            let primary_tok = sample_logit_row(&sl, 0, 0, vocab, sampling, &mut state.rng);
             // Draft new MTP tokens from skip hidden.
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
             let (draft, log_probs, _dist, added, _m) = mtp_draft_tokens(
@@ -6136,13 +6139,12 @@ impl MlxRunner {
         prefill_output_token: Option<u32>,
         is_greedy: bool,
     ) -> Option<u32> {
-        // Seed the n-gram table with the tail of the prompt.
-        // Only the last NGRAM_PROMPT_FEED_MAX tokens are fed: long prompts
-        // (e.g. random-token benchmarks with 512+ tokens) would otherwise inject
-        // hundreds of useless bigrams, causing a false-positive spec attempt on
-        // the first decode step and disabling n-gram acceleration for
-        // LINEAR_NGRAM_RETRY_INTERVAL steps — wiping out most of the generation.
-        seed_generation_ngram_from_prompt(state);
+        // When MTP is active, use a wider prompt window (NGRAM_MTP_PROMPT_FEED_MAX)
+        // so real-code bigrams are seeded before the first decode step. Without
+        // MTP, keep the conservative 64-token guard to avoid random-token false
+        // positives that would disable n-gram for the first 16 decode steps.
+        let has_mtp = self.weights.mtp.is_some();
+        seed_generation_ngram_from_prompt(state, has_mtp);
         seed_generation_ngram_from_prefill_output(state, prefill_output_token);
 
         // Initialize think-block tracking from the full prompt token sequence.
@@ -6157,8 +6159,12 @@ impl MlxRunner {
         let prompt_class = classify_prompt_class(&state.prompt_prefix_tokens);
         state.ngram_acceleration.record_prompt_class(prompt_class);
         let has_linear_attention = self.cfg.linear_attention.is_some();
-        let linear_initial_prompt_without_draft =
-            linear_ngram_initial_prompt_should_disable_request(
+        // When MTP is active, skip the probe-based initial disable: MTP handles
+        // first-step speculation independently, so even if the n-gram table has no
+        // candidate at step 0, n-gram can build from output tokens and contribute
+        // later without any harm to the first decode step.
+        let linear_initial_prompt_without_draft = !has_mtp
+            && linear_ngram_initial_prompt_should_disable_request(
                 has_linear_attention,
                 prompt_class,
                 &state.ngram,
@@ -8153,7 +8159,7 @@ mod tests {
         let mut warm = RequestState::new(2, RequestId(11));
         warm.prompt_prefix_tokens = vec![10, 11, 12, 13, 10, 11, 12];
 
-        seed_generation_ngram_from_prompt(&mut warm);
+        seed_generation_ngram_from_prompt(&mut warm, false);
 
         assert_eq!(
             warm.ngram.predict(1),
@@ -8163,7 +8169,7 @@ mod tests {
 
         let mut suffix_only = RequestState::new(2, RequestId(12));
         suffix_only.prompt_prefix_tokens = vec![10, 11, 12];
-        seed_generation_ngram_from_prompt(&mut suffix_only);
+        seed_generation_ngram_from_prompt(&mut suffix_only, false);
 
         assert!(
             suffix_only.ngram.predict(1).is_empty(),
@@ -8176,7 +8182,7 @@ mod tests {
         let mut state = RequestState::new(2, RequestId(13));
         state.prompt_prefix_tokens = vec![1, 2, 3, 1, 2, 3];
 
-        seed_generation_ngram_from_prompt(&mut state);
+        seed_generation_ngram_from_prompt(&mut state, false);
         assert_eq!(
             state.ngram.predict(1),
             vec![1],
@@ -8199,7 +8205,7 @@ mod tests {
         state.prompt_prefix_tokens.extend_from_slice(&block);
         state.prompt_prefix_tokens.extend_from_slice(&block);
 
-        seed_generation_ngram_from_prompt(&mut state);
+        seed_generation_ngram_from_prompt(&mut state, false);
 
         assert_eq!(
             state.ngram.predict(1),
@@ -8216,7 +8222,7 @@ mod tests {
             .prompt_prefix_tokens
             .extend_from_slice(&[147, 148, 149, 150]);
 
-        seed_generation_ngram_from_prompt(&mut state);
+        seed_generation_ngram_from_prompt(&mut state, false);
 
         assert!(
             state.ngram.predict(1).is_empty(),

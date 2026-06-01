@@ -2,7 +2,7 @@
 
 ### Qwen3.6 Fair MTP
 
-Four-engine MTP comparison (MTPLX 0.3.7, Lightning MLX, Lightning ngram+MTP, AX Engine) using
+Five-engine MTP comparison (MTPLX 0.3.7, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, AX Engine MTP+n-gram) using
 standard `Qwen/Qwen3.6-*` sidecars plus matching `mlx-community/*-4bit` MLX
 bases. No `Youssofal/*MTPLX*` bundles are used. Latest local rerun: native
 depth, sampled decode, max tokens `1000`, five measured repetitions, one
@@ -14,28 +14,28 @@ warmup repetition.
 <td align="center"><strong>Qwen3.6 35B-A3B 4-bit</strong></td>
 </tr>
 <tr>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-decode-tok-s.svg" alt="Qwen3.6 27B 4-bit fair MTP decode throughput chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, and AX Engine across flappy, long_code, and python_modules_long"></td>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-decode-tok-s.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP decode throughput chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, and AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-decode-tok-s.svg" alt="Qwen3.6 27B 4-bit fair MTP decode throughput chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, and AX Engine MTP+n-gram across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-decode-tok-s.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP decode throughput chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, and AX Engine MTP+n-gram across flappy, long_code, and python_modules_long"></td>
 </tr>
 <tr>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-accept-rate.svg" alt="Qwen3.6 27B 4-bit fair MTP accept-rate chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, and AX Engine across flappy, long_code, and python_modules_long"></td>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-accept-rate.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP accept-rate chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, and AX Engine across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-accept-rate.svg" alt="Qwen3.6 27B 4-bit fair MTP accept-rate chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, and AX Engine MTP+n-gram across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-accept-rate.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP accept-rate chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, and AX Engine MTP+n-gram across flappy, long_code, and python_modules_long"></td>
 </tr>
 </table>
 
-| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | Light.+ngram tok/s | Light.+ngram accept | AX tok/s | AX accept |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 51.5 | 100.0% | 49.5 | 96.5% | 52.4 | 85.4% | 65.9 | 99.5% |
-| Qwen3.6 27B 4-bit | long_code | 3 | 53.5 | 99.7% | 51.7 | 93.3% | 54.9 | 87.6% | 65.6 | 98.4% |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 51.6 | 87.6% | 46.9 | 76.5% | 45.0 | 72.2% | 53.8 | 74.8% |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 107.3 | 50.8% | 147.9 | 99.0% | 173.9 | 91.0% | 182.5 | 99.9% |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.4 | 50.5% | 149.0 | 98.5% | 194.9 | 92.1% | 180.7 | 99.8% |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.7 | 42.6% | 148.8 | 97.2% | 136.1 | 91.8% | 178.1 | 92.8% |
+| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | Light.+ngram tok/s | Light.+ngram accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Qwen3.6 27B 4-bit | flappy | 3 | 51.5 | 100.0% | 49.5 | 96.5% | 52.4 | 85.4% | 65.9 | 99.5% | 62.1 | 80.2% |
+| Qwen3.6 27B 4-bit | long_code | 3 | 53.5 | 99.7% | 51.7 | 93.3% | 54.9 | 87.6% | 65.6 | 98.4% | 62.2 | 90.0% |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 51.6 | 87.6% | 46.9 | 76.5% | 45.0 | 72.2% | 53.8 | 74.8% | 53.5 | 78.2% |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 107.3 | 50.8% | 147.9 | 99.0% | 173.9 | 91.0% | 182.5 | 99.9% | 261.7 | 88.8% |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.4 | 50.5% | 149.0 | 98.5% | 194.9 | 92.1% | 180.7 | 99.8% | 277.3 | 92.0% |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.7 | 42.6% | 148.8 | 97.2% | 136.1 | 91.8% | 178.1 | 92.8% | 196.3 | 83.5% |
 
-AX Engine uses pure MTP (n-gram stacking disabled); Lightning ngram+MTP uses `--enable-ngram` with MTP. Sampler: temperature=0.6,
+AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP; Lightning ngram+MTP uses `--enable-ngram` with MTP. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 15 s cooldown.
 
-Full artifacts: [`2026-05-31` (four-engine: MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine)](benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/summary.json).
+Full artifacts: [`2026-06-01` (five-engine: MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, AX Engine MTP+n-gram)](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/summary.json).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 

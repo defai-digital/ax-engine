@@ -253,7 +253,7 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
    the draft candidate set is no longer halved at each depth, giving the draft
    model the full candidate set at all depths.
 
-35B-A3B results (native depth=1, pure MTP for AX Engine, ngram+MTP for Lightning ngram row, 1000 gen tokens):
+35B-A3B results (native depth=1, 1000 gen tokens):
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
@@ -263,12 +263,15 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 | Light. ngram+MTP (accept) | 91.0% | 92.1% | 91.8% |
 | MTPLX 0.3.7 (tok/s) | 107.3 | 106.4 | 102.7 |
 | MTPLX 0.3.7 (accept) | 50.8% | 50.5% | 42.6% |
-| AX Engine (tok/s) | 182.5 | 180.7 | 178.1 |
-| AX Engine (accept) | 99.9% | 99.8% | 92.8% |
-| AX/MTPLX ratio | 1.701 | 1.699 | 1.735 |
-| AX/Lightning ratio | 1.234 | 1.213 | 1.197 |
+| AX MTP (tok/s) | 182.5 | 180.7 | 178.1 |
+| AX MTP (accept) | 99.9% | 99.8% | 92.8% |
+| AX MTP+n-gram (tok/s) | 261.7 | 277.3 | 196.3 |
+| AX MTP+n-gram (accept) | 88.8% | 92.0% | 83.5% |
+| AX+ngram/MTPLX ratio | 2.439 | 2.605 | 1.912 |
+| AX+ngram/Lightning ratio | 1.769 | 1.861 | 1.319 |
+| AX+ngram/AX ratio | 1.434 | 1.534 | 1.103 |
 
-27B results (native depth=3, pure MTP for AX Engine, ngram+MTP for Lightning ngram row, 1000 gen tokens):
+27B results (native depth=3, 1000 gen tokens):
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
@@ -278,13 +281,19 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 | Light. ngram+MTP (accept) | 85.4% | 87.6% | 72.2% |
 | MTPLX 0.3.7 (tok/s) | 51.5 | 53.5 | 51.6 |
 | MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 87.6% |
-| AX Engine (tok/s) | 65.9 | 65.6 | 53.8 |
-| AX Engine (accept) | 99.5% | 98.4% | 74.8% |
-| AX/MTPLX ratio | 1.280 | 1.227 | 1.043 |
-| AX/Lightning ratio | 1.331 | 1.270 | 1.148 |
+| AX MTP (tok/s) | 65.9 | 65.6 | 53.8 |
+| AX MTP (accept) | 99.5% | 98.4% | 74.8% |
+| AX MTP+n-gram (tok/s) | 62.1 | 62.2 | 53.5 |
+| AX MTP+n-gram (accept) | 80.2% | 90.0% | 78.2% |
+| AX+ngram/MTPLX ratio | 1.206 | 1.163 | 1.037 |
+| AX+ngram/Lightning ratio | 1.254 | 1.203 | 1.140 |
 
-Artifacts: `benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/` (four-engine:
-MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine; fresh full rerun 2026-05-31).
+Note: For 27B (depth=3), pure MTP already achieves 98–99% accept on flappy/long_code, leaving
+little room for n-gram to improve throughput. For 35B-A3B (depth=1), n-gram stacking provides
+substantial speedup (+43–54%) by drafting additional tokens cheaply beyond the single MTP step.
+
+Artifacts: `benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/` (five-engine:
+MTPLX, Lightning MLX, Lightning ngram+MTP, AX MTP, AX MTP+n-gram; fresh full rerun 2026-06-01).
 
 #### Chart data table
 
