@@ -303,48 +303,6 @@ uses a cost-gated n-gram-first path with KV trim on rejection. AX Engine n-gram
 verification is argmax-exact (distribution-exact under greedy), while Lightning MLX
 n-gram uses argmax accept for its positions and probability-ratio for the MTP tail.
 
-### Benchmarking Lightning MLX MTP+n-gram
-
-Use `bench_rapid_mlx_prompt_suites.py --lightning-mode --enable-ngram` to run a single
-suite, or `bench_qwen36_mtp_fair.py --lightning-ngram` to compare all four engines
-(MTPLX, Lightning MLX, Lightning MLX MTP+ngram, AX Engine) on the full fair benchmark:
-
-```text
-python3 scripts/bench_rapid_mlx_prompt_suites.py \
-  --model /path/to/model \
-  --suite flappy \
-  --prompts benchmarks/prompts/mtp-suites/flappy.jsonl \
-  --lightning-mode \
-  --enable-ngram \
-  --output benchmarks/results/mtp-fair/lightning-ngram-flappy.json
-```
-
-The `--enable-ngram` flag applies the production benchmark preset:
-
-| Flag | Value | Reason |
-|---|---|---|
-| `--enable-ngram` | on | activates prompt-lookup drafter |
-| `--ngram-num-draft-tokens` | 6 | wide K for long-overlap workloads |
-| `--ngram-min-occurrences` | 2 | require bigram to appear twice before drafting |
-| `--ngram-acceptance-mode` | greedy | argmax accept for n-gram positions |
-| `--ngram-hybrid-verify` | on | append one MTP head draft as tail when n-gram hits |
-| `--ngram-everywhere` | on | required: `--no-thinking` suppresses `<think>` blocks entirely, so the default `ngram_only_in_think=True` would produce zero drafts |
-| `--ngram-self-tune` | on | disable n-gram for the rest of a request when per-request running accept falls below 0.30 after 32-token warmup |
-| `--ngram-auto-disable-mtp-threshold` | 0.0 | threshold=0 disables auto-disable; n-gram is always active for clean benchmark coverage |
-
-Per-request n-gram accept ratio is fetched from `/v1/requests?limit=1` and stored
-as `ngram_acceptance_ratio` alongside the existing `mtp_acceptance_ratio`. The
-`bench_qwen36_mtp_fair.py` markdown output shows this as "Lightning ngram+MTP accept"
-for the `lightning_mtp_ngram` ("Lightning ngram+MTP") engine row.
-
-### Claim boundary
-
-Lightning MLX MTP+n-gram results are cross-engine comparison evidence, not
-repo-owned MLX throughput claims. They must not be cited in the same table as
-`bench_mlx_inference_stack.py` random-token baseline rows or AX n-gram
-`ngram_acceleration_effective_throughput` rows. The claim taxonomies and
-correctness contracts differ.
-
 ## Reproducing the gate locally
 
 ```bash
