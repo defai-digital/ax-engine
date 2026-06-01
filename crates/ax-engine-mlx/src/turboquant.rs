@@ -12,6 +12,8 @@ pub const TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM: usize = 128;
 pub const TURBOQUANT_EXTENDED_FUSED_DECODE_HEAD_DIM: usize = 256;
 pub const TURBOQUANT_GEMMA4_FULL_ATTENTION_FUSED_DECODE_HEAD_DIM: usize = 512;
 pub const TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION: u32 = 3;
+pub const TURBOQUANT_CODEC_VERSION_UNIFORM_HADAMARD: u32 = 1;
+pub const TURBOQUANT_CODEC_VERSION_RHT_LLOYD_MAX: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TurboQuantProductionRequirements {
@@ -142,6 +144,96 @@ pub enum TurboQuantCodecError {
     FusedDecodeLaunchRejected {
         status: TurboQuantFusedDecodeCandidateStatus,
     },
+    #[error("TurboQuant compressed buffer state is inconsistent: {message}")]
+    InvalidCompressedBufferState { message: String },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TurboQuantKeyCentroidKind {
+    #[default]
+    Uniform,
+    LloydMaxGaussian,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TurboQuantVectorRole {
+    #[default]
+    Key,
+    Value,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantKeyCodecConfig {
+    pub version: u32,
+    pub centroid_kind: TurboQuantKeyCentroidKind,
+}
+
+impl Default for TurboQuantKeyCodecConfig {
+    fn default() -> Self {
+        Self::rht_lloyd_max()
+    }
+}
+
+impl TurboQuantKeyCodecConfig {
+    pub const fn legacy_uniform_hadamard() -> Self {
+        Self {
+            version: TURBOQUANT_CODEC_VERSION_UNIFORM_HADAMARD,
+            centroid_kind: TurboQuantKeyCentroidKind::Uniform,
+        }
+    }
+
+    pub const fn rht_lloyd_max() -> Self {
+        Self {
+            version: TURBOQUANT_CODEC_VERSION_RHT_LLOYD_MAX,
+            centroid_kind: TurboQuantKeyCentroidKind::LloydMaxGaussian,
+        }
+    }
+
+    pub const fn uses_random_signs(self) -> bool {
+        self.version >= TURBOQUANT_CODEC_VERSION_RHT_LLOYD_MAX
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurboQuantRotationSigns {
+    pub dim: usize,
+    pub seed: u64,
+    signs: Vec<i8>,
+}
+
+impl TurboQuantRotationSigns {
+    pub fn new(dim: usize, seed: u64) -> Result<Self, TurboQuantCodecError> {
+        validate_key_shape_len(dim)?;
+        let signs = (0..dim)
+            .map(|idx| {
+                if splitmix64(seed ^ (idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)) & 1 == 0 {
+                    1
+                } else {
+                    -1
+                }
+            })
+            .collect();
+        Ok(Self { dim, seed, signs })
+    }
+
+    pub fn sign_at(&self, index: usize) -> f32 {
+        if self.signs[index] >= 0 { 1.0 } else { -1.0 }
+    }
+
+    pub fn apply(&self, values: &mut [f32]) -> Result<(), TurboQuantCodecError> {
+        if values.len() != self.dim {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: self.dim,
+                actual: values.len(),
+            });
+        }
+        for (value, sign) in values.iter_mut().zip(&self.signs) {
+            if *sign < 0 {
+                *value = -*value;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,12 +242,17 @@ pub struct QuantizedKeyVector {
     pub bit_width: u32,
     pub l2_norm: f32,
     pub packed_indices: Vec<u8>,
+    pub codec_version: u32,
+    pub centroid_kind: TurboQuantKeyCentroidKind,
+    pub rotation_seed: u64,
+    pub head_index: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct QuantizedValueGroups {
     pub element_count: usize,
     pub group_size: usize,
+    pub value_bits_x2: u32,
     pub mins: Vec<f32>,
     pub scales: Vec<f32>,
     pub packed_values: Vec<u8>,
@@ -204,8 +301,11 @@ impl TurboQuantDecodeQualityProfile {
 
     pub const fn for_quantization_preset(preset: TurboQuantPreset) -> Self {
         match preset {
-            TurboQuantPreset::K8V4 => Self::ReferenceK8V4,
-            TurboQuantPreset::K4V4 | TurboQuantPreset::K3V4Research => Self::ResearchLoose,
+            TurboQuantPreset::K8V4 | TurboQuantPreset::K16V4 => Self::ReferenceK8V4,
+            TurboQuantPreset::K4V4
+            | TurboQuantPreset::K3V4Research
+            | TurboQuantPreset::K8V3_5
+            | TurboQuantPreset::K7V4 => Self::ResearchLoose,
         }
     }
 
@@ -676,6 +776,20 @@ impl TurboQuantFusedDecodePromotionReadiness {
     pub fn is_ready(self) -> bool {
         self.status == TurboQuantFusedDecodePromotionStatus::Ready
     }
+
+    pub fn fallback_preset(self) -> Option<TurboQuantPreset> {
+        if self.status == TurboQuantFusedDecodePromotionStatus::QualityGateFailed
+            && self.preset == TurboQuantPreset::K8V4
+        {
+            Some(TurboQuantPreset::K16V4)
+        } else {
+            None
+        }
+    }
+
+    pub fn effective_preset(self) -> TurboQuantPreset {
+        self.fallback_preset().unwrap_or(self.preset)
+    }
 }
 
 impl TurboQuantFusedDecodeLaunchDescriptor {
@@ -1032,14 +1146,14 @@ impl TurboQuantBlockLayout {
         validate_layout_nonzero("head_dim", config.head_dim)?;
         validate_layout_nonzero("value_group_size", config.value_group_size)?;
         validate_key_shape_len(config.head_dim)?;
-        key_centroids(config.preset.key_bits())?;
+        validate_supported_key_bits(config.preset.key_bits())?;
 
         let value_group_count = config.head_dim.div_ceil(config.value_group_size);
         let key_payload_bytes_per_head =
             packed_index_bytes(config.head_dim, config.preset.key_bits())?;
         let key_norm_bytes_per_head = std::mem::size_of::<f32>();
         let value_payload_bytes_per_head =
-            packed_index_bytes(config.head_dim, config.preset.value_bits())?;
+            packed_value_bytes_for_preset(config.head_dim, config.preset)?;
         let value_metadata_bytes_per_head = checked_mul(
             checked_mul(value_group_count, std::mem::size_of::<f32>())?,
             2,
@@ -1167,20 +1281,55 @@ pub struct TurboQuantCompressedHeadSlot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TurboQuantCompressedBlockBuffer {
     layout: TurboQuantBlockLayout,
+    key_codec: TurboQuantKeyCodecConfig,
     bytes: Vec<u8>,
     written_slots: Vec<bool>,
     token_count: usize,
     written_slot_count: usize,
+    k_deq_buf: Vec<Vec<u16>>,
+    v_deq_buf: Vec<Vec<u16>>,
+    deq_offset: usize,
+    deq_alloc: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurboQuantCompressedBlockBufferState {
+    pub bytes: Vec<u8>,
+    pub written_slots: Vec<bool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurboQuantCompressedBlockBufferMetaState {
+    pub layout: TurboQuantBlockLayout,
+    pub key_codec: TurboQuantKeyCodecConfig,
+    pub token_count: usize,
+    pub written_slot_count: usize,
 }
 
 impl TurboQuantCompressedBlockBuffer {
     pub fn new(layout: TurboQuantBlockLayout) -> Self {
+        Self::new_with_key_codec(layout, TurboQuantKeyCodecConfig::default())
+    }
+
+    pub fn new_legacy_uniform_hadamard(layout: TurboQuantBlockLayout) -> Self {
+        Self::new_with_key_codec(layout, TurboQuantKeyCodecConfig::legacy_uniform_hadamard())
+    }
+
+    pub fn new_with_key_codec(
+        layout: TurboQuantBlockLayout,
+        key_codec: TurboQuantKeyCodecConfig,
+    ) -> Self {
         Self {
             layout,
+            key_codec,
             bytes: Vec::new(),
             written_slots: Vec::new(),
             token_count: 0,
             written_slot_count: 0,
+            k_deq_buf: Vec::new(),
+            v_deq_buf: Vec::new(),
+            deq_offset: 0,
+            deq_alloc: 0,
         }
     }
 
@@ -1188,8 +1337,91 @@ impl TurboQuantCompressedBlockBuffer {
         &self.layout
     }
 
+    pub fn key_codec(&self) -> TurboQuantKeyCodecConfig {
+        self.key_codec
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    pub fn state(&self) -> TurboQuantCompressedBlockBufferState {
+        TurboQuantCompressedBlockBufferState {
+            bytes: self.bytes.clone(),
+            written_slots: self.written_slots.clone(),
+        }
+    }
+
+    pub fn meta_state(&self) -> TurboQuantCompressedBlockBufferMetaState {
+        TurboQuantCompressedBlockBufferMetaState {
+            layout: self.layout,
+            key_codec: self.key_codec,
+            token_count: self.token_count,
+            written_slot_count: self.written_slot_count,
+        }
+    }
+
+    pub fn from_state(
+        meta_state: TurboQuantCompressedBlockBufferMetaState,
+        state: TurboQuantCompressedBlockBufferState,
+    ) -> Result<Self, TurboQuantCodecError> {
+        let expected_bytes = meta_state
+            .layout
+            .buffer_bytes_for_tokens(meta_state.token_count)?;
+        if state.bytes.len() != expected_bytes {
+            return Err(TurboQuantCodecError::InvalidCompressedBufferState {
+                message: format!(
+                    "expected {expected_bytes} bytes for {} tokens, got {}",
+                    meta_state.token_count,
+                    state.bytes.len()
+                ),
+            });
+        }
+
+        let expected_slots = checked_mul(
+            checked_mul(
+                meta_state
+                    .layout
+                    .block_count_for_tokens(meta_state.token_count),
+                meta_state.layout.config.block_tokens,
+            )?,
+            meta_state.layout.config.n_kv_heads,
+        )?;
+        if state.written_slots.len() != expected_slots {
+            return Err(TurboQuantCodecError::InvalidCompressedBufferState {
+                message: format!(
+                    "expected {expected_slots} written-slot flags, got {}",
+                    state.written_slots.len()
+                ),
+            });
+        }
+
+        let actual_written_slot_count = state
+            .written_slots
+            .iter()
+            .filter(|written| **written)
+            .count();
+        if actual_written_slot_count != meta_state.written_slot_count {
+            return Err(TurboQuantCodecError::InvalidCompressedBufferState {
+                message: format!(
+                    "meta written_slot_count={} but state contains {actual_written_slot_count} flags",
+                    meta_state.written_slot_count
+                ),
+            });
+        }
+
+        Ok(Self {
+            layout: meta_state.layout,
+            key_codec: meta_state.key_codec,
+            bytes: state.bytes,
+            written_slots: state.written_slots,
+            token_count: meta_state.token_count,
+            written_slot_count: meta_state.written_slot_count,
+            k_deq_buf: Vec::new(),
+            v_deq_buf: Vec::new(),
+            deq_offset: 0,
+            deq_alloc: 0,
+        })
     }
 
     pub fn token_count(&self) -> usize {
@@ -1198,6 +1430,14 @@ impl TurboQuantCompressedBlockBuffer {
 
     pub fn written_slot_count(&self) -> usize {
         self.written_slot_count
+    }
+
+    pub fn dequant_buffer_token_count(&self) -> usize {
+        self.deq_offset
+    }
+
+    pub fn dequant_buffer_alloc_tokens(&self) -> usize {
+        self.deq_alloc
     }
 
     pub fn block_count(&self) -> usize {
@@ -1215,8 +1455,17 @@ impl TurboQuantCompressedBlockBuffer {
         let address = self.layout.address_for_token(token_index, head_index)?;
         self.ensure_capacity_for_tokens(token_index.saturating_add(1))?;
 
-        let key = encode_key_vector(key, self.layout.config.preset)?;
-        let value = encode_value_groups_4bit(value, self.layout.config.value_group_size)?;
+        let key = encode_key_vector_for_head_with_codec(
+            key,
+            self.layout.config.preset,
+            head_index,
+            self.key_codec,
+        )?;
+        let value = encode_value_groups_for_preset(
+            value,
+            self.layout.config.value_group_size,
+            self.layout.config.preset,
+        )?;
 
         self.zero_slot(&address)?;
         self.write_compressed_slot_at(&address, &key, &value)?;
@@ -1227,6 +1476,7 @@ impl TurboQuantCompressedBlockBuffer {
         }
         self.written_slots[slot_index] = true;
         self.token_count = self.token_count.max(token_index.saturating_add(1));
+        self.invalidate_dequant_buffers();
         Ok(())
     }
 
@@ -1244,11 +1494,21 @@ impl TurboQuantCompressedBlockBuffer {
 
         let compressed_heads = heads
             .iter()
-            .map(|(key, value)| {
+            .enumerate()
+            .map(|(head_index, (key, value))| {
                 self.validate_slot_vectors(key, value)?;
                 Ok(TurboQuantCompressedHeadSlot {
-                    key: encode_key_vector(key, self.layout.config.preset)?,
-                    value: encode_value_groups_4bit(value, self.layout.config.value_group_size)?,
+                    key: encode_key_vector_for_head_with_codec(
+                        key,
+                        self.layout.config.preset,
+                        head_index,
+                        self.key_codec,
+                    )?,
+                    value: encode_value_groups_for_preset(
+                        value,
+                        self.layout.config.value_group_size,
+                        self.layout.config.preset,
+                    )?,
                 })
             })
             .collect::<Result<Vec<_>, TurboQuantCodecError>>()?;
@@ -1265,6 +1525,7 @@ impl TurboQuantCompressedBlockBuffer {
             self.written_slots[slot_index] = true;
         }
         self.token_count = self.token_count.max(token_index.saturating_add(1));
+        self.update_dequant_buffers_after_token_write(token_index, heads)?;
         Ok(())
     }
 
@@ -1277,7 +1538,7 @@ impl TurboQuantCompressedBlockBuffer {
         let address = self.layout.address_for_token(token_index, head_index)?;
 
         Ok(TurboQuantCompressedHeadSlot {
-            key: self.read_key_at(&address),
+            key: self.read_key_at(&address, head_index),
             value: self.read_value_at(&address),
         })
     }
@@ -1320,6 +1581,47 @@ impl TurboQuantCompressedBlockBuffer {
         self.validate_head_index(head_index)?;
         (0..token_count)
             .map(|token_index| self.debug_reconstruct_slot(token_index, head_index))
+            .collect()
+    }
+
+    pub fn debug_reconstruct_head_history_cached(
+        &mut self,
+        head_index: usize,
+        token_count: usize,
+    ) -> Result<Vec<FullPrecisionKvTokenVectors>, TurboQuantCodecError> {
+        self.validate_head_index(head_index)?;
+        self.ensure_dequant_buffers_for_tokens(token_count)?;
+        let head_dim = self.layout.config.head_dim;
+        let key_head =
+            self.k_deq_buf
+                .get(head_index)
+                .ok_or(TurboQuantCodecError::MismatchedKvHeadCount {
+                    expected: self.layout.config.n_kv_heads,
+                    actual: head_index.saturating_add(1),
+                })?;
+        let value_head =
+            self.v_deq_buf
+                .get(head_index)
+                .ok_or(TurboQuantCodecError::MismatchedKvHeadCount {
+                    expected: self.layout.config.n_kv_heads,
+                    actual: head_index.saturating_add(1),
+                })?;
+
+        (0..token_count)
+            .map(|token_index| {
+                let start = token_index.saturating_mul(head_dim);
+                let end = start.saturating_add(head_dim);
+                Ok((
+                    key_head[start..end]
+                        .iter()
+                        .map(|bits| f16_bits_to_f32(*bits))
+                        .collect(),
+                    value_head[start..end]
+                        .iter()
+                        .map(|bits| f16_bits_to_f32(*bits))
+                        .collect(),
+                ))
+            })
             .collect()
     }
 
@@ -1419,6 +1721,94 @@ impl TurboQuantCompressedBlockBuffer {
         ))
     }
 
+    fn invalidate_dequant_buffers(&mut self) {
+        self.k_deq_buf.clear();
+        self.v_deq_buf.clear();
+        self.deq_offset = 0;
+        self.deq_alloc = 0;
+    }
+
+    fn update_dequant_buffers_after_token_write(
+        &mut self,
+        token_index: usize,
+        heads: &[FullPrecisionKvTokenVectors],
+    ) -> Result<(), TurboQuantCodecError> {
+        if token_index != self.deq_offset || heads.len() != self.layout.config.n_kv_heads {
+            self.invalidate_dequant_buffers();
+            return Ok(());
+        }
+
+        self.ensure_dequant_buffer_capacity(token_index.saturating_add(1))?;
+        let head_dim = self.layout.config.head_dim;
+        for (head_index, (key, value)) in heads.iter().enumerate() {
+            let start = token_index.saturating_mul(head_dim);
+            let end = start.saturating_add(head_dim);
+            for (target, source) in self.k_deq_buf[head_index][start..end].iter_mut().zip(key) {
+                *target = f32_to_f16_bits(*source);
+            }
+            for (target, source) in self.v_deq_buf[head_index][start..end].iter_mut().zip(value) {
+                *target = f32_to_f16_bits(*source);
+            }
+        }
+        self.deq_offset = token_index.saturating_add(1);
+        Ok(())
+    }
+
+    fn ensure_dequant_buffers_for_tokens(
+        &mut self,
+        token_count: usize,
+    ) -> Result<(), TurboQuantCodecError> {
+        if token_count <= self.deq_offset {
+            return Ok(());
+        }
+        self.ensure_dequant_buffer_capacity(token_count)?;
+        for token_index in self.deq_offset..token_count {
+            let token = self.debug_reconstruct_token(token_index)?;
+            let head_dim = self.layout.config.head_dim;
+            for (head_index, (key, value)) in token.iter().enumerate() {
+                let start = token_index.saturating_mul(head_dim);
+                let end = start.saturating_add(head_dim);
+                for (target, source) in self.k_deq_buf[head_index][start..end].iter_mut().zip(key) {
+                    *target = f32_to_f16_bits(*source);
+                }
+                for (target, source) in self.v_deq_buf[head_index][start..end].iter_mut().zip(value)
+                {
+                    *target = f32_to_f16_bits(*source);
+                }
+            }
+        }
+        self.deq_offset = token_count;
+        Ok(())
+    }
+
+    fn ensure_dequant_buffer_capacity(
+        &mut self,
+        token_count: usize,
+    ) -> Result<(), TurboQuantCodecError> {
+        let head_dim = self.layout.config.head_dim;
+        let n_kv_heads = self.layout.config.n_kv_heads;
+        if self.k_deq_buf.len() != n_kv_heads || self.v_deq_buf.len() != n_kv_heads {
+            self.k_deq_buf = (0..n_kv_heads).map(|_| Vec::new()).collect();
+            self.v_deq_buf = (0..n_kv_heads).map(|_| Vec::new()).collect();
+            self.deq_alloc = 0;
+            self.deq_offset = 0;
+        }
+
+        if token_count <= self.deq_alloc {
+            return Ok(());
+        }
+        let new_alloc = token_count.next_multiple_of(4);
+        let new_len = checked_mul(new_alloc, head_dim)?;
+        for head in &mut self.k_deq_buf {
+            head.resize(new_len, 0);
+        }
+        for head in &mut self.v_deq_buf {
+            head.resize(new_len, 0);
+        }
+        self.deq_alloc = new_alloc;
+        Ok(())
+    }
+
     fn validate_slot_vectors(
         &self,
         key: &[f32],
@@ -1503,7 +1893,11 @@ impl TurboQuantCompressedBlockBuffer {
         }
     }
 
-    fn read_key_at(&self, address: &TurboQuantSlotAddress) -> QuantizedKeyVector {
+    fn read_key_at(
+        &self,
+        address: &TurboQuantSlotAddress,
+        head_index: usize,
+    ) -> QuantizedKeyVector {
         QuantizedKeyVector {
             dim: self.layout.config.head_dim,
             bit_width: self.layout.config.preset.key_bits(),
@@ -1511,6 +1905,14 @@ impl TurboQuantCompressedBlockBuffer {
             packed_indices: self.bytes[address.key_payload_offset_bytes
                 ..address.key_payload_offset_bytes + self.layout.key_payload_bytes_per_head]
                 .to_vec(),
+            codec_version: self.key_codec.version,
+            centroid_kind: self.key_codec.centroid_kind,
+            rotation_seed: turboquant_rotation_seed(
+                self.layout.config.head_dim,
+                head_index,
+                TurboQuantVectorRole::Key,
+            ),
+            head_index,
         }
     }
 
@@ -1518,6 +1920,7 @@ impl TurboQuantCompressedBlockBuffer {
         QuantizedValueGroups {
             element_count: self.layout.config.head_dim,
             group_size: self.layout.config.value_group_size,
+            value_bits_x2: self.layout.config.preset.value_bits_x2(),
             mins: self.read_f32_vec(
                 address.value_mins_offset_bytes,
                 self.layout.value_group_count,
@@ -1606,7 +2009,7 @@ impl TurboQuantKvPrototypeConfig {
         if !vector_dim.is_power_of_two() {
             return Err(TurboQuantCodecError::NonPowerOfTwoDimension(vector_dim));
         }
-        key_centroids(preset.key_bits())?;
+        validate_supported_key_bits(preset.key_bits())?;
         packed_index_bytes(vector_dim, preset.value_bits())?;
         Ok(Self {
             preset,
@@ -1621,7 +2024,7 @@ pub fn turboquant_support_report(
     cfg: &ModelConfig,
     preset: TurboQuantPreset,
 ) -> Result<TurboQuantSupportReport, TurboQuantCodecError> {
-    key_centroids(preset.key_bits())?;
+    validate_supported_key_bits(preset.key_bits())?;
     let mut report = TurboQuantSupportReport {
         layers: Vec::with_capacity(cfg.layer_count),
         eligible_layers: 0,
@@ -1850,8 +2253,12 @@ impl TurboQuantKvPrototypeStore {
                 .pop_front()
                 .expect("hot len is above window so a token must exist");
             self.cold.push(CompressedKvToken {
-                key: encode_key_vector(&token.key, self.config.preset)?,
-                value: encode_value_groups_4bit(&token.value, self.config.value_group_size)?,
+                key: encode_key_vector_for_head(&token.key, self.config.preset, 0)?,
+                value: encode_value_groups_for_preset(
+                    &token.value,
+                    self.config.value_group_size,
+                    self.config.preset,
+                )?,
             });
         }
         Ok(())
@@ -2374,19 +2781,52 @@ pub fn encode_key_vector(
     vector: &[f32],
     preset: TurboQuantPreset,
 ) -> Result<QuantizedKeyVector, TurboQuantCodecError> {
-    let bit_width = preset.key_bits();
-    validate_supported_key_bits(bit_width)?;
-    validate_key_shape(vector)?;
+    encode_key_vector_for_head(vector, preset, 0)
+}
 
-    let levels = 1usize << bit_width;
+pub fn encode_key_vector_for_head(
+    vector: &[f32],
+    preset: TurboQuantPreset,
+    head_index: usize,
+) -> Result<QuantizedKeyVector, TurboQuantCodecError> {
+    encode_key_vector_for_head_with_codec(
+        vector,
+        preset,
+        head_index,
+        TurboQuantKeyCodecConfig::default(),
+    )
+}
+
+pub fn encode_key_vector_for_head_with_codec(
+    vector: &[f32],
+    preset: TurboQuantPreset,
+    head_index: usize,
+    codec: TurboQuantKeyCodecConfig,
+) -> Result<QuantizedKeyVector, TurboQuantCodecError> {
+    let bit_width = preset.key_bits();
+    validate_key_shape(vector)?;
+    validate_supported_key_bits(bit_width)?;
+
+    if preset.has_full_precision_keys() {
+        return encode_full_precision_key_vector_f16(vector, preset, head_index, codec);
+    }
+
     let l2_norm_val = l2_norm(vector);
     let norm = l2_norm_val.max(f32::EPSILON);
     let mut rotated: Vec<f32> = vector.iter().map(|v| v / norm).collect();
-    hadamard_in_place(&mut rotated)?;
+    let rotation_seed =
+        turboquant_rotation_seed(vector.len(), head_index, TurboQuantVectorRole::Key);
+    if codec.uses_random_signs() {
+        randomized_hadamard_in_place(&mut rotated, rotation_seed)?;
+    } else {
+        hadamard_in_place(&mut rotated)?;
+    }
 
+    let centroids = key_centroids_for_dim_with_kind(bit_width, vector.len(), codec.centroid_kind)?;
+    let boundaries = centroid_boundaries(&centroids);
     let indices: Vec<u8> = rotated
         .iter()
-        .map(|&v| uniform_centroid_index(v, levels))
+        .map(|&v| centroid_index_by_boundaries(v, &boundaries))
         .collect();
     let packed_indices = pack_indices(&indices, bit_width)?;
 
@@ -2395,6 +2835,10 @@ pub fn encode_key_vector(
         bit_width,
         l2_norm: l2_norm_val,
         packed_indices,
+        codec_version: codec.version,
+        centroid_kind: codec.centroid_kind,
+        rotation_seed,
+        head_index,
     })
 }
 
@@ -2407,14 +2851,22 @@ pub fn decode_key_vector(encoded: &QuantizedKeyVector) -> Result<Vec<f32>, Turbo
     }
     validate_supported_key_bits(encoded.bit_width)?;
 
-    let levels = 1usize << encoded.bit_width;
-    let max_index = (levels - 1) as f32;
+    if encoded.bit_width == 16 {
+        return decode_full_precision_key_vector_f16(encoded);
+    }
+
     let indices = unpack_indices(&encoded.packed_indices, encoded.dim, encoded.bit_width)?;
+    let centroids =
+        key_centroids_for_dim_with_kind(encoded.bit_width, encoded.dim, encoded.centroid_kind)?;
     let mut rotated: Vec<f32> = indices
         .into_iter()
-        .map(|index| -1.0 + 2.0 * index as f32 / max_index)
+        .map(|index| centroids[index as usize])
         .collect();
-    hadamard_in_place(&mut rotated)?;
+    if encoded.codec_version >= TURBOQUANT_CODEC_VERSION_RHT_LLOYD_MAX {
+        inverse_randomized_hadamard_in_place(&mut rotated, encoded.rotation_seed)?;
+    } else {
+        hadamard_in_place(&mut rotated)?;
+    }
 
     for v in &mut rotated {
         *v *= encoded.l2_norm;
@@ -2447,6 +2899,10 @@ pub fn encode_key_vector_with_centroids(
         bit_width,
         l2_norm,
         packed_indices,
+        codec_version: TURBOQUANT_CODEC_VERSION_UNIFORM_HADAMARD,
+        centroid_kind: TurboQuantKeyCentroidKind::Uniform,
+        rotation_seed: turboquant_rotation_seed(vector.len(), 0, TurboQuantVectorRole::Key),
+        head_index: 0,
     })
 }
 
@@ -2490,8 +2946,39 @@ pub fn nearest_centroid_index(value: f32, centroids: &[f32]) -> u8 {
 }
 
 pub fn key_centroids(bit_width: u32) -> Result<Vec<f32>, TurboQuantCodecError> {
+    legacy_uniform_key_centroids(bit_width)
+}
+
+pub fn key_centroids_for_dim(bit_width: u32, dim: usize) -> Result<Vec<f32>, TurboQuantCodecError> {
+    key_centroids_for_dim_with_kind(bit_width, dim, TurboQuantKeyCentroidKind::LloydMaxGaussian)
+}
+
+pub fn key_centroids_for_dim_with_kind(
+    bit_width: u32,
+    dim: usize,
+    kind: TurboQuantKeyCentroidKind,
+) -> Result<Vec<f32>, TurboQuantCodecError> {
+    validate_key_shape_len(dim)?;
+    match (kind, bit_width) {
+        (_, 16) => Ok(Vec::new()),
+        (TurboQuantKeyCentroidKind::Uniform, _) => legacy_uniform_key_centroids(bit_width),
+        (TurboQuantKeyCentroidKind::LloydMaxGaussian, 3 | 4) => {
+            let scale = (dim as f32).sqrt().recip();
+            Ok(raw_lloyd_max_gaussian_centroids(bit_width)?
+                .into_iter()
+                .map(|centroid| centroid * scale)
+                .collect())
+        }
+        (TurboQuantKeyCentroidKind::LloydMaxGaussian, 7 | 8) => {
+            legacy_uniform_key_centroids(bit_width)
+        }
+        (_, other) => Err(TurboQuantCodecError::UnsupportedKeyBits(other)),
+    }
+}
+
+fn legacy_uniform_key_centroids(bit_width: u32) -> Result<Vec<f32>, TurboQuantCodecError> {
     match bit_width {
-        3 | 4 | 8 => {
+        3 | 4 | 7 | 8 => {
             let levels = 1usize << bit_width;
             let max_level = levels.saturating_sub(1).max(1) as f32;
             Ok((0..levels)
@@ -2502,12 +2989,43 @@ pub fn key_centroids(bit_width: u32) -> Result<Vec<f32>, TurboQuantCodecError> {
     }
 }
 
+fn raw_lloyd_max_gaussian_centroids(bit_width: u32) -> Result<Vec<f32>, TurboQuantCodecError> {
+    match bit_width {
+        3 => Ok(vec![
+            -2.1520, -1.3440, -0.7560, -0.2451, 0.2451, 0.7560, 1.3440, 2.1520,
+        ]),
+        4 => Ok(vec![
+            -2.7326, -2.0690, -1.6180, -1.2562, -0.9423, -0.6568, -0.3881, -0.1284, 0.1284, 0.3881,
+            0.6568, 0.9423, 1.2562, 1.6180, 2.0690, 2.7326,
+        ]),
+        other => Err(TurboQuantCodecError::UnsupportedKeyBits(other)),
+    }
+}
+
+pub fn centroid_boundaries(centroids: &[f32]) -> Vec<f32> {
+    centroids
+        .windows(2)
+        .map(|window| (window[0] + window[1]) * 0.5)
+        .collect()
+}
+
+pub fn centroid_index_by_boundaries(value: f32, boundaries: &[f32]) -> u8 {
+    boundaries
+        .iter()
+        .take_while(|boundary| value > **boundary)
+        .count()
+        .min(u8::MAX as usize) as u8
+}
+
 pub fn packed_index_bytes(
     index_count: usize,
     bit_width: u32,
 ) -> Result<usize, TurboQuantCodecError> {
-    if !matches!(bit_width, 3 | 4 | 8) {
+    if !matches!(bit_width, 3 | 4 | 7 | 8 | 16) {
         return Err(TurboQuantCodecError::UnsupportedPackedBits(bit_width));
+    }
+    if bit_width == 16 {
+        return Ok(index_count.saturating_mul(std::mem::size_of::<u16>()));
     }
     Ok(index_count.saturating_mul(bit_width as usize).div_ceil(8))
 }
@@ -2522,8 +3040,20 @@ pub fn packed_kv_bytes_per_token(
     Ok(key_bytes.saturating_add(value_bytes))
 }
 
+pub fn packed_value_bytes_for_preset(
+    element_count: usize,
+    preset: TurboQuantPreset,
+) -> Result<usize, TurboQuantCodecError> {
+    if preset.has_fractional_values() {
+        let split = fractional_value_split(element_count);
+        return Ok(packed_index_bytes(split, 4)?
+            .saturating_add(packed_index_bytes(element_count.saturating_sub(split), 3)?));
+    }
+    packed_index_bytes(element_count, preset.value_bits())
+}
+
 pub fn pack_indices(indices: &[u8], bit_width: u32) -> Result<Vec<u8>, TurboQuantCodecError> {
-    if !matches!(bit_width, 3 | 4 | 8) {
+    if !matches!(bit_width, 3 | 4 | 7 | 8) {
         return Err(TurboQuantCodecError::UnsupportedPackedBits(bit_width));
     }
 
@@ -2583,7 +3113,7 @@ pub fn unpack_indices(
     index_count: usize,
     bit_width: u32,
 ) -> Result<Vec<u8>, TurboQuantCodecError> {
-    if !matches!(bit_width, 3 | 4 | 8) {
+    if !matches!(bit_width, 3 | 4 | 7 | 8) {
         return Err(TurboQuantCodecError::UnsupportedPackedBits(bit_width));
     }
 
@@ -2627,9 +3157,76 @@ pub fn unpack_indices(
     Ok(indices)
 }
 
+fn fractional_value_split(element_count: usize) -> usize {
+    element_count / 2
+}
+
+fn value_bit_width_for_index(value_bits_x2: u32, element_count: usize, index: usize) -> u32 {
+    if value_bits_x2 == 7 {
+        if index < fractional_value_split(element_count) {
+            4
+        } else {
+            3
+        }
+    } else {
+        value_bits_x2 / 2
+    }
+}
+
+fn pack_value_indices(indices: &[u8], value_bits_x2: u32) -> Result<Vec<u8>, TurboQuantCodecError> {
+    if value_bits_x2 == 7 {
+        let split = fractional_value_split(indices.len());
+        let mut packed = pack_indices(&indices[..split], 4)?;
+        packed.extend(pack_indices(&indices[split..], 3)?);
+        return Ok(packed);
+    }
+    pack_indices(indices, value_bits_x2 / 2)
+}
+
+fn unpack_value_indices(
+    packed: &[u8],
+    element_count: usize,
+    value_bits_x2: u32,
+) -> Result<Vec<u8>, TurboQuantCodecError> {
+    if value_bits_x2 == 7 {
+        let split = fractional_value_split(element_count);
+        let first_bytes = packed_index_bytes(split, 4)?;
+        if packed.len() < first_bytes {
+            return Err(TurboQuantCodecError::PackedBufferTooShort {
+                bit_width: 4,
+                index_count: split,
+            });
+        }
+        let mut indices = unpack_indices(&packed[..first_bytes], split, 4)?;
+        indices.extend(unpack_indices(
+            &packed[first_bytes..],
+            element_count.saturating_sub(split),
+            3,
+        )?);
+        return Ok(indices);
+    }
+    unpack_indices(packed, element_count, value_bits_x2 / 2)
+}
+
 pub fn encode_value_groups_4bit(
     values: &[f32],
     group_size: usize,
+) -> Result<QuantizedValueGroups, TurboQuantCodecError> {
+    encode_value_groups_with_bits_x2(values, group_size, 8)
+}
+
+pub fn encode_value_groups_for_preset(
+    values: &[f32],
+    group_size: usize,
+    preset: TurboQuantPreset,
+) -> Result<QuantizedValueGroups, TurboQuantCodecError> {
+    encode_value_groups_with_bits_x2(values, group_size, preset.value_bits_x2())
+}
+
+pub fn encode_value_groups_with_bits_x2(
+    values: &[f32],
+    group_size: usize,
+    value_bits_x2: u32,
 ) -> Result<QuantizedValueGroups, TurboQuantCodecError> {
     if values.is_empty() {
         return Err(TurboQuantCodecError::EmptyVector);
@@ -2640,19 +3237,34 @@ pub fn encode_value_groups_4bit(
     let mut scales = Vec::with_capacity(group_count);
     let mut quantized = Vec::with_capacity(values.len());
 
-    for group in values.chunks(group_size) {
+    for (group_index, group) in values.chunks(group_size).enumerate() {
         let min = group
             .iter()
             .fold(f32::INFINITY, |acc, value| acc.min(*value));
         let max = group
             .iter()
             .fold(f32::NEG_INFINITY, |acc, value| acc.max(*value));
-        let scale = if max > min { (max - min) / 15.0 } else { 1.0 };
+        let group_start = group_index.saturating_mul(group_size);
+        let group_bits = (0..group.len())
+            .map(|offset| {
+                value_bit_width_for_index(value_bits_x2, values.len(), group_start + offset)
+            })
+            .min()
+            .unwrap_or(4);
+        let max_quantized = ((1u32 << group_bits) - 1) as f32;
+        let scale = if max > min {
+            (max - min) / max_quantized
+        } else {
+            1.0
+        };
         mins.push(min);
         scales.push(scale);
-        quantized.extend(group.iter().map(|value| {
+        quantized.extend(group.iter().enumerate().map(|(offset, value)| {
+            let bit_width =
+                value_bit_width_for_index(value_bits_x2, values.len(), group_start + offset);
+            let max_quantized = ((1u32 << bit_width) - 1) as f32;
             if max > min {
-                ((*value - min) / scale).round().clamp(0.0, 15.0) as u8
+                ((*value - min) / scale).round().clamp(0.0, max_quantized) as u8
             } else {
                 0
             }
@@ -2662,16 +3274,21 @@ pub fn encode_value_groups_4bit(
     Ok(QuantizedValueGroups {
         element_count: values.len(),
         group_size,
+        value_bits_x2,
         mins,
         scales,
-        packed_values: pack_indices(&quantized, 4)?,
+        packed_values: pack_value_indices(&quantized, value_bits_x2)?,
     })
 }
 
 pub fn decode_value_groups_4bit(
     encoded: &QuantizedValueGroups,
 ) -> Result<Vec<f32>, TurboQuantCodecError> {
-    let quantized = unpack_indices(&encoded.packed_values, encoded.element_count, 4)?;
+    let quantized = unpack_value_indices(
+        &encoded.packed_values,
+        encoded.element_count,
+        encoded.value_bits_x2,
+    )?;
     let mut values = Vec::with_capacity(encoded.element_count);
 
     for (index, quantized_value) in quantized.into_iter().enumerate() {
@@ -2682,6 +3299,51 @@ pub fn decode_value_groups_4bit(
     }
 
     Ok(values)
+}
+
+fn encode_full_precision_key_vector_f16(
+    vector: &[f32],
+    preset: TurboQuantPreset,
+    head_index: usize,
+    codec: TurboQuantKeyCodecConfig,
+) -> Result<QuantizedKeyVector, TurboQuantCodecError> {
+    let mut packed_indices = Vec::with_capacity(vector.len() * std::mem::size_of::<u16>());
+    for value in vector {
+        packed_indices.extend_from_slice(&f32_to_f16_bits(*value).to_le_bytes());
+    }
+    Ok(QuantizedKeyVector {
+        dim: vector.len(),
+        bit_width: preset.key_bits(),
+        l2_norm: 1.0,
+        packed_indices,
+        codec_version: codec.version,
+        centroid_kind: codec.centroid_kind,
+        rotation_seed: turboquant_rotation_seed(
+            vector.len(),
+            head_index,
+            TurboQuantVectorRole::Key,
+        ),
+        head_index,
+    })
+}
+
+fn decode_full_precision_key_vector_f16(
+    encoded: &QuantizedKeyVector,
+) -> Result<Vec<f32>, TurboQuantCodecError> {
+    let required_bytes = encoded.dim.saturating_mul(std::mem::size_of::<u16>());
+    if encoded.packed_indices.len() < required_bytes {
+        return Err(TurboQuantCodecError::PackedBufferTooShort {
+            bit_width: encoded.bit_width,
+            index_count: encoded.dim,
+        });
+    }
+
+    Ok(encoded
+        .packed_indices
+        .chunks_exact(std::mem::size_of::<u16>())
+        .take(encoded.dim)
+        .map(|bytes| f16_bits_to_f32(u16::from_le_bytes([bytes[0], bytes[1]])))
+        .collect())
 }
 
 pub fn hadamard_in_place(values: &mut [f32]) -> Result<(), TurboQuantCodecError> {
@@ -2709,6 +3371,34 @@ pub fn hadamard_in_place(values: &mut [f32]) -> Result<(), TurboQuantCodecError>
     Ok(())
 }
 
+pub fn randomized_hadamard_in_place(
+    values: &mut [f32],
+    seed: u64,
+) -> Result<(), TurboQuantCodecError> {
+    let signs = TurboQuantRotationSigns::new(values.len(), seed)?;
+    signs.apply(values)?;
+    hadamard_in_place(values)
+}
+
+pub fn inverse_randomized_hadamard_in_place(
+    values: &mut [f32],
+    seed: u64,
+) -> Result<(), TurboQuantCodecError> {
+    let signs = TurboQuantRotationSigns::new(values.len(), seed)?;
+    hadamard_in_place(values)?;
+    signs.apply(values)
+}
+
+pub fn turboquant_rotation_seed(dim: usize, head_index: usize, role: TurboQuantVectorRole) -> u64 {
+    let role_offset = match role {
+        TurboQuantVectorRole::Key => 1000u64,
+        TurboQuantVectorRole::Value => 2000u64,
+    };
+    (dim as u64)
+        .wrapping_mul(role_offset)
+        .wrapping_add(head_index as u64)
+}
+
 fn validate_key_shape(values: &[f32]) -> Result<(), TurboQuantCodecError> {
     validate_key_shape_len(values.len())
 }
@@ -2721,6 +3411,77 @@ fn validate_key_shape_len(len: usize) -> Result<(), TurboQuantCodecError> {
         return Err(TurboQuantCodecError::NonPowerOfTwoDimension(len));
     }
     Ok(())
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut mixed = value;
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    mixed ^ (mixed >> 31)
+}
+
+fn f32_to_f16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let mantissa = bits & 0x007f_ffff;
+
+    if exponent == 0xff {
+        if mantissa == 0 {
+            return sign | 0x7c00;
+        }
+        return sign | 0x7e00;
+    }
+
+    let half_exponent = exponent - 127 + 15;
+    if half_exponent >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if half_exponent <= 0 {
+        if half_exponent < -10 {
+            return sign;
+        }
+        let mantissa = mantissa | 0x0080_0000;
+        let shift = (14 - half_exponent) as u32;
+        let mut half_mantissa = (mantissa >> shift) as u16;
+        if ((mantissa >> (shift - 1)) & 1) != 0 {
+            half_mantissa = half_mantissa.saturating_add(1);
+        }
+        return sign | half_mantissa;
+    }
+
+    let mut half = sign | ((half_exponent as u16) << 10) | ((mantissa >> 13) as u16);
+    if (mantissa & 0x0000_1000) != 0 {
+        half = half.saturating_add(1);
+    }
+    half
+}
+
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exponent = (bits >> 10) & 0x1f;
+    let fraction = (bits & 0x03ff) as u32;
+
+    let f32_bits = match exponent {
+        0 => {
+            if fraction == 0 {
+                sign
+            } else {
+                let leading = fraction.leading_zeros() - 22;
+                let mantissa = (fraction << (leading + 1)) & 0x03ff;
+                let exponent = 127 - 15 - leading;
+                sign | (exponent << 23) | (mantissa << 13)
+            }
+        }
+        0x1f => sign | 0x7f80_0000 | (fraction << 13),
+        _ => {
+            let exponent = (exponent as u32) + (127 - 15);
+            sign | (exponent << 23) | (fraction << 13)
+        }
+    };
+
+    f32::from_bits(f32_bits)
 }
 
 fn validate_layout_nonzero(name: &'static str, value: usize) -> Result<(), TurboQuantCodecError> {
@@ -2789,7 +3550,7 @@ fn align_up(value: usize, alignment: usize) -> Result<usize, TurboQuantCodecErro
 
 fn validate_centroid_count(bit_width: u32, centroids: &[f32]) -> Result<(), TurboQuantCodecError> {
     let expected = match bit_width {
-        3 | 4 | 8 => 1usize << bit_width,
+        3 | 4 | 7 | 8 => 1usize << bit_width,
         other => return Err(TurboQuantCodecError::UnsupportedKeyBits(other)),
     };
     if centroids.len() != expected {
@@ -2808,11 +3569,12 @@ fn l2_norm(values: &[f32]) -> f32 {
 
 fn validate_supported_key_bits(bit_width: u32) -> Result<(), TurboQuantCodecError> {
     match bit_width {
-        3 | 4 | 8 => Ok(()),
+        3 | 4 | 7 | 8 | 16 => Ok(()),
         other => Err(TurboQuantCodecError::UnsupportedKeyBits(other)),
     }
 }
 
+#[cfg(test)]
 fn uniform_centroid_index(value: f32, levels: usize) -> u8 {
     let max_index = (levels - 1) as f32;
     ((value + 1.0) * 0.5 * max_index)
@@ -3953,11 +4715,18 @@ mod tests {
                 .status,
             TurboQuantFusedDecodePromotionStatus::QualityPresetMismatch
         );
+        let failing_readiness = descriptor.promotion_readiness(&failing_quality_check);
         assert_eq!(
-            descriptor
-                .promotion_readiness(&failing_quality_check)
-                .status,
+            failing_readiness.status,
             TurboQuantFusedDecodePromotionStatus::QualityGateFailed
+        );
+        assert_eq!(
+            failing_readiness.fallback_preset(),
+            Some(TurboQuantPreset::K16V4)
+        );
+        assert_eq!(
+            failing_readiness.effective_preset(),
+            TurboQuantPreset::K16V4
         );
 
         let no_savings_descriptor = TurboQuantFusedDecodeLaunchDescriptor {
@@ -5081,6 +5850,10 @@ mod tests {
         assert_eq!(packed_index_bytes(8, 4).expect("4-bit packed bytes"), 4);
         assert_eq!(packed_kv_bytes_per_token(8, 8, 4).expect("K8V4 bytes"), 12);
         assert_eq!(packed_kv_bytes_per_token(8, 3, 4).expect("K3V4 bytes"), 7);
+        assert_eq!(
+            packed_value_bytes_for_preset(8, TurboQuantPreset::K8V3_5).expect("K8V3.5 value bytes"),
+            4
+        );
     }
 
     #[test]
@@ -5119,6 +5892,31 @@ mod tests {
     }
 
     #[test]
+    fn randomized_hadamard_is_self_inverse_for_stable_seed() {
+        let original = vec![0.5, -1.0, 2.0, 0.25, -0.75, 1.5, -2.5, 0.0];
+        let seed = turboquant_rotation_seed(original.len(), 3, TurboQuantVectorRole::Key);
+        let mut transformed = original.clone();
+        randomized_hadamard_in_place(&mut transformed, seed).expect("forward RHT");
+        inverse_randomized_hadamard_in_place(&mut transformed, seed).expect("inverse RHT");
+
+        for (actual, expected) in transformed.iter().zip(original) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn lloyd_max_key_centroids_are_scaled_to_head_dim() {
+        let centroids = key_centroids_for_dim(4, 128).expect("4-bit Lloyd-Max centroids");
+        let scale = (128.0f32).sqrt().recip();
+        assert!((centroids[0] - (-2.7326 * scale)).abs() < 1e-6);
+        assert!((centroids[15] - (2.7326 * scale)).abs() < 1e-6);
+
+        let k8 = key_centroids_for_dim(8, 128).expect("8-bit centroids");
+        assert_eq!(k8[0], -1.0);
+        assert_eq!(k8[255], 1.0);
+    }
+
+    #[test]
     fn key_codec_preserves_direction_for_fixed_vector() {
         let vector = vec![0.5, -1.0, 2.0, 0.25, -0.75, 1.5, -2.5, 0.0];
         let encoded =
@@ -5135,6 +5933,26 @@ mod tests {
             .sum::<f32>()
             / vector.len() as f32;
         assert!(mse < 0.0002, "mse was {mse}");
+    }
+
+    #[test]
+    fn k16v4_key_codec_uses_fp16_payload_without_rotation_error() {
+        let vector = vec![0.5, -1.0, 2.0, 0.25, -0.75, 1.5, -2.5, 0.0];
+        let encoded =
+            encode_key_vector(&vector, TurboQuantPreset::K16V4).expect("encode K16 key vector");
+        let decoded = decode_key_vector(&encoded).expect("decode K16 key vector");
+
+        assert_eq!(encoded.bit_width, 16);
+        assert_eq!(
+            encoded.packed_indices.len(),
+            vector.len() * std::mem::size_of::<u16>()
+        );
+        for (expected, actual) in vector.iter().zip(decoded) {
+            assert!(
+                (expected - actual).abs() < 0.001,
+                "expected {expected}, got {actual}"
+            );
+        }
     }
 
     #[test]
@@ -5155,6 +5973,25 @@ mod tests {
                 "expected {expected}, got {actual}"
             );
         }
+    }
+
+    #[test]
+    fn fractional_value_group_codec_uses_mixed_three_and_four_bit_payloads() {
+        let values = vec![
+            -1.0, -0.6, -0.2, 0.0, 0.2, 0.5, 0.9, 1.0, 2.0, 2.1, 2.4, 2.9,
+        ];
+        let encoded = encode_value_groups_for_preset(&values, 3, TurboQuantPreset::K8V3_5)
+            .expect("encode fractional values");
+        let decoded = decode_value_groups_4bit(&encoded).expect("decode fractional values");
+
+        assert_eq!(encoded.value_bits_x2, 7);
+        assert_eq!(
+            encoded.packed_values.len(),
+            packed_value_bytes_for_preset(values.len(), TurboQuantPreset::K8V3_5)
+                .expect("fractional payload bytes")
+        );
+        assert_eq!(decoded.len(), values.len());
+        assert!(cosine_similarity(&values, &decoded) > 0.995);
     }
 
     #[test]
@@ -5505,5 +6342,86 @@ mod tests {
             4,
             "overwrite must not double-count"
         );
+    }
+
+    #[test]
+    fn compressed_block_buffer_state_round_trips_codec_metadata() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: TurboQuantPreset::K8V4,
+            block_tokens: 4,
+            n_kv_heads: 1,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let token = (
+            vec![0.5, -0.5, 0.25, -0.25, 0.1, -0.1, 0.75, -0.75],
+            vec![0.1, 0.2, 0.3, 0.4, -0.1, -0.2, -0.3, -0.4],
+        );
+        buffer
+            .write_token(0, std::slice::from_ref(&token))
+            .expect("write token");
+
+        let state = buffer.state();
+        let meta_state = buffer.meta_state();
+        assert_eq!(
+            meta_state.key_codec,
+            TurboQuantKeyCodecConfig::rht_lloyd_max()
+        );
+        let restored = TurboQuantCompressedBlockBuffer::from_state(meta_state, state)
+            .expect("buffer state should restore");
+
+        assert_eq!(
+            restored.key_codec(),
+            TurboQuantKeyCodecConfig::rht_lloyd_max()
+        );
+        assert_eq!(restored.written_slot_count(), 1);
+        let expected = buffer
+            .debug_reconstruct_slot(0, 0)
+            .expect("original reconstruct");
+        let actual = restored
+            .debug_reconstruct_slot(0, 0)
+            .expect("restored reconstruct");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn compressed_block_buffer_maintains_incremental_dequant_cache_for_sequential_tokens() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: TurboQuantPreset::K8V4,
+            block_tokens: 4,
+            n_kv_heads: 1,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        for token_index in 0..3 {
+            let token = (
+                (0..8)
+                    .map(|idx| token_index as f32 * 0.1 + idx as f32 * 0.01)
+                    .collect::<Vec<_>>(),
+                (0..8)
+                    .map(|idx| token_index as f32 * -0.1 + idx as f32 * 0.02)
+                    .collect::<Vec<_>>(),
+            );
+            buffer
+                .write_token(token_index, std::slice::from_ref(&token))
+                .expect("write sequential token");
+            assert_eq!(buffer.dequant_buffer_token_count(), token_index + 1);
+        }
+
+        assert_eq!(buffer.dequant_buffer_alloc_tokens(), 4);
+        let cached = buffer
+            .debug_reconstruct_head_history_cached(0, 3)
+            .expect("cached reconstruct");
+        assert_eq!(cached.len(), 3);
+
+        buffer
+            .write_slot(0, 0, &[0.0; 8], &[0.0; 8])
+            .expect("overwrite slot");
+        assert_eq!(buffer.dequant_buffer_token_count(), 0);
+        assert_eq!(buffer.dequant_buffer_alloc_tokens(), 0);
     }
 }

@@ -5,15 +5,155 @@ use mlx_sys::{KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalK
 
 use crate::turboquant::{
     TurboQuantAttentionPartitionStats, TurboQuantAttentionPartitionStatsBatch,
-    TurboQuantCodecError, TurboQuantCompressedBlockBuffer, TurboQuantFusedDecodeLaunchDescriptor,
-    hadamard_in_place, merge_attention_partition_stats,
+    TurboQuantCodecError, TurboQuantCompressedBlockBuffer, TurboQuantFusedDecodeCandidateStatus,
+    TurboQuantFusedDecodeLaunchDescriptor, TurboQuantRotationSigns, TurboQuantVectorRole,
+    merge_attention_partition_stats, randomized_hadamard_in_place,
+    turboquant_query_head_to_kv_head, turboquant_rotation_seed,
 };
 
+static TURBOQUANT_FUSED_KEY_ENCODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static TURBOQUANT_FUSED_COLD_DECODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static TURBOQUANT_FUSED_COLD_DECODE_HEAD_SERIAL_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static TURBOQUANT_FUSED_COLD_DECODE_SCORE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurboQuantFusedKeyEncodeResult {
+    pub token_start: usize,
+    pub token_count: usize,
+    pub n_kv_heads: usize,
+    pub head_dim: usize,
+    pub packed_key_bytes: Vec<u8>,
+    pub key_norms: Vec<f32>,
+}
+
+pub fn turboquant_fused_key_encode_metal_k8(
+    keys: &MlxArray,
+    token_start: usize,
+    token_count: usize,
+) -> Result<TurboQuantFusedKeyEncodeResult, TurboQuantCodecError> {
+    let shape = keys.shape();
+    if shape.len() != 4 || shape[0] != 1 {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: 4,
+            actual: shape.len(),
+        });
+    }
+    if keys.dtype() != MlxDtype::Float32 {
+        return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
+            status: TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset,
+        });
+    }
+    let n_kv_heads = usize::try_from(shape[1]).unwrap_or(usize::MAX);
+    let capacity_tokens = usize::try_from(shape[2]).unwrap_or(usize::MAX);
+    let head_dim = usize::try_from(shape[3]).unwrap_or(usize::MAX);
+    if token_count == 0 {
+        return Ok(TurboQuantFusedKeyEncodeResult {
+            token_start,
+            token_count,
+            n_kv_heads,
+            head_dim,
+            packed_key_bytes: Vec::new(),
+            key_norms: Vec::new(),
+        });
+    }
+    if token_start.saturating_add(token_count) > capacity_tokens {
+        return Err(TurboQuantCodecError::MismatchedVectorDimension {
+            expected: capacity_tokens,
+            actual: token_start.saturating_add(token_count),
+        });
+    }
+    if head_dim == 0 || !head_dim.is_power_of_two() || head_dim > 512 {
+        return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
+            status: TurboQuantFusedDecodeCandidateStatus::UnsupportedHeadDim,
+        });
+    }
+
+    let mut signs = Vec::with_capacity(n_kv_heads.saturating_mul(head_dim));
+    for head_index in 0..n_kv_heads {
+        let seed = turboquant_rotation_seed(head_dim, head_index, TurboQuantVectorRole::Key);
+        let head_signs = TurboQuantRotationSigns::new(head_dim, seed)?;
+        for dim in 0..head_dim {
+            signs.push(head_signs.sign_at(dim));
+        }
+    }
+    let signs = MlxArray::from_raw_data(
+        signs.as_ptr().cast(),
+        std::mem::size_of_val(signs.as_slice()),
+        &[n_kv_heads as i32, head_dim as i32],
+        MlxDtype::Float32,
+    );
+
+    let kernel = TURBOQUANT_FUSED_KEY_ENCODE_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "turboquant_fused_key_encode_k8_rht",
+            &["keys", "signs"],
+            &["packed", "norms"],
+            TURBOQUANT_FUSED_KEY_ENCODE_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let vector_count = token_count.saturating_mul(n_kv_heads);
+    let outputs = kernel.apply_with_template(
+        &[keys, &signs],
+        &[
+            KernelOutputSpec {
+                shape: vec![vector_count as i32, head_dim as i32],
+                dtype: MlxDtype::Uint8,
+            },
+            KernelOutputSpec {
+                shape: vec![vector_count as i32],
+                dtype: MlxDtype::Float32,
+            },
+        ],
+        &[
+            KernelTemplateArg::Int {
+                name: "TOKEN_START",
+                value: token_start as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "TOKEN_COUNT",
+                value: token_count as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "KV_HEADS",
+                value: n_kv_heads as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "CAPACITY_TOKENS",
+                value: capacity_tokens as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "HEAD_DIM",
+                value: head_dim as i32,
+            },
+        ],
+        (vector_count as i32 * head_dim as i32, 1, 1),
+        (head_dim as i32, 1, 1),
+        None,
+    );
+    let mut outputs = outputs.into_iter();
+    let packed = outputs
+        .next()
+        .expect("TurboQuant fused key encode packed output");
+    let norms = outputs
+        .next()
+        .expect("TurboQuant fused key encode norm output");
+    eval(&[&packed, &norms]);
+    let packed_key_bytes =
+        unsafe { std::slice::from_raw_parts(packed.data_raw(), packed.nbytes()).to_vec() };
+
+    Ok(TurboQuantFusedKeyEncodeResult {
+        token_start,
+        token_count,
+        n_kv_heads,
+        head_dim,
+        packed_key_bytes,
+        key_norms: norms.data_f32().to_vec(),
+    })
+}
 
 fn validate_query_head_mapping(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
@@ -100,12 +240,30 @@ fn rotated_query_values_from_flat(
 ) -> Result<Vec<f32>, TurboQuantCodecError> {
     validate_fused_decode_launch_flat(descriptor, query_values, n_query_heads)?;
     let mut rotated_queries = Vec::with_capacity(query_values.len());
-    for query in query_values.chunks_exact(descriptor.head_dim) {
+    for (query_head_index, query) in query_values.chunks_exact(descriptor.head_dim).enumerate() {
         let mut rotated = query.to_vec();
-        hadamard_in_place(&mut rotated)?;
+        rotate_query_for_descriptor(&mut rotated, descriptor, query_head_index)?;
         rotated_queries.extend(rotated);
     }
     Ok(rotated_queries)
+}
+
+fn rotate_query_for_descriptor(
+    query: &mut [f32],
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    query_head_index: usize,
+) -> Result<(), TurboQuantCodecError> {
+    let kv_head_index = turboquant_query_head_to_kv_head(
+        query_head_index,
+        descriptor.n_query_heads,
+        descriptor.n_kv_heads,
+    )?;
+    let seed = turboquant_rotation_seed(
+        descriptor.head_dim,
+        kv_head_index,
+        TurboQuantVectorRole::Key,
+    );
+    randomized_hadamard_in_place(query, seed)
 }
 
 pub fn turboquant_fused_cold_decode_metal(
@@ -116,7 +274,7 @@ pub fn turboquant_fused_cold_decode_metal(
     validate_fused_decode_launch(descriptor, queries)?;
 
     let mut rotated_queries = Vec::with_capacity(descriptor.n_query_heads * descriptor.head_dim);
-    for query in queries {
+    for (query_head_index, query) in queries.iter().enumerate() {
         if query.len() != descriptor.head_dim {
             return Err(TurboQuantCodecError::MismatchedVectorDimension {
                 expected: descriptor.head_dim,
@@ -124,7 +282,7 @@ pub fn turboquant_fused_cold_decode_metal(
             });
         }
         let mut rotated = query.clone();
-        hadamard_in_place(&mut rotated)?;
+        rotate_query_for_descriptor(&mut rotated, descriptor, query_head_index)?;
         rotated_queries.extend(rotated);
     }
 
@@ -250,7 +408,7 @@ pub fn turboquant_fused_cold_decode_metal_head_serial(
     }
 
     let mut rotated_queries = Vec::with_capacity(descriptor.n_kv_heads * descriptor.head_dim);
-    for query in queries {
+    for (query_head_index, query) in queries.iter().enumerate() {
         if query.len() != descriptor.head_dim {
             return Err(TurboQuantCodecError::MismatchedVectorDimension {
                 expected: descriptor.head_dim,
@@ -258,7 +416,7 @@ pub fn turboquant_fused_cold_decode_metal_head_serial(
             });
         }
         let mut rotated = query.clone();
-        hadamard_in_place(&mut rotated)?;
+        rotate_query_for_descriptor(&mut rotated, descriptor, query_head_index)?;
         rotated_queries.extend(rotated);
     }
 
@@ -434,6 +592,32 @@ pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_with_compres
         .collect()
 }
 
+pub fn turboquant_fused_cold_decode_metal_two_stage_sparse_partition_stats_flat(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    buffer: &TurboQuantCompressedBlockBuffer,
+    query_values: &[f32],
+    n_query_heads: usize,
+    sparse_value_threshold: f32,
+) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+    let compressed = MlxArray::from_raw_data(
+        buffer.as_bytes().as_ptr(),
+        buffer.as_bytes().len(),
+        &[buffer.as_bytes().len() as i32],
+        MlxDtype::Uint8,
+    );
+    let batch =
+        turboquant_fused_cold_decode_metal_two_stage_stats_batch_flat_with_sparse_threshold(
+            descriptor,
+            &compressed,
+            query_values,
+            n_query_heads,
+            sparse_value_threshold,
+        )?;
+    (0..batch.query_heads())
+        .map(|head_index| batch.partition_stats(head_index))
+        .collect()
+}
+
 pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
     compressed: &MlxArray,
@@ -448,6 +632,22 @@ pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_c
     )
 }
 
+fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_flat_with_sparse_threshold(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    compressed: &MlxArray,
+    query_values: &[f32],
+    n_query_heads: usize,
+    sparse_value_threshold: f32,
+) -> Result<TurboQuantAttentionPartitionStatsBatch, TurboQuantCodecError> {
+    let rotated_queries = rotated_query_values_from_flat(descriptor, query_values, n_query_heads)?;
+    turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries_and_sparse_threshold(
+        descriptor,
+        compressed,
+        &rotated_queries,
+        sparse_value_threshold,
+    )
+}
+
 fn turboquant_fused_cold_decode_metal_two_stage_stats(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
     compressed: &MlxArray,
@@ -456,7 +656,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
     validate_fused_decode_launch(descriptor, queries)?;
 
     let mut rotated_queries = Vec::with_capacity(descriptor.n_query_heads * descriptor.head_dim);
-    for query in queries {
+    for (query_head_index, query) in queries.iter().enumerate() {
         if query.len() != descriptor.head_dim {
             return Err(TurboQuantCodecError::MismatchedVectorDimension {
                 expected: descriptor.head_dim,
@@ -464,7 +664,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
             });
         }
         let mut rotated = query.clone();
-        hadamard_in_place(&mut rotated)?;
+        rotate_query_for_descriptor(&mut rotated, descriptor, query_head_index)?;
         rotated_queries.extend(rotated);
     }
 
@@ -494,6 +694,20 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
     compressed: &MlxArray,
     rotated_queries: &[f32],
+) -> Result<TurboQuantAttentionPartitionStatsBatch, TurboQuantCodecError> {
+    turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries_and_sparse_threshold(
+        descriptor,
+        compressed,
+        rotated_queries,
+        0.0,
+    )
+}
+
+fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries_and_sparse_threshold(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    compressed: &MlxArray,
+    rotated_queries: &[f32],
+    sparse_value_threshold: f32,
 ) -> Result<TurboQuantAttentionPartitionStatsBatch, TurboQuantCodecError> {
     let query = MlxArray::from_raw_data(
         rotated_queries.as_ptr().cast(),
@@ -623,15 +837,34 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries
     let value_sum_kernel = TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
             "turboquant_fused_cold_decode_k8v4_value_sum",
-            &["compressed", "scores", "max_scores"],
+            &[
+                "compressed",
+                "scores",
+                "max_scores",
+                "exp_sums",
+                "threshold",
+            ],
             &["weighted_value_sum"],
             TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL_SOURCE,
             TURBOQUANT_FUSED_COLD_DECODE_KERNEL_HEADER,
             true,
         )
     });
+    let sparse_threshold = [sparse_value_threshold.max(0.0)];
+    let sparse_threshold = MlxArray::from_raw_data(
+        sparse_threshold.as_ptr().cast(),
+        std::mem::size_of_val(sparse_threshold.as_slice()),
+        &[1],
+        MlxDtype::Float32,
+    );
     let value_outputs = value_sum_kernel.apply_with_template(
-        &[compressed, &scores, &max_scores],
+        &[
+            compressed,
+            &scores,
+            &max_scores,
+            &exp_sums,
+            &sparse_threshold,
+        ],
         &[KernelOutputSpec {
             shape: vec![descriptor.n_query_heads as i32, descriptor.head_dim as i32],
             dtype: MlxDtype::Float32,
@@ -712,6 +945,60 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries
         weighted_value_sums: weighted_value_sum.to_vec(),
     })
 }
+
+const TURBOQUANT_FUSED_KEY_ENCODE_KERNEL_SOURCE: &str = r#"
+    const int lane = (int)thread_position_in_threadgroup.x;
+    const int vector = (int)thread_position_in_grid.x / HEAD_DIM;
+    if (vector >= TOKEN_COUNT * KV_HEADS || lane >= HEAD_DIM) {
+      return;
+    }
+    const int token = vector / KV_HEADS;
+    const int head = vector - token * KV_HEADS;
+    const int source_token = TOKEN_START + token;
+    const int source_offset = ((head * CAPACITY_TOKENS + source_token) * HEAD_DIM) + lane;
+
+    threadgroup float values[512];
+    threadgroup float reductions[512];
+
+    const float input_value = keys[source_offset];
+    values[lane] = input_value;
+    reductions[lane] = input_value * input_value;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (int stride = HEAD_DIM / 2; stride > 0; stride >>= 1) {
+      if (lane < stride) {
+        reductions[lane] += reductions[lane + stride];
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    const float vec_norm = sqrt(reductions[0]);
+    const float safe_norm = max(vec_norm, 1.19209290e-7f);
+    values[lane] = (values[lane] / safe_norm) * signs[head * HEAD_DIM + lane];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    int h = 1;
+    while (h < HEAD_DIM) {
+      const int block = lane / (2 * h);
+      const int offset = lane - block * 2 * h;
+      if (offset < h) {
+        const int j = block * 2 * h + offset;
+        const float left = values[j];
+        const float right = values[j + h];
+        values[j] = left + right;
+        values[j + h] = left - right;
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      h <<= 1;
+    }
+
+    const float rotated = values[lane] * rsqrt((float)HEAD_DIM);
+    const float projected = (rotated + 1.0f) * 127.5f + 0.5f - 0.000001f;
+    const int centroid = clamp((int)floor(projected), 0, 255);
+    packed[vector * HEAD_DIM + lane] = (uint8_t)centroid;
+    if (lane == 0) {
+      norms[vector] = vec_norm;
+    }
+"#;
 
 const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_HEADER: &str = r#"
     inline float tq_read_f32(const device uint8_t* bytes, int offset) {
@@ -923,18 +1210,23 @@ const TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL_SOURCE: &str = r#"
     if (head >= HEADS) {
       return;
     }
-    const int kv_head = head / (HEADS / KV_HEADS);
+	    const int kv_head = head / (HEADS / KV_HEADS);
 
-    const float max_score = max_scores[head];
-    float weighted = 0.0f;
-    for (int token = 0; token < COLD_TOKENS; ++token) {
-      const int block = token / BLOCK_TOKENS;
-      const int token_offset = token - block * BLOCK_TOKENS;
-      const int slot = block * BLOCK_BYTES
-        + token_offset * TOKEN_STRIDE_BYTES
-        + kv_head * SLOT_BYTES;
-      const float weight = exp(scores[head * COLD_TOKENS + token] - max_score);
-      const int value_payload = slot + VALUE_PAYLOAD_OFFSET;
+	    const float max_score = max_scores[head];
+	    const float denom = max(exp_sums[head], 1.17549435e-38f);
+	    const float min_weight = max(threshold[0], 0.0f);
+	    float weighted = 0.0f;
+	    for (int token = 0; token < COLD_TOKENS; ++token) {
+	      const int block = token / BLOCK_TOKENS;
+	      const int token_offset = token - block * BLOCK_TOKENS;
+	      const int slot = block * BLOCK_BYTES
+	        + token_offset * TOKEN_STRIDE_BYTES
+	        + kv_head * SLOT_BYTES;
+	      const float weight = exp(scores[head * COLD_TOKENS + token] - max_score);
+	      if ((weight / denom) < min_weight) {
+	        continue;
+	      }
+	      const int value_payload = slot + VALUE_PAYLOAD_OFFSET;
       float value_min = lane == 0 ? tq_read_f32(compressed, slot + VALUE_MINS_OFFSET + group * 4) : 0.0f;
       float value_scale = lane == 0 ? tq_read_f32(compressed, slot + VALUE_SCALES_OFFSET + group * 4) : 0.0f;
       value_min = simd_broadcast_first(value_min);
@@ -955,7 +1247,70 @@ mod tests {
     use super::*;
     use crate::turboquant::{
         TurboQuantBlockLayout, TurboQuantBlockLayoutConfig, TurboQuantCompressedDecodePlan,
+        encode_key_vector_for_head,
     };
+
+    #[test]
+    fn turboquant_fused_key_encode_metal_matches_cpu_k8v4() {
+        let n_kv_heads = 2usize;
+        let capacity_tokens = 3usize;
+        let head_dim = 8usize;
+        let mut data = vec![0.0f32; n_kv_heads * capacity_tokens * head_dim];
+        for head in 0..n_kv_heads {
+            for token in 0..capacity_tokens {
+                for dim in 0..head_dim {
+                    let idx = (head * capacity_tokens + token) * head_dim + dim;
+                    data[idx] = ((idx % 23) as f32 - 11.0) / 13.0 + token as f32 * 0.03
+                        - head as f32 * 0.02;
+                }
+            }
+        }
+        let keys = MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[
+                1,
+                n_kv_heads as i32,
+                capacity_tokens as i32,
+                head_dim as i32,
+            ],
+            MlxDtype::Float32,
+        );
+
+        let actual = turboquant_fused_key_encode_metal_k8(&keys, 1, 2).expect("Metal key encode");
+
+        assert_eq!(actual.token_start, 1);
+        assert_eq!(actual.token_count, 2);
+        assert_eq!(actual.n_kv_heads, n_kv_heads);
+        assert_eq!(actual.head_dim, head_dim);
+        assert_eq!(actual.packed_key_bytes.len(), 2 * n_kv_heads * head_dim);
+        assert_eq!(actual.key_norms.len(), 2 * n_kv_heads);
+
+        for rel_token in 0..actual.token_count {
+            let source_token = actual.token_start + rel_token;
+            for head in 0..n_kv_heads {
+                let vector_index = rel_token * n_kv_heads + head;
+                let source_offset = (head * capacity_tokens + source_token) * head_dim;
+                let expected = encode_key_vector_for_head(
+                    &data[source_offset..source_offset + head_dim],
+                    TurboQuantPreset::K8V4,
+                    head,
+                )
+                .expect("CPU key encode");
+                let packed_start = vector_index * head_dim;
+                assert_eq!(
+                    &actual.packed_key_bytes[packed_start..packed_start + head_dim],
+                    expected.packed_indices.as_slice()
+                );
+                assert!(
+                    (actual.key_norms[vector_index] - expected.l2_norm).abs() < 1e-6,
+                    "norm mismatch for token {source_token} head {head}: actual={} expected={}",
+                    actual.key_norms[vector_index],
+                    expected.l2_norm
+                );
+            }
+        }
+    }
 
     #[test]
     fn turboquant_fused_cold_decode_metal_matches_reference_for_k8v4() {
@@ -1011,6 +1366,49 @@ mod tests {
             descriptor, &buffer, &queries,
         )
         .expect("two-stage Metal partition stats should launch");
+        let flat_queries = queries
+            .iter()
+            .flat_map(|query| query.iter().copied())
+            .collect::<Vec<_>>();
+        let sparse_zero_stats =
+            turboquant_fused_cold_decode_metal_two_stage_sparse_partition_stats_flat(
+                descriptor,
+                &buffer,
+                &flat_queries,
+                queries.len(),
+                0.0,
+            )
+            .expect("sparse threshold=0 stats should launch");
+        assert_eq!(sparse_zero_stats.len(), actual_stats.len());
+        for (expected, actual) in actual_stats.iter().zip(&sparse_zero_stats) {
+            assert_eq!(actual.token_count, expected.token_count);
+            assert_eq!(actual.value_dim, expected.value_dim);
+            assert!((actual.max_score - expected.max_score).abs() < 0.0001);
+            assert!((actual.exp_sum - expected.exp_sum).abs() < 0.0001);
+            for (dim, (expected, actual)) in expected
+                .weighted_value_sum
+                .iter()
+                .zip(&actual.weighted_value_sum)
+                .enumerate()
+            {
+                assert!(
+                    (actual - expected).abs() < 0.0001,
+                    "sparse threshold=0 mismatch at dim {dim}: actual={actual} expected={expected}"
+                );
+            }
+        }
+        let sparse_all_skipped =
+            turboquant_fused_cold_decode_metal_two_stage_sparse_partition_stats_flat(
+                descriptor,
+                &buffer,
+                &flat_queries,
+                queries.len(),
+                2.0,
+            )
+            .expect("sparse all-skipped stats should launch");
+        for stats in sparse_all_skipped {
+            assert!(stats.weighted_value_sum.iter().all(|value| *value == 0.0));
+        }
         assert_eq!(actual_stats.len(), expected_stats.len());
         for (expected, actual) in expected_stats.iter().zip(&actual_stats) {
             assert_eq!(actual.token_count, expected.token_count);

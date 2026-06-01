@@ -113,6 +113,12 @@ pub enum TurboQuantPreset {
     K4V4,
     /// 3-bit keys and 4-bit values; research-only until accuracy gates promote it.
     K3V4Research,
+    /// 16-bit keys and 4-bit values; fallback for models where key quantization fails.
+    K16V4,
+    /// 8-bit keys and mixed 3/4-bit values; research-only fractional-value preset.
+    K8V3_5,
+    /// 7-bit keys and 4-bit values; research-only near-K8 memory tradeoff.
+    K7V4,
 }
 
 impl TurboQuantPreset {
@@ -121,11 +127,32 @@ impl TurboQuantPreset {
             Self::K8V4 => 8,
             Self::K4V4 => 4,
             Self::K3V4Research => 3,
+            Self::K16V4 => 16,
+            Self::K8V3_5 => 8,
+            Self::K7V4 => 7,
         }
     }
 
     pub fn value_bits(self) -> u32 {
-        4
+        match self {
+            Self::K8V3_5 => 4,
+            _ => 4,
+        }
+    }
+
+    pub fn value_bits_x2(self) -> u32 {
+        match self {
+            Self::K8V3_5 => 7,
+            _ => self.value_bits() * 2,
+        }
+    }
+
+    pub fn has_full_precision_keys(self) -> bool {
+        matches!(self, Self::K16V4)
+    }
+
+    pub fn has_fractional_values(self) -> bool {
+        matches!(self, Self::K8V3_5)
     }
 
     pub fn route_code(self) -> u32 {
@@ -133,6 +160,9 @@ impl TurboQuantPreset {
             Self::K8V4 => 1,
             Self::K4V4 => 2,
             Self::K3V4Research => 3,
+            Self::K16V4 => 4,
+            Self::K8V3_5 => 5,
+            Self::K7V4 => 6,
         }
     }
 }

@@ -1,14 +1,16 @@
 use std::time::Instant;
 
-use ax_engine_core::{KvCompressionConfig, KvCompressionMode};
+use ax_engine_core::{KvCompressionConfig, KvCompressionMode, TurboQuantPreset};
 use mlx_sys::{MlxArray, MlxDtype, astype, contiguous, eval, slice, slice_update, zeros};
 
 use crate::turboquant::{
     FullPrecisionKvTokenVectors, TurboQuantAttentionPartitionStats,
     TurboQuantAttentionPartitionStatsBatch, TurboQuantBlockLayout, TurboQuantBlockLayoutConfig,
-    TurboQuantCodecError, TurboQuantCompressedBlockBuffer, TurboQuantCompressedDecodePlan,
-    append_attention_partition_stats_batch_head_with_hot_tail_from_f32_slices,
-    packed_kv_bytes_per_token, turboquant_query_head_to_kv_head,
+    TurboQuantCodecError, TurboQuantCompressedBlockBuffer,
+    TurboQuantCompressedBlockBufferMetaState, TurboQuantCompressedBlockBufferState,
+    TurboQuantCompressedDecodePlan, TurboQuantKeyCentroidKind, TurboQuantKeyCodecConfig,
+    append_attention_partition_stats_batch_head_with_hot_tail_from_f32_slices, packed_index_bytes,
+    packed_kv_bytes_per_token, packed_value_bytes_for_preset, turboquant_query_head_to_kv_head,
 };
 use crate::turboquant_metal::{
     turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat,
@@ -771,6 +773,8 @@ pub enum MlxKVCacheSerializeError {
     UnknownLayerKind(u8),
     /// Tensor metadata declared an unsupported rank.
     BadShape(usize),
+    /// TurboQuant compressed shadow state was inconsistent or used unknown tags.
+    InvalidTurboQuantState(String),
 }
 
 impl std::fmt::Display for MlxKVCacheSerializeError {
@@ -782,6 +786,12 @@ impl std::fmt::Display for MlxKVCacheSerializeError {
             Self::UnknownDtype(t) => write!(f, "kv-cache payload has unknown dtype tag {t}"),
             Self::UnknownLayerKind(t) => write!(f, "kv-cache payload has unknown layer kind {t}"),
             Self::BadShape(n) => write!(f, "kv-cache payload has bad tensor rank {n}"),
+            Self::InvalidTurboQuantState(message) => {
+                write!(
+                    f,
+                    "kv-cache payload has invalid TurboQuant state: {message}"
+                )
+            }
         }
     }
 }
@@ -831,6 +841,10 @@ impl<'a> DeserializeCursor<'a> {
     fn read_u64(&mut self) -> Result<u64, MlxKVCacheSerializeError> {
         let bytes = self.read_bytes(8)?;
         Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn read_usize(&mut self) -> Result<usize, MlxKVCacheSerializeError> {
+        usize::try_from(self.read_u64()?).map_err(|_| MlxKVCacheSerializeError::BadShape(8))
     }
 }
 
@@ -958,7 +972,7 @@ impl MlxKVCache {
     /// `AXKV` (used by the future disk wrapper for outer file framing) so
     /// a partial / nested payload cannot be mistaken for a complete file.
     const SERIALIZE_MAGIC: &'static [u8; 4] = b"AXKB";
-    const SERIALIZE_VERSION: u32 = 1;
+    const SERIALIZE_VERSION: u32 = 2;
     const LAYER_KIND_EMPTY: u8 = 0;
     const LAYER_KIND_FA: u8 = 1;
     const LAYER_KIND_MLA: u8 = 2;
@@ -1016,6 +1030,15 @@ impl MlxKVCache {
     //   Linear payload: [tag:u8][optional conv_state][tag:u8][optional recurrent_state]
     //   Empty payload:  (nothing)
     //
+    //   TurboQuant shadow section:
+    //     repeated layer_count times:
+    //       present: u8 (0/1)
+    //       reserved[7]
+    //       if present:
+    //         compressed_tokens: u64
+    //         layout config, key codec, token_count, written_slot_count
+    //         compressed byte payload and written-slot flags
+    //
     //   tensor encoding (32 bytes header + raw bytes):
     //     dtype: u8          (MlxDtype variant index 0..=13)
     //     ndim: u8           (1..=4)
@@ -1024,10 +1047,6 @@ impl MlxKVCache {
     //     byte_count: u64
     //     bytes: [u8; byte_count]
     //
-    // TurboQuant shadow storage is intentionally not serialized; it is
-    // rebuilt from base KV on the next decode via the existing runtime
-    // sync path (see kv_cache.rs:sync_turboquant_shadow_storage).
-
     fn dtype_to_tag(dtype: MlxDtype) -> u8 {
         match dtype {
             MlxDtype::Bool => 0,
@@ -1168,14 +1187,145 @@ impl MlxKVCache {
         })
     }
 
+    fn turboquant_preset_to_tag(preset: TurboQuantPreset) -> u8 {
+        match preset {
+            TurboQuantPreset::K8V4 => 1,
+            TurboQuantPreset::K4V4 => 2,
+            TurboQuantPreset::K3V4Research => 3,
+            TurboQuantPreset::K16V4 => 4,
+            TurboQuantPreset::K8V3_5 => 5,
+            TurboQuantPreset::K7V4 => 6,
+        }
+    }
+
+    fn turboquant_preset_from_tag(tag: u8) -> Result<TurboQuantPreset, MlxKVCacheSerializeError> {
+        Ok(match tag {
+            1 => TurboQuantPreset::K8V4,
+            2 => TurboQuantPreset::K4V4,
+            3 => TurboQuantPreset::K3V4Research,
+            4 => TurboQuantPreset::K16V4,
+            5 => TurboQuantPreset::K8V3_5,
+            6 => TurboQuantPreset::K7V4,
+            other => {
+                return Err(MlxKVCacheSerializeError::InvalidTurboQuantState(format!(
+                    "unknown preset tag {other}"
+                )));
+            }
+        })
+    }
+
+    fn turboquant_centroid_kind_to_tag(kind: TurboQuantKeyCentroidKind) -> u8 {
+        match kind {
+            TurboQuantKeyCentroidKind::Uniform => 1,
+            TurboQuantKeyCentroidKind::LloydMaxGaussian => 2,
+        }
+    }
+
+    fn turboquant_centroid_kind_from_tag(
+        tag: u8,
+    ) -> Result<TurboQuantKeyCentroidKind, MlxKVCacheSerializeError> {
+        Ok(match tag {
+            1 => TurboQuantKeyCentroidKind::Uniform,
+            2 => TurboQuantKeyCentroidKind::LloydMaxGaussian,
+            other => {
+                return Err(MlxKVCacheSerializeError::InvalidTurboQuantState(format!(
+                    "unknown key centroid kind tag {other}"
+                )));
+            }
+        })
+    }
+
+    fn write_turboquant_shadow_layer(out: &mut Vec<u8>, storage: &TurboQuantShadowLayerStorage) {
+        out.extend_from_slice(&(storage.compressed_tokens as u64).to_le_bytes());
+        let meta_state = storage.buffer.meta_state();
+        let state = storage.buffer.state();
+        out.push(Self::turboquant_preset_to_tag(
+            meta_state.layout.config.preset,
+        ));
+        out.extend_from_slice(&[0u8; 7]);
+        out.extend_from_slice(&(meta_state.layout.config.block_tokens as u64).to_le_bytes());
+        out.extend_from_slice(&(meta_state.layout.config.n_kv_heads as u64).to_le_bytes());
+        out.extend_from_slice(&(meta_state.layout.config.head_dim as u64).to_le_bytes());
+        out.extend_from_slice(&(meta_state.layout.config.value_group_size as u64).to_le_bytes());
+        out.extend_from_slice(&meta_state.key_codec.version.to_le_bytes());
+        out.push(Self::turboquant_centroid_kind_to_tag(
+            meta_state.key_codec.centroid_kind,
+        ));
+        out.extend_from_slice(&[0u8; 3]);
+        out.extend_from_slice(&(meta_state.token_count as u64).to_le_bytes());
+        out.extend_from_slice(&(meta_state.written_slot_count as u64).to_le_bytes());
+        out.extend_from_slice(&(state.bytes.len() as u64).to_le_bytes());
+        out.extend_from_slice(&state.bytes);
+        out.extend_from_slice(&(state.written_slots.len() as u64).to_le_bytes());
+        for written in state.written_slots {
+            out.push(u8::from(written));
+        }
+    }
+
+    fn read_turboquant_shadow_layer(
+        cursor: &mut DeserializeCursor<'_>,
+    ) -> Result<TurboQuantShadowLayerStorage, MlxKVCacheSerializeError> {
+        let compressed_tokens = cursor.read_usize()?;
+        let preset = Self::turboquant_preset_from_tag(cursor.read_u8()?)?;
+        cursor.read_bytes(7)?;
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset,
+            block_tokens: cursor.read_usize()?,
+            n_kv_heads: cursor.read_usize()?,
+            head_dim: cursor.read_usize()?,
+            value_group_size: cursor.read_usize()?,
+        })
+        .map_err(|error| MlxKVCacheSerializeError::InvalidTurboQuantState(error.to_string()))?;
+        let key_codec = TurboQuantKeyCodecConfig {
+            version: cursor.read_u32()?,
+            centroid_kind: Self::turboquant_centroid_kind_from_tag(cursor.read_u8()?)?,
+        };
+        cursor.read_bytes(3)?;
+        let token_count = cursor.read_usize()?;
+        let written_slot_count = cursor.read_usize()?;
+        let byte_count = cursor.read_usize()?;
+        let bytes = cursor.read_bytes(byte_count)?.to_vec();
+        let slot_count = cursor.read_usize()?;
+        let mut written_slots = Vec::with_capacity(slot_count);
+        for _ in 0..slot_count {
+            let flag = cursor.read_u8()?;
+            match flag {
+                0 => written_slots.push(false),
+                1 => written_slots.push(true),
+                other => {
+                    return Err(MlxKVCacheSerializeError::InvalidTurboQuantState(format!(
+                        "invalid written-slot flag {other}"
+                    )));
+                }
+            }
+        }
+        let buffer = TurboQuantCompressedBlockBuffer::from_state(
+            TurboQuantCompressedBlockBufferMetaState {
+                layout,
+                key_codec,
+                token_count,
+                written_slot_count,
+            },
+            TurboQuantCompressedBlockBufferState {
+                bytes,
+                written_slots,
+            },
+        )
+        .map_err(|error| MlxKVCacheSerializeError::InvalidTurboQuantState(error.to_string()))?;
+
+        Ok(TurboQuantShadowLayerStorage {
+            layout,
+            buffer,
+            compressed_tokens,
+            metal_buffer: None,
+        })
+    }
+
     /// Serialise the cache to a self-contained byte payload that
     /// `try_deserialize_from_bytes` can reconstruct. Format is private to
     /// this module and versioned via `SERIALIZE_VERSION`; cross-version
     /// reads return an error rather than silently degrading.
     ///
-    /// TurboQuant shadow storage is **not** serialised. On reload it will
-    /// be re-synced from base KV by the existing runtime path the first
-    /// time a decode step runs.
     pub fn serialize_to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(Self::SERIALIZE_MAGIC);
@@ -1220,6 +1370,17 @@ impl MlxKVCache {
                 }
             } else {
                 out.push(Self::LAYER_KIND_EMPTY);
+                out.extend_from_slice(&[0u8; 7]);
+            }
+        }
+
+        for storage in &self.turboquant_shadow_layers {
+            if let Some(storage) = storage {
+                out.push(Self::TENSOR_PRESENT_TAG);
+                out.extend_from_slice(&[0u8; 7]);
+                Self::write_turboquant_shadow_layer(&mut out, storage);
+            } else {
+                out.push(Self::TENSOR_ABSENT_TAG);
                 out.extend_from_slice(&[0u8; 7]);
             }
         }
@@ -1309,6 +1470,23 @@ impl MlxKVCache {
                     };
                 }
                 other => return Err(MlxKVCacheSerializeError::UnknownLayerKind(other)),
+            }
+        }
+
+        for idx in 0..layer_count {
+            let present = cursor.read_u8()?;
+            cursor.read_bytes(7)?;
+            match present {
+                p if p == Self::TENSOR_ABSENT_TAG => {}
+                p if p == Self::TENSOR_PRESENT_TAG => {
+                    cache.turboquant_shadow_layers[idx] =
+                        Some(Self::read_turboquant_shadow_layer(&mut cursor)?);
+                }
+                other => {
+                    return Err(MlxKVCacheSerializeError::InvalidTurboQuantState(format!(
+                        "unknown TurboQuant layer-present tag {other}"
+                    )));
+                }
             }
         }
 
@@ -2666,10 +2844,19 @@ impl MlxKVCache {
                 .saturating_mul(2);
             let elements_per_token_usize =
                 usize::try_from(elements_per_token).unwrap_or(usize::MAX);
-            let compressed_bytes_per_token =
+            let compressed_bytes_per_token = if compression.preset.has_fractional_values() {
+                let key_bytes =
+                    packed_index_bytes(elements_per_token_usize, compression.preset.key_bits())
+                        .expect("TurboQuant shadow presets use supported packed key bit widths");
+                let value_bytes =
+                    packed_value_bytes_for_preset(elements_per_token_usize, compression.preset)
+                        .expect("TurboQuant shadow presets use supported packed value bit widths");
+                key_bytes.saturating_add(value_bytes) as u64
+            } else {
                 packed_kv_bytes_per_token(elements_per_token_usize, key_bits, value_bits)
                     .expect("TurboQuant shadow presets use supported packed bit widths")
-                    as u64;
+                    as u64
+            };
 
             usage.full_precision_bytes = usage
                 .full_precision_bytes
@@ -3061,6 +3248,28 @@ mod tests {
         assert_eq!(usage.kv_compression.estimated_compressed_bytes, 4_128);
         assert_eq!(usage.kv_compression.estimated_saved_bytes, 6_880);
         assert_eq!(usage.kv_compression.estimated_ratio_milli, 375);
+    }
+
+    #[test]
+    fn turboquant_shadow_estimates_fractional_value_bits_without_rounding_up() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 1, 600, 128], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 1, 600, 128], MlxDtype::Bfloat16, None);
+        let compression = KvCompressionConfig {
+            preset: TurboQuantPreset::K8V3_5,
+            ..KvCompressionConfig::turboquant_shadow()
+        };
+
+        cache.append(0, k, v);
+        cache.seq_len = 600;
+
+        let usage = cache.usage_snapshot_with_layer_windows_and_compression(&[None], compression);
+
+        assert_eq!(usage.kv_compression.candidate_token_layers, 344);
+        assert_eq!(
+            usage.kv_compression.estimated_compressed_bytes,
+            (128 + 56) * 344
+        );
     }
 
     #[test]
@@ -3754,6 +3963,71 @@ mod tests {
             assert_eq!(back.dtype, orig.dtype);
             assert_eq!(host_f32(&back.k), host_f32(&orig.k));
             assert_eq!(host_f32(&back.v), host_f32(&orig.v));
+        }
+    }
+
+    #[test]
+    fn serialize_turboquant_shadow_storage_roundtrips_decode_state() {
+        let mut cache = MlxKVCache::new(1);
+        let k_data: Vec<f32> = (0..96).map(|idx| ((idx % 17) as f32 - 8.0) / 9.0).collect();
+        let v_data: Vec<f32> = (0..96)
+            .map(|idx| ((idx % 19) as f32 - 9.0) / 11.0)
+            .collect();
+        let k = MlxArray::from_raw_data(
+            k_data.as_ptr().cast(),
+            std::mem::size_of_val(k_data.as_slice()),
+            &[1, 2, 6, 8],
+            MlxDtype::Float32,
+        );
+        let v = MlxArray::from_raw_data(
+            v_data.as_ptr().cast(),
+            std::mem::size_of_val(v_data.as_slice()),
+            &[1, 2, 6, 8],
+            MlxDtype::Float32,
+        );
+        let compression = KvCompressionConfig {
+            hot_window_tokens: 2,
+            min_context_tokens: 4,
+            ..KvCompressionConfig::turboquant_shadow()
+        };
+        let queries = vec![
+            vec![0.2, -0.4, 0.6, -0.8, 1.0, -1.2, 1.4, -1.6],
+            vec![-0.3, 0.5, -0.7, 0.9, -1.1, 1.3, -1.5, 1.7],
+        ];
+
+        cache.append(0, k, v);
+        cache.seq_len = 6;
+        cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
+        let expected = cache
+            .debug_turboquant_shadow_decode_attention_for_layer(0, &queries, 2)
+            .expect("decode before serialization");
+
+        let bytes = cache.serialize_to_bytes();
+        let restored = MlxKVCache::try_deserialize_from_bytes(&bytes).expect("round-trip");
+        let usage = restored.turboquant_shadow_storage_usage();
+        assert_eq!(usage.layers, 1);
+        assert_eq!(usage.token_layers, 4);
+        assert_eq!(usage.written_slots, 8);
+        assert_eq!(restored.turboquant_shadow_storage_cold_tokens(0), Some(4));
+        assert_eq!(
+            restored.turboquant_shadow_layers[0]
+                .as_ref()
+                .expect("shadow storage")
+                .buffer
+                .key_codec(),
+            TurboQuantKeyCodecConfig::rht_lloyd_max()
+        );
+
+        let actual = restored
+            .debug_turboquant_shadow_decode_attention_for_layer(0, &queries, 2)
+            .expect("decode after serialization");
+        for (before_head, after_head) in expected.iter().zip(actual) {
+            for (before, after) in before_head.iter().zip(after_head) {
+                assert!(
+                    (before - after).abs() < 1e-6,
+                    "expected {before}, got {after}"
+                );
+            }
         }
     }
 
