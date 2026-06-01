@@ -2,7 +2,7 @@ use crate::openai::responses::openai_finish_reason;
 use ax_engine_sdk::GenerateFinishReason;
 
 #[test]
-fn finish_reason_preserves_only_real_openai_terminal_labels() {
+fn finish_reason_maps_terminal_labels_without_hiding_cancellations() {
     assert_eq!(
         openai_finish_reason(Some(GenerateFinishReason::Stop)),
         Some("stop")
@@ -17,7 +17,7 @@ fn finish_reason_preserves_only_real_openai_terminal_labels() {
     );
     assert_eq!(
         openai_finish_reason(Some(GenerateFinishReason::Cancelled)),
-        Some("stop")
+        Some("cancel")
     );
     assert_eq!(
         openai_finish_reason(Some(GenerateFinishReason::Error)),

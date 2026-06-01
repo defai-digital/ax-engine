@@ -93,6 +93,10 @@ def finish_reason(reason: str | None) -> str | None:
         return "length"
     if reason == "stop":
         return "stop"
+    if reason == "cancelled":
+        return "cancel"
+    if reason == "content_filter":
+        return "content_filter"
     return None
 
 

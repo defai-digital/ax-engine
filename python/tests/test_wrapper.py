@@ -868,6 +868,16 @@ class WrapperContractTests(unittest.TestCase):
             (400, "OpenAI-compatible MLX shim requires max_tokens > 0"),
         )
 
+    def test_openai_mlx_shim_finish_reason_maps_terminal_reasons(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        self.assertEqual(openai_server.finish_reason("stop"), "stop")
+        self.assertEqual(openai_server.finish_reason("max_output_tokens"), "length")
+        self.assertEqual(openai_server.finish_reason("content_filter"), "content_filter")
+        self.assertEqual(openai_server.finish_reason("cancelled"), "cancel")
+        self.assertIsNone(openai_server.finish_reason("error"))
+        self.assertIsNone(openai_server.finish_reason(None))
+
     def test_qwen_chat_prompt_matches_real_tokenizer_enable_thinking_false(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
         try:

@@ -94,7 +94,7 @@ pub(crate) fn openai_finish_reason(
 ) -> Option<&'static str> {
     match finish_reason {
         Some(GenerateFinishReason::Stop) => Some("stop"),
-        Some(GenerateFinishReason::Cancelled) => Some("stop"),
+        Some(GenerateFinishReason::Cancelled) => Some("cancel"),
         Some(GenerateFinishReason::MaxOutputTokens) => Some("length"),
         Some(GenerateFinishReason::ContentFilter) => Some("content_filter"),
         Some(GenerateFinishReason::Error) | None => None,
