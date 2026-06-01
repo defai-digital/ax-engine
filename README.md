@@ -25,17 +25,17 @@ warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | AX tok/s | AX accept | AX/MTPLX | AX/Lightning |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 51.5 | 100.0% | 49.5 | 96.5% | 37.6 | 99.1% | 0.731 | 0.760 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 53.5 | 99.7% | 51.7 | 93.3% | 38.0 | 98.3% | 0.711 | 0.736 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 51.6 | 87.6% | 46.9 | 76.5% | 22.9 | 67.0% | 0.443 | 0.488 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 107.3 | 50.8% | 147.9 | 99.0% | 84.2 | 99.9% | 0.785 | 0.569 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.4 | 50.5% | 149.0 | 98.5% | 81.5 | 99.8% | 0.766 | 0.547 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.7 | 42.6% | 148.8 | 97.2% | 79.0 | 93.2% | 0.769 | 0.531 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 51.5 | 100.0% | 49.5 | 96.5% | 41.0 | 99.1% | 0.797 | 0.828 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 53.5 | 99.7% | 51.7 | 93.3% | 55.4 | 98.4% | 1.035 | 1.072 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 51.6 | 87.6% | 46.9 | 76.5% | 47.8 | 74.8% | 0.925 | 1.019 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 107.3 | 50.8% | 147.9 | 99.0% | 182.3 | 99.9% | 1.699 | 1.233 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.4 | 50.5% | 149.0 | 98.5% | 180.6 | 99.8% | 1.698 | 1.212 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.7 | 42.6% | 148.8 | 97.2% | 177.9 | 92.8% | 1.733 | 1.196 |
 
 Pure MTP benchmark (n-gram stacking disabled). Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 15 s cooldown.
 
-Full artifacts: [`2026-05-31` (three-engine: MTPLX, Lightning MLX, AX Engine)](benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-final/summary.md).
+Full artifacts: [`2026-05-31` (three-engine: MTPLX, Lightning MLX, AX Engine)](benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-ax-rerun/summary.json).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
