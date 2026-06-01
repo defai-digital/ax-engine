@@ -798,6 +798,20 @@ kernel void decode_logits_projection_sg_f32(
     uint K = params.input_width;
     uint N = params.projection_cols;
 
+    // Partial last tile: simdgroup_load would read past the buffer; use scalar path.
+    if (row_base + SG_GEMV_TILE > params.vocab_rows) {
+        if (lane < SG_GEMV_TILE) {
+            uint row_actual = row_base + lane;
+            if (row_actual < params.vocab_rows) {
+                float val = 0.0f;
+                uint row_kbase = row_actual * N;
+                for (uint c = 0; c < K; c++) val += projection[row_kbase + c] * hidden[c];
+                logits[row_actual] = val;
+            }
+        }
+        return;
+    }
+
     simdgroup_matrix<float, 8, 8> acc;
     acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
 
@@ -839,6 +853,19 @@ kernel void decode_logits_projection_sg_f16(
 
     uint K = params.input_width;
     uint N = params.projection_cols;
+
+    if (row_base + SG_GEMV_TILE > params.vocab_rows) {
+        if (lane < SG_GEMV_TILE) {
+            uint row_actual = row_base + lane;
+            if (row_actual < params.vocab_rows) {
+                float val = 0.0f;
+                uint row_kbase = row_actual * N;
+                for (uint c = 0; c < K; c++) val += float(projection[row_kbase + c]) * hidden[c];
+                logits[row_actual] = val;
+            }
+        }
+        return;
+    }
 
     simdgroup_matrix<float, 8, 8> acc;
     acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
@@ -882,6 +909,19 @@ kernel void decode_logits_projection_sg_bf16(
 
     uint K = params.input_width;
     uint N = params.projection_cols;
+
+    if (row_base + SG_GEMV_TILE > params.vocab_rows) {
+        if (lane < SG_GEMV_TILE) {
+            uint row_actual = row_base + lane;
+            if (row_actual < params.vocab_rows) {
+                float val = 0.0f;
+                uint row_kbase = row_actual * N;
+                for (uint c = 0; c < K; c++) val += float(projection[row_kbase + c]) * hidden[c];
+                logits[row_actual] = val;
+            }
+        }
+        return;
+    }
 
     simdgroup_matrix<float, 8, 8> acc;
     acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
@@ -935,6 +975,20 @@ kernel void decode_logits_projection_batched_sg_f16(
     uint N           = params.projection_cols;
     uint hidden_base = token_idx * params.hidden_stride;
 
+    if (row_base + SG_GEMV_TILE > params.vocab_rows) {
+        if (lane < SG_GEMV_TILE) {
+            uint row_actual = row_base + lane;
+            if (row_actual < params.vocab_rows) {
+                float val = 0.0f;
+                uint row_kbase = row_actual * N;
+                for (uint c = 0; c < K; c++)
+                    val += float(projection[row_kbase + c]) * hidden[hidden_base + c];
+                logits[token_idx * params.vocab_rows + row_actual] = val;
+            }
+        }
+        return;
+    }
+
     simdgroup_matrix<float, 8, 8> acc;
     acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
 
@@ -982,6 +1036,20 @@ kernel void decode_logits_projection_batched_sg_bf16(
     uint K           = params.input_width;
     uint N           = params.projection_cols;
     uint hidden_base = token_idx * params.hidden_stride;
+
+    if (row_base + SG_GEMV_TILE > params.vocab_rows) {
+        if (lane < SG_GEMV_TILE) {
+            uint row_actual = row_base + lane;
+            if (row_actual < params.vocab_rows) {
+                float val = 0.0f;
+                uint row_kbase = row_actual * N;
+                for (uint c = 0; c < K; c++)
+                    val += float(projection[row_kbase + c]) * hidden[hidden_base + c];
+                logits[token_idx * params.vocab_rows + row_actual] = val;
+            }
+        }
+        return;
+    }
 
     simdgroup_matrix<float, 8, 8> acc;
     acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
