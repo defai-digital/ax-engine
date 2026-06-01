@@ -31,6 +31,9 @@ This directory contains active architecture decisions for the current
 - `ADR-013-mtp-optimization-phase2.md` - MTP decode, prefill, and TTFT
   optimization: adaptive n-gram gating, warmup batching, top-k target softmax,
   skip-state expansion, MTP cache preservation, Metal fusion.
+- `ADR-014-mtp-ttft-optimization.md` - MTP TTFT optimization: warmup cap
+  (256 tokens), sliding-window post-norm capture, MTP shader warmup at
+  startup, deferred warmup (env-gated alternative).
 
 ## Policy
 

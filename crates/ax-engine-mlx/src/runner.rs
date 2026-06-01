@@ -8,7 +8,7 @@ use std::time::Instant;
 use mlx_sys::{
     MlxArray, MlxDtype, MlxStream, add, argpartition_axis, astype, clear_cache, divide,
     enable_compile, eval, max_recommended_working_set_size, multiply, power, set_wired_limit,
-    slice, slice_last_dim, softmax, sum_axis, take, take_along_axis,
+    slice, softmax, stack, sum_axis, take, take_along_axis,
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
@@ -3592,6 +3592,26 @@ impl MlxRunner {
                 MlxSamplingRequest::new(MlxSamplingParams::greedy(), &dummy_tokens),
                 &mut dummy_rng,
             );
+            // Warm up MTP Metal shaders so first-request TTFT does not include
+            // JIT compilation overhead for the MTP head (~50-200 ms).
+            if weights.mtp.is_some() {
+                let mut mtp_dummy_cache = MlxKVCache::new(1);
+                let dummy_hidden = mlx_sys::zeros(
+                    &[1, 1, cfg.hidden_size as i32],
+                    mlx_sys::MlxDtype::Bfloat16,
+                    None,
+                );
+                let _ = crate::mtp::mtp_draft_tokens(
+                    &weights,
+                    &cfg,
+                    &dummy_hidden,
+                    0,
+                    &mut mtp_dummy_cache,
+                    None,
+                    &mut dummy_rng,
+                );
+                mtp_dummy_cache.reset();
+            }
         }
         let _ = take_gemma4_moe_profile_snapshot();
         let _ = take_linear_attention_profile_snapshot();
@@ -5744,29 +5764,25 @@ impl MlxRunner {
                     }
                     (logits_all, draft_hidden, ac, true, correction_argmax_tok)
                 } else {
-                    // Full-vocab target probabilities for rejection-sampling acceptance.
-                    // Computes p_target(draft_token) via full-vocab softmax so the
-                    // acceptance ratio min(1, p_target/p_draft) uses correct
-                    // normalization.  The previous top-k path normalized within the
-                    // sampler's top-k (e.g. 20 tokens), inflating p_target for in-set
-                    // tokens and zeroing it for out-of-set tokens, causing systematic
-                    // over-rejection and ~40 pp lower acceptance vs mtplx (which uses
-                    // full-vocab softmax for both target and draft).
-                    let lazy_target_probs = compute_mtp_target_probs_lazy(
+                    // Target probabilities for rejection-sampling acceptance.
+                    // Full-vocab softmax by default; top-k approximation when
+                    // AX_MLX_MTP_TARGET_SOFTMAX_MODE is set (e.g. topk_128).
+                    let lazy_target_probs = compute_mtp_target_probs(
                         &logits_all,
                         &pending,
                         &state.mtp_pending_draft_log_probs,
                         vocab,
                         sampling,
+                        self.mtp_target_softmax_topk,
                     );
                     // Always compute argmax for the correction/bonus fallback.
                     let predicted_arr = Some(argmax(&logits_all, None));
                     let kv_refs = state.cache.collect_eval_refs();
-                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
+                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs.len());
                     targets.push(predicted_arr.as_ref().unwrap());
                     targets.push(&post_norm_all);
                     if let Some(ref ltp) = lazy_target_probs {
-                        targets.push(ltp);
+                        ltp.push_eval_targets(&mut targets);
                     }
                     targets.extend(kv_refs);
                     let verify_eval_started = Instant::now();
@@ -5780,7 +5796,12 @@ impl MlxRunner {
                     let (target_probs_cpu, target_distributions_cpu): (
                         Option<Vec<f32>>,
                         Option<Vec<TokenDistribution>>,
-                    ) = (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None);
+                    ) = (
+                        lazy_target_probs
+                            .as_ref()
+                            .and_then(|ltp| ltp.extract_cpu(&pending)),
+                        None,
+                    );
 
                     let accept = mtp_accept_count(
                         &pending,
@@ -5876,22 +5897,23 @@ impl MlxRunner {
                     }
                     (logits_all, draft_hidden, ac, true, correction_argmax_tok)
                 } else {
-                    // Full-vocab target probabilities for rejection-sampling acceptance.
-                    let lazy_target_probs = compute_mtp_target_probs_lazy(
+                    // Target probabilities for rejection-sampling acceptance.
+                    let lazy_target_probs = compute_mtp_target_probs(
                         &logits_all,
                         &pending,
                         &state.mtp_pending_draft_log_probs,
                         vocab,
                         sampling,
+                        self.mtp_target_softmax_topk,
                     );
                     // Always compute argmax for the correction/bonus fallback.
                     let predicted_arr = Some(argmax(&logits_all, None));
                     let kv_refs = state.cache.collect_eval_refs();
-                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(3 + kv_refs.len());
+                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs.len());
                     targets.push(predicted_arr.as_ref().unwrap());
                     targets.push(&post_norm_all);
                     if let Some(ref ltp) = lazy_target_probs {
-                        targets.push(ltp);
+                        ltp.push_eval_targets(&mut targets);
                     }
                     targets.extend(kv_refs);
                     let verify_eval_started = Instant::now();
@@ -5905,7 +5927,12 @@ impl MlxRunner {
                     let (target_probs_cpu, target_distributions_cpu): (
                         Option<Vec<f32>>,
                         Option<Vec<TokenDistribution>>,
-                    ) = (lazy_target_probs.map(|arr| arr.data_f32().to_vec()), None);
+                    ) = (
+                        lazy_target_probs
+                            .as_ref()
+                            .and_then(|ltp| ltp.extract_cpu(&pending)),
+                        None,
+                    );
 
                     let accept = mtp_accept_count(
                         &pending,
@@ -6260,6 +6287,14 @@ impl MlxRunner {
         // sustained profile does the same via committed MTP history; without
         // this, the recurrent MTP attention starts decode with almost no
         // prompt-side history and acceptance drops sharply.
+        //
+        // The warmup is capped to the most recent `mtp_warmup_cap()` tokens
+        // (default 256) because the MTP head's single-layer attention has
+        // limited effective range. Tokens beyond ~256 positions contribute
+        // diminishing returns to draft quality but add linearly to the lazy
+        // computation graph depth, increasing TTFT. For a 2048-token cold
+        // prefill chunk, the cap reduces warmup ops from ~57 to ~7
+        // full-model-equivalent forwards.
         if let (Some(prefill_hidden), Some(head)) =
             (state.mtp_prefill_hidden.take(), self.weights.mtp.as_ref())
         {
@@ -6271,10 +6306,15 @@ impl MlxRunner {
                 .copied()
                 .unwrap_or_default()
                 .max(0) as usize;
-            let warmup_len = available_rows.min(history_tokens.len());
+            let total = available_rows.min(history_tokens.len());
+            let cap = mtp_warmup_cap();
+            let warmup_len = if cap > 0 { total.min(cap) } else { total };
+            let start_offset = total.saturating_sub(warmup_len);
             let mut warmup_hidden: Option<MlxArray> = None;
-            for (pos, token) in history_tokens.into_iter().take(warmup_len).enumerate() {
+            for i in 0..warmup_len {
+                let pos = start_offset + i;
                 let row = slice_post_norm_hidden(&prefill_hidden, pos, self.cfg.hidden_size);
+                let token = history_tokens[pos];
                 let tok_data = [token];
                 let tok_arr = MlxArray::from_raw_data(
                     tok_data.as_ptr() as *const u8,
@@ -6584,15 +6624,13 @@ impl LazyTargetProbs {
         match self {
             LazyTargetProbs::Full(arr) => Some(arr.data_f32().to_vec()),
             LazyTargetProbs::TopK { indices, probs, k } => {
-                let n = pending.len();
                 let k_val = *k as usize;
-                let indices_data = indices.data_i32();
+                let indices_data = indices.data_u32();
                 let probs_data = probs.data_f32();
-                let mut result = Vec::with_capacity(n);
-                for i in 0..n {
+                let mut result = Vec::with_capacity(pending.len());
+                for (i, &needle) in pending.iter().enumerate() {
                     let row_start = i * k_val;
                     let row_end = row_start + k_val;
-                    let needle = pending[i] as i32;
                     let mut found = false;
                     for j in row_start..row_end {
                         if indices_data.get(j) == Some(&needle) {
@@ -6642,18 +6680,27 @@ fn compute_mtp_target_probs(
             return None;
         }
 
-        let last_axis = scaled.ndim() as i32 - 1;
-        let part_indices =
-            argpartition_axis(&scaled, -k_i32, last_axis, None);
-        let top_indices =
-            slice_last_dim(&part_indices, vocab - k_i32, vocab, None);
-        let top_logits =
-            take_along_axis(&scaled, &top_indices, last_axis, None);
-        let top_probs = softmax(&top_logits, last_axis, None);
+        let scaled_topk = multiply(logits_all, &inv_temp, None);
+        let verify_len = pending.len() as i32;
+        let mut all_top_indices = Vec::with_capacity(pending.len());
+        let mut all_top_probs = Vec::with_capacity(pending.len());
+        for row in 0..verify_len {
+            let row_logits = slice(&scaled_topk, &[row, 0], &[row + 1, vocab], &[1, 1], None);
+            let part = argpartition_axis(&row_logits, -k_i32, -1, None);
+            let top_idx = slice(&part, &[0, vocab - k_i32], &[1, vocab], &[1, 1], None);
+            let top_vals = take_along_axis(&row_logits, &top_idx, -1, None);
+            let top_p = softmax(&top_vals, -1, None);
+            all_top_indices.push(top_idx);
+            all_top_probs.push(top_p);
+        }
+        let idx_refs: Vec<&MlxArray> = all_top_indices.iter().collect();
+        let prob_refs: Vec<&MlxArray> = all_top_probs.iter().collect();
+        let stacked_indices = stack(&idx_refs, 0, None);
+        let stacked_probs = stack(&prob_refs, 0, None);
 
         Some(LazyTargetProbs::TopK {
-            indices: top_indices,
-            probs: top_probs,
+            indices: astype(&stacked_indices, MlxDtype::Uint32, None),
+            probs: stacked_probs,
             k,
         })
     } else {
@@ -7024,6 +7071,20 @@ fn maybe_reenable_linear_ngram_from_fallback_output(
 ///
 /// Other decode paths (non-MTP `ngram_accel_decode_step`, prefill seeding) are
 /// unaffected — only the n-gram-first branch inside `run_mtp_decode` is gated.
+/// Maximum number of history tokens to warm up the MTP KV cache.
+/// The most recent tokens dominate the MTP head's attention context for
+/// speculative decoding; older tokens have diminishing returns.
+/// Override with `AX_MLX_MTP_WARMUP_CAP` (0 = unlimited, default 256).
+fn mtp_warmup_cap() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_WARMUP_CAP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(256)
+    })
+}
+
 fn mtp_disable_ngram_stacking_from_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
@@ -11386,5 +11447,169 @@ mod tests {
         assert_eq!(&mask_data[0..3], &[1.0, 1.0, 1.0]);
         // seq 1 (len 2): position 2 is padding
         assert_eq!(&mask_data[3..6], &[1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn argpartition_axis_2d_topk_returns_dominant_indices() {
+        let vocab: i32 = 10;
+        let k: i32 = 3;
+
+        let mut data = vec![0.0f32; vocab as usize];
+        data[2] = 8.0;
+        data[5] = 4.0;
+
+        let arr = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            data.len() * 4,
+            &[1, vocab],
+            MlxDtype::Float32,
+        );
+
+        let neg = multiply(&arr, &mlx_scalar_f32(-1.0), None);
+        let part = argpartition_axis(&neg, k, 1, None);
+        let top = slice(&part, &[0, 0], &[1, k], &[1, 1], None);
+        let top_u32 = astype(&top, MlxDtype::Uint32, None);
+        mlx_sys::eval(&[&top_u32]);
+        let indices = top_u32.data_u32().to_vec();
+
+        assert!(
+            indices.contains(&2),
+            "top-{k} should contain index 2 (value 8.0), got {indices:?}"
+        );
+        assert!(
+            indices.contains(&5),
+            "top-{k} should contain index 5 (value 4.0), got {indices:?}"
+        );
+    }
+
+    #[test]
+    fn topk_target_softmax_approximates_full_softmax_for_dominant_tokens() {
+        use mlx_sys::eval;
+
+        let vocab: i32 = 100;
+        let pending: Vec<u32> = vec![10, 25, 55];
+        let pending_log_probs: Vec<f32> = vec![-2.0, -3.0, -1.5];
+        let temperature: f32 = 0.8;
+        let verify_len = pending.len() as i32;
+
+        let mut logits_data = vec![0.0f32; verify_len as usize * vocab as usize];
+        logits_data[10] = 5.0;
+        logits_data[20] = 4.0;
+        logits_data[vocab as usize + 25] = 6.0;
+        logits_data[vocab as usize + 30] = 3.0;
+        logits_data[2 * vocab as usize + 55] = 7.0;
+        logits_data[2 * vocab as usize + 60] = 2.0;
+
+        let logits_all = MlxArray::from_raw_data(
+            logits_data.as_ptr() as *const u8,
+            logits_data.len() * 4,
+            &[verify_len, vocab],
+            MlxDtype::Float32,
+        );
+
+        let sampling = MlxSamplingParams {
+            temperature,
+            ..Default::default()
+        };
+
+        let full_result = compute_mtp_target_probs(
+            &logits_all,
+            &pending,
+            &pending_log_probs,
+            vocab,
+            sampling,
+            None,
+        )
+        .expect("full should return Some");
+        if let LazyTargetProbs::Full(arr) = &full_result {
+            eval(&[arr]);
+        }
+        let full_probs = full_result.extract_cpu(&pending).unwrap();
+
+        let topk_result = compute_mtp_target_probs(
+            &logits_all,
+            &pending,
+            &pending_log_probs,
+            vocab,
+            sampling,
+            Some(32),
+        )
+        .expect("topk should return Some");
+        if let LazyTargetProbs::TopK { indices, probs, .. } = &topk_result {
+            eval(&[indices, probs]);
+        }
+        let topk_probs = topk_result.extract_cpu(&pending).unwrap();
+
+        assert_eq!(full_probs.len(), 3);
+        assert_eq!(topk_probs.len(), 3);
+
+        for i in 0..3 {
+            assert!(
+                full_probs[i] > 0.0,
+                "position {i}: full softmax should be > 0, got {}",
+                full_probs[i]
+            );
+            assert!(
+                topk_probs[i] > 0.0,
+                "position {i}: topk should find token {} in top-32, got p=0",
+                pending[i]
+            );
+            let ratio = topk_probs[i] / full_probs[i];
+            assert!(
+                (0.85..1.15).contains(&ratio),
+                "position {i}: full={} topk={} ratio={ratio:.3}",
+                full_probs[i],
+                topk_probs[i]
+            );
+        }
+    }
+
+    #[test]
+    fn topk_target_softmax_returns_zero_for_out_of_set_tokens() {
+        use mlx_sys::eval;
+
+        let vocab: i32 = 100;
+        let verify_len: usize = 1;
+        let pending: Vec<u32> = vec![99];
+        let pending_log_probs: Vec<f32> = vec![-2.0];
+        let temperature: f32 = 0.8;
+
+        let mut logits_data = vec![0.0f32; verify_len * vocab as usize];
+        logits_data[0] = 10.0;
+        logits_data[1] = 9.0;
+        logits_data[2] = 8.0;
+
+        let logits_all = MlxArray::from_raw_data(
+            logits_data.as_ptr() as *const u8,
+            logits_data.len() * 4,
+            &[verify_len as i32, vocab],
+            MlxDtype::Float32,
+        );
+
+        let sampling = MlxSamplingParams {
+            temperature,
+            ..Default::default()
+        };
+
+        let topk_result = compute_mtp_target_probs(
+            &logits_all,
+            &pending,
+            &pending_log_probs,
+            vocab,
+            sampling,
+            Some(3),
+        )
+        .expect("topk should return Some");
+
+        if let LazyTargetProbs::TopK { indices, probs, .. } = &topk_result {
+            eval(&[indices, probs]);
+        }
+
+        let topk_probs = topk_result.extract_cpu(&pending).unwrap();
+        assert_eq!(topk_probs.len(), 1);
+        assert_eq!(
+            topk_probs[0], 0.0,
+            "token 99 is outside top-3, should return 0"
+        );
     }
 }

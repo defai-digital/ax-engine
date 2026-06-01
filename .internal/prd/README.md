@@ -23,6 +23,9 @@ This directory contains active product and execution plans for the current
 - `PRD-2026-06-01-mtp-optimization-phase2.md` - MTP decode, prefill, and TTFT
   optimization: adaptive n-gram gating, warmup batching, top-k softmax,
   skip-state expansion, MTP cache preservation, Metal fusion, prefill profiling.
+- `PRD-2026-06-01-mtp-ttft-optimization.md` - MTP TTFT optimization: warmup
+  cap (256 tokens), sliding-window post-norm, MTP shader warmup, deferred
+  warmup. Targets 27B TTFT within 3% of MTPLX.
 
 ## Policy
 
