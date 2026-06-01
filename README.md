@@ -44,11 +44,11 @@ warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | Light.+ngram tok/s | Light.+ngram accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 51.5 | 100.0% | 49.5 | 96.5% | 52.4 | 85.4% | 65.9 | 99.5% | 62.5 | 80.2% |
-| Qwen3.6 27B 4-bit | long_code | 3 | 53.5 | 99.7% | 51.7 | 93.3% | 54.9 | 87.6% | 65.6 | 98.4% | 70.6 | 90.0% |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 51.6 | 87.6% | 46.9 | 76.5% | 45.0 | 72.2% | 53.8 | 74.8% | 60.5 | 77.7% |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 107.3 | 50.8% | 147.9 | 99.0% | 173.9 | 91.0% | 182.5 | 99.9% | 257.9 | 88.8% |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.4 | 50.5% | 149.0 | 98.5% | 194.9 | 92.1% | 180.7 | 99.8% | 272.0 | 92.0% |
+| Qwen3.6 27B 4-bit | flappy | 3 | 58.8 | 100.0% | 49.5 | 96.5% | 52.4 | 85.4% | 65.9 | 99.5% | 62.5 | 80.2% |
+| Qwen3.6 27B 4-bit | long_code | 3 | 58.4 | 99.7% | 51.7 | 93.3% | 54.9 | 87.6% | 65.6 | 98.4% | 70.6 | 90.0% |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.6 | 87.6% | 46.9 | 76.5% | 45.0 | 72.2% | 53.8 | 74.8% | 60.5 | 77.7% |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 105.0 | 49.1% | 147.9 | 99.0% | 173.9 | 91.0% | 182.5 | 99.9% | 257.9 | 88.8% |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 103.8 | 51.3% | 149.0 | 98.5% | 194.9 | 92.1% | 180.7 | 99.8% | 272.0 | 92.0% |
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.7 | 42.6% | 148.8 | 97.2% | 136.1 | 91.8% | 178.1 | 92.8% | 191.6 | 83.5% |
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP; Lightning ngram+MTP uses `--enable-ngram` with MTP. Sampler: temperature=0.6,

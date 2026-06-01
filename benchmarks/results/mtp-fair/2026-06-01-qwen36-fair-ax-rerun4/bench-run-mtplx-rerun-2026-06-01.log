@@ -378,3 +378,83 @@ long_code_test_stubs rep 2/6: decode=101.7 tok/s out=1000 accept=324/676
 long_code_test_stubs rep 3/6: decode=101.3 tok/s out=1000 accept=331/668
 long_code_test_stubs rep 4/6: decode=101.9 tok/s out=1000 accept=326/674
 long_code_test_stubs rep 5/6: decode=103.8 tok/s out=1000 accept=335/665
+long_code_test_stubs rep 6/6: decode=101.1 tok/s out=1000 accept=326/673
+  [mtplx] inter-case cooldown 10s
+long_code_sql_schema rep 1/6: decode=102.1 tok/s out=1000 accept=319/680
+long_code_sql_schema rep 2/6: decode=100.9 tok/s out=1000 accept=310/689
+long_code_sql_schema rep 3/6: decode=100.3 tok/s out=1000 accept=307/692
+long_code_sql_schema rep 4/6: decode=101.1 tok/s out=1000 accept=313/687
+long_code_sql_schema rep 5/6: decode=101.8 tok/s out=1000 accept=319/681
+long_code_sql_schema rep 6/6: decode=101.3 tok/s out=1000 accept=313/686
+Saved to benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/35b-a3b-4bit/long_code/mtplx.json
+{
+  "accept_rate": 0.5324645458029896,
+  "accepted_drafts": 6946,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": 104.61819033293193,
+    "p10": 101.13629407645179,
+    "p90": 115.55944459730607,
+    "values": [
+      115.1996905274694,
+      115.95858475217395,
+      113.9065324567704,
+      116.36955612263773,
+      115.55944459730607,
+      106.2834303383472,
+      105.89245679078361,
+      107.96123026238097,
+      105.46195923862992,
+      105.49638775420223,
+      101.69931288768561,
+      101.26301433852824,
+      101.94854899900545,
+      103.77442142723396,
+      101.13629407645179,
+      100.85444559018347,
+      100.3096437527558,
+      101.14134509460315,
+      101.84235276669179,
+      101.25271546451391
+    ]
+  },
+  "drafted_tokens": 13045,
+  "end_to_end_tok_s": {
+    "median": 101.40617850645313,
+    "p10": 98.2853474131211,
+    "p90": 111.75626501647317,
+    "values": [
+      111.46866853995948,
+      112.15874021746774,
+      110.43798240517935,
+      112.54321201704693,
+      111.75626501647317,
+      102.85655098764627,
+      102.51930031558159,
+      104.41662439196854,
+      102.19613141038123,
+      102.11141213503372,
+      98.65435419444076,
+      98.2853474131211,
+      98.98648235637074,
+      100.70094487787256,
+      98.26341884941544,
+      98.39837739449194,
+      97.96856506000506,
+      98.67126276000742,
+      99.38056713636526,
+      98.78373553957664
+    ]
+  },
+  "generated_tokens": 20000,
+  "runs": 20,
+  "validations_passed": 4,
+  "validations_total": 8
+}
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_mtplx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1 --suite python_modules_long --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl --output benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/35b-a3b-4bit/python_modules_long/mtplx.json --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --disable-thinking --allow-unverified-model
+pymod_http_client rep 1/6: decode=97.9 tok/s out=1000 accept=279/720
+pymod_http_client rep 2/6: decode=97.2 tok/s out=1000 accept=283/716
+pymod_http_client rep 3/6: decode=99.5 tok/s out=1000 accept=296/703
+pymod_http_client rep 4/6: decode=98.8 tok/s out=1000 accept=289/710
+pymod_http_client rep 5/6: decode=99.1 tok/s out=1000 accept=291/708
