@@ -6106,10 +6106,7 @@ impl MlxRunner {
         // The gate requires a minimum number of EWMA samples before it can
         // activate, to avoid false gating on early-generation noise.
         // Override with `AX_MLX_MTP_NGRAM_GATE_SAMPLES` (default 8).
-        let ngram_gate_min_samples = std::env::var("AX_MLX_MTP_NGRAM_GATE_SAMPLES")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(8);
+        let ngram_gate_min_samples = mtp_ngram_gate_min_samples();
         let ngram_saturated = ngram_max > 0
             && state.mtp_telemetry.accept_rate_ewma_samples >= ngram_gate_min_samples
             && state.mtp_telemetry.accept_rate_ewma
@@ -7104,6 +7101,19 @@ fn mtp_warmup_cap() -> usize {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(256)
+    })
+}
+
+/// Minimum EWMA samples before n-gram saturation gating can activate.
+/// 8 samples is sufficient for EWMA to stabilize at high acceptance rates.
+/// Override with `AX_MLX_MTP_NGRAM_GATE_SAMPLES` (default 8).
+fn mtp_ngram_gate_min_samples() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_NGRAM_GATE_SAMPLES")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(8)
     })
 }
 
