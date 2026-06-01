@@ -875,6 +875,11 @@ pub struct MlxKVCache {
     turboquant_shadow_layers: Vec<Option<TurboQuantShadowLayerStorage>>,
     /// Current logical sequence length (token count cached).
     pub seq_len: usize,
+    /// RoPE offset added to `seq_len` for positional encoding.  Used when
+    /// the KV cache has fewer physical entries than the logical sequence
+    /// position (e.g. after capped MTP warmup where only the last N tokens
+    /// are warmed up but RoPE needs the full prompt offset).
+    pub rope_offset: usize,
     growth_count: u64,
     turboquant_decode_usage: MlxKvCompressionDecodeUsage,
     use_rotating_sliding_decode: bool,
@@ -888,6 +893,7 @@ impl Clone for MlxKVCache {
             linear_layers: self.linear_layers.clone(),
             turboquant_shadow_layers: self.turboquant_shadow_layers.clone(),
             seq_len: self.seq_len,
+            rope_offset: self.rope_offset,
             growth_count: self.growth_count,
             turboquant_decode_usage: self.turboquant_decode_usage,
             use_rotating_sliding_decode: self.use_rotating_sliding_decode,
@@ -969,6 +975,7 @@ impl MlxKVCache {
                 .collect(),
             turboquant_shadow_layers: (0..num_layers).map(|_| None).collect(),
             seq_len: 0,
+            rope_offset: 0,
             growth_count: 0,
             turboquant_decode_usage: MlxKvCompressionDecodeUsage::default(),
             use_rotating_sliding_decode: false,
@@ -2770,6 +2777,7 @@ impl MlxKVCache {
         }
         self.clear_turboquant_shadow_storage();
         self.seq_len = 0;
+        self.rope_offset = 0;
         self.growth_count = 0;
     }
 }

@@ -1,7 +1,7 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argmax, astype, concatenate, eval,
-    multiply, reshape, rms_norm, scaled_dot_product_attention_with_mask, sigmoid, slice, softmax,
-    take,
+    add, argmax, astype, concatenate, eval, multiply, reshape, rms_norm,
+    scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take, MlxArray, MlxDtype,
+    ScaledDotProductAttentionMask,
 };
 
 use crate::kv_cache::MlxKVCache;
@@ -10,7 +10,7 @@ use crate::model::shared::{
     moe_router_deepseek_v3, moe_router_glm, moe_router_qwen3, prepare_value_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj, qw, shared_expert_forward,
 };
-use crate::model::{ModelConfig, embed_tokens_arr};
+use crate::model::{embed_tokens_arr, ModelConfig};
 use crate::sampling::{TokenDistribution, Xorshift64};
 use crate::weights::{ModelWeights, MtpWeights};
 
@@ -72,9 +72,14 @@ pub fn mtp_head_forward(
     weights: &ModelWeights,
     cache: &mut MlxKVCache,
     cfg: &ModelConfig,
+    rope_offset_override: Option<usize>,
 ) -> MlxArray {
-    // Use the MTP KV-cache length as the RoPE offset (matches mlx-lm cache.offset).
-    let token_offset = cache.seq_len;
+    // Use the explicit RoPE offset when provided (e.g. during capped warmup
+    // where KV entries start at buffer position 0 but represent prompt tokens
+    // at higher positions).  Otherwise use the MTP KV-cache seq_len + rope_offset
+    // as the RoPE offset (matches mlx-lm cache.offset, with rope_offset accounting
+    // for physical-vs-logical position differences after capped warmup).
+    let token_offset = rope_offset_override.unwrap_or(cache.seq_len + cache.rope_offset);
     // 1. Embed prev_token → [1, 1, hidden_size] in bf16.
     let embed = embed_tokens_arr(prev_token_arr, &weights.token_embedding, cfg.hidden_size);
     let embed = astype(&embed, MlxDtype::Bfloat16, None);
@@ -385,7 +390,15 @@ pub fn mtp_draft_tokens_after_forced_prefix(
     );
 
     for &forced_token in forced_prefix {
-        let new_hidden = mtp_head_forward(head, &prev_hidden, &prev_token_arr, weights, cache, cfg);
+        let new_hidden = mtp_head_forward(
+            head,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
         prev_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
         let tok_data = [forced_token];
         prev_token_arr = MlxArray::from_raw_data(
@@ -455,7 +468,15 @@ fn mtp_draft_tokens_greedy(
 
     // Build the full multi-depth lazy graph: no GPU syncs.
     for _ in 0..max_depth {
-        let new_hidden = mtp_head_forward(head, &prev_hidden, &prev_token_arr, weights, cache, cfg);
+        let new_hidden = mtp_head_forward(
+            head,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
         let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
         let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
 
@@ -526,7 +547,15 @@ fn mtp_draft_tokens_sampled(
     );
 
     for _ in 0..max_depth {
-        let new_hidden = mtp_head_forward(head, &prev_hidden, &prev_token_arr, weights, cache, cfg);
+        let new_hidden = mtp_head_forward(
+            head,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
         let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
         let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
 

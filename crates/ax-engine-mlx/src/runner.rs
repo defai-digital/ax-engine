@@ -6323,13 +6323,11 @@ impl MlxRunner {
             let warmup_len = if cap > 0 { total.min(cap) } else { total };
             let start_offset = total.saturating_sub(warmup_len);
             let mut warmup_hidden: Option<MlxArray> = None;
-            // Pre-advance the KV cache seq_len so the RoPE offsets inside
-            // `mtp_head_forward` match the actual prompt positions of the
-            // warmed-up tokens. Without this, the cap would cause the MTP
-            // head to apply RoPE position 0 to a token that's actually at
-            // prompt position `start_offset`, producing incorrect attention
-            // and degrading acceptance rate on the first decode steps.
-            cache.seq_len = start_offset;
+            // The warmup loop writes KV entries starting at buffer position 0
+            // (cache.seq_len starts at 0 for correct append layout), but passes
+            // the actual prompt position as the RoPE offset so positional
+            // encoding is correct.  This avoids allocating a zero-padded KV
+            // buffer with start_offset empty rows, which would dilute attention.
             for i in 0..warmup_len {
                 let pos = start_offset + i;
                 let row = slice_post_norm_hidden(&prefill_hidden, pos, self.cfg.hidden_size);
@@ -6348,6 +6346,7 @@ impl MlxRunner {
                     &self.weights,
                     cache,
                     &self.cfg,
+                    Some(pos),
                 ));
             }
             if let Some(ref hidden) = warmup_hidden {
@@ -6358,6 +6357,13 @@ impl MlxRunner {
                 mlx_sys::eval(&targets);
                 clear_cache();
                 state.mtp_decode_count = warmup_len;
+                // After warmup, cache.seq_len == warmup_len (physical entries).
+                // Set rope_offset so subsequent decode steps compute RoPE at
+                // the correct absolute position: seq_len + rope_offset gives
+                // the true logical position (e.g. warmup_len + start_offset = total).
+                if let Some(ref mut c) = state.mtp_cache {
+                    c.rope_offset = start_offset;
+                }
             }
         }
 
