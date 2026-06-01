@@ -6311,6 +6311,13 @@ impl MlxRunner {
             let warmup_len = if cap > 0 { total.min(cap) } else { total };
             let start_offset = total.saturating_sub(warmup_len);
             let mut warmup_hidden: Option<MlxArray> = None;
+            // Pre-advance the KV cache seq_len so the RoPE offsets inside
+            // `mtp_head_forward` match the actual prompt positions of the
+            // warmed-up tokens. Without this, the cap would cause the MTP
+            // head to apply RoPE position 0 to a token that's actually at
+            // prompt position `start_offset`, producing incorrect attention
+            // and degrading acceptance rate on the first decode steps.
+            cache.seq_len = start_offset;
             for i in 0..warmup_len {
                 let pos = start_offset + i;
                 let row = slice_post_norm_hidden(&prefill_hidden, pos, self.cfg.hidden_size);
