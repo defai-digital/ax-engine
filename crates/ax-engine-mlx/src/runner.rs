@@ -6190,9 +6190,15 @@ impl MlxRunner {
                         .unwrap_or(false);
                     if preserve_cache {
                         if let Some(ref mut cache) = state.mtp_cache {
-                            cache.seq_len += ngram_len;
+                            // N-gram tokens don't produce MTP KV entries, so advance
+                            // rope_offset (logical position) instead of seq_len
+                            // (physical entries).  This keeps the next MTP step's
+                            // RoPE correct without leaving a gap of uninitialized
+                            // KV entries that SDPA would attend over.
+                            cache.rope_offset += ngram_len;
                         }
-                        state.mtp_decode_count += ngram_len;
+                        // mtp_decode_count tracks physical MTP KV entries only.
+                        // N-gram tokens don't add entries, so don't increment here.
                     } else {
                         state.mtp_cache = None;
                         state.mtp_decode_count = 0;
