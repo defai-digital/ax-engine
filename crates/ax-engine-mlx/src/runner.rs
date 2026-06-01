@@ -1290,18 +1290,29 @@ impl MtpTelemetry {
             }
             self.accept_rate_ewma_samples = self.accept_rate_ewma_samples.saturating_add(1);
         }
-        let mtp_only_drafted = sources
+        // Cascade-correct MTP-only EWMA: in sequential spec decoding, an n-gram
+        // rejection at position k causes all tokens at positions k+1..drafted to be
+        // rejected by cascade rather than by their own quality.  Counting those
+        // cascaded rejections against MTP deflates the EWMA when n-gram is running.
+        // Only count tokens that were "meaningfully evaluated":
+        //   - accepted tokens (positions 0..accepted) passed the verifier, and
+        //   - the first-rejected token (position `accepted`) was the one that
+        //     actually failed — but only if that token is MTP-sourced.
+        // Tokens at positions accepted+1..drafted are cascade rejections and are
+        // excluded regardless of source.
+        let mtp_only_accepted_count = sources
             .iter()
-            .take(drafted)
+            .take(accepted)
             .filter(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
             .count();
+        let first_rejection_is_mtp = accepted < drafted
+            && sources
+                .get(accepted)
+                .map(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+                .unwrap_or(true);
+        let mtp_only_drafted = mtp_only_accepted_count + usize::from(first_rejection_is_mtp);
         if mtp_only_drafted > 0 {
-            let mtp_only_accepted = sources
-                .iter()
-                .take(accepted)
-                .filter(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
-                .count();
-            let mtp_step_rate = mtp_only_accepted as f32 / mtp_only_drafted as f32;
+            let mtp_step_rate = mtp_only_accepted_count as f32 / mtp_only_drafted as f32;
             if self.mtp_only_accept_rate_ewma_samples == 0 {
                 self.mtp_only_accept_rate_ewma = mtp_step_rate;
             } else {
@@ -7283,7 +7294,10 @@ fn adaptive_ngram_saturation_threshold(mtp_depth: usize) -> f32 {
     std::env::var("AX_MLX_MTP_NGRAM_GATE_THRESHOLD")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(0.98)
+        // depth≥3: 0.99 splits flappy (99.5% MTP accept → gate fires) from
+        // long_code (98.4% → gate stays open, n-gram keeps helping).
+        // depth=2: lower bound 0.98 since we lack benchmark data.
+        .unwrap_or(if mtp_depth >= 3 { 0.99 } else { 0.98 })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -7992,6 +8006,80 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_accepted_source_ngram_tokens".into(), 2)));
         assert!(decisions.contains(&("ax_mtp_draft_source_hybrid_mtp_tokens".into(), 1)));
         assert!(decisions.contains(&("ax_mtp_accepted_source_hybrid_mtp_tokens".into(), 0)));
+    }
+
+    #[test]
+    fn mtp_only_ewma_excludes_cascade_rejections_from_ngram_failure() {
+        // When an n-gram token at position 0 is rejected (accept=0), MTP tokens
+        // at later positions are cascade-rejected — not because they are bad
+        // predictions but because the earlier n-gram token already failed.
+        // The MTP-only EWMA must NOT count those cascade rejections, otherwise
+        // it would deflate even when pure-MTP acceptance is near-perfect.
+
+        let mut tel = MtpTelemetry::default();
+
+        // Step 1: [Ngram, Ngram, Mtp] accept=0 — n-gram at pos 0 fails.
+        // MTP token at pos 2 is cascade-rejected.  No MTP EWMA update.
+        tel.record_step(
+            3,
+            0,
+            &[
+                MtpDraftSource::Ngram,
+                MtpDraftSource::Ngram,
+                MtpDraftSource::Mtp,
+            ],
+        );
+        assert_eq!(
+            tel.mtp_only_accept_rate_ewma_samples, 0,
+            "cascade step must not produce a sample"
+        );
+
+        // Step 2: [Ngram, Ngram, Mtp] accept=3 — all pass, MTP genuinely accepted.
+        tel.record_step(
+            3,
+            3,
+            &[
+                MtpDraftSource::Ngram,
+                MtpDraftSource::Ngram,
+                MtpDraftSource::Mtp,
+            ],
+        );
+        assert_eq!(tel.mtp_only_accept_rate_ewma_samples, 1);
+        assert!(
+            (tel.mtp_only_accept_rate_ewma - 1.0).abs() < 1e-5,
+            "MTP accepted → rate 1.0"
+        );
+
+        // Step 3: [Ngram, Ngram, Mtp] accept=2 — ngrams pass, MTP at pos 2 is
+        // the first rejection (position == accept).  This IS a meaningful eval.
+        tel.record_step(
+            3,
+            2,
+            &[
+                MtpDraftSource::Ngram,
+                MtpDraftSource::Ngram,
+                MtpDraftSource::Mtp,
+            ],
+        );
+        assert_eq!(tel.mtp_only_accept_rate_ewma_samples, 2);
+        // After step 3: EWMA nudged down from 1.0 toward 0.0 (mtp rejected).
+        assert!(
+            tel.mtp_only_accept_rate_ewma < 1.0,
+            "MTP rejection must lower the EWMA"
+        );
+
+        // Pure MTP steps must count every token, including cascade positions.
+        let mut tel2 = MtpTelemetry::default();
+        tel2.record_step(3, 1, &[MtpDraftSource::Mtp; 3]);
+        // drafted=3, first rejection at pos 1 (MTP), positions 2 is cascade but
+        // all tokens are MTP so first_rejection_is_mtp=true.
+        // mtp_only_drafted = accepted_mtp_count(1) + 1 = 2
+        assert_eq!(tel2.mtp_only_accept_rate_ewma_samples, 1);
+        let expected_rate = 1.0_f32 / 2.0;
+        assert!(
+            (tel2.mtp_only_accept_rate_ewma - expected_rate).abs() < 1e-5,
+            "pure-MTP partial rejection: rate should be accepted/meaningful = 1/2"
+        );
     }
 
     #[test]
