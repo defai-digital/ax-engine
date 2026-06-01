@@ -795,7 +795,9 @@ def write_decode_svg(path: Path, summary: dict[str, Any]) -> None:
     path.write_text("\n".join(parts) + "\n")
 
 
-def write_decode_model_svg(path: Path, summary: dict[str, Any], model_key: str) -> None:
+def write_decode_model_svg(
+    path: Path, summary: dict[str, Any], model_key: str, y_max: float | None = None
+) -> None:
     rows = [row for row in summary["rows"] if row["model"] == model_key]
     if not rows:
         return
@@ -813,7 +815,7 @@ def write_decode_model_svg(path: Path, summary: dict[str, Any], model_key: str) 
         }
         for row in rows
     ]
-    max_value = max(
+    max_value = y_max if y_max is not None else max(
         [
             float(value)
             for group in groups
@@ -1095,10 +1097,11 @@ def main() -> int:
     summary_json.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     write_markdown(summary_md, summary)
     write_decode_svg(chart_svg, summary)
+    decode_y_max: dict[str, float] = {"27b-4bit": 80.0, "35b-a3b-4bit": 300.0}
     model_chart_paths: list[Path] = []
     for model_key in args.models:
         model_chart = args.output_dir / f"decode-tok-s-{model_key}.svg"
-        write_decode_model_svg(model_chart, summary, model_key)
+        write_decode_model_svg(model_chart, summary, model_key, y_max=decode_y_max.get(model_key))
         model_chart_paths.append(model_chart)
         accept_chart = args.output_dir / f"accept-rate-{model_key}.svg"
         write_accept_model_svg(accept_chart, summary, model_key)
