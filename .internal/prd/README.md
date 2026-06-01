@@ -29,6 +29,10 @@ This directory contains active product and execution plans for the current
 - `PRD-2026-06-01-mtp-decode-optimization.md` - MTP decode rate optimization:
   enable skip-state, top-k=128 softmax, and faster n-gram gating by default.
   Targets 10–20% decode throughput improvement.
+- `PRD-2026-06-01-turboquant-codec-kernel-improvements.md` - TurboQuant KV
+  cache compression improvements: randomized Hadamard transform, Lloyd-Max
+  codebooks, incremental decode buffer, simd_sum kernel, fused Metal encode,
+  sparse V attention, V-only cache, fractional bits, state serialization.
 
 ## Policy
 

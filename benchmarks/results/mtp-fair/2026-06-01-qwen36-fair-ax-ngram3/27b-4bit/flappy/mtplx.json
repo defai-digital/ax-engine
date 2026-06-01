@@ -1,12 +1,12 @@
 {
   "allow_unverified_model": false,
   "build": {
-    "git_commit": "ef5f202c4668b3e5f8409cd0d1b09ef0e7a0f166",
+    "git_commit": "c0d5ecdd714dc5a37672eeabbbc2d58c8d56c133",
     "git_tracked_dirty": true,
     "host": "AKMBPM5MAX.local",
     "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
   },
-  "cooldown_s": 15.0,
+  "cooldown_s": 30.0,
   "depth": 3,
   "disable_thinking": true,
   "draft_lm_head": null,
@@ -305,29 +305,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 16.882134040999972,
-          "decode_tok_s": 59.23421752080624,
-          "draft_time_s": 3.4073834680000346,
+          "decode_elapsed_s": 17.121640708006453,
+          "decode_tok_s": 58.40561760721788,
+          "draft_time_s": 3.4690463280276163,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 17.320042040999965,
-          "end_to_end_tok_s": 57.736580409724304,
-          "ended_at": 1780260030.298344,
+          "elapsed_s": 17.531596041008015,
+          "end_to_end_tok_s": 57.03987233455003,
+          "ended_at": 1780345227.9939818,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 17975880346,
-          "prompt_eval_time_s": 0.4379079999999931,
+          "prompt_eval_time_s": 0.4099553330015624,
           "rejected_drafts": 0,
           "repetition": 1,
           "seed": 43,
-          "started_at": 1780260012.9771872,
-          "target_forward_time_s": 13.190167328998427,
+          "started_at": 1780345210.461249,
+          "target_forward_time_s": 13.304825154060381,
           "text": "def spawn_pipe_3(self):\n    self.pipes[3] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[3] = True\n    self.timers[3] = 0\n\ndef spawn_pipe_4(self):\n    self.pipes[4] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[4] = True\n    self.timers[4] = 0\n\ndef spawn_pipe_5(self):\n    self.pipes[5] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[5] = True\n    self.timers[5] = 0\n\ndef spawn_pipe_6(self):\n    self.pipes[6] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[6] = True\n    self.timers[6] = 0\n\ndef spawn_pipe_7(self):\n    self.pipes[7] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[7] = True\n    self.timers[7] = 0\n\ndef spawn_pipe_8(self):\n    self.pipes[8] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[8] = True\n    self.timers[8] = 0\n\ndef spawn_pipe_9(self):\n    self.pipes[9] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[9] = True\n    self.timers[9] = 0\n\ndef spawn_pipe_10(self):\n    self.pipes[10] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[10] = True\n    self.timers[10] = 0\n\ndef spawn_pipe_11(self):\n    self.pipes[11] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[11] = True\n    self.timers[11] = 0\n\ndef spawn_pipe_12(self):\n    self.pipes[12] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[12] = True\n    self.timers[12] = 0\n\ndef spawn_pipe_13(self):\n    self.pipes[13] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[13] = True\n    self.timers[13] = 0\n\ndef spawn_pipe_14(self):\n    self.pipes[14] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[14] = True\n    self.timers[14] = 0\n\ndef spawn_pipe_15(self):\n    self.pipes[15] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[15] = True\n    self.timers[15] = 0\n\ndef spawn_pipe_16(self):\n    self.pipes[16] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[16] = True\n    self.timers[16] = 0\n\ndef spawn_pipe_17(self):\n    self.pipes[17] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[17] = True\n    self.timers[17] = 0\n\ndef spawn_pipe_18(self):\n    self.pipes[18] = Pipe(x=self.spawn_x",
-          "tok_s": 59.23421752080624,
+          "tok_s": 58.40561760721788,
           "tokens": [
             727,
             17503,
@@ -1330,7 +1330,7 @@
             57292,
             3109
           ],
-          "verify_time_s": 12.761707203998412
+          "verify_time_s": 12.902641446053167
         },
         {
           "acceptance_by_depth": [
@@ -1344,29 +1344,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 16.910018207999883,
-          "decode_tok_s": 59.13654188301906,
-          "draft_time_s": 3.4081041680003636,
+          "decode_elapsed_s": 16.959110167008475,
+          "decode_tok_s": 58.965357860895146,
+          "draft_time_s": 3.402883775954251,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 17.350610957999947,
-          "end_to_end_tok_s": 57.63485807045453,
-          "ended_at": 1780260062.654163,
+          "elapsed_s": 17.384912749999785,
+          "end_to_end_tok_s": 57.52113998961613,
+          "ended_at": 1780345275.380532,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 17975880346,
-          "prompt_eval_time_s": 0.44059275000006437,
+          "prompt_eval_time_s": 0.42580258299130946,
           "rejected_drafts": 0,
           "repetition": 2,
           "seed": 44,
-          "started_at": 1780260045.30252,
-          "target_forward_time_s": 13.230525450999266,
+          "started_at": 1780345257.9947011,
+          "target_forward_time_s": 13.230111543118255,
           "text": "def spawn_pipe_3(self):\n    self.pipes[3] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[3] = True\n    self.timers[3] = 0\n\ndef spawn_pipe_4(self):\n    self.pipes[4] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[4] = True\n    self.timers[4] = 0\n\ndef spawn_pipe_5(self):\n    self.pipes[5] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[5] = True\n    self.timers[5] = 0\n\ndef spawn_pipe_6(self):\n    self.pipes[6] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[6] = True\n    self.timers[6] = 0\n\ndef spawn_pipe_7(self):\n    self.pipes[7] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[7] = True\n    self.timers[7] = 0\n\ndef spawn_pipe_8(self):\n    self.pipes[8] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[8] = True\n    self.timers[8] = 0\n\ndef spawn_pipe_9(self):\n    self.pipes[9] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[9] = True\n    self.timers[9] = 0\n\ndef spawn_pipe_10(self):\n    self.pipes[10] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[10] = True\n    self.timers[10] = 0\n\ndef spawn_pipe_11(self):\n    self.pipes[11] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[11] = True\n    self.timers[11] = 0\n\ndef spawn_pipe_12(self):\n    self.pipes[12] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[12] = True\n    self.timers[12] = 0\n\ndef spawn_pipe_13(self):\n    self.pipes[13] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[13] = True\n    self.timers[13] = 0\n\ndef spawn_pipe_14(self):\n    self.pipes[14] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[14] = True\n    self.timers[14] = 0\n\ndef spawn_pipe_15(self):\n    self.pipes[15] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[15] = True\n    self.timers[15] = 0\n\ndef spawn_pipe_16(self):\n    self.pipes[16] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[16] = True\n    self.timers[16] = 0\n\ndef spawn_pipe_17(self):\n    self.pipes[17] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[17] = True\n    self.timers[17] = 0\n\ndef spawn_pipe_18(self):\n    self.pipes[18] = Pipe(x=self.spawn_x",
-          "tok_s": 59.13654188301906,
+          "tok_s": 58.965357860895146,
           "tokens": [
             727,
             17503,
@@ -2369,7 +2369,7 @@
             57292,
             3109
           ],
-          "verify_time_s": 12.798693325999238
+          "verify_time_s": 12.812495918115019
         },
         {
           "acceptance_by_depth": [
@@ -2383,29 +2383,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 16.975768666000135,
-          "decode_tok_s": 58.90749453972278,
-          "draft_time_s": 3.406797219998907,
+          "decode_elapsed_s": 17.052542041012202,
+          "decode_tok_s": 58.64228322058675,
+          "draft_time_s": 3.4394007021328434,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 17.408054458000038,
-          "end_to_end_tok_s": 57.444673235178236,
-          "ended_at": 1780260095.064325,
+          "elapsed_s": 17.474922250010422,
+          "end_to_end_tok_s": 57.22486118640119,
+          "ended_at": 1780345322.8567302,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 17975880346,
-          "prompt_eval_time_s": 0.43228579199990236,
+          "prompt_eval_time_s": 0.42238020899822004,
           "rejected_drafts": 0,
           "repetition": 3,
           "seed": 45,
-          "started_at": 1780260077.655085,
-          "target_forward_time_s": 13.305909424000333,
+          "started_at": 1780345305.380939,
+          "target_forward_time_s": 13.27699348788883,
           "text": "def spawn_pipe_3(self):\n    self.pipes[3] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[3] = True\n    self.timers[3] = 0\n\ndef spawn_pipe_4(self):\n    self.pipes[4] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[4] = True\n    self.timers[4] = 0\n\ndef spawn_pipe_5(self):\n    self.pipes[5] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[5] = True\n    self.timers[5] = 0\n\ndef spawn_pipe_6(self):\n    self.pipes[6] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[6] = True\n    self.timers[6] = 0\n\ndef spawn_pipe_7(self):\n    self.pipes[7] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[7] = True\n    self.timers[7] = 0\n\ndef spawn_pipe_8(self):\n    self.pipes[8] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[8] = True\n    self.timers[8] = 0\n\ndef spawn_pipe_9(self):\n    self.pipes[9] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[9] = True\n    self.timers[9] = 0\n\ndef spawn_pipe_10(self):\n    self.pipes[10] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[10] = True\n    self.timers[10] = 0\n\ndef spawn_pipe_11(self):\n    self.pipes[11] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[11] = True\n    self.timers[11] = 0\n\ndef spawn_pipe_12(self):\n    self.pipes[12] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[12] = True\n    self.timers[12] = 0\n\ndef spawn_pipe_13(self):\n    self.pipes[13] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[13] = True\n    self.timers[13] = 0\n\ndef spawn_pipe_14(self):\n    self.pipes[14] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[14] = True\n    self.timers[14] = 0\n\ndef spawn_pipe_15(self):\n    self.pipes[15] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[15] = True\n    self.timers[15] = 0\n\ndef spawn_pipe_16(self):\n    self.pipes[16] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[16] = True\n    self.timers[16] = 0\n\ndef spawn_pipe_17(self):\n    self.pipes[17] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[17] = True\n    self.timers[17] = 0\n\ndef spawn_pipe_18(self):\n    self.pipes[18] = Pipe(x=self.spawn_x",
-          "tok_s": 58.90749453972278,
+          "tok_s": 58.64228322058675,
           "tokens": [
             727,
             17503,
@@ -3408,7 +3408,7 @@
             57292,
             3109
           ],
-          "verify_time_s": 12.88302434100035
+          "verify_time_s": 12.863222403888358
         },
         {
           "acceptance_by_depth": [
@@ -3422,29 +3422,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 17.08617166800002,
-          "decode_tok_s": 58.526861337397094,
-          "draft_time_s": 3.4280739630021344,
+          "decode_elapsed_s": 17.078509792030673,
+          "decode_tok_s": 58.553118051706655,
+          "draft_time_s": 3.4449985909595853,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 17.516611583999975,
-          "end_to_end_tok_s": 57.08866667531865,
-          "ended_at": 1780260127.585448,
+          "elapsed_s": 17.4977203340095,
+          "end_to_end_tok_s": 57.15030191997907,
+          "ended_at": 1780345370.360057,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 17975880346,
-          "prompt_eval_time_s": 0.4304399159999548,
+          "prompt_eval_time_s": 0.4192105419788277,
           "rejected_drafts": 0,
           "repetition": 4,
           "seed": 46,
-          "started_at": 1780260110.0676851,
-          "target_forward_time_s": 13.359538192999139,
+          "started_at": 1780345352.861516,
+          "target_forward_time_s": 13.295181001070887,
           "text": "def spawn_pipe_3(self):\n    self.pipes[3] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[3] = True\n    self.timers[3] = 0\n\ndef spawn_pipe_4(self):\n    self.pipes[4] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[4] = True\n    self.timers[4] = 0\n\ndef spawn_pipe_5(self):\n    self.pipes[5] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[5] = True\n    self.timers[5] = 0\n\ndef spawn_pipe_6(self):\n    self.pipes[6] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[6] = True\n    self.timers[6] = 0\n\ndef spawn_pipe_7(self):\n    self.pipes[7] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[7] = True\n    self.timers[7] = 0\n\ndef spawn_pipe_8(self):\n    self.pipes[8] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[8] = True\n    self.timers[8] = 0\n\ndef spawn_pipe_9(self):\n    self.pipes[9] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[9] = True\n    self.timers[9] = 0\n\ndef spawn_pipe_10(self):\n    self.pipes[10] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[10] = True\n    self.timers[10] = 0\n\ndef spawn_pipe_11(self):\n    self.pipes[11] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[11] = True\n    self.timers[11] = 0\n\ndef spawn_pipe_12(self):\n    self.pipes[12] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[12] = True\n    self.timers[12] = 0\n\ndef spawn_pipe_13(self):\n    self.pipes[13] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[13] = True\n    self.timers[13] = 0\n\ndef spawn_pipe_14(self):\n    self.pipes[14] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[14] = True\n    self.timers[14] = 0\n\ndef spawn_pipe_15(self):\n    self.pipes[15] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[15] = True\n    self.timers[15] = 0\n\ndef spawn_pipe_16(self):\n    self.pipes[16] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[16] = True\n    self.timers[16] = 0\n\ndef spawn_pipe_17(self):\n    self.pipes[17] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[17] = True\n    self.timers[17] = 0\n\ndef spawn_pipe_18(self):\n    self.pipes[18] = Pipe(x=self.spawn_x",
-          "tok_s": 58.526861337397094,
+          "tok_s": 58.553118051706655,
           "tokens": [
             727,
             17503,
@@ -4447,7 +4447,7 @@
             57292,
             3109
           ],
-          "verify_time_s": 12.938364067999146
+          "verify_time_s": 12.88493450108217
         },
         {
           "acceptance_by_depth": [
@@ -4461,29 +4461,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 22.288999499999818,
-          "decode_tok_s": 44.86518114014082,
-          "draft_time_s": 3.855319202001965,
+          "decode_elapsed_s": 17.042481208001846,
+          "decode_tok_s": 58.67690201884902,
+          "draft_time_s": 3.4475617669231724,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 22.720543499999962,
-          "end_to_end_tok_s": 44.01303164248697,
-          "ended_at": 1780260165.3116539,
+          "elapsed_s": 17.46459804099868,
+          "end_to_end_tok_s": 57.25868970201715,
+          "ended_at": 1780345417.827374,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 17975880346,
-          "prompt_eval_time_s": 0.4315440000001445,
+          "prompt_eval_time_s": 0.422116832996835,
           "rejected_drafts": 0,
           "repetition": 5,
           "seed": 47,
-          "started_at": 1780260142.5900218,
-          "target_forward_time_s": 17.998721458000205,
+          "started_at": 1780345400.3619862,
+          "target_forward_time_s": 13.272061449009925,
           "text": "def spawn_pipe_3(self):\n    self.pipes[3] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[3] = True\n    self.timers[3] = 0\n\ndef spawn_pipe_4(self):\n    self.pipes[4] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[4] = True\n    self.timers[4] = 0\n\ndef spawn_pipe_5(self):\n    self.pipes[5] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[5] = True\n    self.timers[5] = 0\n\ndef spawn_pipe_6(self):\n    self.pipes[6] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[6] = True\n    self.timers[6] = 0\n\ndef spawn_pipe_7(self):\n    self.pipes[7] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[7] = True\n    self.timers[7] = 0\n\ndef spawn_pipe_8(self):\n    self.pipes[8] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[8] = True\n    self.timers[8] = 0\n\ndef spawn_pipe_9(self):\n    self.pipes[9] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[9] = True\n    self.timers[9] = 0\n\ndef spawn_pipe_10(self):\n    self.pipes[10] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[10] = True\n    self.timers[10] = 0\n\ndef spawn_pipe_11(self):\n    self.pipes[11] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[11] = True\n    self.timers[11] = 0\n\ndef spawn_pipe_12(self):\n    self.pipes[12] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[12] = True\n    self.timers[12] = 0\n\ndef spawn_pipe_13(self):\n    self.pipes[13] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[13] = True\n    self.timers[13] = 0\n\ndef spawn_pipe_14(self):\n    self.pipes[14] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[14] = True\n    self.timers[14] = 0\n\ndef spawn_pipe_15(self):\n    self.pipes[15] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[15] = True\n    self.timers[15] = 0\n\ndef spawn_pipe_16(self):\n    self.pipes[16] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[16] = True\n    self.timers[16] = 0\n\ndef spawn_pipe_17(self):\n    self.pipes[17] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n    self.active[17] = True\n    self.timers[17] = 0\n\ndef spawn_pipe_18(self):\n    self.pipes[18] = Pipe(x=self.spawn_x",
-          "tok_s": 44.86518114014082,
+          "tok_s": 58.67690201884902,
           "tokens": [
             727,
             17503,
@@ -5486,35 +5486,35 @@
             57292,
             3109
           ],
-          "verify_time_s": 17.57663575000015
+          "verify_time_s": 12.858360574013204
         }
       ],
       "summary": {
         "accept_rate": 1.0,
         "accepted_drafts": 3750,
         "decode_tok_s": {
-          "median": 58.90749453972278,
-          "p10": 44.86518114014082,
-          "p90": 59.23421752080624,
+          "median": 58.64228322058675,
+          "p10": 58.40561760721788,
+          "p90": 58.965357860895146,
           "values": [
-            59.23421752080624,
-            59.13654188301906,
-            58.90749453972278,
-            58.526861337397094,
-            44.86518114014082
+            58.40561760721788,
+            58.965357860895146,
+            58.64228322058675,
+            58.553118051706655,
+            58.67690201884902
           ]
         },
         "drafted_tokens": 3750,
         "end_to_end_tok_s": {
-          "median": 57.444673235178236,
-          "p10": 44.01303164248697,
-          "p90": 57.736580409724304,
+          "median": 57.22486118640119,
+          "p10": 57.03987233455003,
+          "p90": 57.52113998961613,
           "values": [
-            57.736580409724304,
-            57.63485807045453,
-            57.444673235178236,
-            57.08866667531865,
-            44.01303164248697
+            57.03987233455003,
+            57.52113998961613,
+            57.22486118640119,
+            57.15030191997907,
+            57.25868970201715
           ]
         },
         "generated_tokens": 5000,
@@ -5547,29 +5547,29 @@
             169
           ],
           "accepted_drafts": 513,
-          "decode_elapsed_s": 14.822616292000134,
-          "decode_tok_s": 46.34809310761006,
-          "draft_time_s": 2.589491807999366,
+          "decode_elapsed_s": 11.727699290990131,
+          "decode_tok_s": 58.579264607150314,
+          "draft_time_s": 2.394687327090651,
           "drafted_by_depth": [
             173,
             173,
             173
           ],
           "drafted_tokens": 519,
-          "elapsed_s": 15.329513417000044,
-          "end_to_end_tok_s": 44.815512489661565,
-          "ended_at": 1780260211.549962,
+          "elapsed_s": 12.223091041989392,
+          "end_to_end_tok_s": 56.20509555561537,
+          "ended_at": 1780345482.261819,
           "generated_tokens": 687,
           "measured": true,
           "peak_memory_bytes": 18171707556,
-          "prompt_eval_time_s": 0.5068971249999095,
+          "prompt_eval_time_s": 0.4953917509992607,
           "rejected_drafts": 4,
           "repetition": 1,
           "seed": 1043,
-          "started_at": 1780260196.219436,
-          "target_forward_time_s": 12.145099750999975,
+          "started_at": 1780345470.037874,
+          "target_forward_time_s": 9.303839840198634,
           "text": "def validate_gate_750(score: int) -> dict:\n    if score >= 750:\n        return {\"gate\": 750, \"passed\": True, \"rank\": \"Robin\", \"badge\": \"emerald_feather\"}\n    return {\"gate\": 750, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_1000(score: int) -> dict:\n    if score >= 1000:\n        return {\"gate\": 1000, \"passed\": True, \"rank\": \"Pigeon\", \"badge\": \"blue_feather\"}\n    return {\"gate\": 1000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_1500(score: int) -> dict:\n    if score >= 1500:\n        return {\"gate\": 1500, \"passed\": True, \"rank\": \"Raven\", \"badge\": \"obsidian_feather\"}\n    return {\"gate\": 1500, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_2000(score: int) -> dict:\n    if score >= 2000:\n        return {\"gate\": 2000, \"passed\": True, \"rank\": \"Hawk\", \"badge\": \"copper_feather\"}\n    return {\"gate\": 2000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_2500(score: int) -> dict:\n    if score >= 2500:\n        return {\"gate\": 2500, \"passed\": True, \"rank\": \"Falcon\", \"badge\": \"silver_feather\"}\n    return {\"gate\": 2500, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_3000(score: int) -> dict:\n    if score >= 3000:\n        return {\"gate\": 3000, \"passed\": True, \"rank\": \"Eagle\", \"badge\": \"gold_feather\"}\n    return {\"gate\": 3000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_4000(score: int) -> dict:\n    if score >= 4000:\n        return {\"gate\": 4000, \"passed\": True, \"rank\": \"Condor\", \"badge\": \"platinum_feather\"}\n    return {\"gate\": 4000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_5000(score: int) -> dict:\n    if score >= 5000:\n        return {\"gate\": 5000, \"passed\": True, \"rank\": \"Phoenix\", \"badge\": \"fire_feather\"}\n    return {\"gate\": 5000, \"passed\": False, \"rank\": None, \"badge\": None}",
-          "tok_s": 46.34809310761006,
+          "tok_s": 58.579264607150314,
           "tokens": [
             727,
             9307,
@@ -6259,7 +6259,7 @@
             92,
             248046
           ],
-          "verify_time_s": 11.646180668000056
+          "verify_time_s": 8.817051631194772
         },
         {
           "acceptance_by_depth": [
@@ -6273,29 +6273,29 @@
             168
           ],
           "accepted_drafts": 512,
-          "decode_elapsed_s": 15.161709916999826,
-          "decode_tok_s": 45.377467565752,
-          "draft_time_s": 2.6536543199971447,
+          "decode_elapsed_s": 11.742777124993154,
+          "decode_tok_s": 58.58920702290014,
+          "draft_time_s": 2.3767556283564772,
           "drafted_by_depth": [
             175,
             175,
             175
           ],
           "drafted_tokens": 525,
-          "elapsed_s": 15.669897042000002,
-          "end_to_end_tok_s": 43.905840488674215,
-          "ended_at": 1780260242.226208,
+          "elapsed_s": 12.250981999997748,
+          "end_to_end_tok_s": 56.15876343628017,
+          "ended_at": 1780345524.5182369,
           "generated_tokens": 688,
           "measured": true,
           "peak_memory_bytes": 18171707556,
-          "prompt_eval_time_s": 0.5081871250001768,
+          "prompt_eval_time_s": 0.5082048750045942,
           "rejected_drafts": 7,
           "repetition": 2,
           "seed": 1044,
-          "started_at": 1780260226.555201,
-          "target_forward_time_s": 12.400418922999506,
+          "started_at": 1780345512.266337,
+          "target_forward_time_s": 9.360562457106425,
           "text": "def validate_gate_750(score: int) -> dict:\n    if score >= 750:\n        return {\"gate\": 750, \"passed\": True, \"rank\": \"Robin\", \"badge\": \"emerald_feather\"}\n    return {\"gate\": 750, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_1000(score: int) -> dict:\n    if score >= 1000:\n        return {\"gate\": 1000, \"passed\": True, \"rank\": \"Bluejay\", \"badge\": \"sapphire_feather\"}\n    return {\"gate\": 1000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_1500(score: int) -> dict:\n    if score >= 1500:\n        return {\"gate\": 1500, \"passed\": True, \"rank\": \"Hawk\", \"badge\": \"ruby_feather\"}\n    return {\"gate\": 1500, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_2000(score: int) -> dict:\n    if score >= 2000:\n        return {\"gate\": 2000, \"passed\": True, \"rank\": \"Eagle\", \"badge\": \"diamond_feather\"}\n    return {\"gate\": 2000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_2500(score: int) -> dict:\n    if score >= 2500:\n        return {\"gate\": 2500, \"passed\": True, \"rank\": \"Falcon\", \"badge\": \"platinum_feather\"}\n    return {\"gate\": 2500, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_3000(score: int) -> dict:\n    if score >= 3000:\n        return {\"gate\": 3000, \"passed\": True, \"rank\": \"Phoenix\", \"badge\": \"flame_feather\"}\n    return {\"gate\": 3000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_4000(score: int) -> dict:\n    if score >= 4000:\n        return {\"gate\": 4000, \"passed\": True, \"rank\": \"Griffin\", \"badge\": \"celestial_feather\"}\n    return {\"gate\": 4000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_5000(score: int) -> dict:\n    if score >= 5000:\n        return {\"gate\": 5000, \"passed\": True, \"rank\": \"Archangel\", \"badge\": \"divine_feather\"}\n    return {\"gate\": 5000, \"passed\": False, \"rank\": None, \"badge\": None}",
-          "tok_s": 45.377467565752,
+          "tok_s": 58.58920702290014,
           "tokens": [
             727,
             9307,
@@ -6986,7 +6986,7 @@
             92,
             248046
           ],
-          "verify_time_s": 11.900534505999417
+          "verify_time_s": 8.861689666096936
         },
         {
           "acceptance_by_depth": [
@@ -7000,29 +7000,29 @@
             169
           ],
           "accepted_drafts": 513,
-          "decode_elapsed_s": 13.824208625000097,
-          "decode_tok_s": 49.62309370530027,
-          "draft_time_s": 2.5246026550004217,
+          "decode_elapsed_s": 11.648998706994462,
+          "decode_tok_s": 58.889181573013815,
+          "draft_time_s": 2.3747990040428704,
           "drafted_by_depth": [
             173,
             173,
             173
           ],
           "drafted_tokens": 519,
-          "elapsed_s": 14.30844408300004,
-          "end_to_end_tok_s": 47.94371743151593,
-          "ended_at": 1780260271.5367749,
+          "elapsed_s": 12.127499166002963,
+          "end_to_end_tok_s": 56.565660455625085,
+          "ended_at": 1780345566.6482282,
           "generated_tokens": 686,
           "measured": true,
           "peak_memory_bytes": 18171707556,
-          "prompt_eval_time_s": 0.4842354579999437,
+          "prompt_eval_time_s": 0.4785004590085009,
           "rejected_drafts": 4,
           "repetition": 3,
           "seed": 1045,
-          "started_at": 1780260257.227543,
-          "target_forward_time_s": 11.201806242999965,
+          "started_at": 1780345554.520025,
+          "target_forward_time_s": 9.236442837194772,
           "text": "def validate_gate_750(score: int) -> dict:\n    if score >= 750:\n        return {\"gate\": 750, \"passed\": True, \"rank\": \"Robin\", \"badge\": \"emerald_feather\"}\n    return {\"gate\": 750, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_1000(score: int) -> dict:\n    if score >= 1000:\n        return {\"gate\": 1000, \"passed\": True, \"rank\": \"Hawk\", \"badge\": \"ruby_feather\"}\n    return {\"gate\": 1000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_1500(score: int) -> dict:\n    if score >= 1500:\n        return {\"gate\": 1500, \"passed\": True, \"rank\": \"Falcon\", \"badge\": \"sapphire_feather\"}\n    return {\"gate\": 1500, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_2000(score: int) -> dict:\n    if score >= 2000:\n        return {\"gate\": 2000, \"passed\": True, \"rank\": \"Eagle\", \"badge\": \"diamond_feather\"}\n    return {\"gate\": 2000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_2500(score: int) -> dict:\n    if score >= 2500:\n        return {\"gate\": 2500, \"passed\": True, \"rank\": \"Condor\", \"badge\": \"platinum_feather\"}\n    return {\"gate\": 2500, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_3000(score: int) -> dict:\n    if score >= 3000:\n        return {\"gate\": 3000, \"passed\": True, \"rank\": \"Phoenix\", \"badge\": \"fire_feather\"}\n    return {\"gate\": 3000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_4000(score: int) -> dict:\n    if score >= 4000:\n        return {\"gate\": 4000, \"passed\": True, \"rank\": \"Griffin\", \"badge\": \"celestial_feather\"}\n    return {\"gate\": 4000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_5000(score: int) -> dict:\n    if score >= 5000:\n        return {\"gate\": 5000, \"passed\": True, \"rank\": \"Dragon\", \"badge\": \"legendary_feather\"}\n    return {\"gate\": 5000, \"passed\": False, \"rank\": None, \"badge\": None}",
-          "tok_s": 49.62309370530027,
+          "tok_s": 58.889181573013815,
           "tokens": [
             727,
             9307,
@@ -7711,7 +7711,7 @@
             92,
             248046
           ],
-          "verify_time_s": 10.725417201000027
+          "verify_time_s": 8.766210795191
         },
         {
           "acceptance_by_depth": [
@@ -7725,29 +7725,29 @@
             166
           ],
           "accepted_drafts": 509,
-          "decode_elapsed_s": 12.684787458000073,
-          "decode_tok_s": 54.08052774012794,
-          "draft_time_s": 2.436048746001461,
+          "decode_elapsed_s": 11.645250290996046,
+          "decode_tok_s": 58.908137039390745,
+          "draft_time_s": 2.337565170004382,
           "drafted_by_depth": [
             176,
             176,
             176
           ],
           "drafted_tokens": 528,
-          "elapsed_s": 13.161443542000029,
-          "end_to_end_tok_s": 52.12194223307473,
-          "ended_at": 1780260299.704324,
+          "elapsed_s": 12.150931665993994,
+          "end_to_end_tok_s": 56.45657624096946,
+          "ended_at": 1780345608.805244,
           "generated_tokens": 686,
           "measured": true,
           "peak_memory_bytes": 18171707556,
-          "prompt_eval_time_s": 0.4766560839999556,
+          "prompt_eval_time_s": 0.5056813749979483,
           "rejected_drafts": 10,
           "repetition": 4,
           "seed": 1046,
-          "started_at": 1780260286.542047,
-          "target_forward_time_s": 10.16604219900205,
+          "started_at": 1780345596.653433,
+          "target_forward_time_s": 9.327273803792195,
           "text": "def validate_gate_750(score: int) -> dict:\n    if score >= 750:\n        return {\"gate\": 750, \"passed\": True, \"rank\": \"Robin\", \"badge\": \"ruby_feather\"}\n    return {\"gate\": 750, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_1000(score: int) -> dict:\n    if score >= 1000:\n        return {\"gate\": 1000, \"passed\": True, \"rank\": \"Bluebird\", \"badge\": \"sapphire_feather\"}\n    return {\"gate\": 1000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_1500(score: int) -> dict:\n    if score >= 1500:\n        return {\"gate\": 1500, \"passed\": True, \"rank\": \"Cardinal\", \"badge\": \"crimson_feather\"}\n    return {\"gate\": 1500, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_2000(score: int) -> dict:\n    if score >= 2000:\n        return {\"gate\": 2000, \"passed\": True, \"rank\": \"Hawk\", \"badge\": \"iron_feather\"}\n    return {\"gate\": 2000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_2500(score: int) -> dict:\n    if score >= 2500:\n        return {\"gate\": 2500, \"passed\": True, \"rank\": \"Eagle\", \"badge\": \"platinum_feather\"}\n    return {\"gate\": 2500, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_3000(score: int) -> dict:\n    if score >= 3000:\n        return {\"gate\": 3000, \"passed\": True, \"rank\": \"Falcon\", \"badge\": \"diamond_feather\"}\n    return {\"gate\": 3000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_4000(score: int) -> dict:\n    if score >= 4000:\n        return {\"gate\": 4000, \"passed\": True, \"rank\": \"Phoenix\", \"badge\": \"golden_flame\"}\n    return {\"gate\": 4000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_5000(score: int) -> dict:\n    if score >= 5000:\n        return {\"gate\": 5000, \"passed\": True, \"rank\": \"Thunderbird\", \"badge\": \"celestial_feather\"}\n    return {\"gate\": 5000, \"passed\": False, \"rank\": None, \"badge\": None}",
-          "tok_s": 54.08052774012794,
+          "tok_s": 58.908137039390745,
           "tokens": [
             727,
             9307,
@@ -8436,7 +8436,7 @@
             92,
             248046
           ],
-          "verify_time_s": 9.697190324002122
+          "verify_time_s": 8.831842261788552
         },
         {
           "acceptance_by_depth": [
@@ -8450,29 +8450,29 @@
             165
           ],
           "accepted_drafts": 510,
-          "decode_elapsed_s": 12.873637498999983,
-          "decode_tok_s": 53.44254877873045,
-          "draft_time_s": 2.4926745220004705,
+          "decode_elapsed_s": 11.714871499003493,
+          "decode_tok_s": 58.72877052544056,
+          "draft_time_s": 2.3505964071082417,
           "drafted_by_depth": [
             177,
             177,
             177
           ],
           "drafted_tokens": 531,
-          "elapsed_s": 13.380314624999983,
-          "end_to_end_tok_s": 51.418820803699965,
-          "ended_at": 1780260328.08765,
+          "elapsed_s": 12.2234196250065,
+          "end_to_end_tok_s": 56.2853948491222,
+          "ended_at": 1780345651.033273,
           "generated_tokens": 688,
           "measured": true,
           "peak_memory_bytes": 18171707556,
-          "prompt_eval_time_s": 0.5066771259999996,
+          "prompt_eval_time_s": 0.5085481260030065,
           "rejected_drafts": 12,
           "repetition": 5,
           "seed": 1047,
-          "started_at": 1780260314.706327,
-          "target_forward_time_s": 10.313231212999995,
+          "started_at": 1780345638.8089359,
+          "target_forward_time_s": 9.383769044201472,
           "text": "def validate_gate_750(score: int) -> dict:\n    if score >= 750:\n        return {\"gate\": 750, \"passed\": True, \"rank\": \"Robin\", \"badge\": \"copper_wing\"}\n    return {\"gate\": 750, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_1000(score: int) -> dict:\n    if score >= 1000:\n        return {\"gate\": 1000, \"passed\": True, \"rank\": \"Starling\", \"badge\": \"silver_wing\"}\n    return {\"gate\": 1000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_1500(score: int) -> dict:\n    if score >= 1500:\n        return {\"gate\": 1500, \"passed\": True, \"rank\": \"Bluejay\", \"badge\": \"gold_wing\"}\n    return {\"gate\": 1500, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_2000(score: int) -> dict:\n    if score >= 2000:\n        return {\"gate\": 2000, \"passed\": True, \"rank\": \"Hawk\", \"badge\": \"platinum_wing\"}\n    return {\"gate\": 2000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_2500(score: int) -> dict:\n    if score >= 2500:\n        return {\"gate\": 2500, \"passed\": True, \"rank\": \"Falcon\", \"badge\": \"diamond_wing\"}\n    return {\"gate\": 2500, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_3000(score: int) -> dict:\n    if score >= 3000:\n        return {\"gate\": 3000, \"passed\": True, \"rank\": \"Eagle\", \"badge\": \"mythic_wing\"}\n    return {\"gate\": 3000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_4000(score: int) -> dict:\n    if score >= 4000:\n        return {\"gate\": 4000, \"passed\": True, \"rank\": \"Phoenix\", \"badge\": \"legendary_wing\"}\n    return {\"gate\": 4000, \"passed\": False, \"rank\": None, \"badge\": None}\n\ndef validate_gate_5000(score: int) -> dict:\n    if score >= 5000:\n        return {\"gate\": 5000, \"passed\": True, \"rank\": \"Celestial Bird\", \"badge\": \"divine_wing\"}\n    return {\"gate\": 5000, \"passed\": False, \"rank\": None, \"badge\": None}",
-          "tok_s": 53.44254877873045,
+          "tok_s": 58.72877052544056,
           "tokens": [
             727,
             9307,
@@ -9163,35 +9163,35 @@
             92,
             248046
           ],
-          "verify_time_s": 9.81510437899999
+          "verify_time_s": 8.885727377200965
         }
       ],
       "summary": {
         "accept_rate": 0.975209763539283,
         "accepted_drafts": 2557,
         "decode_tok_s": {
-          "median": 49.62309370530027,
-          "p10": 45.377467565752,
-          "p90": 54.08052774012794,
+          "median": 58.72877052544056,
+          "p10": 58.579264607150314,
+          "p90": 58.908137039390745,
           "values": [
-            46.34809310761006,
-            45.377467565752,
-            49.62309370530027,
-            54.08052774012794,
-            53.44254877873045
+            58.579264607150314,
+            58.58920702290014,
+            58.889181573013815,
+            58.908137039390745,
+            58.72877052544056
           ]
         },
         "drafted_tokens": 2622,
         "end_to_end_tok_s": {
-          "median": 47.94371743151593,
-          "p10": 43.905840488674215,
-          "p90": 52.12194223307473,
+          "median": 56.2853948491222,
+          "p10": 56.15876343628017,
+          "p90": 56.565660455625085,
           "values": [
-            44.815512489661565,
-            43.905840488674215,
-            47.94371743151593,
-            52.12194223307473,
-            51.418820803699965
+            56.20509555561537,
+            56.15876343628017,
+            56.565660455625085,
+            56.45657624096946,
+            56.2853948491222
           ]
         },
         "generated_tokens": 3435,
@@ -9224,29 +9224,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 19.822037875000092,
-          "decode_tok_s": 50.448899669454164,
-          "draft_time_s": 3.620880410998666,
+          "decode_elapsed_s": 16.967706166018615,
+          "decode_tok_s": 58.93548545782278,
+          "draft_time_s": 3.3904670978081413,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 20.380516917000023,
-          "end_to_end_tok_s": 49.0664689258136,
-          "ended_at": 1780260383.425482,
+          "elapsed_s": 17.526978333000443,
+          "end_to_end_tok_s": 57.05490022299868,
+          "ended_at": 1780345726.238462,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18313559836,
-          "prompt_eval_time_s": 0.5584790419999308,
+          "prompt_eval_time_s": 0.5592721669818275,
           "rejected_drafts": 0,
           "repetition": 1,
           "seed": 2043,
-          "started_at": 1780260363.043849,
-          "target_forward_time_s": 15.927043124003262,
+          "started_at": 1780345708.710596,
+          "target_forward_time_s": 13.388541708191042,
           "text": "def check_collision_pipe_3(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[3]:\n        return False\n    top_rect = pygame.Rect(self.pipes[3].x, 0, PIPE_WIDTH, self.pipes[3].gap_y)\n    bot_rect = pygame.Rect(self.pipes[3].x, self.pipes[3].gap_y + self.pipes[3].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_4(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[4]:\n        return False\n    top_rect = pygame.Rect(self.pipes[4].x, 0, PIPE_WIDTH, self.pipes[4].gap_y)\n    bot_rect = pygame.Rect(self.pipes[4].x, self.pipes[4].gap_y + self.pipes[4].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_5(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[5]:\n        return False\n    top_rect = pygame.Rect(self.pipes[5].x, 0, PIPE_WIDTH, self.pipes[5].gap_y)\n    bot_rect = pygame.Rect(self.pipes[5].x, self.pipes[5].gap_y + self.pipes[5].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_6(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[6]:\n        return False\n    top_rect = pygame.Rect(self.pipes[6].x, 0, PIPE_WIDTH, self.pipes[6].gap_y)\n    bot_rect = pygame.Rect(self.pipes[6].x, self.pipes[6].gap_y + self.pipes[6].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_7(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[7]:\n        return False\n    top_rect = pygame.Rect(self.pipes[7].x, 0, PIPE_WIDTH, self.pipes[7].gap_y)\n    bot_rect = pygame.Rect(self.pipes[7].x, self.pipes[7].gap_y + self.pipes[7].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_8(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[8]:\n        return False\n    top_rect = pygame.Rect(self.pipes[8].x, 0, PIPE_WIDTH, self.pipes[8].gap_y)\n    bot_rect = pygame.Rect(self.pipes[8].x, self.pipes[8].gap_y + self.pipes[8].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_9(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[9]:\n        return False\n    top_rect = pygame.Rect(self.pipes[9].x, 0, PIPE_WIDTH, self.pipes[9].gap_y)\n    bot_rect = pygame.Rect(self.pipes[9].x, self.pipes[9].gap_y + self.pipes[9].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_10(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[10]:\n        return False\n    top_rect = pygame.Rect(self.pipes[10].x, 0, PIPE_WIDTH, self.pipes[10].gap_y)\n    bot_rect = pygame.Rect(self.pipes[10].x, self.pipes[10].gap_y + self.pipes[10].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_11(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[11]:\n        return False\n    top_rect = pygame.Rect(self.pipes[11].x, ",
-          "tok_s": 50.448899669454164,
+          "tok_s": 58.93548545782278,
           "tokens": [
             727,
             1716,
@@ -10249,7 +10249,7 @@
             11,
             220
           ],
-          "verify_time_s": 15.377497499003312
+          "verify_time_s": 12.839081749203615
         },
         {
           "acceptance_by_depth": [
@@ -10263,29 +10263,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 19.69045079199998,
-          "decode_tok_s": 50.78603890604116,
-          "draft_time_s": 3.5939533700000084,
+          "decode_elapsed_s": 17.026673875996494,
+          "decode_tok_s": 58.73137685509787,
+          "draft_time_s": 3.428308459042455,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 20.258274416000063,
-          "end_to_end_tok_s": 49.36254586472558,
-          "ended_at": 1780260418.664366,
+          "elapsed_s": 17.60190949999378,
+          "end_to_end_tok_s": 56.81201803704043,
+          "ended_at": 1780345773.842081,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18313559836,
-          "prompt_eval_time_s": 0.5678236240000842,
+          "prompt_eval_time_s": 0.5752356239972869,
           "rejected_drafts": 0,
           "repetition": 2,
           "seed": 2044,
-          "started_at": 1780260398.428256,
-          "target_forward_time_s": 15.86643949499944,
+          "started_at": 1780345756.239182,
+          "target_forward_time_s": 13.439594659081195,
           "text": "def check_collision_pipe_3(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[3]:\n        return False\n    top_rect = pygame.Rect(self.pipes[3].x, 0, PIPE_WIDTH, self.pipes[3].gap_y)\n    bot_rect = pygame.Rect(self.pipes[3].x, self.pipes[3].gap_y + self.pipes[3].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_4(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[4]:\n        return False\n    top_rect = pygame.Rect(self.pipes[4].x, 0, PIPE_WIDTH, self.pipes[4].gap_y)\n    bot_rect = pygame.Rect(self.pipes[4].x, self.pipes[4].gap_y + self.pipes[4].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_5(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[5]:\n        return False\n    top_rect = pygame.Rect(self.pipes[5].x, 0, PIPE_WIDTH, self.pipes[5].gap_y)\n    bot_rect = pygame.Rect(self.pipes[5].x, self.pipes[5].gap_y + self.pipes[5].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_6(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[6]:\n        return False\n    top_rect = pygame.Rect(self.pipes[6].x, 0, PIPE_WIDTH, self.pipes[6].gap_y)\n    bot_rect = pygame.Rect(self.pipes[6].x, self.pipes[6].gap_y + self.pipes[6].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_7(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[7]:\n        return False\n    top_rect = pygame.Rect(self.pipes[7].x, 0, PIPE_WIDTH, self.pipes[7].gap_y)\n    bot_rect = pygame.Rect(self.pipes[7].x, self.pipes[7].gap_y + self.pipes[7].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_8(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[8]:\n        return False\n    top_rect = pygame.Rect(self.pipes[8].x, 0, PIPE_WIDTH, self.pipes[8].gap_y)\n    bot_rect = pygame.Rect(self.pipes[8].x, self.pipes[8].gap_y + self.pipes[8].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_9(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[9]:\n        return False\n    top_rect = pygame.Rect(self.pipes[9].x, 0, PIPE_WIDTH, self.pipes[9].gap_y)\n    bot_rect = pygame.Rect(self.pipes[9].x, self.pipes[9].gap_y + self.pipes[9].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_10(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[10]:\n        return False\n    top_rect = pygame.Rect(self.pipes[10].x, 0, PIPE_WIDTH, self.pipes[10].gap_y)\n    bot_rect = pygame.Rect(self.pipes[10].x, self.pipes[10].gap_y + self.pipes[10].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_11(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[11]:\n        return False\n    top_rect = pygame.Rect(self.pipes[11].x, ",
-          "tok_s": 50.78603890604116,
+          "tok_s": 58.73137685509787,
           "tokens": [
             727,
             1716,
@@ -11288,7 +11288,7 @@
             11,
             220
           ],
-          "verify_time_s": 15.307090286999369
+          "verify_time_s": 12.874193868090515
         },
         {
           "acceptance_by_depth": [
@@ -11302,29 +11302,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 19.584229250000135,
-          "decode_tok_s": 51.06149377821408,
-          "draft_time_s": 3.57955611400007,
+          "decode_elapsed_s": 17.043700499998522,
+          "decode_tok_s": 58.67270432263737,
+          "draft_time_s": 3.4226157509110635,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 20.153476958000056,
-          "end_to_end_tok_s": 49.61922957929318,
-          "ended_at": 1780260453.804615,
+          "elapsed_s": 17.615634332993068,
+          "end_to_end_tok_s": 56.767754206106424,
+          "ended_at": 1780345821.459807,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18313559836,
-          "prompt_eval_time_s": 0.5692477079999207,
+          "prompt_eval_time_s": 0.5719338329945458,
           "rejected_drafts": 0,
           "repetition": 3,
           "seed": 2045,
-          "started_at": 1780260433.656163,
-          "target_forward_time_s": 15.794049224001355,
+          "started_at": 1780345803.843241,
+          "target_forward_time_s": 13.46140214909974,
           "text": "def check_collision_pipe_3(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[3]:\n        return False\n    top_rect = pygame.Rect(self.pipes[3].x, 0, PIPE_WIDTH, self.pipes[3].gap_y)\n    bot_rect = pygame.Rect(self.pipes[3].x, self.pipes[3].gap_y + self.pipes[3].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_4(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[4]:\n        return False\n    top_rect = pygame.Rect(self.pipes[4].x, 0, PIPE_WIDTH, self.pipes[4].gap_y)\n    bot_rect = pygame.Rect(self.pipes[4].x, self.pipes[4].gap_y + self.pipes[4].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_5(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[5]:\n        return False\n    top_rect = pygame.Rect(self.pipes[5].x, 0, PIPE_WIDTH, self.pipes[5].gap_y)\n    bot_rect = pygame.Rect(self.pipes[5].x, self.pipes[5].gap_y + self.pipes[5].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_6(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[6]:\n        return False\n    top_rect = pygame.Rect(self.pipes[6].x, 0, PIPE_WIDTH, self.pipes[6].gap_y)\n    bot_rect = pygame.Rect(self.pipes[6].x, self.pipes[6].gap_y + self.pipes[6].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_7(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[7]:\n        return False\n    top_rect = pygame.Rect(self.pipes[7].x, 0, PIPE_WIDTH, self.pipes[7].gap_y)\n    bot_rect = pygame.Rect(self.pipes[7].x, self.pipes[7].gap_y + self.pipes[7].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_8(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[8]:\n        return False\n    top_rect = pygame.Rect(self.pipes[8].x, 0, PIPE_WIDTH, self.pipes[8].gap_y)\n    bot_rect = pygame.Rect(self.pipes[8].x, self.pipes[8].gap_y + self.pipes[8].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_9(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[9]:\n        return False\n    top_rect = pygame.Rect(self.pipes[9].x, 0, PIPE_WIDTH, self.pipes[9].gap_y)\n    bot_rect = pygame.Rect(self.pipes[9].x, self.pipes[9].gap_y + self.pipes[9].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_10(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[10]:\n        return False\n    top_rect = pygame.Rect(self.pipes[10].x, 0, PIPE_WIDTH, self.pipes[10].gap_y)\n    bot_rect = pygame.Rect(self.pipes[10].x, self.pipes[10].gap_y + self.pipes[10].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_11(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[11]:\n        return False\n    top_rect = pygame.Rect(self.pipes[11].x, ",
-          "tok_s": 51.06149377821408,
+          "tok_s": 58.67270432263737,
           "tokens": [
             727,
             1716,
@@ -12327,7 +12327,7 @@
             11,
             220
           ],
-          "verify_time_s": 15.233437891001358
+          "verify_time_s": 12.899182483102777
         },
         {
           "acceptance_by_depth": [
@@ -12341,29 +12341,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 19.510753791999832,
-          "decode_tok_s": 51.25378602286698,
-          "draft_time_s": 3.5667561349998778,
+          "decode_elapsed_s": 16.978024041003664,
+          "decode_tok_s": 58.899669218567354,
+          "draft_time_s": 3.4024708979704883,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 20.082555374999856,
-          "end_to_end_tok_s": 49.79445998415464,
-          "ended_at": 1780260488.891148,
+          "elapsed_s": 17.543804749991978,
+          "end_to_end_tok_s": 57.00017836783422,
+          "ended_at": 1780345869.005436,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18313559836,
-          "prompt_eval_time_s": 0.571801583000024,
+          "prompt_eval_time_s": 0.5657807089883136,
           "rejected_drafts": 0,
           "repetition": 4,
           "seed": 2046,
-          "started_at": 1780260468.808328,
-          "target_forward_time_s": 15.7323251360001,
+          "started_at": 1780345851.4606879,
+          "target_forward_time_s": 13.411276465150877,
           "text": "def check_collision_pipe_3(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[3]:\n        return False\n    top_rect = pygame.Rect(self.pipes[3].x, 0, PIPE_WIDTH, self.pipes[3].gap_y)\n    bot_rect = pygame.Rect(self.pipes[3].x, self.pipes[3].gap_y + self.pipes[3].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_4(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[4]:\n        return False\n    top_rect = pygame.Rect(self.pipes[4].x, 0, PIPE_WIDTH, self.pipes[4].gap_y)\n    bot_rect = pygame.Rect(self.pipes[4].x, self.pipes[4].gap_y + self.pipes[4].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_5(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[5]:\n        return False\n    top_rect = pygame.Rect(self.pipes[5].x, 0, PIPE_WIDTH, self.pipes[5].gap_y)\n    bot_rect = pygame.Rect(self.pipes[5].x, self.pipes[5].gap_y + self.pipes[5].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_6(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[6]:\n        return False\n    top_rect = pygame.Rect(self.pipes[6].x, 0, PIPE_WIDTH, self.pipes[6].gap_y)\n    bot_rect = pygame.Rect(self.pipes[6].x, self.pipes[6].gap_y + self.pipes[6].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_7(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[7]:\n        return False\n    top_rect = pygame.Rect(self.pipes[7].x, 0, PIPE_WIDTH, self.pipes[7].gap_y)\n    bot_rect = pygame.Rect(self.pipes[7].x, self.pipes[7].gap_y + self.pipes[7].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_8(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[8]:\n        return False\n    top_rect = pygame.Rect(self.pipes[8].x, 0, PIPE_WIDTH, self.pipes[8].gap_y)\n    bot_rect = pygame.Rect(self.pipes[8].x, self.pipes[8].gap_y + self.pipes[8].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_9(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[9]:\n        return False\n    top_rect = pygame.Rect(self.pipes[9].x, 0, PIPE_WIDTH, self.pipes[9].gap_y)\n    bot_rect = pygame.Rect(self.pipes[9].x, self.pipes[9].gap_y + self.pipes[9].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_10(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[10]:\n        return False\n    top_rect = pygame.Rect(self.pipes[10].x, 0, PIPE_WIDTH, self.pipes[10].gap_y)\n    bot_rect = pygame.Rect(self.pipes[10].x, self.pipes[10].gap_y + self.pipes[10].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_11(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[11]:\n        return False\n    top_rect = pygame.Rect(self.pipes[11].x, ",
-          "tok_s": 51.25378602286698,
+          "tok_s": 58.899669218567354,
           "tokens": [
             727,
             1716,
@@ -13366,7 +13366,7 @@
             11,
             220
           ],
-          "verify_time_s": 15.169040553000059
+          "verify_time_s": 12.855360256158747
         },
         {
           "acceptance_by_depth": [
@@ -13380,29 +13380,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 19.44018858299978,
-          "decode_tok_s": 51.43983021206329,
-          "draft_time_s": 3.5616580039970813,
+          "decode_elapsed_s": 16.932910791016184,
+          "decode_tok_s": 59.05659176628708,
+          "draft_time_s": 3.379486088990234,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 20.01005649999979,
-          "end_to_end_tok_s": 49.97487138529621,
-          "ended_at": 1780260523.906966,
+          "elapsed_s": 17.493874333013082,
+          "end_to_end_tok_s": 57.16286632474989,
+          "ended_at": 1780345916.5052009,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18313559836,
-          "prompt_eval_time_s": 0.5698679170000105,
+          "prompt_eval_time_s": 0.5609635419968981,
           "rejected_drafts": 0,
           "repetition": 5,
           "seed": 2047,
-          "started_at": 1780260503.896089,
-          "target_forward_time_s": 15.669752207001466,
+          "started_at": 1780345899.0103638,
+          "target_forward_time_s": 13.389783037942834,
           "text": "def check_collision_pipe_3(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[3]:\n        return False\n    top_rect = pygame.Rect(self.pipes[3].x, 0, PIPE_WIDTH, self.pipes[3].gap_y)\n    bot_rect = pygame.Rect(self.pipes[3].x, self.pipes[3].gap_y + self.pipes[3].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_4(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[4]:\n        return False\n    top_rect = pygame.Rect(self.pipes[4].x, 0, PIPE_WIDTH, self.pipes[4].gap_y)\n    bot_rect = pygame.Rect(self.pipes[4].x, self.pipes[4].gap_y + self.pipes[4].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_5(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[5]:\n        return False\n    top_rect = pygame.Rect(self.pipes[5].x, 0, PIPE_WIDTH, self.pipes[5].gap_y)\n    bot_rect = pygame.Rect(self.pipes[5].x, self.pipes[5].gap_y + self.pipes[5].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_6(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[6]:\n        return False\n    top_rect = pygame.Rect(self.pipes[6].x, 0, PIPE_WIDTH, self.pipes[6].gap_y)\n    bot_rect = pygame.Rect(self.pipes[6].x, self.pipes[6].gap_y + self.pipes[6].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_7(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[7]:\n        return False\n    top_rect = pygame.Rect(self.pipes[7].x, 0, PIPE_WIDTH, self.pipes[7].gap_y)\n    bot_rect = pygame.Rect(self.pipes[7].x, self.pipes[7].gap_y + self.pipes[7].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_8(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[8]:\n        return False\n    top_rect = pygame.Rect(self.pipes[8].x, 0, PIPE_WIDTH, self.pipes[8].gap_y)\n    bot_rect = pygame.Rect(self.pipes[8].x, self.pipes[8].gap_y + self.pipes[8].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_9(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[9]:\n        return False\n    top_rect = pygame.Rect(self.pipes[9].x, 0, PIPE_WIDTH, self.pipes[9].gap_y)\n    bot_rect = pygame.Rect(self.pipes[9].x, self.pipes[9].gap_y + self.pipes[9].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_10(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[10]:\n        return False\n    top_rect = pygame.Rect(self.pipes[10].x, 0, PIPE_WIDTH, self.pipes[10].gap_y)\n    bot_rect = pygame.Rect(self.pipes[10].x, self.pipes[10].gap_y + self.pipes[10].gap_h, PIPE_WIDTH, SCREEN_H)\n    return bird_rect.colliderect(top_rect) or bird_rect.colliderect(bot_rect)\n\ndef check_collision_pipe_11(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[11]:\n        return False\n    top_rect = pygame.Rect(self.pipes[11].x, ",
-          "tok_s": 51.43983021206329,
+          "tok_s": 59.05659176628708,
           "tokens": [
             727,
             1716,
@@ -14405,35 +14405,35 @@
             11,
             220
           ],
-          "verify_time_s": 15.108510873001478
+          "verify_time_s": 12.837938995944569
         }
       ],
       "summary": {
         "accept_rate": 1.0,
         "accepted_drafts": 3750,
         "decode_tok_s": {
-          "median": 51.06149377821408,
-          "p10": 50.448899669454164,
-          "p90": 51.43983021206329,
+          "median": 58.899669218567354,
+          "p10": 58.67270432263737,
+          "p90": 59.05659176628708,
           "values": [
-            50.448899669454164,
-            50.78603890604116,
-            51.06149377821408,
-            51.25378602286698,
-            51.43983021206329
+            58.93548545782278,
+            58.73137685509787,
+            58.67270432263737,
+            58.899669218567354,
+            59.05659176628708
           ]
         },
         "drafted_tokens": 3750,
         "end_to_end_tok_s": {
-          "median": 49.61922957929318,
-          "p10": 49.0664689258136,
-          "p90": 49.97487138529621,
+          "median": 57.00017836783422,
+          "p10": 56.767754206106424,
+          "p90": 57.16286632474989,
           "values": [
-            49.0664689258136,
-            49.36254586472558,
-            49.61922957929318,
-            49.79445998415464,
-            49.97487138529621
+            57.05490022299868,
+            56.81201803704043,
+            56.767754206106424,
+            57.00017836783422,
+            57.16286632474989
           ]
         },
         "generated_tokens": 5000,
@@ -14466,29 +14466,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 19.446002958000008,
-          "decode_tok_s": 51.4244496496183,
-          "draft_time_s": 3.560377147999816,
+          "decode_elapsed_s": 16.929121084001963,
+          "decode_tok_s": 59.06981201434025,
+          "draft_time_s": 3.4023645352426684,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.891692207999995,
-          "end_to_end_tok_s": 50.272243786168296,
-          "ended_at": 1780260578.916448,
+          "elapsed_s": 17.361863166996045,
+          "end_to_end_tok_s": 57.59750496714808,
+          "ended_at": 1780345991.369888,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18313559836,
-          "prompt_eval_time_s": 0.4456892499999867,
+          "prompt_eval_time_s": 0.432742082994082,
           "rejected_drafts": 0,
           "repetition": 1,
           "seed": 3043,
-          "started_at": 1780260559.023811,
-          "target_forward_time_s": 15.55393996499788,
+          "started_at": 1780345974.0070028,
+          "target_forward_time_s": 13.214908196940087,
           "text": "def setup_channel_3(self) -> None:\n    self.channels[3] = pygame.mixer.Channel(3)\n    self.channels[3].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[3] = False\n    self.channel_priority[3] = 0\n\ndef setup_channel_4(self) -> None:\n    self.channels[4] = pygame.mixer.Channel(4)\n    self.channels[4].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[4] = False\n    self.channel_priority[4] = 0\n\ndef setup_channel_5(self) -> None:\n    self.channels[5] = pygame.mixer.Channel(5)\n    self.channels[5].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[5] = False\n    self.channel_priority[5] = 0\n\ndef setup_channel_6(self) -> None:\n    self.channels[6] = pygame.mixer.Channel(6)\n    self.channels[6].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[6] = False\n    self.channel_priority[6] = 0\n\ndef setup_channel_7(self) -> None:\n    self.channels[7] = pygame.mixer.Channel(7)\n    self.channels[7].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[7] = False\n    self.channel_priority[7] = 0\n\ndef setup_channel_8(self) -> None:\n    self.channels[8] = pygame.mixer.Channel(8)\n    self.channels[8].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[8] = False\n    self.channel_priority[8] = 0\n\ndef setup_channel_9(self) -> None:\n    self.channels[9] = pygame.mixer.Channel(9)\n    self.channels[9].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[9] = False\n    self.channel_priority[9] = 0\n\ndef setup_channel_10(self) -> None:\n    self.channels[10] = pygame.mixer.Channel(10)\n    self.channels[10].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[10] = False\n    self.channel_priority[10] = 0\n\ndef setup_channel_11(self) -> None:\n    self.channels[11] = pygame.mixer.Channel(11)\n    self.channels[11].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[11] = False\n    self.channel_priority[11] = 0\n\ndef setup_channel_12(self) -> None:\n    self.channels[12] = pygame.mixer.Channel(12)\n    self.channels[12].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[12] = False\n    self.channel_priority[12] = 0\n\ndef setup_channel_13(self) -> None:\n    self.channels[13] = pygame.mixer.Channel(13)\n    self.channels[13].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[13] = False\n    self.channel_priority[13] = 0\n\ndef setup_channel_14(self) -> None:\n    self.channels[14] = pygame.mixer.Channel(14)\n    self.channels[14].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[14] = False\n    self.channel_priority[14] = 0\n\ndef setup_channel_15(self) -> None:\n    self.channels[15] = pygame.mixer.Channel(15)\n    self.channels[15].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[15] = False\n    self.channel_priority[15] = 0\n\ndef setup_channel_16(self) -> None:\n    self.channels[16] = pygame.mixer.Channel(16)\n    self.channels[16].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[16] = False\n    self.channel_priority[16] = 0\n\ndef setup_channel_17(self) -> None:\n    self.channels[17] = pygame.mixer.Channel(17)\n    self.channels[17].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[17] = False\n    self.channel_priority",
-          "tok_s": 51.4244496496183,
+          "tok_s": 59.06981201434025,
           "tokens": [
             727,
             6302,
@@ -15491,7 +15491,7 @@
             15718,
             36899
           ],
-          "verify_time_s": 15.115682506997928
+          "verify_time_s": 12.791257696939283
         },
         {
           "acceptance_by_depth": [
@@ -15505,29 +15505,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 19.412132832999987,
-          "decode_tok_s": 51.514174593944304,
-          "draft_time_s": 3.562493881996488,
+          "decode_elapsed_s": 16.919452542002546,
+          "decode_tok_s": 59.10356718206453,
+          "draft_time_s": 3.412759621045552,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.862938333000102,
-          "end_to_end_tok_s": 50.345018608783036,
-          "ended_at": 1780260613.7853959,
+          "elapsed_s": 17.35211387500749,
+          "end_to_end_tok_s": 57.62986614791153,
+          "ended_at": 1780346038.728172,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18313559836,
-          "prompt_eval_time_s": 0.450805500000115,
+          "prompt_eval_time_s": 0.432661333004944,
           "rejected_drafts": 0,
           "repetition": 2,
           "seed": 3044,
-          "started_at": 1780260593.921543,
-          "target_forward_time_s": 15.519395682997356,
+          "started_at": 1780346021.3750741,
+          "target_forward_time_s": 13.203176617971621,
           "text": "def setup_channel_3(self) -> None:\n    self.channels[3] = pygame.mixer.Channel(3)\n    self.channels[3].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[3] = False\n    self.channel_priority[3] = 0\n\ndef setup_channel_4(self) -> None:\n    self.channels[4] = pygame.mixer.Channel(4)\n    self.channels[4].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[4] = False\n    self.channel_priority[4] = 0\n\ndef setup_channel_5(self) -> None:\n    self.channels[5] = pygame.mixer.Channel(5)\n    self.channels[5].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[5] = False\n    self.channel_priority[5] = 0\n\ndef setup_channel_6(self) -> None:\n    self.channels[6] = pygame.mixer.Channel(6)\n    self.channels[6].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[6] = False\n    self.channel_priority[6] = 0\n\ndef setup_channel_7(self) -> None:\n    self.channels[7] = pygame.mixer.Channel(7)\n    self.channels[7].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[7] = False\n    self.channel_priority[7] = 0\n\ndef setup_channel_8(self) -> None:\n    self.channels[8] = pygame.mixer.Channel(8)\n    self.channels[8].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[8] = False\n    self.channel_priority[8] = 0\n\ndef setup_channel_9(self) -> None:\n    self.channels[9] = pygame.mixer.Channel(9)\n    self.channels[9].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[9] = False\n    self.channel_priority[9] = 0\n\ndef setup_channel_10(self) -> None:\n    self.channels[10] = pygame.mixer.Channel(10)\n    self.channels[10].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[10] = False\n    self.channel_priority[10] = 0\n\ndef setup_channel_11(self) -> None:\n    self.channels[11] = pygame.mixer.Channel(11)\n    self.channels[11].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[11] = False\n    self.channel_priority[11] = 0\n\ndef setup_channel_12(self) -> None:\n    self.channels[12] = pygame.mixer.Channel(12)\n    self.channels[12].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[12] = False\n    self.channel_priority[12] = 0\n\ndef setup_channel_13(self) -> None:\n    self.channels[13] = pygame.mixer.Channel(13)\n    self.channels[13].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[13] = False\n    self.channel_priority[13] = 0\n\ndef setup_channel_14(self) -> None:\n    self.channels[14] = pygame.mixer.Channel(14)\n    self.channels[14].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[14] = False\n    self.channel_priority[14] = 0\n\ndef setup_channel_15(self) -> None:\n    self.channels[15] = pygame.mixer.Channel(15)\n    self.channels[15].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[15] = False\n    self.channel_priority[15] = 0\n\ndef setup_channel_16(self) -> None:\n    self.channels[16] = pygame.mixer.Channel(16)\n    self.channels[16].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[16] = False\n    self.channel_priority[16] = 0\n\ndef setup_channel_17(self) -> None:\n    self.channels[17] = pygame.mixer.Channel(17)\n    self.channels[17].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[17] = False\n    self.channel_priority",
-          "tok_s": 51.514174593944304,
+          "tok_s": 59.10356718206453,
           "tokens": [
             727,
             6302,
@@ -16530,7 +16530,7 @@
             15718,
             36899
           ],
-          "verify_time_s": 15.075906682997356
+          "verify_time_s": 12.77974861797702
         },
         {
           "acceptance_by_depth": [
@@ -16544,29 +16544,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 19.217387040999938,
-          "decode_tok_s": 52.03621063917371,
-          "draft_time_s": 3.530433957995456,
+          "decode_elapsed_s": 16.97806441602006,
+          "decode_tok_s": 58.89952915106306,
+          "draft_time_s": 3.422656919065048,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.660402791000024,
-          "end_to_end_tok_s": 50.86365781161776,
-          "ended_at": 1780260648.450182,
+          "elapsed_s": 17.413666375010507,
+          "end_to_end_tok_s": 57.426160491684314,
+          "ended_at": 1780346086.143361,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18313559836,
-          "prompt_eval_time_s": 0.443015750000086,
+          "prompt_eval_time_s": 0.4356019589904463,
           "rejected_drafts": 0,
           "repetition": 3,
           "seed": 3045,
-          "started_at": 1780260628.788974,
-          "target_forward_time_s": 15.378330334996235,
+          "started_at": 1780346068.728715,
+          "target_forward_time_s": 13.258982671919512,
           "text": "def setup_channel_3(self) -> None:\n    self.channels[3] = pygame.mixer.Channel(3)\n    self.channels[3].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[3] = False\n    self.channel_priority[3] = 0\n\ndef setup_channel_4(self) -> None:\n    self.channels[4] = pygame.mixer.Channel(4)\n    self.channels[4].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[4] = False\n    self.channel_priority[4] = 0\n\ndef setup_channel_5(self) -> None:\n    self.channels[5] = pygame.mixer.Channel(5)\n    self.channels[5].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[5] = False\n    self.channel_priority[5] = 0\n\ndef setup_channel_6(self) -> None:\n    self.channels[6] = pygame.mixer.Channel(6)\n    self.channels[6].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[6] = False\n    self.channel_priority[6] = 0\n\ndef setup_channel_7(self) -> None:\n    self.channels[7] = pygame.mixer.Channel(7)\n    self.channels[7].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[7] = False\n    self.channel_priority[7] = 0\n\ndef setup_channel_8(self) -> None:\n    self.channels[8] = pygame.mixer.Channel(8)\n    self.channels[8].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[8] = False\n    self.channel_priority[8] = 0\n\ndef setup_channel_9(self) -> None:\n    self.channels[9] = pygame.mixer.Channel(9)\n    self.channels[9].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[9] = False\n    self.channel_priority[9] = 0\n\ndef setup_channel_10(self) -> None:\n    self.channels[10] = pygame.mixer.Channel(10)\n    self.channels[10].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[10] = False\n    self.channel_priority[10] = 0\n\ndef setup_channel_11(self) -> None:\n    self.channels[11] = pygame.mixer.Channel(11)\n    self.channels[11].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[11] = False\n    self.channel_priority[11] = 0\n\ndef setup_channel_12(self) -> None:\n    self.channels[12] = pygame.mixer.Channel(12)\n    self.channels[12].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[12] = False\n    self.channel_priority[12] = 0\n\ndef setup_channel_13(self) -> None:\n    self.channels[13] = pygame.mixer.Channel(13)\n    self.channels[13].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[13] = False\n    self.channel_priority[13] = 0\n\ndef setup_channel_14(self) -> None:\n    self.channels[14] = pygame.mixer.Channel(14)\n    self.channels[14].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[14] = False\n    self.channel_priority[14] = 0\n\ndef setup_channel_15(self) -> None:\n    self.channels[15] = pygame.mixer.Channel(15)\n    self.channels[15].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[15] = False\n    self.channel_priority[15] = 0\n\ndef setup_channel_16(self) -> None:\n    self.channels[16] = pygame.mixer.Channel(16)\n    self.channels[16].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[16] = False\n    self.channel_priority[16] = 0\n\ndef setup_channel_17(self) -> None:\n    self.channels[17] = pygame.mixer.Channel(17)\n    self.channels[17].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[17] = False\n    self.channel_priority",
-          "tok_s": 52.03621063917371,
+          "tok_s": 58.89952915106306,
           "tokens": [
             727,
             6302,
@@ -17569,7 +17569,7 @@
             15718,
             36899
           ],
-          "verify_time_s": 14.942714084996169
+          "verify_time_s": 12.83252904692199
         },
         {
           "acceptance_by_depth": [
@@ -17583,29 +17583,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 19.243381999999883,
-          "decode_tok_s": 51.96591742553394,
-          "draft_time_s": 3.5482264530007797,
+          "decode_elapsed_s": 16.926869208997232,
+          "decode_tok_s": 59.07767039804765,
+          "draft_time_s": 3.412114393155207,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.68116208299989,
-          "end_to_end_tok_s": 50.81000785333584,
-          "ended_at": 1780260683.132871,
+          "elapsed_s": 17.369960291995085,
+          "end_to_end_tok_s": 57.570655498898766,
+          "ended_at": 1780346133.5193741,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18313559836,
-          "prompt_eval_time_s": 0.4377800830000069,
+          "prompt_eval_time_s": 0.44309108299785294,
           "rejected_drafts": 0,
           "repetition": 4,
           "seed": 3046,
-          "started_at": 1780260663.450846,
-          "target_forward_time_s": 15.363984302002109,
+          "started_at": 1780346116.1483169,
+          "target_forward_time_s": 13.227515120845055,
           "text": "def setup_channel_3(self) -> None:\n    self.channels[3] = pygame.mixer.Channel(3)\n    self.channels[3].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[3] = False\n    self.channel_priority[3] = 0\n\ndef setup_channel_4(self) -> None:\n    self.channels[4] = pygame.mixer.Channel(4)\n    self.channels[4].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[4] = False\n    self.channel_priority[4] = 0\n\ndef setup_channel_5(self) -> None:\n    self.channels[5] = pygame.mixer.Channel(5)\n    self.channels[5].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[5] = False\n    self.channel_priority[5] = 0\n\ndef setup_channel_6(self) -> None:\n    self.channels[6] = pygame.mixer.Channel(6)\n    self.channels[6].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[6] = False\n    self.channel_priority[6] = 0\n\ndef setup_channel_7(self) -> None:\n    self.channels[7] = pygame.mixer.Channel(7)\n    self.channels[7].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[7] = False\n    self.channel_priority[7] = 0\n\ndef setup_channel_8(self) -> None:\n    self.channels[8] = pygame.mixer.Channel(8)\n    self.channels[8].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[8] = False\n    self.channel_priority[8] = 0\n\ndef setup_channel_9(self) -> None:\n    self.channels[9] = pygame.mixer.Channel(9)\n    self.channels[9].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[9] = False\n    self.channel_priority[9] = 0\n\ndef setup_channel_10(self) -> None:\n    self.channels[10] = pygame.mixer.Channel(10)\n    self.channels[10].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[10] = False\n    self.channel_priority[10] = 0\n\ndef setup_channel_11(self) -> None:\n    self.channels[11] = pygame.mixer.Channel(11)\n    self.channels[11].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[11] = False\n    self.channel_priority[11] = 0\n\ndef setup_channel_12(self) -> None:\n    self.channels[12] = pygame.mixer.Channel(12)\n    self.channels[12].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[12] = False\n    self.channel_priority[12] = 0\n\ndef setup_channel_13(self) -> None:\n    self.channels[13] = pygame.mixer.Channel(13)\n    self.channels[13].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[13] = False\n    self.channel_priority[13] = 0\n\ndef setup_channel_14(self) -> None:\n    self.channels[14] = pygame.mixer.Channel(14)\n    self.channels[14].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[14] = False\n    self.channel_priority[14] = 0\n\ndef setup_channel_15(self) -> None:\n    self.channels[15] = pygame.mixer.Channel(15)\n    self.channels[15].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[15] = False\n    self.channel_priority[15] = 0\n\ndef setup_channel_16(self) -> None:\n    self.channels[16] = pygame.mixer.Channel(16)\n    self.channels[16].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[16] = False\n    self.channel_priority[16] = 0\n\ndef setup_channel_17(self) -> None:\n    self.channels[17] = pygame.mixer.Channel(17)\n    self.channels[17].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[17] = False\n    self.channel_priority",
-          "tok_s": 51.96591742553394,
+          "tok_s": 59.07767039804765,
           "tokens": [
             727,
             6302,
@@ -18608,7 +18608,7 @@
             15718,
             36899
           ],
-          "verify_time_s": 14.93557942700204
+          "verify_time_s": 12.793320953845978
         },
         {
           "acceptance_by_depth": [
@@ -18622,29 +18622,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 19.210265624000158,
-          "decode_tok_s": 52.05550092710117,
-          "draft_time_s": 3.555178576005119,
+          "decode_elapsed_s": 16.936700459002168,
+          "decode_tok_s": 59.04337757053982,
+          "draft_time_s": 3.4071342388779158,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.65794870800005,
-          "end_to_end_tok_s": 50.87000759102792,
-          "ended_at": 1780260717.796823,
+          "elapsed_s": 17.37355904201104,
+          "end_to_end_tok_s": 57.55873034315525,
+          "ended_at": 1780346180.8988018,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18313559836,
-          "prompt_eval_time_s": 0.4476830839998911,
+          "prompt_eval_time_s": 0.4368585830088705,
           "rejected_drafts": 0,
           "repetition": 5,
           "seed": 3047,
-          "started_at": 1780260698.137959,
-          "target_forward_time_s": 15.323320005002415,
+          "started_at": 1780346163.5243,
+          "target_forward_time_s": 13.237677409080788,
           "text": "def setup_channel_3(self) -> None:\n    self.channels[3] = pygame.mixer.Channel(3)\n    self.channels[3].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[3] = False\n    self.channel_priority[3] = 0\n\ndef setup_channel_4(self) -> None:\n    self.channels[4] = pygame.mixer.Channel(4)\n    self.channels[4].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[4] = False\n    self.channel_priority[4] = 0\n\ndef setup_channel_5(self) -> None:\n    self.channels[5] = pygame.mixer.Channel(5)\n    self.channels[5].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[5] = False\n    self.channel_priority[5] = 0\n\ndef setup_channel_6(self) -> None:\n    self.channels[6] = pygame.mixer.Channel(6)\n    self.channels[6].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[6] = False\n    self.channel_priority[6] = 0\n\ndef setup_channel_7(self) -> None:\n    self.channels[7] = pygame.mixer.Channel(7)\n    self.channels[7].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[7] = False\n    self.channel_priority[7] = 0\n\ndef setup_channel_8(self) -> None:\n    self.channels[8] = pygame.mixer.Channel(8)\n    self.channels[8].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[8] = False\n    self.channel_priority[8] = 0\n\ndef setup_channel_9(self) -> None:\n    self.channels[9] = pygame.mixer.Channel(9)\n    self.channels[9].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[9] = False\n    self.channel_priority[9] = 0\n\ndef setup_channel_10(self) -> None:\n    self.channels[10] = pygame.mixer.Channel(10)\n    self.channels[10].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[10] = False\n    self.channel_priority[10] = 0\n\ndef setup_channel_11(self) -> None:\n    self.channels[11] = pygame.mixer.Channel(11)\n    self.channels[11].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[11] = False\n    self.channel_priority[11] = 0\n\ndef setup_channel_12(self) -> None:\n    self.channels[12] = pygame.mixer.Channel(12)\n    self.channels[12].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[12] = False\n    self.channel_priority[12] = 0\n\ndef setup_channel_13(self) -> None:\n    self.channels[13] = pygame.mixer.Channel(13)\n    self.channels[13].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[13] = False\n    self.channel_priority[13] = 0\n\ndef setup_channel_14(self) -> None:\n    self.channels[14] = pygame.mixer.Channel(14)\n    self.channels[14].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[14] = False\n    self.channel_priority[14] = 0\n\ndef setup_channel_15(self) -> None:\n    self.channels[15] = pygame.mixer.Channel(15)\n    self.channels[15].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[15] = False\n    self.channel_priority[15] = 0\n\ndef setup_channel_16(self) -> None:\n    self.channels[16] = pygame.mixer.Channel(16)\n    self.channels[16].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[16] = False\n    self.channel_priority[16] = 0\n\ndef setup_channel_17(self) -> None:\n    self.channels[17] = pygame.mixer.Channel(17)\n    self.channels[17].set_volume(self.master_vol * self.sfx_vol)\n    self.channel_busy[17] = False\n    self.channel_priority",
-          "tok_s": 52.05550092710117,
+          "tok_s": 59.04337757053982,
           "tokens": [
             727,
             6302,
@@ -19647,35 +19647,35 @@
             15718,
             36899
           ],
-          "verify_time_s": 14.882989755002427
+          "verify_time_s": 12.809699701072532
         }
       ],
       "summary": {
         "accept_rate": 1.0,
         "accepted_drafts": 3750,
         "decode_tok_s": {
-          "median": 51.96591742553394,
-          "p10": 51.4244496496183,
-          "p90": 52.05550092710117,
+          "median": 59.06981201434025,
+          "p10": 58.89952915106306,
+          "p90": 59.10356718206453,
           "values": [
-            51.4244496496183,
-            51.514174593944304,
-            52.03621063917371,
-            51.96591742553394,
-            52.05550092710117
+            59.06981201434025,
+            59.10356718206453,
+            58.89952915106306,
+            59.07767039804765,
+            59.04337757053982
           ]
         },
         "drafted_tokens": 3750,
         "end_to_end_tok_s": {
-          "median": 50.81000785333584,
-          "p10": 50.272243786168296,
-          "p90": 50.87000759102792,
+          "median": 57.570655498898766,
+          "p10": 57.426160491684314,
+          "p90": 57.62986614791153,
           "values": [
-            50.272243786168296,
-            50.345018608783036,
-            50.86365781161776,
-            50.81000785333584,
-            50.87000759102792
+            57.59750496714808,
+            57.62986614791153,
+            57.426160491684314,
+            57.570655498898766,
+            57.55873034315525
           ]
         },
         "generated_tokens": 5000,
@@ -19718,58 +19718,58 @@
     "accepted_drafts": 13807,
     "case_count": 4,
     "decode_tok_s": {
-      "median": 51.477002403003794,
-      "p10": 46.34809310761006,
-      "p90": 58.90749453972278,
+      "median": 58.89435536203844,
+      "p10": 58.579264607150314,
+      "p90": 59.06981201434025,
       "values": [
-        59.23421752080624,
-        59.13654188301906,
-        58.90749453972278,
-        58.526861337397094,
-        44.86518114014082,
-        46.34809310761006,
-        45.377467565752,
-        49.62309370530027,
-        54.08052774012794,
-        53.44254877873045,
-        50.448899669454164,
-        50.78603890604116,
-        51.06149377821408,
-        51.25378602286698,
-        51.43983021206329,
-        51.4244496496183,
-        51.514174593944304,
-        52.03621063917371,
-        51.96591742553394,
-        52.05550092710117
+        58.40561760721788,
+        58.965357860895146,
+        58.64228322058675,
+        58.553118051706655,
+        58.67690201884902,
+        58.579264607150314,
+        58.58920702290014,
+        58.889181573013815,
+        58.908137039390745,
+        58.72877052544056,
+        58.93548545782278,
+        58.73137685509787,
+        58.67270432263737,
+        58.899669218567354,
+        59.05659176628708,
+        59.06981201434025,
+        59.10356718206453,
+        58.89952915106306,
+        59.07767039804765,
+        59.04337757053982
       ]
     },
     "drafted_tokens": 13872,
     "end_to_end_tok_s": {
-      "median": 50.30863119747566,
-      "p10": 44.815512489661565,
-      "p90": 57.444673235178236,
+      "median": 57.10260107148888,
+      "p10": 56.2853948491222,
+      "p90": 57.570655498898766,
       "values": [
-        57.736580409724304,
-        57.63485807045453,
-        57.444673235178236,
-        57.08866667531865,
-        44.01303164248697,
-        44.815512489661565,
-        43.905840488674215,
-        47.94371743151593,
-        52.12194223307473,
-        51.418820803699965,
-        49.0664689258136,
-        49.36254586472558,
-        49.61922957929318,
-        49.79445998415464,
-        49.97487138529621,
-        50.272243786168296,
-        50.345018608783036,
-        50.86365781161776,
-        50.81000785333584,
-        50.87000759102792
+        57.03987233455003,
+        57.52113998961613,
+        57.22486118640119,
+        57.15030191997907,
+        57.25868970201715,
+        56.20509555561537,
+        56.15876343628017,
+        56.565660455625085,
+        56.45657624096946,
+        56.2853948491222,
+        57.05490022299868,
+        56.81201803704043,
+        56.767754206106424,
+        57.00017836783422,
+        57.16286632474989,
+        57.59750496714808,
+        57.62986614791153,
+        57.426160491684314,
+        57.570655498898766,
+        57.55873034315525
       ]
     },
     "generated_tokens": 18435,

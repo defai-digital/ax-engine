@@ -458,3 +458,80 @@ pymod_http_client rep 2/6: decode=97.2 tok/s out=1000 accept=283/716
 pymod_http_client rep 3/6: decode=99.5 tok/s out=1000 accept=296/703
 pymod_http_client rep 4/6: decode=98.8 tok/s out=1000 accept=289/710
 pymod_http_client rep 5/6: decode=99.1 tok/s out=1000 accept=291/708
+pymod_http_client rep 6/6: decode=93.7 tok/s out=1000 accept=270/729
+  [mtplx] inter-case cooldown 10s
+pymod_config_loader rep 1/6: decode=98.3 tok/s out=1000 accept=292/707
+pymod_config_loader rep 2/6: decode=98.1 tok/s out=1000 accept=293/706
+pymod_config_loader rep 3/6: decode=101.7 tok/s out=1000 accept=313/686
+pymod_config_loader rep 4/6: decode=100.4 tok/s out=1000 accept=308/692
+pymod_config_loader rep 5/6: decode=97.5 tok/s out=1000 accept=306/693
+pymod_config_loader rep 6/6: decode=100.6 tok/s out=1000 accept=310/690
+  [mtplx] inter-case cooldown 10s
+pymod_event_bus rep 1/6: decode=101.2 tok/s out=1000 accept=313/686
+pymod_event_bus rep 2/6: decode=100.2 tok/s out=1000 accept=307/692
+pymod_event_bus rep 3/6: decode=98.9 tok/s out=1000 accept=290/709
+pymod_event_bus rep 4/6: decode=98.4 tok/s out=1000 accept=284/715
+pymod_event_bus rep 5/6: decode=102.2 tok/s out=1000 accept=315/685
+pymod_event_bus rep 6/6: decode=100.0 tok/s out=1000 accept=301/699
+Saved to benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/35b-a3b-4bit/python_modules_long/mtplx.json
+{
+  "accept_rate": 0.4230513623848856,
+  "accepted_drafts": 4456,
+  "case_count": 3,
+  "decode_tok_s": {
+    "median": 99.0835072826373,
+    "p10": 97.24317778936297,
+    "p90": 101.73997485423433,
+    "values": [
+      97.24317778936297,
+      99.45652437775057,
+      98.79639074064094,
+      99.0835072826373,
+      93.70972750388744,
+      98.13010348037422,
+      101.73997485423433,
+      100.37321983133558,
+      97.48080082728133,
+      100.60646458149063,
+      100.20072124317542,
+      98.92626380969764,
+      98.37142661228489,
+      102.19454003383322,
+      99.957087172804
+    ]
+  },
+  "drafted_tokens": 10533,
+  "end_to_end_tok_s": {
+    "median": 97.21878327649361,
+    "p10": 95.43120330452413,
+    "p90": 99.78495427317692,
+    "values": [
+      95.43120330452413,
+      97.60237449008092,
+      97.0462215454797,
+      97.21878327649361,
+      92.01280295001175,
+      96.28913006697502,
+      99.78495427317692,
+      98.4101056026866,
+      95.56080598198314,
+      98.55098677692193,
+      98.13590520283417,
+      96.92736222766261,
+      96.39925332017752,
+      100.23555355094742,
+      97.85193954521313
+    ]
+  },
+  "generated_tokens": 15000,
+  "runs": 15,
+  "validations_passed": 3,
+  "validations_total": 3
+}
+Saved summary: benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/summary.json
+Saved markdown: benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/summary.md
+Saved chart: benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/decode-tok-s.svg
+Saved chart: benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/decode-tok-s-27b-4bit.svg
+Saved chart: benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/accept-rate-27b-4bit.svg
+Saved chart: benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/decode-tok-s-35b-a3b-4bit.svg
+Saved chart: benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/accept-rate-35b-a3b-4bit.svg

@@ -1,12 +1,12 @@
 {
   "allow_unverified_model": false,
   "build": {
-    "git_commit": "ef5f202c4668b3e5f8409cd0d1b09ef0e7a0f166",
+    "git_commit": "c0d5ecdd714dc5a37672eeabbbc2d58c8d56c133",
     "git_tracked_dirty": true,
     "host": "AKMBPM5MAX.local",
     "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
   },
-  "cooldown_s": 15.0,
+  "cooldown_s": 30.0,
   "depth": 3,
   "disable_thinking": true,
   "draft_lm_head": null,
@@ -305,29 +305,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 18.89218850100042,
-          "decode_tok_s": 52.931930038017875,
-          "draft_time_s": 3.5609774540052967,
+          "decode_elapsed_s": 17.097398123994935,
+          "decode_tok_s": 58.48843155828335,
+          "draft_time_s": 3.448174842094886,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.793159083999853,
-          "end_to_end_tok_s": 50.522506071724926,
-          "ended_at": 1780261545.448899,
+          "elapsed_s": 17.993347083000117,
+          "end_to_end_tok_s": 55.5760968421927,
+          "ended_at": 1780346249.3199282,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18813908306,
-          "prompt_eval_time_s": 0.9009705829994346,
+          "prompt_eval_time_s": 0.8959489590051817,
           "rejected_drafts": 0,
           "repetition": 1,
           "seed": 43,
-          "started_at": 1780261525.654742,
-          "target_forward_time_s": 15.444377777005684,
+          "started_at": 1780346231.3256269,
+          "target_forward_time_s": 13.804649096811772,
           "text": "Function f_12 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 12: reject negative sizes before casting.\nFunction f_13 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 13: reject negative sizes before casting.\nFunction f_14 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 14: reject negative sizes before casting.\nFunction f_15 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 15: reject negative sizes before casting.\nFunction f_16 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 16: reject negative sizes before casting.\nFunction f_17 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 17: reject negative sizes before casting.\nFunction f_18 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 18: reject negative sizes before casting.\nFunction f_19 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 19: reject negative sizes before casting.\nFunction f_20 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 20: reject negative sizes before casting.\nFunction f_21 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 21: reject negative sizes before casting.\nFunction f_22 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 22: reject negative sizes before casting.\nFunction f_23 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 23: reject negative sizes before casting.\nFunction f_24 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 24: reject negative sizes before casting.\nFunction f_25 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 25: reject negative sizes before casting.\nFunction f_26 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 26: reject negative sizes before casting.\nFunction f_27 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 27: reject negative sizes before casting.\nFunction f_28 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 28: reject negative sizes before casting.\nFunction f_29 validates a queue entry, calls normalize_path(),",
-          "tok_s": 52.931930038017875,
+          "tok_s": 58.48843155828335,
           "tokens": [
             4987,
             281,
@@ -1330,7 +1330,7 @@
             2551,
             1453
           ],
-          "verify_time_s": 14.559182819005855
+          "verify_time_s": 12.922437387809623
         },
         {
           "acceptance_by_depth": [
@@ -1344,29 +1344,29 @@
             249
           ],
           "accepted_drafts": 749,
-          "decode_elapsed_s": 18.798219917000097,
-          "decode_tok_s": 53.196526288941534,
-          "draft_time_s": 3.534738616996947,
+          "decode_elapsed_s": 17.13847450001049,
+          "decode_tok_s": 58.348250306606225,
+          "draft_time_s": 3.456136087013874,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.70512716600024,
-          "end_to_end_tok_s": 50.748213476410704,
-          "ended_at": 1780261580.155499,
+          "elapsed_s": 18.047659917006968,
+          "end_to_end_tok_s": 55.40884550122,
+          "ended_at": 1780346297.371062,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18813908306,
-          "prompt_eval_time_s": 0.9069072490001417,
+          "prompt_eval_time_s": 0.909185416996479,
           "rejected_drafts": 1,
           "repetition": 2,
           "seed": 44,
-          "started_at": 1780261560.449435,
-          "target_forward_time_s": 15.38092319999896,
+          "started_at": 1780346279.322359,
+          "target_forward_time_s": 13.834893704857677,
           "text": "Function f_12 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 12: reject negative sizes before casting.\nFunction f_13 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 13: reject negative sizes before casting.\nFunction f_14 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 14: reject negative sizes before casting.\nFunction f_15 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 15: reject negative sizes before casting.\nFunction f_16 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 16: reject negative sizes before casting.\nFunction f_17 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 17: reject negative sizes before casting.\nFunction f_18 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 18: reject negative sizes before casting.\nFunction f_19 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 19: reject negative sizes before casting.\nFunction f_20 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 20: reject negative sizes before casting.\nFunction f_21 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 21: reject negative sizes before casting.\nFunction f_22 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 22: reject negative sizes before casting.\nFunction f_23 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 23: reject negative sizes before casting.\nFunction f_24 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 24: reject negative sizes before casting.\nFunction f_25 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 25: reject negative sizes before casting.\nFunction f_26 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 26: reject negative sizes before casting.\nFunction f_27 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 27: reject negative sizes before casting.\nFunction f_28 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 28: reject negative sizes before casting.\nFunction f_29 validates a queue entry, calls normalize_path(),",
-          "tok_s": 53.196526288941534,
+          "tok_s": 58.348250306606225,
           "tokens": [
             4987,
             281,
@@ -2369,7 +2369,7 @@
             2551,
             1453
           ],
-          "verify_time_s": 14.489749741998821
+          "verify_time_s": 12.939660787858884
         },
         {
           "acceptance_by_depth": [
@@ -2383,29 +2383,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 18.834848208999574,
-          "decode_tok_s": 53.09307454477838,
-          "draft_time_s": 3.5682789210150077,
+          "decode_elapsed_s": 17.02313166599197,
+          "decode_tok_s": 58.74359780684503,
+          "draft_time_s": 3.4300338320754236,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.758552916999633,
-          "end_to_end_tok_s": 50.61099384153946,
-          "ended_at": 1780261614.918783,
+          "elapsed_s": 17.926773957995465,
+          "end_to_end_tok_s": 55.78248503289646,
+          "ended_at": 1780346345.30176,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18813908306,
-          "prompt_eval_time_s": 0.9237047080000593,
+          "prompt_eval_time_s": 0.9036422920034966,
           "rejected_drafts": 0,
           "repetition": 3,
           "seed": 45,
-          "started_at": 1780261595.15932,
-          "target_forward_time_s": 15.398008688993286,
+          "started_at": 1780346327.373993,
+          "target_forward_time_s": 13.76617079298012,
           "text": "Function f_12 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 12: reject negative sizes before casting.\nFunction f_13 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 13: reject negative sizes before casting.\nFunction f_14 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 14: reject negative sizes before casting.\nFunction f_15 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 15: reject negative sizes before casting.\nFunction f_16 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 16: reject negative sizes before casting.\nFunction f_17 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 17: reject negative sizes before casting.\nFunction f_18 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 18: reject negative sizes before casting.\nFunction f_19 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 19: reject negative sizes before casting.\nFunction f_20 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 20: reject negative sizes before casting.\nFunction f_21 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 21: reject negative sizes before casting.\nFunction f_22 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 22: reject negative sizes before casting.\nFunction f_23 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 23: reject negative sizes before casting.\nFunction f_24 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 24: reject negative sizes before casting.\nFunction f_25 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 25: reject negative sizes before casting.\nFunction f_26 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 26: reject negative sizes before casting.\nFunction f_27 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 27: reject negative sizes before casting.\nFunction f_28 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 28: reject negative sizes before casting.\nFunction f_29 validates a queue entry, calls normalize_path(),",
-          "tok_s": 53.09307454477838,
+          "tok_s": 58.74359780684503,
           "tokens": [
             4987,
             281,
@@ -3408,7 +3408,7 @@
             2551,
             1453
           ],
-          "verify_time_s": 14.490364230993237
+          "verify_time_s": 12.875655000985716
         },
         {
           "acceptance_by_depth": [
@@ -3422,29 +3422,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 18.7358117079998,
-          "decode_tok_s": 53.37372170392921,
-          "draft_time_s": 3.5572384509923722,
+          "decode_elapsed_s": 17.01173645700328,
+          "decode_tok_s": 58.78294685127964,
+          "draft_time_s": 3.422647000683355,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.649888582999665,
-          "end_to_end_tok_s": 50.89087379687037,
-          "ended_at": 1780261649.572386,
+          "elapsed_s": 17.91809216600086,
+          "end_to_end_tok_s": 55.80951312983396,
+          "ended_at": 1780346393.2246678,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18813908306,
-          "prompt_eval_time_s": 0.9140768749998642,
+          "prompt_eval_time_s": 0.9063557089975802,
           "rejected_drafts": 0,
           "repetition": 4,
           "seed": 46,
-          "started_at": 1780261629.9213922,
-          "target_forward_time_s": 15.303112113995212,
+          "started_at": 1780346375.3055758,
+          "target_forward_time_s": 13.767405376856914,
           "text": "validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 12: reject negative sizes before casting.\nFunction f_13 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 13: reject negative sizes before casting.\nFunction f_14 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 14: reject negative sizes before casting.\nFunction f_15 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 15: reject negative sizes before casting.\nFunction f_16 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 16: reject negative sizes before casting.\nFunction f_17 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 17: reject negative sizes before casting.\nFunction f_18 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 18: reject negative sizes before casting.\nFunction f_19 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 19: reject negative sizes before casting.\nFunction f_20 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 20: reject negative sizes before casting.\nFunction f_21 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 21: reject negative sizes before casting.\nFunction f_22 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 22: reject negative sizes before casting.\nFunction f_23 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 23: reject negative sizes before casting.\nFunction f_24 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 24: reject negative sizes before casting.\nFunction f_25 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 25: reject negative sizes before casting.\nFunction f_26 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 26: reject negative sizes before casting.\nFunction f_27 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 27: reject negative sizes before casting.\nFunction f_28 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 28: reject negative sizes before casting.\nFunction f_29 validates a queue entry, calls normalize_path(), then appends a",
-          "tok_s": 53.37372170392921,
+          "tok_s": 58.78294685127964,
           "tokens": [
             1826,
             942,
@@ -4447,7 +4447,7 @@
             1364,
             264
           ],
-          "verify_time_s": 14.404895988995122
+          "verify_time_s": 12.874753709853394
         },
         {
           "acceptance_by_depth": [
@@ -4461,29 +4461,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 18.710586415999842,
-          "decode_tok_s": 53.445679240971174,
-          "draft_time_s": 3.5590842400006295,
+          "decode_elapsed_s": 17.118420916987816,
+          "decode_tok_s": 58.416603076258596,
+          "draft_time_s": 3.4553502871422097,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.614378624999972,
-          "end_to_end_tok_s": 50.983006860356326,
-          "ended_at": 1780261684.189353,
+          "elapsed_s": 18.013242208995507,
+          "end_to_end_tok_s": 55.514714585951495,
+          "ended_at": 1780346441.240879,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 18813908306,
-          "prompt_eval_time_s": 0.9037922090001302,
+          "prompt_eval_time_s": 0.8948212920076912,
           "rejected_drafts": 0,
           "repetition": 5,
           "seed": 47,
-          "started_at": 1780261664.5740328,
-          "target_forward_time_s": 15.260225450002054,
+          "started_at": 1780346423.226815,
+          "target_forward_time_s": 13.812669738093973,
           "text": "Function f_12 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 12: reject negative sizes before casting.\nFunction f_13 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 13: reject negative sizes before casting.\nFunction f_14 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 14: reject negative sizes before casting.\nFunction f_15 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 15: reject negative sizes before casting.\nFunction f_16 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 16: reject negative sizes before casting.\nFunction f_17 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 17: reject negative sizes before casting.\nFunction f_18 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 18: reject negative sizes before casting.\nFunction f_19 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 19: reject negative sizes before casting.\nFunction f_20 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 20: reject negative sizes before casting.\nFunction f_21 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 21: reject negative sizes before casting.\nFunction f_22 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 22: reject negative sizes before casting.\nFunction f_23 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 23: reject negative sizes before casting.\nFunction f_24 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 24: reject negative sizes before casting.\nFunction f_25 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 25: reject negative sizes before casting.\nFunction f_26 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 26: reject negative sizes before casting.\nFunction f_27 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 27: reject negative sizes before casting.\nFunction f_28 validates a queue entry, calls normalize_path(), then appends a compact audit line. The invariant is that strlen() must not be recomputed when a trusted length returned by snprintf() is already available. Security note 28: reject negative sizes before casting.\nFunction f_29 validates a queue entry, calls normalize_path(),",
-          "tok_s": 53.445679240971174,
+          "tok_s": 58.416603076258596,
           "tokens": [
             4987,
             281,
@@ -5486,35 +5486,35 @@
             2551,
             1453
           ],
-          "verify_time_s": 14.3722524910022
+          "verify_time_s": 12.931655946085812
         }
       ],
       "summary": {
         "accept_rate": 0.9997333333333334,
         "accepted_drafts": 3749,
         "decode_tok_s": {
-          "median": 53.196526288941534,
-          "p10": 52.931930038017875,
-          "p90": 53.445679240971174,
+          "median": 58.48843155828335,
+          "p10": 58.348250306606225,
+          "p90": 58.78294685127964,
           "values": [
-            52.931930038017875,
-            53.196526288941534,
-            53.09307454477838,
-            53.37372170392921,
-            53.445679240971174
+            58.48843155828335,
+            58.348250306606225,
+            58.74359780684503,
+            58.78294685127964,
+            58.416603076258596
           ]
         },
         "drafted_tokens": 3750,
         "end_to_end_tok_s": {
-          "median": 50.748213476410704,
-          "p10": 50.522506071724926,
-          "p90": 50.983006860356326,
+          "median": 55.5760968421927,
+          "p10": 55.40884550122,
+          "p90": 55.80951312983396,
           "values": [
-            50.522506071724926,
-            50.748213476410704,
-            50.61099384153946,
-            50.89087379687037,
-            50.983006860356326
+            55.5760968421927,
+            55.40884550122,
+            55.78248503289646,
+            55.80951312983396,
+            55.514714585951495
           ]
         },
         "generated_tokens": 5000,
@@ -5552,29 +5552,29 @@
             247
           ],
           "accepted_drafts": 748,
-          "decode_elapsed_s": 19.176865332000034,
-          "decode_tok_s": 52.146165845536856,
-          "draft_time_s": 3.628259041001911,
+          "decode_elapsed_s": 17.25145104098192,
+          "decode_tok_s": 57.966138478695875,
+          "draft_time_s": 3.4658996350772213,
           "drafted_by_depth": [
             252,
             252,
             251
           ],
           "drafted_tokens": 755,
-          "elapsed_s": 20.27315820800004,
-          "end_to_end_tok_s": 49.32630573589603,
-          "ended_at": 1780261739.763125,
+          "elapsed_s": 18.28865037499054,
+          "end_to_end_tok_s": 54.67872038100118,
+          "ended_at": 1780346518.0110679,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 1.0962928760000068,
+          "prompt_eval_time_s": 1.0371993340086192,
           "rejected_drafts": 4,
           "repetition": 1,
           "seed": 1043,
-          "started_at": 1780261719.489061,
-          "target_forward_time_s": 15.82924008800046,
+          "started_at": 1780346499.7215009,
+          "target_forward_time_s": 14.061296915082494,
           "text": "Endpoint e_12: GET /api/v1/users/{id}/connections \u2014 validates UUID format, checks authorization header, calls user_service.fetch_connections(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_13: GET /api/v1/users/{id}/messages \u2014 validates UUID format, checks authorization header, calls user_service.fetch_messages(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_14: GET /api/v1/users/{id}/files \u2014 validates UUID format, checks authorization header, calls user_service.fetch_files(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_15: GET /api/v1/users/{id}/tags \u2014 validates UUID format, checks authorization header, calls user_service.fetch_tags(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_16: GET /api/v1/users/{id}/roles \u2014 validates UUID format, checks authorization header, calls user_service.fetch_roles(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_17: GET /api/v1/users/{id}/history \u2014 validates UUID format, checks authorization header, calls user_service.fetch_history(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_18: GET /api/v1/users/{id}/analytics \u2014 validates UUID format, checks authorization header, calls user_service.fetch_analytics(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_19: GET /api/v1/users/{id}/integrations \u2014 validates UUID format, checks authorization header, calls user_service.fetch_integrations(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_20: GET /api/v1/users/{id}/webhooks \u2014 validates UUID format, checks authorization header, calls user_service.fetch_webhooks(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_21: GET /api/v1/users/{id}/tokens \u2014 validates UUID format, checks authorization header, calls user_service.fetch_tokens(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_22: GET /api/v1/users/{id}/invitations \u2014 validates UUID format, checks authorization header, calls user_service.fetch_invitations(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_23: GET /api/v1/users/{id}/organizations \u2014 validates UUID format, checks authorization header, calls user_service.fetch_organizations(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_24: GET /api/v1/users/{id}/projects \u2014 validates UUID format, checks authorization header, calls user_service.fetch_projects(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_25: GET /api/v1/users/{id}/tasks \u2014 validates UUID format, checks authorization header, calls user_service.fetch_tasks(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_26: GET /api/v1/users/{id}/comments \u2014 validates UUID format, checks authorization header, calls user_service.fetch_comments(id), returns 200 with JSON",
-          "tok_s": 52.146165845536856,
+          "tok_s": 57.966138478695875,
           "tokens": [
             26493,
             378,
@@ -6577,7 +6577,7 @@
             440,
             4566
           ],
-          "verify_time_s": 14.75619387900042
+          "verify_time_s": 13.040092456081766
         },
         {
           "acceptance_by_depth": [
@@ -6591,29 +6591,29 @@
             247
           ],
           "accepted_drafts": 747,
-          "decode_elapsed_s": 19.033778958999847,
-          "decode_tok_s": 52.53817448201291,
-          "draft_time_s": 3.6208125990015105,
+          "decode_elapsed_s": 17.289300001008087,
+          "decode_tok_s": 57.839241608491555,
+          "draft_time_s": 3.466623963249731,
           "drafted_by_depth": [
             253,
             253,
             253
           ],
           "drafted_tokens": 759,
-          "elapsed_s": 20.13145799999984,
-          "end_to_end_tok_s": 49.67350104498184,
-          "ended_at": 1780261774.900435,
+          "elapsed_s": 18.3235477089911,
+          "end_to_end_tok_s": 54.57458434805802,
+          "ended_at": 1780346566.338567,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 1.0976790409999921,
+          "prompt_eval_time_s": 1.0342477079830132,
           "rejected_drafts": 6,
           "repetition": 2,
           "seed": 1044,
-          "started_at": 1780261754.768063,
-          "target_forward_time_s": 15.690026091996515,
+          "started_at": 1780346548.0139709,
+          "target_forward_time_s": 14.098603408914641,
           "text": "Endpoint e_12: GET /api/v1/users/{id}/security \u2014 validates UUID format, checks authorization header, calls user_service.fetch_security(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_13: GET /api/v1/users/{id}/integrations \u2014 validates UUID format, checks authorization header, calls user_service.fetch_integrations(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_14: GET /api/v1/users/{id}/api_keys \u2014 validates UUID format, checks authorization header, calls user_service.fetch_api_keys(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_15: GET /api/v1/users/{id}/webhooks \u2014 validates UUID format, checks authorization header, calls user_service.fetch_webhooks(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_16: GET /api/v1/users/{id}/organizations \u2014 validates UUID format, checks authorization header, calls user_service.fetch_organizations(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_17: GET /api/v1/users/{id}/teams \u2014 validates UUID format, checks authorization header, calls user_service.fetch_teams(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_18: GET /api/v1/users/{id}/projects \u2014 validates UUID format, checks authorization header, calls user_service.fetch_projects(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_19: GET /api/v1/users/{id}/tasks \u2014 validates UUID format, checks authorization header, calls user_service.fetch_tasks(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_20: GET /api/v1/users/{id}/comments \u2014 validates UUID format, checks authorization header, calls user_service.fetch_comments(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_21: GET /api/v1/users/{id}/messages \u2014 validates UUID format, checks authorization header, calls user_service.fetch_messages(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_22: GET /api/v1/users/{id}/contacts \u2014 validates UUID format, checks authorization header, calls user_service.fetch_contacts(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_23: GET /api/v1/users/{id}/favorites \u2014 validates UUID format, checks authorization header, calls user_service.fetch_favorites(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_24: GET /api/v1/users/{id}/recent \u2014 validates UUID format, checks authorization header, calls user_service.fetch_recent(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_25: GET /api/v1/users/{id}/history \u2014 validates UUID format, checks authorization header, calls user_service.fetch_history(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_26: GET /api/v1/users/{id}/invitations \u2014 validates UUID format, checks authorization header, calls user_service.fetch_invitations(id), returns 200",
-          "tok_s": 52.53817448201291,
+          "tok_s": 57.839241608491555,
           "tokens": [
             26493,
             378,
@@ -7616,7 +7616,7 @@
             15,
             15
           ],
-          "verify_time_s": 14.611730300996442
+          "verify_time_s": 13.080272450926714
         },
         {
           "acceptance_by_depth": [
@@ -7630,29 +7630,29 @@
             248
           ],
           "accepted_drafts": 749,
-          "decode_elapsed_s": 18.85239216700029,
-          "decode_tok_s": 53.04366634969676,
-          "draft_time_s": 3.570756324989361,
+          "decode_elapsed_s": 17.169595666011446,
+          "decode_tok_s": 58.24248977391925,
+          "draft_time_s": 3.465264564161771,
           "drafted_by_depth": [
             251,
             251,
             251
           ],
           "drafted_tokens": 753,
-          "elapsed_s": 19.95082637500036,
-          "end_to_end_tok_s": 50.12323706315558,
-          "ended_at": 1780261809.8684301,
+          "elapsed_s": 18.19552616600413,
+          "end_to_end_tok_s": 54.95856458761629,
+          "ended_at": 1780346614.537765,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 1.0984342080000715,
+          "prompt_eval_time_s": 1.0259304999926826,
           "rejected_drafts": 3,
           "repetition": 3,
           "seed": 1045,
-          "started_at": 1780261789.911813,
-          "target_forward_time_s": 15.564897760005806,
+          "started_at": 1780346596.341436,
+          "target_forward_time_s": 13.97650478380092,
           "text": "Endpoint e_12: GET /api/v1/users/{id}/roles \u2014 validates UUID format, checks authorization header, calls user_service.fetch_roles(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_13: GET /api/v1/users/{id}/tags \u2014 validates UUID format, checks authorization header, calls user_service.fetch_tags(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_14: GET /api/v1/users/{id}/connections \u2014 validates UUID format, checks authorization header, calls user_service.fetch_connections(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_15: GET /api/v1/users/{id}/groups \u2014 validates UUID format, checks authorization header, calls user_service.fetch_groups(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_16: GET /api/v1/users/{id}/projects \u2014 validates UUID format, checks authorization header, calls user_service.fetch_projects(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_17: GET /api/v1/users/{id}/tasks \u2014 validates UUID format, checks authorization header, calls user_service.fetch_tasks(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_18: GET /api/v1/users/{id}/messages \u2014 validates UUID format, checks authorization header, calls user_service.fetch_messages(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_19: GET /api/v1/users/{id}/files \u2014 validates UUID format, checks authorization header, calls user_service.fetch_files(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_20: GET /api/v1/users/{id}/keys \u2014 validates UUID format, checks authorization header, calls user_service.fetch_keys(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_21: GET /api/v1/users/{id}/tokens \u2014 validates UUID format, checks authorization header, calls user_service.fetch_tokens(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_22: GET /api/v1/users/{id}/webhooks \u2014 validates UUID format, checks authorization header, calls user_service.fetch_webhooks(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_23: GET /api/v1/users/{id}/integrations \u2014 validates UUID format, checks authorization header, calls user_service.fetch_integrations(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_24: GET /api/v1/users/{id}/logs \u2014 validates UUID format, checks authorization header, calls user_service.fetch_logs(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_25: GET /api/v1/users/{id}/metrics \u2014 validates UUID format, checks authorization header, calls user_service.fetch_metrics(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_26: GET /api/v1/users/{id}/stats \u2014 validates UUID format, checks authorization header, calls user_service.fetch_stats(id), returns 200 with JSON body or 4",
-          "tok_s": 53.04366634969676,
+          "tok_s": 58.24248977391925,
           "tokens": [
             26493,
             378,
@@ -8655,7 +8655,7 @@
             220,
             19
           ],
-          "verify_time_s": 14.488133843005926
+          "verify_time_s": 12.966378075798275
         },
         {
           "acceptance_by_depth": [
@@ -8669,29 +8669,29 @@
             248
           ],
           "accepted_drafts": 749,
-          "decode_elapsed_s": 18.663078832999872,
-          "decode_tok_s": 53.581727267411516,
-          "draft_time_s": 3.5253961110065575,
+          "decode_elapsed_s": 17.185472292010672,
+          "decode_tok_s": 58.188683034616886,
+          "draft_time_s": 3.4659822437970433,
           "drafted_by_depth": [
             251,
             251,
             251
           ],
           "drafted_tokens": 753,
-          "elapsed_s": 19.732000083000003,
-          "end_to_end_tok_s": 50.679099726010264,
-          "ended_at": 1780261844.604872,
+          "elapsed_s": 18.21498766700097,
+          "end_to_end_tok_s": 54.8998450222199,
+          "ended_at": 1780346662.7583098,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 1.0689212500001304,
+          "prompt_eval_time_s": 1.0295153749902966,
           "rejected_drafts": 3,
           "repetition": 4,
           "seed": 1046,
-          "started_at": 1780261824.871414,
-          "target_forward_time_s": 15.423732884003584,
+          "started_at": 1780346644.542336,
+          "target_forward_time_s": 14.002414302100078,
           "text": "Endpoint e_12: GET /api/v1/users/{id}/roles \u2014 validates UUID format, checks authorization header, calls user_service.fetch_roles(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_13: GET /api/v1/users/{id}/groups \u2014 validates UUID format, checks authorization header, calls user_service.fetch_groups(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_14: GET /api/v1/users/{id}/tags \u2014 validates UUID format, checks authorization header, calls user_service.fetch_tags(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_15: GET /api/v1/users/{id}/metadata \u2014 validates UUID format, checks authorization header, calls user_service.fetch_metadata(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_16: GET /api/v1/users/{id}/avatar \u2014 validates UUID format, checks authorization header, calls user_service.fetch_avatar(id), returns 200 with image body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_17: GET /api/v1/users/{id}/api_keys \u2014 validates UUID format, checks authorization header, calls user_service.fetch_api_keys(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_18: GET /api/v1/users/{id}/webhooks \u2014 validates UUID format, checks authorization header, calls user_service.fetch_webhooks(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_19: GET /api/v1/users/{id}/integrations \u2014 validates UUID format, checks authorization header, calls user_service.fetch_integrations(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_20: GET /api/v1/users/{id}/connections \u2014 validates UUID format, checks authorization header, calls user_service.fetch_connections(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_21: GET /api/v1/users/{id}/friends \u2014 validates UUID format, checks authorization header, calls user_service.fetch_friends(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_22: GET /api/v1/users/{id}/followers \u2014 validates UUID format, checks authorization header, calls user_service.fetch_followers(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_23: GET /api/v1/users/{id}/following \u2014 validates UUID format, checks authorization header, calls user_service.fetch_following(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_24: GET /api/v1/users/{id}/posts \u2014 validates UUID format, checks authorization header, calls user_service.fetch_posts(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_25: GET /api/v1/users/{id}/comments \u2014 validates UUID format, checks authorization header, calls user_service.fetch_comments(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_26: GET /api/v1/users/{id}/likes \u2014 validates UUID format, checks authorization header, calls user_service.fetch_likes(id), returns 200 with JSON",
-          "tok_s": 53.581727267411516,
+          "tok_s": 58.188683034616886,
           "tokens": [
             26493,
             378,
@@ -9694,7 +9694,7 @@
             440,
             4566
           ],
-          "verify_time_s": 14.37401530000352
+          "verify_time_s": 12.988671218103264
         },
         {
           "acceptance_by_depth": [
@@ -9708,29 +9708,29 @@
             247
           ],
           "accepted_drafts": 747,
-          "decode_elapsed_s": 18.71650008200004,
-          "decode_tok_s": 53.42879254234696,
-          "draft_time_s": 3.541891671997746,
+          "decode_elapsed_s": 17.252025041016168,
+          "decode_tok_s": 57.964209860728246,
+          "draft_time_s": 3.465826498955721,
           "drafted_by_depth": [
             252,
             252,
             252
           ],
           "drafted_tokens": 756,
-          "elapsed_s": 19.774621541000215,
-          "end_to_end_tok_s": 50.569867945468616,
-          "ended_at": 1780261879.3857348,
+          "elapsed_s": 18.304854166999576,
+          "end_to_end_tok_s": 54.63031777673616,
+          "ended_at": 1780346711.068563,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 1.0581214590001764,
+          "prompt_eval_time_s": 1.0528291259834077,
           "rejected_drafts": 5,
           "repetition": 5,
           "seed": 1047,
-          "started_at": 1780261859.6101298,
-          "target_forward_time_s": 15.438579253006992,
+          "started_at": 1780346692.762697,
+          "target_forward_time_s": 14.0912708278629,
           "text": "Endpoint e_12: GET /api/v1/users/{id}/addresses \u2014 validates UUID format, checks authorization header, calls user_service.fetch_addresses(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_13: GET /api/v1/users/{id}/contacts \u2014 validates UUID format, checks authorization header, calls user_service.fetch_contacts(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_14: GET /api/v1/users/{id}/groups \u2014 validates UUID format, checks authorization header, calls user_service.fetch_groups(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_15: GET /api/v1/users/{id}/roles \u2014 validates UUID format, checks authorization header, calls user_service.fetch_roles(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_16: GET /api/v1/users/{id}/tags \u2014 validates UUID format, checks authorization header, calls user_service.fetch_tags(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_17: GET /api/v1/users/{id}/metadata \u2014 validates UUID format, checks authorization header, calls user_service.fetch_metadata(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_18: GET /api/v1/users/{id}/avatar \u2014 validates UUID format, checks authorization header, calls user_service.fetch_avatar(id), returns 200 with image body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_19: GET /api/v1/users/{id}/history \u2014 validates UUID format, checks authorization header, calls user_service.fetch_history(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_20: GET /api/v1/users/{id}/tokens \u2014 validates UUID format, checks authorization header, calls user_service.fetch_tokens(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_21: GET /api/v1/users/{id}/invites \u2014 validates UUID format, checks authorization header, calls user_service.fetch_invites(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_22: GET /api/v1/users/{id}/blocks \u2014 validates UUID format, checks authorization header, calls user_service.fetch_blocks(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_23: GET /api/v1/users/{id}/friends \u2014 validates UUID format, checks authorization header, calls user_service.fetch_friends(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_24: GET /api/v1/users/{id}/followers \u2014 validates UUID format, checks authorization header, calls user_service.fetch_followers(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_25: GET /api/v1/users/{id}/following \u2014 validates UUID format, checks authorization header, calls user_service.fetch_following(id), returns 200 with JSON body or 404. Rate limit: 100 req/min. Cache-Control: private, max-age=60.\nEndpoint e_26: GET /api/v1/users/{id}/posts \u2014 validates UUID format, checks authorization header, calls user_service.fetch_posts(id), returns 200 with JSON body or 40",
-          "tok_s": 53.42879254234696,
+          "tok_s": 57.964209860728246,
           "tokens": [
             26493,
             378,
@@ -10733,35 +10733,35 @@
             19,
             15
           ],
-          "verify_time_s": 14.399437128006866
+          "verify_time_s": 13.054186743873288
         }
       ],
       "summary": {
         "accept_rate": 0.9904661016949152,
         "accepted_drafts": 3740,
         "decode_tok_s": {
-          "median": 53.04366634969676,
-          "p10": 52.146165845536856,
-          "p90": 53.581727267411516,
+          "median": 57.966138478695875,
+          "p10": 57.839241608491555,
+          "p90": 58.24248977391925,
           "values": [
-            52.146165845536856,
-            52.53817448201291,
-            53.04366634969676,
-            53.581727267411516,
-            53.42879254234696
+            57.966138478695875,
+            57.839241608491555,
+            58.24248977391925,
+            58.188683034616886,
+            57.964209860728246
           ]
         },
         "drafted_tokens": 3776,
         "end_to_end_tok_s": {
-          "median": 50.12323706315558,
-          "p10": 49.32630573589603,
-          "p90": 50.679099726010264,
+          "median": 54.67872038100118,
+          "p10": 54.57458434805802,
+          "p90": 54.95856458761629,
           "values": [
-            49.32630573589603,
-            49.67350104498184,
-            50.12323706315558,
-            50.679099726010264,
-            50.569867945468616
+            54.67872038100118,
+            54.57458434805802,
+            54.95856458761629,
+            54.8998450222199,
+            54.63031777673616
           ]
         },
         "generated_tokens": 5000,
@@ -10799,29 +10799,29 @@
             247
           ],
           "accepted_drafts": 749,
-          "decode_elapsed_s": 18.69369020799968,
-          "decode_tok_s": 53.49398587829733,
-          "draft_time_s": 3.5487087480041737,
+          "decode_elapsed_s": 17.180923042993527,
+          "decode_tok_s": 58.20409051932779,
+          "draft_time_s": 3.4609532827307703,
           "drafted_by_depth": [
             251,
             251,
             250
           ],
           "drafted_tokens": 752,
-          "elapsed_s": 19.583764832999805,
-          "end_to_end_tok_s": 51.06270467029612,
-          "ended_at": 1780261933.9535308,
+          "elapsed_s": 18.086275749999913,
+          "end_to_end_tok_s": 55.29054260935974,
+          "ended_at": 1780346787.478741,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 0.8900746250001248,
+          "prompt_eval_time_s": 0.9053527070063865,
           "rejected_drafts": 3,
           "repetition": 1,
           "seed": 2043,
-          "started_at": 1780261914.368813,
-          "target_forward_time_s": 15.234059939999042,
+          "started_at": 1780346769.394655,
+          "target_forward_time_s": 13.866785340025672,
           "text": "```python\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/notifications\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_8(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/subscriptions\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_9(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/friends\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_10(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/messages\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_11(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/posts\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_12(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/comments\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_13(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/likes\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_14(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/followers\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_15(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/following\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_16(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/blocks\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_17(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/reports\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user",
-          "tok_s": 53.49398587829733,
+          "tok_s": 58.20409051932779,
           "tokens": [
             71093,
             12305,
@@ -11824,7 +11824,7 @@
             11465,
             3208
           ],
-          "verify_time_s": 14.35916773199915
+          "verify_time_s": 12.975054924027063
         },
         {
           "acceptance_by_depth": [
@@ -11838,29 +11838,29 @@
             247
           ],
           "accepted_drafts": 749,
-          "decode_elapsed_s": 18.703366124999775,
-          "decode_tok_s": 53.46631153540614,
-          "draft_time_s": 3.5858382560136306,
+          "decode_elapsed_s": 17.115110666010878,
+          "decode_tok_s": 58.42790149092714,
+          "draft_time_s": 3.445243502879748,
           "drafted_by_depth": [
             251,
             251,
             250
           ],
           "drafted_tokens": 752,
-          "elapsed_s": 19.607032916999742,
-          "end_to_end_tok_s": 51.00210746996693,
-          "ended_at": 1780261968.5648131,
+          "elapsed_s": 18.01520987501135,
+          "end_to_end_tok_s": 55.508651130791776,
+          "ended_at": 1780346835.498589,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 0.9036667919999672,
+          "prompt_eval_time_s": 0.9000992090004729,
           "rejected_drafts": 3,
           "repetition": 2,
           "seed": 2044,
-          "started_at": 1780261948.95678,
-          "target_forward_time_s": 15.212192157001482,
+          "started_at": 1780346817.4825878,
+          "target_forward_time_s": 13.820227741045528,
           "text": "```python\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/notifications\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_8(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/messages\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_9(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/friends\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_10(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/posts\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_11(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/comments\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_12(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/likes\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_13(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/followers\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_14(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/following\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_15(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/albums\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_16(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/photos\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_17(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/videos\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user",
-          "tok_s": 53.46631153540614,
+          "tok_s": 58.42790149092714,
           "tokens": [
             71093,
             12305,
@@ -12863,7 +12863,7 @@
             11465,
             3208
           ],
-          "verify_time_s": 14.322205615001621
+          "verify_time_s": 12.933363699048641
         },
         {
           "acceptance_by_depth": [
@@ -12877,29 +12877,29 @@
             249
           ],
           "accepted_drafts": 749,
-          "decode_elapsed_s": 18.53093654200029,
-          "decode_tok_s": 53.963813309354556,
-          "draft_time_s": 3.5118979520025277,
+          "decode_elapsed_s": 16.895329876002506,
+          "decode_tok_s": 59.18795355516335,
+          "draft_time_s": 3.372714743047254,
           "drafted_by_depth": [
             251,
             251,
             250
           ],
           "drafted_tokens": 752,
-          "elapsed_s": 19.426059082999927,
-          "end_to_end_tok_s": 51.47724485586049,
-          "ended_at": 1780262002.996413,
+          "elapsed_s": 17.788703083992004,
+          "end_to_end_tok_s": 56.21545287918694,
+          "ended_at": 1780346883.288821,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 0.8951225409996368,
+          "prompt_eval_time_s": 0.893373207989498,
           "rejected_drafts": 1,
           "repetition": 3,
           "seed": 2045,
-          "started_at": 1780261983.5693161,
-          "target_forward_time_s": 15.121375219003312,
+          "started_at": 1780346865.499254,
+          "target_forward_time_s": 13.711829707186553,
           "text": "```python\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_7(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/notifications\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_8(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/subscriptions\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_9(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/followers\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_10(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/following\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_11(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/posts\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_12(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/comments\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_13(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/likes\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_14(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/bookmarks\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_15(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/history\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_16(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/devices\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_17(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/security\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user",
-          "tok_s": 53.963813309354556,
+          "tok_s": 59.18795355516335,
           "tokens": [
             71093,
             12305,
@@ -13902,7 +13902,7 @@
             606,
             1156
           ],
-          "verify_time_s": 14.239857678003318
+          "verify_time_s": 12.83147404018382
         },
         {
           "acceptance_by_depth": [
@@ -13916,29 +13916,29 @@
             247
           ],
           "accepted_drafts": 748,
-          "decode_elapsed_s": 18.600109958999838,
-          "decode_tok_s": 53.76312302477226,
-          "draft_time_s": 3.544670695996956,
+          "decode_elapsed_s": 17.138395625996054,
+          "decode_tok_s": 58.34851883586867,
+          "draft_time_s": 3.4455179780634353,
           "drafted_by_depth": [
             252,
             252,
             251
           ],
           "drafted_tokens": 755,
-          "elapsed_s": 19.489935499999774,
-          "end_to_end_tok_s": 51.30853306312951,
-          "ended_at": 1780262037.4918232,
+          "elapsed_s": 18.04200350001338,
+          "end_to_end_tok_s": 55.426216938670834,
+          "ended_at": 1780346931.336437,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 0.8898255409999365,
+          "prompt_eval_time_s": 0.9036078740173252,
           "rejected_drafts": 4,
           "repetition": 4,
           "seed": 2046,
-          "started_at": 1780262018.000843,
-          "target_forward_time_s": 15.146726666000632,
+          "started_at": 1780346913.293429,
+          "target_forward_time_s": 13.85248029975628,
           "text": "```python\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_7(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/notifications\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_8(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/friends\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_9(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/followers\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_10(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/following\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_11(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/posts\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_12(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/comments\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_13(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/likes\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_14(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/bookmarks\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_15(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/history\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_16(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/subscriptions\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_17(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/devices\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user",
-          "tok_s": 53.76312302477226,
+          "tok_s": 58.34851883586867,
           "tokens": [
             71093,
             12305,
@@ -14941,7 +14941,7 @@
             606,
             1156
           ],
-          "verify_time_s": 14.269862541000748
+          "verify_time_s": 12.962903966748854
         },
         {
           "acceptance_by_depth": [
@@ -14955,29 +14955,29 @@
             248
           ],
           "accepted_drafts": 749,
-          "decode_elapsed_s": 18.507596333000492,
-          "decode_tok_s": 54.03186788858809,
-          "draft_time_s": 3.535546121990592,
+          "decode_elapsed_s": 17.198331625011633,
+          "decode_tok_s": 58.14517488113174,
+          "draft_time_s": 3.473358914779965,
           "drafted_by_depth": [
             251,
             251,
             250
           ],
           "drafted_tokens": 752,
-          "elapsed_s": 19.41170670800011,
-          "end_to_end_tok_s": 51.51530543101972,
-          "ended_at": 1780262071.909652,
+          "elapsed_s": 18.099271167011466,
+          "end_to_end_tok_s": 55.250843571129224,
+          "ended_at": 1780346979.439542,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 0.9041103749996182,
+          "prompt_eval_time_s": 0.9009395419998327,
           "rejected_drafts": 2,
           "repetition": 5,
           "seed": 2047,
-          "started_at": 1780262052.4969652,
-          "target_forward_time_s": 15.063211873999535,
+          "started_at": 1780346961.339415,
+          "target_forward_time_s": 13.867909401131328,
           "text": "```python\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/notifications\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_8(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/subscriptions\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_9(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/addresses\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_10(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/payments\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_11(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/orders\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_12(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/reviews\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_13(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/wishlist\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_14(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/cart\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_15(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/messages\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_16(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/friends\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user_17(user_id, mock_db, auth_client):\n    resp = auth_client.get(f\"/api/v1/users/{user_id}/followers\")\n    assert resp.status_code == 200\n    assert resp.json()[\"id\"] == user_id\n    assert mock_db.fetch.call_count == 1\n\n@pytest.mark.parametrize(\"user_id\", [\"u_0\", \"u_1\", \"u_2\"])\ndef test_fetch_user",
-          "tok_s": 54.03186788858809,
+          "tok_s": 58.14517488113174,
           "tokens": [
             71093,
             12305,
@@ -15980,35 +15980,35 @@
             11465,
             3208
           ],
-          "verify_time_s": 14.172673790999852
+          "verify_time_s": 12.980104942136677
         }
       ],
       "summary": {
         "accept_rate": 0.9949508370980601,
         "accepted_drafts": 3744,
         "decode_tok_s": {
-          "median": 53.76312302477226,
-          "p10": 53.46631153540614,
-          "p90": 54.03186788858809,
+          "median": 58.34851883586867,
+          "p10": 58.14517488113174,
+          "p90": 59.18795355516335,
           "values": [
-            53.49398587829733,
-            53.46631153540614,
-            53.963813309354556,
-            53.76312302477226,
-            54.03186788858809
+            58.20409051932779,
+            58.42790149092714,
+            59.18795355516335,
+            58.34851883586867,
+            58.14517488113174
           ]
         },
         "drafted_tokens": 3763,
         "end_to_end_tok_s": {
-          "median": 51.30853306312951,
-          "p10": 51.00210746996693,
-          "p90": 51.51530543101972,
+          "median": 55.426216938670834,
+          "p10": 55.250843571129224,
+          "p90": 56.21545287918694,
           "values": [
-            51.06270467029612,
-            51.00210746996693,
-            51.47724485586049,
-            51.30853306312951,
-            51.51530543101972
+            55.29054260935974,
+            55.508651130791776,
+            56.21545287918694,
+            55.426216938670834,
+            55.250843571129224
           ]
         },
         "generated_tokens": 5000,
@@ -16046,29 +16046,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 18.36839949900059,
-          "decode_tok_s": 54.44132462680863,
-          "draft_time_s": 3.4967376209942813,
+          "decode_elapsed_s": 16.928629500005627,
+          "decode_tok_s": 59.07152732001534,
+          "draft_time_s": 3.4060102530784206,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 19.010383415999968,
-          "end_to_end_tok_s": 52.60283173238665,
-          "ended_at": 1780262125.114016,
+          "elapsed_s": 17.540763875003904,
+          "end_to_end_tok_s": 57.010059945281455,
+          "ended_at": 1780347054.756523,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 0.6419839169993793,
+          "prompt_eval_time_s": 0.612134374998277,
           "rejected_drafts": 0,
           "repetition": 1,
           "seed": 3043,
-          "started_at": 1780262106.1026728,
-          "target_forward_time_s": 14.716773001000547,
+          "started_at": 1780347037.214891,
+          "target_forward_time_s": 13.410795080082607,
           "text": "CREATE TABLE user_profiles_3 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 3,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_3_user_id ON user_profiles_3(user_id);\nCREATE INDEX idx_user_profiles_3_shard ON user_profiles_3(shard_key);\n\nCREATE TABLE user_profiles_4 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 4,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_4_user_id ON user_profiles_4(user_id);\nCREATE INDEX idx_user_profiles_4_shard ON user_profiles_4(shard_key);\n\nCREATE TABLE user_profiles_5 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 5,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_5_user_id ON user_profiles_5(user_id);\nCREATE INDEX idx_user_profiles_5_shard ON user_profiles_5(shard_key);\n\nCREATE TABLE user_profiles_6 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 6,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_6_user_id ON user_profiles_6(user_id);\nCREATE INDEX idx_user_profiles_6_shard ON user_profiles_6(shard_key);\n\nCREATE TABLE user_profiles_7 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 7,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_7_user_id ON user_profiles_7(user_id);\nCREATE INDEX idx_user_profiles_7_shard ON user_profiles_7(shard_key);\n\nCREATE TABLE user_profiles_8 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 8,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_8_user_id ON user_profiles_8(user_id);\nCREATE INDEX idx_user_profiles_8_shard ON user_profiles_8(shard_key);\n\nCREATE TABLE user_profiles_9 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 9,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_9_user_id ON user_profiles_9(user_id);\nCREATE INDEX idx_user_profiles_9_shard ON user_profiles_9(shard_key);\n\nCREATE TABLE user_profiles_10 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 10,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_10_user_id ON user_profiles_10(user_id);\nCREATE INDEX idx_user_profiles_10_shard ON user_profiles_10(shard_key);\n\nCREATE TABLE",
-          "tok_s": 54.44132462680863,
+          "tok_s": 59.07152732001534,
           "tokens": [
             21898,
             13951,
@@ -17071,7 +17071,7 @@
             21898,
             13951
           ],
-          "verify_time_s": 14.08451766700091
+          "verify_time_s": 12.80786595508107
         },
         {
           "acceptance_by_depth": [
@@ -17085,29 +17085,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 18.340433041000324,
-          "decode_tok_s": 54.524339625159584,
-          "draft_time_s": 3.5023677620069975,
+          "decode_elapsed_s": 17.04066137400514,
+          "decode_tok_s": 58.683168337906224,
+          "draft_time_s": 3.440507143866853,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 18.9819969160003,
-          "end_to_end_tok_s": 52.68149628435986,
-          "ended_at": 1780262159.102154,
+          "elapsed_s": 17.661532665995765,
+          "end_to_end_tok_s": 56.62022763886894,
+          "ended_at": 1780347102.4219441,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 0.6415638749999744,
+          "prompt_eval_time_s": 0.6208712919906247,
           "rejected_drafts": 0,
           "repetition": 2,
           "seed": 3044,
-          "started_at": 1780262140.1191611,
-          "target_forward_time_s": 14.675143908990322,
+          "started_at": 1780347084.7595918,
+          "target_forward_time_s": 13.467316203808878,
           "text": "CREATE TABLE user_profiles_3 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 3,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_3_user_id ON user_profiles_3(user_id);\nCREATE INDEX idx_user_profiles_3_shard ON user_profiles_3(shard_key);\n\nCREATE TABLE user_profiles_4 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 4,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_4_user_id ON user_profiles_4(user_id);\nCREATE INDEX idx_user_profiles_4_shard ON user_profiles_4(shard_key);\n\nCREATE TABLE user_profiles_5 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 5,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_5_user_id ON user_profiles_5(user_id);\nCREATE INDEX idx_user_profiles_5_shard ON user_profiles_5(shard_key);\n\nCREATE TABLE user_profiles_6 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 6,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_6_user_id ON user_profiles_6(user_id);\nCREATE INDEX idx_user_profiles_6_shard ON user_profiles_6(shard_key);\n\nCREATE TABLE user_profiles_7 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 7,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_7_user_id ON user_profiles_7(user_id);\nCREATE INDEX idx_user_profiles_7_shard ON user_profiles_7(shard_key);\n\nCREATE TABLE user_profiles_8 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 8,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_8_user_id ON user_profiles_8(user_id);\nCREATE INDEX idx_user_profiles_8_shard ON user_profiles_8(shard_key);\n\nCREATE TABLE user_profiles_9 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 9,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_9_user_id ON user_profiles_9(user_id);\nCREATE INDEX idx_user_profiles_9_shard ON user_profiles_9(shard_key);\n\nCREATE TABLE user_profiles_10 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 10,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_10_user_id ON user_profiles_10(user_id);\nCREATE INDEX idx_user_profiles_10_shard ON user_profiles_10(shard_key);\n\nCREATE TABLE",
-          "tok_s": 54.524339625159584,
+          "tok_s": 58.683168337906224,
           "tokens": [
             21898,
             13951,
@@ -18110,7 +18110,7 @@
             21898,
             13951
           ],
-          "verify_time_s": 14.044481658990208
+          "verify_time_s": 12.856138078816002
         },
         {
           "acceptance_by_depth": [
@@ -18124,29 +18124,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 18.260578832999272,
-          "decode_tok_s": 54.762776642812014,
-          "draft_time_s": 3.4920929950089885,
+          "decode_elapsed_s": 16.99706537500606,
+          "decode_tok_s": 58.83368557671642,
+          "draft_time_s": 3.4327488650014857,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 18.898477374999857,
-          "end_to_end_tok_s": 52.914315802122,
-          "ended_at": 1780262193.006773,
+          "elapsed_s": 17.621569583003293,
+          "end_to_end_tok_s": 56.74863384272761,
+          "ended_at": 1780347150.046946,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 0.6378985420005847,
+          "prompt_eval_time_s": 0.6245042079972336,
           "rejected_drafts": 0,
           "repetition": 3,
           "seed": 3045,
-          "started_at": 1780262174.1072938,
-          "target_forward_time_s": 14.605439182002101,
+          "started_at": 1780347132.424451,
+          "target_forward_time_s": 13.443482576083625,
           "text": "CREATE TABLE user_profiles_3 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 3,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_3_user_id ON user_profiles_3(user_id);\nCREATE INDEX idx_user_profiles_3_shard ON user_profiles_3(shard_key);\n\nCREATE TABLE user_profiles_4 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 4,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_4_user_id ON user_profiles_4(user_id);\nCREATE INDEX idx_user_profiles_4_shard ON user_profiles_4(shard_key);\n\nCREATE TABLE user_profiles_5 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 5,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_5_user_id ON user_profiles_5(user_id);\nCREATE INDEX idx_user_profiles_5_shard ON user_profiles_5(shard_key);\n\nCREATE TABLE user_profiles_6 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 6,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_6_user_id ON user_profiles_6(user_id);\nCREATE INDEX idx_user_profiles_6_shard ON user_profiles_6(shard_key);\n\nCREATE TABLE user_profiles_7 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 7,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_7_user_id ON user_profiles_7(user_id);\nCREATE INDEX idx_user_profiles_7_shard ON user_profiles_7(shard_key);\n\nCREATE TABLE user_profiles_8 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 8,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_8_user_id ON user_profiles_8(user_id);\nCREATE INDEX idx_user_profiles_8_shard ON user_profiles_8(shard_key);\n\nCREATE TABLE user_profiles_9 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 9,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_9_user_id ON user_profiles_9(user_id);\nCREATE INDEX idx_user_profiles_9_shard ON user_profiles_9(shard_key);\n\nCREATE TABLE user_profiles_10 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 10,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_10_user_id ON user_profiles_10(user_id);\nCREATE INDEX idx_user_profiles_10_shard ON user_profiles_10(shard_key);\n\nCREATE TABLE",
-          "tok_s": 54.762776642812014,
+          "tok_s": 58.83368557671642,
           "tokens": [
             21898,
             13951,
@@ -19149,7 +19149,7 @@
             21898,
             13951
           ],
-          "verify_time_s": 13.977101223001682
+          "verify_time_s": 12.829014534087037
         },
         {
           "acceptance_by_depth": [
@@ -19163,29 +19163,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 18.218359584000154,
-          "decode_tok_s": 54.889683969034536,
-          "draft_time_s": 3.4877952460014967,
+          "decode_elapsed_s": 17.013788333992125,
+          "decode_tok_s": 58.77585757911915,
+          "draft_time_s": 3.425603272204171,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 18.867180707999978,
-          "end_to_end_tok_s": 53.002089473600286,
-          "ended_at": 1780262226.88011,
+          "elapsed_s": 17.641105333997984,
+          "end_to_end_tok_s": 56.68579043472958,
+          "ended_at": 1780347197.693625,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 0.6488211239998236,
+          "prompt_eval_time_s": 0.6273170000058599,
           "rejected_drafts": 0,
           "repetition": 4,
           "seed": 3046,
-          "started_at": 1780262208.011913,
-          "target_forward_time_s": 14.578750703999958,
+          "started_at": 1780347180.051459,
+          "target_forward_time_s": 13.474894911953015,
           "text": "CREATE TABLE user_profiles_3 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 3,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_3_user_id ON user_profiles_3(user_id);\nCREATE INDEX idx_user_profiles_3_shard ON user_profiles_3(shard_key);\n\nCREATE TABLE user_profiles_4 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 4,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_4_user_id ON user_profiles_4(user_id);\nCREATE INDEX idx_user_profiles_4_shard ON user_profiles_4(shard_key);\n\nCREATE TABLE user_profiles_5 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 5,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_5_user_id ON user_profiles_5(user_id);\nCREATE INDEX idx_user_profiles_5_shard ON user_profiles_5(shard_key);\n\nCREATE TABLE user_profiles_6 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 6,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_6_user_id ON user_profiles_6(user_id);\nCREATE INDEX idx_user_profiles_6_shard ON user_profiles_6(shard_key);\n\nCREATE TABLE user_profiles_7 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 7,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_7_user_id ON user_profiles_7(user_id);\nCREATE INDEX idx_user_profiles_7_shard ON user_profiles_7(shard_key);\n\nCREATE TABLE user_profiles_8 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 8,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_8_user_id ON user_profiles_8(user_id);\nCREATE INDEX idx_user_profiles_8_shard ON user_profiles_8(shard_key);\n\nCREATE TABLE user_profiles_9 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 9,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_9_user_id ON user_profiles_9(user_id);\nCREATE INDEX idx_user_profiles_9_shard ON user_profiles_9(shard_key);\n\nCREATE TABLE user_profiles_10 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 10,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_10_user_id ON user_profiles_10(user_id);\nCREATE INDEX idx_user_profiles_10_shard ON user_profiles_10(shard_key);\n\nCREATE TABLE",
-          "tok_s": 54.889683969034536,
+          "tok_s": 58.77585757911915,
           "tokens": [
             21898,
             13951,
@@ -20188,7 +20188,7 @@
             21898,
             13951
           ],
-          "verify_time_s": 13.940882413000054
+          "verify_time_s": 12.857563494952046
         },
         {
           "acceptance_by_depth": [
@@ -20202,29 +20202,29 @@
             250
           ],
           "accepted_drafts": 750,
-          "decode_elapsed_s": 18.167423626000527,
-          "decode_tok_s": 55.04357803210126,
-          "draft_time_s": 3.4843645079963608,
+          "decode_elapsed_s": 17.04014533299778,
+          "decode_tok_s": 58.684945489492215,
+          "draft_time_s": 3.440827027327032,
           "drafted_by_depth": [
             250,
             250,
             250
           ],
           "drafted_tokens": 750,
-          "elapsed_s": 18.805788292000216,
-          "end_to_end_tok_s": 53.17511738794749,
-          "ended_at": 1780262260.692008,
+          "elapsed_s": 17.666668666992337,
+          "end_to_end_tok_s": 56.60376717588858,
+          "ended_at": 1780347245.3642151,
           "generated_tokens": 1000,
           "measured": true,
           "peak_memory_bytes": 19049285698,
-          "prompt_eval_time_s": 0.6383646659996884,
+          "prompt_eval_time_s": 0.6265233339945553,
           "rejected_drafts": 0,
           "repetition": 5,
           "seed": 3047,
-          "started_at": 1780262241.8852181,
-          "target_forward_time_s": 14.526232801996684,
+          "started_at": 1780347227.69661,
+          "target_forward_time_s": 13.481419800868025,
           "text": "CREATE TABLE user_profiles_3 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 3,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_3_user_id ON user_profiles_3(user_id);\nCREATE INDEX idx_user_profiles_3_shard ON user_profiles_3(shard_key);\n\nCREATE TABLE user_profiles_4 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 4,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_4_user_id ON user_profiles_4(user_id);\nCREATE INDEX idx_user_profiles_4_shard ON user_profiles_4(shard_key);\n\nCREATE TABLE user_profiles_5 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 5,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_5_user_id ON user_profiles_5(user_id);\nCREATE INDEX idx_user_profiles_5_shard ON user_profiles_5(shard_key);\n\nCREATE TABLE user_profiles_6 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 6,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_6_user_id ON user_profiles_6(user_id);\nCREATE INDEX idx_user_profiles_6_shard ON user_profiles_6(shard_key);\n\nCREATE TABLE user_profiles_7 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 7,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_7_user_id ON user_profiles_7(user_id);\nCREATE INDEX idx_user_profiles_7_shard ON user_profiles_7(shard_key);\n\nCREATE TABLE user_profiles_8 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 8,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_8_user_id ON user_profiles_8(user_id);\nCREATE INDEX idx_user_profiles_8_shard ON user_profiles_8(shard_key);\n\nCREATE TABLE user_profiles_9 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 9,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_9_user_id ON user_profiles_9(user_id);\nCREATE INDEX idx_user_profiles_9_shard ON user_profiles_9(shard_key);\n\nCREATE TABLE user_profiles_10 (\n    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    shard_key INTEGER NOT NULL DEFAULT 10,\n    display_name TEXT,\n    avatar_url TEXT,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\nCREATE INDEX idx_user_profiles_10_user_id ON user_profiles_10(user_id);\nCREATE INDEX idx_user_profiles_10_shard ON user_profiles_10(shard_key);\n\nCREATE TABLE",
-          "tok_s": 55.04357803210126,
+          "tok_s": 58.684945489492215,
           "tokens": [
             21898,
             13951,
@@ -21227,35 +21227,35 @@
             21898,
             13951
           ],
-          "verify_time_s": 13.898763176996908
+          "verify_time_s": 12.864454550872324
         }
       ],
       "summary": {
         "accept_rate": 1.0,
         "accepted_drafts": 3750,
         "decode_tok_s": {
-          "median": 54.762776642812014,
-          "p10": 54.44132462680863,
-          "p90": 55.04357803210126,
+          "median": 58.77585757911915,
+          "p10": 58.683168337906224,
+          "p90": 59.07152732001534,
           "values": [
-            54.44132462680863,
-            54.524339625159584,
-            54.762776642812014,
-            54.889683969034536,
-            55.04357803210126
+            59.07152732001534,
+            58.683168337906224,
+            58.83368557671642,
+            58.77585757911915,
+            58.684945489492215
           ]
         },
         "drafted_tokens": 3750,
         "end_to_end_tok_s": {
-          "median": 52.914315802122,
-          "p10": 52.60283173238665,
-          "p90": 53.17511738794749,
+          "median": 56.68579043472958,
+          "p10": 56.60376717588858,
+          "p90": 57.010059945281455,
           "values": [
-            52.60283173238665,
-            52.68149628435986,
-            52.914315802122,
-            53.002089473600286,
-            53.17511738794749
+            57.010059945281455,
+            56.62022763886894,
+            56.74863384272761,
+            56.68579043472958,
+            56.60376717588858
           ]
         },
         "generated_tokens": 5000,
@@ -21303,58 +21303,58 @@
     "accepted_drafts": 14983,
     "case_count": 4,
     "decode_tok_s": {
-      "median": 53.480148706851736,
-      "p10": 52.931930038017875,
-      "p90": 54.762776642812014,
+      "median": 58.42225228359287,
+      "p10": 57.966138478695875,
+      "p90": 58.83368557671642,
       "values": [
-        52.931930038017875,
-        53.196526288941534,
-        53.09307454477838,
-        53.37372170392921,
-        53.445679240971174,
-        52.146165845536856,
-        52.53817448201291,
-        53.04366634969676,
-        53.581727267411516,
-        53.42879254234696,
-        53.49398587829733,
-        53.46631153540614,
-        53.963813309354556,
-        53.76312302477226,
-        54.03186788858809,
-        54.44132462680863,
-        54.524339625159584,
-        54.762776642812014,
-        54.889683969034536,
-        55.04357803210126
+        58.48843155828335,
+        58.348250306606225,
+        58.74359780684503,
+        58.78294685127964,
+        58.416603076258596,
+        57.966138478695875,
+        57.839241608491555,
+        58.24248977391925,
+        58.188683034616886,
+        57.964209860728246,
+        58.20409051932779,
+        58.42790149092714,
+        59.18795355516335,
+        58.34851883586867,
+        58.14517488113174,
+        59.07152732001534,
+        58.683168337906224,
+        58.83368557671642,
+        58.77585757911915,
+        58.684945489492215
       ]
     },
     "drafted_tokens": 15039,
     "end_to_end_tok_s": {
-      "median": 50.99255716516163,
-      "p10": 50.12323706315558,
-      "p90": 52.914315802122,
+      "median": 55.511682858371636,
+      "p10": 54.67872038100118,
+      "p90": 56.68579043472958,
       "values": [
-        50.522506071724926,
-        50.748213476410704,
-        50.61099384153946,
-        50.89087379687037,
-        50.983006860356326,
-        49.32630573589603,
-        49.67350104498184,
-        50.12323706315558,
-        50.679099726010264,
-        50.569867945468616,
-        51.06270467029612,
-        51.00210746996693,
-        51.47724485586049,
-        51.30853306312951,
-        51.51530543101972,
-        52.60283173238665,
-        52.68149628435986,
-        52.914315802122,
-        53.002089473600286,
-        53.17511738794749
+        55.5760968421927,
+        55.40884550122,
+        55.78248503289646,
+        55.80951312983396,
+        55.514714585951495,
+        54.67872038100118,
+        54.57458434805802,
+        54.95856458761629,
+        54.8998450222199,
+        54.63031777673616,
+        55.29054260935974,
+        55.508651130791776,
+        56.21545287918694,
+        55.426216938670834,
+        55.250843571129224,
+        57.010059945281455,
+        56.62022763886894,
+        56.74863384272761,
+        56.68579043472958,
+        56.60376717588858
       ]
     },
     "generated_tokens": 20000,

@@ -36,6 +36,10 @@ This directory contains active architecture decisions for the current
   startup, deferred warmup (env-gated alternative).
 - `ADR-015-mtp-decode-optimization.md` - MTP decode rate optimization: enable
   skip-state, top-k=128 softmax, and faster n-gram gating by default.
+- `ADR-016-turboquant-codec-kernel-improvements.md` - TurboQuant codec and
+  kernel improvements: randomized Hadamard, Lloyd-Max codebooks, simd_sum,
+  incremental decode buffer, fused Metal encode, sparse V attention, V-only
+  cache, fractional bits, state serialization.
 
 ## Policy
 
