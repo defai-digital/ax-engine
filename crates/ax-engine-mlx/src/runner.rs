@@ -8068,12 +8068,15 @@ mod tests {
             "MTP rejection must lower the EWMA"
         );
 
-        // Pure MTP steps must count every token, including cascade positions.
+        // In pure-MTP steps the cascade-exclusion still applies: position 2 is
+        // cascade-rejected (never independently verified by the main model) and is
+        // excluded from both numerator and denominator.  Only the two "meaningfully
+        // evaluated" positions count — position 0 (accepted) and position 1 (the
+        // first and only genuine rejection that caused the cascade).
         let mut tel2 = MtpTelemetry::default();
         tel2.record_step(3, 1, &[MtpDraftSource::Mtp; 3]);
-        // drafted=3, first rejection at pos 1 (MTP), positions 2 is cascade but
-        // all tokens are MTP so first_rejection_is_mtp=true.
-        // mtp_only_drafted = accepted_mtp_count(1) + 1 = 2
+        // drafted=3, accepted=1, first rejection at pos 1 (Mtp) → first_rejection_is_mtp=true.
+        // pos 2 is cascade-excluded.  mtp_only_drafted = 1 (accepted) + 1 (first rejection) = 2.
         assert_eq!(tel2.mtp_only_accept_rate_ewma_samples, 1);
         let expected_rate = 1.0_f32 / 2.0;
         assert!(
