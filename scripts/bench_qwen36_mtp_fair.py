@@ -319,7 +319,11 @@ def run_rapid_mlx_suite(
         str(config.cooldown_s),
         "--port",
         str(port),
+        "--mtp-draft-temperature",
+        str(mtp_draft_temperature),
     ]
+    if mtp_optimistic:
+        cmd.append("--mtp-optimistic")
     if enable_ngram:
         cmd.append("--enable-ngram")
     run_subprocess(cmd)
