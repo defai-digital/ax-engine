@@ -36,15 +36,19 @@ HF_CACHE = Path(
 )
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
-    "ax_engine": "AX Engine 5.0.4",
-    "lightning_mlx": "Lightning MLX 0.6.10",
+    "lightning_mlx": "Light. MTP",
+    "lightning_mtp_ngram": "Light. ngram+MTP",
+    "ax_engine": "AX MTP",
+    "ax_engine_ngram": "AX MTP+n-gram",
 }
 ENGINE_COLORS = {
     "mtplx": "#a78bfa",
-    "ax_engine": "#4ade80",
     "lightning_mlx": "#60a5fa",
+    "lightning_mtp_ngram": "#1d4ed8",
+    "ax_engine": "#86efac",
+    "ax_engine_ngram": "#4ade80",
 }
-ENGINE_ORDER = ["mtplx", "lightning_mlx", "ax_engine"]
+ENGINE_ORDER = ["mtplx", "lightning_mlx", "lightning_mtp_ngram", "ax_engine", "ax_engine_ngram"]
 
 
 @dataclass(frozen=True)
@@ -271,6 +275,7 @@ def run_rapid_mlx_suite(
     model_dir: Path,
     config: diff.RunConfig,
     port: int = 18765,
+    enable_ngram: bool = False,
 ) -> Path:
     cmd = [
         str(python),
@@ -307,6 +312,8 @@ def run_rapid_mlx_suite(
         "--port",
         str(port),
     ]
+    if enable_ngram:
+        cmd.append("--enable-ngram")
     run_subprocess(cmd)
     return output_path
 
@@ -348,7 +355,18 @@ def run_engine_suite(
                 model_dir=model_dir,
                 config=config,
                 no_build=args.no_build_ax_engine,
-                pure_mtp=args.pure_mtp,
+                pure_mtp=True,
+            )
+        if engine == "ax_engine_ngram":
+            return run_ax_suite(
+                python=args.ax_python,
+                suite=suite,
+                suite_file=suite_file,
+                output_path=output_path,
+                model_dir=model_dir,
+                config=config,
+                no_build=args.no_build_ax_engine,
+                pure_mtp=False,
             )
         if engine == "mtplx":
             return run_mtplx_suite(
@@ -371,6 +389,18 @@ def run_engine_suite(
                 model_dir=model_dir,
                 config=config,
                 port=args.base_port + 1,
+            )
+        if engine == "lightning_mtp_ngram":
+            return run_rapid_mlx_suite(
+                python=args.rapid_python,
+                lightning_source=args.lightning_source,
+                suite=suite,
+                suite_file=suite_file,
+                output_path=output_path,
+                model_dir=model_dir,
+                config=config,
+                port=args.base_port + 1,
+                enable_ngram=True,
             )
         raise ValueError(f"unknown engine: {engine}")
     except Exception as exc:
@@ -396,11 +426,11 @@ def cases_for_engine(
 ) -> dict[str, dict[str, Any]]:
     if artifact.get("schema") == "ax.mtp_engine_error.v1":
         return {}
-    if engine == "ax_engine":
+    if engine in ("ax_engine", "ax_engine_ngram"):
         return diff.ax_cases(artifact)
     if engine == "mtplx":
         return diff.mtplx_cases(artifact)
-    if engine == "lightning_mlx":
+    if engine in ("lightning_mlx", "lightning_mtp_ngram"):
         return diff.rapid_mlx_cases(artifact)
     raise ValueError(f"unknown engine: {engine}")
 
@@ -437,6 +467,11 @@ def summarize_engine_artifact(engine: str, artifact_path: Path) -> dict[str, Any
         for case in cases.values()
         if case.get("accept_rate") is not None
     ]
+    ngram_accept_values = [
+        float(case["ngram_accept_rate"])
+        for case in cases.values()
+        if case.get("ngram_accept_rate") is not None
+    ]
     ngram_hit_steps = sum(
         int(case.get("ngram_hit_steps", 0) or 0) for case in cases.values()
     )
@@ -458,7 +493,8 @@ def summarize_engine_artifact(engine: str, artifact_path: Path) -> dict[str, Any
         "validations_total": validations_total,
         "decode_tok_s": median(decode_values),
         "accept_rate": median(accept_values),
-        "ngram_hit_steps": ngram_hit_steps if engine == "ax_engine" else None,
+        "ngram_accept_rate": median(ngram_accept_values) if ngram_accept_values else None,
+        "ngram_hit_steps": ngram_hit_steps if engine in ("ax_engine", "ax_engine_ngram") else None,
     }
 
 
@@ -483,17 +519,19 @@ def build_summary(
                 )
                 for engine in args.engines
             }
-            if args.pure_mtp and "ax_engine" in engine_summaries:
+            ax_mtp_summary = engine_summaries.get("ax_engine")
+            if ax_mtp_summary and ax_mtp_summary.get("status") != "error":
                 ngram_hit_steps = int(
-                    engine_summaries["ax_engine"].get("ngram_hit_steps", 0) or 0
+                    ax_mtp_summary.get("ngram_hit_steps", 0) or 0
                 )
                 if ngram_hit_steps > 0:
                     raise RuntimeError(
-                        "pure-MTP AX benchmark observed n-gram draft hits; "
+                        "AX MTP benchmark observed n-gram draft hits; "
                         "AX_MLX_MTP_DISABLE_NGRAM_STACKING may not be honored "
                         f"for {profile.key}/{suite}: {ngram_hit_steps}"
                     )
             ax_tok_s = (engine_summaries.get("ax_engine") or {}).get("decode_tok_s")
+            ax_ngram_tok_s = (engine_summaries.get("ax_engine_ngram") or {}).get("decode_tok_s")
             mtplx_tok_s = (engine_summaries.get("mtplx") or {}).get("decode_tok_s")
             lightning_tok_s = (engine_summaries.get("lightning_mlx") or {}).get("decode_tok_s")
             rows.append(
@@ -509,6 +547,9 @@ def build_summary(
                     "ratios": {
                         "ax_engine_vs_mtplx": ratio(ax_tok_s, mtplx_tok_s),
                         "ax_engine_vs_lightning_mlx": ratio(ax_tok_s, lightning_tok_s),
+                        "ax_engine_ngram_vs_mtplx": ratio(ax_ngram_tok_s, mtplx_tok_s),
+                        "ax_engine_ngram_vs_lightning_mlx": ratio(ax_ngram_tok_s, lightning_tok_s),
+                        "ax_engine_ngram_vs_ax_engine": ratio(ax_ngram_tok_s, ax_tok_s),
                         "lightning_mlx_vs_mtplx": ratio(lightning_tok_s, mtplx_tok_s),
                     },
                 }
@@ -534,7 +575,6 @@ def build_summary(
             "repetitions": args.repetitions,
             "warmup_repetitions": args.warmup_repetitions,
             "cooldown_s": args.cooldown,
-            "ax_pure_mtp": bool(args.pure_mtp),
             "fairness_rules": [
                 "standard Qwen source MTP shards plus mlx-community 4-bit base only",
                 "Youssofal MTPLX bundles are excluded",
@@ -581,7 +621,6 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
         "mode",
         "max_tokens",
         "repetitions",
-        "ax_pure_mtp",
     ):
         lines.append(f"- {key}: `{contract[key]}`")
     lines.append("")
@@ -590,39 +629,43 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
     for rule in contract["fairness_rules"]:
         lines.append(f"- {rule}")
     lines.append("")
-    has_lightning = "lightning_mlx" in (summary.get("contract", {}).get("engines") or [])
+    contract_engines = summary.get("contract", {}).get("engines") or []
+    has_lightning = "lightning_mlx" in contract_engines
+    has_lightning_ngram = "lightning_mtp_ngram" in contract_engines
+    has_ax = "ax_engine" in contract_engines
+    has_ax_ngram = "ax_engine_ngram" in contract_engines
+    header_cols = ["Model", "Suite", "Depth", "MTPLX tok/s", "MTPLX accept"]
     if has_lightning:
-        lines.append(
-            "| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | AX tok/s | AX accept | AX/MTPLX | AX/Lightning |"
-        )
-        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
-    else:
-        lines.append(
-            "| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX/MTPLX |"
-        )
-        lines.append("|---|---|---:|---:|---:|---:|---:|---:|")
+        header_cols += ["Light. MTP tok/s", "Light. MTP accept"]
+    if has_lightning_ngram:
+        header_cols += ["Light. ngram+MTP tok/s", "Light. ngram+MTP accept"]
+    if has_ax:
+        header_cols += ["AX MTP tok/s", "AX MTP accept"]
+    if has_ax_ngram:
+        header_cols += ["AX MTP+n-gram tok/s", "AX MTP+n-gram accept"]
+    lines.append("| " + " | ".join(header_cols) + " |")
+    align = ["---", "---", "---:"] + ["---:"] * (len(header_cols) - 3)
+    lines.append("| " + " | ".join(align) + " |")
     for row in summary["rows"]:
         engines = row["engines"]
         mtplx = engines.get("mtplx", {})
-        ax = engines.get("ax_engine", {})
-        ratios = row["ratios"]
+        cells = [
+            row["model_label"], row["suite"], str(row["depth"]),
+            fmt_number(mtplx.get("decode_tok_s")), fmt_percent(mtplx.get("accept_rate")),
+        ]
         if has_lightning:
-            lightning = engines.get("lightning_mlx", {})
-            lines.append(
-                f"| {row['model_label']} | {row['suite']} | {row['depth']} | "
-                f"{fmt_number(mtplx.get('decode_tok_s'))} | {fmt_percent(mtplx.get('accept_rate'))} | "
-                f"{fmt_number(lightning.get('decode_tok_s'))} | {fmt_percent(lightning.get('accept_rate'))} | "
-                f"{fmt_number(ax.get('decode_tok_s'))} | {fmt_percent(ax.get('accept_rate'))} | "
-                f"{fmt_number(ratios.get('ax_engine_vs_mtplx'), 3)} | "
-                f"{fmt_number(ratios.get('ax_engine_vs_lightning_mlx'), 3)} |"
-            )
-        else:
-            lines.append(
-                f"| {row['model_label']} | {row['suite']} | {row['depth']} | "
-                f"{fmt_number(mtplx.get('decode_tok_s'))} | {fmt_percent(mtplx.get('accept_rate'))} | "
-                f"{fmt_number(ax.get('decode_tok_s'))} | {fmt_percent(ax.get('accept_rate'))} | "
-                f"{fmt_number(ratios.get('ax_engine_vs_mtplx'), 3)} |"
-            )
+            e = engines.get("lightning_mlx", {})
+            cells += [fmt_number(e.get("decode_tok_s")), fmt_percent(e.get("accept_rate"))]
+        if has_lightning_ngram:
+            e = engines.get("lightning_mtp_ngram", {})
+            cells += [fmt_number(e.get("decode_tok_s")), fmt_percent(e.get("accept_rate"))]
+        if has_ax:
+            e = engines.get("ax_engine", {})
+            cells += [fmt_number(e.get("decode_tok_s")), fmt_percent(e.get("accept_rate"))]
+        if has_ax_ngram:
+            e = engines.get("ax_engine_ngram", {})
+            cells += [fmt_number(e.get("decode_tok_s")), fmt_percent(e.get("accept_rate"))]
+        lines.append("| " + " | ".join(cells) + " |")
     lines.append("")
     lines.append("Artifacts:")
     lines.append("")
@@ -661,10 +704,12 @@ def write_decode_svg(path: Path, summary: dict[str, Any]) -> None:
         ]
         or [1.0]
     )
+    active_engines = [e for e in ENGINE_ORDER if e in summary["contract"]["engines"]]
+    n_engines = len(active_engines)
     width = 920
     left = 190
     top = 54
-    row_h = 70
+    row_h = max(70, n_engines * 18 + 10)
     chart_w = width - left - 40
     height = top + row_h * len(groups) + 48
     parts = [
@@ -687,7 +732,7 @@ def write_decode_svg(path: Path, summary: dict[str, Any]) -> None:
         parts.append(
             f'<text x="24" y="{base_y + 25}" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">{html.escape(group["label"])}</text>'
         )
-        for engine_index, engine in enumerate(ENGINE_ORDER):
+        for engine_index, engine in enumerate(active_engines):
             if engine not in group["values"]:
                 continue
             value = group["values"][engine]
@@ -896,8 +941,18 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(QWEN36_PROFILES),
         default=sorted(QWEN36_PROFILES),
     )
+    _default_engines = [e for e in ENGINE_ORDER if e != "lightning_mtp_ngram"]
+    parser.add_argument("--engines", nargs="+", choices=ENGINE_ORDER, default=_default_engines)
     parser.add_argument(
-        "--engines", nargs="+", choices=ENGINE_ORDER, default=ENGINE_ORDER
+        "--lightning-ngram",
+        action="store_true",
+        default=False,
+        help=(
+            "Add lightning_mtp_ngram to the engine list. Runs lightning-mlx with "
+            "MTP + n-gram (prompt-lookup) layered before MTP, using the production "
+            "preset: K=6, min_occ=2, greedy accept, hybrid MTP tail, everywhere gate. "
+            "Equivalent to --engines ... lightning_mtp_ngram."
+        ),
     )
     parser.add_argument("--suites", nargs="+", default=["flappy", "long_code"])
     parser.add_argument("--suites-dir", type=Path, default=DEFAULT_SUITES_DIR)
@@ -952,26 +1007,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument(
-        "--pure-mtp",
-        action="store_true",
-        help=(
-            "Pass --ax-mtp-disable-ngram-stacking to the AX subprocess so the MTP "
-            "verify loop sources its draft only from the MTP head (no ADR-008 "
-            "n-gram-first stacking). Use this to measure pure-MTP acceptance for "
-            "fair comparison against MTPLX."
-        ),
-    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.lightning_ngram and "lightning_mtp_ngram" not in args.engines:
+        args.engines = list(args.engines) + ["lightning_mtp_ngram"]
     args.output_dir = (
         args.output_dir
         or DEFAULT_OUTPUT_BASE / f"{date.today().isoformat()}-qwen36-fair"
     )
-    if args.warmup_repetitions != 1 and "ax_engine" in args.engines:
+    if args.warmup_repetitions != 1 and any(e in args.engines for e in ("ax_engine", "ax_engine_ngram")):
         raise ValueError(
             "AX prompt-suite benchmark has an implicit 1 warmup repetition"
         )

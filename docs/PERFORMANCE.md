@@ -253,12 +253,14 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
    the draft candidate set is no longer halved at each depth, giving the draft
    model the full candidate set at all depths.
 
-35B-A3B results (native depth=1, pure MTP, 1000 gen tokens):
+35B-A3B results (native depth=1, pure MTP for AX Engine, ngram+MTP for Lightning ngram row, 1000 gen tokens):
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
 | Lightning MLX (tok/s) | 147.9 | 149.0 | 148.8 |
 | Lightning MLX (accept) | 99.0% | 98.5% | 97.2% |
+| Light. ngram+MTP (tok/s) | 173.9 | 194.9 | 136.1 |
+| Light. ngram+MTP (accept) | 91.0% | 92.1% | 91.8% |
 | MTPLX 0.3.7 (tok/s) | 107.3 | 106.4 | 102.7 |
 | MTPLX 0.3.7 (accept) | 50.8% | 50.5% | 42.6% |
 | AX Engine (tok/s) | 182.5 | 180.7 | 178.1 |
@@ -266,12 +268,14 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 | AX/MTPLX ratio | 1.701 | 1.699 | 1.735 |
 | AX/Lightning ratio | 1.234 | 1.213 | 1.197 |
 
-27B results (native depth=3, pure MTP, 1000 gen tokens):
+27B results (native depth=3, pure MTP for AX Engine, ngram+MTP for Lightning ngram row, 1000 gen tokens):
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
 | Lightning MLX (tok/s) | 49.5 | 51.7 | 46.9 |
 | Lightning MLX (accept) | 96.5% | 93.3% | 76.5% |
+| Light. ngram+MTP (tok/s) | 52.4 | 54.9 | 45.0 |
+| Light. ngram+MTP (accept) | 85.4% | 87.6% | 72.2% |
 | MTPLX 0.3.7 (tok/s) | 51.5 | 53.5 | 51.6 |
 | MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 87.6% |
 | AX Engine (tok/s) | 65.9 | 65.6 | 53.8 |
@@ -279,8 +283,8 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 | AX/MTPLX ratio | 1.280 | 1.227 | 1.043 |
 | AX/Lightning ratio | 1.331 | 1.270 | 1.148 |
 
-Artifacts: `benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-ax-rerun2/` (three-engine:
-MTPLX, Lightning MLX, AX Engine; fresh full rerun 2026-05-31).
+Artifacts: `benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/` (four-engine:
+MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine; fresh full rerun 2026-05-31).
 
 #### Chart data table
 
