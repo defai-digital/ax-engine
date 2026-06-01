@@ -46,9 +46,15 @@ ENGINE_COLORS = {
     "lightning_mlx": "#60a5fa",
     "lightning_mtp_ngram": "#1d4ed8",
     "ax_engine": "#86efac",
-    "ax_engine_ngram": "#4ade80",
+    "ax_engine_ngram": "#15803d",
 }
-ENGINE_ORDER = ["mtplx", "lightning_mlx", "lightning_mtp_ngram", "ax_engine", "ax_engine_ngram"]
+ENGINE_ORDER = [
+    "mtplx",
+    "lightning_mlx",
+    "lightning_mtp_ngram",
+    "ax_engine",
+    "ax_engine_ngram",
+]
 
 
 @dataclass(frozen=True)
@@ -224,7 +230,7 @@ def run_mtplx_suite(
     output_path: Path,
     model_dir: Path,
     config: diff.RunConfig,
-    mtplx_profile: str = "stable",
+    mtplx_profile: str = "sustained",
     allow_unverified_model: bool = False,
 ) -> Path:
     cmd = [
@@ -276,6 +282,8 @@ def run_rapid_mlx_suite(
     config: diff.RunConfig,
     port: int = 18765,
     enable_ngram: bool = False,
+    mtp_optimistic: bool = True,
+    mtp_draft_temperature: float = 0.5,
 ) -> Path:
     cmd = [
         str(python),
@@ -493,8 +501,12 @@ def summarize_engine_artifact(engine: str, artifact_path: Path) -> dict[str, Any
         "validations_total": validations_total,
         "decode_tok_s": median(decode_values),
         "accept_rate": median(accept_values),
-        "ngram_accept_rate": median(ngram_accept_values) if ngram_accept_values else None,
-        "ngram_hit_steps": ngram_hit_steps if engine in ("ax_engine", "ax_engine_ngram") else None,
+        "ngram_accept_rate": median(ngram_accept_values)
+        if ngram_accept_values
+        else None,
+        "ngram_hit_steps": ngram_hit_steps
+        if engine in ("ax_engine", "ax_engine_ngram")
+        else None,
     }
 
 
@@ -509,6 +521,14 @@ def build_summary(
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     profiles = [QWEN36_PROFILES[key] for key in args.models]
+    ax_engine_modes = {
+        engine: mode
+        for engine, mode in (
+            ("ax_engine", "pure_mtp"),
+            ("ax_engine_ngram", "mtp_ngram_stacked"),
+        )
+        if engine in args.engines
+    }
     for profile in profiles:
         depth = effective_depth(profile, args.engines, args.depth_policy, args.depth)
         provenance = diff.model_provenance_for(sidecar_dir(profile, args.hf_cache))
@@ -521,19 +541,21 @@ def build_summary(
             }
             ax_mtp_summary = engine_summaries.get("ax_engine")
             if ax_mtp_summary and ax_mtp_summary.get("status") != "error":
-                ngram_hit_steps = int(
-                    ax_mtp_summary.get("ngram_hit_steps", 0) or 0
-                )
+                ngram_hit_steps = int(ax_mtp_summary.get("ngram_hit_steps", 0) or 0)
                 if ngram_hit_steps > 0:
                     raise RuntimeError(
-                        "AX MTP benchmark observed n-gram draft hits; "
+                        "pure-MTP AX benchmark row observed n-gram draft hits; "
                         "AX_MLX_MTP_DISABLE_NGRAM_STACKING may not be honored "
                         f"for {profile.key}/{suite}: {ngram_hit_steps}"
                     )
             ax_tok_s = (engine_summaries.get("ax_engine") or {}).get("decode_tok_s")
-            ax_ngram_tok_s = (engine_summaries.get("ax_engine_ngram") or {}).get("decode_tok_s")
+            ax_ngram_tok_s = (engine_summaries.get("ax_engine_ngram") or {}).get(
+                "decode_tok_s"
+            )
             mtplx_tok_s = (engine_summaries.get("mtplx") or {}).get("decode_tok_s")
-            lightning_tok_s = (engine_summaries.get("lightning_mlx") or {}).get("decode_tok_s")
+            lightning_tok_s = (engine_summaries.get("lightning_mlx") or {}).get(
+                "decode_tok_s"
+            )
             rows.append(
                 {
                     "model": profile.key,
@@ -548,7 +570,9 @@ def build_summary(
                         "ax_engine_vs_mtplx": ratio(ax_tok_s, mtplx_tok_s),
                         "ax_engine_vs_lightning_mlx": ratio(ax_tok_s, lightning_tok_s),
                         "ax_engine_ngram_vs_mtplx": ratio(ax_ngram_tok_s, mtplx_tok_s),
-                        "ax_engine_ngram_vs_lightning_mlx": ratio(ax_ngram_tok_s, lightning_tok_s),
+                        "ax_engine_ngram_vs_lightning_mlx": ratio(
+                            ax_ngram_tok_s, lightning_tok_s
+                        ),
                         "ax_engine_ngram_vs_ax_engine": ratio(ax_ngram_tok_s, ax_tok_s),
                         "lightning_mlx_vs_mtplx": ratio(lightning_tok_s, mtplx_tok_s),
                     },
@@ -575,6 +599,8 @@ def build_summary(
             "repetitions": args.repetitions,
             "warmup_repetitions": args.warmup_repetitions,
             "cooldown_s": args.cooldown,
+            "ax_pure_mtp": "ax_engine" in args.engines,
+            "ax_engine_modes": ax_engine_modes,
             "fairness_rules": [
                 "standard Qwen source MTP shards plus mlx-community 4-bit base only",
                 "Youssofal MTPLX bundles are excluded",
@@ -650,21 +676,36 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
         engines = row["engines"]
         mtplx = engines.get("mtplx", {})
         cells = [
-            row["model_label"], row["suite"], str(row["depth"]),
-            fmt_number(mtplx.get("decode_tok_s")), fmt_percent(mtplx.get("accept_rate")),
+            row["model_label"],
+            row["suite"],
+            str(row["depth"]),
+            fmt_number(mtplx.get("decode_tok_s")),
+            fmt_percent(mtplx.get("accept_rate")),
         ]
         if has_lightning:
             e = engines.get("lightning_mlx", {})
-            cells += [fmt_number(e.get("decode_tok_s")), fmt_percent(e.get("accept_rate"))]
+            cells += [
+                fmt_number(e.get("decode_tok_s")),
+                fmt_percent(e.get("accept_rate")),
+            ]
         if has_lightning_ngram:
             e = engines.get("lightning_mtp_ngram", {})
-            cells += [fmt_number(e.get("decode_tok_s")), fmt_percent(e.get("accept_rate"))]
+            cells += [
+                fmt_number(e.get("decode_tok_s")),
+                fmt_percent(e.get("accept_rate")),
+            ]
         if has_ax:
             e = engines.get("ax_engine", {})
-            cells += [fmt_number(e.get("decode_tok_s")), fmt_percent(e.get("accept_rate"))]
+            cells += [
+                fmt_number(e.get("decode_tok_s")),
+                fmt_percent(e.get("accept_rate")),
+            ]
         if has_ax_ngram:
             e = engines.get("ax_engine_ngram", {})
-            cells += [fmt_number(e.get("decode_tok_s")), fmt_percent(e.get("accept_rate"))]
+            cells += [
+                fmt_number(e.get("decode_tok_s")),
+                fmt_percent(e.get("accept_rate")),
+            ]
         lines.append("| " + " | ".join(cells) + " |")
     lines.append("")
     lines.append("Artifacts:")
@@ -853,9 +894,7 @@ def write_accept_model_svg(path: Path, summary: dict[str, Any], model_key: str) 
         return
     model_label = rows[0]["model_label"]
     engines = [
-        engine
-        for engine in ENGINE_ORDER
-        if engine in summary["contract"]["engines"]
+        engine for engine in ENGINE_ORDER if engine in summary["contract"]["engines"]
     ]
     groups = [
         {
@@ -942,7 +981,9 @@ def parse_args() -> argparse.Namespace:
         default=sorted(QWEN36_PROFILES),
     )
     _default_engines = [e for e in ENGINE_ORDER if e != "lightning_mtp_ngram"]
-    parser.add_argument("--engines", nargs="+", choices=ENGINE_ORDER, default=_default_engines)
+    parser.add_argument(
+        "--engines", nargs="+", choices=ENGINE_ORDER, default=_default_engines
+    )
     parser.add_argument(
         "--lightning-ngram",
         action="store_true",
@@ -1018,7 +1059,9 @@ def main() -> int:
         args.output_dir
         or DEFAULT_OUTPUT_BASE / f"{date.today().isoformat()}-qwen36-fair"
     )
-    if args.warmup_repetitions != 1 and any(e in args.engines for e in ("ax_engine", "ax_engine_ngram")):
+    if args.warmup_repetitions != 1 and any(
+        e in args.engines for e in ("ax_engine", "ax_engine_ngram")
+    ):
         raise ValueError(
             "AX prompt-suite benchmark has an implicit 1 warmup repetition"
         )

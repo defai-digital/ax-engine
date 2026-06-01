@@ -19,7 +19,7 @@
 <text x="172.0" y="122.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">52.4</text>
 <rect x="194.8" y="68.0" width="29.6" height="290.0" rx="2" fill="#86efac" fill-opacity="0.86"/>
 <text x="209.6" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">65.9</text>
-<rect x="232.4" y="84.9" width="29.6" height="273.1" rx="2" fill="#4ade80" fill-opacity="0.86"/>
+<rect x="232.4" y="84.9" width="29.6" height="273.1" rx="2" fill="#15803d" fill-opacity="0.86"/>
 <text x="247.2" y="79.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">62.1</text>
 <text x="396.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">long_code</text>
 <rect x="306.0" y="122.7" width="29.6" height="235.3" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
@@ -30,7 +30,7 @@
 <text x="396.0" y="111.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">54.9</text>
 <rect x="418.8" y="69.2" width="29.6" height="288.8" rx="2" fill="#86efac" fill-opacity="0.86"/>
 <text x="433.6" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">65.6</text>
-<rect x="456.4" y="84.2" width="29.6" height="273.8" rx="2" fill="#4ade80" fill-opacity="0.86"/>
+<rect x="456.4" y="84.2" width="29.6" height="273.8" rx="2" fill="#15803d" fill-opacity="0.86"/>
 <text x="471.2" y="79.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">62.2</text>
 <text x="620.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">python_modules_long</text>
 <rect x="530.0" y="130.8" width="29.6" height="227.2" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
@@ -41,7 +41,7 @@
 <text x="620.0" y="154.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">45.0</text>
 <rect x="642.8" y="121.2" width="29.6" height="236.8" rx="2" fill="#86efac" fill-opacity="0.86"/>
 <text x="657.6" y="116.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">53.8</text>
-<rect x="680.4" y="122.7" width="29.6" height="235.3" rx="2" fill="#4ade80" fill-opacity="0.86"/>
+<rect x="680.4" y="122.7" width="29.6" height="235.3" rx="2" fill="#15803d" fill-opacity="0.86"/>
 <text x="695.2" y="117.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">53.5</text>
 <rect x="60" y="407" width="10" height="10" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
 <text x="74" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
@@ -51,6 +51,6 @@
 <text x="334" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Light. ngram+MTP</text>
 <rect x="450" y="407" width="10" height="10" rx="2" fill="#86efac" fill-opacity="0.86"/>
 <text x="464" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX MTP</text>
-<rect x="580" y="407" width="10" height="10" rx="2" fill="#4ade80" fill-opacity="0.86"/>
+<rect x="580" y="407" width="10" height="10" rx="2" fill="#15803d" fill-opacity="0.86"/>
 <text x="594" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX MTP+n-gram</text>
 </svg>
