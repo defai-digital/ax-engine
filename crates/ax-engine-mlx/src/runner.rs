@@ -5583,18 +5583,68 @@ impl MlxRunner {
         let mut mtp_timings = MtpStepTimings::default();
         let optimistic = self.mtp_optimistic && !pending.is_empty();
 
-        // Consume skip-state from the previous iteration (AX_MLX_MTP_SKIP_STATE=1).
-        // Currently captured but not yet consumed — full skip-state consumption
-        // requires restructuring the verify loop to skip the first token's forward
-        // pass (matching Lightning-MLX's 2-token verify design).  The capture +
-        // async_eval still provides GPU/CPU overlap for the slice operations.
-        let _skip_logits = state.mtp_skip_logits.take();
-        let _skip_hidden = state.mtp_skip_hidden.take();
+        // Skip-state consumption (Lightning-MLX always-advance pattern):
+        // When the previous step's verify forward captured logits at the last
+        // accepted position, we can reuse them to sample the primary token and
+        // draft new MTP tokens WITHOUT a fresh model forward.  This halves the
+        // number of model forwards: every other step uses skip-state instead.
+        //
+        // Skip-state is only valid when there's no pending draft to verify
+        // (otherwise we need to verify the pending draft first).
+        let skip_logits = state.mtp_skip_logits.take();
+        let skip_hidden = state.mtp_skip_hidden.take();
+        let can_skip = skip_logits.is_some()
+            && skip_hidden.is_some()
+            && pending.is_empty()
+            && self.mtp_skip_state;
+
+        // Skip-state fast path: use logits/hidden from the previous verify
+        // to produce primary token + new draft WITHOUT a model forward.
+        // Then verify the new draft normally.
+        let (primary_tok_from_skip, new_draft_from_skip) = if can_skip {
+            let sl = skip_logits.unwrap();
+            let sh = skip_hidden.unwrap();
+            // Sample primary token from skip logits.
+            let primary_tok = sample_logit_row(
+                &sl,
+                0,
+                0,
+                1,
+                sampling,
+                &mut state.rng,
+            );
+            // Draft new MTP tokens from skip hidden.
+            let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+            let (draft, _lp, _dist, added, _m) = mtp_draft_tokens(
+                &self.weights,
+                &self.cfg,
+                &sh,
+                primary_tok,
+                cache,
+                Some(state.mtp_adaptive_max_depth),
+                &mut state.rng,
+            );
+            state.mtp_decode_count += added;
+            state.mtp_telemetry.record_step(0, 0, &[]);
+            (Some(primary_tok), Some(draft))
+        } else {
+            // Discard skip-state if not usable.
+            drop(skip_logits);
+            drop(skip_hidden);
+            (None, None)
+        };
 
         // Build verify sequence: [last_token] ++ pending_draft.
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + pending.len());
-        verify_input.push(last_token);
+        if let Some(pt) = primary_tok_from_skip {
+            verify_input.push(pt);
+        } else {
+            verify_input.push(last_token);
+        }
         verify_input.extend_from_slice(&pending);
+        if let Some(ref nd) = new_draft_from_skip {
+            verify_input.extend_from_slice(nd);
+        }
         let verify_len = verify_input.len();
 
         // Returns (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok).
@@ -5876,10 +5926,23 @@ impl MlxRunner {
                 }
             };
 
+        // Compute effective accept count: subtract 1 for skip-primary if present.
+        let skip_primary_offset = if primary_tok_from_skip.is_some() {
+            1
+        } else {
+            0
+        };
+        let effective_accept = accept_count.saturating_sub(skip_primary_offset);
+
         // For linear attention with rejection, trim MTP cache too.
+        // Account for skip-state: rejected_count includes new-draft-from-skip tokens.
         if has_linear_attention && !all_accepted {
             let rollback_started = Instant::now();
-            let rejected_count = pending.len() - accept_count;
+            let skip_new_len = new_draft_from_skip
+                .as_ref()
+                .map(|nd| nd.len())
+                .unwrap_or(0);
+            let rejected_count = (pending.len() + skip_new_len).saturating_sub(effective_accept);
             if rejected_count > 0 {
                 let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
                 if let Some(ref mut c) = state.mtp_cache {
@@ -5892,9 +5955,21 @@ impl MlxRunner {
                 .saturating_add(elapsed_us(rollback_started));
         }
 
-        // Collect output tokens: accepted draft tokens followed by correction/bonus.
-        // Correction/bonus token sampled from logits to respect temperature.
-        let mut result: Vec<u32> = pending[..accept_count].to_vec();
+        // Collect output tokens.
+        // When skip-state was used, verify_input = [skip_primary, nd0, nd1, nd2]
+        // and accept_count counts accepted new-draft tokens (nd0..nd{ac-1}).
+        // Prepend the skip-primary token to the result.
+        // When no skip-state, verify_input = [last_token, p0, p1, p2]
+        // and accept_count counts accepted pending tokens.
+        let mut result: Vec<u32> = if let Some(pt) = primary_tok_from_skip {
+            let mut r = vec![pt];
+            if let Some(ref nd) = new_draft_from_skip {
+                r.extend_from_slice(&nd[..effective_accept.min(nd.len())]);
+            }
+            r
+        } else {
+            pending[..effective_accept].to_vec()
+        };
         let tail_sample_started = Instant::now();
         let tail_tok = sample_logit_row(
             &logits_all,
@@ -5907,11 +5982,11 @@ impl MlxRunner {
         mtp_timings.tail_sample_wall_us = elapsed_us(tail_sample_started);
         result.push(tail_tok);
 
-        // Record MTP draft/accept telemetry (only when there was a pending draft).
+        // Record MTP draft/accept telemetry.
         if !pending.is_empty() {
             state.mtp_telemetry.record_step(
                 pending.len(),
-                accept_count,
+                effective_accept,
                 &state.mtp_pending_draft_sources,
             );
             let ngram_prefix_len = state

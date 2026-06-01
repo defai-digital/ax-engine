@@ -1,7 +1,7 @@
 use mlx_sys::{
-    add, argmax, astype, concatenate, eval, multiply, reshape, rms_norm,
-    scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take, MlxArray, MlxDtype,
-    ScaledDotProductAttentionMask,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argmax, astype, concatenate, eval,
+    multiply, reshape, rms_norm, scaled_dot_product_attention_with_mask, sigmoid, slice, softmax,
+    take,
 };
 
 use crate::kv_cache::MlxKVCache;
@@ -10,7 +10,7 @@ use crate::model::shared::{
     moe_router_deepseek_v3, moe_router_glm, moe_router_qwen3, prepare_value_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj, qw, shared_expert_forward,
 };
-use crate::model::{embed_tokens_arr, ModelConfig};
+use crate::model::{ModelConfig, embed_tokens_arr};
 use crate::sampling::{TokenDistribution, Xorshift64};
 use crate::weights::{ModelWeights, MtpWeights};
 
@@ -25,34 +25,8 @@ fn lazy_argmax_logits(logits: &MlxArray) -> MlxArray {
     argmax(&logits_2d, None)
 }
 
-/// Compute `log(softmax(logits / temperature)[token])` on GPU.
-///
-/// Uses the same GPU softmax path as the target-model probability
-/// computation (`compute_mtp_target_probs_lazy` in runner.rs), so
-/// `p_draft` and `p_target` share the same numerical basis and the
-/// rejection-sampling acceptance ratio `min(1, p_target/p_draft)` is
-/// not biased by different reduction orders or intermediate dtypes.
-///
-/// Returns a lazy `[1]` f32 array.  Caller must include it in the batch
-/// `eval` and read back with `data_f32()`.
-fn gpu_draft_log_prob(logits: &MlxArray, token: u32, temperature: f32, vocab: i32) -> MlxArray {
-    use mlx_sys::log as mlx_log;
-    let logits_2d = reshape(logits, &[1_i32, vocab], None);
-    let inv_temp = MlxArray::from_f32(1.0 / temperature);
-    let scaled = multiply(&logits_2d, &inv_temp, None);
-    let probs = softmax(&scaled, -1, None);
-
-    let idx_arr =
-        MlxArray::from_raw_data([token].as_ptr() as *const u8, 4, &[1_i32], MlxDtype::Uint32);
-    let prob = take(&probs, &idx_arr, 1, None);
-
-    let log_prob = mlx_log(&prob, None);
-    let floor = MlxArray::from_f32(-30.0f32);
-    mlx_sys::maximum(&log_prob, &floor, None)
-}
-
-/// Lazy variant of `gpu_draft_log_prob` that accepts a lazy `[1]` uint32
-/// token array (e.g. from `lazy_argmax_logits`) instead of a concrete `u32`.
+/// Compute `log(softmax(logits / temperature)[token])` on GPU using a lazy
+/// `[1]` uint32 token array (e.g. from `lazy_argmax_logits`).
 ///
 /// The `take` index is the lazy argmax result, so the entire softmax → gather
 /// → log chain stays lazy and can be fused into a single GPU dispatch.
