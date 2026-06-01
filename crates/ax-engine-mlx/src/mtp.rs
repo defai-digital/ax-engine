@@ -62,9 +62,12 @@ fn gpu_draft_log_prob_lazy(
 /// * `weights`        — main model weights (for the shared token embedding).
 /// * `cache`          — shared 1-layer KV cache for this head (grows by 1 per call).
 ///
-/// RoPE offset is taken from `cache.seq_len` before appending, matching the
-/// mlx-lm `cache.offset` convention: position 0 for the first MTP call, 1 for
-/// the second, etc.  Callers must NOT pass absolute sequence positions.
+/// RoPE offset is `cache.seq_len + cache.rope_offset` (or an explicit
+/// `rope_offset_override` when provided).  This matches the mlx-lm
+/// `cache.offset` convention while supporting capped warmup where physical
+/// KV entries start at buffer position 0 but represent tokens at higher
+/// prompt positions.  Callers must NOT pass absolute sequence positions
+/// unless using `rope_offset_override`.
 pub fn mtp_head_forward(
     head: &MtpWeights,
     main_hidden: &MlxArray,
