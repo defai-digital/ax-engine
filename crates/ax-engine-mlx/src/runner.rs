@@ -1253,6 +1253,12 @@ struct MtpTelemetry {
     ngram_think_gated_steps: u32,
     accept_rate_ewma: f32,
     accept_rate_ewma_samples: u32,
+    /// MTP-only acceptance EWMA: tracks only MTP and HybridMtp sourced draft
+    /// positions, excluding n-gram tokens.  Used by the saturation gate so
+    /// that n-gram rejections cannot suppress gating when the model itself
+    /// has near-perfect acceptance (e.g. 27B flappy at 99.5% accept rate).
+    mtp_only_accept_rate_ewma: f32,
+    mtp_only_accept_rate_ewma_samples: u32,
     ngram_saturated_gated_steps: u32,
 }
 
@@ -1274,15 +1280,36 @@ impl MtpTelemetry {
             .accepted_tokens
             .saturating_add(saturating_u32(accepted));
         self.decode_steps = self.decode_steps.saturating_add(1);
+        const ALPHA: f32 = 0.05;
         if drafted > 0 {
             let step_rate = accepted as f32 / drafted as f32;
-            const ALPHA: f32 = 0.05;
             if self.accept_rate_ewma_samples == 0 {
                 self.accept_rate_ewma = step_rate;
             } else {
                 self.accept_rate_ewma = (1.0 - ALPHA) * self.accept_rate_ewma + ALPHA * step_rate;
             }
             self.accept_rate_ewma_samples = self.accept_rate_ewma_samples.saturating_add(1);
+        }
+        let mtp_only_drafted = sources
+            .iter()
+            .take(drafted)
+            .filter(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+            .count();
+        if mtp_only_drafted > 0 {
+            let mtp_only_accepted = sources
+                .iter()
+                .take(accepted)
+                .filter(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+                .count();
+            let mtp_step_rate = mtp_only_accepted as f32 / mtp_only_drafted as f32;
+            if self.mtp_only_accept_rate_ewma_samples == 0 {
+                self.mtp_only_accept_rate_ewma = mtp_step_rate;
+            } else {
+                self.mtp_only_accept_rate_ewma =
+                    (1.0 - ALPHA) * self.mtp_only_accept_rate_ewma + ALPHA * mtp_step_rate;
+            }
+            self.mtp_only_accept_rate_ewma_samples =
+                self.mtp_only_accept_rate_ewma_samples.saturating_add(1);
         }
         // Cycle-level acceptance: matches Lightning-MLX's mtp_acceptance_ratio
         // = accepted_cycles / (accepted_cycles + rejected_cycles).
@@ -1578,6 +1605,14 @@ impl MtpTelemetry {
         decisions.upsert_route_decision(
             "ax_mtp_accept_rate_ewma_samples",
             self.accept_rate_ewma_samples,
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_mtp_only_accept_rate_ewma_x1000",
+            (self.mtp_only_accept_rate_ewma * 1000.0) as u32,
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_mtp_only_accept_rate_ewma_samples",
+            self.mtp_only_accept_rate_ewma_samples,
         );
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);
@@ -5749,23 +5784,6 @@ impl MlxRunner {
                         slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
                     let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                    // Capture skip-state + async eval for next iteration.
-                    // Only capture when there were pending drafts — a single-token
-                    // verify (pending empty) produces skip-state that is never
-                    // usefully consumed on the next iteration.
-                    if self.mtp_skip_state && !pending.is_empty() {
-                        let sl = slice(
-                            &logits_all,
-                            &[ac as i32, 0],
-                            &[(ac + 1) as i32, vocab],
-                            &[1, 1],
-                            None,
-                        );
-                        let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                        mlx_sys::async_eval(&[&sl, &sh]);
-                        state.mtp_skip_logits = Some(sl);
-                        state.mtp_skip_hidden = Some(sh);
-                    }
                     (logits_all, draft_hidden, ac, true, correction_argmax_tok)
                 } else {
                     // Target probabilities for rejection-sampling acceptance.
@@ -5830,20 +5848,6 @@ impl MlxRunner {
                     let draft_hidden =
                         slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                     let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                    // Capture skip-state + async eval for next iteration.
-                    if self.mtp_skip_state && !pending.is_empty() {
-                        let sl = slice(
-                            &logits_all,
-                            &[ac as i32, 0],
-                            &[(ac + 1) as i32, vocab],
-                            &[1, 1],
-                            None,
-                        );
-                        let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                        mlx_sys::async_eval(&[&sl, &sh]);
-                        state.mtp_skip_logits = Some(sl);
-                        state.mtp_skip_hidden = Some(sh);
-                    }
                     (
                         logits_all,
                         draft_hidden,
@@ -5886,19 +5890,6 @@ impl MlxRunner {
                         slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
                     let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                    if self.mtp_skip_state && !pending.is_empty() {
-                        let sl = slice(
-                            &logits_all,
-                            &[ac as i32, 0],
-                            &[(ac + 1) as i32, vocab],
-                            &[1, 1],
-                            None,
-                        );
-                        let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                        mlx_sys::async_eval(&[&sl, &sh]);
-                        state.mtp_skip_logits = Some(sl);
-                        state.mtp_skip_hidden = Some(sh);
-                    }
                     (logits_all, draft_hidden, ac, true, correction_argmax_tok)
                 } else {
                     // Target probabilities for rejection-sampling acceptance.
@@ -5970,20 +5961,6 @@ impl MlxRunner {
                     let draft_hidden =
                         slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                     let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                    // Capture skip-state + async eval for next iteration.
-                    if self.mtp_skip_state && !pending.is_empty() {
-                        let sl = slice(
-                            &logits_all,
-                            &[ac as i32, 0],
-                            &[(ac + 1) as i32, vocab],
-                            &[1, 1],
-                            None,
-                        );
-                        let sh = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                        mlx_sys::async_eval(&[&sl, &sh]);
-                        state.mtp_skip_logits = Some(sl);
-                        state.mtp_skip_hidden = Some(sh);
-                    }
                     (
                         logits_all,
                         draft_hidden,
@@ -6107,9 +6084,11 @@ impl MlxRunner {
         // activate, to avoid false gating on early-generation noise.
         // Override with `AX_MLX_MTP_NGRAM_GATE_SAMPLES` (default 8).
         let ngram_gate_min_samples = mtp_ngram_gate_min_samples();
+        // Gate uses the MTP-only EWMA (excluding n-gram sources) so that n-gram
+        // rejections cannot suppress gating when the model itself accepts ≥99%.
         let ngram_saturated = ngram_max > 0
-            && state.mtp_telemetry.accept_rate_ewma_samples >= ngram_gate_min_samples
-            && state.mtp_telemetry.accept_rate_ewma
+            && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= ngram_gate_min_samples
+            && state.mtp_telemetry.mtp_only_accept_rate_ewma
                 >= adaptive_ngram_saturation_threshold(mtp_max_depth);
         let ngram_max = if ngram_saturated { 0 } else { ngram_max };
         if ngram_saturated {
@@ -6186,8 +6165,8 @@ impl MlxRunner {
                     // with correct RoPE offsets. Gated by env var; defaults to
                     // the previous reset behavior for safety.
                     let preserve_cache = std::env::var("AX_MLX_MTP_NGRAM_CACHE_POLICY")
-                        .map(|v| v == "preserve")
-                        .unwrap_or(false);
+                        .map(|v| v != "reset")
+                        .unwrap_or(true);
                     if preserve_cache {
                         if let Some(ref mut cache) = state.mtp_cache {
                             // N-gram tokens don't produce MTP KV entries, so advance
@@ -6233,6 +6212,21 @@ impl MlxRunner {
         }
         if state.mtp_pending_draft.is_empty() {
             state.mtp_pending_draft_sources.clear();
+        }
+        // Capture skip-state only when the next step will have no pending draft,
+        // making `can_skip` true.  When pending is non-empty (the common case)
+        // async_eval + slice work here is never consumed — so skip it entirely.
+        if self.mtp_skip_state && state.mtp_pending_draft.is_empty() {
+            let sl = slice(
+                &logits_all,
+                &[accept_count as i32, 0],
+                &[(accept_count + 1) as i32, vocab],
+                &[1, 1],
+                None,
+            );
+            mlx_sys::async_eval(&[&sl, &draft_hidden]);
+            state.mtp_skip_logits = Some(sl);
+            state.mtp_skip_hidden = Some(draft_hidden);
         }
         mtp_timings.draft_wall_us = elapsed_us(draft_started);
         state.mtp_telemetry.record_timings(mtp_timings);

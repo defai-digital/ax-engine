@@ -1,7 +1,7 @@
 use mlx_sys::{
-    add, argmax, astype, concatenate, eval, multiply, reshape, rms_norm,
-    scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take, MlxArray, MlxDtype,
-    ScaledDotProductAttentionMask,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argmax, astype, concatenate, eval,
+    multiply, reshape, rms_norm, scaled_dot_product_attention_with_mask, sigmoid, slice, softmax,
+    take,
 };
 
 use crate::kv_cache::MlxKVCache;
@@ -10,7 +10,7 @@ use crate::model::shared::{
     moe_router_deepseek_v3, moe_router_glm, moe_router_qwen3, prepare_value_bhsd_from_proj,
     qk_norm_rope_bhsd_from_proj, qw, shared_expert_forward,
 };
-use crate::model::{embed_tokens_arr, ModelConfig};
+use crate::model::{ModelConfig, embed_tokens_arr};
 use crate::sampling::{TokenDistribution, Xorshift64};
 use crate::weights::{ModelWeights, MtpWeights};
 
