@@ -32,6 +32,7 @@ host, model, sampling policy, and artifact schema are explicit.
 | Which AX runtime path is best for a product endpoint on this host? | `scripts/bench_ax_engine_three_modes.py` against already-running AX servers | End-to-end AX API latency by mode; not raw model throughput |
 | How does AX Engine MTP compare against MTPLX and Lightning MLX on real prompt suites? | `scripts/bench_qwen36_mtp_fair.py` | `ax.qwen36_mtp_fair.v1` artifact with per-engine decode tok/s and MTP accept rate |
 | Does layering n-gram prompt-lookup before MTP help Lightning MLX? | `scripts/bench_qwen36_mtp_fair.py --lightning-ngram` | Same artifact; adds `lightning_mtp_ngram` engine with both MTP and n-gram accept rates |
+| What are the prefill rates and TTFT across MTP engines? | `scripts/bench_mtp_prefill_ttft_report.py --result-dir <fair-output-dir>` | `ax.mtp_prefill_ttft_report.v1` artifact with per-engine prefill tok/s and TTFT ms; generates `prefill-tok-s.svg`, `ttft-ms.svg`, and `prefill-ttft-report.md` |
 
 Do not merge these rows into one unlabeled throughput table. Repo-owned
 model-inference claims come from the MLX inference stack, and every such claim
@@ -106,6 +107,25 @@ decode tok/s and MTP accept rate for all engines. For `lightning_mtp_ngram`
 ("Lightning ngram+MTP") it additionally records the n-gram accept rate as a
 separate column. Saved under `benchmarks/results/mtp-fair/`. Use `--skip-existing`
 to resume a partial run after adding a new engine.
+
+To generate prefill rate and TTFT tables and charts from an existing fair benchmark
+output directory:
+
+```bash
+python3 scripts/bench_mtp_prefill_ttft_report.py \
+  --result-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair
+```
+
+This reads the existing per-engine artifact JSON files (no new inference required) and
+emits `prefill-ttft-report.md`, `prefill-tok-s.svg`, `ttft-ms.svg`, and per-model charts
+into the same directory, using schema `ax.mtp_prefill_ttft_report.v1`.
+
+**Measurement provenance**: MTPLX and AX Engine prefill rates and TTFT values are
+runner-level measurements of pure GPU compute time (`prompt_eval_time_s` for MTPLX,
+`ttft_source: ax_engine_runner_prefill_time` for AX). Lightning-MLX prefill and TTFT
+are client-side measurements (`ttft_s`) that include local HTTP socket overhead; they
+overstate latency slightly and understate prefill rate. Charts mark Lightning values
+with `~` to indicate this caveat.
 
 Do not merge these rows with `bench_mlx_inference_stack.py` MLX throughput tables.
 The fair benchmark uses real prompt suites, not the `mlx_lm.benchmark` random-token

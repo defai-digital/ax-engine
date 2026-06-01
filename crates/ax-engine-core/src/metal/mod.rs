@@ -9,7 +9,7 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_os = "macos")]
 use metal::{
@@ -309,6 +309,11 @@ struct MetalOptionalKernelDispatchPlan {
     batched_projection_f32: Option<usize>,
     batched_projection_f16: Option<usize>,
     batched_projection_bf16: Option<usize>,
+    projection_sg_f32: Option<usize>,
+    projection_sg_f16: Option<usize>,
+    projection_sg_bf16: Option<usize>,
+    batched_projection_sg_f16: Option<usize>,
+    batched_projection_sg_bf16: Option<usize>,
     embedding_gather_f32: Option<usize>,
     embedding_gather_f16: Option<usize>,
     embedding_gather_bf16: Option<usize>,
@@ -384,6 +389,42 @@ impl MetalOptionalKernelDispatchPlan {
             NativeTensorDataType::Bf16 => self
                 .batched_projection_bf16
                 .map(|index| ("decode_logits_projection_batched_bf16", index)),
+            _ => None,
+        }
+    }
+
+    fn sg_projection_kernel(self, dtype: NativeTensorDataType) -> Option<(&'static str, usize)> {
+        if !sg_projection_enabled() {
+            return None;
+        }
+        match dtype {
+            NativeTensorDataType::F32 => self
+                .projection_sg_f32
+                .map(|index| ("decode_logits_projection_sg_f32", index)),
+            NativeTensorDataType::F16 => self
+                .projection_sg_f16
+                .map(|index| ("decode_logits_projection_sg_f16", index)),
+            NativeTensorDataType::Bf16 => self
+                .projection_sg_bf16
+                .map(|index| ("decode_logits_projection_sg_bf16", index)),
+            _ => None,
+        }
+    }
+
+    fn sg_batched_projection_kernel(
+        self,
+        dtype: NativeTensorDataType,
+    ) -> Option<(&'static str, usize)> {
+        if !sg_projection_enabled() {
+            return None;
+        }
+        match dtype {
+            NativeTensorDataType::F16 => self
+                .batched_projection_sg_f16
+                .map(|index| ("decode_logits_projection_batched_sg_f16", index)),
+            NativeTensorDataType::Bf16 => self
+                .batched_projection_sg_bf16
+                .map(|index| ("decode_logits_projection_batched_sg_bf16", index)),
             _ => None,
         }
     }
@@ -5204,16 +5245,30 @@ fn project_decode_token_cpu(
 }
 
 #[cfg(target_os = "macos")]
+fn sg_projection_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let Ok(raw) = std::env::var("AX_MLX_GEMV_SIMDGROUP_MATRIX") else {
+            return false;
+        };
+        let t = raw.trim();
+        t.eq_ignore_ascii_case("1")
+            || t.eq_ignore_ascii_case("true")
+            || t.eq_ignore_ascii_case("yes")
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn project_decode_token_with_optional_native_path(
     bringup: Option<&MetalRuntimeBringup>,
     decode_projection: &MetalNativeTensorBufferBinding,
     hidden: &[f32],
 ) -> Option<u32> {
     let bringup = bringup?;
-    let (projection_kernel_name, projection_pipeline_index) = bringup
-        .state
-        .optional_kernel_dispatch_plan
-        .projection_kernel(decode_projection.native_dtype)?;
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let (projection_kernel_name, projection_pipeline_index) = plan
+        .sg_projection_kernel(decode_projection.native_dtype)
+        .or_else(|| plan.projection_kernel(decode_projection.native_dtype))?;
     let argmax_kernel_name = "logits_argmax_f32";
     let argmax_pipeline_index = bringup
         .state
@@ -5279,10 +5334,17 @@ fn project_decode_token_with_optional_native_path(
                 saturating_usize_to_u32(projection_cols),
                 saturating_usize_to_u32(input_width),
             );
-            encoder.dispatch_threads(
-                MTLSize::new(projection_dispatch_threads(vocab_rows.max(1)), 1, 1),
-                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
-            );
+            if projection_kernel_name.contains("_sg_") {
+                encoder.dispatch_thread_groups(
+                    MTLSize::new(sg_projection_tg_count(vocab_rows.max(1)), 1, 1),
+                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                );
+            } else {
+                encoder.dispatch_threads(
+                    MTLSize::new(projection_dispatch_threads(vocab_rows.max(1)), 1, 1),
+                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                );
+            }
 
             encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
             encoder.set_buffer(0, Some(&logits_buffer), 0);
@@ -5320,10 +5382,10 @@ fn project_decode_logits_with_optional_native_path(
     hidden: &[f32],
 ) -> Option<(Vec<f32>, u32)> {
     let bringup = bringup?;
-    let (projection_kernel_name, projection_pipeline_index) = bringup
-        .state
-        .optional_kernel_dispatch_plan
-        .projection_kernel(decode_projection.native_dtype)?;
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let (projection_kernel_name, projection_pipeline_index) = plan
+        .sg_projection_kernel(decode_projection.native_dtype)
+        .or_else(|| plan.projection_kernel(decode_projection.native_dtype))?;
     let argmax_kernel_name = "logits_argmax_f32";
     let argmax_pipeline_index = bringup
         .state
@@ -5389,10 +5451,17 @@ fn project_decode_logits_with_optional_native_path(
                 saturating_usize_to_u32(projection_cols),
                 saturating_usize_to_u32(input_width),
             );
-            encoder.dispatch_threads(
-                MTLSize::new(projection_dispatch_threads(vocab_rows.max(1)), 1, 1),
-                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
-            );
+            if projection_kernel_name.contains("_sg_") {
+                encoder.dispatch_thread_groups(
+                    MTLSize::new(sg_projection_tg_count(vocab_rows.max(1)), 1, 1),
+                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                );
+            } else {
+                encoder.dispatch_threads(
+                    MTLSize::new(projection_dispatch_threads(vocab_rows.max(1)), 1, 1),
+                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                );
+            }
 
             encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
             encoder.set_buffer(0, Some(&logits_buffer), 0);
@@ -5444,10 +5513,10 @@ fn project_batched_decode_logits_with_optional_native_path(
         return None;
     }
 
-    let (projection_kernel_name, projection_pipeline_index) = bringup
-        .state
-        .optional_kernel_dispatch_plan
-        .batched_projection_kernel(decode_projection.native_dtype)?;
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let (projection_kernel_name, projection_pipeline_index) = plan
+        .sg_batched_projection_kernel(decode_projection.native_dtype)
+        .or_else(|| plan.batched_projection_kernel(decode_projection.native_dtype))?;
     let argmax_kernel_name = "logits_argmax_batched_f32";
     let argmax_pipeline_index = bringup
         .state
@@ -5531,14 +5600,23 @@ fn project_batched_decode_logits_with_optional_native_path(
                 saturating_usize_to_u32(input_width),
                 saturating_usize_to_u32(serialized_hidden_stride),
             );
-            encoder.dispatch_threads(
-                MTLSize::new(
-                    projection_dispatch_threads(logits_element_count.max(1)),
-                    1,
-                    1,
-                ),
-                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
-            );
+            if projection_kernel_name.contains("_sg_") {
+                let sg_tg_count = (token_count as u64)
+                    .saturating_mul(sg_projection_tg_count(vocab_rows.max(1)));
+                encoder.dispatch_thread_groups(
+                    MTLSize::new(sg_tg_count, 1, 1),
+                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                );
+            } else {
+                encoder.dispatch_threads(
+                    MTLSize::new(
+                        projection_dispatch_threads(logits_element_count.max(1)),
+                        1,
+                        1,
+                    ),
+                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                );
+            }
 
             encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
             encoder.set_buffer(0, Some(&logits_buffer), 0);
@@ -5611,10 +5689,10 @@ fn project_batched_decode_tokens_with_optional_native_path(
         return None;
     }
 
-    let (projection_kernel_name, projection_pipeline_index) = bringup
-        .state
-        .optional_kernel_dispatch_plan
-        .batched_projection_kernel(decode_projection.native_dtype)?;
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let (projection_kernel_name, projection_pipeline_index) = plan
+        .sg_batched_projection_kernel(decode_projection.native_dtype)
+        .or_else(|| plan.batched_projection_kernel(decode_projection.native_dtype))?;
     let argmax_kernel_name = "logits_argmax_batched_f32";
     let argmax_pipeline_index = bringup
         .state
@@ -5698,14 +5776,23 @@ fn project_batched_decode_tokens_with_optional_native_path(
                 saturating_usize_to_u32(input_width),
                 saturating_usize_to_u32(serialized_hidden_stride),
             );
-            encoder.dispatch_threads(
-                MTLSize::new(
-                    projection_dispatch_threads(logits_element_count.max(1)),
-                    1,
-                    1,
-                ),
-                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
-            );
+            if projection_kernel_name.contains("_sg_") {
+                let sg_tg_count = (token_count as u64)
+                    .saturating_mul(sg_projection_tg_count(vocab_rows.max(1)));
+                encoder.dispatch_thread_groups(
+                    MTLSize::new(sg_tg_count, 1, 1),
+                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                );
+            } else {
+                encoder.dispatch_threads(
+                    MTLSize::new(
+                        projection_dispatch_threads(logits_element_count.max(1)),
+                        1,
+                        1,
+                    ),
+                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                );
+            }
 
             encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
             encoder.set_buffer(0, Some(&logits_buffer), 0);
@@ -8581,6 +8668,11 @@ fn build_optional_kernel_dispatch_plan(
         batched_projection_f32: index("decode_logits_projection_batched_f32"),
         batched_projection_f16: index("decode_logits_projection_batched_f16"),
         batched_projection_bf16: index("decode_logits_projection_batched_bf16"),
+        projection_sg_f32: index("decode_logits_projection_sg_f32"),
+        projection_sg_f16: index("decode_logits_projection_sg_f16"),
+        projection_sg_bf16: index("decode_logits_projection_sg_bf16"),
+        batched_projection_sg_f16: index("decode_logits_projection_batched_sg_f16"),
+        batched_projection_sg_bf16: index("decode_logits_projection_batched_sg_bf16"),
         embedding_gather_f32: index("gather_embedding_rows_f32"),
         embedding_gather_f16: index("gather_embedding_rows_f16"),
         embedding_gather_bf16: index("gather_embedding_rows_bf16"),

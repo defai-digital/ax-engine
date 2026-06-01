@@ -38,4 +38,4 @@ strip = "debuginfo"   # strip DWARF; keep symbol table for Instruments / cargo-f
 
 [profile.release-native]
 inherits = "release"
-rustflags = ["-C", "target-cpu=native"]  # auto-selects best instructions for the build machine
+# Build with: RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native

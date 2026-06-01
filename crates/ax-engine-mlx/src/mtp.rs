@@ -104,6 +104,7 @@ pub fn mtp_head_forward(
     // We must reshape to [1, 1, n_heads, 2*head_dim] and then slice the last dim —
     // NOT a simple first-half / second-half slice (which mixes heads).
     // Output = o_proj(sdpa_out * sigmoid(gate)), then residual.
+    let fused_ffn_norm;
     {
         let normed = rms_norm(&h, Some(&head.attn_norm), cfg.rms_norm_eps, None);
 
@@ -198,12 +199,16 @@ pub fn mtp_head_forward(
         // Apply sigmoid gating: o_proj(attn_flat * sigmoid(gate)).
         let gated = multiply(&attn_flat, &sigmoid(&gate, None), None);
         let attn_proj = qw(&gated, &head.o_proj);
-        h = add(&h, &attn_proj, None);
+        // Fuse add(h, attn_proj) + rms_norm(h, ffn_norm) into a single C++ call.
+        let (h_new, fnormed) =
+            mlx_sys::add_rms_norm_pair(&h, &attn_proj, &head.ffn_norm, cfg.rms_norm_eps, None);
+        h = h_new;
+        fused_ffn_norm = fnormed;
     }
 
     // 4. FFN sub-layer (SwiGLU).
     {
-        let normed = rms_norm(&h, Some(&head.ffn_norm), cfg.rms_norm_eps, None);
+        let normed = fused_ffn_norm;
         let ffn_out = if head.ffn_layer.router_proj.is_some() {
             let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
                 moe_router_glm(cfg, &head.ffn_layer, &normed)

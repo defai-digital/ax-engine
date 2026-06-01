@@ -583,12 +583,13 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
             f'<text x="{FAMILY_LEFT}" y="40" font-family="{FONT}"'
             f' font-size="10" fill="#6b7280">{escape(spec.subtitle)}</text>'
         )
+    direction_fill = "#dc2626" if "lower" in spec.direction_label.lower() else "#374151"
     lines.extend(
         [
             f'<text x="{FAMILY_RIGHT}" y="22" text-anchor="end" font-family="{FONT}"'
             f' font-size="10" fill="#6b7280">{escape(spec.unit)}</text>',
             f'<text x="{FAMILY_RIGHT}" y="40" text-anchor="end" font-family="{FONT}"'
-            f' font-size="10" font-weight="700" fill="#374151">{escape(spec.direction_label)}</text>',
+            f' font-size="10" font-weight="700" fill="{direction_fill}">{escape(spec.direction_label)}</text>',
         ]
     )
 

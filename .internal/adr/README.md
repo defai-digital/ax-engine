@@ -14,10 +14,23 @@ This directory contains active architecture decisions for the current
   speculative decoding, and offline policy-search boundaries.
 - `ADR-005-experimental-low-bit-mlx-quantization.md` - gated 3-bit/2-bit MLX
   quantization boundaries and benchmark evidence rules.
+- `ADR-006-mtp-per-depth-candidate-refinement.md` - per-depth candidate
+  re-ranking using partial logits before passing to next depth.
+- `ADR-007-mtp-verify-draft-overlap.md` - lazy eval batching for MTP draft
+  (single GPU eval) and top2_margin extraction.
+- `ADR-008-mtp-ngram-stacking.md` - zero-cost n-gram draft substitution
+  before MTP head, with MTP KV cache reset on n-gram hit.
+- `ADR-009-mtp-ev-gated-depth.md` - EV-gated depth continuation using
+  top2_margin EWMA to skip low-confidence depth levels.
+- `ADR-010-mtp-per-depth-telemetry.md` - per-depth accepted/drafted counters
+  and n-gram hit step tracking in MtpTelemetry.
 - `ADR-011-transactional-speculative-decode.md` - typed draft, verify,
   acceptance, cache transaction, and telemetry boundaries for speculative decode.
 - `ADR-012-mtp-fused-lazy-draft-skip-state.md` - fused lazy MTP draft
   (single GPU eval) and skip-state consumption (Lightning always-advance pattern).
+- `ADR-013-mtp-optimization-phase2.md` - MTP decode, prefill, and TTFT
+  optimization: adaptive n-gram gating, warmup batching, top-k target softmax,
+  skip-state expansion, MTP cache preservation, Metal fusion.
 
 ## Policy
 

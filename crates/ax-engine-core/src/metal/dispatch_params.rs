@@ -206,6 +206,12 @@ pub(super) fn projection_dispatch_threads(output_rows: usize) -> u64 {
         .max(PROJECTION_SIMD_WIDTH)
 }
 
+pub(super) const SG_PROJECTION_ROWS_PER_TG: u64 = 8;
+
+pub(super) fn sg_projection_tg_count(output_rows: usize) -> u64 {
+    ((output_rows as u64).div_ceil(SG_PROJECTION_ROWS_PER_TG)).max(1)
+}
+
 /// Returns (threadgroup_count, threadgroup_size) for `decode_projection_q4km`.
 /// Threadgroup is (32, 2, 1) = 64 threads, covering 2 output rows per TG.
 pub(super) fn q4km_dispatch(n_rows: usize) -> (MTLSize, MTLSize) {

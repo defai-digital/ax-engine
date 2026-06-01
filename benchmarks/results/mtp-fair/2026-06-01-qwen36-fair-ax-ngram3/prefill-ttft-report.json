@@ -1,0 +1,303 @@
+{
+  "contract": {
+    "ax_engine_modes": {
+      "ax_engine": "pure_mtp",
+      "ax_engine_ngram": "mtp_ngram_stacked"
+    },
+    "ax_pure_mtp": true,
+    "cooldown_s": 15.0,
+    "depth_policy": "native",
+    "engines": [
+      "mtplx",
+      "lightning_mlx",
+      "lightning_mtp_ngram",
+      "ax_engine",
+      "ax_engine_ngram"
+    ],
+    "fairness_rules": [
+      "standard Qwen source MTP shards plus mlx-community 4-bit base only",
+      "Youssofal MTPLX bundles are excluded",
+      "same prompt suite, max token cap, sampler, warmup, repetitions, and cooldown"
+    ],
+    "max_tokens": 1000,
+    "mode": "sampled",
+    "models": [
+      "27b-4bit",
+      "35b-a3b-4bit"
+    ],
+    "repetitions": 5,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suites": [
+      "flappy",
+      "long_code",
+      "python_modules_long"
+    ],
+    "warmup_repetitions": 1
+  },
+  "created_at": "2026-06-01",
+  "rows": [
+    {
+      "depth": 3,
+      "engines": {
+        "ax_engine": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 640.5643605210319,
+          "status": "ok",
+          "ttft_ms": 502.14199999999994
+        },
+        "ax_engine_ngram": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 646.6957909076892,
+          "status": "ok",
+          "ttft_ms": 496.00649999999996
+        },
+        "lightning_mlx": {
+          "case_count": 4,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 439.587456564795,
+          "status": "ok",
+          "ttft_ms": 731.4939794999873
+        },
+        "lightning_mtp_ngram": {
+          "case_count": 4,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 423.5521338146374,
+          "status": "ok",
+          "ttft_ms": 759.0996874987468
+        },
+        "mtplx": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 684.8346557125071,
+          "status": "ok",
+          "ttft_ms": 476.18318799999315
+        }
+      },
+      "model": "27b-4bit",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "suite": "flappy"
+    },
+    {
+      "depth": 3,
+      "engines": {
+        "ax_engine": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 692.1829246082782,
+          "status": "ok",
+          "ttft_ms": 1036.5720000000001
+        },
+        "ax_engine_ngram": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 658.0936380156705,
+          "status": "ok",
+          "ttft_ms": 1088.4865
+        },
+        "lightning_mlx": {
+          "case_count": 4,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 632.505539665998,
+          "status": "ok",
+          "ttft_ms": 1134.452229499857
+        },
+        "lightning_mtp_ngram": {
+          "case_count": 4,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 611.456244766228,
+          "status": "ok",
+          "ttft_ms": 1173.5144169997511
+        },
+        "mtplx": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 786.0871103504389,
+          "status": "ok",
+          "ttft_ms": 901.0148949998893
+        }
+      },
+      "model": "27b-4bit",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "suite": "long_code"
+    },
+    {
+      "depth": 3,
+      "engines": {
+        "ax_engine": {
+          "case_count": 3,
+          "prefill_note": "measured",
+          "prefill_tok_s": 650.9593280611826,
+          "status": "ok",
+          "ttft_ms": 537.432
+        },
+        "ax_engine_ngram": {
+          "case_count": 3,
+          "prefill_note": "measured",
+          "prefill_tok_s": 646.1785003489364,
+          "status": "ok",
+          "ttft_ms": 541.59
+        },
+        "lightning_mlx": {
+          "case_count": 3,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 451.9077850092894,
+          "status": "ok",
+          "ttft_ms": 728.726624999581
+        },
+        "lightning_mtp_ngram": {
+          "case_count": 3,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 442.93868745399993,
+          "status": "ok",
+          "ttft_ms": 789.5014170026116
+        },
+        "mtplx": {
+          "case_count": 3,
+          "prefill_note": "measured",
+          "prefill_tok_s": 683.0516111364566,
+          "status": "ok",
+          "ttft_ms": 511.12341799989736
+        }
+      },
+      "model": "27b-4bit",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "suite": "python_modules_long"
+    },
+    {
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 1664.2900258631414,
+          "status": "ok",
+          "ttft_ms": 193.19150000000002
+        },
+        "ax_engine_ngram": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 1667.9324127719237,
+          "status": "ok",
+          "ttft_ms": 192.769
+        },
+        "lightning_mlx": {
+          "case_count": 4,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 918.0099453550699,
+          "status": "ok",
+          "ttft_ms": 351.70585399964693
+        },
+        "lightning_mtp_ngram": {
+          "case_count": 4,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 875.6946928567518,
+          "status": "ok",
+          "ttft_ms": 371.10445849975804
+        },
+        "mtplx": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 1597.5708820203781,
+          "status": "ok",
+          "ttft_ms": 201.83624950004742
+        }
+      },
+      "model": "35b-a3b-4bit",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "suite": "flappy"
+    },
+    {
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 2306.6194130498634,
+          "status": "ok",
+          "ttft_ms": 311.06449999999995
+        },
+        "ax_engine_ngram": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 2315.94561353686,
+          "status": "ok",
+          "ttft_ms": 309.81449999999995
+        },
+        "lightning_mlx": {
+          "case_count": 4,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 1664.4978021519992,
+          "status": "ok",
+          "ttft_ms": 431.07681250057794
+        },
+        "lightning_mtp_ngram": {
+          "case_count": 4,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 1606.9291090188408,
+          "status": "ok",
+          "ttft_ms": 446.51141649956116
+        },
+        "mtplx": {
+          "case_count": 4,
+          "prefill_note": "measured",
+          "prefill_tok_s": 2519.464682495731,
+          "status": "ok",
+          "ttft_ms": 284.79177000053824
+        }
+      },
+      "model": "35b-a3b-4bit",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "suite": "long_code"
+    },
+    {
+      "depth": 1,
+      "engines": {
+        "ax_engine": {
+          "case_count": 3,
+          "prefill_note": "measured",
+          "prefill_tok_s": 1816.115691758467,
+          "status": "ok",
+          "ttft_ms": 190.672
+        },
+        "ax_engine_ngram": {
+          "case_count": 3,
+          "prefill_note": "measured",
+          "prefill_tok_s": 1812.8797335584757,
+          "status": "ok",
+          "ttft_ms": 191.024
+        },
+        "lightning_mlx": {
+          "case_count": 3,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 995.194512786424,
+          "status": "ok",
+          "ttft_ms": 349.26454200012813
+        },
+        "lightning_mtp_ngram": {
+          "case_count": 3,
+          "prefill_note": "approx_via_ttft",
+          "prefill_tok_s": 962.0736810948658,
+          "status": "ok",
+          "ttft_ms": 360.4221249988768
+        },
+        "mtplx": {
+          "case_count": 3,
+          "prefill_note": "measured",
+          "prefill_tok_s": 1704.682092011209,
+          "status": "ok",
+          "ttft_ms": 202.4258749997898
+        }
+      },
+      "model": "35b-a3b-4bit",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "suite": "python_modules_long"
+    }
+  ],
+  "schema": "ax.mtp_prefill_ttft_report.v1"
+}

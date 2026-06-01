@@ -21,6 +21,14 @@ warmup repetition.
 <td><img width="100%" src="docs/assets/perf-mtp-fair-27b-accept-rate.svg" alt="Qwen3.6 27B 4-bit fair MTP accept-rate chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, and AX Engine MTP+n-gram across flappy, long_code, and python_modules_long"></td>
 <td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-accept-rate.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP accept-rate chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, and AX Engine MTP+n-gram across flappy, long_code, and python_modules_long"></td>
 </tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-prefill-tok-s.svg" alt="Qwen3.6 27B 4-bit fair MTP prefill throughput chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, and AX Engine MTP+n-gram across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-prefill-tok-s.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP prefill throughput chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, and AX Engine MTP+n-gram across flappy, long_code, and python_modules_long"></td>
+</tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-ttft-ms.svg" alt="Qwen3.6 27B 4-bit fair MTP time-to-first-token chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, and AX Engine MTP+n-gram across flappy, long_code, and python_modules_long"></td>
+<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-ttft-ms.svg" alt="Qwen3.6 35B-A3B 4-bit fair MTP time-to-first-token chart comparing MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, and AX Engine MTP+n-gram across flappy, long_code, and python_modules_long"></td>
+</tr>
 </table>
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | Light.+ngram tok/s | Light.+ngram accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
@@ -34,6 +42,36 @@ warmup repetition.
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP; Lightning ngram+MTP uses `--enable-ngram` with MTP. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 15 s cooldown.
+
+#### Prefill throughput (tok/s) — same run
+
+MTPLX and AX prefill rates are measured at runner level (pure GPU compute). Lightning prefill
+is approximate — derived from `prompt_tokens / ttft_s` where `ttft_s` is a client-side
+measurement that includes local HTTP socket overhead; actual compute rate is higher.
+Values marked `~` carry this caveat.
+
+| Model | Suite | Depth | MTPLX tok/s | Light. MTP tok/s | Light.+ngram tok/s | AX MTP tok/s | AX MTP+ngram tok/s |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Qwen3.6 27B 4-bit | flappy | 3 | 685 | 440 ~ | 424 ~ | 641 | 647 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 786 | 633 ~ | 611 ~ | 692 | 658 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 683 | 452 ~ | 443 ~ | 651 | 646 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,598 | 918 ~ | 876 ~ | 1,664 | 1,668 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,519 | 1,664 ~ | 1,607 ~ | 2,307 | 2,316 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,705 | 995 ~ | 962 ~ | 1,816 | 1,813 |
+
+#### Time to first token (ms) — same run
+
+MTPLX and AX TTFT are runner-time measurements (pure prefill). Lightning TTFT (`ttft_s`) is
+client-side and includes local HTTP socket overhead; values marked `~` carry this caveat.
+
+| Model | Suite | Depth | MTPLX ms | Light. MTP ms | Light.+ngram ms | AX MTP ms | AX MTP+ngram ms |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Qwen3.6 27B 4-bit | flappy | 3 | 476 | 731 ~ | 759 ~ | 502 | 496 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 901 | 1,134 ~ | 1,174 ~ | 1,037 | 1,088 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 511 | 729 ~ | 790 ~ | 537 | 542 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 202 | 352 ~ | 371 ~ | 193 | 193 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 285 | 431 ~ | 447 ~ | 311 | 310 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 202 | 349 ~ | 360 ~ | 191 | 191 |
 
 Full artifacts: [`2026-06-01` (five-engine: MTPLX, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, AX Engine MTP+n-gram)](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/summary.json).
 

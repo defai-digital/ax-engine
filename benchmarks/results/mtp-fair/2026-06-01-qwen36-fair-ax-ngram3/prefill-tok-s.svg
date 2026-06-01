@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="430" viewBox="0 0 760 430" role="img">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="24" y="30" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="700" fill="#111827">MTP prefill throughput</text>
+<text x="732" y="30" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">tok/s — higher is better  (~ = via ttft_s, includes HTTP overhead)</text>
+<line x1="60" y1="358.0" x2="732" y2="358.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="52" y="361.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0</text>
+<line x1="60" y1="261.3" x2="732" y2="261.3" stroke="#e5e7eb" stroke-width="1"/>
+<text x="52" y="264.3" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">840</text>
+<line x1="60" y1="164.7" x2="732" y2="164.7" stroke="#e5e7eb" stroke-width="1"/>
+<text x="52" y="167.7" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">1680</text>
+<line x1="60" y1="68.0" x2="732" y2="68.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="52" y="71.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">2519</text>
+<text x="116.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">27b flappy</text>
+<rect x="82.0" y="279.2" width="7.2" height="78.8" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
+<text x="85.6" y="274.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">685</text>
+<rect x="97.2" y="307.4" width="7.2" height="50.6" rx="2" fill="#60a5fa" fill-opacity="0.60"/>
+<text x="100.8" y="302.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">440~</text>
+<rect x="112.4" y="309.2" width="7.2" height="48.8" rx="2" fill="#1d4ed8" fill-opacity="0.60"/>
+<text x="116.0" y="304.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">424~</text>
+<rect x="127.6" y="284.3" width="7.2" height="73.7" rx="2" fill="#86efac" fill-opacity="0.86"/>
+<text x="131.2" y="279.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">641</text>
+<rect x="142.8" y="283.6" width="7.2" height="74.4" rx="2" fill="#15803d" fill-opacity="0.86"/>
+<text x="146.4" y="278.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">647</text>
+<text x="228.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">27b long_code</text>
+<rect x="194.0" y="267.5" width="7.2" height="90.5" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
+<text x="197.6" y="262.5" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">786</text>
+<rect x="209.2" y="285.2" width="7.2" height="72.8" rx="2" fill="#60a5fa" fill-opacity="0.60"/>
+<text x="212.8" y="280.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">633~</text>
+<rect x="224.4" y="287.6" width="7.2" height="70.4" rx="2" fill="#1d4ed8" fill-opacity="0.60"/>
+<text x="228.0" y="282.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">611~</text>
+<rect x="239.6" y="278.3" width="7.2" height="79.7" rx="2" fill="#86efac" fill-opacity="0.86"/>
+<text x="243.2" y="273.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">692</text>
+<rect x="254.8" y="282.3" width="7.2" height="75.7" rx="2" fill="#15803d" fill-opacity="0.86"/>
+<text x="258.4" y="277.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">658</text>
+<text x="340.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">27b python_modules_long</text>
+<rect x="306.0" y="279.4" width="7.2" height="78.6" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
+<text x="309.6" y="274.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">683</text>
+<rect x="321.2" y="306.0" width="7.2" height="52.0" rx="2" fill="#60a5fa" fill-opacity="0.60"/>
+<text x="324.8" y="301.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">452~</text>
+<rect x="336.4" y="307.0" width="7.2" height="51.0" rx="2" fill="#1d4ed8" fill-opacity="0.60"/>
+<text x="340.0" y="302.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">443~</text>
+<rect x="351.6" y="283.1" width="7.2" height="74.9" rx="2" fill="#86efac" fill-opacity="0.86"/>
+<text x="355.2" y="278.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">651</text>
+<rect x="366.8" y="283.6" width="7.2" height="74.4" rx="2" fill="#15803d" fill-opacity="0.86"/>
+<text x="370.4" y="278.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">646</text>
+<text x="452.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">35b-a3b flappy</text>
+<rect x="418.0" y="174.1" width="7.2" height="183.9" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
+<text x="421.6" y="169.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">1598</text>
+<rect x="433.2" y="252.3" width="7.2" height="105.7" rx="2" fill="#60a5fa" fill-opacity="0.60"/>
+<text x="436.8" y="247.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">918~</text>
+<rect x="448.4" y="257.2" width="7.2" height="100.8" rx="2" fill="#1d4ed8" fill-opacity="0.60"/>
+<text x="452.0" y="252.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">876~</text>
+<rect x="463.6" y="166.4" width="7.2" height="191.6" rx="2" fill="#86efac" fill-opacity="0.86"/>
+<text x="467.2" y="161.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">1664</text>
+<rect x="478.8" y="166.0" width="7.2" height="192.0" rx="2" fill="#15803d" fill-opacity="0.86"/>
+<text x="482.4" y="161.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">1668</text>
+<text x="564.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">35b-a3b long_code</text>
+<rect x="530.0" y="68.0" width="7.2" height="290.0" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
+<text x="533.6" y="78.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">2519</text>
+<rect x="545.2" y="166.4" width="7.2" height="191.6" rx="2" fill="#60a5fa" fill-opacity="0.60"/>
+<text x="548.8" y="161.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">1664~</text>
+<rect x="560.4" y="173.0" width="7.2" height="185.0" rx="2" fill="#1d4ed8" fill-opacity="0.60"/>
+<text x="564.0" y="168.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">1607~</text>
+<rect x="575.6" y="92.5" width="7.2" height="265.5" rx="2" fill="#86efac" fill-opacity="0.86"/>
+<text x="579.2" y="87.5" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">2307</text>
+<rect x="590.8" y="91.4" width="7.2" height="266.6" rx="2" fill="#15803d" fill-opacity="0.86"/>
+<text x="594.4" y="86.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">2316</text>
+<text x="676.0" y="396" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">35b-a3b python_modules_long</text>
+<rect x="642.0" y="161.8" width="7.2" height="196.2" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
+<text x="645.6" y="156.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">1705</text>
+<rect x="657.2" y="243.4" width="7.2" height="114.6" rx="2" fill="#60a5fa" fill-opacity="0.60"/>
+<text x="660.8" y="238.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">995~</text>
+<rect x="672.4" y="247.3" width="7.2" height="110.7" rx="2" fill="#1d4ed8" fill-opacity="0.60"/>
+<text x="676.0" y="242.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">962~</text>
+<rect x="687.6" y="149.0" width="7.2" height="209.0" rx="2" fill="#86efac" fill-opacity="0.86"/>
+<text x="691.2" y="144.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">1816</text>
+<rect x="702.8" y="149.3" width="7.2" height="208.7" rx="2" fill="#15803d" fill-opacity="0.86"/>
+<text x="706.4" y="144.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">1813</text>
+<rect x="60" y="407" width="10" height="10" rx="2" fill="#a78bfa" fill-opacity="0.86"/>
+<text x="74" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
+<rect x="190" y="407" width="10" height="10" rx="2" fill="#60a5fa" fill-opacity="0.60"/>
+<text x="204" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Light. MTP</text>
+<rect x="320" y="407" width="10" height="10" rx="2" fill="#1d4ed8" fill-opacity="0.60"/>
+<text x="334" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Light. ngram+MTP</text>
+<rect x="450" y="407" width="10" height="10" rx="2" fill="#86efac" fill-opacity="0.86"/>
+<text x="464" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX MTP</text>
+<rect x="580" y="407" width="10" height="10" rx="2" fill="#15803d" fill-opacity="0.86"/>
+<text x="594" y="416" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX MTP+n-gram</text>
+</svg>

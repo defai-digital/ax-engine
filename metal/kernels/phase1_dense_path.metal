@@ -766,6 +766,252 @@ kernel void decode_logits_projection_batched_bf16(
     }
 }
 
+// ---------------------------------------------------------------------------
+// simdgroup_matrix GEMV kernels — hardware matrix-multiply path.
+//
+// Dispatch: ceil(vocab_rows / 8) threadgroups, 32 threads per TG (1 simdgroup).
+// Each TG computes 8 output rows simultaneously, tiling the inner dimension K
+// in steps of 8. The hidden vector is broadcast into all columns of the B tile
+// via simdgroup_load with transpose=true and stride=0, giving:
+//   B[m][j] = hidden[k+m] for all j
+// so C[i][j] = Σ_m W[row_base+i][k+m] * hidden[k+m] (same for all j).
+// Column 0 of the accumulated result holds the final dot product per row.
+// Remainder K % 8 elements handled with a scalar loop on lanes 0–7.
+//
+// Requires Metal 2.3+ (Apple M1 GPU family) for simdgroup_matrix<half/float>.
+// simdgroup_matrix<bfloat> requires Metal 3.0+ (Apple M2 GPU family).
+// ---------------------------------------------------------------------------
+
+static constant uint SG_GEMV_TILE = 8;
+
+kernel void decode_logits_projection_sg_f32(
+    device const float* hidden     [[buffer(0)]],
+    device const float* projection [[buffer(1)]],
+    device float*       logits     [[buffer(2)]],
+    constant LogitsProjectionParams& params [[buffer(3)]],
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint lane   [[thread_index_in_simdgroup]]
+) {
+    uint row_base = tg_idx * SG_GEMV_TILE;
+    if (row_base >= params.vocab_rows) return;
+
+    uint K = params.input_width;
+    uint N = params.projection_cols;
+
+    simdgroup_matrix<float, 8, 8> acc;
+    acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+    uint k = 0;
+    for (; k + SG_GEMV_TILE <= K; k += SG_GEMV_TILE) {
+        simdgroup_matrix<float, 8, 8> w_tile, h_tile;
+        simdgroup_load(w_tile, projection + row_base * N + k, (ulong)N,  ulong2(0, 0), false);
+        simdgroup_load(h_tile, hidden + k,                   0,          ulong2(0, 0), true);
+        simdgroup_multiply_accumulate(acc, w_tile, h_tile, acc);
+    }
+
+    threadgroup float out_buf[SG_GEMV_TILE * SG_GEMV_TILE];
+    simdgroup_store(acc, out_buf, SG_GEMV_TILE, ulong2(0, 0));
+
+    if (lane < SG_GEMV_TILE) {
+        uint r = lane;
+        uint row_actual = row_base + r;
+        if (row_actual < params.vocab_rows) {
+            float val = out_buf[r * SG_GEMV_TILE];
+            uint row_kbase = row_actual * N;
+            for (uint c = k; c < K; c++) {
+                val += projection[row_kbase + c] * hidden[c];
+            }
+            logits[row_actual] = val;
+        }
+    }
+}
+
+kernel void decode_logits_projection_sg_f16(
+    device const float* hidden     [[buffer(0)]],
+    device const half*  projection [[buffer(1)]],
+    device float*       logits     [[buffer(2)]],
+    constant LogitsProjectionParams& params [[buffer(3)]],
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint lane   [[thread_index_in_simdgroup]]
+) {
+    uint row_base = tg_idx * SG_GEMV_TILE;
+    if (row_base >= params.vocab_rows) return;
+
+    uint K = params.input_width;
+    uint N = params.projection_cols;
+
+    simdgroup_matrix<float, 8, 8> acc;
+    acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+    uint k = 0;
+    for (; k + SG_GEMV_TILE <= K; k += SG_GEMV_TILE) {
+        simdgroup_matrix<half, 8, 8>  w_tile;
+        simdgroup_matrix<float, 8, 8> h_tile;
+        simdgroup_load(w_tile, projection + row_base * N + k, (ulong)N,  ulong2(0, 0), false);
+        simdgroup_load(h_tile, hidden + k,                   0,          ulong2(0, 0), true);
+        simdgroup_multiply_accumulate(acc, w_tile, h_tile, acc);
+    }
+
+    threadgroup float out_buf[SG_GEMV_TILE * SG_GEMV_TILE];
+    simdgroup_store(acc, out_buf, SG_GEMV_TILE, ulong2(0, 0));
+
+    if (lane < SG_GEMV_TILE) {
+        uint r = lane;
+        uint row_actual = row_base + r;
+        if (row_actual < params.vocab_rows) {
+            float val = out_buf[r * SG_GEMV_TILE];
+            uint row_kbase = row_actual * N;
+            for (uint c = k; c < K; c++) {
+                val += float(projection[row_kbase + c]) * hidden[c];
+            }
+            logits[row_actual] = val;
+        }
+    }
+}
+
+kernel void decode_logits_projection_sg_bf16(
+    device const float*  hidden     [[buffer(0)]],
+    device const bfloat* projection [[buffer(1)]],
+    device float*        logits     [[buffer(2)]],
+    constant LogitsProjectionParams& params [[buffer(3)]],
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint lane   [[thread_index_in_simdgroup]]
+) {
+    uint row_base = tg_idx * SG_GEMV_TILE;
+    if (row_base >= params.vocab_rows) return;
+
+    uint K = params.input_width;
+    uint N = params.projection_cols;
+
+    simdgroup_matrix<float, 8, 8> acc;
+    acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+    uint k = 0;
+    for (; k + SG_GEMV_TILE <= K; k += SG_GEMV_TILE) {
+        simdgroup_matrix<bfloat, 8, 8> w_tile;
+        simdgroup_matrix<float, 8, 8>  h_tile;
+        simdgroup_load(w_tile, projection + row_base * N + k, (ulong)N,  ulong2(0, 0), false);
+        simdgroup_load(h_tile, hidden + k,                   0,          ulong2(0, 0), true);
+        simdgroup_multiply_accumulate(acc, w_tile, h_tile, acc);
+    }
+
+    threadgroup float out_buf[SG_GEMV_TILE * SG_GEMV_TILE];
+    simdgroup_store(acc, out_buf, SG_GEMV_TILE, ulong2(0, 0));
+
+    if (lane < SG_GEMV_TILE) {
+        uint r = lane;
+        uint row_actual = row_base + r;
+        if (row_actual < params.vocab_rows) {
+            float val = out_buf[r * SG_GEMV_TILE];
+            uint row_kbase = row_actual * N;
+            for (uint c = k; c < K; c++) {
+                val += float(projection[row_kbase + c]) * hidden[c];
+            }
+            logits[row_actual] = val;
+        }
+    }
+}
+
+// Batched sg variants: token_count tokens, each projecting over vocab_rows.
+// Dispatch: token_count * ceil(vocab_rows / 8) TGs, 32 threads per TG.
+// tg_idx encodes (token_idx * vocab_tiles + vocab_tile_idx).
+
+kernel void decode_logits_projection_batched_sg_f16(
+    device const float* hidden     [[buffer(0)]],
+    device const half*  projection [[buffer(1)]],
+    device float*       logits     [[buffer(2)]],
+    constant BatchedLogitsProjectionParams& params [[buffer(3)]],
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint lane   [[thread_index_in_simdgroup]]
+) {
+    if (params.hidden_stride == 0) return;
+    uint vocab_tiles = (params.vocab_rows + SG_GEMV_TILE - 1) / SG_GEMV_TILE;
+    uint token_idx   = tg_idx / vocab_tiles;
+    uint tile_idx    = tg_idx % vocab_tiles;
+    if (token_idx >= params.token_count) return;
+
+    uint row_base    = tile_idx * SG_GEMV_TILE;
+    uint K           = params.input_width;
+    uint N           = params.projection_cols;
+    uint hidden_base = token_idx * params.hidden_stride;
+
+    simdgroup_matrix<float, 8, 8> acc;
+    acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+    uint k = 0;
+    for (; k + SG_GEMV_TILE <= K; k += SG_GEMV_TILE) {
+        simdgroup_matrix<half, 8, 8>  w_tile;
+        simdgroup_matrix<float, 8, 8> h_tile;
+        simdgroup_load(w_tile, projection + row_base * N + k,    (ulong)N, ulong2(0, 0), false);
+        simdgroup_load(h_tile, hidden + hidden_base + k,         0,        ulong2(0, 0), true);
+        simdgroup_multiply_accumulate(acc, w_tile, h_tile, acc);
+    }
+
+    threadgroup float out_buf[SG_GEMV_TILE * SG_GEMV_TILE];
+    simdgroup_store(acc, out_buf, SG_GEMV_TILE, ulong2(0, 0));
+
+    if (lane < SG_GEMV_TILE) {
+        uint r = lane;
+        uint row_actual = row_base + r;
+        if (row_actual < params.vocab_rows) {
+            float val = out_buf[r * SG_GEMV_TILE];
+            uint row_kbase = row_actual * N;
+            for (uint c = k; c < K; c++) {
+                val += float(projection[row_kbase + c]) * hidden[hidden_base + c];
+            }
+            logits[token_idx * params.vocab_rows + row_actual] = val;
+        }
+    }
+}
+
+kernel void decode_logits_projection_batched_sg_bf16(
+    device const float*  hidden     [[buffer(0)]],
+    device const bfloat* projection [[buffer(1)]],
+    device float*        logits     [[buffer(2)]],
+    constant BatchedLogitsProjectionParams& params [[buffer(3)]],
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint lane   [[thread_index_in_simdgroup]]
+) {
+    if (params.hidden_stride == 0) return;
+    uint vocab_tiles = (params.vocab_rows + SG_GEMV_TILE - 1) / SG_GEMV_TILE;
+    uint token_idx   = tg_idx / vocab_tiles;
+    uint tile_idx    = tg_idx % vocab_tiles;
+    if (token_idx >= params.token_count) return;
+
+    uint row_base    = tile_idx * SG_GEMV_TILE;
+    uint K           = params.input_width;
+    uint N           = params.projection_cols;
+    uint hidden_base = token_idx * params.hidden_stride;
+
+    simdgroup_matrix<float, 8, 8> acc;
+    acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+    uint k = 0;
+    for (; k + SG_GEMV_TILE <= K; k += SG_GEMV_TILE) {
+        simdgroup_matrix<bfloat, 8, 8> w_tile;
+        simdgroup_matrix<float, 8, 8>  h_tile;
+        simdgroup_load(w_tile, projection + row_base * N + k,    (ulong)N, ulong2(0, 0), false);
+        simdgroup_load(h_tile, hidden + hidden_base + k,         0,        ulong2(0, 0), true);
+        simdgroup_multiply_accumulate(acc, w_tile, h_tile, acc);
+    }
+
+    threadgroup float out_buf[SG_GEMV_TILE * SG_GEMV_TILE];
+    simdgroup_store(acc, out_buf, SG_GEMV_TILE, ulong2(0, 0));
+
+    if (lane < SG_GEMV_TILE) {
+        uint r = lane;
+        uint row_actual = row_base + r;
+        if (row_actual < params.vocab_rows) {
+            float val = out_buf[r * SG_GEMV_TILE];
+            uint row_kbase = row_actual * N;
+            for (uint c = k; c < K; c++) {
+                val += float(projection[row_kbase + c]) * hidden[hidden_base + c];
+            }
+            logits[token_idx * params.vocab_rows + row_actual] = val;
+        }
+    }
+}
+
 // Parallel argmax using SIMD max + min-index selection.
 // Dispatch with ARGMAX_TG_SIZE threads (1 threadgroup).
 // smem_val/smem_idx hold per-SIMD-group results (max 32 SIMD groups for TG ≤ 1024).

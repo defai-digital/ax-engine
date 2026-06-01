@@ -1211,7 +1211,7 @@ enum MtpDraftSource {
     HybridMtp,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 struct MtpTelemetry {
     draft_tokens: u32,
     accepted_tokens: u32,
@@ -1251,6 +1251,9 @@ struct MtpTelemetry {
     ngram_hybrid_tail_tokens: u32,
     /// MTP n-gram stacking steps skipped because model is outside `<think>`.
     ngram_think_gated_steps: u32,
+    accept_rate_ewma: f32,
+    accept_rate_ewma_samples: u32,
+    ngram_saturated_gated_steps: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1271,6 +1274,16 @@ impl MtpTelemetry {
             .accepted_tokens
             .saturating_add(saturating_u32(accepted));
         self.decode_steps = self.decode_steps.saturating_add(1);
+        if drafted > 0 {
+            let step_rate = accepted as f32 / drafted as f32;
+            const ALPHA: f32 = 0.05;
+            if self.accept_rate_ewma_samples == 0 {
+                self.accept_rate_ewma = step_rate;
+            } else {
+                self.accept_rate_ewma = (1.0 - ALPHA) * self.accept_rate_ewma + ALPHA * step_rate;
+            }
+            self.accept_rate_ewma_samples = self.accept_rate_ewma_samples.saturating_add(1);
+        }
         // Cycle-level acceptance: matches Lightning-MLX's mtp_acceptance_ratio
         // = accepted_cycles / (accepted_cycles + rejected_cycles).
         if accepted == drafted && drafted > 0 {
@@ -1467,6 +1480,9 @@ impl MtpTelemetry {
         self.ngram_think_gated_steps = self
             .ngram_think_gated_steps
             .saturating_add(other.ngram_think_gated_steps);
+        self.ngram_saturated_gated_steps = self
+            .ngram_saturated_gated_steps
+            .saturating_add(other.ngram_saturated_gated_steps);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -1550,7 +1566,19 @@ impl MtpTelemetry {
                 "ax_mtp_ngram_think_gated_steps",
                 self.ngram_think_gated_steps,
             ),
+            (
+                "ax_mtp_ngram_saturated_gated_steps",
+                self.ngram_saturated_gated_steps,
+            ),
         ];
+        decisions.upsert_route_decision(
+            "ax_mtp_accept_rate_ewma_x1000",
+            (self.accept_rate_ewma * 1000.0) as u32,
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_accept_rate_ewma_samples",
+            self.accept_rate_ewma_samples,
+        );
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);
         }
@@ -6029,6 +6057,21 @@ impl MlxRunner {
         } else {
             adaptive_ngram_draft_len(has_linear_attention, state.ngram_posterior_mean())
         };
+        // Adaptive n-gram saturation gate (ADR-013 Phase 1): when the MTP
+        // accept-rate EWMA exceeds the threshold (default 0.90), skip the
+        // n-gram probe entirely.  On 27B depth=3 where MTP already achieves
+        // 98-99% accept, n-gram stacking adds CPU overhead and MTP cache
+        // resets that *reduce* decode throughput (65.9 → 62.1 tok/s).
+        let ngram_saturated = ngram_max > 0
+            && state.mtp_telemetry.accept_rate_ewma_samples >= 16
+            && state.mtp_telemetry.accept_rate_ewma >= adaptive_ngram_saturation_threshold();
+        let ngram_max = if ngram_saturated { 0 } else { ngram_max };
+        if ngram_saturated {
+            state.mtp_telemetry.ngram_saturated_gated_steps = state
+                .mtp_telemetry
+                .ngram_saturated_gated_steps
+                .saturating_add(1);
+        }
         let ngram_outcome = if ngram_max > 0 {
             state.ngram.predict_with_policy(NgramDraftPolicy {
                 variant: NgramPolicyVariant::MajorityRecency,
@@ -6090,12 +6133,24 @@ impl MlxRunner {
                     draft.extend(tail);
                     (draft, aligned_log_probs, sources)
                 } else {
-                    // Reset cache and count together: the next MTP step starts fresh.
-                    // Resetting count keeps the linear-attention rollback trim correct.
-                    state.mtp_cache = None;
-                    state.mtp_decode_count = 0;
-                    // Clear skip-state: the MTP cache was reset, so any skip-state
-                    // from the previous verify is stale and must not be consumed.
+                    // N-gram filled the whole draft window — no MTP tail needed.
+                    // Preserve MTP cache and advance RoPE offset by ngram_len
+                    // instead of resetting to None (ADR-013 Phase 5). This keeps
+                    // accumulated positional context so the next MTP step starts
+                    // with correct RoPE offsets. Gated by env var; defaults to
+                    // the previous reset behavior for safety.
+                    let preserve_cache = std::env::var("AX_MLX_MTP_NGRAM_CACHE_POLICY")
+                        .map(|v| v == "preserve")
+                        .unwrap_or(false);
+                    if preserve_cache {
+                        if let Some(ref mut cache) = state.mtp_cache {
+                            cache.seq_len += ngram_len;
+                        }
+                        state.mtp_decode_count += ngram_len;
+                    } else {
+                        state.mtp_cache = None;
+                        state.mtp_decode_count = 0;
+                    }
                     state.mtp_skip_logits = None;
                     state.mtp_skip_hidden = None;
                     state.mtp_telemetry.record_ngram_stack_hit(ngram_len, true);
@@ -7004,12 +7059,15 @@ fn adaptive_ngram_draft_len(has_linear_attention: bool, posterior_mean: f32) -> 
             DEFAULT_DRAFT_LEN
         }
     } else {
-        // Dense models: always allow MAX_DRAFT_LEN and let the ngram confidence
-        // gate in predict_with_policy prune the chain naturally. Pre-capping at
-        // DEFAULT_DRAFT_LEN for mid-range posterior hurts throughput because it
-        // discards valid chain extensions that the confidence gate would keep.
         MAX_DRAFT_LEN
     }
+}
+
+fn adaptive_ngram_saturation_threshold() -> f32 {
+    std::env::var("AX_MLX_MTP_NGRAM_GATE_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.90)
 }
 
 #[derive(Debug, thiserror::Error)]

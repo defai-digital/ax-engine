@@ -20,6 +20,9 @@ This directory contains active product and execution plans for the current
   Lightning-compatible benchmark evidence.
 - `PRD-2026-06-01-mtp-fused-lazy-draft-skip-state.md` - MTP decode performance
   improvement: fused lazy draft, skip-state consumption, off-by-one fix.
+- `PRD-2026-06-01-mtp-optimization-phase2.md` - MTP decode, prefill, and TTFT
+  optimization: adaptive n-gram gating, warmup batching, top-k softmax,
+  skip-state expansion, MTP cache preservation, Metal fusion, prefill profiling.
 
 ## Policy
 

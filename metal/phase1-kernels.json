@@ -110,6 +110,31 @@
       "purpose": "batched decode or dense projection over a bf16 weight matrix into per-request f32 logits"
     },
     {
+      "name": "decode_logits_projection_sg_f32",
+      "tier": "optional",
+      "purpose": "simdgroup_matrix GEMV over f32 lm_head — 8 rows per TG via hardware matrix-multiply units"
+    },
+    {
+      "name": "decode_logits_projection_sg_f16",
+      "tier": "optional",
+      "purpose": "simdgroup_matrix GEMV over f16 weight matrix — 8 rows per TG via hardware matrix-multiply units"
+    },
+    {
+      "name": "decode_logits_projection_sg_bf16",
+      "tier": "optional",
+      "purpose": "simdgroup_matrix GEMV over bf16 weight matrix — 8 rows per TG via hardware matrix-multiply units"
+    },
+    {
+      "name": "decode_logits_projection_batched_sg_f16",
+      "tier": "optional",
+      "purpose": "batched simdgroup_matrix GEMV over f16 weight matrix for MTP multi-token projection"
+    },
+    {
+      "name": "decode_logits_projection_batched_sg_bf16",
+      "tier": "optional",
+      "purpose": "batched simdgroup_matrix GEMV over bf16 weight matrix for MTP multi-token projection"
+    },
+    {
       "name": "logits_argmax_f32",
       "tier": "optional",
       "purpose": "native top-1 vocab scan over projected decode logits"
